@@ -10,6 +10,106 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### JSDoc-rejection-gated matrix (2026-10-08 UTC)
+
+Result `20261008T213919Z` uses source/harness
+[`3491cdb45`](https://github.com/home-lang/home/commit/3491cdb45a78a9b21db5602e5726957b06e7260c)
+and validation protocol **4** under
+[#852](https://github.com/home-lang/home/issues/852). Compiler inputs equal
+`db28b2e10`; the frozen standalone native binary remains SHA-256
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
+This strengthens admission, not compiler speed, and does not attribute
+cross-run timing changes to a source patch.
+
+All five byte-pinned compilers pass the same 20 positive and nine negative
+projects: **145/145 admissions**. The new checked-JS control plants 15 errors
+in separate, untimed copies, covering model assignments/missing members,
+callback returns, instance arguments and nested generic values at first,
+middle and last families. Expected codes are TS2322×9, TS2339×3, TS2345×3;
+partial diagnostics, erased `any`, silent success and abnormal exits fail.
+Base three-compiler runs now retain admission evidence too, and reporting
+rejects skipped/weakened JSDoc gates or a legacy schedule claiming protocol 4.
+The earlier positive-only JSDoc rows stay provisional; they are not
+retroactively relabeled as having run these controls.
+
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Tools:
+Node 26.10.0, Hyperfine 1.20.0, Python 3.9.6. Versions remain TS6.0.3,
+direct native TS7.0.2, Home0.1.0, Rust tsc-rs0.1.0/TS7.1.0-dev and
+Bun1.4.3-canary.1+bd599f5af. Both additional payload inventories match their
+unchanged pins. After three warmups, 30 fresh processes per compiler/workload
+rotate command order equally: **600 original rounds / 3,000 retained samples**.
+Executable, payload, input, harness and project-context fingerprints match
+before admission and after timing. No observation or compiler was removed.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 216.1 ms | 24.4 ms | 30.7 ms | 23.8 ms | 14.3 ms | 2.14× slower |
+| `class_hierarchy` | 209.9 ms | 22.4 ms | 25.0 ms | 19.4 ms | 14.6 ms | 1.71× slower |
+| `commonjs_graph` | 175.3 ms | 20.1 ms | 28.0 ms | 16.8 ms | 13.2 ms | 2.12× slower |
+| `control_flow` | 220.8 ms | 29.9 ms | 27.7 ms | 26.6 ms | 17.9 ms | 1.55× slower |
+| `deep_types` | 146.0 ms | 22.9 ms | 22.3 ms | 15.5 ms | 14.7 ms | 1.52× slower |
+| `destructuring` | 144.0 ms | 17.3 ms | 15.6 ms | 15.0 ms | 11.0 ms | 1.41× slower |
+| `generic_calls` | 207.1 ms | 25.4 ms | 25.2 ms | 21.4 ms | 16.3 ms | 1.54× slower |
+| `import_graph` | 140.8 ms | 16.5 ms | 22.0 ms | 12.2 ms | 16.6 ms | 1.80× slower |
+| `interface_composition` | 240.4 ms | 34.5 ms | 37.2 ms | 25.8 ms | 19.3 ms | 1.93× slower |
+| `many_files` | 233.0 ms | 25.8 ms | 24.0 ms | 18.3 ms | 15.3 ms | 1.56× slower |
+| `null_safe_access` | 213.6 ms | 29.4 ms | 35.3 ms | 24.9 ms | 17.5 ms | 2.01× slower |
+| `overload_resolution` | 214.8 ms | 34.8 ms | 25.1 ms | 27.9 ms | 21.0 ms | 1.20× slower |
+| `recursive_generics` | 163.8 ms | 41.0 ms | 15.2 ms | 33.1 ms | 9.9 ms | 1.54× slower |
+| `reexport_graph` | 110.6 ms | 12.1 ms | 14.2 ms | 10.0 ms | 9.9 ms | 1.43× slower |
+| `startup` | 78.6 ms | 9.0 ms | **3.6 ms** | 7.5 ms | 7.9 ms | **2.08× faster** |
+| `structural_objects` | 201.7 ms | 28.9 ms | 23.8 ms | 24.0 ms | 18.3 ms | 1.31× slower |
+| `tsx_components` | 188.3 ms | 18.1 ms | 21.9 ms | 16.5 ms | 11.9 ms | 1.84× slower |
+| `type_predicates` | 347.5 ms | 54.4 ms | 40.5 ms | 44.7 ms | 30.8 ms | 1.31× slower |
+| `type_predicates_large` | 1,136.6 ms | 347.1 ms | 270.2 ms | 289.7 ms | 172.0 ms | 1.57× slower |
+| `variadic_tuples` | 269.5 ms | 46.9 ms | 32.1 ms | 34.9 ms | 19.9 ms | 1.61× slower |
+
+Home leads **1/20** (`startup`) and beats direct native TS7 on **12/20**,
+using unrounded medians. Bun leads 18 and Rust leads imports. Counts and small
+margins are descriptive, not significance or equivalence claims. The main
+measured gaps remain checked JS/JSDoc **2.14×**, CommonJS **2.12×**, null-safe
+access **2.01×**, interface composition **1.93×**, and TSX **1.84×** slower.
+No universal leadership, other-platform result, canonical C++ selection or
+production Zod admission is established. #416/#838/#548 remain open; the
+unmodified C++ candidate still fails negative admission and has no timing row.
+
+The [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T213919Z.tar.gz)
+retains all rounds byte-for-byte, all 145 admissions and **603 verified payload
+checksums**. SHA-256:
+`d1f7b629929bdc7214bbdaeee3fcc5c79571f21d4808a38a6f3377160e6c2ca0`.
+The shared-lock run peaked at 380 MB, with a 30% host low-water mark; the
+3,840 MB guard and disk floors are unchanged. Full harness **136/136** passes.
+
+#### Untimed admission and diagnostic profile
+
+All five compilers also pass five isolated feature controls plus their
+combined gate: **35** retained process records with exact fixture bytes and
+unchanged provenance. This establishes the new gate before the matrix rather
+than weakening it around a failure. The diagnostic image passed all **58**
+official image admissions and has identical original/renamed instruction bytes,
+SHA-256 `1c9d4cd471ae2c71e2e73dff7a4deb0205bb81ef02f4d921fb48976a8da505bb`.
+It is never used for timing. An unchanged 8,192-family checked-JS generator
+exits zero silently, with stable source/input/binary fingerprints.
+
+Its one-second sample records 428 leaf observations in `checkSourceFile`,
+348 in `checkDeclarationSpaceDiagnosticsImpl`, 18 in `jsdoc.parse`, and five
+in string interning. These are exploratory leaf counts, not whole-run CPU
+percentages or causal proof. The next investigation is
+[#853](https://github.com/home-lang/home/issues/853): map the actual sampled
+loops and replace repeated metadata scans with complete owned/pass-local facts,
+preserving diagnostic ordering, duplicates/merges, virtual sections and OOM
+behavior. No guessed source-level optimization is claimed by this sample.
+
+The [admission/profile context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-jsdoc-admission-profile-852-853.tar.gz)
+retains every isolated/combined process record and exact project, the full
+scale source, raw sample, both instruction sections, exact matrix/profile
+runners/logs, row statistics, provenance and full harness log. Its **50**
+payload checksums verify. SHA-256:
+`db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
+Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Historical compiler matrices
+
 ### Landed global-reference matrix (2026-10-08 UTC)
 
 Result `20261008T202953Z` measures source
