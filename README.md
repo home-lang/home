@@ -180,6 +180,18 @@ The large-predicate 3.5% slower screen and 0.9% slower independent recheck, comp
 oracle/version distinctions and raw evidence are in the
 [default-owner correctness/cost report](docs/docs/TS_PERFORMANCE.md#default-module-owner-correctness-and-cost-checkpoint-2026-10-08-utc).
 
+Two later CommonJS path-index prototypes were **rejected**, not shipped:
+
+| Prototype, independent same-parent confirmation | CommonJS median | Large-predicate recheck |
+|---|---:|---:|
+| Inline index | 5.3% faster | 1.3% slower; negative saving interval |
+| Lazy pointer index | 5.2% faster | 1.6% slower; negative saving interval |
+
+All observations and the unaccepted five-compiler run are preserved in the
+[rejection report](docs/docs/TS_PERFORMANCE.md#whole-commonjs-path-indexes-rejected-2026-10-08-utc)
+under [#848](https://github.com/home-lang/home/issues/848). Compiler behavior
+was restored; only general path-matching tests remain.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

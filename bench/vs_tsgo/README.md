@@ -115,6 +115,14 @@ retained. [Report](../../docs/docs/TS_PERFORMANCE.md#default-module-owner-correc
 and [evidence](evidence/20261008-default-module-owners-845.tar.gz): 296 pair
 rounds, 224 admissions, 6,271 verified checksums. This is not a new expanded
 matrix, a production admission or a universal regression-freedom claim.
+
+The later #848 inline/lazy CommonJS path-index prototypes are rejected,
+despite roughly 5% CommonJS gains: independent large-predicate rechecks have
+entirely negative saving intervals. [Rejection report](../../docs/docs/TS_PERFORMANCE.md#whole-commonjs-path-indexes-rejected-2026-10-08-utc).
+Result `20261008T140417Z` is an **unaccepted prototype** matrix (Home leads
+1/20), not a replacement for the accepted current snapshot. Its
+[raw matrix](evidence/20261008T140417Z-rejected-848.tar.gz) retains all 600
+rounds / 3,000 samples, 140 admissions and 603 payload checksums.
 Earlier three-compiler snapshots used different hosts and
 TypeScript 7 launcher modes; they remain dated history rather than regression
 comparisons or current expanded-matrix claims.

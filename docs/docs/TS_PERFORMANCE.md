@@ -821,6 +821,105 @@ The sections below retain dated A/B investigations, including rejected ideas.
 They describe the source revisions named in each section and must not be read
 as the current full-suite result above.
 
+### Whole CommonJS path indexes (rejected, 2026-10-08 UTC)
+
+Issue [#848](https://github.com/home-lang/home/issues/848) investigated a
+general repeated cost in `programCommonJsModuleHasWholeExport`: each query
+scanned all whole-export records and repeatedly compared extensionless
+module paths. Current stack samples on same-generator CommonJS 1,024-family
+and re-export 4,096-leaf projects are retained. A diagnostic-only image was
+relinked from the exact cached ReleaseFast object with temporary local symbols
+renamed; the machine-code section is byte-identical. It passed all 56
+frozen/diagnostic admission records and was never used for accepted timings.
+
+Two candidates indexed canonical whole-export paths, preserving external OR
+fallback resolution, duplicates, misses, metadata replacement, and
+importer/resolver invalidation. The first stored an inline hash table/built
+flag; the second allocated a lazy index behind a nullable pointer. Neither
+stored foreign TypeIds, changed diagnostics, imposed a limit, or recognized
+benchmark/declaration names. **Both were rejected**: positive CommonJS
+confirmation coexisted with independently adverse large-predicate results.
+The cause of the unrelated-family cost is unproven; pointer storage did not
+clear it, and it is not dismissed as noise or declared harmless.
+
+Every A/B below uses source parent `3698c7a06` / byte-identical compiler
+`206cdf1aa`, pinned Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast and
+the same guard limits. Host: Apple M3 Pro / Mac15,6, 11 logical cores,
+Darwin 27.0.0 arm64. Each phase independently passed 56 admissions on the
+20 unchanged official workloads and existing negatives. The scale used the
+unchanged CommonJS generator, 1,024 families, on both sides. Three warmups,
+fresh processes, reversed alternating pair order, all samples and stable
+before/after binary/input/harness/tool/runner hashes are retained.
+
+Positive paired saving means faster candidate; the intervals are
+exploratory observations, not universal significance/equivalence claims.
+
+| Variant / independent gate | Parent median | Candidate median | Faster pairs | Paired mean saving 95% t interval |
+|---|---:|---:|---:|---:|
+| Inline: official CommonJS confirmation | 29.823 ms | 28.327 ms | 26/30 | +0.218 to +1.856 ms |
+| Inline: CommonJS scale confirmation | 449.598 ms | 373.946 ms | 10/10 | +65.470 to +86.664 ms |
+| Inline: large-predicate screen | 273.002 ms | 281.876 ms | 2/10 | −22.018 to −3.402 ms |
+| Inline: independent large-predicate recheck | 266.922 ms | 270.431 ms | 8/30 | **−6.510 to −0.496 ms** |
+| Lazy pointer: official CommonJS confirmation | 30.088 ms | 28.531 ms | 29/30 | +0.699 to +2.262 ms |
+| Lazy pointer: scale confirmation | 453.839 ms | 379.511 ms | 10/10 | +59.207 to +81.697 ms |
+| Lazy pointer: large-predicate screen | 282.829 ms | 282.717 ms | 4/10 | −6.272 to +6.557 ms |
+| Lazy pointer: carried-forward independent predicate recheck | 279.147 ms | 283.733 ms | 9/30 | **−6.528 to −1.070 ms** |
+
+CommonJS confirmation medians improve about **5.3% / 5.2%**; large-predicate
+recheck medians worsen **1.3% / 1.6%**, with entirely negative saving
+intervals. The inline official screen had an interval crossing zero, despite
+a 3.7% lower median; it remains in the archive. The predeclared >3%-slower
+family-median rule selected startup/predicates for inline, and
+startup/re-exports/generic calls for lazy storage. The prior independently
+adverse predicate family was additionally carried forward before the lazy
+recheck: absence from its screen threshold did not establish clearance.
+
+| Other independent recheck | Parent median | Candidate median | Faster pairs | Saving interval |
+|---|---:|---:|---:|---:|
+| Inline startup | 3.168 ms | 3.169 ms | 17/30 | −0.201 to +0.137 ms |
+| Lazy startup | 3.500 ms | 3.244 ms | 20/30 | −0.077 to +0.330 ms |
+| Lazy re-exports | 13.867 ms | 13.985 ms | 17/30 | −0.874 to +0.581 ms |
+| Lazy generic calls | 26.447 ms | 26.400 ms | 15/30 | −1.095 to +0.839 ms |
+
+These zero-spanning intervals do not prove equivalence. All 20 family screens
+for each candidate remain in raw evidence; no favorable phase substitutes
+for another variant/run. Candidate full checker 4,503, Program 238 and
+entrypoint 35 tests passed as applicable; each candidate retained the complete
+pinned 195 TS + 3 HM9002 Zod multiset, zero changes, not production admission.
+The compiler implementation was restored. The restored native image is
+byte-identical to the frozen parent (`7346fd7b…`); only the two general
+path-matching/reset tests were kept in
+[`773ca888f`](https://github.com/home-lang/home/commit/773ca888fe4940965c0556cc4ac6bdc9fe6bc69f),
+after unrelated upstream integration. These equivalence/measurements refer
+to the original experiment source, not that later runtime tree.
+
+The complete inline-prototype five-compiler run `20261008T140417Z` is retained
+as **unaccepted evidence**, not the current snapshot or a successful compiler
+change. It passes 140 admissions and preserves 600 rounds / 3,000 samples,
+all five pinned versions and unchanged provenance. Home leads only **1/20**
+(startup); CommonJS is 28.2 ms versus Bun's 13.4 ms, **2.10× slower**. The
+current accepted snapshot above is not replaced with this rejected variant.
+Its [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T140417Z-rejected-848.tar.gz)
+has 603 verified payload checksums; SHA-256:
+`6052b7d07edbdfbe7e2356a74b4803486e0aaa55a5d02890d0360f3030feea74`.
+
+The [paired/profile archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-whole-commonjs-paths-rejected-848.tar.gz)
+records all 686 pair rounds, seven independent
+phases (392 admissions), the separate 56 profile admissions, both rejected
+patches and frozen binary hashes, retained/restored test logs, full Zod output,
+all official/scale inputs, scripts and raw samples. Archive provenance is
+covered by **7,031 verified checksums**. SHA-256:
+`a54ace54f9e3a5f991cc04149e082cd4e4e8948c72e76589002aac0740b96e73`.
+Its verifier recomputes medians, intervals and win counts and verifies the
+separate matrix, both negative predicate intervals, and diagnostic-image
+code/admission equivalence. Parent, inline and lazy binary SHA-256:
+`7346fd7bbc264c20a9b32a0da08e8579e615e68795c961f4f91911e6b276063a`,
+`cb451c6a896264aaabc10d601bf69fd31940b339bd468b4e65c9f038d6db22cc`,
+`0ffab1f3a47c2c09a1f6d0abce75304895131bb47aa55e3d4f34a1cc3de3b6d6`.
+Issue [#848](https://github.com/home-lang/home/issues/848) remains open for a design that can
+recover the general CommonJS gain without the observed tradeoff; the full
+benchmark-leadership goal is not achieved.
+
 ### Lazy forward-overload root index
 
 Issue [#837](https://github.com/home-lang/home/issues/837) traced the remaining
