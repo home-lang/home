@@ -956,7 +956,7 @@ pub const Program = struct {
     fn compileFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ts_driver.CompileError!void {
         var per_file = options;
         per_file.shared_strings = &self.strings.?;
-        per_file.is_tsx = options.is_tsx or f.is_tsx;
+        per_file.is_tsx = f.is_tsx;
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
         per_file.file_id = f.id;
@@ -3033,7 +3033,7 @@ pub const Program = struct {
         for (self.files.items, 0..) |f, idx| {
             var per_file = options;
             per_file.shared_strings = &self.strings.?;
-            per_file.is_tsx = options.is_tsx or f.is_tsx;
+            per_file.is_tsx = f.is_tsx;
             per_file.package_type_module = f.package_type_module;
             per_file.is_declaration_file = f.is_declaration;
             const r = ts_driver.emitWithCache(self.gpa, f.source, cache, config_blob, per_file) catch |err| switch (err) {
@@ -9171,6 +9171,27 @@ test "Program: tsx flag inherits from .tsx file extension" {
     const file = p.fileById(0);
     try T.expect(file.is_tsx);
     try T.expect(std.mem.indexOf(u8, file.compilation.?.js, "React.createElement") != null);
+}
+
+test "Program: JSX syntax mode stays local to source filenames" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/generic.ts", "export const identity = <T>(value: T) => value;");
+    _ = try p.add("/types.d.ts", "// Documentation: <https://example.test>\nexport declare const value: string;");
+    _ = try p.add("/app.tsx", "const element = <Item />;");
+    try p.compileAll(.{ .is_tsx = true });
+    for ([_]FileId{ 0, 1 }) |id| {
+        const compilation = p.fileById(id).compilation.?;
+        for (compilation.diagnostics.items) |diagnostic| {
+            try T.expect(diagnostic.phase != .parse and diagnostic.phase != .lex);
+            try T.expect(diagnostic.code != 7026);
+        }
+    }
+    try T.expect(std.mem.indexOf(u8, p.fileById(2).compilation.?.js, "React.createElement") != null);
 }
 
 test "Program: declaration files marked is_declaration" {

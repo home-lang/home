@@ -2310,6 +2310,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     checker.setSourceWithMarkers(source, c.source_markers);
     checker.setTsx(options.is_tsx);
     checker.setIsDeclarationFile(c.is_declaration_file);
+    checker.setSkipDeclarationValidation(options.skip_lib_check and c.is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling
     // the checker whether the parser produced a true syntactic diagnostic.
@@ -7852,6 +7853,33 @@ test "driver: triple-slash type diagnostics honor suppression" {
         }
         for (c.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2688);
     }
+}
+
+test "driver: skipLibCheck retains inherited interface shapes and application validation" {
+    const source =
+        \\interface Parent { value: string }
+        \\interface Box extends Parent { own: number }
+        \\interface Invalid extends string { stillTyped: string }
+    ;
+    var declaration = try compileSource(T.allocator, source, .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true });
+    defer {
+        declaration.deinit();
+        T.allocator.destroy(declaration);
+    }
+    const box = declaration.checked_types.type_names.get(declaration.interner.lookup("Box").?).?;
+    try T.expectEqual(ts_checker.types.Primitive.string_t, declaration.type_interner.objectMember(box, declaration.interner.lookup("value").?).?);
+    try T.expectEqual(ts_checker.types.Primitive.number_t, declaration.type_interner.objectMember(box, declaration.interner.lookup("own").?).?);
+    for (declaration.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2840);
+    var application = try compileSource(T.allocator, source, .{ .no_emit = true, .skip_lib_check = true });
+    defer {
+        application.deinit();
+        T.allocator.destroy(application);
+    }
+    var found = false;
+    for (application.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2840) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: skipLibCheck suppresses declaration semantics but retains syntax diagnostics" {

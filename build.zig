@@ -358,6 +358,11 @@ pub fn build(b: *std.Build) void {
         "ts-checker-test-filter",
         "Only compile/run ts_checker tests whose name contains this substring",
     );
+    const ts_driver_test_filter = b.option(
+        []const u8,
+        "ts-driver-test-filter",
+        "Only compile/run ts_driver tests whose name contains this substring",
+    );
     const home_test_test_filter = b.option(
         []const u8,
         "home-test-test-filter",
@@ -1868,7 +1873,8 @@ pub fn build(b: *std.Build) void {
     const run_d_hm_tests = b.addRunArtifact(d_hm_tests);
     dependOnTest(test_step, &run_d_hm_tests.step, test_filter, "d_hm");
 
-    const ts_driver_tests = b.addTest(.{ .root_module = ts_driver_pkg });
+    const ts_driver_test_filters: []const []const u8 = if (ts_driver_test_filter) |needle| &.{needle} else &.{};
+    const ts_driver_tests = b.addTest(.{ .root_module = ts_driver_pkg, .filters = ts_driver_test_filters });
     const run_ts_driver_tests = b.addRunArtifact(ts_driver_tests);
     dependOnTest(test_step, &run_ts_driver_tests.step, test_filter, "ts_driver");
 

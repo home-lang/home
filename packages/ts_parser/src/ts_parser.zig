@@ -11983,7 +11983,7 @@ pub const Parser = struct {
         const start_span_start = self.peek().span.start;
         // `asserts <ident>` ...
         if (self.peek().kind == .kw_asserts and
-            (self.peekAt(1).kind == .identifier or self.peekAt(1).kind == .kw_this) and
+            (self.peekAt(1).kind == .identifier or self.peekAt(1).kind.isContextualKeyword() or self.peekAt(1).kind == .kw_this) and
             !self.peekAt(1).flags.preceded_by_newline)
         {
             _ = self.advance(); // asserts
@@ -12012,7 +12012,7 @@ pub const Parser = struct {
             );
         }
         // `<ident> is T`
-        if (self.peek().kind == .identifier and
+        if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
             self.peekAt(1).kind == .kw_is and
             !self.peekAt(1).flags.preceded_by_newline)
         {
@@ -30809,6 +30809,27 @@ test "parser: assertion method return types accept this targets" {
     try T.expectEqual(hir_mod.none_node_id, truthy.target_type);
     try T.expect(typed.is_asserts);
     try T.expect(typed.target_type != hir_mod.none_node_id);
+}
+
+test "parser: contextual predicate parameter names retain targets and ordinary returns" {
+    var s = try newTestSetup(
+        \\declare function isElement<P>(object: {}): object is Box<P>;
+        \\declare function requireObject(object: unknown): asserts object is {};
+        \\declare function ordinary(object: unknown): object;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const declarations = hir_mod.blockStmts(&s.hir, root);
+    for (declarations[0..2], 0..) |declaration, index| {
+        const function = hir_mod.fnDeclOf(&s.hir, declaration);
+        try T.expectEqual(hir_mod.NodeKind.type_predicate_type, s.hir.kindOf(function.return_type));
+        const predicate = hir_mod.typePredicateOf(&s.hir, function.return_type);
+        try T.expectEqual(index == 1, predicate.is_asserts);
+        try T.expectEqual(@as(u16, 0), predicate.param_index);
+        try T.expect(predicate.target_type != hir_mod.none_node_id);
+    }
+    try T.expect(s.hir.kindOf(hir_mod.fnDeclOf(&s.hir, declarations[2]).return_type) != .type_predicate_type);
 }
 
 test "parser: non-assertion `x is T` is still a type predicate (is_asserts=false)" {

@@ -5429,6 +5429,9 @@ pub const Checker = struct {
     /// (e.g. `parserReturnStatement1.d.ts`) suppress TS1108 the same
     /// way virtual-`@filename:`-anchored `.d.ts` sections already do.
     whole_file_is_declaration_file: bool = false,
+    /// Declaration type shapes are still resolved, but diagnostic-only
+    /// relation checks need not run when the caller requests skipLibCheck.
+    skip_declaration_validation: bool = false,
     /// True when the parser produced at least one syntactic diagnostic
     /// for this source file. tsc/tsgo gate every grammar error
     /// (`grammarErrorOnNode` → `hasParseDiagnostics`) on the file being
@@ -6035,6 +6038,10 @@ pub const Checker = struct {
     /// the virtual-section heuristic already covers.
     pub fn setIsDeclarationFile(self: *Checker, enabled: bool) void {
         self.whole_file_is_declaration_file = enabled;
+    }
+
+    pub fn setSkipDeclarationValidation(self: *Checker, enabled: bool) void {
+        self.skip_declaration_validation = enabled;
     }
 
     /// Record whether the parser emitted any syntactic diagnostic for
@@ -66980,10 +66987,13 @@ pub const Checker = struct {
         defer pattern_indexes.deinit(self.gpa);
         var own_index_signatures: IndexSignatureDuplicateState = .{};
         const extends = hir_mod.interfaceExtends(self.hir, node);
-        for (extends) |extends_node| {
-            try self.reportInterfaceExtendsPrimitive(extends_node);
-            try self.reportUnresolvedTypeRefHeritage(extends_node, type_params);
-            try self.reportInterfaceExtendsNonObject(extends_node, type_params);
+        const validate_declaration = !(self.skip_declaration_validation and self.whole_file_is_declaration_file);
+        if (validate_declaration) {
+            for (extends) |extends_node| {
+                try self.reportInterfaceExtendsPrimitive(extends_node);
+                try self.reportUnresolvedTypeRefHeritage(extends_node, type_params);
+                try self.reportInterfaceExtendsNonObject(extends_node, type_params);
+            }
         }
         for (members) |m| {
             if (self.hir.kindOf(m) == .index_signature) {
@@ -67191,8 +67201,10 @@ pub const Checker = struct {
         // `interface B extends A { ... }` ÃÂ¢ÃÂÃÂ merge each parent's
         // members into the child. Child decls win on name conflict.
         if (extends.len > 0) {
-            try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items, string_idx, number_idx, symbol_idx);
-            try self.checkMergedInterfaceExtendsCompatibility(node, extends);
+            if (validate_declaration) {
+                try self.checkInterfaceExtendsCompatibility(node, extends, iface_members.items, string_idx, number_idx, symbol_idx);
+                try self.checkMergedInterfaceExtendsCompatibility(node, extends);
+            }
             const iface_name_for_extends: ?hir_mod.StringId = if (it.name != hir_mod.none_node_id and self.hir.kindOf(it.name) == .identifier)
                 hir_mod.identifierOf(self.hir, it.name).name
             else
@@ -67203,8 +67215,10 @@ pub const Checker = struct {
                 if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
             }
         }
-        try self.checkIndexSignatureMemberCompatibility(node, iface_members.items, string_idx, number_idx, symbol_idx);
-        try self.checkPatternIndexSignatureCompatibility(pattern_indexes.items);
+        if (validate_declaration) {
+            try self.checkIndexSignatureMemberCompatibility(node, iface_members.items, string_idx, number_idx, symbol_idx);
+            try self.checkPatternIndexSignatureCompatibility(pattern_indexes.items);
+        }
 
         var iface_t = self.interner.internObjectTypeWithIndexAndSymbol(iface_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         var recursive_provisional_t = types.Primitive.none;
@@ -166120,15 +166134,16 @@ pub const Checker = struct {
                         continue;
                     }
                     const tp = self.interner.pool.type_parameter_payloads.items[tp_payload_idx];
+                    const constraint_subs = if (signature_subs_changed) &signature_subs else subs;
                     const next_constraint = if (tp.constraint != types.Primitive.none)
                         if (self.typeContainsMappedConstraintParameter(t, param_t, 0))
-                            try self.substituteInferenceConstraintPreservingKeyof(tp.constraint, &signature_subs)
+                            try self.substituteInferenceConstraintPreservingKeyof(tp.constraint, constraint_subs)
                         else
-                            try self.substituteType(tp.constraint, &signature_subs)
+                            try self.substituteType(tp.constraint, constraint_subs)
                     else
                         types.Primitive.none;
                     const next_default = if (tp.default != types.Primitive.none)
-                        try self.substituteType(tp.default, &signature_subs)
+                        try self.substituteType(tp.default, constraint_subs)
                     else
                         types.Primitive.none;
                     const next_param_t = if (next_constraint != tp.constraint or next_default != tp.default)
@@ -166369,13 +166384,18 @@ pub const Checker = struct {
                     .next_type = try self.substituteType(gen.next_type, subs),
                 });
             }
-            for (orig_snapshot) |om| {
-                var pred_opt = self.member_predicates.get(.{ .receiver_type = t, .member_name = om.name });
-                if (pred_opt == null) {
-                    const substituted_member_t = self.substituteType(om.type, subs) catch om.type;
-                    pred_opt = self.signature_predicates.get(substituted_member_t);
+            for (orig_snapshot, new_members.items) |om, rebuilt_member| {
+                const receiver_predicate = self.member_predicates.get(.{ .receiver_type = t, .member_name = om.name });
+                const original_signature_predicate = self.signature_predicates.get(om.type);
+                const follows_signature = receiver_predicate == null or
+                    (original_signature_predicate != null and std.meta.eql(receiver_predicate.?, original_signature_predicate.?));
+                if (follows_signature) {
+                    if (self.signature_predicates.get(rebuilt_member.type)) |pred| {
+                        try self.recordMemberPredicate(new_obj, om.name, pred);
+                        continue;
+                    }
                 }
-                if (pred_opt) |pred| {
+                if (receiver_predicate) |pred| {
                     var next_pred = pred;
                     next_pred.target_type = self.substituteType(pred.target_type, subs) catch pred.target_type;
                     try self.recordMemberPredicate(new_obj, om.name, next_pred);
@@ -236022,6 +236042,96 @@ test "checker: callable union composition handles three predicate branches and c
     try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.this_context_not_assignable));
+}
+
+test "checker: substitution sharing batch preserves constrained binders under separate maps" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value_name = try s.checker.string_interner.intern("value");
+    const constraint = try s.ti.internObjectType(&.{.{ .name = value_name, .type = outer, .is_optional = false, .is_readonly = true, .is_method = false }});
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), constraint, constraint, .bivariant);
+    const signature = try s.ti.internSignature(&.{local}, local, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    var previous: TypeId = types.Primitive.none;
+    for ([_]TypeId{ types.Primitive.string_t, types.Primitive.number_t }) |replacement| {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, outer, replacement);
+        const instantiated = try s.checker.substituteType(signature, &map);
+        const next_local = s.checker.generic_signature_params.get(instantiated).?[0];
+        try T.expect(next_local != local and next_local != previous);
+        previous = next_local;
+        try T.expectEqual(next_local, s.ti.signatureParams(instantiated)[0]);
+        try T.expectEqual(next_local, s.ti.signatureReturn(instantiated).?);
+        const payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(next_local)];
+        try T.expectEqual(replacement, s.ti.objectMember(payload.constraint, value_name).?);
+        try T.expectEqual(replacement, s.ti.objectMember(payload.default, value_name).?);
+    }
+}
+
+test "checker: substitution sharing batch avoids repeat member metadata traversals" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value_name = try s.checker.string_interner.intern("value");
+    const child_name = try s.checker.string_interner.intern("child");
+    const leaf = try s.ti.internObjectType(&.{});
+    try s.ti.completeFreshObjectType(leaf, &.{
+        .{ .name = value_name, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = child_name, .type = leaf, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    var root = leaf;
+    for (0..7) |_| root = try s.ti.internObjectType(&.{.{ .name = child_name, .type = root, .is_optional = false, .is_readonly = false, .is_method = false }});
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, parameter, types.Primitive.string_t);
+    const before = s.ti.pool.typeCount();
+    var result = try s.checker.substituteType(root, &map);
+    try T.expect(s.ti.pool.typeCount() - before < 32);
+    for (0..7) |_| result = s.ti.objectMember(result, child_name).?;
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(result, value_name).?);
+    var saw_value = false;
+    var saw_child = false;
+    for (s.ti.objectMembers(result)) |member| {
+        if (member.name == value_name) {
+            saw_value = true;
+            try T.expect(member.is_readonly and !member.is_optional);
+        }
+        if (member.name == child_name) {
+            saw_child = true;
+            try T.expect(member.is_optional and !member.is_readonly);
+        }
+    }
+    try T.expect(saw_value and saw_child);
+}
+
+test "checker: substitution sharing batch ties member predicates to the rebuilt signature binder" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value_name = try s.checker.string_interner.intern("value");
+    const guard_name = try s.checker.string_interner.intern("guard");
+    const constraint = try s.ti.internObjectType(&.{.{ .name = value_name, .type = outer, .is_optional = false, .is_readonly = true, .is_method = false }});
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), constraint, types.Primitive.none, .bivariant);
+    const signature = try s.ti.internSignature(&.{local}, types.Primitive.boolean_t, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    try s.checker.signature_predicates.put(T.allocator, signature, .{ .param_index = 0, .target_type = local, .is_asserts = false });
+    const object = try s.ti.internObjectType(&.{.{ .name = guard_name, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true }});
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const rebuilt = try s.checker.substituteType(object, &map);
+    const rebuilt_signature = s.ti.objectMember(rebuilt, guard_name).?;
+    const binder = s.checker.generic_signature_params.get(rebuilt_signature).?[0];
+    try T.expect(binder != local);
+    try T.expectEqual(binder, s.checker.signature_predicates.get(rebuilt_signature).?.target_type);
+    try T.expectEqual(binder, s.checker.member_predicates.get(.{ .receiver_type = rebuilt, .member_name = guard_name }).?.target_type);
+    try s.checker.recordMemberPredicate(object, guard_name, s.checker.signature_predicates.get(signature).?);
+    const rebuilt_again = try s.checker.substituteType(object, &map);
+    const signature_again = s.ti.objectMember(rebuilt_again, guard_name).?;
+    const binder_again = s.checker.generic_signature_params.get(signature_again).?[0];
+    try T.expectEqual(binder_again, s.checker.member_predicates.get(.{ .receiver_type = rebuilt_again, .member_name = guard_name }).?.target_type);
 }
 
 test "checker: empty substitutions preserve type graph identity" {

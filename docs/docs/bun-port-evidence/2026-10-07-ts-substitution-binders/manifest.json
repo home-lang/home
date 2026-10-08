@@ -1,0 +1,112 @@
+{
+  "source_base": "cc1128f6213a9de94767e5008a4f7f10e93b7068",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "build.zig": "54834ed94b13911a77afaad49aec2aa33681d8d8928d363120143b72746ea61f",
+    "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_program/src/ts_program.zig": "21835b0f187de36f7b2315ee7b2acde102159dde1f6ad66d0765ec2849c2fc3d",
+    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9"
+  },
+  "gates": {
+    "substitution_controls": {
+      "passed": 4,
+      "total": 4,
+      "peak_mb": 1703
+    },
+    "declaration_controls": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 1690
+    },
+    "checker": {
+      "passed": 4486,
+      "total": 4486,
+      "peak_mb": 2088
+    },
+    "driver": {
+      "passed": 198,
+      "total": 198,
+      "peak_mb": 1965
+    },
+    "program": {
+      "passed": 229,
+      "total": 229,
+      "peak_mb": 1176
+    },
+    "parser": {
+      "passed": 905,
+      "total": 905,
+      "peak_mb": 414
+    },
+    "react_before_file_modes": {
+      "passed": 0,
+      "failed": 2,
+      "total": 2,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 3597
+    },
+    "react_file_modes": {
+      "passed": 0,
+      "failed": 2,
+      "total": 2,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 154
+    },
+    "prefix_file_modes": {
+      "passed": 166,
+      "failed": 34,
+      "total": 200,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 362
+    },
+    "compiler_file_modes": {
+      "steps": 3,
+      "peak_mb": 2830
+    },
+    "zod_file_modes": {
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "peak_mb": 688,
+      "text_changed_from_previous_checkpoint": true,
+      "equal_to_first_substitution_run": true
+    }
+  },
+  "validation_scope": "Gates recorded before integrating origin/main export-owner reuse; checker/driver gates preceded JSX mode and parser-only changes; final combined validation is pending",
+  "artifact_sha256": {
+    "home-substitution-critical-disk-cleanup.json.gz": "fd9fbf3d1442c77eb5f4da405f0e365b367a90a83a0c110291e1679e77f06112",
+    "program-full-file-modes.log.gz": "827db52bd6647ad2c3c82691a50bf1cb646bfd0f8d67fa4e414a69287dabb25f",
+    "declaration-controls-final.log.gz": "0972efd90686c3a1b9e881d15bf4c23d4fdbe59b7fb7b3034d59ff97ebf455df",
+    "program-disk-stop.log.gz": "947290d2493e4132103eddda418e70ba58a88c09e2c95100da97b72cccecc263",
+    "original-cases-file-modes.log.gz": "d17e58fdb99d1d3b2f42b5bd64db36202c71d60bf33d97e0e24632d877761f4f",
+    "home-substitution-control-cache-cleanup.json.gz": "6614e8f16a51a5f17c21fd0e7debac3338fe508d611ade3af7e5c24814c9cb48",
+    "production-zod-file-modes.log.gz": "bb66531a3948b8a97a8ec2e5f59eabc74f9d5447b8a96a8f7ef4f23955d0a7ad",
+    "home-substitution-intermediate-cache-cleanup.json.gz": "0c4f24f6a03062aecac971424928041a9ac83934df91c8ad3309bb7763286cad",
+    "controls-compile-failure.log.gz": "243139032d5e4e441d670a5814b826dd12acfb798fa3b0bbf2e97fc2fe5360ac",
+    "intermediate-original-cases-interrupted.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25",
+    "production-compiler-file-modes.log.gz": "c5e40deb61e4a4295f8c69e6bbc30199f774c4b57a83a6be502654d7250b065f",
+    "production-zod-file-modes-diagnostics.log.gz": "d4f88a1cb9f8697f851a04cc8073788b0e726b9a7692fccb99b0bc2ce7dcd7d1",
+    "driver-full.log.gz": "09ba22df16b60bf6a31bc6143af5de3ff9b13b6d0d52b52efd90dc36de59b273",
+    "baseline-disk-stop.log.gz": "a3783307e01a9303b79c3196daf815d889f7db2f4f0fd6df67054d6b7d362637",
+    "original-cases-before-file-modes.log.gz": "27de6a0ecf5fe5c7077ddd3ede65d1687d4343acd050391f10cf047f9f926f67",
+    "controls-binder-failure.log.gz": "7378654e6f5a5e64c3c23e7c7121a3e1f9903d6883c3c8e0c9b3109512cccdf6",
+    "home-substitution-download-cache-cleanup.json.gz": "77e50424e29ddf904aadcfad867b4e1996f838c735a807537060556df1934128",
+    "parser-admission-refusal.log.gz": "070770fc3293ccbd1581e3819d83a6707ef7aa0f29470ff011ac33a300353d60",
+    "intermediate-process-sample.txt.gz": "3cba3482eab60a44b06581bec8da9c70d877eb777a01f6a25a7f9e4770167f3e",
+    "home-substitution-bun-download-cache-cleanup.json.gz": "77d5f006a9f6171be0f8953a25acfba9d2c6616fc65d4025d0348937e7822ed8",
+    "zod-old-to-substitution.diff.gz": "cab5b79e3b943c3f070357b701d66ad72318132b4db6d3dd80e3ed51a5a658ee",
+    "home-substitution-cache-cleanup.json.gz": "15a18014ba50a9437f3e5192bda1360b9c579f3b9b22fcef04ff7dc08b3170da",
+    "controls-final.log.gz": "8965c85330a3b212fb9ed765c4afd5cb6930bb14fc0a12da0ba281e167312194",
+    "prefix-file-modes.log.gz": "f1a47c3138b1cec1d96fab46d5294551b270caa0778e9bd78f9ea6e926a13ba0",
+    "program-admission-refusal.log.gz": "707e7f76507c1793a6d7a2351dc724c719d53ea4fa7df1cd0c53aa3cd30ccdc9",
+    "checker-full.log.gz": "ad9562dbde2dfccfc376d699f02aa54b39515172dcd9bfec4a4d9ea86b9b1ff7",
+    "parser-full.log.gz": "70e607ede5a324bdbe46c341f080402da425df34e3c3089a88261b9fee0ea80c"
+  }
+}
