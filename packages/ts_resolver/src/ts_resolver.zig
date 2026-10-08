@@ -292,15 +292,14 @@ pub const Resolver = struct {
     trace: ?*TraceSink = null,
     /// Guards the once-per-program resolution-kind banner (TS6087/6088).
     resolution_kind_traced: bool = false,
-    /// Per-(directory, specifier) resolution memo, mirroring tsc's
+    /// Per-(containing-file, specifier) resolution memo, mirroring tsc's
     /// module-resolution cache. The checker re-resolves the same
     /// specifiers many times during type-checking; without this every
     /// reference re-walks the filesystem (and, under `--traceResolution`,
     /// re-emits the whole trace, which exploded the trace volume). Keyed
-    /// by `"<dir>\x00<specifier>"` (interned in `arena`); value `null`
-    /// memoizes a `NotFound`. Resolution depends only on the containing
-    /// DIRECTORY (relative joins + the package-scope walk both start from
-    /// `dirname(containing_file)`), so a per-dir key is sound.
+    /// by `"<containing-file>\x00<specifier>"` (owned in `arena`); value
+    /// `null` memoizes a `NotFound`. Importer extensions and effective
+    /// module kind can select different bundler conditions in one directory.
     cache: std.StringHashMapUnmanaged(?Resolution) = .empty,
     /// Directory snapshots for extensionless relative imports. A single
     /// listing preserves the configured candidate order while avoiding one
@@ -3525,6 +3524,46 @@ test "Resolver: paths mapping traces TS6091/6092/6093" {
     try T.expect(saw_6091);
     try T.expect(saw_6092);
     try T.expect(saw_6093);
+}
+
+test "Resolver: cached importer and specifier keys own caller bytes" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/foo.ts", "");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    var importer = "/proj/app.ts".*;
+    var specifier = "./foo".*;
+    const result = try r.resolve(&specifier, &importer);
+    @memset(&importer, '?');
+    @memset(&specifier, '?');
+    try T.expectEqualStrings(result.path, (try r.resolve("./foo", "/proj/app.ts")).path);
+    try T.expect(r.cache.contains("/proj/app.ts\x00./foo"));
+}
+
+test "Resolver: cached hits preserve importer conditions and repeated ambiguity" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/pkg/package.json", "{\"exports\":{\"import\":\"./esm.js\",\"require\":\"./cjs.js\"}}");
+    try vfs.addFile("/node_modules/pkg/esm.js", "");
+    try vfs.addFile("/node_modules/pkg/cjs.js", "");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler, .module_kind = "esnext" });
+    defer r.deinit();
+    for (0..3) |_| {
+        try T.expectEqualStrings("/node_modules/pkg/esm.js", (try r.resolve("pkg", "/app.mts")).path);
+        try T.expectEqualStrings("/node_modules/pkg/cjs.js", (try r.resolve("pkg", "/app.cts")).path);
+        try T.expectEqualStrings("/node_modules/pkg/esm.js", (try r.resolve("pkg", "/app.ts")).path);
+    }
+    try vfs.addFile("/package.json", "{\"name\":\"self\",\"exports\":\"./index.js\"}");
+    try vfs.addFile("/index.js", "");
+    var ambiguous = Resolver.init(T.allocator, vfs.fs(), .{ .out_dir = "out" });
+    defer ambiguous.deinit();
+    for (0..3) |_| {
+        try T.expectError(error.NotFound, ambiguous.resolve("self", "/index.js"));
+        try T.expect(ambiguous.ambiguous_root != null);
+        try T.expectEqualStrings(".", ambiguous.ambiguous_root.?.entry);
+        try T.expect(!ambiguous.cache.contains("/index.js\x00self"));
+    }
 }
 
 test "Resolver: resolution cache dedupes repeated resolves (one trace set, not N)" {
