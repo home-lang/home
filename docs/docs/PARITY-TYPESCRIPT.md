@@ -375,8 +375,18 @@ failures, and UMD globals are derived from the reachable program instead of
 every declaration present on disk. The focused controls and pinned fixture
 evidence are recorded in
 [the root-admission checkpoint](./bun-port-evidence/2026-10-08-ts-root-admission/README.md).
-Inherited config expansion, default-library/compiler-API fidelity, and honest
-unsupported/skip accounting remain open under #841.
+
+Virtual config graphs now expand inherited configs before deriving roots,
+strict/checking flags, JS admission, and resolver settings. The adapter covers
+ordered `extends` arrays, cross-directory paths, package export mappings,
+package config defaults, cycle/missing-parent failures, and inherited
+`baseUrl`/`paths`. The pinned compiler cases pass **4/4**, the two inherited
+module-mode conformance cases pass **2/2**, and the named category regression
+remains **87/87**. Exact scope and guarded resource evidence are recorded in
+[the virtual-tsconfig checkpoint](./bun-port-evidence/2026-10-08-tsconfig-extends/README.md).
+Default-library/compiler-API fidelity, null-override/config-diagnostic edge
+cases, and honest unsupported/skip accounting remain open under #841; these
+focused gates are not a complete-corpus claim.
 
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:

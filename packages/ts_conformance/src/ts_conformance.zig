@@ -29,6 +29,7 @@ const ts_checker = @import("ts_checker");
 const tsconfig_mod = @import("tsconfig");
 const hir_mod = @import("hir");
 const fixture_variants = @import("fixture_variants.zig");
+const virtual_tsconfig = @import("virtual_tsconfig.zig");
 
 /// Adapter that exposes a `ts_resolver.Resolver` through the
 /// `ts_checker.ExternalResolver` opaque vtable. Lives on the
@@ -1105,6 +1106,17 @@ const VirtualFile = struct {
     extra_strip: u32,
 };
 
+fn virtualTsconfigFiles(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+) ![]virtual_tsconfig.File {
+    const out = try gpa.alloc(virtual_tsconfig.File, files.len);
+    for (files, 0..) |file, index| {
+        out[index] = .{ .path = file.path, .source = file.source };
+    }
+    return out;
+}
+
 const ProgramFileEntry = struct {
     path: []const u8,
     diag_path: []const u8,
@@ -2158,6 +2170,72 @@ test "conformance: tsconfig wildcard roots honor TypeScript extension priority" 
     try T.expectEqualSlices(bool, &.{ false, false, false, true, true, true, false, false, true }, selected);
 }
 
+test "conformance: inherited tsconfig roots and resolver paths retain their declaring directory" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "/base/tsconfig.base.json",
+            .source =
+            \\{
+            \\  "compilerOptions": {
+            \\    "allowJs": true,
+            \\    "baseUrl": ".",
+            \\    "paths": { "pkg": ["src/pkg"] }
+            \\  },
+            \\  "files": ["src/main.js"]
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "/app/tsconfig.json", .source = "{ \"extends\": \"../base/tsconfig.base.json\" }", .extra_strip = 0 },
+        .{ .path = "/base/src/main.js", .source = "exports.value = 1;", .extra_strip = 0 },
+        .{ .path = "/base/src/pkg.ts", .source = "export const value = 1;", .extra_strip = 0 },
+    };
+    const options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer options.deinit(T.allocator);
+
+    try T.expect(options.has_config);
+    try T.expectEqual(@as(?bool, true), options.allow_js);
+    try T.expectEqualStrings("/base", options.base_url);
+    try T.expectEqual(@as(usize, 1), options.root_files.len);
+    try T.expectEqualStrings("/base/src/main.js", options.root_files[0]);
+    try T.expectEqual(@as(usize, 1), options.paths.len);
+    try T.expectEqualStrings("pkg", options.paths[0].pattern);
+    try T.expectEqualStrings("src/pkg", options.paths[0].targets[0]);
+}
+
+test "conformance: inherited strict options come from the virtual config graph" {
+    const raw =
+        \\// @filename: /base.json
+        \\{ "compilerOptions": { "strict": false, "noUnusedLocals": true } }
+        \\// @filename: /tsconfig.json
+        \\{ "extends": "./base.json", "compilerOptions": { "strictNullChecks": true } }
+        \\// @filename: /index.ts
+        \\export const value = 1;
+    ;
+    const configured = try configuredStrictOptions(T.allocator, raw, null);
+    try T.expect(!configured.flags.no_implicit_any);
+    try T.expect(configured.flags.strict_null_checks);
+    try T.expect(configured.flags.no_unused_locals);
+}
+
+test "conformance: unresolved extended configs remain failed cases" {
+    const raw =
+        \\// @filename: /tsconfig.json
+        \\{ "extends": "./missing.json" }
+        \\// @filename: /index.ts
+        \\export const value = 1;
+    ;
+    const result = try run(T.allocator, .{
+        .name = "missing-extended-config-control",
+        .path = "/index.ts",
+        .source = raw,
+        .raw_source = raw,
+    });
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.failed, result.outcome);
+    try T.expect(std.mem.indexOf(u8, result.detail, "extended tsconfig is missing") != null);
+}
+
 test "conformance: missing configured roots remain retained failures" {
     const raw =
         \\// @filename: /tsconfig.json
@@ -2300,19 +2378,13 @@ fn virtualFilesContainProjectPath(gpa: std.mem.Allocator, files: []const Virtual
 fn virtualFilesAllowJs(gpa: std.mem.Allocator, raw_source: []const u8, files: []const VirtualFile) !bool {
     if (directiveBool(raw_source, "allowJs") orelse false) return true;
     if (directiveBool(raw_source, "checkJs") orelse false) return true;
-    for (files) |f| {
-        const canon = try canonicalVfsPath(gpa, f.path);
-        defer gpa.free(canon);
-        if (!std.mem.endsWith(u8, canon, "/tsconfig.json")) continue;
-        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch return false;
-        defer parsed.deinit();
-        if (parsed.value != .object) return false;
-        const compiler_options = parsed.value.object.get("compilerOptions") orelse return false;
-        if (compiler_options != .object) return false;
-        const value = compiler_options.object.get("allowJs") orelse return false;
-        return value == .bool and value.bool;
-    }
-    return false;
+    const config_files = try virtualTsconfigFiles(gpa, files);
+    defer gpa.free(config_files);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const resolved = try virtual_tsconfig.resolveRoot(gpa, arena.allocator(), config_files);
+    const options = if (resolved.config) |config| config.compiler_options else return false;
+    return options.allow_js orelse options.check_js orelse false;
 }
 
 fn collectScriptGlobalSpaces(
@@ -2461,7 +2533,10 @@ fn resolverStrategyFromCase(c: Case, module_option: []const u8) ts_resolver.Stra
 
 const TsconfigResolverOptions = struct {
     has_config: bool = false,
+    config_error: []const u8 = "",
     root_files: []const []const u8 = &.{},
+    base_url: []const u8 = "",
+    paths: []const ts_resolver.Config.PathEntry = &.{},
     out_dir: []const u8 = "",
     declaration_dir: []const u8 = "",
     root_dir: []const u8 = "",
@@ -2478,7 +2553,10 @@ const TsconfigResolverOptions = struct {
     types_configured: bool = false,
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
+        if (self.config_error.len != 0) gpa.free(self.config_error);
         freeStringList(gpa, self.root_files);
+        if (self.base_url.len != 0) gpa.free(self.base_url);
+        freeResolverPaths(gpa, self.paths);
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
         if (self.declaration_dir.len != 0) gpa.free(self.declaration_dir);
         if (self.root_dir.len != 0) gpa.free(self.root_dir);
@@ -2492,40 +2570,84 @@ const TsconfigResolverOptions = struct {
     }
 };
 
+fn dupeResolverPaths(
+    gpa: std.mem.Allocator,
+    paths: ?tsconfig_mod.Paths,
+) ![]const ts_resolver.Config.PathEntry {
+    const configured = paths orelse return &.{};
+    if (configured.patterns.len == 0) return &.{};
+    const out = try gpa.alloc(ts_resolver.Config.PathEntry, configured.patterns.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (out[0..initialized]) |entry| {
+            gpa.free(entry.pattern);
+            freeStringList(gpa, entry.targets);
+        }
+        gpa.free(out);
+    }
+    for (configured.patterns, 0..) |pattern, index| {
+        const owned_pattern = try gpa.dupe(u8, pattern);
+        const owned_targets = dupeOptionalStringList(gpa, configured.substitutions[index]) catch |err| {
+            gpa.free(owned_pattern);
+            return err;
+        };
+        out[index] = .{
+            .pattern = owned_pattern,
+            .targets = owned_targets,
+        };
+        initialized += 1;
+    }
+    return out;
+}
+
+fn freeResolverPaths(gpa: std.mem.Allocator, paths: []const ts_resolver.Config.PathEntry) void {
+    for (paths) |entry| {
+        gpa.free(entry.pattern);
+        freeStringList(gpa, entry.targets);
+    }
+    if (paths.len != 0) gpa.free(paths);
+}
+
 fn resolverConfigOptionsFromVirtualTsconfig(
     gpa: std.mem.Allocator,
     files: []const VirtualFile,
 ) !TsconfigResolverOptions {
-    for (files) |f| {
-        if (!std.mem.eql(u8, f.path, "tsconfig.json") and
-            !std.mem.eql(u8, f.path, "/tsconfig.json") and
-            !std.mem.endsWith(u8, f.path, "/tsconfig.json")) continue;
-        var arena = std.heap.ArenaAllocator.init(gpa);
-        defer arena.deinit();
-        const parsed = tsconfig_mod.parseString(gpa, arena.allocator(), f.source) catch return .{};
-        const options = parsed.compiler_options;
-        var result: TsconfigResolverOptions = .{
-            .has_config = true,
-            .config_file_path = try canonicalVfsPath(gpa, f.path),
-        };
-        errdefer result.deinit(gpa);
-        result.root_files = try selectTsconfigRootFiles(gpa, files, f.path, parsed);
-        if (options.out_dir) |value| result.out_dir = try gpa.dupe(u8, value);
-        if (options.declaration_dir) |value| result.declaration_dir = try gpa.dupe(u8, value);
-        if (options.root_dir) |value| result.root_dir = try gpa.dupe(u8, value);
-        result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
-        if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
-        if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
-        result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
-        result.import_helpers = options.import_helpers;
-        result.allow_js = options.allow_js;
-        result.check_js = options.check_js;
-        result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
-        result.types = try dupeOptionalStringList(gpa, options.types);
-        result.types_configured = options.types != null;
+    const config_files = try virtualTsconfigFiles(gpa, files);
+    defer gpa.free(config_files);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const resolved = try virtual_tsconfig.resolveRoot(gpa, arena.allocator(), config_files);
+    if (resolved.config == null and resolved.failure == null) return .{};
+
+    var result: TsconfigResolverOptions = .{ .has_config = true };
+    errdefer result.deinit(gpa);
+    if (resolved.config_path.len != 0) {
+        result.config_file_path = try gpa.dupe(u8, resolved.config_path);
+    }
+    if (resolved.failure) |failure| {
+        result.config_error = try virtual_tsconfig.formatFailure(gpa, failure);
         return result;
     }
-    return .{};
+
+    const parsed = resolved.config.?;
+    const options = parsed.compiler_options;
+    result.root_files = try selectTsconfigRootFiles(gpa, files, resolved.config_path, parsed);
+    if (options.base_url) |value| result.base_url = try gpa.dupe(u8, value);
+    result.paths = try dupeResolverPaths(gpa, options.paths);
+    if (options.out_dir) |value| result.out_dir = try gpa.dupe(u8, value);
+    if (options.declaration_dir) |value| result.declaration_dir = try gpa.dupe(u8, value);
+    if (options.root_dir) |value| result.root_dir = try gpa.dupe(u8, value);
+    result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
+    if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
+    if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
+    result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
+    result.import_helpers = options.import_helpers;
+    result.allow_js = options.allow_js;
+    result.check_js = options.check_js;
+    result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
+    result.types = try dupeOptionalStringList(gpa, options.types);
+    result.types_configured = options.types != null;
+    return result;
 }
 
 /// Compute the same root-name set that the pinned TypeScript harness obtains
@@ -4243,6 +4365,13 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, input_source, "typeRoots");
     }
     defer tsconfig_options.deinit(gpa);
+    if (tsconfig_options.config_error.len != 0) {
+        return .{
+            .name = c.name,
+            .outcome = .failed,
+            .detail = try gpa.dupe(u8, tsconfig_options.config_error),
+        };
+    }
     const root_selection = try fixtureRootSelection(gpa, input_source, virtual_files.items, tsconfig_options);
     defer gpa.free(root_selection);
     if (tsconfig_options.has_config) {
@@ -4292,7 +4421,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         resolverStrategyFromCase(c, module_kind_label);
     var resolver = ts_resolver.Resolver.init(gpa, vfs.fs(), .{
         .strategy = resolver_strategy,
+        .explicit_strategy = tsconfig_options.module_resolution.len > 0,
         .module_kind = module_kind_label,
+        .base_url = tsconfig_options.base_url,
+        .paths = tsconfig_options.paths,
         .out_dir = tsconfig_options.out_dir,
         .declaration_dir = tsconfig_options.declaration_dir,
         .root_dir = tsconfig_options.root_dir,
@@ -7018,19 +7150,15 @@ fn configuredStrictOptions(
     var state: StrictDirectiveState = .{};
     var files = try splitVirtualFiles(gpa, source);
     defer files.deinit(gpa);
-    for (files.items) |file| {
-        if (!std.mem.eql(u8, file.path, "tsconfig.json") and
-            !std.mem.endsWith(u8, file.path, "/tsconfig.json")) continue;
-        var arena = std.heap.ArenaAllocator.init(gpa);
-        defer arena.deinit();
-        const config = tsconfig_mod.parseString(gpa, arena.allocator(), file.source) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => continue,
-        };
+    const config_files = try virtualTsconfigFiles(gpa, files.items);
+    defer gpa.free(config_files);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const resolved = try virtual_tsconfig.resolveRoot(gpa, arena.allocator(), config_files);
+    if (resolved.config) |config| {
         inline for (@typeInfo(StrictDirectiveState).@"struct".field_names) |field_name| {
             @field(state, field_name) = @field(config.compiler_options, field_name);
         }
-        break;
     }
     if (parseStrictDirectiveState(source)) |directives| {
         inline for (@typeInfo(StrictDirectiveState).@"struct".field_names) |field_name| {
@@ -54349,7 +54477,7 @@ test "conformance: baseline-aware type-relationship survey" {
     }
     const ts_root = paths.cases;
     const baseline_root = paths.baselines;
-    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator);
+    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator, "conformance");
     defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     const specs = [_]CategorySpec{
@@ -54422,11 +54550,11 @@ fn resolveTsCorpusPaths(gpa: std.mem.Allocator) !?TsCorpusPaths {
     return resolveTsCaseFamilyPaths(gpa, "conformance");
 }
 
-fn resolveOriginalTsBaselineRoot(gpa: std.mem.Allocator) !?[]u8 {
+fn resolveOriginalTsBaselineRoot(gpa: std.mem.Allocator, family: []const u8) !?[]u8 {
     const path = try std.fmt.allocPrint(
         gpa,
-        "{s}/_submodules/TypeScript/tests/baselines/reference",
-        .{tsSuiteRootSlice()},
+        "{s}/_submodules/TypeScript/tests/baselines/reference/{s}",
+        .{ tsSuiteRootSlice(), family },
     );
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -54471,9 +54599,9 @@ test "conformance: tsgo submodule cases use tsgo-generated baselines" {
 }
 
 test "conformance: original TypeScript baselines are available as a fallback" {
-    const root = (try resolveOriginalTsBaselineRoot(T.allocator)) orelse return;
+    const root = (try resolveOriginalTsBaselineRoot(T.allocator, "conformance")) orelse return;
     defer T.allocator.free(root);
-    try T.expect(std.mem.endsWith(u8, root, "/_submodules/TypeScript/tests/baselines/reference"));
+    try T.expect(std.mem.endsWith(u8, root, "/_submodules/TypeScript/tests/baselines/reference/conformance"));
 }
 
 fn resolveTsgoTestdataCaseFamilyPaths(gpa: std.mem.Allocator, family: []const u8) !?TsCorpusPaths {
@@ -54553,7 +54681,7 @@ fn runOptInTsSuiteFamily(
     const fallback_baseline_root = if (use_tsgo_testdata)
         null
     else
-        try resolveOriginalTsBaselineRoot(T.allocator);
+        try resolveOriginalTsBaselineRoot(T.allocator, family);
     defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     const start_env = env_prefix ++ "_START";
@@ -54685,7 +54813,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     }
     const ts_root = paths.cases;
     const baseline_root = paths.baselines;
-    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator);
+    const fallback_baseline_root = try resolveOriginalTsBaselineRoot(T.allocator, "conformance");
     defer if (fallback_baseline_root) |root| T.allocator.free(root);
 
     var results: std.ArrayListUnmanaged(Result) = .empty;

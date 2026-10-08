@@ -1286,8 +1286,14 @@ pub const Resolver = struct {
         // `resolveJsonModule` per tsc — otherwise even
         // `import "./data.json"` is left unresolved.
         const explicit_json = hasExtension(base, ".json");
+        const json_is_active = self.config.resolve_json or active: {
+            for (self.config.extensions) |ext| {
+                if (std.mem.eql(u8, ext, ".json")) break :active true;
+            }
+            break :active false;
+        };
         const explicit_ext: ?[]const u8 = knownExtension(base) orelse
-            if (explicit_json and self.config.resolve_json) ".json" else null;
+            if (explicit_json and json_is_active) ".json" else null;
         const explicit_known = explicit_ext != null;
         if (explicit_known) {
             if (self.config.strategy == .bundler and isImplementationOutputPath(base)) {
@@ -4794,6 +4800,27 @@ test "Resolver: package exports — subpath resolves through pattern wildcard" {
     const res = try r.resolve("foo/sub", "/a.ts");
     try T.expectEqualStrings("/node_modules/foo/types/sub.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: package exports — explicit JSON target survives extension partitioning" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/foo/package.json",
+        \\{
+        \\  "name": "foo",
+        \\  "exports": { "./*.json": "./configs/*.json" }
+        \\}
+    );
+    try vfs.addFile("/node_modules/foo/configs/strict.json", "{}");
+    try vfs.addFile("/tsconfig.json", "{}");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{
+        .strategy = .node16,
+        .resolve_json = true,
+    });
+    defer r.deinit();
+    const res = try r.resolve("foo/strict.json", "/tsconfig.json");
+    try T.expectEqualStrings("/node_modules/foo/configs/strict.json", res.path);
 }
 
 test "Resolver: self-name exports declarationDir target maps back to source input" {
