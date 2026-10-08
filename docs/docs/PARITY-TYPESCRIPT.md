@@ -409,8 +409,15 @@ ES5 variant remains visible as one skip while its ES2015 sibling compiles and
 passes; the 87-case category gate remains **87/87** with no skips. Guarded
 results and the exact boundary of this port are recorded in
 [the upstream-skip checkpoint](./bun-port-evidence/2026-10-08-ts-upstream-skips/README.md).
-The runner's static disabled-fixture list and remaining compiler-API/default-
-library fidelity are still open in [#841](https://github.com/home-lang/home/issues/841).
+The runner's 45-file pre-enumeration exclusion list is now retained as one
+explicit skip per source, before reading or expanding fixture variants. Its
+case-sensitive split preserves the ten compiler-API fixtures that require a
+built `typescript.d.ts` and the 35 fixtures using removed compiler options.
+Both pinned reason-group controls report one skip and no pass/failure, while
+the named category gate remains **87/87**. Evidence is recorded in
+[the static-skip checkpoint](./bun-port-evidence/2026-10-08-ts-static-skips/README.md).
+Default-library/compiler-API input fidelity remains open in
+[#841](https://github.com/home-lang/home/issues/841).
 
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:

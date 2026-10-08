@@ -507,6 +507,8 @@ pub const Outcome = enum {
 /// from passing and failing cases; a runner limitation never earns compiler
 /// parity credit.
 pub const UpstreamSkip = enum {
+    disabled_typescript_api_fixture,
+    disabled_removed_option_fixture,
     module_kind,
     module_resolution,
     es_module_interop_false,
@@ -516,6 +518,67 @@ pub const UpstreamSkip = enum {
     target_es5,
     always_strict_false,
 };
+
+/// Exact port of `testrunner.skippedTests` at the pinned typescript-go
+/// revision. Upstream drops these basenames before reading the fixture or
+/// expanding its configured variants. Home retains one explicit skipped
+/// result per source so the excluded surface cannot disappear into pass
+/// totals.
+const upstream_disabled_fixture_entries = .{
+    .{ "APILibCheck.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_Watch.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_WatchWithDefaults.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_WatchWithOwnWatchHost.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_compile.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_jsdoc.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_linter.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_parseConfig.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_transform.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "APISample_watcher.ts", UpstreamSkip.disabled_typescript_api_fixture },
+    .{ "preserveUnusedImports.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noCrashWithVerbatimModuleSyntaxAndImportsNotUsedAsValues.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "verbatimModuleSyntaxCompat.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "verbatimModuleSyntaxCompat2.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "verbatimModuleSyntaxCompat3.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "verbatimModuleSyntaxCompat4.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "preserveValueImports.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "preserveValueImports_importsNotUsedAsValues.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "preserveValueImports_errors.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "preserveValueImports_mixedImports.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "preserveValueImports_module.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "importsNotUsedAsValues_error.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "alwaysStrictNoImplicitUseStrict.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "nonPrimitiveIndexingWithForInSupressError.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "parameterInitializerBeforeDestructuringEmit.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "mappedTypeUnionConstraintInferences.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "lateBoundConstraintTypeChecksCorrectly.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "keyofDoesntContainSymbols.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "isolatedModulesOut.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noStrictGenericChecks.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitUseStrict_umd.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitUseStrict_system.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitUseStrict_es6.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitUseStrict_commonjs.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitUseStrict_amd.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noImplicitAnyIndexingSuppressed.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "excessPropertyErrorsSuppressed.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "moduleNoneDynamicImport.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "moduleNoneErrors.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "moduleNoneOutFile.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noErrorUsingImportExportModuleAugmentationInDeclarationFile1.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noErrorUsingImportExportModuleAugmentationInDeclarationFile2.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "noErrorUsingImportExportModuleAugmentationInDeclarationFile3.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "requireOfJsonFileWithModuleEmitNone.ts", UpstreamSkip.disabled_removed_option_fixture },
+    .{ "requireOfJsonFileWithModuleNodeResolutionEmitNone.ts", UpstreamSkip.disabled_removed_option_fixture },
+};
+
+const upstream_disabled_fixtures = std.StaticStringMap(UpstreamSkip).initComptime(
+    upstream_disabled_fixture_entries,
+);
+
+fn upstreamDisabledFixture(basename: []const u8) ?UpstreamSkip {
+    return upstream_disabled_fixtures.get(basename);
+}
 
 pub const Result = struct {
     name: []const u8,
@@ -5558,6 +5621,26 @@ pub fn loadDirectory(gpa: std.mem.Allocator, dir_path: []const u8) ![]OwnedCorpu
     return loadDirectoryWithOptions(gpa, dir_path, .{});
 }
 
+fn buildUpstreamDisabledCorpusEntry(
+    gpa: std.mem.Allocator,
+    basename: []const u8,
+    stem: []const u8,
+    skip: UpstreamSkip,
+) !OwnedCorpusEntry {
+    const name = try gpa.dupe(u8, stem);
+    errdefer gpa.free(name);
+    const source = try gpa.dupe(u8, "");
+    errdefer gpa.free(source);
+    const path = try gpa.dupe(u8, basename);
+    errdefer gpa.free(path);
+    return .{
+        .name = name,
+        .source = source,
+        .path = path,
+        .upstream_skip = skip,
+    };
+}
+
 pub fn loadDirectoryWithOptions(
     gpa: std.mem.Allocator,
     dir_path: []const u8,
@@ -5592,6 +5675,19 @@ pub fn loadDirectoryWithOptions(
         if (!include_entry) continue;
         if (std.c.getenv("HOME_TS_COMPILER_LOAD_TRACE") != null) {
             std.debug.print("[ts_suite load] {d} {s}\n", .{ code_index, entry.basename });
+        }
+        if (upstreamDisabledFixture(entry.basename)) |skip| {
+            const owned = try buildUpstreamDisabledCorpusEntry(
+                gpa,
+                entry.basename,
+                stem,
+                skip,
+            );
+            out.append(gpa, owned) catch |err| {
+                freeOwnedCorpusEntry(gpa, owned);
+                return err;
+            };
+            continue;
         }
         // Open through the iterating root so paths are dir-relative.
         const src = read_src: {
@@ -6949,6 +7045,8 @@ fn classifyUpstreamUnsupportedOptions(
 
 fn upstreamSkipDetail(skip: UpstreamSkip) []const u8 {
     return switch (skip) {
+        .disabled_typescript_api_fixture => "pinned typescript-go runner: fixture requires built typescript.d.ts",
+        .disabled_removed_option_fixture => "pinned typescript-go runner: fixture uses removed compiler options",
         .module_kind => "pinned typescript-go runner: unsupported module kind",
         .module_resolution => "pinned typescript-go runner: unsupported module resolution kind",
         .es_module_interop_false => "pinned typescript-go runner: esModuleInterop=false is unsupported",
@@ -53729,6 +53827,92 @@ test "conformance: unsupported compiler variants stay visible without pass credi
     try T.expectEqual(Outcome.skipped, results.items[0].outcome);
     try T.expect(results.items[0].detail.len > 0);
     try T.expectEqual(Outcome.passed, results.items[1].outcome);
+}
+
+test "conformance: pinned disabled fixtures remain one explicit skip per source" {
+    try T.expectEqual(@as(usize, 45), upstream_disabled_fixture_entries.len);
+    inline for (upstream_disabled_fixture_entries) |entry| {
+        try T.expectEqual(@as(?UpstreamSkip, entry[1]), upstreamDisabledFixture(entry[0]));
+    }
+    try T.expectEqual(@as(?UpstreamSkip, null), upstreamDisabledFixture("apilibcheck.ts"));
+    try T.expectEqual(@as(?UpstreamSkip, null), upstreamDisabledFixture("active.ts"));
+
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    {
+        var skipped_file = try tmp.dir.createFile(io, "cases/APILibCheck.ts", .{ .truncate = true });
+        defer skipped_file.close(io);
+        try skipped_file.writeStreamingAll(
+            io,
+            "// @target: ES5, ES2015\nexport const disabled = true;\n",
+        );
+    }
+    {
+        var active_file = try tmp.dir.createFile(io, "cases/active.ts", .{ .truncate = true });
+        defer active_file.close(io);
+        try active_file.writeStreamingAll(
+            io,
+            "// @target: ES2015\nexport const active: boolean = true;\n",
+        );
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const corpus = try loadDirectory(T.allocator, cases);
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    try T.expectEqual(@as(usize, 2), corpus.len);
+    var saw_disabled = false;
+    var saw_active = false;
+    for (corpus) |entry| {
+        if (std.mem.eql(u8, entry.name, "APILibCheck")) {
+            saw_disabled = true;
+            try T.expectEqual(
+                @as(?UpstreamSkip, .disabled_typescript_api_fixture),
+                entry.upstream_skip,
+            );
+            try T.expectEqualStrings("APILibCheck.ts", entry.path);
+            try T.expectEqual(@as(usize, 0), entry.source.len);
+        } else if (std.mem.eql(u8, entry.name, "active")) {
+            saw_active = true;
+            try T.expectEqual(@as(?UpstreamSkip, null), entry.upstream_skip);
+        }
+    }
+    try T.expect(saw_disabled);
+    try T.expect(saw_active);
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |result| {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, corpus, &results);
+    try T.expectEqual(@as(u32, 2), stats.total());
+    try T.expectEqual(@as(u32, 1), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+    try T.expectEqual(@as(u32, 1), stats.skipped);
+
+    var saw_disabled_result = false;
+    var saw_active_result = false;
+    for (results.items) |result| {
+        if (std.mem.eql(u8, result.name, "APILibCheck")) {
+            saw_disabled_result = true;
+            try T.expectEqual(Outcome.skipped, result.outcome);
+            try T.expect(std.mem.indexOf(u8, result.detail, "typescript.d.ts") != null);
+        } else if (std.mem.eql(u8, result.name, "active")) {
+            saw_active_result = true;
+            try T.expectEqual(Outcome.passed, result.outcome);
+        }
+    }
+    try T.expect(saw_disabled_result);
+    try T.expect(saw_active_result);
 }
 
 test "conformance: variant inputs are invariant under expected diagnostic mutations" {
