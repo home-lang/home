@@ -1393,6 +1393,90 @@ all 116 exact audit projects, source snapshots, runners and fingerprints.
 All **492** payload checksums verify. Archive SHA-256:
 `acd2390d230a7c2bd29f65a0e9c7e804069dc97bcacdb05336128c647e9d553a`.
 
+### Borrowed resolver-key lookup (rejected, 2026-10-08 UTC)
+
+Issue [#851](https://github.com/home-lang/home/issues/851) investigated
+`Resolver.resolve` allocating the complete containing-file + NUL + specifier
+key before every cache lookup, including hits. The draft used a borrowed
+adapted lookup with streaming Wyhash and segmented equality, preserving the
+existing `StringHashMap` representation and owned stored keys. Misses still
+ran complete resolution; only cacheable results allocated key storage.
+Trace banners, ambiguity reset/non-caching, importer-specific bundler
+conditions, negative hits and allocation-failure behavior were retained.
+
+All **124** resolver tests passed, including **16,900** binary/empty/length
+key cases, exact concatenated hash/equality parity, owned caller bytes,
+every insertion-allocation failure until success/retry, repeated ambiguity,
+and MTS/CTS importer conditions. **8,192** repeated positive/negative hits
+performed no allocator calls, consumed no arena bytes and added no traces.
+That allocation result did **not** translate into acceptable latency.
+
+The exact parent is `ac8af9ce7602116ae4fabaea1d8a3818fc8f120b` (compiler
+inputs equal to `00a9dcf8f`). Parent/candidate native SHA-256 values are
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`
+and `cab3dc5a3c355208bd213f810b38423c990719fa826a77bfad2679cb6548cae1`.
+Patch SHA-256:
+`7890fb1ccba6e2cc52677cec6e71be21134dba480269619f48c407d14e3a479c`.
+Both binaries use pinned Zig2163, stripped ReleaseFast, no JSC, and one build
+worker. Every phase requires **64** unchanged official/scale positive/negative
+admissions before timing. Scale controls mutate first/middle/last families
+in separate retained inputs and require TS2322×3 + TS2339×3 on both binaries.
+Three warmups precede fresh processes; pair order alternates and every sample
+remains present. Before/after binary/input/harness/tool fingerprints match.
+
+| Target | Initial screen: parent → candidate | Initial mean-saving 95% interval | Independent 30-pair confirmation | Confirmation saving interval | Lower candidate pairs |
+|---|---:|---:|---:|---:|---:|
+| Official imports | 19.902 → 20.451 ms | −0.948 to +0.066 ms | 20.513 → 20.713 ms | −0.700 to +0.067 ms | 11/30 |
+| Official re-exports | 12.000 → 12.725 ms | **−2.392 to −0.176 ms** | 12.569 → 12.783 ms | **−1.300 to −0.046 ms** | 13/30 |
+| Official CommonJS | 24.045 → 24.374 ms | −0.578 to +0.284 ms | 25.177 → 25.226 ms | −0.371 to +0.232 ms | 11/30 |
+| CommonJS 1,024 families | 281.128 → 285.276 ms | −6.841 to +2.839 ms | 291.316 → 293.459 ms | **−12.614 to −0.817 ms** | 13/30 |
+| Re-exports 4,096 leaves | 1,323.521 → 1,282.795 ms | −49.041 to +111.533 ms | 1,261.839 → 1,298.532 ms | **−73.518 to −20.605 ms** | 4/30 |
+
+The independent re-export medians are **1.7% slower** officially and **2.9%
+slower** at scale; CommonJS scale is **0.7% slower**. Their wholly negative
+saving intervals reject this draft. Import and official CommonJS intervals
+cross zero: inconclusive, not equivalence. The initial lower scale re-export
+median is retained rather than promoted over the adverse independent result.
+Streaming-hash overhead is a hypothesis, not a proven cause; no alignment
+tweak, filtered sample, benchmark shortcut or favorable replacement run was used.
+
+All **20** ten-pair family screens remain visible in the archive; none selected
+an extra family under the predeclared >3%-slower-median/negative-interval rule.
+The carried-forward large-predicate risk still received 30 independent pairs:
+272.843 → 272.316 ms, 12/30 lower candidate observations, interval **−13.532
+to +16.112 ms**. It remains inconclusive and does not cancel the target regressions.
+
+Candidate correctness passed Program **247**, checker **4,527**, driver **200**,
+CLI **74**, entrypoint **35**, resolver **124**, and harness **128** tests.
+All **105** primary diagnostic source/option/package cases match parent and
+native TS7, with **86** shared-config TS6 matches and **19** documented option
+dialect differences retained separately. Pinned unmodified Zod's complete
+primary message/position multiset remains identical at **195 TS + 3 HM9002**,
+normalized SHA-256 `6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is not production admission or a new competitor ranking.
+
+The production optimization and optimization-only tests are removed. Only
+general caller-key ownership and importer-condition/repeated-ambiguity controls
+remain, along with corrected cache-key documentation. Restored resolver
+**122/122** tests pass, and the supported rebuilt native binary is
+**byte-identical to the accepted parent**, SHA-256 `c16c8caa…`. The initial
+context-initializer syntax failure is retained as a pre-execution failure,
+not a semantic test failure or an excluded test. No rejected compiler code
+was pushed; #851 remains open for a different measured design.
+
+The shared lock, **3,840 MB** guard and disk floors are unchanged. Candidate
+build/Program/entrypoint peaks are 2,906/3,074/2,978 MB; paired phases remain
+at or below 874 MB. Restored build peaks at 2,926 MB. These tree footprints
+over-count shared pages, not universal resource bounds.
+
+The [rejection evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-resolver-borrowed-keys-rejected-851.tar.gz)
+retains all **452** paired rounds and **256** admissions, complete family
+screens/recheck, exact positive/negative scale and oracle inputs, full
+test/build/Zod logs, rejected and retained patches plus source snapshots,
+binary fingerprints and statistical/oracle verifiers. All **13,078** payload
+checksums verify. Archive SHA-256:
+`306b81723e6c9b342e86a04b90634f5caf7981aeedad0fffd0d78651b14dd10b`.
+
 ### Lazy forward-overload root index
 
 Issue [#837](https://github.com/home-lang/home/issues/837) traced the remaining

@@ -259,6 +259,20 @@ retains 332 paired rounds;
 [integration evidence](bench/vs_tsgo/evidence/20261008-per-pass-global-reference-integration-850.tar.gz)
 verifies the combined source without timing it. Neither replaces the ranking above.
 
+A borrowed resolver-key lookup was **rejected** despite eliminating allocations
+on repeated hits: independent latency confirmation was adverse.
+
+| Rejected #851 confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official re-exports | 12.569 ms | 12.783 ms | **−1.300 to −0.046 ms** |
+| CommonJS, 1,024 families | 291.316 ms | 293.459 ms | **−12.614 to −0.817 ms** |
+| Re-exports, 4,096 leaves | 1,261.839 ms | 1,298.532 ms | **−73.518 to −20.605 ms** |
+
+Production resolution is restored; the rebuilt native binary matches the
+accepted parent exactly. General ownership/condition controls remain. See the
+[rejection report](docs/docs/TS_PERFORMANCE.md#borrowed-resolver-key-lookup-rejected-2026-10-08-utc)
+and [all raw evidence](bench/vs_tsgo/evidence/20261008-resolver-borrowed-keys-rejected-851.tar.gz).
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
