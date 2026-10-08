@@ -4346,9 +4346,9 @@ pub const Checker = struct {
     /// `class_instance_types` is populated and inside
     /// `checkInterfaceDecl` for single-parent interfaces.
     decl_single_base: std.AutoHashMapUnmanaged(TypeId, TypeId),
-    /// Canonical pool-owned templates for deferred inheritance metadata.
+    /// Canonical pool-owned templates for mapped inheritance and cyclic edges.
     /// Keys encode the source body and sorted declaration-parameter identities.
-    declaration_base_definitions: std.StringHashMapUnmanaged(TypeId) = .empty,
+    substitution_definitions: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// TypeId -> display-base TypeId for relation elaborations. Mirrors
     /// tsc's `getNormalizedType`: a type whose declaration adds no own
     /// members and exactly one base is *rendered* as its base inside
@@ -6326,9 +6326,9 @@ pub const Checker = struct {
         self.interface_extends_visibility_class.deinit(self.gpa);
         self.class_decl_by_instance.deinit(self.gpa);
         self.decl_single_base.deinit(self.gpa);
-        var base_definition_keys = self.declaration_base_definitions.keyIterator();
-        while (base_definition_keys.next()) |key| self.gpa.free(key.*);
-        self.declaration_base_definitions.deinit(self.gpa);
+        var substitution_definition_keys = self.substitution_definitions.keyIterator();
+        while (substitution_definition_keys.next()) |key| self.gpa.free(key.*);
+        self.substitution_definitions.deinit(self.gpa);
         self.relation_display_base.deinit(self.gpa);
         self.jsx_ica_by_instance.deinit(self.gpa);
         self.class_name_by_static.deinit(self.gpa);
@@ -166039,9 +166039,9 @@ pub const Checker = struct {
     /// interned type DAG, which for a recursively-defined alias body
     /// can re-enter the same node. We share the instantiation depth
     /// budget so a single outer evaluation can't blow the native stack;
-    /// hitting the cap yields the input type unchanged (the safe
-    /// fixed-point) rather than the error type, since substitution
-    /// itself doesn't surface TS2589.
+    /// unresolved overflow retains the input for diagnostic recovery.
+    /// Recursive edges under declaration-parameter maps retain exact owned
+    /// generic references instead of dropping the substitution environment.
     /// Memoizing front door for the substitution engine. Within one
     /// outermost walk (fixed `subs`), the result for a given TypeId is
     /// deterministic unless a cycle-cut / deferral fired beneath it
@@ -166091,40 +166091,53 @@ pub const Checker = struct {
         if (subs.get(base)) |replacement| return replacement;
         if (subs.count() == 0 or base >= self.interner.pool.typeCount()) return base;
         if (!self.interner.pool.flagsOf(base).is_object_type) return self.substituteType(base, subs);
+        return (try self.substitutionReference(base, subs)) orelse try self.substituteType(base, subs);
+    }
+
+    /// Retain an exact recursive edge as a pool-owned body/parameter/argument
+    /// reference. Unsupported non-parameter rewrites remain on the guarded
+    /// eager path; no approximate body is published as a completed result.
+    fn substitutionReference(
+        self: *Checker,
+        body: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
         var parameters: std.ArrayListUnmanaged(TypeId) = .empty;
         defer parameters.deinit(self.gpa);
         var entries = subs.iterator();
         while (entries.next()) |entry| {
             const parameter = entry.key_ptr.*;
-            if (parameter >= self.interner.pool.typeCount()) return self.substituteType(base, subs);
+            if (parameter >= self.interner.pool.typeCount()) return null;
             const flags = self.interner.pool.flagsOf(parameter);
             // Non-parameter rewriting still uses the general substitution path.
-            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return self.substituteType(base, subs);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return null;
             try parameters.append(self.gpa, parameter);
         }
         std.mem.sort(TypeId, parameters.items, {}, std.sort.asc(TypeId));
         const key = try self.gpa.alloc(u8, (parameters.items.len + 1) * @sizeOf(TypeId));
         var key_owned = false;
         defer if (!key_owned) self.gpa.free(key);
-        std.mem.writeInt(TypeId, key[0..4], base, .little);
+        std.mem.writeInt(TypeId, key[0..4], body, .little);
         for (parameters.items, 0..) |parameter, index| {
             std.mem.writeInt(TypeId, key[(index + 1) * 4 ..][0..4], parameter, .little);
         }
-        const definition = if (self.declaration_base_definitions.get(key)) |cached|
+        const definition = if (self.substitution_definitions.get(key)) |cached|
             cached
         else blk: {
             const reserved = try self.interner.reserveGenericDefinition();
-            self.interner.completeGenericDefinition(reserved, parameters.items, base) catch |err| switch (err) {
+            self.interner.completeGenericDefinition(reserved, parameters.items, body) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidTypeGraph => unreachable,
             };
-            try self.declaration_base_definitions.put(self.gpa, key, reserved);
+            try self.substitution_definitions.put(self.gpa, key, reserved);
             key_owned = true;
             break :blk reserved;
         };
         const arguments = try self.gpa.alloc(TypeId, parameters.items.len);
         defer self.gpa.free(arguments);
         for (parameters.items, arguments) |parameter, *argument| argument.* = subs.get(parameter).?;
+        self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+        self.engine.generic_instance_origins = &self.generic_instance_origins;
         return try self.interner.internInstantiation(definition, arguments);
     }
 
@@ -166217,14 +166230,12 @@ pub const Checker = struct {
         self.instantiation_count +|= 1;
         self.instantiation_depth += 1;
         defer self.instantiation_depth -= 1;
-        // Cycle cut: if `t` is already being substituted higher on the
-        // active call path, a self-reference brought us back to it. Return
-        // it unchanged rather than re-expanding (which terminates only via
-        // the far-off depth/count caps after astronomical work). Type
-        // parameters never reach here — `subs.get(t)` short-circuits them
-        // above — so this only affects composite types (objects,
-        // signatures, unions, …).
+        // Close a recursive edge with its exact substitution environment.
+        // An owned reference is independent of the ambient active stack and
+        // therefore does not invalidate memoization of completed ancestors.
+        // Non-parameter rewrite maps retain the existing unresolved deferral.
         if (self.subst_active.contains(t)) {
+            if (try self.substitutionReference(t, subs)) |reference| return reference;
             self.instantiation_defer_events +%= 1;
             return t;
         }
@@ -236639,6 +236650,117 @@ test "checker: inheritance base references survive checked metadata ownership tr
     try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
     const resolved = (try consumer.declaredSingleBase(mapped)) orelse return error.TestUnexpectedResult;
     try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(resolved, value).?);
+}
+
+// These pool-level controls construct actual back edges before substitution;
+// checking only an acyclic source shape cannot expose a stale recursive binder.
+test "checker: cyclic substitution retains mapped recursive edges and memoizes shared roots" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const next = try s.sint.intern("next");
+    const source = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = next, .type = types.Primitive.none, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(source)];
+    s.ti.pool.object_member_pool.items[payload.members_start + 1].type = source;
+    var members: [32]types.ObjectMember = undefined;
+    for (&members, 0..) |*member, index| {
+        member.* = .{ .name = try s.sint.intern(try std.fmt.allocPrint(s.checker.diag_arena.allocator(), "branch{d}", .{index})), .type = source, .is_optional = false, .is_readonly = false, .is_method = false };
+    }
+    const root = try s.ti.internObjectType(&members);
+    var previous: TypeId = types.Primitive.none;
+    for ([_]TypeId{ types.Primitive.string_t, types.Primitive.number_t }) |argument| {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, parameter, argument);
+        const count = s.checker.instantiation_count;
+        const deferrals = s.checker.instantiation_defer_events;
+        const mapped = try s.checker.substituteType(root, &map);
+        try T.expect(s.checker.instantiation_count - count <= 8);
+        try T.expectEqual(deferrals, s.checker.instantiation_defer_events);
+        const first = s.ti.objectMembers(mapped)[0].type;
+        for (s.ti.objectMembers(mapped)) |member| try T.expectEqual(first, member.type);
+        try T.expectEqual(argument, s.ti.objectMember(first, value).?);
+        const reference = s.ti.objectMember(first, next).?;
+        try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
+        try T.expect(reference != previous);
+        previous = reference;
+        const expanded = try s.checker.resolveGenericType(reference);
+        try T.expectEqual(argument, s.ti.objectMember(expanded, value).?);
+        try T.expectEqual(reference, s.ti.objectMember(expanded, next).?);
+        try T.expectEqual(expanded, try s.checker.resolveGenericType(reference));
+        try T.expect(s.ti.objectMembers(expanded)[1].is_optional);
+        try T.expect(s.ti.objectMembers(expanded)[0].is_readonly);
+    }
+}
+
+test "checker: cyclic substitution preserves mutual callable edges and binder identities" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const name = try s.sint.intern("T");
+    const left_param = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const right_param = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const call = try s.sint.intern("call");
+    const signature = try s.ti.internSignature(&.{right_param}, types.Primitive.none, false);
+    const object = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = left_param, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = call, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    s.ti.pool.signature_payloads.items[s.ti.pool.payloadOf(signature)].return_type = object;
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, left_param, types.Primitive.string_t);
+    try map.put(T.allocator, right_param, types.Primitive.number_t);
+    const mapped = try s.checker.substituteType(object, &map);
+    const mapped_signature = s.ti.objectMember(mapped, call).?;
+    try T.expectEqualSlices(TypeId, &.{types.Primitive.number_t}, s.ti.signatureParams(mapped_signature));
+    const reference = s.ti.signatureReturn(mapped_signature).?;
+    try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
+    const resolved = try s.checker.resolveGenericType(reference);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(resolved, value).?);
+    const again = s.ti.objectMember(resolved, call).?;
+    try T.expectEqualSlices(TypeId, &.{types.Primitive.number_t}, s.ti.signatureParams(again));
+    try T.expectEqual(reference, s.ti.signatureReturn(again).?);
+    const target = try s.ti.internObjectType(&.{.{ .name = value, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const incompatible = try s.ti.internObjectType(&.{.{ .name = value, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false }});
+    try T.expect(try s.engine.isAssignableTo(reference, target));
+    try T.expect(!try s.engine.isAssignableTo(reference, incompatible));
+}
+
+test "checker: cyclic substitution references survive mapper and checker ownership transfer" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const next = try s.sint.intern("next");
+    const source = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = next, .type = types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(source)];
+    s.ti.pool.object_member_pool.items[payload.members_start + 1].type = source;
+    var reference: TypeId = types.Primitive.none;
+    {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, parameter, types.Primitive.string_t);
+        const mapped = try s.checker.substituteType(source, &map);
+        reference = s.ti.objectMember(mapped, next).?;
+    }
+    try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
+    var consumer = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+    defer consumer.deinit();
+    const resolved = try consumer.resolveGenericType(reference);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(resolved, value).?);
+    const recursive = s.ti.objectMember(resolved, next).?;
+    try T.expect(s.ti.pool.flagsOf(recursive).is_instantiation);
+    const again = try consumer.resolveGenericType(recursive);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(again, value).?);
+    try T.expectEqual(recursive, s.ti.objectMember(again, next).?);
 }
 
 test "checker: empty substitutions preserve type graph identity" {
