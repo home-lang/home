@@ -222,6 +222,70 @@ const BoundGlobal = struct {
     symbol: *const binder.Symbol,
 };
 
+/// Complete reference-presence facts for one retained HIR pass. Nothing is
+/// stored on File: a new pass (including a source replacement) rebuilds them.
+/// If allocation fails, every query uses the original complete scanner.
+const GlobalReferenceNames = struct {
+    const value_mask: u3 = 0b001;
+    const type_mask: u3 = 0b010;
+    const namespace_mask: u3 = 0b100;
+
+    names: std.AutoHashMapUnmanaged(hir_mod_ns.StringId, u3) = .empty,
+    complete: bool = false,
+
+    fn init(gpa: std.mem.Allocator, file: *const File) GlobalReferenceNames {
+        return collect(gpa, file) catch .{};
+    }
+
+    fn deinit(self: *GlobalReferenceNames, gpa: std.mem.Allocator) void {
+        self.names.deinit(gpa);
+    }
+
+    fn add(self: *GlobalReferenceNames, gpa: std.mem.Allocator, name: hir_mod_ns.StringId, mask: u3) !void {
+        const entry = try self.names.getOrPut(gpa, name);
+        if (!entry.found_existing) entry.value_ptr.* = 0;
+        entry.value_ptr.* |= mask;
+    }
+
+    fn collect(gpa: std.mem.Allocator, file: *const File) std.mem.Allocator.Error!GlobalReferenceNames {
+        var result: GlobalReferenceNames = .{};
+        errdefer result.deinit(gpa);
+        if (file.compilation) |compilation| {
+            const hir = &compilation.hir;
+            var node: hir_mod_ns.NodeId = 1;
+            while (node < hir.nodeCount()) : (node += 1) {
+                switch (hir.kindOf(node)) {
+                    .identifier => if (Program.identifierIsValueReference(hir, node)) {
+                        try result.add(gpa, hir_mod_ns.identifierOf(hir, node).name, value_mask | namespace_mask);
+                    },
+                    .type_ref => try result.add(gpa, hir_mod_ns.typeRefOf(hir, node).name, type_mask | namespace_mask),
+                    .member_access => {
+                        const member = hir_mod_ns.memberOf(hir, node);
+                        if (hir.kindOf(member.object) != .identifier) continue;
+                        const object_name = hir_mod_ns.identifierOf(hir, member.object).name;
+                        if (std.mem.eql(u8, compilation.interner.get(object_name), "globalThis")) {
+                            try result.add(gpa, member.name, value_mask);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+        result.complete = true;
+        return result;
+    }
+
+    fn contains(self: *const GlobalReferenceNames, file: *const File, key: BoundGlobals.Key) bool {
+        if (!self.complete) return Program.fileReferencesGlobalName(file, key);
+        const mask: u3 = switch (key.space) {
+            .value => value_mask,
+            .type => type_mask,
+            .namespace => namespace_mask,
+        };
+        return ((self.names.get(key.name) orelse 0) & mask) != 0;
+    }
+};
+
 const BoundGlobals = struct {
     const Key = struct { name: hir_mod_ns.StringId, space: binder.Binder.Space };
     entries: std.AutoArrayHashMapUnmanaged(Key, std.ArrayListUnmanaged(BoundGlobal)) = .empty,
@@ -625,6 +689,16 @@ pub const Program = struct {
         return false;
     }
 
+    fn fileReferencesGlobalNameInPass(
+        gpa: std.mem.Allocator,
+        file: *const File,
+        key: BoundGlobals.Key,
+        references: *?GlobalReferenceNames,
+    ) bool {
+        if (references.* == null) references.* = GlobalReferenceNames.init(gpa, file);
+        return references.*.?.contains(file, key);
+    }
+
     fn appendGlobalProviderOrder(
         self: *Program,
         file_index: usize,
@@ -637,6 +711,8 @@ pub const Program = struct {
         states[file_index] = 1;
         const file = self.files.items[file_index];
         const compilation = file.compilation orelse return;
+        var references: ?GlobalReferenceNames = null;
+        defer if (references) |*facts| facts.deinit(self.gpa);
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
             const local_map = switch (key.space) {
                 .value => &compilation.module.root.values,
@@ -654,7 +730,7 @@ pub const Program = struct {
                 }
             }
             if (has_local and !needs_foreign_merge) continue;
-            if (!needs_foreign_merge and !fileReferencesGlobalName(file, key)) continue;
+            if (!needs_foreign_merge and !fileReferencesGlobalNameInPass(self.gpa, file, key, &references)) continue;
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.redirect_target != null) continue;
                 try self.appendGlobalProviderOrder(owner.file.id, globals, states, order);
@@ -791,9 +867,12 @@ pub const Program = struct {
         var result: ImportedProgramGlobals = .{ .gpa = self.gpa };
         errdefer result.deinit();
         const compilation = file.compilation orelse return result;
+        if (globals.entries.count() == 0) return result;
+        var references: ?GlobalReferenceNames = null;
+        defer if (references) |*facts| facts.deinit(self.gpa);
 
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
-            if (!fileNeedsImportedGlobal(file, key, owners.items)) continue;
+            if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.owner == .none or
                     result.importedFor(owner.file.owner) != null) continue;
@@ -867,7 +946,7 @@ pub const Program = struct {
     /// conflict with a completed foreign declaration. Importing every owner
     /// makes each newly checked script absorb all previous scripts' imported
     /// payloads, producing transitive growth for otherwise independent files.
-    fn fileNeedsImportedGlobal(file: *const File, key: BoundGlobals.Key, owners: []const BoundGlobal) bool {
+    fn fileNeedsImportedGlobal(file: *const File, key: BoundGlobals.Key, owners: []const BoundGlobal, gpa: std.mem.Allocator, references: *?GlobalReferenceNames) bool {
         const compilation = file.compilation orelse return false;
         // Syntax such as tuple/array types depends on lib declarations even
         // when the source contains no explicit `Array` type-reference node.
@@ -881,7 +960,7 @@ pub const Program = struct {
             .type => &compilation.module.root.types,
             .namespace => &compilation.module.root.namespaces,
         };
-        if (!local_map.contains(key.name)) return fileReferencesGlobalName(file, key);
+        if (!local_map.contains(key.name)) return fileReferencesGlobalNameInPass(gpa, file, key, references);
         for (owners) |owner| {
             if (owner.file != file and owner.file.owner != .none) return true;
         }
@@ -9261,6 +9340,158 @@ test "Program: all checking modes consume bound global names without leaking mod
         try T.expectEqual(@as(usize, 2), c.diagnostics.items.len);
         try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
         try T.expectEqual(@as(u32, 7017), c.diagnostics.items[1].code);
+    }
+}
+
+test "Program: per-pass global references match every scanner key and space" {
+    const source =
+        \\const declarationOnly = externalValue;
+        \\function functionOnly(parameterOnly: ParameterType) { return nestedValue; }
+        \\type AliasOnly = TypeOnly;
+        \\interface InterfaceOnly { propertyOnly: MemberType; }
+        \\class ClassOnly {}
+        \\enum EnumOnly { EntryOnly }
+        \\namespace NamespaceOnly {}
+        \\const objectOnly = { propertyKeyOnly: objectValue, shortHand };
+        \\const { renameKeyOnly: renamedOnly = defaultValue, ...restOnly } = sourceObject;
+        \\labelOnly: while (conditionValue) { break labelOnly; }
+        \\globalThis.memberOnly;
+        \\otherObject.nonGlobalMember;
+        \\const mergeOnly: MergeName = MergeName;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/references.ts", source);
+    try p.prepareNameStore();
+    try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
+    const file = p.fileById(id);
+    const compilation = file.compilation.?;
+    var references = GlobalReferenceNames.init(T.allocator, file);
+    defer references.deinit(T.allocator);
+    try T.expect(references.complete);
+    for (0..compilation.interner.count()) |name| {
+        for ([_]binder.Binder.Space{ .value, .type, .namespace }) |space| {
+            const key: BoundGlobals.Key = .{ .name = @intCast(name), .space = space };
+            try T.expectEqual(Program.fileReferencesGlobalName(file, key), references.contains(file, key));
+        }
+    }
+    const Case = struct { name: []const u8, mask: u3 };
+    for ([_]Case{
+        .{ .name = "declarationOnly", .mask = 0 },
+        .{ .name = "functionOnly", .mask = 0 },
+        .{ .name = "parameterOnly", .mask = 0 },
+        .{ .name = "propertyKeyOnly", .mask = 0 },
+        .{ .name = "labelOnly", .mask = 0 },
+        .{ .name = "nonGlobalMember", .mask = 0 },
+        .{ .name = "externalValue", .mask = 0b101 },
+        .{ .name = "nestedValue", .mask = 0b101 },
+        .{ .name = "shortHand", .mask = 0b101 },
+        .{ .name = "defaultValue", .mask = 0b101 },
+        .{ .name = "TypeOnly", .mask = 0b110 },
+        .{ .name = "memberOnly", .mask = 0b001 },
+        .{ .name = "MergeName", .mask = 0b111 },
+    }) |case| {
+        const name = compilation.interner.lookup(case.name) orelse return error.TestUnexpectedResult;
+        try T.expectEqual(case.mask, references.names.get(name) orelse 0);
+    }
+}
+
+test "Program: local-only global queries do not construct reference facts" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/local.ts", "const localValue = 1; function localFunction() { return localValue; } interface LocalType {}");
+    try p.prepareNameStore();
+    try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
+    var globals = try p.collectBoundGlobals();
+    defer globals.deinit(T.allocator);
+    try T.expect(globals.entries.count() > 0);
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    p.gpa = failing.allocator();
+    {
+        defer p.gpa = T.allocator;
+        var imported = try p.importProgramGlobals(p.fileById(id), &globals);
+        defer imported.deinit();
+        try T.expect(!failing.has_induced_failure);
+        try T.expectEqual(@as(usize, 0), imported.imports.items.len);
+    }
+}
+
+test "Program: global reference allocation failures retain the complete scanner" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/references.ts",
+        \\const value = external0 + external1 + external2 + external3 + external4 + external5;
+        \\const second: TypeOnly = external6 + external7 + external8 + external9 + external10 + external11;
+        \\globalThis.memberOnly;
+    );
+    try p.prepareNameStore();
+    try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
+    const file = p.fileById(id);
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index });
+        var references = GlobalReferenceNames.init(failing.allocator(), file);
+        defer references.deinit(failing.allocator());
+        for (0..file.compilation.?.interner.count()) |name| {
+            for ([_]binder.Binder.Space{ .value, .type, .namespace }) |space| {
+                const key: BoundGlobals.Key = .{ .name = @intCast(name), .space = space };
+                try T.expectEqual(Program.fileReferencesGlobalName(file, key), references.contains(file, key));
+            }
+        }
+        if (!failing.has_induced_failure) {
+            try T.expect(references.complete);
+            break;
+        }
+        try T.expect(!references.complete);
+        try T.expectEqual(@as(u32, 0), references.names.count());
+        var retried = GlobalReferenceNames.init(T.allocator, file);
+        defer retried.deinit(T.allocator);
+        try T.expect(retried.complete);
+    }
+    // Cover a failure after an already populated initial allocation too.
+    try T.expect(fail_index > 1);
+}
+
+test "Program: global reference facts rebuild after source replacement" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/references.ts", "oldValue; globalThis.oldMember; type Local = OldType;");
+    for (0..2) |pass| {
+        if (pass == 1) _ = try p.updateSource("/references.ts", "newValue; globalThis.newMember; type Local = NewType;");
+        try p.prepareNameStore();
+        try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
+        const file = p.fileById(id);
+        var references = GlobalReferenceNames.init(T.allocator, file);
+        defer references.deinit(T.allocator);
+        try T.expect(references.complete);
+        for (0..file.compilation.?.interner.count()) |name| {
+            for ([_]binder.Binder.Space{ .value, .type, .namespace }) |space| {
+                const key: BoundGlobals.Key = .{ .name = @intCast(name), .space = space };
+                try T.expectEqual(Program.fileReferencesGlobalName(file, key), references.contains(file, key));
+            }
+        }
+        const strings = &file.compilation.?.interner;
+        const current = strings.lookup(if (pass == 0) "oldValue" else "newValue").?;
+        try T.expect(references.contains(file, .{ .name = current, .space = .value }));
+        if (strings.lookup(if (pass == 0) "newValue" else "oldValue")) |other| {
+            try T.expect(!references.contains(file, .{ .name = other, .space = .value }));
+        }
     }
 }
 
