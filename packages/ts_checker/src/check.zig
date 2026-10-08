@@ -4325,6 +4325,9 @@ pub const Checker = struct {
     /// `class_instance_types` is populated and inside
     /// `checkInterfaceDecl` for single-parent interfaces.
     decl_single_base: std.AutoHashMapUnmanaged(TypeId, TypeId),
+    /// Canonical pool-owned templates for deferred inheritance metadata.
+    /// Keys encode the source body and sorted declaration-parameter identities.
+    declaration_base_definitions: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// TypeId -> display-base TypeId for relation elaborations. Mirrors
     /// tsc's `getNormalizedType`: a type whose declaration adds no own
     /// members and exactly one base is *rendered* as its base inside
@@ -6150,7 +6153,7 @@ pub const Checker = struct {
                 var entries = @field(source, name).iterator();
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, {});
             }
-            inline for (.{ "tuple_trailing_rest_types", "tuple_trailing_variadic_types" }) |name| {
+            inline for (.{ "tuple_trailing_rest_types", "tuple_trailing_variadic_types", "decl_single_base", "relation_display_base" }) |name| {
                 var entries = @field(source, name).iterator();
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
             }
@@ -6302,6 +6305,9 @@ pub const Checker = struct {
         self.interface_extends_visibility_class.deinit(self.gpa);
         self.class_decl_by_instance.deinit(self.gpa);
         self.decl_single_base.deinit(self.gpa);
+        var base_definition_keys = self.declaration_base_definitions.keyIterator();
+        while (base_definition_keys.next()) |key| self.gpa.free(key.*);
+        self.declaration_base_definitions.deinit(self.gpa);
         self.relation_display_base.deinit(self.gpa);
         self.jsx_ica_by_instance.deinit(self.gpa);
         self.class_name_by_static.deinit(self.gpa);
@@ -88183,7 +88189,7 @@ pub const Checker = struct {
         if (self.declaredGlobalFunctionType()) |declared| {
             if (t == declared and self.declaredGlobalFunctionIsCallable(declared)) return true;
         }
-        if (self.decl_single_base.get(t)) |base_t| {
+        if (self.declaredSingleBase(t) catch null) |base_t| {
             if (base_t != t and self.typeIsBuiltinFunctionObjectDepth(base_t, depth + 1)) return true;
         }
         if (!self.interner.pool.flagsOf(t).is_object_type) return false;
@@ -123285,8 +123291,9 @@ pub const Checker = struct {
         if (depth > 16) return;
         if (t >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(t).is_object_type) return;
+        const base = try self.declaredSingleBase(t);
         const members = self.interner.objectMembers(t);
-        if (self.decl_single_base.get(t)) |bt| {
+        if (base) |bt| {
             if (bt < self.interner.pool.typeCount() and
                 self.interner.pool.flagsOf(bt).is_object_type)
             {
@@ -123314,6 +123321,11 @@ pub const Checker = struct {
         }
     }
 
+    fn declaredSingleBase(self: *Checker, t: TypeId) CheckError!?TypeId {
+        const base = self.decl_single_base.get(t) orelse return null;
+        return try self.resolveGenericType(base);
+    }
+
     /// tsc's `getNormalizedType` single step: a type whose declaration
     /// adds zero own members and exactly one base normalises to that
     /// base. Own members are recovered the same way as in
@@ -123326,7 +123338,7 @@ pub const Checker = struct {
             if (explicit != t) return explicit;
             return null;
         }
-        const bt = self.decl_single_base.get(t) orelse return null;
+        const bt = (try self.declaredSingleBase(t)) orelse return null;
         if (bt == t or bt >= self.interner.pool.typeCount()) return null;
         if (t >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(t).is_object_type) return null;
@@ -165988,6 +166000,55 @@ pub const Checker = struct {
         return result;
     }
 
+    /// Preserve the inheritance edge without traversing an entire base graph
+    /// during member substitution. Consumers expand its required surface using
+    /// the same checked substitution engine. The pool owns the complete source
+    /// body, parameter identities and arguments, so no mapper pointer escapes.
+    fn substituteDeclarationBaseReference(
+        self: *Checker,
+        base: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        if (subs.get(base)) |replacement| return replacement;
+        if (subs.count() == 0 or base >= self.interner.pool.typeCount()) return base;
+        if (!self.interner.pool.flagsOf(base).is_object_type) return self.substituteType(base, subs);
+        var parameters: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer parameters.deinit(self.gpa);
+        var entries = subs.iterator();
+        while (entries.next()) |entry| {
+            const parameter = entry.key_ptr.*;
+            if (parameter >= self.interner.pool.typeCount()) return self.substituteType(base, subs);
+            const flags = self.interner.pool.flagsOf(parameter);
+            // Non-parameter rewriting still uses the general substitution path.
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return self.substituteType(base, subs);
+            try parameters.append(self.gpa, parameter);
+        }
+        std.mem.sort(TypeId, parameters.items, {}, std.sort.asc(TypeId));
+        const key = try self.gpa.alloc(u8, (parameters.items.len + 1) * @sizeOf(TypeId));
+        var key_owned = false;
+        defer if (!key_owned) self.gpa.free(key);
+        std.mem.writeInt(TypeId, key[0..4], base, .little);
+        for (parameters.items, 0..) |parameter, index| {
+            std.mem.writeInt(TypeId, key[(index + 1) * 4 ..][0..4], parameter, .little);
+        }
+        const definition = if (self.declaration_base_definitions.get(key)) |cached|
+            cached
+        else blk: {
+            const reserved = try self.interner.reserveGenericDefinition();
+            self.interner.completeGenericDefinition(reserved, parameters.items, base) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidTypeGraph => unreachable,
+            };
+            try self.declaration_base_definitions.put(self.gpa, key, reserved);
+            key_owned = true;
+            break :blk reserved;
+        };
+        const arguments = try self.gpa.alloc(TypeId, parameters.items.len);
+        defer self.gpa.free(arguments);
+        for (parameters.items, arguments) |parameter, *argument| argument.* = subs.get(parameter).?;
+        return try self.interner.internInstantiation(definition, arguments);
+    }
+
     fn propagateProgramContextualOrigins(
         self: *Checker,
         source: TypeId,
@@ -166425,7 +166486,7 @@ pub const Checker = struct {
                 }
             }
             if (self.decl_single_base.get(t)) |base_t| {
-                try self.decl_single_base.put(self.gpa, new_obj, try self.substituteType(base_t, subs));
+                try self.decl_single_base.put(self.gpa, new_obj, try self.substituteDeclarationBaseReference(base_t, subs));
             }
             if (self.generator_type_info.get(t)) |gen| {
                 try self.generator_type_info.put(self.gpa, new_obj, .{
@@ -196866,7 +196927,7 @@ pub const Checker = struct {
         var base = target_t;
         var depth: u8 = 0;
         while (depth < 32) : (depth += 1) {
-            base = self.decl_single_base.get(base) orelse return false;
+            base = (try self.declaredSingleBase(base)) orelse return false;
             if (self.classNameForInstanceType(base) != source_name) continue;
             return !try self.checkerAssignableTo(base, source_t);
         }
@@ -236405,6 +236466,99 @@ test "checker: receiver predicate locations retain independent unresolved target
     try T.expectEqual(receiver_node, next_receiver.target_node);
     try T.expectEqual(types.Primitive.number_t, try s.checker.resolvePredicateTarget(next_receiver));
     try T.expectEqual(types.Primitive.string_t, try s.checker.resolvePredicateTarget(next_signature));
+}
+
+test "checker: inheritance base references defer metadata expansion and preserve arguments" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.checker.string_interner.intern("value");
+    var graph = try s.ti.internObjectType(&.{.{ .name = value, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false }});
+    for (0..8) |_| {
+        const child = try s.ti.internObjectType(s.ti.objectMembers(graph));
+        try s.checker.decl_single_base.put(T.allocator, child, graph);
+        graph = child;
+    }
+    var previous: TypeId = types.Primitive.none;
+    for ([_]TypeId{ types.Primitive.string_t, types.Primitive.number_t }) |replacement| {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, parameter, replacement);
+        const before = s.ti.pool.typeCount();
+        const mapped = try s.checker.substituteType(graph, &map);
+        try T.expect(s.ti.pool.typeCount() - before <= 4);
+        try T.expectEqual(replacement, s.ti.objectMember(mapped, value).?);
+        const reference = s.checker.decl_single_base.get(mapped).?;
+        try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
+        try T.expect(reference != previous);
+        previous = reference;
+        var current = mapped;
+        for (0..8) |_| {
+            const base = s.checker.decl_single_base.get(current).?;
+            current = try s.checker.resolveGenericType(base);
+            try T.expectEqual(replacement, s.ti.objectMember(current, value).?);
+        }
+    }
+}
+
+test "checker: inheritance base references retain member ordering and normalization" {
+    const s = try newSetup("type First = string; type Second = number;");
+    defer destroySetup(s);
+    const nodes = hir_mod.blockStmts(&s.hir, s.root);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const inherited = try s.checker.string_interner.intern("inherited");
+    const own = try s.checker.string_interner.intern("own");
+    const base_member: types.ObjectMember = .{ .name = inherited, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false, .decl_node = nodes[0] };
+    const base = try s.ti.internObjectType(&.{base_member});
+    const derived = try s.ti.internObjectType(&.{ base_member, .{ .name = own, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = false, .decl_node = nodes[1] } });
+    const empty_derived = try s.ti.internObjectType(&.{base_member});
+    try s.checker.decl_single_base.put(T.allocator, derived, base);
+    try s.checker.decl_single_base.put(T.allocator, empty_derived, base);
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, parameter, types.Primitive.string_t);
+    const mapped = try s.checker.substituteType(derived, &map);
+    var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer members.deinit(T.allocator);
+    try s.checker.objectMembersOwnThenInherited(mapped, &members);
+    try T.expectEqual(@as(usize, 2), members.items.len);
+    try T.expectEqual(own, members.items[0].name);
+    try T.expectEqual(inherited, members.items[1].name);
+    try T.expectEqual(types.Primitive.string_t, members.items[1].type);
+    try T.expect(members.items[1].is_readonly);
+    try T.expectEqual(@as(?TypeId, null), try s.checker.normalizedRelationBase(mapped));
+    const mapped_empty = try s.checker.substituteType(empty_derived, &map);
+    const normalized = (try s.checker.normalizedRelationBase(mapped_empty)) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(normalized, inherited).?);
+}
+
+test "checker: inheritance base references survive checked metadata ownership transfer" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.checker.string_interner.intern("value");
+    const base = try s.ti.internObjectType(&.{.{ .name = value, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false }});
+    const derived = try s.ti.internObjectType(s.ti.objectMembers(base));
+    try s.checker.decl_single_base.put(T.allocator, derived, base);
+    var mapped: TypeId = types.Primitive.none;
+    {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, parameter, types.Primitive.string_t);
+        mapped = try s.checker.substituteType(derived, &map);
+    }
+    var checked: CheckedTypes = .{};
+    defer checked.deinit(T.allocator);
+    try s.checker.takeCheckedTypes(&checked);
+    try T.expect(!s.checker.decl_single_base.contains(mapped));
+    // A new checker has no access to the creating mapper or definition cache.
+    var consumer = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+    defer consumer.deinit();
+    try consumer.importProgramTypeMetadata(&.{&checked});
+    const reference = consumer.decl_single_base.get(mapped).?;
+    try T.expect(s.ti.pool.flagsOf(reference).is_instantiation);
+    const resolved = (try consumer.declaredSingleBase(mapped)) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(resolved, value).?);
 }
 
 test "checker: empty substitutions preserve type graph identity" {

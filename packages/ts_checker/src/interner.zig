@@ -1065,7 +1065,15 @@ pub const Interner = struct {
         defer self.pool_mu.unlock();
 
         const member_start: u32 = @intCast(self.pool.object_member_pool.items.len);
-        try self.pool.object_member_pool.appendSlice(self.gpa, members);
+        // A caller can intern a copy of an existing object's members. Snapshot
+        // such a borrowed slice before append relocates the owning pool.
+        const pool_start = @intFromPtr(self.pool.object_member_pool.items.ptr);
+        const pool_end = pool_start + self.pool.object_member_pool.items.len * @sizeOf(types.ObjectMember);
+        const member_address = @intFromPtr(members.ptr);
+        const borrowed = members.len != 0 and member_address >= pool_start and member_address < pool_end;
+        const stable_members = if (borrowed) try self.gpa.dupe(types.ObjectMember, members) else members;
+        defer if (borrowed) self.gpa.free(stable_members);
+        try self.pool.object_member_pool.appendSlice(self.gpa, stable_members);
         const payload_idx: u32 = @intCast(self.pool.object_type_payloads.items.len);
         try self.pool.object_type_payloads.append(self.gpa, .{
             .members_start = member_start,
@@ -1844,6 +1852,20 @@ test "Interner: fresh recursive objects retain reserved identities" {
     try i.completeFreshObjectType(b, &.{.{ .name = 2, .type = a, .is_optional = false, .is_readonly = true, .is_method = false }});
     try T.expectEqual(b, i.objectMember(a, 1).?);
     try T.expectEqual(a, i.objectMember(b, 2).?);
+}
+
+test "Interner: borrowed object member copies survive owning pool relocation" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const member: types.ObjectMember = .{ .name = 1, .type = types.Primitive.string_t, .is_optional = true, .is_readonly = true, .is_method = false };
+    const original = try i.internObjectType(&.{member});
+    while (i.pool.object_member_pool.items.len < i.pool.object_member_pool.capacity) {
+        _ = try i.internObjectType(&.{member});
+    }
+    const borrowed = i.objectMembers(original);
+    const copied = try i.internObjectType(borrowed);
+    try T.expectEqualDeep(member, i.objectMembers(copied)[0]);
+    try T.expectEqualDeep(member, i.objectMembers(original)[0]);
 }
 
 test "Interner: fresh objects retain open index signatures when completed" {
