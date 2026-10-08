@@ -239,6 +239,21 @@ and Rust payload pins still verify locally. See the
 [admission and current-profile report](docs/docs/TS_PERFORMANCE.md#cpp-admission-and-current-source-profile-2026-10-08-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261008-current-profile-cpp-admission-838-850.tar.gz).
 
+A per-pass global-reference candidate has completed its frozen-parent A/B;
+it is **not yet landed**, pending integrated-source verification:
+
+| #850 candidate confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official CommonJS, 30 pairs | 26.271 ms | 25.519 ms | **+0.084 to +0.898 ms** |
+| 1,024 families, 10 pairs | 375.040 ms | 324.106 ms | −10.883 to +86.004 ms; inconclusive |
+| 4,096 families, 30 pairs | 3,505.488 ms | 3,064.615 ms | **+377.701 to +575.922 ms** |
+
+The full family screen and adverse large-predicate observations remain in the
+[candidate report](docs/docs/TS_PERFORMANCE.md#per-pass-global-reference-candidate-2026-10-08-utc).
+Its independent predicate recheck spans zero, not equivalence.
+[Raw evidence](bench/vs_tsgo/evidence/20261008-per-pass-global-reference-candidate-850.tar.gz)
+retains 332 paired rounds. This does not replace the compiler ranking above.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

@@ -1168,6 +1168,108 @@ raw samples, both scale corpora, identical instruction sections, and Bun/Rust
 payload inventories. All **9,794** payload checksums verify. Archive SHA-256:
 `7f538b457302bd0bc307065ca0b1d7895a05e3d16a1382100bae1d5a16b2bbb6`.
 
+### Per-pass global-reference candidate (2026-10-08 UTC)
+
+Issue [#850](https://github.com/home-lang/home/issues/850) follows the current
+source profile above. This is a **frozen candidate checkpoint, not a landed
+compiler optimization**. Integration verification is pending after main's
+independent type-transfer change
+[`bdb366c03`](https://github.com/home-lang/home/commit/bdb366c03ae740267f0be5315a26dc5a651caf3a).
+The experiment below is not relabeled as a measurement of the combined changes
+and does not replace the current five-compiler ranking.
+
+The candidate collects complete reference-presence facts from a file's
+retained HIR into a pass-local name-to-symbol-space mask. Global-owner queries
+reuse those facts instead of repeatedly traversing HIR. Construction occurs
+only on the first actual reference query: local-only globals and the existing
+implicit declaration-owner environment do not pay for an unused index. There
+is no persistent `File` or checker state, foreign `TypeId`, omitted owner,
+depth cutoff, benchmark-name branch, or altered diagnostic rule. Allocation
+failure destroys partial state and keeps the original complete scanner for
+every remaining query in that pass.
+
+The exact parent is `7b9e6f2ab29e85acc58c811740cfe37a2876394e`, whose compiler
+tree equals the profiled `30ab18c8c` (intervening changes are documentation and
+evidence only). Frozen parent/candidate executable SHA-256 values:
+`9b5b834b77aa4ba400e79c7acd773732e44133be4414b7a85c0e4e79327a920f`
+and `74b7c607ea47308e26e7d057b7decb258b9d52ffe6ea1730916c311f29e4296c`.
+The source patch SHA-256 is
+`1c4464495ab652ca24d4c07f5ce8feea50dec5a337fac5826d4fab557418fbcf`.
+Both use pinned Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+`-Denable_jsc=false`, and one build worker. The byte-pinned parent is reused
+from the verified native profile build, not mislabeled as a fresh compilation.
+
+Every phase passed **64** admissions before timing: 56 unchanged official
+records plus eight positive/negative scale records. The existing deterministic
+CommonJS generator supplies both scales; controls mutate first, middle and
+last families in separate retained projects and require exactly TS2322×3 and
+TS2339×3 on each binary. Three warmups precede fresh-process measurements,
+pair order alternates, and every observation is retained. Binary, input,
+runner, harness and tool fingerprints are identical before and after.
+
+| Exact-parent phase | Parent median | Candidate median | Lower candidate pairs | Paired mean-saving 95% t interval |
+|---|---:|---:|---:|---:|
+| Official CommonJS initial screen | 24.663 ms | 24.185 ms | 12/20 | −0.357 to +0.996 ms |
+| Scale 1,024 initial screen | 321.150 ms | 290.896 ms | 6/6 | +23.965 to +36.308 ms |
+| Scale 4,096 initial screen | 3,610.959 ms | 2,775.052 ms | 6/6 | +244.235 to +1,191.925 ms |
+| Official CommonJS independent confirmation | 26.271 ms | **25.519 ms** | 22/30 | **+0.084 to +0.898 ms** |
+| Scale 1,024 independent confirmation | 375.040 ms | 324.106 ms | 9/10 | −10.883 to +86.004 ms |
+| Scale 4,096 independent confirmation | 3,505.488 ms | **3,064.615 ms** | 29/30 | **+377.701 to +575.922 ms** |
+| Large predicates independent risk recheck | 259.743 ms | 259.157 ms | 17/30 | −1.115 to +2.698 ms |
+
+Official CommonJS confirmation has a wholly positive saving interval; its
+paired mean saving is 0.491 ms. Scale 4,096 has a 476.812 ms paired mean saving
+and a 12.6% lower candidate median. Scale 1,024 confirmation remains
+**inconclusive**, despite nine lower candidate pairs and the positive initial
+screen. Its noisy observations are not removed or replaced by a favorable run.
+These are version-scoped same-parent results, not universal wins.
+
+The complete **20-family**, ten-pair screen selected no family under the
+predeclared candidate-median-greater-than-103%-of-parent rule; no family had a
+wholly negative saving interval. Large predicates still received an independent
+30-pair recheck because both rejected #848 designs had adverse evidence in
+that family. Its screen retains candidate observations of **809.312** and
+**572.024 ms**, with an interval of −208.651 to +35.513 ms. The independent
+recheck interval spans zero. Neither the absence of a threshold warning nor
+that recheck establishes equivalence or universal regression freedom. The
+re-export screen's positive interval is exploratory, not a confirmed target gain.
+
+Frozen-source correctness passed Program **247/247**, checker **4,526/4,526**,
+driver **200/200**, CLI **74/74**, entrypoint **35/35**, and harness
+**128/128**. Controls compare every interned name in all three symbol spaces,
+including declaration/property/label exclusions, nested references, shorthand,
+destructuring, `globalThis` and mixed type/value names. Every construction
+allocation is failed in turn until a successful build, with complete scanner
+parity, partial-state cleanup and retry checks. Source replacement rebuilds
+facts. A separate allocator control proves local-only queries construct no
+reference table. The initial eager correctness-only draft passed 246 Program
+tests and built, but collected **zero** timing samples; its source and logs
+are retained separately.
+
+The unchanged global and bound-global audits pass **116/116** cases on each
+of TypeScript 6.0.3, direct native TypeScript 7.0.2, parent Home and candidate
+Home: **464** retained process records with all exact project bytes and stable
+executable/payload/harness fingerprints. Pinned unmodified Zod 4.5.2 retains
+the identical complete primary diagnostic multiset, including positions and
+messages: **195 TS + 3 HM9002**, normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is not production admission; #548 remains open.
+
+All work used the shared machine lock and unchanged **3,840 MB** guard. The
+frozen experiment's largest recorded footprint is 3,239 MB (checker); the final candidate build
+peaked at 2,895 MB, Program at 3,094 MB, and paired phases at no more than
+983 MB. Footprints over-count shared pages. Queued work waited for confirmed
+live jobs rather than competing with them or raising guard limits.
+
+The [frozen candidate evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-per-pass-global-reference-candidate-850.tar.gz)
+contains all **332** original pair rounds, **256** passing admission records,
+the four full scale/control corpora, official inputs, 116 exact semantic-audit
+projects, complete test/build/Zod logs, source snapshots/patches, and statistics
+verifiers. All **11,754** payload checksums verify. Archive SHA-256:
+`ddbc0e6cc1346872078a1202290a236bc52fa0f7a0fcaefac18814231ac211ed`.
+The archive explicitly records integration as pending; it is not evidence
+that the later combined source passed or has these timings.
+
 ### Lazy forward-overload root index
 
 Issue [#837](https://github.com/home-lang/home/issues/837) traced the remaining
