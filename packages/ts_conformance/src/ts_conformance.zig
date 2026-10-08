@@ -514,6 +514,7 @@ pub const Result = struct {
 };
 
 pub const Case = struct {
+    test_library_root: ?[]const u8 = null,
     /// Logical case name (filename minus extension).
     name: []const u8,
     /// Source bytes for the .ts / .tsx / .d.ts file.
@@ -530,6 +531,7 @@ pub const Case = struct {
     /// Optional file-scoped compiler strictness from upstream
     /// conformance directives.
     strict_flags: ?ts_driver.StrictFlags = null,
+    skip_lib_check: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
@@ -829,6 +831,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         if (try runProgram(gpa, c)) |program_result| return program_result;
     }
     const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    const configured = try configuredStrictOptions(gpa, directive_source, null);
     const module_kind_label = selectedModuleKind(c, directive_source, "");
     const compiler_type_reference_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, compiler_type_reference_names);
@@ -838,7 +841,8 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
         .react_namespace = directiveValue(directive_source, "reactNamespace"),
         .is_declaration_file = c.is_declaration_file,
-        .strict_flags = c.strict_flags,
+        .strict_flags = c.strict_flags orelse configured.flags,
+        .skip_lib_check = c.skip_lib_check orelse configured.skip_lib_check,
         .always_strict = c.always_strict,
         .allow_importing_ts_extensions = c.allow_importing_ts_extensions orelse
             directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
@@ -1556,6 +1560,8 @@ fn freeStringSet(gpa: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void))
 /// Each upstream virtual file is a physical compilation unit. Routing is
 /// determined only by input layout, independently of names or expected output.
 fn shouldRouteThroughProgram(c: Case) bool {
+    const source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    if (std.mem.indexOf(u8, source, "/.lib/") != null or directiveValue(source, "libFiles") != null) return true;
     if (c.raw_source.len == 0) return false;
     var lines = std.mem.splitScalar(u8, c.raw_source, '\n');
     while (lines.next()) |line| {
@@ -2627,7 +2633,6 @@ test "conformance: loaded corpus keeps current checkJs diagnostics for late-boun
     defer T.allocator.free(salsa_dir);
     const corpus = try loadDirectoryWithOptions(T.allocator, salsa_dir, .{
         .baseline_root = paths.baselines,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = true,
     });
     defer {
@@ -2647,6 +2652,7 @@ test "conformance: loaded corpus keeps current checkJs diagnostics for late-boun
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -2681,7 +2687,6 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
     defer T.allocator.free(salsa_dir);
     const corpus = try loadDirectoryWithOptions(T.allocator, salsa_dir, .{
         .baseline_root = paths.baselines,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = false,
     });
     defer {
@@ -2701,6 +2706,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -2906,7 +2912,7 @@ test "conformance: untyped package require remains any after TS7016" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: absolute package types stubs are external modules" {
+test "conformance: corpus inputs do not invent absent absolute package declarations" {
     const raw =
         \\// @module: commonjs
         \\// @filename: node_modules/typescript/package.json
@@ -2925,7 +2931,67 @@ test "conformance: absolute package types stubs are external modules" {
     };
     const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
     defer if (result.detail.len > 0) T.allocator.free(result.detail);
-    try T.expectEqual(Outcome.passed, result.outcome);
+    try T.expectEqual(Outcome.failed, result.outcome);
+    try T.expect(std.mem.indexOf(u8, result.detail, "TS2307") != null);
+}
+
+test "conformance: corpus inputs preserve physical declaration shapes and libFiles globals" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    var declarations = try tmp.dir.createFile(io, "contract.d.ts", .{});
+    try declarations.writeStreamingAll(io, "export declare const value: string;\n");
+    declarations.close(io);
+    var globals = try tmp.dir.createFile(io, "globals.d.ts", .{});
+    try globals.writeStreamingAll(io, "declare const message: string;\n");
+    globals.close(io);
+    const root = try tmp.dir.realPathFileAlloc(io, ".", T.allocator);
+    defer T.allocator.free(root);
+    for ([_][]const u8{
+        "// @moduleResolution: bundler\n// @filename: app.ts\nimport { value } from '/.lib/contract';\nconst result: number = value;",
+        "// @moduleResolution: bundler\n// @filename: node_modules/contract/package.json\n{ \"types\": \"/.lib/contract.d.ts\" }\n// @filename: app.ts\nimport { value } from 'contract';\nconst result: number = value;",
+        "// @libFiles: globals.d.ts\nconst result: number = message;",
+    }) |source| {
+        const result = try run(T.allocator, .{
+            .name = "library-shape",
+            .source = source,
+            .raw_source = source,
+            .path = "app.ts",
+            .test_library_root = root,
+        });
+        defer if (result.detail.len > 0) T.allocator.free(result.detail);
+        try T.expectEqual(Outcome.failed, result.outcome);
+        try T.expectEqual(@as(u32, 1), result.actual_diag_count);
+        try T.expect(std.mem.indexOf(u8, result.detail, "TS2322: Type 'string' is not assignable to type 'number'.") != null);
+    }
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const missing = try std.fmt.allocPrint(T.allocator, "{s}/missing", .{root});
+    defer T.allocator.free(missing);
+    try T.expectError(error.MissingTypeScriptTestLibrary, mountTestLibraries(T.allocator, missing, &vfs));
+    try T.expect(!vfs.fs().fileExists("/.lib/contract.d.ts"));
+}
+
+test "conformance: corpus inputs apply explicit skipLibCheck and retain application errors" {
+    const source =
+        \\// @moduleResolution: bundler
+        \\// @filename: library.d.ts
+        \\export declare const value: string;
+        \\export declare const invalid: Missing;
+        \\// @filename: app.ts
+        \\import { value } from './library';
+        \\const result: number = value;
+    ;
+    for ([_]bool{ false, true }) |skip| {
+        const raw = try std.fmt.allocPrint(T.allocator, "// @skipLibCheck: {s}\n{s}", .{ if (skip) "true" else "false", source });
+        defer T.allocator.free(raw);
+        const result = try run(T.allocator, .{ .name = "declaration-check-policy", .path = "app.ts", .source = raw, .raw_source = raw });
+        defer if (result.detail.len > 0) T.allocator.free(result.detail);
+        try T.expectEqual(Outcome.failed, result.outcome);
+        try T.expectEqual(@as(u32, if (skip) 1 else 2), result.actual_diag_count);
+        try T.expect(std.mem.indexOf(u8, result.detail, "TS2322") != null);
+        try T.expectEqual(!skip, std.mem.indexOf(u8, result.detail, "TS2304") != null);
+    }
 }
 
 test "conformance: clean conditional @types import types route through program" {
@@ -3409,69 +3475,6 @@ fn strategyFromLabel(label: []const u8) ?ts_resolver.Strategy {
 /// Routed compile path. Returns `null` to fall back to the legacy
 /// path when something prevents the program-graph route (no virtual
 /// files extracted, etc.).
-/// Scan node_modules `package.json` virtual files for a `types` /
-/// `typings` field that names an ABSOLUTE path (e.g.
-/// `"/.ts/typescript.d.ts"`). When the named declaration file isn't
-/// already a virtual file, synthesize an any-exporting `.d.ts` stub at
-/// that path so the resolver resolves the package to a typed module
-/// instead of failing with TS2306/TS2307 — matching the upstream test
-/// harness, which mounts the real declaration files at `/.ts/...`.
-fn synthesizeAbsoluteTypesStubs(
-    gpa: std.mem.Allocator,
-    files: []const VirtualFile,
-    vfs: *ts_resolver.VirtualFs,
-) !void {
-    for (files) |f| {
-        if (!std.mem.endsWith(u8, f.path, "package.json")) continue;
-        if (!isNodeModulesVirtualPath(f.path)) continue;
-        var parsed = std.json.parseFromSlice(std.json.Value, gpa, f.source, .{}) catch continue;
-        defer parsed.deinit();
-        if (parsed.value != .object) continue;
-        const obj = parsed.value.object;
-        const fields = [_][]const u8{ "types", "typings" };
-        for (fields) |key| {
-            const v = obj.get(key) orelse continue;
-            if (v != .string) continue;
-            const target = v.string;
-            // Only absolute targets bypass the package directory; a
-            // relative `types` resolves inside node_modules where the
-            // real fixture file already lives.
-            if (target.len == 0 or target[0] != '/') continue;
-            // Skip if the target (or a `.d.ts`/`.ts` extension
-            // permutation of an extensionless target) is already a
-            // virtual file the fixture supplied.
-            if (absoluteTypesTargetPresent(files, target)) continue;
-            const stub_path = if (declarationExtensionPresent(target))
-                try gpa.dupe(u8, target)
-            else
-                try std.fmt.allocPrint(gpa, "{s}.d.ts", .{target});
-            defer gpa.free(stub_path);
-            try vfs.addFile(stub_path, "declare const api: any; export = api;\n");
-        }
-    }
-}
-
-fn declarationExtensionPresent(path: []const u8) bool {
-    return std.mem.endsWith(u8, path, ".d.ts") or
-        std.mem.endsWith(u8, path, ".ts") or
-        std.mem.endsWith(u8, path, ".d.mts") or
-        std.mem.endsWith(u8, path, ".d.cts");
-}
-
-fn absoluteTypesTargetPresent(files: []const VirtualFile, target: []const u8) bool {
-    for (files) |f| {
-        const canon = if (std.mem.startsWith(u8, f.path, "/")) f.path else null;
-        const p = canon orelse continue;
-        if (std.mem.eql(u8, p, target)) return true;
-        // Extensionless target: match a `.d.ts`/`.ts` sibling.
-        if (!declarationExtensionPresent(target)) {
-            if (std.mem.startsWith(u8, p, target) and
-                p.len > target.len and p[target.len] == '.') return true;
-        }
-    }
-    return false;
-}
-
 const TripleSlashTypesReference = struct {
     name: []const u8,
     mode: ?ts_resolver.TypeReferenceResolutionMode,
@@ -3704,16 +3707,44 @@ fn mountVirtualLinks(
     }
 }
 
+/// Mount the upstream test-library filesystem with its actual bytes. Missing
+/// files remain missing; no declaration shape or any-typed package is invented.
+fn mountTestLibraries(gpa: std.mem.Allocator, root: []const u8, vfs: *ts_resolver.VirtualFs) !void {
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return error.MissingTypeScriptTestLibrary,
+        else => return err,
+    };
+    defer dir.close(io);
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        const physical = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.path });
+        defer gpa.free(physical);
+        const source = try readFileAlloc(gpa, physical);
+        defer gpa.free(source);
+        const virtual = try std.fmt.allocPrint(gpa, "/.lib/{s}", .{entry.path});
+        defer gpa.free(virtual);
+        try vfs.addFile(virtual, source);
+    }
+}
+
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
-    var virtual_files = try splitVirtualFiles(gpa, c.raw_source);
+    const input_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    var virtual_files = try splitVirtualFiles(gpa, input_source);
     defer virtual_files.deinit(gpa);
-    if (virtual_files.items.len == 0) return null;
+    if (virtual_files.items.len == 0) {
+        try virtual_files.append(gpa, .{ .path = c.path, .source = input_source, .extra_strip = countLeadingDirectiveLines(input_source) });
+    }
 
     // Build a `VirtualFs` populated with EVERY virtual file (including
     // package.json, tsconfig.json, declaration JS, etc.) so the
     // resolver has the full filesystem the upstream fixture describes.
     // The VFS dupes its keys+values internally so we don't need to
-    // keep `c.raw_source` alive past this function.
+    // keep `input_source` alive past this function.
     var vfs = ts_resolver.VirtualFs.init(gpa);
     defer vfs.deinit();
     for (virtual_files.items) |f| {
@@ -3721,26 +3752,22 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         defer gpa.free(canon);
         try vfs.addFile(canon, f.source);
     }
-    try mountVirtualLinks(gpa, c.raw_source, virtual_files.items, &vfs);
-
-    // The upstream test harness mounts the real TypeScript declaration
-    // files at the absolute `/.ts/...` virtual root, so a
-    // `node_modules/<pkg>/package.json` whose `"types"`/`"typings"`
-    // field points at an absolute path (e.g.
-    // `"/.ts/typescript.d.ts"`) resolves to a typed module. Home's
-    // harness has no such mount, so synthesize an empty declaration
-    // stub at any absolute `types`/`typings` target that isn't already
-    // present. The module then types as `any` (no shape), which is all
-    // these fixtures need — they only require the import to resolve so
-    // no spurious TS2307 leaks. Mirrors `APISample_*`.
-    try synthesizeAbsoluteTypesStubs(gpa, virtual_files.items, &vfs);
+    if (std.mem.indexOf(u8, input_source, "/.lib/") != null or directiveValue(input_source, "libFiles") != null) {
+        const default_library_root = if (c.test_library_root == null)
+            try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/lib", .{tsSuiteRootSlice()})
+        else
+            null;
+        defer if (default_library_root) |root| gpa.free(root);
+        try mountTestLibraries(gpa, c.test_library_root orelse default_library_root.?, &vfs);
+    }
+    try mountVirtualLinks(gpa, input_source, virtual_files.items, &vfs);
 
     var tsconfig_options = try resolverConfigOptionsFromVirtualTsconfig(gpa, virtual_files.items);
     if (tsconfig_options.type_roots.len == 0) {
-        tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, c.raw_source, "typeRoots");
+        tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, input_source, "typeRoots");
     }
     defer tsconfig_options.deinit(gpa);
-    const directive_source = if (c.raw_source.len > 0) c.raw_source else c.source;
+    const directive_source = if (input_source.len > 0) input_source else c.source;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
     const types_directive_present = directiveValue(directive_source, "types") != null;
@@ -3822,7 +3849,15 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         if (declarationFileShadowedByImplementation(virtual_files.items, f.path)) continue;
         if (configured_type_names.len != 0 and virtualFileIsUnderAnyTypeRoot(f.path, tsconfig_options.type_roots)) continue;
         const canon = try canonicalVfsPath(gpa, f.path);
-        _ = program.add(canon, f.source) catch |err| switch (err) {
+        const file_source = if (std.mem.startsWith(u8, canon, "/.lib/")) block: {
+            const mounted = try resolver.fs.readFile(gpa, canon);
+            owned_program_sources.append(gpa, mounted) catch |err| {
+                gpa.free(mounted);
+                return err;
+            };
+            break :block mounted;
+        } else f.source;
+        _ = program.add(canon, file_source) catch |err| switch (err) {
             error.OutOfMemory => {
                 gpa.free(canon);
                 return error.OutOfMemory;
@@ -3844,6 +3879,20 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             .diag_path = diag_path,
             .extra_strip = f.extra_strip,
         });
+    }
+
+    const library_roots = try dupeDirectiveStringList(gpa, input_source, "libFiles");
+    defer freeStringList(gpa, library_roots);
+    for (library_roots) |name| {
+        if (std.mem.eql(u8, name, "lib.d.ts") and !(directiveBool(input_source, "noLib") orelse false)) continue;
+        const path = try std.fmt.allocPrint(gpa, "/.lib/{s}", .{name});
+        defer gpa.free(path);
+        const source = try resolver.fs.readFile(gpa, path);
+        owned_program_sources.append(gpa, source) catch |err| {
+            gpa.free(source);
+            return err;
+        };
+        _ = try program.add(path, source);
     }
 
     if (program_files.items.len == 0) return null;
@@ -3897,7 +3946,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const ambient_modules = try collectAmbientModules(gpa, virtual_files.items);
     defer freeAmbientModuleResolutions(gpa, ambient_modules);
 
-    const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
+    const allow_js_project = try virtualFilesAllowJs(gpa, input_source, virtual_files.items);
+    const configured = try configuredStrictOptions(gpa, directive_source, null);
     const check_js_setting = directiveBool(directive_source, "checkJs") orelse tsconfig_options.check_js;
     const check_js_project = check_js_setting orelse false;
     const check_js_disabled = if (check_js_setting) |enabled| !enabled else false;
@@ -3924,7 +3974,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .jsx_preserve_option = directiveValueIs(directive_source, "jsx", "preserve"),
         .react_namespace = directiveValue(directive_source, "reactNamespace"),
         .is_declaration_file = c.is_declaration_file,
-        .strict_flags = c.strict_flags,
+        .strict_flags = c.strict_flags orelse configured.flags,
+        .skip_lib_check = c.skip_lib_check orelse configured.skip_lib_check,
         .always_strict = c.always_strict,
         .allow_importing_ts_extensions = c.allow_importing_ts_extensions orelse
             directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
@@ -3938,8 +3989,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .allow_js = allow_js_project,
         .check_js = check_js_project,
         .check_js_disabled = check_js_disabled,
-        .skip_lib_check = directiveBool(directive_source, "skipLibCheck") orelse
-            commentedJsonBoolValue(directive_source, "skipLibCheck", true),
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
@@ -4467,6 +4516,7 @@ pub const CorpusEntry = struct {
     is_tsx: bool = false,
     is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
+    skip_lib_check: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
@@ -4500,6 +4550,7 @@ pub const OwnedCorpusEntry = struct {
     is_tsx: bool = false,
     is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
+    skip_lib_check: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
@@ -4529,15 +4580,6 @@ pub const DirectoryLoadOptions = struct {
     /// Original TypeScript baseline root used only when the primary tsgo
     /// baseline set has no entry for an unported fixture.
     fallback_baseline_root: ?[]const u8 = null,
-    /// Opt in to upstream per-file `// @strict: ...` directive
-    /// handling. Kept off for the current ratchet because a handful
-    /// of strict-positive cases still need contextual typing work.
-    honor_directives: bool = false,
-    /// Use strict-family defaults for files that have an upstream
-    /// `.errors.txt` baseline unless the source explicitly carries a
-    /// strict directive. This mirrors the negative-case baselines
-    /// without enabling strict diagnostics for positive fixtures.
-    strict_default_for_expected_errors: bool = false,
     /// Load and compare the one-line diagnostic headers from upstream
     /// `.errors.txt` files instead of the coarse expected-any mode.
     exact_error_headers: bool = false,
@@ -4688,159 +4730,10 @@ pub fn loadDirectoryWithOptions(
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
             baseline_path != null;
         const directive_source = if (raw_source.len != 0) raw_source else case_src;
-        const directive_state = parseStrictDirectiveState(directive_source);
-        // Per-fixture strict-state inference. We previously
-        // unconditionally flipped strict-on for every expected-error
-        // fixture without an explicit directive, which over-fires
-        // TS2564 (uninitialised property) on fixtures whose upstream
-        // baseline was generated with strict OFF. The new inference
-        // path inspects the fixture's own directives, any
-        // `@filename: tsconfig.json` block, and the upstream baseline
-        // contents to decide whether strict was actually on for that
-        // specific fixture before applying the strict-family default.
-        //
-        // Also: when directives set a sub-strict flag (e.g.
-        // `// @noImplicitAny: false`) but do NOT explicitly set
-        // `// @strict: <bool>`, we must NOT default the remaining
-        // strict-family flags to OFF. Upstream tsc leaves the other
-        // strict-family flags at their `strict`-defaulted value
-        // (which is true under the conformance harness's
-        // strict-on-by-default for expected-error fixtures). Without
-        // this branch, fixtures like `typeofOperatorWithBooleanType`
-        // (which only sets `// @noImplicitAny: false`) silently lose
-        // `strictPropertyInitialization` and miss TS2564.
-        const directive_strict_explicit = if (directive_state) |ds| ds.strict_explicit else false;
-        const has_only_non_strict_family = if (directive_state) |ds|
-            ds.has_strict_family and !ds.strict_explicit
-        else
-            false;
-        const should_infer_strict = options.strict_default_for_expected_errors and
-            expects_error and
-            !directive_strict_explicit;
-        const inferred_strict_on = if (should_infer_strict)
-            inferFixtureStrictOn(.{
-                .case_src = case_src,
-                .raw_src = raw_source,
-                .baseline_path = baseline_path,
-                .gpa = gpa,
-            })
-        else
-            true;
-        // Only apply the inferred strict-on to the per-state defaults
-        // when the fixture's directives include a strict-FAMILY entry
-        // without `@strict` itself. This keeps behavior identical for
-        // the much more common "@strict: false" + "@target: …" pair
-        // (where the family flags should collapse to strict-off per
-        // upstream semantics).
-        const family_strict_on = if (has_only_non_strict_family) inferred_strict_on else false;
-        const directive_flags: ?ts_driver.StrictFlags = if (directive_state) |ds|
-            strictFlagsFromState(ds.state, ds.state.strict orelse family_strict_on)
-        else
-            null;
-        var strict_flags =
-            if (options.honor_directives)
-                directive_flags
-            else if (options.strict_default_for_expected_errors and expects_error) blk_flags: {
-                if (directive_state) |ds| {
-                    // Merge explicit per-flag directives with the
-                    // effective `--strict` base for any unset
-                    // sub-flag. Mirrors tsc's compilerOptions
-                    // layering: `--strict` provides the base, then
-                    // explicit per-flag overrides apply on top.
-                    // When `// @strict: <bool>` is explicit it
-                    // wins outright; otherwise we fall back to the
-                    // inferred strict default so a fixture whose
-                    // only directive is e.g. `// @noImplicitAny:
-                    // false` still keeps the other strict-family
-                    // flags on (it's that scenario which silently
-                    // dropped TS2564 on
-                    // `typeofOperatorWithBooleanType.ts`).
-                    const base_strict_on = ds.state.strict orelse inferred_strict_on;
-                    break :blk_flags strictFlagsFromState(ds.state, base_strict_on);
-                }
-                break :blk_flags strictFlagsFromStrict(inferred_strict_on);
-            } else null;
-        if (!options.honor_directives and
-            options.strict_default_for_expected_errors and
-            expects_error and
-            directive_flags == null and
-            tsconfigStrictValue(raw_source) == null and
-            tsconfigStrictValue(case_src) == null and
-            sourceHasBareVariableWithoutTypeOrInitializer(case_src) and
-            baselineLacksDiagnostic(gpa, baseline_path, "TS7005"))
-        {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.no_implicit_any = false;
-            strict_flags = merged;
-        }
-        if (!options.honor_directives and
-            options.strict_default_for_expected_errors and
-            expects_error and
-            baselineHasNoImplicitAnyDiagnostic(gpa, baseline_path))
-        {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.no_implicit_any = true;
-            strict_flags = merged;
-        }
-        if (!options.honor_directives and
-            options.strict_default_for_expected_errors and
-            expects_error and
-            baselineHasStrictNullDiagnostic(gpa, baseline_path))
-        {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.strict_null_checks = true;
-            strict_flags = merged;
-        }
-        if (!options.honor_directives and
-            options.strict_default_for_expected_errors and
-            expects_error and
-            baselineHasStrictBindCallApplyDiagnostic(gpa, baseline_path))
-        {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.strict_bind_call_apply = true;
-            strict_flags = merged;
-        }
-        if (!options.honor_directives and
-            options.strict_default_for_expected_errors and
-            expects_error and
-            baselineHasDiagnostic(gpa, baseline_path, "TS2564"))
-        {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.strict_null_checks = true;
-            merged.strict_property_initialization = true;
-            strict_flags = merged;
-        }
-        if (!options.honor_directives) {
-            if (directive_flags) |flags| {
-                if (flags.resolve_json_module) {
-                    var merged = strict_flags orelse ts_driver.StrictFlags{};
-                    merged.resolve_json_module = true;
-                    strict_flags = merged;
-                }
-            }
-        }
-        if (baselineOptionBool(baseline_path, "isolatedmodules")) |value| {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.isolated_modules = value;
-            strict_flags = merged;
-        }
-        if (baselineOptionBool(baseline_path, "verbatimmodulesyntax")) |value| {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.verbatim_module_syntax = value;
-            strict_flags = merged;
-        }
-        if (baselineOptionBool(baseline_path, "noimplicitany")) |value| {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.no_implicit_any = value;
-            strict_flags = merged;
-        }
-        if (baselineOptionBool(baseline_path, "exactoptionalpropertytypes")) |value| {
-            var merged = strict_flags orelse ts_driver.StrictFlags{};
-            merged.exact_optional_property_types = value;
-            strict_flags = merged;
-        }
+        const configured = try configuredStrictOptions(gpa, directive_source, selected_baseline_path);
+        const strict_flags = configured.flags;
         const name = try gpa.dupe(u8, stem);
-        var diag_path = default_path;
+        const diag_path = default_path;
         var expected_errors: []const u8 = "";
         var use_exact_errors = false;
         if (options.exact_error_headers) {
@@ -4850,12 +4743,6 @@ pub fn loadDirectoryWithOptions(
                 defer gpa.free(baseline);
                 expected_errors = try extractDiagnosticHeaders(gpa, baseline);
                 errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
-                if (firstDiagnosticPath(expected_errors)) |first_path| {
-                    if (!std.mem.startsWith(u8, first_path, "lib.")) {
-                        gpa.free(diag_path);
-                        diag_path = try gpa.dupe(u8, first_path);
-                    }
-                }
             }
         }
         const baseline_mr: []u8 = if (baseline_path) |bp|
@@ -4892,7 +4779,8 @@ pub fn loadDirectoryWithOptions(
             // emitting TS1039 on class-field initializers there.
             .is_declaration_file = isDeclarationFilePath(entry.basename),
             .strict_flags = strict_flags,
-            .always_strict = selectedAlwaysStrict(case_src, baseline_path, entry.basename),
+            .skip_lib_check = configured.skip_lib_check,
+            .always_strict = if (isDeclarationFilePath(entry.basename)) false else configured.always_strict,
             .syntax_target_es2015 = emit_target != .es5,
             .target_emit_es5 = emit_target == .es5,
             .emit_target = emit_target,
@@ -6271,14 +6159,15 @@ test "conformance: alwaysStrict defaults on and preserves explicit matrix choice
 
 fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
     const p = path orelse return null;
-    var buf: [128]u8 = undefined;
-    if (option.len + "=false".len <= buf.len) {
-        const needle = std.fmt.bufPrint(&buf, "{s}=false", .{option}) catch return null;
-        if (std.mem.indexOf(u8, p, needle) != null) return false;
-    }
-    if (option.len + "=true".len <= buf.len) {
-        const needle = std.fmt.bufPrint(&buf, "{s}=true", .{option}) catch return null;
-        if (std.mem.indexOf(u8, p, needle) != null) return true;
+    const basename = p[if (std.mem.lastIndexOfAny(u8, p, "/\\")) |slash| slash + 1 else 0..];
+    const end = std.mem.lastIndexOfScalar(u8, basename, ')') orelse return null;
+    const start = std.mem.lastIndexOfScalar(u8, basename[0..end], '(') orelse return null;
+    var entries = std.mem.splitScalar(u8, basename[start + 1 .. end], ',');
+    while (entries.next()) |entry| {
+        const equal = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const name = std.mem.trim(u8, entry[0..equal], " \t");
+        if (!std.ascii.eqlIgnoreCase(name, option)) continue;
+        return parseDirectiveBool(entry[equal + 1 ..]);
     }
     return null;
 }
@@ -6479,6 +6368,8 @@ fn isNodeResolutionFullProgramFixture(name: []const u8, source: []const u8) bool
 
 const StrictDirectiveState = struct {
     strict: ?bool = null,
+    always_strict: ?bool = null,
+    skip_lib_check: ?bool = null,
     no_implicit_any: ?bool = null,
     no_implicit_this: ?bool = null,
     no_unused_parameters: ?bool = null,
@@ -6703,346 +6594,61 @@ fn strictFlagsFromStrict(strict_on: bool) ts_driver.StrictFlags {
     return strictFlagsFromState(.{}, strict_on);
 }
 
-pub const StrictInferenceInput = struct {
-    /// Stripped, parser-fed source. Carries the fixture's own
-    /// `// @strict:` etc directives plus, for multi-file fixtures,
-    /// the comment-rewritten tsconfig payload.
-    case_src: []const u8,
-    /// Raw upstream bytes (only populated for multi-file fixtures
-    /// that went through `stripNonCodeVirtualSections`). Empty for
-    /// single-file fixtures. The raw form preserves the verbatim
-    /// `tsconfig.json` JSON before stripping rewrote it.
-    raw_src: []const u8 = "",
-    /// Path to the upstream `<stem>.errors.txt` baseline if one
-    /// exists. Used to peek at the diagnostic codes the baseline
-    /// expects so we can detect the "strict was off in upstream"
-    /// shape (uninitialised fields with no TS2564 in baseline).
-    baseline_path: ?[]const u8 = null,
-    /// Allocator used for the optional baseline read. The result is
-    /// freed before the function returns.
-    gpa: std.mem.Allocator,
+const ConfiguredStrictOptions = struct {
+    flags: ts_driver.StrictFlags,
+    always_strict: bool,
+    skip_lib_check: bool,
 };
 
-/// Infer whether `strict` was actually on for a fixture whose loader
-/// would otherwise blanket-apply strict-on as the expected-error
-/// default. The previous unconditional default over-fired TS2564 on
-/// fixtures whose upstream baseline was generated with strict OFF.
-///
-/// Decision order, mirroring the way upstream tsc resolves a
-/// fixture's effective compilerOptions:
-///
-///   1. An explicit `// @strict: <bool>` directive wins outright
-///      (this branch is normally taken before reaching here because
-///      the loader keeps the explicit directive's flags, but the
-///      helper is also exposed for unit tests).
-///   2. A `// @filename: tsconfig.json` virtual section with
-///      `"strict": true|false` in `compilerOptions` is the
-///      effective project setting — honour it.
-///   3. If the fixture defines class fields without an initializer
-///      AND the upstream `<stem>.errors.txt` baseline contains no
-///      TS2564 diagnostic, upstream had `strictPropertyInitialization`
-///      off — return false so we don't synthesise spurious TS2564s.
-///      This is the targeted fix for Agent #25's TS2564 over-fire.
-///   4. A checked-JavaScript fixture defaults `strict` to false because
-///      `checkJs` enables diagnostics but does not enable the strict family.
-///      Baseline diagnostics still opt individual strict flags back in below.
-///   5. Default `true`. Empirically, defaulting strict OFF
-///      net-regressed the assignmentCompatibility / typeRelationships
-///      categories — many of those fixtures rely on
-///      `strictFunctionTypes` to surface inheritance / call-signature
-///      diagnostics that the upstream baseline expects, so we keep
-///      the previous behaviour as the conservative fall-through.
-pub fn inferFixtureStrictOn(input: StrictInferenceInput) bool {
-    if (directiveBool(input.case_src, "strict")) |v| return v;
-    if (input.raw_src.len > 0) {
-        if (tsconfigStrictValue(input.raw_src)) |v| return v;
-    }
-    if (tsconfigStrictValue(input.case_src)) |v| return v;
-    if (sourceHasUninitializedField(input.case_src) and
-        baselineLacksTs2564(input.gpa, input.baseline_path))
-    {
-        return false;
-    }
-    const directive_source = if (input.raw_src.len > 0) input.raw_src else input.case_src;
-    if (directiveBool(directive_source, "checkJs") orelse false) return false;
-    return true;
-}
-
-/// Lightweight scan for class fields declared without an
-/// initializer — the source pattern that triggers TS2564 under
-/// `strictPropertyInitialization`. Targets the common shape `name:
-/// Type;` (with optional access modifiers, no `=`) inside a class
-/// body. Conservative on purpose: false positives only mean we
-/// might consult the baseline unnecessarily, not flip strict
-/// incorrectly.
-fn sourceHasUninitializedField(source: []const u8) bool {
-    if (std.mem.indexOf(u8, source, "class ") == null) return false;
-    var in_class = false;
-    var pending_class = false;
-    var class_is_ambient = false;
-    var class_depth: i32 = 0;
-    var ambient_depth: i32 = 0;
-    var lines = std.mem.splitScalar(u8, source, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0) continue;
-        if (std.mem.startsWith(u8, line, "//")) continue;
-        const starts_ambient_scope = ambient_depth == 0 and
-            (std.mem.startsWith(u8, line, "declare namespace ") or
-                std.mem.startsWith(u8, line, "declare module ") or
-                std.mem.startsWith(u8, line, "declare global "));
-        defer {
-            if (ambient_depth > 0 or starts_ambient_scope) {
-                for (line) |c| {
-                    if (c == '{') {
-                        ambient_depth += 1;
-                    } else if (c == '}' and ambient_depth > 0) {
-                        ambient_depth -= 1;
-                    }
-                }
-            }
-        }
-        if (!in_class) {
-            if (std.mem.indexOf(u8, line, "class ") != null) {
-                pending_class = true;
-                class_is_ambient = ambient_depth > 0 or
-                    starts_ambient_scope or
-                    std.mem.indexOf(u8, line, "declare class ") != null;
-            }
-            if (pending_class) {
-                for (line) |c| {
-                    if (c == '{') {
-                        class_depth += 1;
-                        in_class = true;
-                    } else if (c == '}' and class_depth > 0) {
-                        class_depth -= 1;
-                    }
-                }
-                if (class_depth == 0) {
-                    in_class = false;
-                    pending_class = false;
-                    class_is_ambient = false;
-                }
-            }
-            continue;
-        }
-        defer {
-            for (line) |c| {
-                if (c == '{') {
-                    class_depth += 1;
-                } else if (c == '}' and class_depth > 0) {
-                    class_depth -= 1;
-                }
-            }
-            if (class_depth == 0) {
-                in_class = false;
-                pending_class = false;
-                class_is_ambient = false;
-            }
-        }
-        if (class_is_ambient) continue;
-        if (class_depth != 1) continue;
-        if (std.mem.indexOfScalar(u8, line, '=') != null) continue;
-        if (std.mem.indexOfScalar(u8, line, '(') != null) continue;
-        if (std.mem.indexOfScalar(u8, line, ':') == null) continue;
-        if (!std.mem.endsWith(u8, line, ";")) continue;
-        var rest = line;
-        const modifiers = [_][]const u8{
-            "public ", "private ",  "protected ", "readonly ",
-            "static ", "abstract ", "declare ",   "override ",
+/// Mirror the pinned TS7 GetStrictOptionValue: an unset strict option defaults
+/// on. Configuration, harness directives and the explicitly selected variant
+/// override that default; expected diagnostics never supply compiler options.
+fn configuredStrictOptions(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    selected_variant: ?[]const u8,
+) !ConfiguredStrictOptions {
+    var state: StrictDirectiveState = .{};
+    var files = try splitVirtualFiles(gpa, source);
+    defer files.deinit(gpa);
+    for (files.items) |file| {
+        if (!std.mem.eql(u8, file.path, "tsconfig.json") and
+            !std.mem.endsWith(u8, file.path, "/tsconfig.json")) continue;
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const config = tsconfig_mod.parseString(gpa, arena.allocator(), file.source) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
         };
-        outer: while (true) {
-            for (modifiers) |m| {
-                if (std.mem.startsWith(u8, rest, m)) {
-                    rest = std.mem.trimStart(u8, rest[m.len..], " \t");
-                    continue :outer;
-                }
+        inline for (@typeInfo(StrictDirectiveState).@"struct".field_names) |field_name| {
+            @field(state, field_name) = @field(config.compiler_options, field_name);
+        }
+        break;
+    }
+    if (parseStrictDirectiveState(source)) |directives| {
+        inline for (@typeInfo(StrictDirectiveState).@"struct".field_names) |field_name| {
+            if (@field(directives.state, field_name)) |value| @field(state, field_name) = value;
+        }
+    }
+    inline for (@typeInfo(StrictDirectiveState).@"struct".field_names) |field_name| {
+        const option_name = comptime blk: {
+            var name: [field_name.len]u8 = undefined;
+            var len: usize = 0;
+            for (field_name) |char| {
+                if (char == '_') continue;
+                name[len] = char;
+                len += 1;
             }
-            break;
-        }
-        var i: usize = 0;
-        if (i < rest.len and (std.ascii.isAlphabetic(rest[i]) or rest[i] == '_' or rest[i] == '$')) {
-            i += 1;
-            while (i < rest.len and (std.ascii.isAlphanumeric(rest[i]) or rest[i] == '_' or rest[i] == '$')) : (i += 1) {}
-        } else continue;
-        while (i < rest.len and (rest[i] == '?' or rest[i] == '!')) : (i += 1) {}
-        while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t')) : (i += 1) {}
-        if (i < rest.len and rest[i] == ':') return true;
+            break :blk name[0..len].*;
+        };
+        if (baselineOptionBool(selected_variant, &option_name)) |value| @field(state, field_name) = value;
     }
-    return false;
-}
-
-/// Lightweight signal for TS7005: a variable declaration with no type
-/// annotation and no initializer. If upstream's error baseline lacks
-/// TS7005 for such a fixture, `noImplicitAny` was not effectively on.
-fn sourceHasBareVariableWithoutTypeOrInitializer(source: []const u8) bool {
-    var lines = std.mem.splitScalar(u8, source, '\n');
-    while (lines.next()) |raw_line| {
-        var line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or std.mem.startsWith(u8, line, "//")) continue;
-        if (std.mem.startsWith(u8, line, "export ")) line = std.mem.trimStart(u8, line["export ".len..], " \t");
-        if (std.mem.startsWith(u8, line, "declare ")) line = std.mem.trimStart(u8, line["declare ".len..], " \t");
-        const rest = if (std.mem.startsWith(u8, line, "var "))
-            line["var ".len..]
-        else if (std.mem.startsWith(u8, line, "let "))
-            line["let ".len..]
-        else if (std.mem.startsWith(u8, line, "const "))
-            line["const ".len..]
-        else
-            continue;
-        const trimmed = std.mem.trim(u8, rest, " \t");
-        if (!std.mem.endsWith(u8, trimmed, ";")) continue;
-        if (std.mem.indexOfScalar(u8, trimmed, '=') != null) continue;
-        if (std.mem.indexOfScalar(u8, trimmed, ':') != null) continue;
-        if (std.mem.indexOfScalar(u8, trimmed, ',') != null) continue;
-        const name = std.mem.trim(u8, trimmed[0 .. trimmed.len - 1], " \t");
-        if (name.len == 0) continue;
-        if (name[0] == '{' or name[0] == '[') continue;
-        return true;
-    }
-    return false;
-}
-
-/// True when the upstream baseline file at `baseline_path` has no
-/// `TS2564` diagnostic — i.e. upstream did not flag any
-/// uninitialised-property error, which is a strong signal that
-/// `strictPropertyInitialization` was off (and by extension that
-/// the aggregate `strict` flag was off). Returns true when the
-/// baseline can't be read, mirroring the conservative bias toward
-/// the historical default in unfamiliar territory.
-fn baselineLacksTs2564(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
-    return baselineLacksDiagnostic(gpa, baseline_path, "TS2564");
-}
-
-fn baselineLacksDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, code: []const u8) bool {
-    const path = baseline_path orelse return false;
-    const baseline = readFileAlloc(gpa, path) catch return false;
-    defer gpa.free(baseline);
-    return !diagnosticHeadersContain(baseline, code);
-}
-
-fn baselineHasDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8, code: []const u8) bool {
-    const path = baseline_path orelse return false;
-    const baseline = readFileAlloc(gpa, path) catch return false;
-    defer gpa.free(baseline);
-    return diagnosticHeadersContain(baseline, code);
-}
-
-fn diagnosticHeadersContain(baseline: []const u8, code: []const u8) bool {
-    return std.mem.indexOf(u8, baseline, code) != null;
-}
-
-fn baselineHasNoImplicitAnyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
-    const path = baseline_path orelse return false;
-    const baseline = readFileAlloc(gpa, path) catch return false;
-    defer gpa.free(baseline);
-    const codes = [_][]const u8{
-        "TS7005",
-        "TS7006",
-        "TS7008",
-        "TS7010",
-        "TS7019",
-        "TS7020",
-        "TS7031",
-        "TS7034",
+    const strict_on = state.strict orelse true;
+    return .{
+        .flags = strictFlagsFromState(state, strict_on),
+        .always_strict = state.always_strict orelse strict_on,
+        .skip_lib_check = state.skip_lib_check orelse false,
     };
-    for (codes) |code| {
-        if (std.mem.indexOf(u8, baseline, code) != null) return true;
-    }
-    return false;
-}
-
-fn baselineHasStrictNullDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
-    const path = baseline_path orelse return false;
-    const baseline = readFileAlloc(gpa, path) catch return false;
-    defer gpa.free(baseline);
-    const snippets = [_][]const u8{
-        "Type 'null' is not assignable",
-        "Type 'undefined' is not assignable",
-        "Object is possibly 'null'",
-        "Object is possibly 'undefined'",
-        "is possibly 'null'",
-        "is possibly 'undefined'",
-        "TS2454",
-        "TS18047",
-        "TS18048",
-    };
-    for (snippets) |snippet| {
-        if (std.mem.indexOf(u8, baseline, snippet) != null) return true;
-    }
-    return false;
-}
-
-fn baselineHasStrictBindCallApplyDiagnostic(gpa: std.mem.Allocator, baseline_path: ?[]const u8) bool {
-    const path = baseline_path orelse return false;
-    const baseline = readFileAlloc(gpa, path) catch return false;
-    defer gpa.free(baseline);
-    return std.mem.indexOf(u8, baseline, "TS2345") != null and
-        std.mem.indexOf(u8, baseline, "Target signature provides too few arguments.") != null;
-}
-
-/// Parse `"strict": true|false` out of the first
-/// `// @filename: tsconfig.json` virtual section's `compilerOptions`
-/// block. Returns `null` when no tsconfig section exists or the
-/// section doesn't name `strict` at all (so the caller's default
-/// applies). Tolerates the comment-prefixed form used by
-/// `stripNonCodeVirtualSections` (which prefixes tsconfig payload
-/// lines with `// `) and the raw upstream form.
-fn tsconfigStrictValue(source: []const u8) ?bool {
-    const section = tsconfigVirtualSection(source) orelse return null;
-    return scanJsonStrictBool(section);
-}
-
-fn tsconfigVirtualSection(source: []const u8) ?[]const u8 {
-    var idx: usize = 0;
-    while (idx < source.len) {
-        const line_end = std.mem.indexOfScalarPos(u8, source, idx, '\n') orelse source.len;
-        const raw_line = source[idx..line_end];
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        const after_marker_start = line_end + @as(usize, if (line_end < source.len) 1 else 0);
-        if (virtualFilename(line)) |path| {
-            if (isTsConfigVirtualPath(path)) {
-                var scan: usize = after_marker_start;
-                while (scan < source.len) {
-                    const end2 = std.mem.indexOfScalarPos(u8, source, scan, '\n') orelse source.len;
-                    const raw2 = source[scan..end2];
-                    const line2 = std.mem.trim(u8, raw2, " \t\r");
-                    if (virtualFilename(line2) != null) {
-                        return source[after_marker_start..scan];
-                    }
-                    scan = end2 + @as(usize, if (end2 < source.len) 1 else 0);
-                }
-                return source[after_marker_start..source.len];
-            }
-        }
-        idx = after_marker_start;
-    }
-    return null;
-}
-
-fn scanJsonStrictBool(section: []const u8) ?bool {
-    const key = "\"strict\"";
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, section, search_from, key)) |pos| {
-        var cursor = pos + key.len;
-        while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t' or section[cursor] == '\r' or section[cursor] == '\n')) : (cursor += 1) {}
-        if (cursor < section.len and section[cursor] == ':') {
-            cursor += 1;
-            while (cursor < section.len and (section[cursor] == ' ' or section[cursor] == '\t' or section[cursor] == '\r' or section[cursor] == '\n' or section[cursor] == '/')) : (cursor += 1) {}
-            if (matchKeywordAt(section, cursor, "true")) return true;
-            if (matchKeywordAt(section, cursor, "false")) return false;
-        }
-        search_from = pos + key.len;
-    }
-    return null;
-}
-
-fn matchKeywordAt(source: []const u8, pos: usize, keyword: []const u8) bool {
-    if (pos + keyword.len > source.len) return false;
-    if (!std.ascii.eqlIgnoreCase(source[pos .. pos + keyword.len], keyword)) return false;
-    if (pos + keyword.len == source.len) return true;
-    const next = source[pos + keyword.len];
-    return !(std.ascii.isAlphanumeric(next) or next == '_');
 }
 
 fn strictFlagsFromState(state: StrictDirectiveState, strict_on: bool) ts_driver.StrictFlags {
@@ -7085,6 +6691,10 @@ fn parseDirectiveBool(raw: []const u8) ?bool {
 fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: bool) bool {
     if (std.ascii.eqlIgnoreCase(name, "strict")) {
         state.strict = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "alwaysStrict")) {
+        state.always_strict = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "skipLibCheck")) {
+        state.skip_lib_check = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noImplicitAny")) {
         state.no_implicit_any = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noImplicitThis")) {
@@ -7152,6 +6762,7 @@ pub fn runOwnedCorpus(
             .is_tsx = entry.is_tsx,
             .is_declaration_file = std.mem.endsWith(u8, entry.path, ".d.ts"),
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -7310,6 +6921,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .is_tsx = entry.is_tsx,
         .is_declaration_file = entry.is_declaration_file,
         .strict_flags = entry.strict_flags,
+        .skip_lib_check = entry.skip_lib_check,
         .always_strict = entry.always_strict,
         // Honor an embedded `// @target: es2015`(+) directive even when
         // the pinned entry didn't set the flag explicitly, so
@@ -7502,37 +7114,6 @@ test "conformance: parseStrictDirectiveState distinguishes sub-strict overrides"
         \\let x;
     ).?;
     try T.expect(explicit_strict.strict_explicit);
-}
-
-test "conformance: checkJs does not imply strict mode" {
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src =
-        \\// @checkJs: true
-        \\// @filename: main.js
-        \\new Promise((resolve) => resolve());
-        ,
-        .gpa = T.allocator,
-    }));
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src =
-        \\// @checkJs: true
-        \\// @strict: true
-        \\// @filename: main.js
-        \\function f(value) {}
-        ,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: baseline diagnostic headers select strict property initialization" {
-    try T.expect(diagnosticHeadersContain(
-        "index.js(4,5): error TS2564: Property 'field' has no initializer.\n",
-        "TS2564",
-    ));
-    try T.expect(!diagnosticHeadersContain(
-        "index.js(4,5): error TS7006: Parameter 'value' implicitly has an 'any' type.\n",
-        "TS2564",
-    ));
 }
 
 test "conformance: checkJs matrix selects the executed variant baseline" {
@@ -53095,292 +52676,84 @@ test "conformance: strict helper mirrors strict-family defaults" {
     try T.expect(!flags.no_unused_parameters);
 }
 
-test "conformance: inferFixtureStrictOn honours explicit @strict directive" {
-    // Explicit `// @strict: true` always wins, no matter what other
-    // hints are present. Companion to the false-explicit case below.
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src =
-        \\// @strict: true
-        \\class C { x: number; }
-        ,
-        .gpa = T.allocator,
-    }));
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src =
-        \\// @strict: false
-        \\class C { x: number; }
-        ,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: directive scanners skip a leading UTF-8 BOM" {
-    // Upstream fixtures occasionally ship with a leading UTF-8 BOM
-    // (`\xEF\xBB\xBF`). Before stripping, `parseStrictDirectiveFlags`
-    // missed the `// @strict: false` on line 1 because the line
-    // started with BOM bytes, not `//`. Mirrors
-    // `emitArrowFunctionWhenUsingArguments09.ts` (BOM + strict:false +
-    // baseline that omits TS7006).
-    const bom_src = "\xEF\xBB\xBF// @strict: false\nfunction f(_a) {}\n";
-    const flags = parseStrictDirectiveFlags(bom_src) orelse {
-        try T.expect(false);
-        return;
-    };
-    try T.expect(!flags.no_implicit_any);
-    // Mirror the inference path used by the corpus loader: with the
-    // BOM-skipping directive scan, `// @strict: false` flips
-    // inferFixtureStrictOn to false too.
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src = bom_src,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: inferFixtureStrictOn reads tsconfig compilerOptions strict key" {
-    // Multi-file fixture with an explicit `tsconfig.json` virtual
-    // section — the project setting wins over the default. We pass
-    // the raw upstream bytes (the form before
-    // `stripNonCodeVirtualSections` rewrites the section into a
-    // commented-out block); the helper still has to find the key.
-    const raw_strict_on =
-        \\// @filename: /tsconfig.json
-        \\{ "compilerOptions": { "strict": true } }
-        \\// @filename: /index.ts
-        \\class C { x: number; }
+test "conformance: corpus inputs layer TS7 defaults config directives and variant options" {
+    try T.expect(baselineOptionBool("parent(strict=false)/case.errors.txt", "strict") == null);
+    try T.expect(baselineOptionBool("case(notstrict=false).errors.txt", "strict") == null);
+    const defaults = try configuredStrictOptions(T.allocator, "// @checkJs: true\nfunction f(value) {}", null);
+    try T.expect(defaults.flags.no_implicit_any);
+    try T.expect(defaults.flags.strict_null_checks);
+    try T.expect(defaults.always_strict);
+    const source =
+        \\// @strict: true, false
+        \\// @noImplicitAny: true
+        \\// @filename: tsconfig.json
+        \\{ "compilerOptions": { "strict": false, "noUnusedLocals": true, "alwaysStrict": false, } }
+        \\// @filename: app.ts
+        \\function f(value) { return value; }
     ;
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src = "class C { x: number; }",
-        .raw_src = raw_strict_on,
-        .gpa = T.allocator,
-    }));
-    const raw_strict_off =
-        \\// @filename: /tsconfig.json
-        \\{ "compilerOptions": { "strict": false } }
-        \\// @filename: /index.ts
-        \\class C { x: number; }
-    ;
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src = "class C { x: number; }",
-        .raw_src = raw_strict_off,
-        .gpa = T.allocator,
-    }));
+    const configured = try configuredStrictOptions(T.allocator, source, "case(strict=false,strictnullchecks=true).errors.txt");
+    try T.expect(configured.flags.no_implicit_any);
+    try T.expect(configured.flags.strict_null_checks);
+    try T.expect(configured.flags.no_unused_locals);
+    try T.expect(!configured.flags.strict_function_types);
+    try T.expect(!configured.flags.strict_property_initialization);
+    try T.expect(!configured.always_strict);
+    const bom = try configuredStrictOptions(T.allocator, "\xEF\xBB\xBF// @strict: false\nfunction f(value) {}", null);
+    try T.expect(!bom.flags.no_implicit_any);
+    try T.expect(!bom.flags.strict_null_checks);
 }
 
-test "conformance: inferFixtureStrictOn defaults to true when no signal is present" {
-    // Conservative default: with no directive, no tsconfig, and no
-    // baseline to consult, keep the historical strict-on behaviour.
-    // Empirically, defaulting strict OFF net-regressed the
-    // assignmentCompatibility / typeRelationships categories — those
-    // fixtures lean on `strictFunctionTypes` to surface inheritance
-    // diagnostics the upstream baseline expects.
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src = "interface I { (x: number): void; }",
-        .gpa = T.allocator,
-    }));
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src =
-        \\// @target: es2015
-        \\interface I { (x: number): void; }
-        ,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: inferFixtureStrictOn handles commented tsconfig section after stripping" {
-    // After `stripNonCodeVirtualSections`, the tsconfig payload is
-    // re-emitted with a leading `// ` so the parser sees it as a
-    // comment. The helper still picks the `"strict"` key out, so
-    // the fall-back path (when raw_source is empty because we only
-    // have the stripped form) keeps working.
-    const stripped_on =
-        \\// @filename: /tsconfig.json
-        \\// { "compilerOptions": { "strict": true } }
-        \\// @filename: /index.ts
-        \\class C { x: number; }
-    ;
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src = stripped_on,
-        .gpa = T.allocator,
-    }));
-    const stripped_off =
-        \\// @filename: /tsconfig.json
-        \\// { "compilerOptions": { "strict": false } }
-        \\// @filename: /index.ts
-        \\class C { x: number; }
-    ;
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src = stripped_off,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: inferFixtureStrictOn flips off for uninit fields when baseline lacks TS2564" {
-    // Targeted regression: a fixture with class fields that have no
-    // initializer is exactly the shape that strict-on would
-    // synthesise spurious TS2564s for. We materialise an upstream
-    // baseline file in a tmp dir whose contents do NOT mention
-    // TS2564 — that's the signal that upstream had
-    // strictPropertyInitialization off, so we should follow suit.
-    var tmp = std.testing.tmpDir(.{});
+test "conformance: corpus inputs cannot change when expected diagnostic contents change" {
+    var tmp = T.tmpDir(.{});
     defer tmp.cleanup();
-
-    const io = std.testing.io;
-    {
-        var f = try tmp.dir.createFile(io, "uninitFieldNoTs2564.errors.txt", .{ .truncate = true });
-        defer f.close(io);
-        try f.writeStreamingAll(
-            io,
-            "uninitFieldNoTs2564.ts(1,1): error TS2300: Duplicate identifier 'x'.",
-        );
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const baselines = try tmp.dir.realPathFileAlloc(io, "baselines", T.allocator);
+    defer T.allocator.free(baselines);
+    for ([_]bool{ false, true }) |strict| {
+        var source_file = try tmp.dir.createFile(io, "cases/control.ts", .{ .truncate = true });
+        try source_file.writeStreamingAll(io, if (strict)
+            "// @strict: true\nfunction identity(value) { return value; }\nclass Box { value: number; }\n"
+        else
+            "// @strict: false\nfunction identity(value) { return value; }\nclass Box { value: number; }\n");
+        source_file.close(io);
+        for ([_][]const u8{
+            "elsewhere.ts(7,9): error TS7006: Parameter 'value' implicitly has an 'any' type.",
+            "lib.es5.d.ts(--,--): error TS2564: Property 'value' has no initializer.\nlib.es5.d.ts(--,--): error TS2454: Variable 'value' is used before being assigned.",
+        }) |expected| {
+            var baseline_file = try tmp.dir.createFile(io, "baselines/control.errors.txt", .{ .truncate = true });
+            try baseline_file.writeStreamingAll(io, expected);
+            baseline_file.close(io);
+            const corpus = try loadDirectoryWithOptions(T.allocator, cases, .{ .baseline_root = baselines, .exact_error_headers = true });
+            defer {
+                for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+                T.allocator.free(corpus);
+            }
+            try T.expectEqual(@as(usize, 1), corpus.len);
+            try T.expectEqualStrings("control.ts", corpus[0].path);
+            try T.expectEqual(strict, corpus[0].strict_flags.?.no_implicit_any);
+            try T.expectEqual(strict, corpus[0].strict_flags.?.strict_null_checks);
+            try T.expectEqual(strict, corpus[0].strict_flags.?.strict_property_initialization);
+            const result = try runOneEntry(T.allocator, .{
+                .name = corpus[0].name,
+                .path = corpus[0].path,
+                .source = corpus[0].source,
+                .expected_errors = corpus[0].expected_errors,
+                .use_exact_errors = true,
+                .strict_flags = corpus[0].strict_flags,
+                .always_strict = corpus[0].always_strict,
+            });
+            defer {
+                T.allocator.free(result.name);
+                if (result.detail.len > 0) T.allocator.free(result.detail);
+            }
+            try T.expectEqual(Outcome.failed, result.outcome);
+            try T.expectEqual(@as(u32, if (strict) 2 else 0), result.actual_diag_count);
+        }
     }
-    const baseline_path = try tmp.dir.realPathFileAlloc(io, "uninitFieldNoTs2564.errors.txt", T.allocator);
-    defer T.allocator.free(baseline_path);
-
-    try T.expect(!inferFixtureStrictOn(.{
-        .case_src =
-        \\class C {
-        \\    x: number;
-        \\}
-        ,
-        .baseline_path = baseline_path,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: inferFixtureStrictOn ignores interface members when scanning class fields" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const io = std.testing.io;
-    {
-        var f = try tmp.dir.createFile(io, "interfaceMembers.errors.txt", .{ .truncate = true });
-        defer f.close(io);
-        try f.writeStreamingAll(
-            io,
-            "interfaceMembers.ts(10,7): error TS2322: Type 'null' is not assignable to type 'ILineTokens'.",
-        );
-    }
-    const baseline_path = try tmp.dir.realPathFileAlloc(io, "interfaceMembers.errors.txt", T.allocator);
-    defer T.allocator.free(baseline_path);
-
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src =
-        \\interface IToken {
-        \\    startIndex: number;
-        \\}
-        \\interface ILineTokens {
-        \\    tokens: IToken[];
-        \\}
-        \\class C {
-        \\    tokenize(): ILineTokens {
-        \\        return null;
-        \\    }
-        \\}
-        ,
-        .baseline_path = baseline_path,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: strict inference ignores ambient class fields" {
-    try T.expect(!sourceHasUninitializedField(
-        \\declare namespace React {
-        \\    class Component<P> {
-        \\        props: P;
-        \\    }
-        \\}
-    ));
-    try T.expect(!sourceHasUninitializedField(
-        \\declare class Component<P> {
-        \\    props: P;
-        \\}
-    ));
-    try T.expect(sourceHasUninitializedField(
-        \\class Component<P> {
-        \\    props: P;
-        \\}
-    ));
-}
-
-test "conformance: inferFixtureStrictOn keeps strict on when baseline expects TS2564" {
-    // Companion gate to the above: when the baseline DOES expect
-    // TS2564, upstream had strictPropertyInitialization on and we
-    // must keep strict on so our checker fires the matching
-    // diagnostic. The presence of an uninitialised field alone is
-    // not enough to flip strict off — the baseline has to
-    // corroborate it.
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const io = std.testing.io;
-    {
-        var f = try tmp.dir.createFile(io, "uninitFieldHasTs2564.errors.txt", .{ .truncate = true });
-        defer f.close(io);
-        try f.writeStreamingAll(
-            io,
-            "uninitFieldHasTs2564.ts(2,5): error TS2564: Property 'x' has no initializer and is not definitely assigned in the constructor.",
-        );
-    }
-    const baseline_path = try tmp.dir.realPathFileAlloc(io, "uninitFieldHasTs2564.errors.txt", T.allocator);
-    defer T.allocator.free(baseline_path);
-
-    try T.expect(inferFixtureStrictOn(.{
-        .case_src =
-        \\class C {
-        \\    x: number;
-        \\}
-        ,
-        .baseline_path = baseline_path,
-        .gpa = T.allocator,
-    }));
-}
-
-test "conformance: TS2454 baseline restores strict null checks after property inference" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const io = std.testing.io;
-    {
-        var f = try tmp.dir.createFile(io, "usedBeforeAssignment.errors.txt", .{ .truncate = true });
-        defer f.close(io);
-        try f.writeStreamingAll(
-            io,
-            "usedBeforeAssignment.ts(4,1): error TS2454: Variable 'value' is used before being assigned.",
-        );
-    }
-    const baseline_path = try tmp.dir.realPathFileAlloc(io, "usedBeforeAssignment.errors.txt", T.allocator);
-    defer T.allocator.free(baseline_path);
-
-    try T.expect(baselineHasStrictNullDiagnostic(T.allocator, baseline_path));
-}
-
-test "conformance: parity 2851-3650 call signature baseline restores strict bind call apply" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const io = std.testing.io;
-    {
-        var f = try tmp.dir.createFile(io, "strictBindCallApply.errors.txt", .{ .truncate = true });
-        defer f.close(io);
-        try f.writeStreamingAll(
-            io,
-            "strictBindCallApply.ts(1,1): error TS2345: Argument of type '(name: any, f: any) => void' is not assignable to parameter of type '() => void'.\n  Target signature provides too few arguments. Expected 2 or more, but got 0.",
-        );
-    }
-    const baseline_path = try tmp.dir.realPathFileAlloc(io, "strictBindCallApply.errors.txt", T.allocator);
-    defer T.allocator.free(baseline_path);
-
-    try T.expect(baselineHasStrictBindCallApplyDiagnostic(T.allocator, baseline_path));
-}
-
-test "conformance: bare variable scan detects TS7005 shape" {
-    try T.expect(sourceHasBareVariableWithoutTypeOrInitializer(
-        \\// @target: esnext
-        \\var async;
-        \\for (async of []) {}
-    ));
-    try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("let x: number;"));
-    try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("const x = 1;"));
 }
 
 test "conformance: parserharness matches its exact optional-parameter diagnostics" {
@@ -53399,7 +52772,6 @@ test "conformance: parserharness matches its exact optional-parameter diagnostic
 
     const corpus = try loadDirectoryWithOptions(T.allocator, dir_path, .{
         .baseline_root = paths.baselines,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = true,
     });
     defer {
@@ -53426,6 +52798,7 @@ test "conformance: parserharness matches its exact optional-parameter diagnostic
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -53689,7 +53062,6 @@ fn runClusterFixture(
 
     const corpus = try loadDirectoryWithOptions(gpa, dir_path, .{
         .baseline_root = baselines_root,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = true,
     });
     defer {
@@ -53714,6 +53086,7 @@ fn runClusterFixture(
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -53956,7 +53329,6 @@ test "conformance: bisect exact-baseline heap leak" {
 
     const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
         .baseline_root = paths.baselines,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = true,
         .load_start = start,
         .load_limit = limit,
@@ -53984,6 +53356,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -54294,7 +53667,6 @@ test "conformance: smoke-run local TS conformance subdirectories" {
         const options: DirectoryLoadOptions = if (std.mem.eql(u8, sd.label, "comparable") or
             std.mem.eql(u8, sd.label, "inOperator")) .{
             .baseline_root = baseline_root,
-            .strict_default_for_expected_errors = true,
         } else .{};
         const maybe = try runConformanceSubset(T.allocator, sd.label, path, options);
         if (maybe) |s| {
@@ -54341,7 +53713,6 @@ test "conformance: category specs summarize local TS feature folders" {
     defer freeCategoryResults(T.allocator, default_cats);
     const baseline_cats = try runCategorySpecsWithOptions(T.allocator, ts_conformance_root, .{
         .baseline_root = baseline_root,
-        .strict_default_for_expected_errors = true,
     }, &baseline_specs);
     defer freeCategoryResults(T.allocator, baseline_cats);
     var combined = combineCategoryStats(default_cats);
@@ -54421,7 +53792,6 @@ test "conformance: baseline-aware type-relationship survey" {
     const cats = try runCategorySpecsWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .fallback_baseline_root = fallback_baseline_root,
-        .strict_default_for_expected_errors = true,
     }, &specs);
     defer freeCategoryResults(T.allocator, cats);
     const combined = combineCategoryStats(cats);
@@ -54602,7 +53972,6 @@ fn runOptInTsSuiteFamily(
     const corpus = try loadDirectoryWithOptions(T.allocator, paths.cases, .{
         .baseline_root = paths.baselines,
         .fallback_baseline_root = fallback_baseline_root,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
@@ -54636,6 +54005,7 @@ fn runOptInTsSuiteFamily(
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
@@ -54731,24 +54101,12 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     const requested_limit = envUsizeOpt("HOME_TS_CONFORMANCE_LIMIT");
     const name_filter: ?[]const u8 = if (std.c.getenv("HOME_TS_CONFORMANCE_FILTER")) |p| std.mem.span(p) else null;
     // Opt-in exact `.errors.txt` baseline comparison. Default off so
-    // the long-running coarse `HOME_TS_CONFORMANCE_FULL=1` gate keeps
-    // its 5907/5907 saturation while the exact-mode ratchet starts
-    // from a known regression set. Driven by §6 punch-list item 4
-    // (graduate from coarse expected-any to exact-baseline).
+    // coarse and exact surveys can be selected independently. Both fail on
+    // mismatches and retain their actual outcomes.
     const want_exact = envBoolOne("HOME_TS_CONFORMANCE_EXACT");
-    // Note on `strict_default_for_expected_errors`: a tempting move
-    // is to flip this off (and turn `honor_directives` on) for EXACT
-    // mode so flags match what tsc actually used when generating the
-    // baseline. Empirically that NET-REGRESSES (-14 cases on the
-    // first 500-case slice) — fixtures without an explicit `// @strict:`
-    // lose strict flags and miss baseline diagnostics that depended
-    // on them. Leave the default on; exact-mode pass rate ratchets
-    // through real semantic fixes, not by changing which strict
-    // policy each case runs under.
     const corpus = try loadDirectoryWithOptions(T.allocator, ts_root, .{
         .baseline_root = baseline_root,
         .fallback_baseline_root = fallback_baseline_root,
-        .strict_default_for_expected_errors = true,
         .exact_error_headers = want_exact,
         .load_start = requested_start,
         .load_limit = requested_limit,
@@ -54786,6 +54144,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .is_tsx = entry.is_tsx,
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
+            .skip_lib_check = entry.skip_lib_check,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,

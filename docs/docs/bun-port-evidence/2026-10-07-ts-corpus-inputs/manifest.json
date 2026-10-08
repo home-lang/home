@@ -1,0 +1,78 @@
+{
+  "home_source_base": "0234bc59818bd3ab20fd0cee6fadb2fb802bd1ad",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_conformance/src/ts_conformance.zig": "b6ef3e225d104c637a6966b4ac7895166eccddce8e45a10d318baabae77a5f86"
+  },
+  "optin_test_binary_sha256": "e9a5262c4c92e85a4a7ec68bb5f9a1953e5cb5316a8b4238328320ce9647defb",
+  "full_attempt_binary_sha256": "b32957020ff67dd3367c1ac5c462293e58dc45e65ca13d91e61773b5f0d243df",
+  "full_attempt_scope": "Intermediate input-mount/configuration build before the final library-policy wiring; no complete test aggregate",
+  "gates": {
+    "input_controls": {
+      "passed": 6,
+      "total": 6,
+      "peak_mb": 2129
+    },
+    "optin_build": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 1964
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10
+    },
+    "typeonly_regressions": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2,
+      "skipped": 0
+    },
+    "exact_prefix_200": {
+      "passed": 166,
+      "failed": 34,
+      "total": 200,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 357
+    },
+    "full_conformance_attempt": {
+      "complete": false,
+      "exit_code": 125,
+      "reason": "normal 3840 MB runaway ceiling",
+      "aggregate": null,
+      "deadline_seconds": 900
+    }
+  },
+  "test_library_sha256": {
+    "_submodules/TypeScript/tests/lib/react.d.ts": "c80b2391fd45ac3dd68eaf05a0922ad5c5fa16761e1fa460fffbf348895e61c3",
+    "_submodules/TypeScript/tests/lib/react16.d.ts": "b0c6dad63ec7918e061c89d5b35d0e77f332207cfcfc22cc8d72a9077e24532c",
+    "_submodules/TypeScript/tests/lib/react18/global.d.ts": "6bd4c72cf6289727da95200026330a3ad1815c83e50ce9b7be4cd8d227a0d277",
+    "_submodules/TypeScript/tests/lib/react18/react18.d.ts": "36d372f95272b88187ee46073fab37cb6b77b0cafbe8dd9d9d86aab4ae336a17"
+  },
+  "remaining": [
+    "full-corpus/variant and file-inclusion fidelity",
+    "real default-library and compiler API inputs",
+    "generic substitution and declaration-check work under issue 842",
+    "full Bun acceptance"
+  ],
+  "artifact_sha256": {
+    "controls-final.log.gz": "3afda90d16ea04aa1a6d1b9a0882543918780bb876aff94efacbe74701cf8d55",
+    "controls-first-compile-failure.log.gz": "8019ecafbd4287a9aa7b820e945d9e501c02ab7e48f60ff4990df5e09bf644b5",
+    "controls-initial.log.gz": "f4022bca6b637a758836d3c16566c310a599023994f7ff66094cccfe474a9461",
+    "controls-policy-compile-failure.log.gz": "e692f2a4febed68713a217ce7af76db76a68b42d2210cc40a2c1f052857200c5",
+    "controls-with-package-shape.log.gz": "098e00a7979263726e7812fb3d7b10793566e69e104b1751c1b2407763d38d5d",
+    "full-conformance-process-sample.txt.gz": "9de528a015b01ee7de1426b68f91a7705943db84e5ada1101d3a059a26236b92",
+    "full-conformance-resource-stop.log.gz": "45b6fa0458af3fae2efb690e77ddcd78d2f8e3ae5f71cc4231aa0ff1d2b13ccb",
+    "optin-compile-failure.log.gz": "d838171c40c3811984a0f01538332853c3f03c65007ff57d67ebfa80399ad66a",
+    "optin-final.log.gz": "6d22a13ada52db818079f2a649d2d2c6f13d47b8171c9d1964a0397380efd602",
+    "prefix-200.log.gz": "7e583c0b5388fdb6e466a8ebcaa2008faee1d433afc297696d5b704350d498cd",
+    "survey-controls-details.log.gz": "189794985b98bf34cf9af4eee58ebcc60d1e87f250380dbdf99ec22b17542043",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "typeonly-regressions.log.gz": "8fcd7553f615e351c79ac79c084e604a865e9fecc46585ccb669830eb2e8d154",
+    "doc-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3"
+  }
+}
