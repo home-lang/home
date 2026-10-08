@@ -313,9 +313,33 @@ fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.Ts
     defer tsconfig_mod.freeValidationDiagnostics(gpa, diags);
     if (diags.len == 0) return false;
     for (diags) |d| {
-        printStdout("error TS{d}: {s}\n", .{ d.code, d.message });
+        const formatted = try formatConfigValidationDiagnostic(gpa, cfg, d);
+        defer gpa.free(formatted);
+        printStdout("{s}\n", .{formatted});
     }
     return true;
+}
+
+fn formatConfigValidationDiagnostic(
+    gpa: std.mem.Allocator,
+    cfg: tsconfig_mod.TsConfig,
+    diagnostic: tsconfig_mod.ValidationDiagnostic,
+) ![]u8 {
+    if (diagnostic.location) |location| {
+        if (cfg.file_path.len > 0) {
+            return ts_diagnostics.formatDefault(gpa, .{
+                .file = cfg.file_path,
+                .line = location.line,
+                .col = location.column + 1,
+                .code = diagnostic.code,
+                .code_prefix = .TS,
+                .severity = .err,
+                .message = diagnostic.message,
+                .span_len = 0,
+            });
+        }
+    }
+    return std.fmt.allocPrint(gpa, "error TS{d}: {s}", .{ diagnostic.code, diagnostic.message });
 }
 
 /// Emit a tsc status message. tsc prints these
@@ -4333,6 +4357,32 @@ test "tsc_main: TS5112 positional files beside discovered config diagnostic" {
     try std.testing.expectEqualStrings(
         "error TS5112: tsconfig.json is present but will not be loaded if files are specified on commandline. Use '--ignoreConfig' to skip this error.",
         msg,
+    );
+}
+
+test "tsc_main: TypeScript 7 removed option diagnostic retains config value location" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "ignoreDeprecations": "6.0",
+        \\    "moduleResolution": "node10"
+        \\  }
+        \\}
+    );
+    cfg.file_path = "/repo/tsconfig.json";
+    const diagnostics = try cfg.validate(std.testing.allocator);
+    defer tsconfig_mod.freeValidationDiagnostics(std.testing.allocator, diagnostics);
+    var removed: ?tsconfig_mod.ValidationDiagnostic = null;
+    for (diagnostics) |diagnostic| {
+        if (diagnostic.code == 5108) removed = diagnostic;
+    }
+    const formatted = try formatConfigValidationDiagnostic(std.testing.allocator, cfg, removed.?);
+    defer std.testing.allocator.free(formatted);
+    try std.testing.expectEqualStrings(
+        "/repo/tsconfig.json(4,25): error TS5108: Option 'moduleResolution=node10' has been removed. Please remove it from your configuration.",
+        formatted,
     );
 }
 

@@ -35,6 +35,13 @@
 const std = @import("std");
 const jsonc = @import("jsonc.zig");
 
+/// Home's compiler-option compatibility contract follows the native
+/// TypeScript 7 frontend. Older options are still parsed far enough to emit
+/// TypeScript 7's removed-option diagnostics; `ignoreDeprecations` does not
+/// select an older option dialect.
+pub const OptionDialect = enum { typescript_7 };
+pub const option_dialect: OptionDialect = .typescript_7;
+
 pub const Module = enum {
     none,
     commonjs,
@@ -409,6 +416,11 @@ pub const TsConfig = struct {
     /// recovers with an empty config (or, for a top-level array, the
     /// first object element). `validate` re-emits the TS5092 here.
     root_not_object: bool = false,
+    /// Source anchors for properties in this config's `compilerOptions`
+    /// object. The JSONC parser owns the positions; validation diagnostics
+    /// choose the key or value anchor according to TypeScript's option
+    /// diagnostic call site.
+    compiler_option_locations: []const CompilerOptionLocation = &.{},
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -788,6 +800,26 @@ pub const TsConfig = struct {
 
         return diags.toOwnedSlice(gpa);
     }
+
+    pub fn compilerOptionValueLocation(self: TsConfig, name: []const u8) ?jsonc.SourceLocation {
+        for (self.compiler_option_locations) |location| {
+            if (std.mem.eql(u8, location.name, name)) return location.value;
+        }
+        return null;
+    }
+
+    pub fn compilerOptionKeyLocation(self: TsConfig, name: []const u8) ?jsonc.SourceLocation {
+        for (self.compiler_option_locations) |location| {
+            if (std.mem.eql(u8, location.name, name)) return location.key;
+        }
+        return null;
+    }
+};
+
+pub const CompilerOptionLocation = struct {
+    name: []const u8,
+    key: jsonc.SourceLocation,
+    value: jsonc.SourceLocation,
 };
 
 /// Diagnostic emitted by `TsConfig.validate` for cross-field issues
@@ -800,6 +832,9 @@ pub const ValidationDiagnostic = struct {
     /// Which option triggered the diagnostic. Empty when the issue
     /// spans multiple fields equally.
     field: []const u8 = "",
+    /// JSONC token anchor. TypeScript 7's removed-option diagnostics point
+    /// at the value when one was supplied and at the key otherwise.
+    location: ?jsonc.SourceLocation = null,
 };
 
 pub fn freeValidationDiagnostics(gpa: std.mem.Allocator, diags: []ValidationDiagnostic) void {
@@ -1026,64 +1061,69 @@ fn appendRemovedOptionDiagnostics(
     // removal on its own.
     if (co.base_url != null) {
         const suggestion: []const u8 = if (cfg.file_path.len > 0) "\"paths\": {\"*\": [\"./*\"]}" else "";
-        try appendRemovedOption(gpa, diags, "baseUrl", "", suggestion);
+        try appendRemovedOption(gpa, diags, cfg, "baseUrl", "", suggestion);
     }
     // outFile is not a typed field — it rides in `extra`.
     for (co.extra.items) |entry| {
         if (std.mem.eql(u8, entry.key, "outFile")) {
-            try appendRemovedOption(gpa, diags, "outFile", "", "");
+            try appendRemovedOption(gpa, diags, cfg, "outFile", "", "");
         }
     }
     if (co.target) |target_value| {
-        if (target_value == .es5) try appendRemovedOption(gpa, diags, "target", "ES5", "");
+        if (target_value == .es5) try appendRemovedOption(gpa, diags, cfg, "target", "ES5", "");
     }
     if (co.module) |m| {
         switch (m) {
-            .amd => try appendRemovedOption(gpa, diags, "module", "AMD", ""),
-            .system => try appendRemovedOption(gpa, diags, "module", "System", ""),
-            .umd => try appendRemovedOption(gpa, diags, "module", "UMD", ""),
+            .amd => try appendRemovedOption(gpa, diags, cfg, "module", "AMD", ""),
+            .system => try appendRemovedOption(gpa, diags, cfg, "module", "System", ""),
+            .umd => try appendRemovedOption(gpa, diags, cfg, "module", "UMD", ""),
             else => {},
         }
     }
     if (co.module_resolution) |mr| {
         switch (mr) {
-            .classic => try appendRemovedOption(gpa, diags, "moduleResolution", "Classic", ""),
-            .node10 => try appendRemovedOption(gpa, diags, "moduleResolution", "node10", ""),
+            .classic => try appendRemovedOption(gpa, diags, cfg, "moduleResolution", "Classic", ""),
+            .node10 => try appendRemovedOption(gpa, diags, cfg, "moduleResolution", "node10", ""),
             else => {},
         }
     }
     if (co.always_strict == false) {
-        try appendRemovedOption(gpa, diags, "alwaysStrict", "false", "");
+        try appendRemovedOption(gpa, diags, cfg, "alwaysStrict", "false", "");
     }
     if (co.es_module_interop == false) {
-        try appendRemovedOption(gpa, diags, "esModuleInterop", "false", "");
+        try appendRemovedOption(gpa, diags, cfg, "esModuleInterop", "false", "");
     }
     if (co.allow_synthetic_default_imports == false) {
-        try appendRemovedOption(gpa, diags, "allowSyntheticDefaultImports", "false", "");
+        try appendRemovedOption(gpa, diags, cfg, "allowSyntheticDefaultImports", "false", "");
     }
     // downlevelIteration: removed whenever explicitly set (any value).
     if (co.down_level_iteration != null) {
-        try appendRemovedOption(gpa, diags, "downlevelIteration", "", "");
+        try appendRemovedOption(gpa, diags, cfg, "downlevelIteration", "", "");
     }
 }
 
 fn appendRemovedOption(
     gpa: std.mem.Allocator,
     diags: *std.ArrayListUnmanaged(ValidationDiagnostic),
+    cfg: TsConfig,
     name: []const u8,
     value: []const u8,
     use_instead: []const u8,
 ) !void {
+    const location = if (value.len == 0)
+        cfg.compilerOptionKeyLocation(name)
+    else
+        cfg.compilerOptionValueLocation(name);
     if (value.len == 0) {
         const msg = try std.fmt.allocPrint(gpa, "Option '{s}' has been removed. Please remove it from your configuration.", .{name});
-        try diags.append(gpa, .{ .code = 5102, .message = msg, .owns_message = true, .field = name });
+        try diags.append(gpa, .{ .code = 5102, .message = msg, .owns_message = true, .field = name, .location = location });
     } else {
         const msg = try std.fmt.allocPrint(gpa, "Option '{s}={s}' has been removed. Please remove it from your configuration.", .{ name, value });
-        try diags.append(gpa, .{ .code = 5108, .message = msg, .owns_message = true, .field = name });
+        try diags.append(gpa, .{ .code = 5108, .message = msg, .owns_message = true, .field = name, .location = location });
     }
     if (use_instead.len != 0) {
         const chain = try std.fmt.allocPrint(gpa, "Use '{s}' instead.", .{use_instead});
-        try diags.append(gpa, .{ .code = 5106, .message = chain, .owns_message = true, .field = name });
+        try diags.append(gpa, .{ .code = 5106, .message = chain, .owns_message = true, .field = name, .location = location });
     }
 }
 
@@ -1668,7 +1708,12 @@ pub fn parseString(
                 if (el.asObject()) |o| break :blk o;
             }
         }
-        break :blk jsonc.Value.Object{ .keys = &.{}, .values = &.{} };
+        break :blk jsonc.Value.Object{
+            .keys = &.{},
+            .values = &.{},
+            .key_locations = &.{},
+            .value_locations = &.{},
+        };
     };
 
     var cfg: TsConfig = .{
@@ -1760,6 +1805,15 @@ pub fn parseString(
     }
     if (root.get("compilerOptions")) |co_v| {
         if (co_v.asObject()) |co| {
+            const option_locations = try arena.alloc(CompilerOptionLocation, co.keys.len);
+            for (co.keys, 0..) |name, i| {
+                option_locations[i] = .{
+                    .name = name,
+                    .key = co.key_locations[i],
+                    .value = co.value_locations[i],
+                };
+            }
+            cfg.compiler_option_locations = option_locations;
             var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
             try fillCompilerOptions(arena, &cfg.compiler_options, co, &opt_diags);
             try config_diags.appendSlice(arena, opt_diags.items);
@@ -2290,6 +2344,20 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
         try combined.append(arena, e);
     }
     merged.compiler_options.extra = combined;
+
+    var combined_locations: std.ArrayListUnmanaged(CompilerOptionLocation) = .empty;
+    for (base.compiler_option_locations) |base_location| {
+        var shadowed = false;
+        for (child.compiler_option_locations) |child_location| {
+            if (std.mem.eql(u8, child_location.name, base_location.name)) {
+                shadowed = true;
+                break;
+            }
+        }
+        if (!shadowed) try combined_locations.append(arena, base_location);
+    }
+    try combined_locations.appendSlice(arena, child.compiler_option_locations);
+    merged.compiler_option_locations = try combined_locations.toOwnedSlice(arena);
 
     inline for (@typeInfo(HomeOptions).@"struct".field_names) |field_name| {
         const child_value = @field(child.home_options, field_name);
@@ -4084,6 +4152,42 @@ test "tsconfig.validate: removed enum value reports TS5108" {
     const d = findCode(diags, 5108).?;
     try t.expectEqualStrings("Option 'module=AMD' has been removed. Please remove it from your configuration.", d.message);
     try t.expectEqualStrings("module", d.field);
+}
+
+test "tsconfig.validate: TypeScript 7 dialect anchors removed node10 value" {
+    try t.expectEqual(OptionDialect.typescript_7, option_dialect);
+
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const source =
+        \\{
+        \\  "compilerOptions": {
+        \\    "ignoreDeprecations": "6.0",
+        \\    "moduleResolution": "node10"
+        \\  }
+        \\}
+    ;
+    const cfg = try parseString(t.allocator, arena.allocator(), source);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 1), countCode(diags, 5108));
+    const d = findCode(diags, 5108).?;
+    try t.expectEqualStrings("Option 'moduleResolution=node10' has been removed. Please remove it from your configuration.", d.message);
+    const location = d.location.?;
+    try t.expectEqual(@as(u32, 4), location.line);
+    try t.expectEqual(@as(u32, 24), location.column);
+    try t.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "\"node10\"").?)), location.pos);
+}
+
+test "tsconfig.validate: TypeScript 7 dialect accepts current module resolution" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "ignoreDeprecations": "6.0", "moduleResolution": "nodenext", "module": "nodenext" } }
+    );
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig.validate: removed boolean=false options report TS5108" {

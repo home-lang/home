@@ -181,8 +181,17 @@ TS2307 emits.
 
 ### Module resolution
 
+Home's compiler-option dialect follows native TypeScript 7. Legacy
+TypeScript 6 options are parsed only far enough to produce the corresponding
+TypeScript 7 removed-option diagnostic; `ignoreDeprecations` does not switch
+the frontend to an older dialect. Consequently, TS6-only configurations are
+reported separately and are not admitted into shared multi-compiler
+benchmarks. Removed options retain their `tsconfig.json` key/value source
+anchor as appropriate ([#847](https://github.com/home-lang/home/issues/847)).
+
 🟡 `classic`, `node10`, `node16`, `nodenext`, `bundler` strategies
-all parse. Classic / nodenext / node16 path semantics — 🟢.
+all parse, but TypeScript 7 rejects `classic` and `node10` before resolution.
+Nodenext / node16 path semantics — 🟢.
 `bundler` with `customConditions` / `exports` / `imports` — 🟡
 (many fixtures in slice 0-100 are bundler-mode).
 `paths` aliasing — 🟢.

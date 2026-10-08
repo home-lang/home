@@ -19,6 +19,15 @@
 
 const std = @import("std");
 
+/// Byte and display position captured before parsing a JSONC token.
+/// `line` is 1-based, while `column` is 0-based to match the parser's
+/// diagnostics; terminal renderers add one to the column.
+pub const SourceLocation = struct {
+    pos: u32,
+    line: u32,
+    column: u32,
+};
+
 pub const Value = union(enum) {
     null_,
     bool_: bool,
@@ -33,6 +42,8 @@ pub const Value = union(enum) {
         /// (matters for `extends` array order and for diagnostics).
         keys: [][]const u8,
         values: []Value,
+        key_locations: []SourceLocation,
+        value_locations: []SourceLocation,
 
         pub fn get(self: Object, key: []const u8) ?Value {
             for (self.keys, 0..) |k, i| {
@@ -43,6 +54,20 @@ pub const Value = union(enum) {
 
         pub fn contains(self: Object, key: []const u8) bool {
             return self.get(key) != null;
+        }
+
+        pub fn keyLocation(self: Object, key: []const u8) ?SourceLocation {
+            for (self.keys, 0..) |candidate, i| {
+                if (std.mem.eql(u8, candidate, key)) return self.key_locations[i];
+            }
+            return null;
+        }
+
+        pub fn valueLocation(self: Object, key: []const u8) ?SourceLocation {
+            for (self.keys, 0..) |candidate, i| {
+                if (std.mem.eql(u8, candidate, key)) return self.value_locations[i];
+            }
+            return null;
         }
     };
 
@@ -135,6 +160,14 @@ const Parser = struct {
             self.line_start = self.pos;
         }
         return c;
+    }
+
+    fn currentLocation(self: *const Parser) SourceLocation {
+        return .{
+            .pos = self.pos,
+            .line = self.line,
+            .column = self.pos - self.line_start,
+        };
     }
 
     fn report(self: *Parser, message: []const u8) void {
@@ -268,6 +301,10 @@ const Parser = struct {
         errdefer keys.deinit(self.arena);
         var values: std.ArrayListUnmanaged(Value) = .empty;
         errdefer values.deinit(self.arena);
+        var key_locations: std.ArrayListUnmanaged(SourceLocation) = .empty;
+        errdefer key_locations.deinit(self.arena);
+        var value_locations: std.ArrayListUnmanaged(SourceLocation) = .empty;
+        errdefer value_locations.deinit(self.arena);
 
         while (true) {
             self.skipWhitespace();
@@ -280,6 +317,7 @@ const Parser = struct {
                 break;
             }
 
+            const key_location = self.currentLocation();
             const key = try self.parseString();
             // Duplicate-key check (last-writer-wins is also acceptable;
             // we error to match strict JSON).
@@ -297,9 +335,13 @@ const Parser = struct {
             }
             self.pos += 1;
 
+            self.skipWhitespace();
+            const value_location = self.currentLocation();
             const v = try self.parseValue();
             try keys.append(self.arena, key);
             try values.append(self.arena, v);
+            try key_locations.append(self.arena, key_location);
+            try value_locations.append(self.arena, value_location);
 
             self.skipWhitespace();
             if (self.peek() == ',') {
@@ -327,6 +369,8 @@ const Parser = struct {
         return Value{ .object = .{
             .keys = try keys.toOwnedSlice(self.arena),
             .values = try values.toOwnedSlice(self.arena),
+            .key_locations = try key_locations.toOwnedSlice(self.arena),
+            .value_locations = try value_locations.toOwnedSlice(self.arena),
         } };
     }
 
@@ -663,6 +707,31 @@ test "jsonc: nested objects" {
     const co = v.asObject().?.get("compilerOptions").?.asObject().?;
     try t.expectEqual(@as(?bool, true), co.get("strict").?.asBool().?);
     try t.expectEqualStrings("es2024", co.get("target").?.asString().?);
+}
+
+test "jsonc: object properties retain key and value locations" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const source =
+        \\{
+        \\  "compilerOptions": {
+        \\    // Removed in the TypeScript 7 option dialect.
+        \\    "moduleResolution": "node10"
+        \\  }
+        \\}
+    ;
+    const v = try parseString(source, arena.allocator());
+    const co = v.asObject().?.get("compilerOptions").?.asObject().?;
+    try t.expectEqual(SourceLocation{
+        .pos = @intCast(std.mem.indexOf(u8, source, "\"moduleResolution\"").?),
+        .line = 4,
+        .column = 4,
+    }, co.keyLocation("moduleResolution").?);
+    try t.expectEqual(SourceLocation{
+        .pos = @intCast(std.mem.indexOf(u8, source, "\"node10\"").?),
+        .line = 4,
+        .column = 24,
+    }, co.valueLocation("moduleResolution").?);
 }
 
 test "jsonc: arrays of strings (e.g. include / exclude)" {
