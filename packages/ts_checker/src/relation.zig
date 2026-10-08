@@ -250,10 +250,10 @@ pub const TwoLevelCache = struct {
     promotion_stride: u32 = L2_PROMOTION_STRIDE,
 
     pub fn init(gpa: std.mem.Allocator) !TwoLevelCache {
-        return .{
-            .l1 = try L1Cache.init(gpa),
-            .l2 = try L2Cache.init(gpa),
-        };
+        var first = try L1Cache.init(gpa);
+        errdefer first.deinit();
+        const second = try L2Cache.init(gpa);
+        return .{ .l1 = first, .l2 = second };
     }
 
     pub fn deinit(self: *TwoLevelCache) void {
@@ -314,6 +314,16 @@ pub const Engine = struct {
         context: *anyopaque,
         resolve: *const fn (*anyopaque, TypeId) anyerror!TypeId,
     } = null,
+    /// Checked-source substitution belongs to the owner of callable and
+    /// declaration metadata, just like expansion of generic references.
+    type_substitution: ?struct {
+        context: *anyopaque,
+        substitute: *const fn (*anyopaque, TypeId, []const TpPair) anyerror!TypeId,
+    } = null,
+    tp_definitions: std.StringHashMapUnmanaged(TypeId) = .empty,
+    tp_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    tp_expanding: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    tp_deferral_events: u64 = 0,
     generic_instance_origins: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
     /// Base constraint of a deferred indexed access `T[K]`: the same access
     /// read on the constraint of `T`. Property lookup belongs to the
@@ -561,6 +571,11 @@ pub const Engine = struct {
     }
 
     pub fn deinit(self: *Engine) void {
+        var keys = self.tp_definitions.keyIterator();
+        while (keys.next()) |key| self.gpa.free(key.*);
+        self.tp_definitions.deinit(self.gpa);
+        self.tp_instances.deinit(self.gpa);
+        self.tp_expanding.deinit(self.gpa);
         self.cache.deinit();
         self.upper_object_targets.deinit(self.gpa);
         self.source_stack.deinit(self.gpa);
@@ -574,11 +589,9 @@ pub const Engine = struct {
     /// True if `a` and `b` are structurally identical.
     pub fn isIdenticalTo(self: *Engine, a: TypeId, b: TypeId) anyerror!bool {
         if (a == b) return true; // interner identity short-circuit
-        if (self.type_resolver) |resolver| {
-            const left = try resolver.resolve(resolver.context, a);
-            const right = try resolver.resolve(resolver.context, b);
-            if (left != a or right != b) return self.isIdenticalTo(left, right);
-        }
+        const left = try self.resolveRelationSurface(a);
+        const right = try self.resolveRelationSurface(b);
+        if (left != a or right != b) return self.isIdenticalTo(left, right);
         switch (self.cache.lookup(.identity, a, b)) {
             .yes => return true,
             .no => return false,
@@ -687,11 +700,9 @@ pub const Engine = struct {
     /// the *fundamental* rules; conformance hardening lands in Phase 6.
     pub fn isAssignableTo(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         if (source == target) return true;
-        if (self.type_resolver) |resolver| {
-            const left = try resolver.resolve(resolver.context, source);
-            const right = try resolver.resolve(resolver.context, target);
-            if (left != source or right != target) return self.isAssignableTo(left, right);
-        }
+        const left = try self.resolveRelationSurface(source);
+        const right = try self.resolveRelationSurface(target);
+        if (left != source or right != target) return self.isAssignableTo(left, right);
 
         // `any` is assignable to any type and any type is assignable
         // to `any` (per tsc; this is the source of most "TS doesn't
@@ -1732,13 +1743,12 @@ pub const Engine = struct {
     /// Positional type-parameter rewrite entry: `from` (a target
     /// type-parameter id) is treated as `to` (the source's tp at the
     /// matching position) for the remainder of a signature comparison.
-    const TpPair = struct { from: TypeId, to: TypeId };
+    pub const TpPair = struct { from: TypeId, to: TypeId };
 
     /// Apply a tiny positional tp-map at the surface level. The map
-    /// is short (one entry per generic position) so a linear scan is
-    /// the right shape; a hash map would be overkill. Only the head
-    /// type id is rewritten — deep substitution lands when generic
-    /// instantiation does (Phase 6).
+    /// is short (one entry per generic position), so a linear scan handles
+    /// surface identities. Structural substitution below applies the same
+    /// simultaneous map through owned type graphs.
     fn substituteTp(t: TypeId, map: []const TpPair) TypeId {
         for (map) |pair| {
             if (pair.from == t) return pair.to;
@@ -1746,22 +1756,94 @@ pub const Engine = struct {
         return t;
     }
 
-    fn substituteTpDeep(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
-        // With no substitutions there is nothing to rewrite. Rebuilding a
-        // composite type here is not an identity operation: unions and
-        // intersections may carry declaration-scoped identity and relation
-        // metadata that a fresh interned node does not inherit.
-        if (map.len == 0) return t;
-        return self.substituteTpDeepLimit(t, map, 0);
+    /// Substitute declaration-parameter identities in a checked type graph.
+    pub fn substituteTypeParameters(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
+        return self.substituteTpDeep(t, map);
     }
 
-    fn substituteTpDeepLimit(self: *Engine, t: TypeId, map: []const TpPair, depth: u8) anyerror!TypeId {
-        if (depth > 64) return t;
-        if (mappedTp(t, map)) |replacement| {
-            if (replacement == t) return replacement;
-            return self.substituteTpDeepLimit(replacement, map, depth + 1);
+    fn substituteTpDeep(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
+        if (map.len == 0) return t;
+        if (self.type_substitution) |owner| return owner.substitute(owner.context, t, map);
+        var walk: TpWalk = .{ .engine = self };
+        defer walk.deinit();
+        var memo: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer memo.deinit(self.gpa);
+        return walk.rewrite(t, map, 0, &memo);
+    }
+
+    const TpWalk = struct {
+        engine: *Engine,
+        active: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+        scopes: std.ArrayListUnmanaged([]const TypeId) = .empty,
+        deferrals: u64 = 0,
+
+        fn deinit(self: *TpWalk) void {
+            self.engine.tp_deferral_events +%= self.deferrals;
+            self.active.deinit(self.engine.gpa);
+            self.scopes.deinit(self.engine.gpa);
         }
-        if (t < Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return t;
+
+        fn rewrite(self: *TpWalk, t: TypeId, map: []const TpPair, depth: u16, memo: *std.AutoHashMapUnmanaged(TypeId, TypeId)) anyerror!TypeId {
+            // A positional mapper is simultaneous, not a transitive rewrite.
+            if (mappedTp(t, map)) |replacement| return replacement;
+            const engine = self.engine;
+            if (t < Primitive.first_dynamic or t >= engine.pool().typeCount()) return t;
+            if (self.active.get(t)) |floor| {
+                if (try engine.tpReference(t, map, self.scopes.items[floor..])) |reference| return reference;
+                self.deferrals +%= 1;
+                return t;
+            }
+            if (depth > 64) {
+                self.deferrals +%= 1;
+                return t;
+            }
+            if (memo.get(t)) |cached| return cached;
+            try self.active.put(engine.gpa, t, self.scopes.items.len);
+            defer _ = self.active.remove(t);
+            const before = self.deferrals;
+            const result = try engine.substituteTpDeepLimit(t, map, depth, self, memo);
+            if (before == self.deferrals) try memo.put(engine.gpa, t, result);
+            return result;
+        }
+    };
+
+    fn tpReference(self: *Engine, body: TypeId, map: []const TpPair, scopes: []const []const TypeId) anyerror!?TypeId {
+        var parameters: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer parameters.deinit(self.gpa);
+        for (map) |pair| {
+            var bound = false;
+            for (scopes) |scope| {
+                if (std.mem.indexOfScalar(TypeId, scope, pair.from) != null) {
+                    bound = true;
+                    break;
+                }
+            }
+            if (bound or std.mem.indexOfScalar(TypeId, parameters.items, pair.from) != null) continue;
+            if (pair.from >= self.pool().typeCount()) return null;
+            const flags = self.pool().flagsOf(pair.from);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return null;
+            try parameters.append(self.gpa, pair.from);
+        }
+        std.mem.sort(TypeId, parameters.items, {}, std.sort.asc(TypeId));
+        const key = try self.gpa.alloc(u8, (parameters.items.len + 1) * 4);
+        var owned = false;
+        defer if (!owned) self.gpa.free(key);
+        std.mem.writeInt(TypeId, key[0..4], body, .little);
+        for (parameters.items, 0..) |parameter, index| std.mem.writeInt(TypeId, key[(index + 1) * 4 ..][0..4], parameter, .little);
+        const definition = if (self.tp_definitions.get(key)) |cached| cached else blk: {
+            const reserved = try self.interner.reserveGenericDefinition();
+            try self.interner.completeGenericDefinition(reserved, parameters.items, body);
+            try self.tp_definitions.put(self.gpa, key, reserved);
+            owned = true;
+            break :blk reserved;
+        };
+        const arguments = try self.gpa.alloc(TypeId, parameters.items.len);
+        defer self.gpa.free(arguments);
+        for (parameters.items, arguments) |parameter, *argument| argument.* = mappedTp(parameter, map).?;
+        return try self.interner.internInstantiation(definition, arguments);
+    }
+
+    fn substituteTpDeepLimit(self: *Engine, t: TypeId, map: []const TpPair, depth: u16, walk: *TpWalk, memo: *std.AutoHashMapUnmanaged(TypeId, TypeId)) anyerror!TypeId {
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
         if (flags.is_union) {
@@ -1772,10 +1854,10 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (snapshot) |m| {
-                const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
+                const subbed = try walk.rewrite(m, map, depth + 1, memo);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
-            return self.interner.internUnion(members.items) catch t;
+            return self.interner.internUnion(members.items);
         }
         if (flags.is_intersection) {
             if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return t;
@@ -1785,14 +1867,33 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(TypeId) = .empty;
             defer members.deinit(self.interner.gpa);
             for (snapshot) |m| {
-                const subbed = try self.substituteTpDeepLimit(m, map, depth + 1);
+                const subbed = try walk.rewrite(m, map, depth + 1, memo);
                 try members.append(self.interner.gpa, if (subbed < self.interner.pool.typeCount()) subbed else Primitive.unknown);
             }
-            return self.interner.internIntersection(members.items) catch t;
+            return self.interner.internIntersection(members.items);
+        }
+        if (flags.is_instantiation) {
+            const reference = self.interner.pool.instantiation_payloads.items[payload_idx];
+            const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+            defer self.gpa.free(args);
+            for (args) |*argument| argument.* = try walk.rewrite(argument.*, map, depth + 1, memo);
+            return self.interner.internInstantiation(reference.origin, args);
+        }
+        if (flags.is_tuple) {
+            const tuple = self.interner.pool.tuple_payloads.items[payload_idx];
+            const elements = try self.gpa.dupe(types.TupleElement, self.interner.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len]);
+            defer self.gpa.free(elements);
+            for (elements) |*element| element.type = try walk.rewrite(element.type, map, depth + 1, memo);
+            return self.interner.internTupleType(elements);
+        }
+        if (flags.is_string_mapping) {
+            const mapping = self.interner.stringMappingPayload(t);
+            return self.interner.internStringMapping(mapping.kind, try walk.rewrite(mapping.inner, map, depth + 1, memo));
         }
         if (flags.is_template_literal) {
             if (payload_idx >= self.interner.pool.template_literal_payloads.items.len) return t;
-            const texts = self.interner.templateLiteralTexts(t);
+            const texts = try self.gpa.dupe(types.StringId, self.interner.templateLiteralTexts(t));
+            defer self.gpa.free(texts);
             const source_parts = self.interner.templateLiteralTypes(t);
             const snapshot = try self.interner.gpa.dupe(TypeId, source_parts);
             defer self.interner.gpa.free(snapshot);
@@ -1800,35 +1901,35 @@ pub const Engine = struct {
             defer parts.deinit(self.interner.gpa);
             var changed = false;
             for (snapshot) |part| {
-                const subbed = self.validOrUnknown(try self.substituteTpDeepLimit(part, map, depth + 1));
+                const subbed = self.validOrUnknown(try walk.rewrite(part, map, depth + 1, memo));
                 if (subbed != part) changed = true;
                 try parts.append(self.interner.gpa, subbed);
             }
             if (!changed) return t;
-            return self.interner.internTemplateLiteral(texts, parts.items) catch t;
+            return self.interner.internTemplateLiteral(texts, parts.items);
         }
         if (flags.is_keyof) {
             if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return t;
             const operand = self.interner.pool.keyof_payloads.items[payload_idx].operand;
-            const subbed = self.validOrUnknown(try self.substituteTpDeepLimit(operand, map, depth + 1));
+            const subbed = self.validOrUnknown(try walk.rewrite(operand, map, depth + 1, memo));
             if (subbed == operand) return t;
-            return self.interner.internKeyof(subbed) catch t;
+            return self.interner.internKeyof(subbed);
         }
         if (flags.is_indexed_access) {
             if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return t;
             const indexed = self.interner.pool.indexed_access_payloads.items[payload_idx];
-            const object = self.validOrUnknown(try self.substituteTpDeepLimit(indexed.object, map, depth + 1));
-            const index = self.validOrUnknown(try self.substituteTpDeepLimit(indexed.index, map, depth + 1));
+            const object = self.validOrUnknown(try walk.rewrite(indexed.object, map, depth + 1, memo));
+            const index = self.validOrUnknown(try walk.rewrite(indexed.index, map, depth + 1, memo));
             if (object == indexed.object and index == indexed.index) return t;
-            return self.interner.internIndexedAccess(object, index) catch t;
+            return self.interner.internIndexedAccess(object, index);
         }
         if (flags.is_conditional) {
             if (payload_idx >= self.interner.pool.conditional_payloads.items.len) return t;
             const conditional = self.interner.pool.conditional_payloads.items[payload_idx];
-            const check = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.check_type, map, depth + 1));
-            const extends_t = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.extends_type, map, depth + 1));
-            const true_branch = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.true_branch, map, depth + 1));
-            const false_branch = self.validOrUnknown(try self.substituteTpDeepLimit(conditional.false_branch, map, depth + 1));
+            const check = self.validOrUnknown(try walk.rewrite(conditional.check_type, map, depth + 1, memo));
+            const extends_t = self.validOrUnknown(try walk.rewrite(conditional.extends_type, map, depth + 1, memo));
+            const true_branch = self.validOrUnknown(try walk.rewrite(conditional.true_branch, map, depth + 1, memo));
+            const false_branch = self.validOrUnknown(try walk.rewrite(conditional.false_branch, map, depth + 1, memo));
             if (check == conditional.check_type and
                 extends_t == conditional.extends_type and
                 true_branch == conditional.true_branch and
@@ -1842,14 +1943,15 @@ pub const Engine = struct {
                 true_branch,
                 false_branch,
                 conditional.is_distributive,
-            ) catch t;
+            );
         }
         if (flags.is_mapped) {
             const mapped = self.interner.mappedPayload(t);
-            const constraint = self.validOrUnknown(try self.substituteTpDeepLimit(mapped.constraint, map, depth + 1));
-            const template = self.validOrUnknown(try self.substituteTpDeepLimit(mapped.template, map, depth + 1));
-            if (constraint == mapped.constraint and template == mapped.template) return t;
-            return self.interner.internMapped(constraint, template, mapped.readonly, mapped.optional) catch t;
+            const constraint = self.validOrUnknown(try walk.rewrite(mapped.constraint, map, depth + 1, memo));
+            const template = self.validOrUnknown(try walk.rewrite(mapped.template, map, depth + 1, memo));
+            const key = try walk.rewrite(mapped.key_parameter, map, depth + 1, memo);
+            if (constraint == mapped.constraint and template == mapped.template and key == mapped.key_parameter) return t;
+            return self.interner.internMappedWithParameter(constraint, template, key, mapped.readonly, mapped.optional);
         }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
@@ -1859,7 +1961,7 @@ pub const Engine = struct {
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.interner.gpa);
             for (snapshot) |m| {
-                const member_t = try self.substituteTpDeepLimit(m.type, map, depth + 1);
+                const member_t = try walk.rewrite(m.type, map, depth + 1, memo);
                 var mapped = m;
                 mapped.type = self.validOrUnknown(member_t);
                 try members.append(self.interner.gpa, mapped);
@@ -1867,35 +1969,82 @@ pub const Engine = struct {
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
             const sym_idx = self.interner.objectSymbolIndex(t);
-            const new_str = if (str_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(str_idx, map, depth + 1)) else Primitive.none;
-            const new_num = if (num_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(num_idx, map, depth + 1)) else Primitive.none;
-            const new_sym = if (sym_idx != Primitive.none) self.validOrUnknown(try self.substituteTpDeepLimit(sym_idx, map, depth + 1)) else Primitive.none;
-            if (new_str == Primitive.none and new_num == Primitive.none and new_sym == Primitive.none) {
-                return self.interner.internObjectType(members.items) catch t;
-            }
-            return self.interner.internObjectTypeWithIndexAndSymbol(members.items, new_str, new_num, new_sym) catch t;
+            const new_str = if (str_idx != Primitive.none) self.validOrUnknown(try walk.rewrite(str_idx, map, depth + 1, memo)) else Primitive.none;
+            const new_num = if (num_idx != Primitive.none) self.validOrUnknown(try walk.rewrite(num_idx, map, depth + 1, memo)) else Primitive.none;
+            const new_sym = if (sym_idx != Primitive.none) self.validOrUnknown(try walk.rewrite(sym_idx, map, depth + 1, memo)) else Primitive.none;
+            const result = try self.interner.internObjectTypeWithIndexAndSymbol(members.items, new_str, new_num, new_sym);
+            const symbol = self.interner.typeSymbol(t);
+            if (symbol != 0) self.interner.setTypeSymbol(result, symbol);
+            return result;
         }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
-            const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
-            const source_params = self.interner.signatureParams(t);
-            const snapshot = try self.interner.gpa.dupe(TypeId, source_params);
-            defer self.interner.gpa.free(snapshot);
-            var params: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer params.deinit(self.interner.gpa);
-            for (snapshot) |p| {
-                try params.append(self.interner.gpa, self.validOrUnknown(try self.substituteTpDeepLimit(p, map, depth + 1)));
+            const payload = self.interner.pool.signature_payloads.items[payload_idx];
+            const originals = try self.gpa.dupe(TypeId, self.interner.signatureParams(t));
+            defer self.gpa.free(originals);
+            const source_binders = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[payload.type_params_start..][0..payload.type_params_len]);
+            defer self.gpa.free(source_binders);
+            var bound: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer bound.deinit(self.gpa);
+            for (source_binders) |parameter| {
+                if (mappedTp(parameter, map)) |argument| {
+                    if (argument != parameter) continue;
+                }
+                try bound.append(self.gpa, parameter);
             }
-            const ret = if (self.interner.signatureReturn(t)) |r|
-                self.validOrUnknown(try self.substituteTpDeepLimit(r, map, depth + 1))
-            else
-                Primitive.void_t;
-            return self.interner.internSignatureWithAbstract(
-                params.items,
-                ret,
-                sig_payload.is_construct,
-                sig_payload.is_abstract_construct,
-            ) catch t;
+            try walk.scopes.append(self.gpa, bound.items);
+            defer _ = walk.scopes.pop();
+            var local: std.ArrayListUnmanaged(TpPair) = .empty;
+            defer local.deinit(self.gpa);
+            try local.appendSlice(self.gpa, map);
+            var local_memo: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer local_memo.deinit(self.gpa);
+            var preserved: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer preserved.deinit(self.gpa);
+            var changed_binders = false;
+            for (bound.items) |parameter| {
+                if (parameter >= self.pool().typeCount() or !self.pool().flagsOf(parameter).is_type_parameter) {
+                    try preserved.append(self.gpa, parameter);
+                    continue;
+                }
+                const source = self.pool().type_parameter_payloads.items[self.pool().payloadOf(parameter)];
+                const constraint = try walk.rewrite(source.constraint, local.items, depth + 1, &local_memo);
+                const default = try walk.rewrite(source.default, local.items, depth + 1, &local_memo);
+                const next = if (constraint == source.constraint and default == source.default) parameter else try self.interner.internFreshTypeParameterWithFlags(source.name, constraint, default, source.variance, source.is_const);
+                try preserved.append(self.gpa, next);
+                if (next != parameter) {
+                    var replaced = false;
+                    for (local.items) |*pair| {
+                        if (pair.from == parameter) {
+                            pair.to = next;
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (!replaced) try local.append(self.gpa, .{ .from = parameter, .to = next });
+                    const symbol = self.interner.typeSymbol(parameter);
+                    if (symbol != 0) self.interner.setTypeSymbol(next, symbol);
+                    changed_binders = true;
+                    local_memo.clearRetainingCapacity();
+                }
+            }
+            const effective = if (changed_binders) local.items else map;
+            const effective_memo = if (changed_binders) &local_memo else memo;
+            const params = try self.gpa.alloc(TypeId, originals.len);
+            defer self.gpa.free(params);
+            for (originals, params) |original, *parameter| parameter.* = self.validOrUnknown(try walk.rewrite(original, effective, depth + 1, effective_memo));
+            const ret = self.validOrUnknown(try walk.rewrite(payload.return_type, effective, depth + 1, effective_memo));
+            const receiver = if (payload.has_this_type) self.validOrUnknown(try walk.rewrite(payload.this_type, effective, depth + 1, effective_memo)) else Primitive.none;
+            if (std.mem.eql(TypeId, params, originals) and ret == payload.return_type and receiver == payload.this_type and std.mem.eql(TypeId, preserved.items, source_binders)) return t;
+            const result = try self.interner.internSignatureWithThisType(params, ret, payload.is_construct, payload.is_abstract_construct, receiver);
+            if (preserved.items.len != 0) {
+                const start: u32 = @intCast(self.interner.pool.type_arg_pool.items.len);
+                try self.interner.pool.type_arg_pool.appendSlice(self.interner.gpa, preserved.items);
+                const destination = &self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(result)];
+                destination.type_params_start = start;
+                destination.type_params_len = @intCast(preserved.items.len);
+            }
+            return result;
         }
         return t;
     }
@@ -2659,8 +2808,30 @@ pub const Engine = struct {
     }
 
     fn resolveRelationSurface(self: *Engine, t: TypeId) anyerror!TypeId {
-        const resolver = self.type_resolver orelse return t;
-        return resolver.resolve(resolver.context, t);
+        if (self.type_resolver) |resolver| {
+            const resolved = try resolver.resolve(resolver.context, t);
+            if (resolved != t) return resolved;
+        }
+        if (t >= self.pool().typeCount()) return t;
+        const flags = self.pool().flagsOf(t);
+        if (flags.is_union or flags.is_intersection or !flags.is_instantiation) return t;
+        if (self.tp_instances.get(t)) |cached| return cached;
+        if (self.tp_expanding.contains(t)) return t;
+        const reference = self.pool().instantiation_payloads.items[self.pool().payloadOf(t)];
+        const definition = self.interner.genericDefinition(reference.origin) orelse return t;
+        if (definition.body == Primitive.none or definition.parameters_len != reference.args_len) return t;
+        const map = try self.gpa.alloc(TpPair, reference.args_len);
+        defer self.gpa.free(map);
+        const parameters = self.pool().type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len];
+        const args = self.pool().type_arg_pool.items[reference.args_start..][0..reference.args_len];
+        for (parameters, args, map) |parameter, argument, *pair| pair.* = .{ .from = parameter, .to = argument };
+        try self.tp_expanding.put(self.gpa, t, {});
+        defer _ = self.tp_expanding.remove(t);
+        const before = self.tp_deferral_events;
+        const substituted = try self.substituteTpDeep(definition.body, map);
+        const result = try self.resolveRelationSurface(substituted);
+        if (result != t and before == self.tp_deferral_events) try self.tp_instances.put(self.gpa, t, result);
+        return result;
     }
 
     fn intersectionObjectAssignableToStringIndex(
@@ -3472,6 +3643,164 @@ test "Engine: imported nominal origins survive type parameter substitution" {
     member.declaration_origin = 4;
     const other = try ti.internObjectType(&.{member});
     try T.expect(!try e.isAssignableTo(mapped, other));
+}
+
+test "Engine: graph substitution shares declaration surfaces and retains receiver types" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const callable = try ti.internSignatureWithThisType(&.{parameter}, parameter, false, false, parameter);
+    var private = mkMember(2, callable, false);
+    private.visibility = .private;
+    private.declaration_origin = 3;
+    private.decl_node = 17;
+    const shared = try ti.internObjectType(&.{private});
+    var members: [32]types.ObjectMember = undefined;
+    for (&members, 0..) |*member, index| member.* = mkMember(@intCast(index + 10), shared, false);
+    const root = try ti.internObjectType(&members);
+    const before = ti.pool.typeCount();
+    const mapped = try e.substituteTypeParameters(root, &.{.{ .from = parameter, .to = Primitive.string_t }});
+    try T.expect(ti.pool.typeCount() - before <= 8);
+    const first = ti.objectMembers(mapped)[0].type;
+    for (ti.objectMembers(mapped)) |member| try T.expectEqual(first, member.type);
+    const next = ti.objectMembers(first)[0];
+    try T.expectEqual(private.declaration_origin, next.declaration_origin);
+    try T.expectEqual(private.decl_node, next.decl_node);
+    try T.expectEqual(private.visibility, next.visibility);
+    try T.expectEqualSlices(TypeId, &.{Primitive.string_t}, ti.signatureParams(next.type));
+    const signature = ti.pool.signature_payloads.items[ti.pool.payloadOf(next.type)];
+    try T.expect(signature.has_this_type);
+    try T.expectEqual(Primitive.string_t, signature.this_type);
+    try T.expectEqual(Primitive.string_t, signature.return_type);
+}
+
+test "Engine: graph substitution maps tuple and reference arguments without expanding bodies" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const definition = try ti.reserveGenericDefinition();
+    const body = try ti.internObjectType(&.{mkMember(2, parameter, false)});
+    try ti.completeGenericDefinition(definition, &.{parameter}, body);
+    const reference = try ti.internInstantiation(definition, &.{parameter});
+    const tuple = try ti.internTupleType(&.{.{ .type = reference, .is_optional = true, .is_rest = false }});
+    const mapped = try e.substituteTypeParameters(tuple, &.{.{ .from = parameter, .to = Primitive.string_t }});
+    const payload = ti.pool.tuple_payloads.items[ti.pool.payloadOf(mapped)];
+    const element = ti.pool.tuple_element_pool.items[payload.elements_start];
+    try T.expect(element.is_optional and !element.is_rest);
+    const next = ti.pool.instantiation_payloads.items[ti.pool.payloadOf(element.type)];
+    try T.expectEqual(definition, next.origin);
+    try T.expectEqualSlices(TypeId, &.{Primitive.string_t}, ti.pool.type_arg_pool.items[next.args_start..][0..next.args_len]);
+    try T.expectEqual(body, ti.genericDefinition(definition).?.body);
+}
+
+test "Engine: graph substitution closes exact recursive environments" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const object = try ti.internObjectType(&.{ mkMember(2, parameter, false), mkMember(3, Primitive.none, true) });
+    const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(object)];
+    ti.pool.object_member_pool.items[payload.members_start + 1].type = object;
+    for ([_]TypeId{ Primitive.string_t, Primitive.number_t }) |argument| {
+        const before = ti.pool.typeCount();
+        const mapped = try e.substituteTypeParameters(object, &.{.{ .from = parameter, .to = argument }});
+        try T.expect(ti.pool.typeCount() - before <= 8);
+        try T.expectEqual(argument, ti.objectMember(mapped, 2).?);
+        const reference = ti.objectMember(mapped, 3).?;
+        try T.expect(ti.pool.flagsOf(reference).is_instantiation);
+        const required = try ti.internObjectType(&.{mkMember(2, argument, false)});
+        const incompatible = try ti.internObjectType(&.{mkMember(2, if (argument == Primitive.string_t) Primitive.number_t else Primitive.string_t, false)});
+        try T.expect(try e.isAssignableTo(reference, required));
+        try T.expect(!try e.isAssignableTo(reference, incompatible));
+    }
+}
+
+test "Engine: graph substitution preserves recursive generic binders and their declaration origins" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const outer = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const local = try ti.internFreshTypeParameterWithFlags(2, outer, Primitive.none, .covariant, true);
+    ti.setTypeSymbol(local, 17);
+    const callable = try ti.internSignature(&.{local}, Primitive.none, false);
+    const binder_start: u32 = @intCast(ti.pool.type_arg_pool.items.len);
+    try ti.pool.type_arg_pool.append(T.allocator, local);
+    ti.pool.signature_payloads.items[ti.pool.payloadOf(callable)].type_params_start = binder_start;
+    ti.pool.signature_payloads.items[ti.pool.payloadOf(callable)].type_params_len = 1;
+    const object = try ti.internObjectType(&.{ mkMember(3, outer, false), mkMember(4, callable, false) });
+    ti.pool.signature_payloads.items[ti.pool.payloadOf(callable)].return_type = object;
+    const mapped = try e.substituteTypeParameters(object, &.{.{ .from = outer, .to = Primitive.string_t }});
+    const next_callable = ti.objectMember(mapped, 4).?;
+    const next = ti.pool.signature_payloads.items[ti.pool.payloadOf(next_callable)];
+    try T.expectEqual(@as(u32, 1), next.type_params_len);
+    const binder = ti.pool.type_arg_pool.items[next.type_params_start];
+    try T.expect(binder != local);
+    try T.expectEqual(@as(u32, 17), ti.typeSymbol(binder));
+    const payload = ti.pool.type_parameter_payloads.items[ti.pool.payloadOf(binder)];
+    try T.expectEqual(Primitive.string_t, payload.constraint);
+    try T.expectEqual(types.Variance.covariant, payload.variance);
+    try T.expect(payload.is_const);
+    try T.expectEqualSlices(TypeId, &.{binder}, ti.signatureParams(next_callable));
+    const recursive = try e.resolveRelationSurface(next.return_type);
+    const recursive_callable = ti.objectMember(recursive, 4).?;
+    const recursive_signature = ti.pool.signature_payloads.items[ti.pool.payloadOf(recursive_callable)];
+    try T.expectEqual(@as(u32, 1), recursive_signature.type_params_len);
+    const recursive_binder = ti.pool.type_arg_pool.items[recursive_signature.type_params_start];
+    try T.expect(recursive_binder != binder);
+    try T.expectEqual(Primitive.string_t, ti.pool.type_parameter_payloads.items[ti.pool.payloadOf(recursive_binder)].constraint);
+}
+
+fn graphSubstitutionAllocationCase(allocator: std.mem.Allocator) !void {
+    var ti = try Interner.init(allocator);
+    defer ti.deinit();
+    var e = try Engine.init(allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const object = try ti.internObjectType(&.{ mkMember(2, parameter, false), mkMember(3, Primitive.none, true) });
+    const payload = ti.pool.object_type_payloads.items[ti.pool.payloadOf(object)];
+    ti.pool.object_member_pool.items[payload.members_start + 1].type = object;
+    const mapped = try e.substituteTypeParameters(object, &.{.{ .from = parameter, .to = Primitive.string_t }});
+    try T.expectEqual(Primitive.string_t, ti.objectMember(mapped, 2).?);
+    const required = try ti.internObjectType(&.{mkMember(2, Primitive.string_t, false)});
+    try T.expect(try e.isAssignableTo(ti.objectMember(mapped, 3).?, required));
+}
+
+test "Engine: graph substitution allocation failures propagate and release scratch" {
+    try std.testing.checkAllAllocationFailures(T.allocator, graphSubstitutionAllocationCase, .{});
+}
+
+test "Engine: graph substitution never publishes a depth-limited expansion as complete" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    var body = try ti.internObjectType(&.{mkMember(2, parameter, false)});
+    for (0..70) |_| body = try ti.internObjectType(&.{mkMember(3, body, false)});
+    const definition = try ti.reserveGenericDefinition();
+    try ti.completeGenericDefinition(definition, &.{parameter}, body);
+    const reference = try ti.internInstantiation(definition, &.{Primitive.string_t});
+    _ = try e.resolveRelationSurface(reference);
+    try T.expect(!e.tp_instances.contains(reference));
+}
+
+test "Engine: graph substitution applies positional renaming simultaneously" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const first = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    const second = try ti.internFreshTypeParameterWithFlags(2, Primitive.unknown, Primitive.none, .invariant, false);
+    const callable = try ti.internSignature(&.{ first, second }, first, false);
+    const mapped = try e.substituteTypeParameters(callable, &.{ .{ .from = first, .to = second }, .{ .from = second, .to = Primitive.string_t } });
+    try T.expectEqualSlices(TypeId, &.{ second, Primitive.string_t }, ti.signatureParams(mapped));
+    try T.expectEqual(second, ti.signatureReturn(mapped).?);
 }
 
 test "Engine: object primitive accepts object-like sources only" {

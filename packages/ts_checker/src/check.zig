@@ -6288,6 +6288,9 @@ pub const Checker = struct {
         self.generic_instances.deinit(self.gpa);
         self.generic_instance_origins.deinit(self.gpa);
         self.generic_expansion_active.deinit(self.gpa);
+        if (self.engine.type_substitution) |owner| {
+            if (owner.context == @as(*anyopaque, @ptrCast(self))) self.engine.type_substitution = null;
+        }
         if (self.engine.type_resolver) |resolver| {
             if (resolver.context == @as(*anyopaque, @ptrCast(self))) {
                 self.engine.type_resolver = null;
@@ -6656,6 +6659,7 @@ pub const Checker = struct {
         // to `rest_signatures` so signature assignability can expand
         // a tuple-typed rest param into positional params when
         // comparing against a regular (non-rest) signature.
+        self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
         self.engine.setRestSignatures(&self.rest_signatures);
         self.engine.indexed_access_constraint = .{ .context = self, .resolve = indexedAccessConstraintForEngine };
         self.engine.indexed_access_write_constraint = .{ .context = self, .resolve = indexedAccessWriteConstraintForEngine };
@@ -111450,6 +111454,20 @@ pub const Checker = struct {
         });
     }
 
+    fn substituteTypeForEngine(context: *anyopaque, t: TypeId, map: []const relation.Engine.TpPair) anyerror!TypeId {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        for (map) |pair| {
+            // Positional maps resolve the first matching declaration identity.
+            if (!substitutions.contains(pair.from)) try substitutions.put(self.gpa, pair.from, pair.to);
+        }
+        const before = self.instantiation_defer_events;
+        const result = try self.substituteTypeWithFreshMemo(t, &substitutions);
+        if (before != self.instantiation_defer_events or self.type_instantiation_overflow) self.engine.tp_deferral_events +%= 1;
+        return result;
+    }
+
     fn resolveGenericTypeForEngine(context: *anyopaque, t: TypeId) anyerror!TypeId {
         const self: *Checker = @ptrCast(@alignCast(context));
         return self.resolveGenericType(t);
@@ -111462,6 +111480,7 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_instantiation and !flags.is_union and !flags.is_intersection) return t;
         if (self.generic_instances.get(t)) |result| return result;
+        const defer_before = self.instantiation_defer_events;
         if (self.generic_expansion_active.contains(t)) return t;
         try self.generic_expansion_active.put(self.gpa, t, {});
         defer _ = self.generic_expansion_active.remove(t);
@@ -111471,6 +111490,7 @@ pub const Checker = struct {
             defer self.gpa.free(snapshot);
             for (snapshot) |*member| member.* = try self.resolveGenericType(member.*);
             const result = if (flags.is_union) try self.interner.internUnion(snapshot) else try self.interner.internIntersection(snapshot);
+            if (defer_before != self.instantiation_defer_events or self.type_instantiation_overflow) return result;
             try self.generic_instances.put(self.gpa, t, result);
             return result;
         }
@@ -111490,6 +111510,7 @@ pub const Checker = struct {
         // A non-productive alias cycle remains symbolic; never publish a
         // guessed body as a completed instantiation.
         if (result == t) return t;
+        if (defer_before != self.instantiation_defer_events or self.type_instantiation_overflow) return result;
         try self.generic_instances.put(self.gpa, t, result);
         // Only a directly materialized object body belongs to this definition.
         // Identity/reference aliases reuse another type; recording their name
@@ -111557,6 +111578,7 @@ pub const Checker = struct {
         });
         if (declaration.is_function) try self.recordGenericSignatureParams(body, parameters);
         self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+        self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
         self.engine.generic_instance_origins = &self.generic_instance_origins;
         return definition;
     }
@@ -166234,6 +166256,7 @@ pub const Checker = struct {
         defer self.gpa.free(arguments);
         for (parameters.items, arguments) |parameter, *argument| argument.* = subs.get(parameter).?;
         self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+        self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
         self.engine.generic_instance_origins = &self.generic_instance_origins;
         return try self.interner.internInstantiation(definition, arguments);
     }
@@ -166322,6 +166345,7 @@ pub const Checker = struct {
             self.instantiation_count >= max_instantiation_count)
         {
             self.type_instantiation_overflow = true;
+            self.instantiation_defer_events +%= 1;
             return t;
         }
         self.instantiation_count +|= 1;
@@ -236941,6 +236965,72 @@ test "checker: cyclic substitution references survive mapper and checker ownersh
     const again = try consumer.resolveGenericType(recursive);
     try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(again, value).?);
     try T.expectEqual(recursive, s.ti.objectMember(again, next).?);
+}
+
+test "checker: relation substitution retains callable and receiver predicate metadata" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const guard = try s.sint.intern("guard");
+    const signature = try s.ti.internSignatureWithThisType(&.{parameter}, types.Primitive.boolean_t, false, false, parameter);
+    const predicate: FnPredicate = .{ .param_index = 0, .target_type = parameter, .target_node = hir_mod.none_node_id, .is_asserts = true };
+    try s.checker.signature_predicates.put(T.allocator, signature, predicate);
+    try s.checker.signature_this_params.put(T.allocator, signature, parameter);
+    const object = try s.ti.internObjectType(&.{.{ .name = guard, .type = signature, .is_optional = false, .is_readonly = true, .is_method = true }});
+    try s.checker.recordMemberPredicate(object, guard, predicate);
+    const mapped = try s.engine.substituteTypeParameters(object, &.{.{ .from = parameter, .to = types.Primitive.string_t }});
+    const next_signature = s.ti.objectMember(mapped, guard).?;
+    const next = s.checker.signature_predicates.get(next_signature) orelse return error.MissingMappedPredicate;
+    try T.expectEqual(types.Primitive.string_t, next.target_type);
+    try T.expect(next.is_asserts);
+    const receiver = s.checker.member_predicates.get(.{ .receiver_type = mapped, .member_name = guard }) orelse return error.MissingReceiverPredicate;
+    try T.expectEqual(types.Primitive.string_t, receiver.target_type);
+    try T.expect(receiver.is_asserts);
+    try T.expectEqual(types.Primitive.string_t, s.checker.signatureThisParam(next_signature).?);
+    try T.expect(s.ti.objectMembers(mapped)[0].is_readonly);
+}
+
+test "checker: relation substitution releases only the active owner's callback" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(s.engine.type_substitution != null);
+    {
+        var consumer = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+        defer consumer.deinit();
+        try consumer.checkSourceFile(s.root);
+        try T.expect(s.engine.type_substitution.?.context == @as(*anyopaque, @ptrCast(&consumer)));
+        s.checker.deinit();
+        s.checker = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+        try T.expect(s.engine.type_substitution.?.context == @as(*anyopaque, @ptrCast(&consumer)));
+        const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+        const callable = try s.ti.internSignature(&.{parameter}, parameter, false);
+        try consumer.signature_predicates.put(T.allocator, callable, .{ .param_index = 0, .target_type = parameter, .target_node = hir_mod.none_node_id, .is_asserts = false });
+        const mapped = try s.engine.substituteTypeParameters(callable, &.{.{ .from = parameter, .to = types.Primitive.number_t }});
+        try T.expectEqual(types.Primitive.number_t, consumer.signature_predicates.get(mapped).?.target_type);
+    }
+    try T.expect(s.engine.type_substitution == null);
+}
+
+test "checker: relation substitution retries an incomplete reference after budget recovery" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const body = try s.ti.internObjectType(&.{.{ .name = value, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const definition = try s.ti.reserveGenericDefinition();
+    try s.ti.completeGenericDefinition(definition, &.{parameter}, body);
+    const reference = try s.ti.internInstantiation(definition, &.{types.Primitive.string_t});
+    s.checker.instantiation_count = Checker.max_instantiation_count;
+    _ = try s.checker.resolveGenericType(reference);
+    try T.expect(s.checker.type_instantiation_overflow);
+    try T.expect(!s.checker.generic_instances.contains(reference));
+    s.checker.instantiation_count = 0;
+    s.checker.type_instantiation_overflow = false;
+    const resolved = try s.checker.resolveGenericType(reference);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(resolved, value).?);
 }
 
 test "checker: empty substitutions preserve type graph identity" {
