@@ -758,6 +758,10 @@ pub const ProgramCommonJsExport = struct {
     /// Require bindings for these modules inherit `any`, rather than a
     /// synthesized module namespace object.
     whole_export_is_any: bool = false,
+    /// Original collection order before the canonical path sort. Metadata
+    /// lookups use this to preserve first-match behavior when external and
+    /// relative fallback paths both resolve to different recorded modules.
+    source_index: usize = 0,
 };
 
 pub const ProgramAmbientInterfaceMember = struct {
@@ -5621,8 +5625,9 @@ pub const Checker = struct {
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
-    /// Runtime-valued CommonJS named exports discovered in sibling program
-    /// files. Borrowed from the driver/program while checking importers.
+    /// Runtime-valued CommonJS exports discovered in sibling program files.
+    /// Borrowed from the driver/program and canonically sorted by normalized
+    /// module path before any checker receives it.
     program_commonjs_exports: []const ProgramCommonJsExport = &.{},
     /// Program-level UMD globals exported from sibling declaration files.
     /// Borrowed from the driver/program while checking this file.
@@ -6213,7 +6218,13 @@ pub const Checker = struct {
         self.program_ambient_module_interface_exports = exports;
     }
 
+    pub fn sortProgramCommonJsExports(exports: []ProgramCommonJsExport) void {
+        for (exports, 0..) |*exported, index| exported.source_index = index;
+        std.sort.block(ProgramCommonJsExport, exports, {}, programCommonJsExportLessThan);
+    }
+
     pub fn setProgramCommonJsExports(self: *Checker, exports: []const ProgramCommonJsExport) void {
+        std.debug.assert(programCommonJsExportsAreSorted(exports));
         self.program_commonjs_exports = exports;
     }
 
@@ -64019,18 +64030,33 @@ pub const Checker = struct {
     fn programCommonJsModuleExportsName(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!bool {
         if (self.program_commonjs_exports.len == 0) return false;
         const name_text = self.string_interner.get(name);
-        for (self.program_commonjs_exports) |exported| {
-            const matches = try self.programImportTargetsPath(node, spec, exported.module_path);
-            if (!matches) continue;
-            if (std.mem.eql(u8, exported.name, name_text)) return true;
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_base) |base| {
+            for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (std.mem.eql(u8, exported.name, name_text)) return true;
+            }
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base == base) return false;
+            for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (std.mem.eql(u8, exported.name, name_text)) return true;
+            }
         }
         return false;
     }
 
     fn programCommonJsModuleHasWholeExport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
-        for (self.program_commonjs_exports) |exported| {
-            if (exported.name.len != 0) continue;
-            if (try self.programImportTargetsPath(node, spec, exported.module_path)) return true;
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_base) |base| {
+            for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (exported.name.len == 0) return true;
+            }
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base == base) return false;
+            for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (exported.name.len == 0) return true;
+            }
         }
         return false;
     }
@@ -64054,8 +64080,8 @@ pub const Checker = struct {
     }
 
     fn programCommonJsWholeExportTypeForPath(self: *Checker, resolved_path: []const u8) CheckError!?TypeId {
-        for (self.program_commonjs_exports) |exported| {
-            if (exported.name.len != 0 or !programModulePathMatches(resolved_path, exported.module_path)) continue;
+        for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exported.name.len != 0) continue;
             if (exported.whole_export_is_any) return types.Primitive.any;
             const owner_schema = exported.whole_export_schema orelse continue;
             if (!try self.programSchemaSupported(owner_schema)) continue;
@@ -64072,9 +64098,23 @@ pub const Checker = struct {
         node: NodeId,
         spec: []const u8,
     ) CheckError!?ExternalResolver.CommonJsExportPrivateName {
-        for (self.program_commonjs_exports) |exported| {
-            if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
-            if (!try self.programImportTargetsPath(node, spec, exported.module_path)) continue;
+        const resolution = try self.programImportResolution(node, spec);
+        var first: ?ProgramCommonJsExport = null;
+        if (resolution.external_base) |base| {
+            for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
+                if (first == null or exported.source_index < first.?.source_index) first = exported;
+            }
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base != base) {
+                for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                    if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
+                    if (first == null or exported.source_index < first.?.source_index) first = exported;
+                }
+            }
+        }
+        if (first) |exported| {
             return .{
                 .symbol_name = exported.private_type_name,
                 .module_name = exported.private_module_name,
@@ -112949,10 +112989,10 @@ pub const Checker = struct {
         return std.mem.indexOf(u8, src[span.start..quote_pos], "from") != null;
     }
 
-    fn programImportTargetsPath(self: *Checker, import_node: NodeId, spec: []const u8, target_path: []const u8) CheckError!bool {
+    fn programImportResolution(self: *Checker, import_node: NodeId, spec: []const u8) CheckError!ProgramImportResolution {
         const specifier = self.string_interner.intern(spec) catch return error.OutOfMemory;
         const key: ProgramImportResolutionKey = .{ .node = import_node, .specifier = specifier };
-        const resolution = self.program_import_resolutions.get(key) orelse blk: {
+        return self.program_import_resolutions.get(key) orelse blk: {
             var computed: ProgramImportResolution = .{};
             if (self.external_resolver) |resolver| {
                 const containing = if (self.importer_path.len > 0)
@@ -112976,6 +113016,10 @@ pub const Checker = struct {
             try self.program_import_resolutions.put(self.gpa, key, computed);
             break :blk computed;
         };
+    }
+
+    fn programImportTargetsPath(self: *Checker, import_node: NodeId, spec: []const u8, target_path: []const u8) CheckError!bool {
+        const resolution = try self.programImportResolution(import_node, spec);
         const target_base = stripProgramModuleExtension(target_path);
         if (resolution.external_base) |base| {
             if (std.mem.eql(u8, self.string_interner.get(base), target_base)) return true;
@@ -112986,11 +113030,45 @@ pub const Checker = struct {
         return false;
     }
 
-    fn programModulePathMatches(candidate: []const u8, target_path: []const u8) bool {
-        if (std.mem.eql(u8, candidate, target_path)) return true;
-        const candidate_base = stripProgramModuleExtension(candidate);
-        const target_base = stripProgramModuleExtension(target_path);
-        return std.mem.eql(u8, candidate_base, target_base);
+    fn programCommonJsExportLessThan(_: void, lhs: ProgramCommonJsExport, rhs: ProgramCommonJsExport) bool {
+        return std.mem.lessThan(
+            u8,
+            stripProgramModuleExtension(lhs.module_path),
+            stripProgramModuleExtension(rhs.module_path),
+        );
+    }
+
+    fn programCommonJsExportsAreSorted(exports: []const ProgramCommonJsExport) bool {
+        if (exports.len < 2) return true;
+        for (exports[1..], exports[0 .. exports.len - 1]) |current, previous| {
+            if (programCommonJsExportLessThan({}, current, previous)) return false;
+        }
+        return true;
+    }
+
+    fn programCommonJsExportsForPath(self: *const Checker, path: []const u8) []const ProgramCommonJsExport {
+        const key = stripProgramModuleExtension(path);
+        var low: usize = 0;
+        var high = self.program_commonjs_exports.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            const candidate = stripProgramModuleExtension(self.program_commonjs_exports[middle].module_path);
+            if (std.mem.order(u8, candidate, key) == .lt)
+                low = middle + 1
+            else
+                high = middle;
+        }
+        const start = low;
+        high = self.program_commonjs_exports.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            const candidate = stripProgramModuleExtension(self.program_commonjs_exports[middle].module_path);
+            if (std.mem.order(u8, candidate, key) == .gt)
+                high = middle
+            else
+                low = middle + 1;
+        }
+        return self.program_commonjs_exports[start..low];
     }
 
     fn stripProgramModuleExtension(path: []const u8) []const u8 {
@@ -261106,6 +261184,37 @@ test "checker: whole CommonJS path matching keeps external and fallback alternat
     stub.canned_path = "/external/changed.mts";
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
     try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+}
+
+test "checker: CommonJS path index preserves first metadata match" {
+    const s = try newSetup("const item = require('./owner');");
+    defer destroySetup(s);
+    var stub = StubExternalResolver{ .canned_path = "/external/owner.d.cts", .canned_is_declaration = true };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/fallback/main.ts");
+    var exports = [_]ProgramCommonJsExport{
+        .{ .module_path = "/fallback/owner.js", .name = "", .private_type_name = "FallbackFirst", .private_module_name = "fallback" },
+        .{ .module_path = "/unrelated/z.js", .name = "named" },
+        .{ .module_path = "/external/owner.mts", .name = "", .private_type_name = "ExternalSecond", .private_module_name = "external" },
+        .{ .module_path = "/unrelated/a.js", .name = "named" },
+    };
+    Checker.sortProgramCommonJsExports(&exports);
+    s.checker.setProgramCommonJsExports(&exports);
+    const first = (try s.checker.programCommonJsExportPrivateName(s.root, "./owner")) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("FallbackFirst", first.symbol_name);
+    try T.expectEqualStrings("fallback", first.module_name);
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+
+    const reversed = [_]ProgramCommonJsExport{
+        .{ .module_path = "/external/owner.ts", .name = "", .private_type_name = "ExternalFirst", .private_module_name = "external" },
+        .{ .module_path = "/fallback/owner.cts", .name = "", .private_type_name = "FallbackSecond", .private_module_name = "fallback" },
+    };
+    var sorted_reversed = reversed;
+    Checker.sortProgramCommonJsExports(&sorted_reversed);
+    s.checker.setProgramCommonJsExports(&sorted_reversed);
+    const next = (try s.checker.programCommonJsExportPrivateName(s.root, "./owner")) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("ExternalFirst", next.symbol_name);
+    try T.expectEqualStrings("external", next.module_name);
 }
 
 test "checker: external owner local fact refines missing export to TS2459" {

@@ -45,6 +45,7 @@ pub const ProgramExportedType = ts_checker.ProgramExportedType;
 pub const ProgramExportedValueKind = ts_checker.ProgramExportedValueKind;
 pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
 pub const ProgramCommonJsExport = ts_checker.ProgramCommonJsExport;
+pub const sortProgramCommonJsExports = ts_checker.Checker.sortProgramCommonJsExports;
 pub const ProgramUmdGlobal = ts_checker.ProgramUmdGlobal;
 pub const ProgramAmbientInterfaceMember = ts_checker.ProgramAmbientInterfaceMember;
 pub const EsTarget = ts_emit.js_emit.EsTarget;

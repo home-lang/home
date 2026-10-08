@@ -1870,6 +1870,7 @@ pub const Program = struct {
             }
         }
         for (self.files.items) |file| try self.populateProgramCommonJsExportSchemas(file, out.items);
+        ts_driver.sortProgramCommonJsExports(out.items);
         return try out.toOwnedSlice(self.gpa);
     }
 
@@ -14514,6 +14515,28 @@ test "Program: records whole CommonJS export assignments" {
     }
     try T.expect(saw_whole);
     try T.expect(saw_f);
+}
+
+test "Program: CommonJS export table is canonical while retaining source order" {
+    const source = "function C() {}\nexports = module.exports = C;\n";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/z.js", source);
+    try vfs.addFile("/a.cjs", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/z.js", source);
+    _ = try p.add("/a.cjs", source);
+
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    try T.expectEqual(@as(usize, 2), exports.len);
+    try T.expectEqualStrings("/a.cjs", exports[0].module_path);
+    try T.expectEqual(@as(usize, 1), exports[0].source_index);
+    try T.expectEqualStrings("/z.js", exports[1].module_path);
+    try T.expectEqual(@as(usize, 0), exports[1].source_index);
 }
 
 test "Program: excludes CommonJS expandos from ESM export tables" {
