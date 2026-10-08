@@ -1793,12 +1793,13 @@ pub const Program = struct {
             if (f.redirect_target != null) continue;
             if (f.is_declaration) {
                 // A declaration-file CommonJS export requires `export =`.
-                // Avoid reparsing ordinary library declarations when either
+                // Avoid scanning ordinary library declarations when either
                 // required token is absent; false positives still take the
-                // full syntax-aware path below.
+                // syntax-aware path below using the retained owner.
                 if (!f.sourceContains("export") or
                     !f.sourceContains("=")) continue;
-                const info = moduleExportAssignmentInfo(self.gpa, f.source, f.is_tsx) orelse continue;
+                const compilation = f.compilation orelse continue;
+                const info = moduleExportAssignmentInfoFromCompilation(self.gpa, compilation) orelse continue;
                 const private_name = info.private_type_name orelse "";
                 if (private_name.len == 0 and !info.target_is_any) continue;
                 errdefer if (private_name.len > 0) self.gpa.free(private_name);
@@ -5915,21 +5916,11 @@ const ModuleExportAssignmentInfo = struct {
     target_is_any: bool = false,
 };
 
-fn moduleExportAssignmentInfo(
+fn moduleExportAssignmentInfoFromCompilation(
     gpa: std.mem.Allocator,
-    source: []const u8,
-    is_tsx: bool,
+    compilation: *const ts_driver.Compilation,
 ) ?ModuleExportAssignmentInfo {
-    var compilation = ts_driver.compileSource(gpa, source, .{
-        .is_tsx = is_tsx,
-        .continue_on_error = true,
-        .no_emit = true,
-        .is_declaration_file = true,
-    }) catch return null;
-    defer {
-        compilation.deinit();
-        gpa.destroy(compilation);
-    }
+    const source = compilation.source;
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return null;
     const stmts = hir_mod_ns.blockStmts(&compilation.hir, compilation.root);
 
@@ -5990,7 +5981,27 @@ pub fn moduleExportAssignmentPrivateTypeName(
     source: []const u8,
     is_tsx: bool,
 ) ?[]u8 {
-    const info = moduleExportAssignmentInfo(gpa, source, is_tsx) orelse return null;
+    const compilation = ts_driver.prepareSource(gpa, source, .{
+        .is_tsx = is_tsx,
+        .continue_on_error = true,
+        .no_emit = true,
+        .is_declaration_file = true,
+    }) catch return null;
+    defer {
+        compilation.deinit();
+        gpa.destroy(compilation);
+    }
+    return moduleExportAssignmentPrivateTypeNameFromCompilation(gpa, compilation);
+}
+
+/// Inspect a retained declaration owner without checking it again. This query
+/// only reads the export target and its annotation syntax; the returned name
+/// is owned by `gpa`, independently of the compilation's lifetime.
+pub fn moduleExportAssignmentPrivateTypeNameFromCompilation(
+    gpa: std.mem.Allocator,
+    compilation: *const ts_driver.Compilation,
+) ?[]u8 {
+    const info = moduleExportAssignmentInfoFromCompilation(gpa, compilation) orelse return null;
     return info.private_type_name;
 }
 
@@ -7751,6 +7762,69 @@ test "module export assignment private type query follows object signatures" {
     const name = moduleExportAssignmentPrivateTypeName(T.allocator, source, false) orelse return error.TestUnexpectedResult;
     defer T.allocator.free(name);
     try T.expectEqualStrings("Private", name);
+}
+
+test "module export assignment query reads retained syntax without checking" {
+    const Case = struct { source: []const u8, private_name: ?[]const u8 = null, is_any: bool = false, has_assignment: bool = true };
+    for ([_]Case{
+        .{ .source = "interface Hidden { child: Hidden } declare const obj: { read(): Hidden }; export = obj;", .private_name = "Hidden" },
+        .{ .source = "export interface Visible {} declare const obj: Visible; export = obj;" },
+        .{ .source = "declare const obj: any; export = obj;", .is_any = true },
+        .{ .source = "// export = fake;\ninterface Hidden {} declare const obj: Hidden;", .has_assignment = false },
+        .{ .source = "declare const obj: 'any'; export = obj;" },
+    }) |case| {
+        const compilation = try ts_driver.prepareSource(T.allocator, case.source, .{ .is_declaration_file = true, .no_emit = true });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        const diagnostics_before = compilation.diagnostics.items.len;
+        const info = moduleExportAssignmentInfoFromCompilation(T.allocator, compilation);
+        defer if (info) |found| {
+            if (found.private_type_name) |name| T.allocator.free(name);
+        };
+        try T.expectEqual(case.has_assignment, info != null);
+        if (info) |found| {
+            try T.expectEqual(case.is_any, found.target_is_any);
+            if (case.private_name) |expected| {
+                try T.expectEqualStrings(expected, found.private_type_name orelse return error.TestUnexpectedResult);
+            } else try T.expect(found.private_type_name == null);
+        }
+        try T.expect(compilation.check_state == .bound);
+        try T.expect(!compilation.checked_types_ready);
+        try T.expectEqual(diagnostics_before, compilation.diagnostics.items.len);
+    }
+}
+
+test "Program: export assignment discovery preserves owner and later declaration checking" {
+    const source = "interface Hidden { missing: Missing } declare const obj: { read(): Hidden }; export = obj;";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.d.ts", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/owner.d.ts", source);
+    try p.prepareNameStore();
+    try p.prepareFiles(.{ .bind_only = true, .continue_on_error = true, .no_emit = true });
+    const owner = p.fileById(id).compilation.?;
+    const exports = try p.collectProgramCommonJsExports();
+    defer Program.freeProgramCommonJsExports(T.allocator, exports);
+    try T.expectEqual(@as(usize, 1), exports.len);
+    try T.expectEqualStrings("Hidden", exports[0].private_type_name);
+    try T.expect(owner == p.fileById(id).compilation.?);
+    try T.expect(owner.check_state == .bound);
+    try T.expect(!owner.checked_types_ready);
+
+    try p.compileAll(.{ .continue_on_error = true, .no_emit = true });
+    try T.expect(owner == p.fileById(id).compilation.?);
+    try T.expect(owner.checked_types_ready);
+    var missing_type_reported = false;
+    for (owner.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2304 and std.mem.indexOf(u8, diagnostic.message, "Missing") != null) missing_type_reported = true;
+    }
+    try T.expect(missing_type_reported);
 }
 
 test "Program: add returns stable FileId, dedups on path" {

@@ -339,10 +339,8 @@ const CheckerResolverAdapter = struct {
         var stack_buf: [1024]u8 = undefined;
         const containing = canonicalContainingPath(&stack_buf, containing_file);
         const resolved = self.resolver.resolve(specifier, containing) catch return null;
-        const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
-        defer self.resolver.gpa.free(source);
-        const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
-        const private_name = ts_program.moduleExportAssignmentPrivateTypeName(self.resolver.gpa, source, is_tsx) orelse return null;
+        const compilation = self.moduleCompilation(resolved.path) orelse return null;
+        const private_name = ts_program.moduleExportAssignmentPrivateTypeNameFromCompilation(self.resolver.gpa, compilation) orelse return null;
         defer self.resolver.gpa.free(private_name);
         const arena = self.resolver.arena.allocator();
         return .{
@@ -1210,6 +1208,29 @@ test "conformance: local import facts reuse the prepared owner" {
     try std.testing.expectEqualStrings("public", next.local_exported_as);
     try std.testing.expect(owner == adapter.moduleCompilation("/owner.ts").?);
     try std.testing.expect(!owner.checked_types_ready);
+    try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
+}
+
+test "conformance: export assignment private names reuse the prepared owner" {
+    const allocator = std.testing.allocator;
+    var vfs = ts_resolver.VirtualFs.init(allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.d.ts", "interface Hidden { child: Hidden } declare const obj: { read(): Hidden }; export = obj;");
+    var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    defer adapter.deinit();
+    const first = CheckerResolverAdapter.commonJsExportPrivateNameImpl(&adapter, "./owner", "/app.ts").?;
+    try std.testing.expectEqualStrings("Hidden", first.symbol_name);
+    try std.testing.expectEqualStrings("\"/owner\"", first.module_name);
+    const owner = adapter.moduleCompilation("/owner.d.ts").?;
+    try vfs.addFile("/owner.d.ts", "interface Changed {} declare const obj: Changed; export = obj;");
+    for (0..8) |_| {
+        const next = CheckerResolverAdapter.commonJsExportPrivateNameImpl(&adapter, "./owner", "/app.ts").?;
+        try std.testing.expectEqualStrings(first.symbol_name, next.symbol_name);
+        try std.testing.expect(owner == adapter.moduleCompilation("/owner.d.ts").?);
+        try std.testing.expect(!owner.checked_types_ready);
+    }
     try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
 }
 
