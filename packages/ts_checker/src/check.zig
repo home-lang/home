@@ -4605,8 +4605,12 @@ pub const Checker = struct {
     /// already on the active path collapses that to a constant-time cut,
     /// mirroring tsc's `pushTypeResolution`/`popTypeResolution` cycle
     /// guard. Add-on-entry / remove-on-exit keeps it to the *active* path
-    /// only, so legitimately-shared (non-cyclic) subtrees still re-expand.
-    subst_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// only; completed shared subtrees use the separate substitution memo.
+    /// Values record the lexical signature-binder scope at graph entry.
+    subst_active: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+    /// Borrowed signature binder lists exist only while their lexical scope is
+    /// active. Recursive references own the projected free-parameter mapping.
+    subst_binder_scopes: std.ArrayListUnmanaged([]const TypeId) = .empty,
     /// Coinductive guard for same-generic variance comparisons. Recursive
     /// aliases can expose the same ordered source/target pair through their
     /// own type arguments; revisiting that pending relation closes the cycle.
@@ -6483,6 +6487,7 @@ pub const Checker = struct {
         self.inferred_variance.deinit(self.gpa);
         self.rest_signatures.deinit(self.gpa);
         self.subst_active.deinit(self.gpa);
+        self.subst_binder_scopes.deinit(self.gpa);
         self.signature_min_args.deinit(self.gpa);
         self.signature_display_min_args.deinit(self.gpa);
         var snad_it = self.signature_nullish_array_defaults.valueIterator();
@@ -166091,7 +166096,7 @@ pub const Checker = struct {
         if (subs.get(base)) |replacement| return replacement;
         if (subs.count() == 0 or base >= self.interner.pool.typeCount()) return base;
         if (!self.interner.pool.flagsOf(base).is_object_type) return self.substituteType(base, subs);
-        return (try self.substitutionReference(base, subs)) orelse try self.substituteType(base, subs);
+        return (try self.substitutionReference(base, subs, null)) orelse try self.substituteType(base, subs);
     }
 
     /// Retain an exact recursive edge as a pool-owned body/parameter/argument
@@ -166101,12 +166106,26 @@ pub const Checker = struct {
         self: *Checker,
         body: TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+        binder_scope_floor: ?usize,
     ) CheckError!?TypeId {
         var parameters: std.ArrayListUnmanaged(TypeId) = .empty;
         defer parameters.deinit(self.gpa);
         var entries = subs.iterator();
         while (entries.next()) |entry| {
             const parameter = entry.key_ptr.*;
+            // A method binder introduced after entering the referenced body
+            // belongs to that method invocation, not to the recursive object's
+            // free environment. Its method declaration must remain generic.
+            if (binder_scope_floor) |floor| {
+                var bound = false;
+                for (self.subst_binder_scopes.items[floor..]) |binders| {
+                    if (std.mem.indexOfScalar(TypeId, binders, parameter) != null) {
+                        bound = true;
+                        break;
+                    }
+                }
+                if (bound) continue;
+            }
             if (parameter >= self.interner.pool.typeCount()) return null;
             const flags = self.interner.pool.flagsOf(parameter);
             // Non-parameter rewriting still uses the general substitution path.
@@ -166234,12 +166253,12 @@ pub const Checker = struct {
         // An owned reference is independent of the ambient active stack and
         // therefore does not invalidate memoization of completed ancestors.
         // Non-parameter rewrite maps retain the existing unresolved deferral.
-        if (self.subst_active.contains(t)) {
-            if (try self.substitutionReference(t, subs)) |reference| return reference;
+        if (self.subst_active.get(t)) |binder_scope_floor| {
+            if (try self.substitutionReference(t, subs, binder_scope_floor)) |reference| return reference;
             self.instantiation_defer_events +%= 1;
             return t;
         }
-        self.subst_active.put(self.gpa, t, {}) catch {};
+        try self.subst_active.put(self.gpa, t, self.subst_binder_scopes.items.len);
         defer _ = self.subst_active.remove(t);
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
@@ -166298,6 +166317,20 @@ pub const Checker = struct {
             }
             var preserved_params: std.ArrayListUnmanaged(TypeId) = .empty;
             defer preserved_params.deinit(self.gpa);
+            var source_binders: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer source_binders.deinit(self.gpa);
+            if (self.generic_signature_params.get(t)) |type_params| {
+                for (type_params) |parameter| {
+                    if (subs.get(parameter)) |argument| {
+                        if (argument != parameter) continue;
+                    }
+                    try source_binders.append(self.gpa, parameter);
+                }
+            }
+            // Constraints and defaults are inside the signature's binder
+            // scope too, including references to earlier local parameters.
+            try self.subst_binder_scopes.append(self.gpa, source_binders.items);
+            defer _ = self.subst_binder_scopes.pop();
             var signature_subs_changed = false;
             if (self.generic_signature_params.get(t)) |type_params| {
                 for (type_params) |param_t| {
@@ -236729,6 +236762,75 @@ test "checker: cyclic substitution preserves mutual callable edges and binder id
     const incompatible = try s.ti.internObjectType(&.{.{ .name = value, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false }});
     try T.expect(try s.engine.isAssignableTo(reference, target));
     try T.expect(!try s.engine.isAssignableTo(reference, incompatible));
+}
+
+test "checker: cyclic substitution keeps recursive method binders generic" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("U"), outer, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const method = try s.sint.intern("method");
+    const signature = try s.ti.internSignature(&.{local}, types.Primitive.none, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    const object = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = outer, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = method, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    s.ti.pool.signature_payloads.items[s.ti.pool.payloadOf(signature)].return_type = object;
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const mapped = try s.checker.substituteType(object, &map);
+    const callable = s.ti.objectMember(mapped, method).?;
+    const binder = s.checker.generic_signature_params.get(callable).?[0];
+    const reference = s.ti.signatureReturn(callable).?;
+    const recursive = try s.checker.resolveGenericType(reference);
+    const recursive_callable = s.ti.objectMember(recursive, method).?;
+    const recursive_binders = s.checker.generic_signature_params.get(recursive_callable) orelse return error.MissingRecursiveBinder;
+    try T.expectEqual(@as(usize, 1), recursive_binders.len);
+    try T.expect(recursive_binders[0] != local and recursive_binders[0] != binder);
+    try T.expectEqual(types.Primitive.string_t, s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(recursive_binders[0])].constraint);
+    try T.expectEqualSlices(TypeId, recursive_binders, s.ti.signatureParams(recursive_callable));
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(recursive, value).?);
+}
+
+test "checker: cyclic substitution scopes recursive constraints and defaults" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("U"), outer, types.Primitive.none, .bivariant);
+    const later = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("V"), types.Primitive.none, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const method = try s.sint.intern("method");
+    const signature = try s.ti.internSignature(&.{ local, later }, types.Primitive.none, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{ local, later });
+    const object = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = outer, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = method, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true },
+    });
+    s.ti.pool.signature_payloads.items[s.ti.pool.payloadOf(signature)].return_type = object;
+    s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(later)].constraint = object;
+    s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(later)].default = object;
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const mapped = try s.checker.substituteType(object, &map);
+    const callable = s.ti.objectMember(mapped, method).?;
+    const binders = s.checker.generic_signature_params.get(callable).?;
+    try T.expectEqual(@as(usize, 2), binders.len);
+    try T.expectEqualSlices(TypeId, binders, s.ti.signatureParams(callable));
+    const payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(binders[1])];
+    try T.expectEqual(payload.constraint, payload.default);
+    try T.expect(s.ti.pool.flagsOf(payload.default).is_instantiation);
+    const default = try s.checker.resolveGenericType(payload.default);
+    const recursive_callable = s.ti.objectMember(default, method).?;
+    const recursive_binders = s.checker.generic_signature_params.get(recursive_callable) orelse return error.MissingRecursiveBinder;
+    try T.expectEqual(@as(usize, 2), recursive_binders.len);
+    try T.expect(recursive_binders[0] != binders[0] and recursive_binders[1] != binders[1]);
+    try T.expectEqualSlices(TypeId, recursive_binders, s.ti.signatureParams(recursive_callable));
+    try T.expectEqual(types.Primitive.string_t, s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(recursive_binders[0])].constraint);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(default, value).?);
 }
 
 test "checker: cyclic substitution references survive mapper and checker ownership transfer" {
