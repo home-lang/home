@@ -115,22 +115,22 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261008T000856Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261008T031844Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 64.7 ms | 7.4 ms | **2.9 ms** | 5.8 ms | 6.2 ms | **2.00× faster** |
-| 256 independent files | 200.2 ms | 24.1 ms | 22.0 ms | 17.6 ms | 13.5 ms | 1.62× slower |
-| 128-module import chain | 129.5 ms | 15.2 ms | 20.4 ms | 11.2 ms | 14.9 ms | 1.82× slower |
-| 64 modules through 8 barrel re-exports | 96.6 ms | 10.6 ms | 16.5 ms | 9.0 ms | 8.5 ms | 1.94× slower |
-| Deep conditional / mapped / template types | 130.8 ms | 21.6 ms | 21.1 ms | 14.2 ms | 13.3 ms | 1.59× slower |
-| Recursive generics | 149.9 ms | 38.9 ms | 14.1 ms | 31.7 ms | 9.5 ms | 1.48× slower |
-| Checked JavaScript with JSDoc | 194.1 ms | 22.6 ms | 28.9 ms | 21.6 ms | 13.4 ms | 2.16× slower |
-| Control-flow narrowing (256 unions) | 188.9 ms | 27.4 ms | 25.4 ms | 23.7 ms | 16.0 ms | 1.59× slower |
-| 256 type-predicate families | 228.3 ms | 39.4 ms | 32.0 ms | 32.9 ms | 22.8 ms | 1.40× slower |
-| 2,048 type-predicate families | 968.6 ms | 294.2 ms | 234.6 ms | 259.3 ms | 155.1 ms | 1.51× slower |
+| Startup (one small file) | 81.7 ms | 9.4 ms | **3.8 ms** | 8.0 ms | 8.1 ms | **2.11× faster** |
+| 256 independent files | 226.4 ms | 24.9 ms | 24.2 ms | 18.4 ms | 15.0 ms | 1.61× slower |
+| 128-module import chain | 141.6 ms | 16.9 ms | 22.5 ms | 12.7 ms | 16.9 ms | 1.77× slower |
+| 64 modules through 8 barrel re-exports | 107.1 ms | 12.2 ms | 19.4 ms | 10.2 ms | 9.8 ms | 1.99× slower |
+| Deep conditional / mapped / template types | 154.2 ms | 24.1 ms | 23.6 ms | 16.7 ms | 15.3 ms | 1.54× slower |
+| Recursive generics | 312.4 ms | 65.6 ms | 23.2 ms | 54.1 ms | 16.0 ms | 1.45× slower |
+| Checked JavaScript with JSDoc | 475.2 ms | 39.4 ms | 47.4 ms | 35.7 ms | 21.6 ms | 2.20× slower |
+| Control-flow narrowing (256 unions) | 230.6 ms | 31.6 ms | 29.4 ms | 28.4 ms | 18.7 ms | 1.57× slower |
+| 256 type-predicate families | 273.1 ms | 46.4 ms | 36.1 ms | 38.1 ms | 25.7 ms | 1.41× slower |
+| 2,048 type-predicate families | 1164.5 ms | 356.3 ms | 263.6 ms | 295.4 ms | 176.8 ms | 1.49× slower |
 
 Home has the lowest median on **1 / 20** admitted workloads and is faster
 than native TypeScript 7 on **12 / 20**. The complete
@@ -141,9 +141,11 @@ scaling regression was fixed by the lazy overload index in
 matrix in [#838](https://github.com/home-lang/home/issues/838) exposes the next
 performance gaps. Export-owner reuse in
 [#839](https://github.com/home-lang/home/issues/839) improves the unchanged
-re-export graph by **1.158×** in independent same-parent paired confirmation.
-This snapshot measures frozen parent `ef0174c05` plus that patch, before its
-rebase as `b18f19203`; intervening compiler changes are not measured here.
+re-export graph by **1.313×** in independent same-parent paired confirmation.
+This snapshot measures source `69c3d28ee`; the documented paired experiment
+uses exact parent `3318885fb`. Startup's targeted recheck has a 0.7% slower
+median, and retained metadata increases the observed Zod footprint; those
+tradeoffs are documented, not hidden. Cross-run differences are not patch A/Bs.
 Older hosts, competitor sets, and launcher modes are not
 mixed with this snapshot.
 
@@ -174,10 +176,10 @@ project. Reproduce them yourself:
 ./bench/vs_tsgo/run.sh evidence
 ```
 
-The [raw evidence archive](bench/vs_tsgo/evidence/20261008T000856Z.tar.gz)
+The [raw evidence archive](bench/vs_tsgo/evidence/20261008T031844Z.tar.gz)
 contains all 600 byte-for-byte Hyperfine round files (3,000 samples), 140
 admission records, normalized metadata, and checksums. Its SHA-256 is
-`20d645283831bd360212267cbc27be7c54590c83fda2e9a02b6af6316d1e6672`.
+`50ea6212fdf1de7b6884a83d298c3a654a023ad1712e877a53163e70107f90ce`.
 
 ### Real-world TypeScript correctness gates
 

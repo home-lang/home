@@ -72,7 +72,7 @@ report refuses results whose provenance changed.
 
 | Platform | Result ID | Current outcome | Evidence and report |
 |---|---|---:|---|
-| Apple M3 Pro / macOS arm64, five compilers | `20261008T000856Z` | Home lower median on **1/20**; faster than native TS 7 on **12/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261008T000856Z.tar.gz) |
+| Apple M3 Pro / macOS arm64, five compilers | `20261008T031844Z` | Home lower median on **1/20**; faster than native TS 7 on **12/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261008T031844Z.tar.gz) |
 
 The checkpoint compares TS 6.0.3, direct native TS 7.0.2 (`tsgo`), Home,
 Rust tsc-rs 0.1.0, and pinned Bun canary, retains every sample, and does not replace real-project
@@ -80,18 +80,21 @@ benchmarking or measure unlisted platforms. Older macOS and Linux measurements
 remain in the dated optimization journal; they are historical, not mixed into
 the current table, and not relabeled as medians without their raw samples.
 
-The current run uses harness `76d1016f4` and frozen Home parent `ef0174c05`
-plus the export-owner reuse patch in the
-[paired evidence](evidence/20261008-export-owner-reuse-839.tar.gz), before
-its rebase as `b18f19203`. It does not measure intervening compiler changes.
+The current run uses harness `76d1016f4` and Home source `69c3d28ee`.
+The [paired evidence](evidence/20261008-export-fact-origins-839.tar.gz) compares
+its exact parent `3318885fb` and retains all 356 pair rounds, including
+unfavorable observations and targeted regression rechecks.
 It runs on an
 Apple M3 Pro / Mac15,6 with 11 logical cores and Darwin 27.0.0 arm64. It
 retains 30 fresh processes per compiler and workload after three warmups:
 600 round files, 3,000 successful samples, and 140 successful admissions.
-Home leads `startup` by 2.00×; its largest relative loss is `checkjs_jsdoc`
-at 2.16× slower. Re-export owner reuse improves the unchanged graph by
-1.158× in independent same-parent confirmation, but it still trails Bun by
-1.94×. Earlier three-compiler snapshots used different hosts and
+Home leads `startup` by 2.11×; its largest relative loss is `commonjs_graph`
+at 2.35× slower. Export-fact origin reuse improves the unchanged graph by
+1.313× in independent same-parent confirmation, but it still trails Bun by
+1.99× in the fresh matrix. Startup's targeted A/B recheck is 0.7% slower,
+and Zod's observed footprint rises from 887 to 991 MiB; these tradeoffs remain
+documented. Cross-run differences are not patch A/Bs.
+Earlier three-compiler snapshots used different hosts and
 TypeScript 7 launcher modes; they remain dated history rather than regression
 comparisons or current expanded-matrix claims.
 
