@@ -8,8 +8,10 @@
     "build.zig": "54834ed94b13911a77afaad49aec2aa33681d8d8928d363120143b72746ea61f",
     "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
     "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
-    "packages/ts_program/src/ts_program.zig": "21835b0f187de36f7b2315ee7b2acde102159dde1f6ad66d0765ec2849c2fc3d",
-    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9"
+    "packages/ts_program/src/ts_program.zig": "adf94d7e7c0bd3bceec890944cc80a84dee072dd6a9c18cda2054b50602b78af",
+    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9",
+    "packages/ts_cli/src/tsc_main.zig": "9d74e21be0ad7de852bba5960cec5d0ef43496832bdb4491bfc255aabb0e4451",
+    "packages/ts_program/src/export_origins.zig": "72e8fc7bd9221e7297c928abebf03ad6a3c4c2ff082e19360c3d0ea70a7cb6d0"
   },
   "gates": {
     "substitution_controls": {
@@ -79,23 +81,37 @@
       "equal_to_first_substitution_run": true
     }
   },
-  "validation_scope": "Gates recorded before integrating origin/main export-owner reuse; checker/driver gates preceded JSX mode and parser-only changes; final combined validation is pending",
+  "validation_scope": "Pre-integration gates retain their qualified stages; integrated gates below validate the combined source commit",
   "artifact_sha256": {
+    "integrated-survey-controls-details.log.gz": "9da7c29a18cae484159c8ae5effb9dca21682ed9af8a7a924d97f7b01fac809b",
+    "original-cases-predicate-memory-stop.log.gz": "af8e7bdd970756b7c5272e6f9c6860b103923dd32ae63ee8ddedb7bdcdb78b18",
+    "integrated-zod-diagnostics.log.gz": "bc238bf0d9cf7267df398567f0e6dc91742886cb9e6f4176676996afd7592e2a",
+    "predicate-optin.log.gz": "04dffdd4ab1dc83b3ac126ac12092a0f315c587d607d4c2ce71309db0108b5f4",
     "home-substitution-critical-disk-cleanup.json.gz": "fd9fbf3d1442c77eb5f4da405f0e365b367a90a83a0c110291e1679e77f06112",
+    "integrated-checker.log.gz": "1f0ae959631582af3aec5244a9ccbdbb1640378bb11aca56dad68e638716ab32",
+    "integrated-prefix-resource-stop.log.gz": "c89ff825a722bfaacab0b21d8dff98370a68080cd5757af46aadf5b4c923c4d4",
     "program-full-file-modes.log.gz": "827db52bd6647ad2c3c82691a50bf1cb646bfd0f8d67fa4e414a69287dabb25f",
     "declaration-controls-final.log.gz": "0972efd90686c3a1b9e881d15bf4c23d4fdbe59b7fb7b3034d59ff97ebf455df",
+    "integrated-compiler.log.gz": "5ca9b4092197937d5f4a3f62c757551c9298da6946a409940c09179949f34594",
     "program-disk-stop.log.gz": "947290d2493e4132103eddda418e70ba58a88c09e2c95100da97b72cccecc263",
     "original-cases-file-modes.log.gz": "d17e58fdb99d1d3b2f42b5bd64db36202c71d60bf33d97e0e24632d877761f4f",
     "home-substitution-control-cache-cleanup.json.gz": "6614e8f16a51a5f17c21fd0e7debac3338fe508d611ade3af7e5c24814c9cb48",
+    "integrated-driver.log.gz": "9cd4d0e00c266d8d596924351a93113761f28e025c327182bd1e876740aeafd9",
+    "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "integrated-zod.log.gz": "8b1a968ad9556a0fe02d9ebe05a348f9901e1ce0074c6036324b3c6693b8e43f",
     "production-zod-file-modes.log.gz": "bb66531a3948b8a97a8ec2e5f59eabc74f9d5447b8a96a8f7ef4f23955d0a7ad",
     "home-substitution-intermediate-cache-cleanup.json.gz": "0c4f24f6a03062aecac971424928041a9ac83934df91c8ad3309bb7763286cad",
+    "integrated-prefix-process-sample.txt.gz": "abf2e56b9f242ff016779c8625ff7c496c949513ca60fa00d39c7d72a216d76b",
     "controls-compile-failure.log.gz": "243139032d5e4e441d670a5814b826dd12acfb798fa3b0bbf2e97fc2fe5360ac",
     "intermediate-original-cases-interrupted.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25",
+    "integrated-optin.log.gz": "11353a1e653d8e90cf0e634c0d1f60c04a0e952e9dc75fc076c36d8ec33cefa3",
     "production-compiler-file-modes.log.gz": "c5e40deb61e4a4295f8c69e6bbc30199f774c4b57a83a6be502654d7250b065f",
     "production-zod-file-modes-diagnostics.log.gz": "d4f88a1cb9f8697f851a04cc8073788b0e726b9a7692fccb99b0bc2ce7dcd7d1",
     "driver-full.log.gz": "09ba22df16b60bf6a31bc6143af5de3ff9b13b6d0d52b52efd90dc36de59b273",
+    "integrated-parser.log.gz": "d480da34d731e79caa0d0f4023d210b35c0152338efdfb0c6e793b05503f5bce",
     "baseline-disk-stop.log.gz": "a3783307e01a9303b79c3196daf815d889f7db2f4f0fd6df67054d6b7d362637",
     "original-cases-before-file-modes.log.gz": "27de6a0ecf5fe5c7077ddd3ede65d1687d4343acd050391f10cf047f9f926f67",
+    "integrated-program.log.gz": "721884fcd6bda86264f8e0a7b95a33c5762ea15926a04ce4f059090ad9b97d9f",
     "controls-binder-failure.log.gz": "7378654e6f5a5e64c3c23e7c7121a3e1f9903d6883c3c8e0c9b3109512cccdf6",
     "home-substitution-download-cache-cleanup.json.gz": "77e50424e29ddf904aadcfad867b4e1996f838c735a807537060556df1934128",
     "parser-admission-refusal.log.gz": "070770fc3293ccbd1581e3819d83a6707ef7aa0f29470ff011ac33a300353d60",
@@ -104,9 +120,83 @@
     "zod-old-to-substitution.diff.gz": "cab5b79e3b943c3f070357b701d66ad72318132b4db6d3dd80e3ed51a5a658ee",
     "home-substitution-cache-cleanup.json.gz": "15a18014ba50a9437f3e5192bda1360b9c579f3b9b22fcef04ff7dc08b3170da",
     "controls-final.log.gz": "8965c85330a3b212fb9ed765c4afd5cb6930bb14fc0a12da0ba281e167312194",
+    "integrated-survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
     "prefix-file-modes.log.gz": "f1a47c3138b1cec1d96fab46d5294551b270caa0778e9bd78f9ea6e926a13ba0",
     "program-admission-refusal.log.gz": "707e7f76507c1793a6d7a2351dc724c719d53ea4fa7df1cd0c53aa3cd30ccdc9",
     "checker-full.log.gz": "ad9562dbde2dfccfc376d699f02aa54b39515172dcd9bfec4a4d9ea86b9b1ff7",
     "parser-full.log.gz": "70e607ede5a324bdbe46c341f080402da425df34e3c3089a88261b9fee0ea80c"
-  }
+  },
+  "pre_integration_source_sha256": {
+    "build.zig": "54834ed94b13911a77afaad49aec2aa33681d8d8928d363120143b72746ea61f",
+    "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_program/src/ts_program.zig": "21835b0f187de36f7b2315ee7b2acde102159dde1f6ad66d0765ec2849c2fc3d",
+    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9"
+  },
+  "integrated_source_commit": "23a47ef40c15ffab18d59e3055bbbfe1aedd28c8",
+  "integrated_gates": {
+    "checker": {
+      "passed": 4486,
+      "total": 4486,
+      "peak_mb": 2133
+    },
+    "driver": {
+      "passed": 198,
+      "total": 198,
+      "peak_mb": 2001
+    },
+    "program": {
+      "passed": 231,
+      "total": 231,
+      "peak_mb": 2128
+    },
+    "parser": {
+      "passed": 905,
+      "total": 905,
+      "cached_result_reused": true
+    },
+    "compiler": {
+      "steps": 3,
+      "peak_mb": 3036
+    },
+    "zod": {
+      "production_files": 106,
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "peak_mb": 623,
+      "equals_pre_integration_diagnostics": true
+    },
+    "optin": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 2034
+    },
+    "prefix_200": {
+      "complete": false,
+      "exit_code": 125,
+      "observed_stop_mb": 3842,
+      "ceiling_mb": 3840,
+      "requested": 200,
+      "last_started": "multiline",
+      "complete_aggregate": null,
+      "passing_credit": 0
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10
+    }
+  },
+  "react_after_contextual_predicate": {
+    "complete": false,
+    "exit_code": 125,
+    "observed_stop_mb": 3851,
+    "ceiling_mb": 3840,
+    "case_started": "intraExpressionInferencesJsx",
+    "second_case_not_started": true,
+    "passed_credit": 0,
+    "source_stage": "final predicate build before origin/main integration"
+  },
+  "compiler_sha256": "2d4a94c0bf0700a631a326c98fce1bc47815b6f242efb755938db516729217c1",
+  "integrated_optin_binary_sha256": "cf32da9a45c9a4f7cef153e7f59054b24e128cadaa63102276bd2350dbaa9313"
 }

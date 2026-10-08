@@ -49,3 +49,19 @@ Remaining exact React behavior and declaration work stay open in
 in [#841](https://github.com/home-lang/home/issues/841). Complete TS corpus and
 Bun acceptance remain open in [#832](https://github.com/home-lang/home/issues/832)
 and [#66](https://github.com/home-lang/home/issues/66).
+
+After integration with origin/main export-owner reuse, the combined source
+passes checker 4,486/4,486, driver 198/198, program 231/231 and parser/precedence
+905/905. The standalone compiler builds at 3,036 MB peak. Zod stays at 196 TS
+diagnostics and three recoveries, with output equal to the pre-integration
+substitution build. Ten real corpus-survey controls pass.
+
+The final contextual-predicate React attempt stops at the unchanged 3,840 MB
+ceiling while processing `intraExpressionInferencesJsx`; the second selected
+case is unstarted. The integrated leading 200-case remeasurement similarly
+stops at that ceiling on `multiline.tsx`. Neither run yields a complete
+aggregate or passing-case credit. The earlier 166/200 count is historical to
+the pre-predicate source stage. A retained process sample places the integrated
+work in `collectProgramCommonJsExports` calling `moduleExportAssignmentInfo`,
+which recompiles and fully checks a declaration owner during export discovery.
+These source-owner and semantic-resolution costs remain open under #842.
