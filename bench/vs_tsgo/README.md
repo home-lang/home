@@ -96,7 +96,16 @@ at 1.89× slower. Nested-owner reuse improves the unchanged graph by
 independent rechecks and CommonJS's 0.7% slower recheck median remain
 documented. Zod identities remain equal; observed footprint 1087/936 MiB is
 not a universal memory claim. Cross-run differences are not patch A/Bs.
-The existing depth cutoff remains outstanding under #843.
+Later source `929d46a67` removes the export-fact cutoff (#843) and corrects
+ambient enum option/access diagnostics (#844); this is not a new matrix.
+Exact-parent graph/scale confirmation medians are 2.9%/1.5% slower, with
+intervals spanning zero: no demonstrated speedup. All 30 original oracle
+cases match, but a new real `.ts` default-import gate still fails (#845).
+The large-predicate 3.1% slower screen and 0.5% slower independent recheck,
+all observations and the [complete correctness/cost report](../../docs/docs/TS_PERFORMANCE.md#complete-export-fact-traversal-and-option-diagnostics-2026-10-08-utc)
+are retained in [raw evidence](evidence/20261008-export-fact-worklist-843.tar.gz).
+That archive retains 592 pair rounds, 448 passing admissions across eight
+old/final phases and 6,206 verified checksums, including the failed CLI gate.
 Earlier three-compiler snapshots used different hosts and
 TypeScript 7 launcher modes; they remain dated history rather than regression
 comparisons or current expanded-matrix claims.

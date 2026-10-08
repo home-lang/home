@@ -10,6 +10,153 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Complete export-fact traversal and option diagnostics (2026-10-08 UTC)
+
+Source [`929d46a67`](https://github.com/home-lang/home/commit/929d46a678c30e30970c80ba039ae1875b53d392)
+contains the cycle-safe export-fact worklist in
+[#843](https://github.com/home-lang/home/issues/843), plus the ambient enum
+diagnostic/config fix in
+[`4e8ee8637`](https://github.com/home-lang/home/commit/4e8ee86370e76899acf5218269b45685a9dc07a1)
+([#844](https://github.com/home-lang/home/issues/844)). Its exact integrated
+parent is `53167b7e5`. This is a correctness checkpoint and same-parent cost
+experiment, **not a new five-compiler matrix or a demonstrated speedup**.
+The latest expanded matrix remains `20261008T042639Z` below: Home leads only
+2/20 workloads. The goal in #416 remains incomplete.
+
+The previous recursive fact evaluator stopped after eight layers. The new
+request-local dependency worklist keys states by module path and export name,
+retains immutable bound owners in the origin query, and wakes parents when
+child facts change. It has no numeric depth cutoff or recursive native-stack
+walk. Type-only restriction provenance comes from complete origin resolution,
+not the order provisional dependency facts arrive. Star edges exclude the
+language's default export; explicit named defaults are not excluded. This
+does not remove every unrelated virtual-checker resolver limitation or change
+the existing directory/index star-resolution policy.
+
+The checker now distinguishes `verbatimModuleSyntax` errors at ambient const
+enum value imports/re-exports from `isolatedModules` errors at actual value
+accesses. Unused bindings are legal in isolated-only mode. The config driver
+also forwards `verbatimModuleSyntax`, which it previously parsed but dropped.
+No diagnostics were normalized away or suppressed to admit timings.
+
+| Correctness control | Exact parent | Published candidate / TS oracle |
+|---|---|---|
+| Valid 8- and 32-layer named/star graphs; 32 includes a cycle | Incorrect TS2305 | Both accept, matching TS 6.0.3 |
+| Isolated ambient enum through 1, 8 and 32 layers | Wrong bindings/re-exports; deeper graph also TS2305 | One TS2748 at actual `index.ts(2,31)`, exact message match |
+| 24 cases: no flags / isolated / verbatim / both × unused, member, alias, element, namespace, type | Flag/location mismatches retained | All 24 match codes, counts, positions, messages and success/error exit classes |
+| Repeated cyclic type restrictions and shared/conflicting diamond origins | New controls | Program checks stable provenance, shared declaration identity and ambiguity |
+| Direct `export *` default fact | Failed new Program assertion | Correctly excluded; 237/237 Program tests pass |
+| Real `.ts` default import from a star barrel | Silently accepted | **Still silently accepted**, unlike TS1192; failed CLI gate retained in [#845](https://github.com/home-lang/home/issues/845) |
+
+The last row is a separate real-project checker coverage gap: its default
+import check only queries `.mts`/`.mjs` targets. Correct Program facts alone
+do not make that CLI path diagnose ordinary `.ts` imports. The failed final
+oracle is **not counted among the 30 passing cases**, and neither #843 nor
+#844 is claimed to satisfy its entire broader acceptance scope. Those issues
+and #845 remain open. The parent fails the new deep valid projects, so these
+projects are not used for an A/B speed claim.
+
+#### Exact integrated-parent cost measurements
+
+Both frozen binaries use Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+with `-Denable_jsc=false` for the independent standalone compiler target.
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64.
+Each phase independently admits both compilers on all 20 unchanged official
+workloads and their existing negative controls (**56 admissions per phase**).
+The unchanged 4,096-module scale project must also exit zero without output.
+Timings use three warmups, fresh processes, alternating reversed pair order,
+and retain every raw sample. Binary/input/harness/tool/runner hashes match
+before and after each phase. No deep failing-parent timing or cross-run
+matrix difference is treated as a patch comparison.
+
+Positive paired saving means the candidate is faster. The t intervals below
+describe these paired observations; they do not establish equivalence or
+universal performance. The >3%-slower family-median rule selects independent
+30-pair rechecks; it is not a reason to discard the adverse screen.
+
+| Phase / unchanged workload | Parent median | Candidate median | Faster pairs | Paired mean saving 95% t interval |
+|---|---:|---:|---:|---:|
+| Screen: official re-export graph | 14.354 ms | 14.125 ms | 10/20 | −2.664 to +1.720 ms |
+| Independent confirmation: official graph | 13.802 ms | 14.197 ms | 11/30 | −1.061 to +0.137 ms |
+| Screen: 4,096-module scale | 1,382.127 ms | 1,417.007 ms | 2/6 | −51.344 to +48.923 ms |
+| Independent confirmation: scale | 1,384.203 ms | 1,405.088 ms | 5/10 | −122.538 to +21.693 ms |
+| Large-predicate family warning | 267.503 ms | 275.705 ms | 2/10 | **−14.142 to −0.964 ms** |
+| Independent large-predicate recheck | 280.212 ms | 281.744 ms | 12/30 | −5.666 to +1.767 ms |
+
+Confirmation graph/scale medians are respectively **2.9% / 1.5% slower**;
+their intervals include zero. The large-predicate screen is 3.1% slower with
+an entirely negative saving interval; its recheck is 0.5% slower with an
+interval spanning zero. Retain both: the warning is not proof of a permanent
+regression, and the recheck is not proof of no regression. This correctness
+change has **no demonstrated graph speedup** and is not a benchmark win.
+
+All 20 family screens (10 pairs each) remain visible:
+
+| Workload | Parent median (ms) | Candidate median (ms) | Faster pairs |
+|---|---:|---:|---:|
+| Startup | 3.296 | 3.114 | 10/10 |
+| Many files | 23.526 | 23.258 | 7/10 |
+| Deep types | 23.037 | 23.310 | 6/10 |
+| Import graph | 22.723 | 23.284 | 3/10 |
+| Re-export graph | 13.415 | 13.689 | 3/10 |
+| TSX components | 21.840 | 21.599 | 8/10 |
+| Generic calls | 24.753 | 24.663 | 6/10 |
+| Control flow | 28.289 | 28.092 | 7/10 |
+| Type predicates | 35.985 | 35.586 | 6/10 |
+| Large type predicates | 267.503 | 275.705 | 2/10 |
+| Null-safe access | 35.631 | 35.237 | 5/10 |
+| Destructuring | 16.129 | 16.296 | 2/10 |
+| Overloads | 26.381 | 26.346 | 6/10 |
+| Class hierarchy | 25.782 | 25.671 | 7/10 |
+| Structural objects | 25.248 | 24.875 | 6/10 |
+| Interface composition | 37.537 | 37.783 | 4/10 |
+| Variadic tuples | 34.410 | 34.828 | 3/10 |
+| Checked JS / JSDoc | 32.471 | 32.923 | 3/10 |
+| CommonJS graph | 28.697 | 28.734 | 6/10 |
+| Recursive generics | 15.878 | 15.844 | 5/10 |
+
+An earlier prototype against source parent `a444cf021` / compiler `30d3824da`
+is also retained, not mixed into these integrated-source results. Its graph
+confirmation was 13.531 → 13.629 ms (15/30 faster pairs; saving interval
+−0.974 to +1.279 ms), and scale 1,330.791 → 1,329.527 ms (6/10; −43.390 to
++33.970 ms): inconclusive. Its startup warning was 3.269 → 3.662 ms (2/10;
+−0.574 to +0.048 ms), followed by a selected independent recheck of
+3.308 → 3.054 ms (30/30; +0.205 to +0.295 ms). Both earlier observations,
+all 20 earlier family screens and their source/patch/binary identities remain
+in the archive, without substituting a favorable result for another run.
+
+#### Semantic, production and reproducibility evidence
+
+Full integrated standalone suites passed: checker **4,493**, driver **199**,
+Program **237**, CLI **74**, entrypoint **33**; no named test filters.
+Program was rerun after the final default-star edge change. The final CLI
+and entrypoint suites are rerun on the published source as well. Harness
+tests: **128/128**. Zig formatting and `git diff --check` passed.
+`bunx --bun pickier .` exits 1 with the unchanged repository-wide
+**22,074 problems (11,461 errors / 10,613 warnings)**; this is not a lint pass
+and unrelated/generated controls are not auto-fixed.
+
+Pinned unmodified Zod 4.5.2, all 106 production files, retains the exact
+**196 TS errors + 3 HM9002** multiset, zero additions/removals. The final
+candidate's guarded observed footprint is 570 MiB; the parent 571 MiB.
+Neither this ratchet nor identical diagnostics admit Zod for a speed claim.
+Native builds/tests/timings kept the 3,840 MiB tree ceiling, 600-second execution
+limit and 1,024/512 MiB disk floors. Disk-floor refusals, an early compilation
+error, the red default-star test, a cancelled wrong build target, the missing
+runtime dependency configure failure and the failed CLI oracle are retained
+and are not counted as passing verification. The corrected standalone build
+uses the same non-JSC option as its parent, not a semantic compiler shortcut.
+
+The [raw evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-export-fact-worklist-843.tar.gz)
+contains all earlier and final pair phases, admissions, fixture bytes and
+hashes, official and scale inputs, source patch, commands/scripts, semantic
+logs and complete Zod diagnostics: **592 pair-round files**, **448 passing
+admissions** across eight independent old/final phases, and **6,206 verified
+checksums**. Its verifier recomputes medians, intervals, win counts,
+exact-message oracle matches and the explicitly failing default oracle.
+Archive SHA-256:
+`705bcf5818d80aaf4138ee9afc0efbe894af8049233dc2056a5f830ebf0e09cf`.
+
 ### Nested export-owner checkpoint (2026-10-08 UTC)
 
 Result `20261008T042639Z` measures source

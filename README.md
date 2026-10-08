@@ -146,8 +146,22 @@ re-export graph by **1.232×** in independent same-parent paired confirmation.
 This snapshot measures source `30d3824da`, against exact parent `eaaddf213`.
 The initial overload regression warning and all ten targeted rechecks are
 retained in the docs; CommonJS's recheck has a 0.7% slower median. Cross-run
-differences are not patch A/Bs. The existing export-fact depth limit remains
-outstanding in [#843](https://github.com/home-lang/home/issues/843).
+differences are not patch A/Bs. The export-fact depth cutoff is removed in
+source `929d46a67` ([#843](https://github.com/home-lang/home/issues/843)),
+with corrected ambient enum diagnostics/config forwarding
+([#844](https://github.com/home-lang/home/issues/844)). This later correctness
+checkpoint is not a new five-compiler matrix and shows no clear graph speedup:
+
+| Unchanged exact-parent confirmation | Parent `53167b7e5` | Source `929d46a67` | Observed outcome |
+|---|---:|---:|---|
+| Official re-export graph (30 pairs) | 13.802 ms | 14.197 ms | 2.9% slower median; interval spans zero |
+| 4,096-module scale (10 pairs) | 1,384.203 ms | 1,405.088 ms | 1.5% slower median; interval spans zero |
+
+All 30 original TypeScript oracle cases match; a separate ordinary `.ts`
+default-import gate still fails and is tracked in
+[#845](https://github.com/home-lang/home/issues/845). The large-predicate
+screen's 3.1% slower warning and 0.5% slower independent recheck remain in
+the [full correctness/cost report](docs/docs/TS_PERFORMANCE.md#complete-export-fact-traversal-and-option-diagnostics-2026-10-08-utc).
 Older hosts, competitor sets, and launcher modes are not
 mixed with this snapshot.
 
