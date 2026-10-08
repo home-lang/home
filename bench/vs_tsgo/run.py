@@ -1166,6 +1166,34 @@ def validate(commands: dict[str, list[str]], workload: str, *, profiles: dict | 
         validate_commonjs_graph_negatives(commands, **options)
     elif workload == "recursive_generics":
         validate_recursive_generic_negatives(commands, **options)
+    elif workload == "checkjs_jsdoc":
+        validate_checkjs_jsdoc_negatives(commands, **options)
+
+
+def validate_checkjs_jsdoc_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
+    # Check the actual typedef, generic-preserved, callback and instance results
+    # from the timed source. Never admit a checker that erased them to any.
+    families = manifest()["generated"]["checkjs_jsdoc_families"]
+    indices = sorted({0, families // 2, families - 1})
+    invalid = "".join(
+        f"/** @type {{boolean}} */ const wrongId{i} = preserved{i}.id;\n"
+        f"preserved{i}.missing;\n"
+        f"/** @type {{number}} */ const wrongCallback{i} = project{i}(model{i});\n"
+        f"store{i}.read(123);\n"
+        f"/** @type {{Box{i}<Model{i}>}} */ const wrongBox{i} = {{ value: {{ id: \"wrong\", name: \"x\", meta: {{ active: true, label: \"x\" }} }}, label: \"x\" }};\n"
+        for i in indices
+    )
+    with tempfile.TemporaryDirectory(prefix="home-bench-jsdoc-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "checkjs_jsdoc", project)
+        source = project / "src/checkjs-jsdoc.js"
+        write(source, source.read_text(encoding="utf-8") + invalid)
+        expected = ["2322"] * (3 * len(indices)) + ["2339"] * len(indices) + ["2345"] * len(indices)
+        for name, command in commands.items():
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                "checkjs_jsdoc", expected_codes=expected, trace=trace)
+            if not passed:
+                raise SystemExit(f"{name} failed checkjs_jsdoc negative controls:\n{result.stdout + result.stderr}")
 
 
 def validate_commonjs_graph_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
@@ -1344,17 +1372,12 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None,
     # Validate the entire selection before creating a result directory or
     # timing any workload. A later admission failure must not leave an
     # apparently complete report containing only the earlier/easier cases.
-    trace = [] if profiles else None
-    admission_path = None
-    if profiles:
-        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        admission_path = RESULTS / "admission" / f"{stamp}-{os.getpid()}.json"
+    trace = []
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    admission_path = RESULTS / "admission" / f"{stamp}-{os.getpid()}.json"
     try:
         for workload in workloads:
-            if profiles:
-                validate(commands, workload, profiles=profiles, trace=trace)
-            else:
-                validate(commands, workload)
+            validate(commands, workload, profiles=profiles, trace=trace)
         admitted_provenance = provenance()
         if admitted_provenance != preflight_provenance:
             raise SystemExit("benchmark artifacts changed during admission; no timing results were created")
@@ -1377,7 +1400,7 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None,
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
-        "validation_schema": 3,
+        "validation_schema": 4,
         "workloads": workloads,
         "compilers": versions,
         "provenance": {

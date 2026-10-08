@@ -20,6 +20,13 @@ whose compiler tree equals
 owned-transfer change in #842. This is a fresh same-host compiler matrix, not
 an exact-parent experiment attributing every difference to those changes.
 
+This run predates [#852](https://github.com/home-lang/home/issues/852)'s direct
+JSDoc negative controls. Its checked-JS row is therefore a provisional timing,
+not a fair speed claim under validation protocol 4. All five pinned compilers
+pass the subsequent untimed isolated and combined controls, but those checks
+are not retroactively relabeled as admission performed before this measurement.
+A fresh complete protocol-4 run is required to replace this checkpoint.
+
 All five compilers pass the identical 20 positive projects and eight
 negative-control projects: **140/140 admissions**. Thirty fresh processes per
 compiler/workload follow three warmups, with rotating order balanced across
@@ -40,7 +47,7 @@ inventory pins; no moving-canary substitution was made.
 
 | Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 205.2 ms | 23.4 ms | 29.7 ms | 22.6 ms | 13.5 ms | 2.19× slower |
+| `checkjs_jsdoc` | 205.2 ms | 23.4 ms | 29.7 ms | 22.6 ms | 13.5 ms | Provisional (JSDoc gate absent) |
 | `class_hierarchy` | 187.6 ms | 21.4 ms | 23.6 ms | 18.0 ms | 14.1 ms | 1.68× slower |
 | `commonjs_graph` | 149.2 ms | 18.2 ms | 24.1 ms | 14.6 ms | 11.8 ms | 2.04× slower |
 | `control_flow` | 185.3 ms | 26.5 ms | 25.0 ms | 23.5 ms | 15.9 ms | 1.58× slower |
@@ -69,7 +76,8 @@ tests, equivalence claims, or a causal regression from the earlier 2/20
 snapshot. All compilers' absolute times changed across those runs; earlier
 numbers are retained below as dated history and are never mixed into this table.
 
-The largest relative gaps are checked JavaScript/JSDoc (**2.19×**), CommonJS
+The provisional checked-JS timing ratio is **2.19×**, pending the new gate.
+Validated relative gaps include CommonJS
 (**2.04×**), null-safe access (**1.97×**), interface composition (**1.95×**),
 and TSX (**1.93×**). The separate #850 exact-parent measurements remain the
 evidence for that patch's gains, including its inconclusive 1,024-family

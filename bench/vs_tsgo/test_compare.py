@@ -13,6 +13,13 @@ import compare
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_jsdoc_comparisons_require_the_new_validation_protocol(self):
+        for schema in (None, 1, 2, 3, 5):
+            self.assertIn("Provisional", compare.format_workload_comparison("checkjs_jsdoc", 1, 2, schema))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("checkjs_jsdoc", 1, 2, 4))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("reexport_graph", 1, 2, 4))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("variadic_tuples", 1, 2, 4))
+
     def test_exact_tie_is_not_a_win(self):
         self.assertEqual("1.00× (near tie)", compare.format_comparison(100, 100))
 
@@ -228,6 +235,58 @@ class InterleavedIntegrityTests(unittest.TestCase):
         self.extra_compiler_rounds()
         (self.directory / "admission.jsonl").write_text("{}\n")
         with self.assertRaisesRegex(ValueError, "admission evidence hash"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def jsdoc_admission(self):
+        self.extra_compiler_rounds()
+        self.metadata["validation_schema"] = 4
+        path = self.directory / "admission.jsonl"
+        admission = json.loads(path.read_text())
+        negatives = []
+        codes = sorted(["2322"] * 9 + ["2339"] * 3 + ["2345"] * 3)
+        for record in admission["records"]:
+            record["workload"] = "checkjs_jsdoc"
+            negative = dict(record, kind="negative", exit_code=1,
+                            stdout="".join(f"error TS{code}: expected\n" for code in codes),
+                            expected_codes=codes, codes=codes)
+            negatives.append(negative)
+        admission["records"].extend(negatives)
+        self.write_admission(admission)
+        return admission
+
+    def write_admission(self, admission):
+        raw = json.dumps(admission).encode()
+        (self.directory / "admission.jsonl").write_bytes(raw)
+        self.metadata["admission"].update(sha256=hashlib.sha256(raw).hexdigest(), records=len(admission["records"]))
+
+    def test_jsdoc_schema_four_requires_all_negative_records(self):
+        admission = self.jsdoc_admission()
+        names = list(self.metadata["compilers"])
+        compare.validate_admission(self.directory, self.metadata, names, ["checkjs_jsdoc"])
+        admission["records"] = [row for row in admission["records"] if row["kind"] != "negative"]
+        self.write_admission(admission)
+        with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
+            compare.validate_admission(self.directory, self.metadata, names, ["checkjs_jsdoc"])
+
+    def test_jsdoc_schema_four_rejects_weakened_error_contract(self):
+        admission = self.jsdoc_admission()
+        negative = next(row for row in admission["records"] if row["kind"] == "negative")
+        negative.update(expected_codes=["2322"], codes=["2322"], stdout="error TS2322: expected\n")
+        self.write_admission(admission)
+        with self.assertRaisesRegex(ValueError, "JSDoc negative contract changed"):
+            compare.validate_admission(self.directory, self.metadata, list(self.metadata["compilers"]), ["checkjs_jsdoc"])
+
+    def test_three_compiler_schema_four_also_requires_retained_admission(self):
+        self.extra_compiler_rounds()
+        self.metadata["validation_schema"] = 4
+        self.metadata["compilers"] = {name: name for name in ("tsc", "tsgo", "home")}
+        del self.metadata["admission"]
+        with self.assertRaisesRegex(ValueError, "retained admission evidence"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_base_compilers_cannot_claim_new_gate_with_legacy_schedule(self):
+        self.metadata.update(validation_schema=4, schedule="sequential")
+        with self.assertRaisesRegex(ValueError, "protocol 4 requires round-robin"):
             compare.validate_interleaved_rounds(self.directory, self.metadata)
 
     def test_admission_claims_must_match_the_retained_process_output(self):

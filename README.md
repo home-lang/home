@@ -127,7 +127,7 @@ Values are medians of 30 fresh processes after three warmups; lower is better.
 | 64 modules through 8 barrel re-exports | 93.7 ms | 10.0 ms | 11.2 ms | 8.3 ms | 8.2 ms | 1.36× slower |
 | Deep conditional / mapped / template types | 127.9 ms | 20.4 ms | 20.4 ms | 13.5 ms | 12.7 ms | 1.61× slower |
 | Recursive generics | 152.4 ms | 40.0 ms | 14.5 ms | 32.4 ms | 9.4 ms | 1.54× slower |
-| Checked JavaScript with JSDoc | 205.2 ms | 23.4 ms | 29.7 ms | 22.6 ms | 13.5 ms | 2.19× slower |
+| Checked JavaScript with JSDoc | 205.2 ms | 23.4 ms | 29.7 ms | 22.6 ms | 13.5 ms | Provisional: predates #852 gate |
 | Control-flow narrowing (256 unions) | 185.3 ms | 26.5 ms | 25.0 ms | 23.5 ms | 15.9 ms | 1.58× slower |
 | 256 type-predicate families | 228.5 ms | 38.7 ms | 32.0 ms | 32.9 ms | 22.7 ms | 1.41× slower |
 | 2,048 type-predicate families | 979.7 ms | 295.4 ms | 240.0 ms | 262.3 ms | 156.6 ms | 1.53× slower |

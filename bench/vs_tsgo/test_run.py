@@ -226,17 +226,21 @@ class ProvenanceTests(unittest.TestCase):
         self.assertNotEqual(compilers["tsgo"]["launcher"]["sha256"], compilers["tsgo"]["payload"]["sha256"])
 
     def test_admission_artifact_change_stops_before_result_creation(self):
+        results = self.root / "changed-admission-results"
         with mock.patch.object(run, "selected_workloads", return_value=["example"]), mock.patch.object(
             run.shutil, "which", return_value="hyperfine"
         ), mock.patch.object(run, "CORPUS") as corpus, mock.patch.object(
             run, "compiler_commands", return_value=self.commands
         ), mock.patch.object(run, "verified_compiler_versions", return_value={}), mock.patch.object(
             run, "benchmark_provenance", side_effect=[{"hash": "before"}, {"hash": "after"}]
-        ), mock.patch.object(run, "validate"), mock.patch.object(run, "RESULTS") as results:
+        ), mock.patch.object(run, "validate"), mock.patch.object(run, "RESULTS", results):
             corpus.is_dir.return_value = True
             with self.assertRaisesRegex(SystemExit, "changed during admission"):
                 run.cmd_cold(1, 0)
-            self.assertEqual([], results.mock_calls)
+            self.assertEqual([], list(results.glob("*/metadata.json")))
+            failures = list((results / "admission").glob("*.json"))
+            self.assertEqual(1, len(failures))
+            self.assertFalse(json.loads(failures[0].read_text())["passed"])
 
     def test_measurement_artifact_change_is_retained_but_not_verified(self):
         results = self.root / "results"
@@ -263,7 +267,7 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "changed during measurement"):
                 run.cmd_cold(1, 0)
 
-        directories = list(results.iterdir())
+        directories = [path for path in results.iterdir() if path.name != "admission"]
         self.assertEqual(1, len(directories))
         metadata = run.json.loads((directories[0] / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual("changed", metadata["provenance"]["status"])
@@ -424,6 +428,46 @@ class CommonJsGraphWorkloadTests(unittest.TestCase):
             negatives.assert_called_once_with(commands)
 
 
+class CheckJsWorkloadTests(unittest.TestCase):
+    def test_controls_append_only_and_cover_all_five_features_at_three_positions(self):
+        complete = "error TS2322: wrong\n" * 9 + "error TS2339: missing\n" * 3 + "error TS2345: argument\n" * 3
+        with mock.patch.object(run, "manifest", return_value={"generated": {"checkjs_jsdoc_families": 128}}), mock.patch.object(
+            run.shutil, "copytree"
+        ) as copy, mock.patch.object(run.Path, "read_text", return_value="original\n"), mock.patch.object(
+            run, "write"
+        ) as write, mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, complete, "")):
+            trace = []
+            run.validate_checkjs_jsdoc_negatives({"home": ["home"]}, trace=trace)
+            self.assertEqual(run.CORPUS / "checkjs_jsdoc", copy.call_args.args[0])
+            self.assertNotEqual(run.CORPUS / "checkjs_jsdoc/src/checkjs-jsdoc.js", write.call_args.args[0])
+            source = write.call_args.args[1]
+            self.assertTrue(source.startswith("original\n"))
+            for index in (0, 64, 127):
+                for token in (f"preserved{index}.id", f"preserved{index}.missing", f"project{index}(model{index})",
+                              f"store{index}.read(123)", f"Box{index}<Model{index}>"):
+                    self.assertIn(token, source)
+            self.assertEqual(15, len(trace[0]["expected_codes"]))
+            self.assertTrue(trace[0]["passed"])
+
+    def test_controls_reject_partial_diagnostics_silent_success_and_abnormal_exits(self):
+        complete = "error TS2322: wrong\n" * 9 + "error TS2339: missing\n" * 3 + "error TS2345: argument\n" * 3
+        for code, output in ((0, ""), (0, complete), (1, "error TS2322: wrong\n"), (-11, complete), (3, complete)):
+            with mock.patch.object(run, "manifest", return_value={"generated": {"checkjs_jsdoc_families": 128}}), mock.patch.object(
+                run.shutil, "copytree"
+            ), mock.patch.object(run.Path, "read_text", return_value="original\n"), mock.patch.object(
+                run, "write"
+            ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")):
+                with self.assertRaisesRegex(SystemExit, "failed checkjs_jsdoc negative controls"):
+                    run.validate_checkjs_jsdoc_negatives({"home": ["home"]})
+
+    def test_positive_jsdoc_cannot_skip_negative_admission(self):
+        with mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), mock.patch.object(
+            run, "validate_checkjs_jsdoc_negatives"
+        ) as negative:
+            run.validate({"home": ["home"]}, "checkjs_jsdoc")
+            negative.assert_called_once_with({"home": ["home"]})
+
+
 class AdmissionTests(unittest.TestCase):
     def test_predicate_and_destructuring_controls_require_normal_diagnostic_exit(self):
         families = (
@@ -501,18 +545,21 @@ class AdmissionTests(unittest.TestCase):
             negatives.assert_called_once_with(commands)
 
     def test_later_failure_stops_before_any_measurement_or_results(self):
-        with mock.patch.object(run, "selected_workloads", return_value=["first", "second"]), mock.patch.object(
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(run, "selected_workloads", return_value=["first", "second"]), mock.patch.object(
             run.shutil, "which", return_value="hyperfine"
         ), mock.patch.object(run, "CORPUS"), mock.patch.object(run, "compiler_commands", return_value={}), mock.patch.object(
             run, "verified_compiler_versions", return_value={}
         ), mock.patch.object(run, "benchmark_provenance", return_value={}
         ), mock.patch.object(run, "validate", side_effect=[None, SystemExit("admission failed")]) as validate, mock.patch.object(
-            run, "RESULTS"
-        ) as results, mock.patch.object(run.subprocess, "run") as process:
+            run, "RESULTS", Path(temporary) / "results"
+        ), mock.patch.object(run.subprocess, "run") as process:
             with self.assertRaisesRegex(SystemExit, "admission failed"):
                 run.cmd_cold(30, 3)
-            self.assertEqual([mock.call({}, "first"), mock.call({}, "second")], validate.call_args_list)
-            self.assertEqual([], results.mock_calls)
+            self.assertEqual([mock.call({}, "first", profiles={}, trace=[]), mock.call({}, "second", profiles={}, trace=[])], validate.call_args_list)
+            self.assertEqual([], list((Path(temporary) / "results").glob("*/metadata.json")))
+            failures = list((Path(temporary) / "results/admission").glob("*.json"))
+            self.assertEqual(1, len(failures))
+            self.assertFalse(json.loads(failures[0].read_text())["passed"])
             process.assert_not_called()
 
     def test_graph_controls_append_to_a_copy_and_require_both_diagnostics(self):

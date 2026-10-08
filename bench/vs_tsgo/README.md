@@ -26,6 +26,14 @@ The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
 New runs invoke its native payload directly rather than the npm Node launcher.
 Older archived runs retain the command and startup costs they actually measured.
 
+New runs use validation protocol 4: checked JavaScript/JSDoc must reject 15
+planted errors covering model properties, missing members, callback returns,
+instance arguments and nested generic values at first/middle/last positions.
+Negative inputs are separate copies and never timed. All runs, including the
+base three-compiler mode, retain admission process evidence. Schema-3 and older
+JSDoc timing rows remain readable but are provisional rather than fair speed
+comparisons; they are not retroactively granted the new gate (#852).
+
 To add byte-pinned native compilers, use `cold --competitor-manifest <file>`.
 The [profile registry](profiles/README.md) documents the schema and current
 Darwin ARM64 Rust/Bun pins. Every added compiler must pass the same positive
