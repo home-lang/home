@@ -166402,11 +166402,22 @@ pub const Checker = struct {
             for (orig_snapshot, new_members.items) |om, rebuilt_member| {
                 const receiver_predicate = self.member_predicates.get(.{ .receiver_type = t, .member_name = om.name });
                 const original_signature_predicate = self.signature_predicates.get(om.type);
-                const follows_signature = receiver_predicate == null or
-                    (original_signature_predicate != null and std.meta.eql(receiver_predicate.?, original_signature_predicate.?));
-                if (follows_signature) {
+                const follows_signature_target = if (receiver_predicate) |receiver|
+                    if (original_signature_predicate) |signature|
+                        receiver.target_type == signature.target_type and
+                            (receiver.target_node == signature.target_node or receiver.target_type != types.Primitive.unknown)
+                    else
+                        false
+                else
+                    true;
+                if (follows_signature_target) {
                     if (self.signature_predicates.get(rebuilt_member.type)) |pred| {
-                        try self.recordMemberPredicate(new_obj, om.name, pred);
+                        // A resolved target follows the actual callable binder.
+                        // Predicate meaning and location belong to the receiver;
+                        // unresolved targets require matching nodes above.
+                        var next_pred = receiver_predicate orelse pred;
+                        next_pred.target_type = pred.target_type;
+                        try self.recordMemberPredicate(new_obj, om.name, next_pred);
                         continue;
                     }
                 }
@@ -236223,6 +236234,103 @@ test "checker: substitution sharing batch ties member predicates to the rebuilt 
     const signature_again = s.ti.objectMember(rebuilt_again, guard_name).?;
     const binder_again = s.checker.generic_signature_params.get(signature_again).?[0];
     try T.expectEqual(binder_again, s.checker.member_predicates.get(.{ .receiver_type = rebuilt_again, .member_name = guard_name }).?.target_type);
+}
+
+test "checker: receiver predicate locations preserve callable binders and receiver annotations" {
+    const s = try newSetup("type First = U; type Second = U;");
+    defer destroySetup(s);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const signature_node = hir_mod.typeAliasOf(&s.hir, stmts[0]).aliased;
+    const receiver_node = hir_mod.typeAliasOf(&s.hir, stmts[1]).aliased;
+    try T.expect(signature_node != receiver_node);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), outer, types.Primitive.none, .bivariant);
+    const guard = try s.checker.string_interner.intern("guard");
+    for ([_]bool{ false, true }) |is_asserts| {
+        const signature = try s.ti.internSignature(&.{local}, types.Primitive.boolean_t, false);
+        try s.checker.recordGenericSignatureParams(signature, &.{local});
+        const predicate: FnPredicate = .{ .param_index = 0, .target_type = local, .target_node = signature_node, .is_asserts = is_asserts };
+        try s.checker.signature_predicates.put(T.allocator, signature, predicate);
+        const object = try s.ti.internObjectType(&.{.{ .name = guard, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true }});
+        var receiver_predicate = predicate;
+        receiver_predicate.target_node = receiver_node;
+        try s.checker.recordMemberPredicate(object, guard, receiver_predicate);
+        var previous: TypeId = types.Primitive.none;
+        for ([_]TypeId{ types.Primitive.string_t, types.Primitive.number_t }) |replacement| {
+            var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer map.deinit(T.allocator);
+            try map.put(T.allocator, outer, replacement);
+            const rebuilt = try s.checker.substituteType(object, &map);
+            const rebuilt_signature = s.ti.objectMember(rebuilt, guard).?;
+            const binder = s.checker.generic_signature_params.get(rebuilt_signature).?[0];
+            try T.expect(binder != local and binder != previous);
+            previous = binder;
+            const next = s.checker.member_predicates.get(.{ .receiver_type = rebuilt, .member_name = guard }).?;
+            try T.expectEqual(binder, next.target_type);
+            try T.expectEqual(receiver_node, next.target_node);
+            try T.expectEqual(is_asserts, next.is_asserts);
+            try T.expectEqual(binder, s.ti.signatureParams(rebuilt_signature)[0]);
+            try T.expectEqual(replacement, s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(binder)].constraint);
+        }
+    }
+}
+
+test "checker: receiver predicate locations preserve receiver overrides with mapped callable targets" {
+    const s = try newSetup("type First = U; type Second = U;");
+    defer destroySetup(s);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const signature_node = hir_mod.typeAliasOf(&s.hir, stmts[0]).aliased;
+    const receiver_node = hir_mod.typeAliasOf(&s.hir, stmts[1]).aliased;
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), outer, types.Primitive.none, .bivariant);
+    const signature = try s.ti.internSignature(&.{ local, local }, types.Primitive.boolean_t, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    try s.checker.signature_predicates.put(T.allocator, signature, .{ .param_index = 0, .target_type = local, .target_node = signature_node, .is_asserts = false });
+    const guard = try s.checker.string_interner.intern("guard");
+    const object = try s.ti.internObjectType(&.{.{ .name = guard, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true }});
+    try s.checker.recordMemberPredicate(object, guard, .{ .param_index = 1, .target_type = local, .target_node = receiver_node, .is_asserts = true });
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const rebuilt = try s.checker.substituteType(object, &map);
+    const rebuilt_signature = s.ti.objectMember(rebuilt, guard).?;
+    const binder = s.checker.generic_signature_params.get(rebuilt_signature).?[0];
+    const receiver = s.checker.member_predicates.get(.{ .receiver_type = rebuilt, .member_name = guard }).?;
+    try T.expectEqual(binder, receiver.target_type);
+    try T.expectEqual(@as(u16, 1), receiver.param_index);
+    try T.expect(receiver.is_asserts);
+    try T.expectEqual(receiver_node, receiver.target_node);
+    const callable = s.checker.signature_predicates.get(rebuilt_signature).?;
+    try T.expectEqual(@as(u16, 0), callable.param_index);
+    try T.expect(!callable.is_asserts);
+    try T.expectEqual(signature_node, callable.target_node);
+}
+
+test "checker: receiver predicate locations retain independent unresolved targets" {
+    const s = try newSetup("type First = string; type Second = number;");
+    defer destroySetup(s);
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    const signature_node = hir_mod.typeAliasOf(&s.hir, stmts[0]).aliased;
+    const receiver_node = hir_mod.typeAliasOf(&s.hir, stmts[1]).aliased;
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const signature = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    const predicate: FnPredicate = .{ .param_index = 0, .target_type = types.Primitive.unknown, .target_node = signature_node, .is_asserts = false };
+    try s.checker.signature_predicates.put(T.allocator, signature, predicate);
+    const guard = try s.checker.string_interner.intern("guard");
+    const object = try s.ti.internObjectType(&.{.{ .name = guard, .type = signature, .is_optional = false, .is_readonly = false, .is_method = true }});
+    var receiver_predicate = predicate;
+    receiver_predicate.target_node = receiver_node;
+    try s.checker.recordMemberPredicate(object, guard, receiver_predicate);
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const rebuilt = try s.checker.substituteType(object, &map);
+    const rebuilt_signature = s.ti.objectMember(rebuilt, guard).?;
+    const next_receiver = s.checker.member_predicates.get(.{ .receiver_type = rebuilt, .member_name = guard }).?;
+    const next_signature = s.checker.signature_predicates.get(rebuilt_signature).?;
+    try T.expectEqual(receiver_node, next_receiver.target_node);
+    try T.expectEqual(types.Primitive.number_t, try s.checker.resolvePredicateTarget(next_receiver));
+    try T.expectEqual(types.Primitive.string_t, try s.checker.resolvePredicateTarget(next_signature));
 }
 
 test "checker: empty substitutions preserve type graph identity" {
