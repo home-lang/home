@@ -1,0 +1,100 @@
+{
+  "source_base": "348e36e92ef20fbb394b7eabae76347b35c7c463",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_program/src/ts_program.zig": "cd72251909532331f302619b0a38976eb1414bebb35858fdc55f95b24267d05d",
+    "packages/ts_conformance/src/ts_conformance.zig": "cfa81a8cbcf1a96e6db2bec2b35f73f6dbed9ddb7c72af688a3da322be603410",
+    "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9"
+  },
+  "gates": {
+    "program": {
+      "passed": 234,
+      "total": 234,
+      "exit_code": 0,
+      "peak_mb": 2043
+    },
+    "resolver_controls": {
+      "passed": 4,
+      "total": 4,
+      "exit_code": 0,
+      "peak_mb": 1874
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2125
+    },
+    "original_react": {
+      "requested_cases": [
+        "intraExpressionInferencesJsx",
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "aggregate_complete": false,
+      "exit_code": 125,
+      "peak_mb": 3844,
+      "deadline_seconds": 900
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 2866
+    },
+    "zod": {
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 596,
+      "normalized_output_equals_previous_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    }
+  },
+  "artifact_sha256": {
+    "program.log.gz": "a07e73e79e9f3c465b386c098b34003b7604958d14c29676093d5ecc0ddcddef",
+    "resolver-controls.log.gz": "a877882af0f0fd7156aab4d82a89ac875ce97a3cbc701bb1bd73f8643724b86a",
+    "opt-in-controls.log.gz": "08f49fa790c9a713e75a0afb911b537f9712f1229aa6ce4af8ee57ec93a9f661",
+    "docs-paths.log.gz": "d678572ab993b8815b84eec97df101dae91397a57aef09953c88c1be66134a0d",
+    "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "original-react-memory-stop.log.gz": "aaf5e7acd28b045acb450c1624adde083f19881489347b587143d5d111864eed",
+    "original-react-process-sample.txt.gz": "5ae5a8ee1bdb53fcbb7b6005a97943ffcc39320629b817966c4beb26b0277ba8",
+    "compiler.log.gz": "810b32d2c67812c977720ca66e286eaf42964e965cc74d14012a481a6740327c",
+    "compiler-lock-admission.log.gz": "39b7da836d5b2db5407556121afc43adb750889dd2ccbfcc65e5bc0886b33e62",
+    "zod.log.gz": "27052cfc2d110c26e952dce3cc6d5b16fc70b3568a9ec704be73b7c131cd932e",
+    "zod-diagnostics.log.gz": "72c6cd6039666eaf5afd6c222efd13b3d81683a7f9bea90b239c2dbf43d1f036",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "273e82233f33f4df90a0f7e26b176146e0b4cfca09a238c6cef2dd2f2f7cec8d",
+    "docs-paths-final.log.gz": "d678572ab993b8815b84eec97df101dae91397a57aef09953c88c1be66134a0d",
+    "evidence-lint-final.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3"
+  },
+  "opt_in_artifact_sha256": "a3cef0903e7479fcb95d3a9d8ebe434be63a42bfdf573125c2036d5407727e8e",
+  "source_commit": "51db032e9d97880fa7b3a6aebf630438c91bccd4",
+  "compiler_sha256": "1900fff5036b39d9c8e532a44e112cbca84b699aa997a2621fa0882c7bf21ff4",
+  "admission_attempts": [
+    {
+      "gate": "compiler",
+      "exit_code": 121,
+      "compilation_started": false,
+      "reason": "shared machine lock wait expired; same-limit retry succeeded"
+    }
+  ]
+}
