@@ -502,6 +502,21 @@ pub const Outcome = enum {
     skipped,
 };
 
+/// Reasons the pinned typescript-go compiler runner declines a configured
+/// compiler case before checking diagnostics. These are retained separately
+/// from passing and failing cases; a runner limitation never earns compiler
+/// parity credit.
+pub const UpstreamSkip = enum {
+    module_kind,
+    module_resolution,
+    es_module_interop_false,
+    allow_synthetic_default_imports_false,
+    base_url,
+    out_file,
+    target_es5,
+    always_strict_false,
+};
+
 pub const Result = struct {
     name: []const u8,
     outcome: Outcome,
@@ -2634,8 +2649,13 @@ const TsconfigResolverOptions = struct {
     config_file_path: []const u8 = "",
     module: []const u8 = "",
     module_resolution: []const u8 = "",
+    target: []const u8 = "",
+    out_file: []const u8 = "",
     module_suffixes: []const []const u8 = &.{},
     import_helpers: ?bool = null,
+    es_module_interop: ?bool = null,
+    allow_synthetic_default_imports: ?bool = null,
+    always_strict: ?bool = null,
     allow_js: ?bool = null,
     check_js: ?bool = null,
     type_roots: []const []const u8 = &.{},
@@ -2654,6 +2674,8 @@ const TsconfigResolverOptions = struct {
         if (self.config_file_path.len != 0) gpa.free(self.config_file_path);
         if (self.module.len != 0) gpa.free(self.module);
         if (self.module_resolution.len != 0) gpa.free(self.module_resolution);
+        if (self.target.len != 0) gpa.free(self.target);
+        if (self.out_file.len != 0) gpa.free(self.out_file);
         freeStringList(gpa, self.module_suffixes);
         freeStringList(gpa, self.type_roots);
         freeStringList(gpa, self.types);
@@ -2730,14 +2752,29 @@ fn resolverConfigOptionsFromVirtualTsconfig(
     result.root_dirs = try dupeOptionalStringList(gpa, options.root_dirs);
     if (options.module) |value| result.module = try gpa.dupe(u8, @tagName(value));
     if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
+    if (options.target) |value| result.target = try gpa.dupe(u8, @tagName(value));
+    if (compilerOptionExtraString(options, "outFile")) |value| {
+        if (value.len != 0) result.out_file = try gpa.dupe(u8, value);
+    }
     result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
     result.import_helpers = options.import_helpers;
+    result.es_module_interop = options.es_module_interop;
+    result.allow_synthetic_default_imports = options.allow_synthetic_default_imports;
+    result.always_strict = options.always_strict;
     result.allow_js = options.allow_js;
     result.check_js = options.check_js;
     result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
     result.types = try dupeOptionalStringList(gpa, options.types);
     result.types_configured = options.types != null;
     return result;
+}
+
+fn compilerOptionExtraString(options: tsconfig_mod.CompilerOptions, name: []const u8) ?[]const u8 {
+    for (options.extra.items) |entry| {
+        if (!std.mem.eql(u8, entry.key, name)) continue;
+        return entry.value.asString();
+    }
+    return null;
 }
 
 /// Compute the same root-name set that the pinned TypeScript harness obtains
@@ -3335,6 +3372,7 @@ test "conformance: loaded corpus keeps current checkJs diagnostics for late-boun
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         defer {
             T.allocator.free(result.name);
@@ -3389,6 +3427,7 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         defer {
             T.allocator.free(result.name);
@@ -5248,6 +5287,7 @@ pub const CorpusEntry = struct {
     baseline_module_kind: []const u8 = "",
     allow_importing_ts_extensions: ?bool = null,
     deduplicate_packages: bool = true,
+    upstream_skip: ?UpstreamSkip = null,
 };
 
 /// Owned-source variant — like `CorpusEntry` but the source is
@@ -5281,6 +5321,7 @@ pub const OwnedCorpusEntry = struct {
     baseline_module_kind: []u8 = "",
     allow_importing_ts_extensions: ?bool = null,
     deduplicate_packages: bool = true,
+    upstream_skip: ?UpstreamSkip = null,
 };
 
 pub const DirectoryLoadOptions = struct {
@@ -5466,6 +5507,11 @@ fn buildVariantCorpusEntry(
     const emit_target = selectedEmitTarget(variant_source, selected_baseline_path);
     const target_selection_explicit = baselineEmitTarget(selected_baseline_path) != null or
         directiveValue(variant_source, "target") != null;
+    const upstream_skip = try classifyUpstreamUnsupportedOptions(
+        gpa,
+        variant_source,
+        selected_baseline_path,
+    );
     const basename_is_tsx = std.mem.endsWith(u8, basename, ".tsx");
     return .{
         .name = name,
@@ -5495,6 +5541,7 @@ fn buildVariantCorpusEntry(
         .deduplicate_packages = baselineOptionBool(selected_baseline_path, "deduplicatepackages") orelse
             directiveBool(variant_source, "deduplicatePackages") orelse
             true,
+        .upstream_skip = upstream_skip,
     };
 }
 
@@ -6818,6 +6865,101 @@ fn baselineOptionValue(path: ?[]const u8, option: []const u8) ?[]const u8 {
     return null;
 }
 
+fn selectedCompilerOptionValue(
+    source: []const u8,
+    baseline_path: ?[]const u8,
+    option: []const u8,
+    config_value: []const u8,
+) []const u8 {
+    if (baselineOptionValue(baseline_path, option)) |value| return value;
+    if (directiveValue(source, option)) |value| return firstCommaSeparatedValue(value);
+    return config_value;
+}
+
+fn selectedCompilerOptionBool(
+    source: []const u8,
+    baseline_path: ?[]const u8,
+    option: []const u8,
+    config_value: ?bool,
+) ?bool {
+    return baselineOptionBool(baseline_path, option) orelse
+        directiveBool(source, option) orelse
+        config_value;
+}
+
+/// Port of the pinned typescript-go runner's
+/// `harnessutil.SkipUnsupportedCompilerOptions`. Classification happens after
+/// config inheritance and selected-variant overrides, exactly where upstream
+/// inspects its final compiler options.
+fn classifyUpstreamUnsupportedOptions(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    baseline_path: ?[]const u8,
+) !?UpstreamSkip {
+    var files = try splitVirtualFiles(gpa, source);
+    defer files.deinit(gpa);
+    const config = try resolverConfigOptionsFromVirtualTsconfig(gpa, files.items);
+    defer config.deinit(gpa);
+
+    const module_kind = selectedCompilerOptionValue(source, baseline_path, "module", config.module);
+    if (std.ascii.eqlIgnoreCase(module_kind, "amd") or
+        std.ascii.eqlIgnoreCase(module_kind, "umd") or
+        std.ascii.eqlIgnoreCase(module_kind, "system")) return .module_kind;
+
+    const module_resolution = selectedCompilerOptionValue(
+        source,
+        baseline_path,
+        "moduleResolution",
+        config.module_resolution,
+    );
+    if (std.ascii.eqlIgnoreCase(module_resolution, "node") or
+        std.ascii.eqlIgnoreCase(module_resolution, "node10") or
+        std.ascii.eqlIgnoreCase(module_resolution, "classic")) return .module_resolution;
+
+    if (selectedCompilerOptionBool(
+        source,
+        baseline_path,
+        "esModuleInterop",
+        config.es_module_interop,
+    ) == false) return .es_module_interop_false;
+    if (selectedCompilerOptionBool(
+        source,
+        baseline_path,
+        "allowSyntheticDefaultImports",
+        config.allow_synthetic_default_imports,
+    ) == false) return .allow_synthetic_default_imports_false;
+
+    if (selectedCompilerOptionValue(source, baseline_path, "baseUrl", config.base_url).len != 0) {
+        return .base_url;
+    }
+    if (selectedCompilerOptionValue(source, baseline_path, "outFile", config.out_file).len != 0) {
+        return .out_file;
+    }
+
+    const target = selectedCompilerOptionValue(source, baseline_path, "target", config.target);
+    if (std.ascii.eqlIgnoreCase(target, "es5")) return .target_es5;
+    if (selectedCompilerOptionBool(
+        source,
+        baseline_path,
+        "alwaysStrict",
+        config.always_strict,
+    ) == false) return .always_strict_false;
+    return null;
+}
+
+fn upstreamSkipDetail(skip: UpstreamSkip) []const u8 {
+    return switch (skip) {
+        .module_kind => "pinned typescript-go runner: unsupported module kind",
+        .module_resolution => "pinned typescript-go runner: unsupported module resolution kind",
+        .es_module_interop_false => "pinned typescript-go runner: esModuleInterop=false is unsupported",
+        .allow_synthetic_default_imports_false => "pinned typescript-go runner: allowSyntheticDefaultImports=false is unsupported",
+        .base_url => "pinned typescript-go runner: baseUrl is unsupported",
+        .out_file => "pinned typescript-go runner: outFile is unsupported",
+        .target_es5 => "pinned typescript-go runner: target ES5 is unsupported",
+        .always_strict_false => "pinned typescript-go runner: alwaysStrict=false is unsupported",
+    };
+}
+
 test "conformance: boolean variant baselines override matrix directives" {
     try T.expectEqual(false, baselineOptionBool("case(noimplicitany=false).errors.txt", "noimplicitany").?);
     try T.expectEqual(true, baselineOptionBool("case(noimplicitany=true).errors.txt", "noimplicitany").?);
@@ -7419,6 +7561,7 @@ pub fn runOwnedCorpus(
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         };
         const r = try runOneEntry(gpa, view);
         switch (r.outcome) {
@@ -7559,6 +7702,15 @@ test "conformance: malformed JSX virtual files route independently" {
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
+    if (entry.upstream_skip) |skip| {
+        const name = try gpa.dupe(u8, entry.name);
+        errdefer gpa.free(name);
+        return .{
+            .name = name,
+            .outcome = .skipped,
+            .detail = try gpa.dupe(u8, upstreamSkipDetail(skip)),
+        };
+    }
     var result = try run(gpa, .{
         .name = entry.name,
         .source = entry.source,
@@ -53469,6 +53621,116 @@ test "conformance: directory loader executes every configured compiler variant" 
     }
 }
 
+test "conformance: upstream unsupported option classifier matches pinned runner" {
+    const cases = [_]struct {
+        source: []const u8,
+        expected: ?UpstreamSkip,
+    }{
+        .{ .source = "// @module: amd\nexport {};", .expected = .module_kind },
+        .{ .source = "// @moduleResolution: node10\nexport {};", .expected = .module_resolution },
+        .{ .source = "// @esModuleInterop: false\nexport {};", .expected = .es_module_interop_false },
+        .{
+            .source = "// @allowSyntheticDefaultImports: false\nexport {};",
+            .expected = .allow_synthetic_default_imports_false,
+        },
+        .{ .source = "// @baseUrl: .\nexport {};", .expected = .base_url },
+        .{ .source = "// @outFile: bundle.js\nexport {};", .expected = .out_file },
+        .{ .source = "// @target: es5\nexport {};", .expected = .target_es5 },
+        .{ .source = "// @alwaysStrict: false\nexport {};", .expected = .always_strict_false },
+        .{
+            .source =
+            \\// @module: commonjs
+            \\// @moduleResolution: nodenext
+            \\// @esModuleInterop: true
+            \\// @allowSyntheticDefaultImports: true
+            \\// @target: es2015
+            \\// @alwaysStrict: true
+            \\export {};
+            ,
+            .expected = null,
+        },
+    };
+    for (cases) |case| {
+        try T.expectEqual(
+            case.expected,
+            try classifyUpstreamUnsupportedOptions(T.allocator, case.source, null),
+        );
+    }
+
+    try T.expectEqual(
+        @as(?UpstreamSkip, .module_kind),
+        try classifyUpstreamUnsupportedOptions(
+            T.allocator,
+            "// @module: system\n// @target: es5\nexport {};",
+            null,
+        ),
+    );
+    try T.expectEqual(
+        @as(?UpstreamSkip, .module_kind),
+        try classifyUpstreamUnsupportedOptions(
+            T.allocator,
+            "// @module: commonjs\nexport {};",
+            "case(module=umd).errors.txt",
+        ),
+    );
+
+    const inherited_base_url =
+        \\// @filename: /base.json
+        \\{ "compilerOptions": { "baseUrl": "." } }
+        \\// @filename: /tsconfig.json
+        \\{ "extends": "./base.json", "files": ["/index.ts"] }
+        \\// @filename: /index.ts
+        \\export {};
+    ;
+    try T.expectEqual(
+        @as(?UpstreamSkip, .base_url),
+        try classifyUpstreamUnsupportedOptions(T.allocator, inherited_base_url, null),
+    );
+}
+
+test "conformance: unsupported compiler variants stay visible without pass credit" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    {
+        var source_file = try tmp.dir.createFile(io, "cases/matrix.ts", .{ .truncate = true });
+        defer source_file.close(io);
+        try source_file.writeStreamingAll(
+            io,
+            "// @target: ES5, ES2015\nexport const value: number = 1;\n",
+        );
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const corpus = try loadDirectory(T.allocator, cases);
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    try T.expectEqual(@as(usize, 2), corpus.len);
+    try T.expectEqual(@as(?UpstreamSkip, .target_es5), corpus[0].upstream_skip);
+    try T.expectEqual(@as(?UpstreamSkip, null), corpus[1].upstream_skip);
+
+    var results: std.ArrayListUnmanaged(Result) = .empty;
+    defer {
+        for (results.items) |result| {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        results.deinit(T.allocator);
+    }
+    const stats = try runOwnedCorpus(T.allocator, corpus, &results);
+    try T.expectEqual(@as(u32, 2), stats.total());
+    try T.expectEqual(@as(u32, 1), stats.passed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
+    try T.expectEqual(@as(u32, 1), stats.skipped);
+    try T.expectEqual(Outcome.skipped, results.items[0].outcome);
+    try T.expect(results.items[0].detail.len > 0);
+    try T.expectEqual(Outcome.passed, results.items[1].outcome);
+}
+
 test "conformance: variant inputs are invariant under expected diagnostic mutations" {
     var tmp = T.tmpDir(.{});
     defer tmp.cleanup();
@@ -53581,6 +53843,7 @@ test "conformance: parserharness matches its exact optional-parameter diagnostic
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         defer {
             T.allocator.free(result.name);
@@ -53869,6 +54132,7 @@ fn runClusterFixture(
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
     }
     return .{
@@ -54195,6 +54459,7 @@ test "conformance: bisect exact-baseline heap leak" {
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         try results.append(T.allocator, r);
     }
@@ -54852,6 +55117,7 @@ fn runOptInTsSuiteFamily(
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
@@ -54991,6 +55257,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .baseline_module_kind = entry.baseline_module_kind,
             .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
             .deduplicate_packages = entry.deduplicate_packages,
+            .upstream_skip = entry.upstream_skip,
         });
         switch (r.outcome) {
             .passed => stats.passed += 1,
