@@ -28,6 +28,7 @@ const ts_resolver = @import("ts_resolver");
 const ts_checker = @import("ts_checker");
 const tsconfig_mod = @import("tsconfig");
 const hir_mod = @import("hir");
+const fixture_variants = @import("fixture_variants.zig");
 
 /// Adapter that exposes a `ts_resolver.Resolver` through the
 /// `ts_checker.ExternalResolver` opaque vtable. Lives on the
@@ -4638,10 +4639,180 @@ test "conformance: fixture name filter preserves include and exclude semantics" 
     try T.expect(!fixtureNameIncluded("jsxParserRecovery", "jsx,!Recovery"));
 }
 
-/// Walk `dir_path` recursively and collect every `.ts` / `.tsx`
-/// file as an `OwnedCorpusEntry`. Convention for `.errors.ts` is
-/// "expects an error" — same as on tsgo's tests/cases/conformance/
-/// corpus. Caller owns each name+source slice and the outer slice.
+fn selectedVariantBaselinePath(
+    gpa: std.mem.Allocator,
+    baseline_root: ?[]const u8,
+    stem: []const u8,
+    variant_suffix: []const u8,
+    file_suffix: []const u8,
+) !?[]u8 {
+    const root = baseline_root orelse return null;
+    const path = try std.fmt.allocPrint(gpa, "{s}/{s}{s}{s}", .{
+        root,
+        stem,
+        variant_suffix,
+        file_suffix,
+    });
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    std.Io.Dir.cwd().access(threaded.io(), path, .{}) catch {
+        gpa.free(path);
+        return null;
+    };
+    return path;
+}
+
+fn selectedVariantErrorBaselineIsNoContent(
+    gpa: std.mem.Allocator,
+    baseline_root: ?[]const u8,
+    stem: []const u8,
+    variant_suffix: []const u8,
+) !bool {
+    const diff_path = try selectedVariantBaselinePath(
+        gpa,
+        baseline_root,
+        stem,
+        variant_suffix,
+        ".errors.txt.diff",
+    ) orelse return false;
+    defer gpa.free(diff_path);
+    const diff = try readFileAlloc(gpa, diff_path);
+    defer gpa.free(diff);
+
+    var lines = std.mem.splitScalar(u8, diff, '\n');
+    while (lines.next()) |raw_line| {
+        const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r')
+            raw_line[0 .. raw_line.len - 1]
+        else
+            raw_line;
+        if (std.mem.eql(u8, line, "+<no content>")) return true;
+    }
+    return false;
+}
+
+/// Build one independently owned corpus entry for one upstream configuration
+/// override. `variant_source` is consumed on success.
+fn buildVariantCorpusEntry(
+    gpa: std.mem.Allocator,
+    options: DirectoryLoadOptions,
+    basename: []const u8,
+    stem: []const u8,
+    variant_suffix: []const u8,
+    variant_source: []u8,
+) !OwnedCorpusEntry {
+    errdefer gpa.free(variant_source);
+    const stripped = try stripNonCodeVirtualSections(gpa, variant_source);
+    errdefer if (stripped) |owned| gpa.free(owned);
+    const case_src: []u8 = stripped orelse variant_source;
+    const raw_source: []u8 = if (stripped != null) variant_source else &.{};
+    const virtual_code_path = firstCodeVirtualFilename(variant_source);
+    const virtual_is_tsx = if (virtual_code_path) |path|
+        (std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"))
+    else
+        false;
+    const default_path = try gpa.dupe(u8, virtual_code_path orelse basename);
+    errdefer gpa.free(default_path);
+
+    var baseline_path = try selectedVariantBaselinePath(
+        gpa,
+        options.baseline_root,
+        stem,
+        variant_suffix,
+        ".errors.txt",
+    );
+    const primary_explicitly_clean = baseline_path == null and
+        try selectedVariantErrorBaselineIsNoContent(
+            gpa,
+            options.baseline_root,
+            stem,
+            variant_suffix,
+        );
+    if (baseline_path == null and !primary_explicitly_clean) {
+        baseline_path = try selectedVariantBaselinePath(
+            gpa,
+            options.fallback_baseline_root,
+            stem,
+            variant_suffix,
+            ".errors.txt",
+        );
+    }
+    defer if (baseline_path) |path| gpa.free(path);
+    const emit_baseline_path = if (baseline_path == null)
+        try selectedVariantBaselinePath(
+            gpa,
+            options.baseline_root,
+            stem,
+            variant_suffix,
+            ".js",
+        )
+    else
+        null;
+    defer if (emit_baseline_path) |path| gpa.free(path);
+    const selected_baseline_path = baseline_path orelse emit_baseline_path;
+
+    const name = try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem, variant_suffix });
+    errdefer gpa.free(name);
+    var expected_errors: []const u8 = "";
+    if (options.exact_error_headers) {
+        if (baseline_path) |path| {
+            const baseline = try readFileAlloc(gpa, path);
+            defer gpa.free(baseline);
+            expected_errors = try extractDiagnosticHeaders(gpa, baseline);
+        }
+    }
+    errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
+    const baseline_mr: []u8 = if (selected_baseline_path) |path|
+        try extractModuleResolutionFromBaseline(gpa, path)
+    else
+        &.{};
+    errdefer if (baseline_mr.len > 0) gpa.free(baseline_mr);
+    const baseline_module: []u8 = if (selected_baseline_path) |path|
+        try extractModuleKindFromBaseline(gpa, path)
+    else
+        &.{};
+    errdefer if (baseline_module.len > 0) gpa.free(baseline_module);
+
+    const configured = try configuredStrictOptions(gpa, variant_source, selected_baseline_path);
+    const emit_target = selectedEmitTarget(variant_source, selected_baseline_path);
+    const target_selection_explicit = baselineEmitTarget(selected_baseline_path) != null or
+        directiveValue(variant_source, "target") != null;
+    const basename_is_tsx = std.mem.endsWith(u8, basename, ".tsx");
+    return .{
+        .name = name,
+        .source = case_src,
+        .path = default_path,
+        .expects_error = std.mem.indexOf(u8, basename, ".errors.") != null or baseline_path != null,
+        .expected_errors = expected_errors,
+        .use_exact_errors = options.exact_error_headers,
+        .is_tsx = basename_is_tsx or virtual_is_tsx,
+        .is_declaration_file = isDeclarationFilePath(basename),
+        .strict_flags = configured.flags,
+        .skip_lib_check = configured.skip_lib_check,
+        .always_strict = if (isDeclarationFilePath(basename)) false else configured.always_strict,
+        .syntax_target_es2015 = emit_target != .es5,
+        .target_emit_es5 = emit_target == .es5,
+        .emit_target = emit_target,
+        .report_deprecated_target_es5 = options.exact_error_headers and
+            target_selection_explicit and emit_target == .es5,
+        .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(default_path, variant_source),
+        .raw_source = raw_source,
+        .baseline_module_resolution = baseline_mr,
+        .baseline_module_kind = baseline_module,
+        .allow_importing_ts_extensions = baselineOptionBool(
+            selected_baseline_path,
+            "allowimportingtsextensions",
+        ),
+        .deduplicate_packages = baselineOptionBool(selected_baseline_path, "deduplicatepackages") orelse
+            directiveBool(variant_source, "deduplicatePackages") orelse
+            true,
+    };
+}
+
+/// Walk `dir_path` recursively and collect every configured variant of every
+/// `.ts` / `.tsx` fixture as an `OwnedCorpusEntry`. Convention for
+/// `.errors.ts` is "expects an error" — same as on tsgo's
+/// tests/cases/conformance/ corpus. Caller owns each name+source slice and the
+/// outer slice.
 ///
 /// Zig 0.16-dev moved the FS surface to `std.Io.Dir`, which threads
 /// an `Io` instance through every call. We construct a short-lived
@@ -4708,112 +4879,24 @@ pub fn loadDirectoryWithOptions(
             }
             break :read_src buf;
         };
-        const virtual_code_path = firstCodeVirtualFilename(src);
-        const virtual_is_tsx = if (virtual_code_path) |p|
-            (std.mem.endsWith(u8, p, ".tsx") or std.mem.endsWith(u8, p, ".jsx"))
-        else
-            false;
-        const default_path = try gpa.dupe(u8, virtual_code_path orelse entry.basename);
-        errdefer gpa.free(default_path);
-        // Strip non-code virtual sections from the parser-fed source
-        // but keep an owned copy of the raw upstream bytes so the
-        // program-graph compile path can rebuild a virtual filesystem
-        // that includes `package.json` / non-code sections — those
-        // sections drive resolver fallthrough decisions (e.g. `main`,
-        // `exports`, `typesVersions`) the legacy single-source path
-        // can't see. When `stripped` is null no markers were present,
-        // so `raw_source` stays empty and `case_src` reuses `src`.
-        const stripped = try stripNonCodeVirtualSections(gpa, src);
-        const case_src: []u8 = stripped orelse src;
-        const raw_source: []u8 = if (stripped != null) src else &.{};
-        var baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.baseline_root, stem, src);
-        // tsgo writes a full `<stem>.errors.txt` whenever its result has
-        // diagnostics. When it intentionally removes every inherited tsc
-        // diagnostic, the full file is absent and the sibling diff records
-        // `+<no content>`. That is an explicit clean tsgo result, not an
-        // unported fixture eligible for the legacy TypeScript fallback.
-        const primary_explicitly_clean = baseline_path == null and
-            try sourceSelectedErrorBaselineIsNoContent(gpa, options.baseline_root, stem, src);
-        if (baseline_path == null and !primary_explicitly_clean) {
-            baseline_path = try sourceSelectedErrorBaselinePath(gpa, options.fallback_baseline_root, stem, src);
+        defer gpa.free(src);
+        const variants = try fixture_variants.enumerate(gpa, src);
+        defer fixture_variants.freeSelections(gpa, variants);
+        for (variants) |variant| {
+            const variant_source = try fixture_variants.materializeSource(gpa, src, variant);
+            const owned = try buildVariantCorpusEntry(
+                gpa,
+                options,
+                entry.basename,
+                stem,
+                variant.suffix,
+                variant_source,
+            );
+            out.append(gpa, owned) catch |err| {
+                freeOwnedCorpusEntry(gpa, owned);
+                return err;
+            };
         }
-        defer if (baseline_path) |p| gpa.free(p);
-        // Clean compiler cases have no errors baseline, but their emitted-JS
-        // baseline still identifies which target expansion tsgo retained.
-        // Use it so a source matrix like `ES5, ES2015` does not fall back to
-        // the first (now-deprecated and absent) target.
-        const emit_baseline_path = if (baseline_path == null)
-            try sourceSelectedBaselinePath(gpa, options.baseline_root, stem, src, ".js")
-        else
-            null;
-        defer if (emit_baseline_path) |p| gpa.free(p);
-        const selected_baseline_path = baseline_path orelse emit_baseline_path;
-        const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
-            baseline_path != null;
-        const directive_source = if (raw_source.len != 0) raw_source else case_src;
-        const configured = try configuredStrictOptions(gpa, directive_source, selected_baseline_path);
-        const strict_flags = configured.flags;
-        const name = try gpa.dupe(u8, stem);
-        const diag_path = default_path;
-        var expected_errors: []const u8 = "";
-        var use_exact_errors = false;
-        if (options.exact_error_headers) {
-            use_exact_errors = true;
-            if (baseline_path) |bp| {
-                const baseline = try readFileAlloc(gpa, bp);
-                defer gpa.free(baseline);
-                expected_errors = try extractDiagnosticHeaders(gpa, baseline);
-                errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
-            }
-        }
-        const baseline_mr: []u8 = if (baseline_path) |bp|
-            try extractModuleResolutionFromBaseline(gpa, bp)
-        else
-            &.{};
-        const baseline_module: []u8 = if (baseline_path) |bp|
-            try extractModuleKindFromBaseline(gpa, bp)
-        else
-            &.{};
-        const deduplicate_packages = baselineOptionBool(baseline_path, "deduplicatepackages") orelse
-            directiveBool(directive_source, "deduplicatePackages") orelse
-            true;
-        const allow_importing_ts_extensions = baselineOptionBool(baseline_path, "allowimportingtsextensions");
-        const emit_target = selectedEmitTarget(directive_source, selected_baseline_path);
-        const target_selection_explicit = baselineEmitTarget(selected_baseline_path) != null or
-            directiveValue(directive_source, "target") != null;
-        try out.append(gpa, .{
-            .name = name,
-            .source = case_src,
-            .path = diag_path,
-            .expects_error = expects_error,
-            .expected_errors = expected_errors,
-            .use_exact_errors = use_exact_errors,
-            .is_tsx = basename_is_tsx or virtual_is_tsx,
-            // Anchor the declaration-file flag on the fixture's own
-            // basename rather than `diag_path`, which for multi-file
-            // fixtures points at the FIRST code virtual section. When
-            // that first section happens to be a `.d.ts` neighbour
-            // (e.g. `tsxDynamicTagName8.tsx` whose first @filename
-            // marker is `react.d.ts`), the legacy single-source path
-            // was treating the concatenated buffer — including the
-            // real `.tsx` content — as a declaration file and falsely
-            // emitting TS1039 on class-field initializers there.
-            .is_declaration_file = isDeclarationFilePath(entry.basename),
-            .strict_flags = strict_flags,
-            .skip_lib_check = configured.skip_lib_check,
-            .always_strict = if (isDeclarationFilePath(entry.basename)) false else configured.always_strict,
-            .syntax_target_es2015 = emit_target != .es5,
-            .target_emit_es5 = emit_target == .es5,
-            .emit_target = emit_target,
-            .report_deprecated_target_es5 = use_exact_errors and
-                target_selection_explicit and emit_target == .es5,
-            .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
-            .raw_source = raw_source,
-            .baseline_module_resolution = baseline_mr,
-            .baseline_module_kind = baseline_module,
-            .allow_importing_ts_extensions = allow_importing_ts_extensions,
-            .deduplicate_packages = deduplicate_packages,
-        });
     }
     return out.toOwnedSlice(gpa);
 }
@@ -5789,151 +5872,6 @@ fn shouldSuppressJsCheckDiagnostics(path: []const u8, source: []const u8) bool {
     return !(directiveBool(source, "checkJs") orelse false);
 }
 
-fn hasErrorBaseline(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) bool {
-    const path = errorBaselinePath(gpa, baseline_root, stem) catch return false;
-    defer if (path) |p| gpa.free(p);
-    return path != null;
-}
-
-fn sourceSelectedErrorBaselinePath(
-    gpa: std.mem.Allocator,
-    baseline_root: ?[]const u8,
-    stem: []const u8,
-    source: []const u8,
-) !?[]u8 {
-    return sourceSelectedBaselinePath(gpa, baseline_root, stem, source, ".errors.txt");
-}
-
-fn sourceSelectedErrorBaselineIsNoContent(
-    gpa: std.mem.Allocator,
-    baseline_root: ?[]const u8,
-    stem: []const u8,
-    source: []const u8,
-) !bool {
-    const diff_path = try sourceSelectedBaselinePath(gpa, baseline_root, stem, source, ".errors.txt.diff") orelse
-        return false;
-    defer gpa.free(diff_path);
-    const diff = try readFileAlloc(gpa, diff_path);
-    defer gpa.free(diff);
-
-    var lines = std.mem.splitScalar(u8, diff, '\n');
-    while (lines.next()) |raw_line| {
-        const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r')
-            raw_line[0 .. raw_line.len - 1]
-        else
-            raw_line;
-        if (std.mem.eql(u8, line, "+<no content>")) return true;
-    }
-    return false;
-}
-
-fn sourceSelectedBaselinePath(
-    gpa: std.mem.Allocator,
-    baseline_root: ?[]const u8,
-    stem: []const u8,
-    source: []const u8,
-    suffix: []const u8,
-) !?[]u8 {
-    const root = baseline_root orelse return null;
-    const direct = try std.fmt.allocPrint(gpa, "{s}/{s}{s}", .{ root, stem, suffix });
-    var threaded = std.Io.Threaded.init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    std.Io.Dir.cwd().access(io, direct, .{}) catch {
-        gpa.free(direct);
-        if (directiveValue(source, "checkJs")) |raw| {
-            const selected = firstCommaSeparatedValue(raw);
-            if (std.ascii.eqlIgnoreCase(selected, "true") or std.ascii.eqlIgnoreCase(selected, "false")) {
-                const value = if (std.ascii.eqlIgnoreCase(selected, "true")) "true" else "false";
-                const variant = try std.fmt.allocPrint(
-                    gpa,
-                    "{s}/{s}(checkjs={s}){s}",
-                    .{ root, stem, value, suffix },
-                );
-                std.Io.Dir.cwd().access(io, variant, .{}) catch {
-                    gpa.free(variant);
-                    return try variantBaselinePath(gpa, root, stem, suffix);
-                };
-                return variant;
-            }
-        }
-        return try variantBaselinePath(gpa, root, stem, suffix);
-    };
-    return direct;
-}
-
-fn errorBaselinePath(gpa: std.mem.Allocator, baseline_root: ?[]const u8, stem: []const u8) !?[]u8 {
-    return sourceSelectedBaselinePath(gpa, baseline_root, stem, "", ".errors.txt");
-}
-
-fn variantBaselinePath(
-    gpa: std.mem.Allocator,
-    root: []const u8,
-    stem: []const u8,
-    suffix: []const u8,
-) !?[]u8 {
-    const suffixes = [_][]const u8{
-        "(alwaysstrict=false)",
-        "(alwaysstrict=true)",
-        "(module=es2022)",
-        "(module=esnext)",
-        "(target=es5)",
-        "(target=es2015)",
-        "(target=es6)",
-    };
-    var threaded = std.Io.Threaded.init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    for (suffixes) |variant| {
-        const path = try std.fmt.allocPrint(gpa, "{s}/{s}{s}{s}", .{ root, stem, variant, suffix });
-        std.Io.Dir.cwd().access(io, path, .{}) catch {
-            gpa.free(path);
-            continue;
-        };
-        return path;
-    }
-    return try discoverVariantBaselinePath(gpa, root, stem, suffix);
-}
-
-fn discoverVariantBaselinePath(
-    gpa: std.mem.Allocator,
-    root: []const u8,
-    stem: []const u8,
-    suffix: []const u8,
-) !?[]u8 {
-    var threaded = std.Io.Threaded.init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return null;
-    defer dir.close(io);
-
-    var best: ?[]u8 = null;
-    errdefer if (best) |p| gpa.free(p);
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.startsWith(u8, entry.name, stem)) continue;
-        const rest = entry.name[stem.len..];
-        if (!std.mem.startsWith(u8, rest, "(")) continue;
-        if (!std.mem.endsWith(u8, rest, suffix)) continue;
-        const variant_end = rest.len - suffix.len;
-        if (variant_end == 0 or rest[variant_end - 1] != ')') continue;
-
-        const candidate = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
-        if (best) |current| {
-            if (std.mem.lessThan(u8, candidate, current)) {
-                gpa.free(current);
-                best = candidate;
-            } else {
-                gpa.free(candidate);
-            }
-        } else {
-            best = candidate;
-        }
-    }
-    return best;
-}
-
 fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
@@ -6095,16 +6033,7 @@ fn parseEmitTarget(raw: []const u8) ?ts_driver.EsTarget {
 }
 
 fn baselineEmitTarget(path: ?[]const u8) ?ts_driver.EsTarget {
-    const p = path orelse return null;
-    const options_end = std.mem.lastIndexOfScalar(u8, p, ')') orelse return null;
-    const options_start = std.mem.lastIndexOfScalar(u8, p[0..options_end], '(') orelse return null;
-    var options = std.mem.splitScalar(u8, p[options_start + 1 .. options_end], ',');
-    while (options.next()) |raw_option| {
-        const option = std.mem.trim(u8, raw_option, " \t");
-        if (!std.mem.startsWith(u8, option, "target=")) continue;
-        return parseEmitTarget(option["target=".len..]);
-    }
-    return null;
+    return parseEmitTarget(baselineOptionValue(path, "target") orelse return null);
 }
 
 fn selectedEmitTarget(source: []const u8, baseline_path: ?[]const u8) ts_driver.EsTarget {
@@ -6143,13 +6072,11 @@ test "conformance: selected emit target follows baseline variants and directives
     try T.expectEqual(ts_driver.EsTarget.esnext, selectedEmitTarget("// @target: es2025", null));
 }
 
-/// Inspect the chosen `.errors.txt` baseline filename for an
-/// `alwaysstrict=<bool>` variant marker. Multi-variant fixtures (e.g.
-/// `// @alwaysStrict: true, false`) produce one baseline per variant
-/// — the harness picks ONE of them lexicographically — so we must
-/// honour the picked variant's setting rather than always taking the
-/// first directive value (which would always be `true` for the
-/// `true, false` ordering).
+/// Inspect the selected variant baseline filename for an
+/// `alwaysstrict=<bool>` marker. Multi-variant fixtures (for example
+/// `// @alwaysStrict: true, false`) produce one independently executed entry
+/// per value, so each entry must honor its own setting rather than the first
+/// directive value.
 fn baselineAlwaysStrictValue(path: ?[]const u8) ?bool {
     const p = path orelse return null;
     if (std.mem.indexOf(u8, p, "alwaysstrict=false") != null) return false;
@@ -6179,6 +6106,10 @@ test "conformance: alwaysStrict defaults on and preserves explicit matrix choice
 }
 
 fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
+    return parseDirectiveBool(baselineOptionValue(path, option) orelse return null);
+}
+
+fn baselineOptionValue(path: ?[]const u8, option: []const u8) ?[]const u8 {
     const p = path orelse return null;
     const basename = p[if (std.mem.lastIndexOfAny(u8, p, "/\\")) |slash| slash + 1 else 0..];
     const end = std.mem.lastIndexOfScalar(u8, basename, ')') orelse return null;
@@ -6188,7 +6119,7 @@ fn baselineOptionBool(path: ?[]const u8, option: []const u8) ?bool {
         const equal = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
         const name = std.mem.trim(u8, entry[0..equal], " \t");
         if (!std.ascii.eqlIgnoreCase(name, option)) continue;
-        return parseDirectiveBool(entry[equal + 1 ..]);
+        return std.mem.trim(u8, entry[equal + 1 ..], " \t");
     }
     return null;
 }
@@ -6208,20 +6139,13 @@ test "conformance: boolean variant baselines override matrix directives" {
 /// drives `resolverStrategyFromCase` so the resolver picks the
 /// strategy that matches the baseline we'll compare against.
 fn extractModuleResolutionFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    const needle = "(moduleresolution=";
-    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
-    const after = start + needle.len;
-    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
-    return gpa.dupe(u8, path[after..close]);
+    const value = baselineOptionValue(path, "moduleresolution") orelse return &.{};
+    return gpa.dupe(u8, value);
 }
 
 fn extractModuleKindFromBaseline(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
-    const needle = "(module=";
-    const start = std.mem.indexOf(u8, path, needle) orelse return gpa.dupe(u8, "");
-    const after = start + needle.len;
-    const close = std.mem.indexOfScalarPos(u8, path, after, ')') orelse return gpa.dupe(u8, "");
-    const comma = std.mem.indexOfScalarPos(u8, path, after, ',') orelse close;
-    return gpa.dupe(u8, path[after..@min(comma, close)]);
+    const value = baselineOptionValue(path, "module") orelse return &.{};
+    return gpa.dupe(u8, value);
 }
 
 test "conformance: module matrix selection follows the chosen baseline" {
@@ -6233,8 +6157,18 @@ test "conformance: module matrix selection follows the chosen baseline" {
     defer T.allocator.free(combined);
     try T.expectEqualStrings("nodenext", combined);
 
+    const reordered = try extractModuleKindFromBaseline(T.allocator, "case(alwaysstrict=true,module=esnext).errors.txt");
+    defer T.allocator.free(reordered);
+    try T.expectEqualStrings("esnext", reordered);
+
+    const resolution = try extractModuleResolutionFromBaseline(
+        T.allocator,
+        "case(noimplicitany=true,moduleresolution=nodenext,nouncheckedindexedaccess=false).errors.txt",
+    );
+    defer T.allocator.free(resolution);
+    try T.expectEqualStrings("nodenext", resolution);
+
     const plain = try extractModuleKindFromBaseline(T.allocator, "case.errors.txt");
-    defer T.allocator.free(plain);
     try T.expectEqualStrings("", plain);
 
     const selected: Case = .{
@@ -6807,8 +6741,9 @@ pub fn runOwnedCorpus(
     return stats;
 }
 
-/// Convenience: run every TS file under `dir_path` and return Stats.
-/// Each result's name is the file's basename (without extension).
+/// Convenience: run every configured TS fixture variant under `dir_path` and
+/// return Stats. Each result's name is the basename plus any upstream
+/// configured-name suffix.
 /// Per-result `name`+`detail` are owned; the corpus itself is freed
 /// internally.
 pub fn runDirectory(
@@ -7138,11 +7073,15 @@ test "conformance: parseStrictDirectiveState distinguishes sub-strict overrides"
 }
 
 test "conformance: checkJs matrix selects the executed variant baseline" {
-    const path = (try sourceSelectedErrorBaselinePath(
+    const selections = try fixture_variants.enumerate(T.allocator, "// @checkJs: true,false");
+    defer fixture_variants.freeSelections(T.allocator, selections);
+    try T.expectEqual(@as(usize, 2), selections.len);
+    const path = (try selectedVariantBaselinePath(
         T.allocator,
         "_submodules/typescript-go/testdata/baselines/reference/compiler",
         "parameterDecoratorInJsFile",
-        "// @checkJs: true,false",
+        selections[0].suffix,
+        ".errors.txt",
     )) orelse return error.TestExpectedEqual;
     defer T.allocator.free(path);
     try T.expect(std.mem.endsWith(u8, path, "parameterDecoratorInJsFile(checkjs=true).errors.txt"));
@@ -7154,13 +7093,13 @@ test "conformance: tsgo no-content diffs suppress inherited error baselines" {
     // tsgo intentionally removed the inherited diagnostics for these
     // fixtures. Their full baseline is absent and the diff's new side is
     // `<no content>`, so exact mode must treat them as clean.
-    try T.expect(try sourceSelectedErrorBaselineIsNoContent(
+    try T.expect(try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
         root,
         "checkJsdocSatisfiesTag11",
         "",
     ));
-    try T.expect(try sourceSelectedErrorBaselineIsNoContent(
+    try T.expect(try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
         root,
         "syntaxErrors",
@@ -7169,7 +7108,7 @@ test "conformance: tsgo no-content diffs suppress inherited error baselines" {
 
     // A normal changed baseline has a diff too, but its new side still
     // contains diagnostics and therefore remains an expected-error case.
-    try T.expect(!try sourceSelectedErrorBaselineIsNoContent(
+    try T.expect(!try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
         root,
         "checkJsdocSatisfiesTag1",
@@ -52777,6 +52716,127 @@ test "conformance: corpus inputs cannot change when expected diagnostic contents
     }
 }
 
+test "conformance: directory loader executes every configured compiler variant" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    {
+        var source_file = try tmp.dir.createFile(io, "cases/matrix.ts", .{ .truncate = true });
+        defer source_file.close(io);
+        try source_file.writeStreamingAll(io, "// @target: ES5, ES2015\n" ++
+            "// @strict: true, false\n" ++
+            "function identity(value) { return value; }\n");
+    }
+    {
+        var baseline_file = try tmp.dir.createFile(
+            io,
+            "baselines/matrix(strict=true,target=es5).errors.txt",
+            .{ .truncate = true },
+        );
+        defer baseline_file.close(io);
+        try baseline_file.writeStreamingAll(
+            io,
+            "matrix.ts(1,1): error TS9999: Expected-control-only diagnostic.",
+        );
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const baselines = try tmp.dir.realPathFileAlloc(io, "baselines", T.allocator);
+    defer T.allocator.free(baselines);
+    const corpus = try loadDirectoryWithOptions(T.allocator, cases, .{
+        .baseline_root = baselines,
+        .exact_error_headers = true,
+    });
+    defer {
+        for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(corpus);
+    }
+
+    try T.expectEqual(@as(usize, 4), corpus.len);
+    const expected_names = [_][]const u8{
+        "matrix(strict=true,target=es5)",
+        "matrix(strict=true,target=es2015)",
+        "matrix(strict=false,target=es5)",
+        "matrix(strict=false,target=es2015)",
+    };
+    for (corpus, expected_names, 0..) |entry, expected_name, index| {
+        try T.expectEqualStrings(expected_name, entry.name);
+        try T.expectEqualStrings("matrix.ts", entry.path);
+        try T.expectEqual(index < 2, entry.strict_flags.?.no_implicit_any);
+        try T.expectEqual(index % 2 == 0, entry.emit_target == .es5);
+        try T.expect(std.mem.indexOf(u8, entry.source, ",") == null);
+    }
+    try T.expect(corpus[0].expects_error);
+    try T.expectEqualStrings(
+        "matrix.ts(1,1): error TS9999: Expected-control-only diagnostic.",
+        corpus[0].expected_errors,
+    );
+    for (corpus[1..]) |entry| {
+        try T.expect(!entry.expects_error);
+        try T.expectEqualStrings("", entry.expected_errors);
+    }
+}
+
+test "conformance: variant inputs are invariant under expected diagnostic mutations" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    {
+        var source_file = try tmp.dir.createFile(io, "cases/control.ts", .{ .truncate = true });
+        defer source_file.close(io);
+        try source_file.writeStreamingAll(io, "// @moduleResolution: node16, nodenext\n" ++
+            "// @noUncheckedIndexedAccess: true, false\n" ++
+            "export const value = 1;\n");
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const baselines = try tmp.dir.realPathFileAlloc(io, "baselines", T.allocator);
+    defer T.allocator.free(baselines);
+
+    var prior_names = [_][]u8{ "", "", "", "" };
+    var prior_sources = [_][]u8{ "", "", "", "" };
+    defer {
+        for (prior_names) |name| if (name.len > 0) T.allocator.free(name);
+        for (prior_sources) |source| if (source.len > 0) T.allocator.free(source);
+    }
+    for ([_][]const u8{
+        "control.ts(1,1): error TS2307: First expected text.",
+        "elsewhere.ts(99,7): error TS9999: Completely different expected text.",
+    }, 0..) |expected, pass| {
+        var baseline_file = try tmp.dir.createFile(
+            io,
+            "baselines/control(moduleresolution=node16,nouncheckedindexedaccess=true).errors.txt",
+            .{ .truncate = true },
+        );
+        try baseline_file.writeStreamingAll(io, expected);
+        baseline_file.close(io);
+        const corpus = try loadDirectoryWithOptions(T.allocator, cases, .{
+            .baseline_root = baselines,
+            .exact_error_headers = true,
+        });
+        defer {
+            for (corpus) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+            T.allocator.free(corpus);
+        }
+        try T.expectEqual(@as(usize, 4), corpus.len);
+        for (corpus, 0..) |entry, index| {
+            if (pass == 0) {
+                prior_names[index] = try T.allocator.dupe(u8, entry.name);
+                prior_sources[index] = try T.allocator.dupe(u8, entry.source);
+            } else {
+                try T.expectEqualStrings(prior_names[index], entry.name);
+                try T.expectEqualStrings(prior_sources[index], entry.source);
+            }
+            try T.expectEqualStrings("control.ts", entry.path);
+        }
+        try T.expectEqualStrings(expected, corpus[0].expected_errors);
+    }
+}
+
 test "conformance: parserharness matches its exact optional-parameter diagnostics" {
     const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
     defer {
@@ -53578,7 +53638,7 @@ test "conformance: extracts diagnostic headers from pretty ANSI baselines" {
     );
 }
 
-test "conformance: discovers option-suffixed upstream error baselines" {
+test "conformance: opens the exact configured upstream error baseline" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -53593,7 +53653,13 @@ test "conformance: discovers option-suffixed upstream error baselines" {
     defer T.allocator.free(file_path);
     const root = std.fs.path.dirname(file_path).?;
 
-    const found = try variantBaselinePath(T.allocator, root, "sample", ".errors.txt");
+    const found = try selectedVariantBaselinePath(
+        T.allocator,
+        root,
+        "sample",
+        "(nouncheckedindexedaccess=false)",
+        ".errors.txt",
+    );
     defer if (found) |p| T.allocator.free(p);
 
     try T.expect(found != null);
@@ -53817,8 +53883,10 @@ test "conformance: category specs summarize local TS feature folders" {
 
     try T.expectEqual(@as(usize, default_specs.len), default_cats.len);
     try T.expectEqual(@as(usize, baseline_specs.len), baseline_cats.len);
-    try T.expectEqual(@as(u32, 86), combined.total());
-    try T.expectEqual(@as(u32, 86), combined.passed);
+    // Thirteen source files expand to fourteen configured cases because
+    // equalityWithtNullishCoalescingAssignment runs both strict variants.
+    try T.expectEqual(@as(u32, 87), combined.total());
+    try T.expectEqual(@as(u32, 87), combined.passed);
 }
 
 test "conformance: baseline-aware type-relationship survey" {

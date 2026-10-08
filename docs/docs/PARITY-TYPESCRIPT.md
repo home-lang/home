@@ -346,6 +346,24 @@ TS2660, and `asyncFunctionDeclarationParameterEvaluation` retains TS2538
 alongside its unresolved-key TS2304. A leading-prefix count will be published
 only after a fresh serial run on current `main`.
 
+### Harness input fidelity
+
+The conformance loader now executes every explicit multi-valued compiler
+configuration instead of choosing one lexicographic baseline. It mirrors the
+pinned TypeScript runner's Cartesian product, boolean/enum `*` expansion,
+exclusions, alias deduplication, 25-configuration ceiling, and configured-name
+suffixes. Selected scalar directives determine compiler inputs before any
+expected diagnostic file is read, so changing expected text cannot alter case
+admission, source routing, options, or actual diagnostic filenames.
+
+Focused evidence is retained in
+[the 2026-10-08 variant-execution checkpoint](./bun-port-evidence/2026-10-08-ts-variant-execution/README.md):
+the pinned `emitRestParametersFunction` target matrix passes both configured
+variants, and the named local category gate expands from 86 collapsed entries
+to **87/87** real configured cases. These focused results are not a restored
+full-corpus claim. Root-file admission and default-library/compiler-API input
+fidelity remain open in [#841](https://github.com/home-lang/home/issues/841).
+
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:
 
