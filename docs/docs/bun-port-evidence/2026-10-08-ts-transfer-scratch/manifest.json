@@ -1,0 +1,130 @@
+{
+  "source": {
+    "source_base": "3f32563d3fc84dcdd367096b6a364e277e351a5b",
+    "source_sha256": {
+      "packages/ts_checker/src/type_transfer.zig": "783f0ebc4f507f347658beaec5fd0a89950f4f651c13b1a2b83984f667c7598c",
+      "packages/ts_checker/src/checked_transfer.zig": "51b0153e6f8ae8f457990cb30c3cc1e5fa1825ab7f997938ccc7278f46b128f7",
+      "packages/ts_checker/src/check.zig": "c13bf0047e6d8ab2fad734c1edf8b533d842e8a77ef6589b0df12114b6731404",
+      "packages/ts_checker/src/relation.zig": "c9a49b660f68b3dea674f0123f0e14c965f37ff4aa996d20dc454ebe54841b4e",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "0ae84a08f11a7460e59e216e222f794041bfa985ec7c87ccc6d847adb6e64907",
+      "packages/ts_driver/src/source_owners.zig": "9fd84b742095a90cd972ba42a6fae6734fc0783ea9ab3b257911c0eb5573fdc2",
+      "packages/ts_program/src/ts_program.zig": "ab39015274f7f678b8ebc293347dfc94596ae82afc67a59efd3e11d1fab540f2",
+      "packages/ts_conformance/src/ts_conformance.zig": "8d39c8bb2206629542255916a08445cec47075a5e9787914b08ad86d75a48449"
+    },
+    "source_commit": "bdb366c03ae740267f0be5315a26dc5a651caf3a",
+    "preintegration_commit": "9d513a9e3abe2518af9438009b219c8dc94d7744",
+    "test_binary_sha256": "d3833b1ad0dc3aec04ffcb6d306520a51be79b15b5242548637d903c185dc7d8"
+  },
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "baseline_controls": {
+    "passed": 11,
+    "total": 11,
+    "exit_code": 0,
+    "peak_mb": 258,
+    "owned_payload_rows": 64,
+    "measured_allocations": 256
+  },
+  "changed_controls": {
+    "passed": 11,
+    "total": 11,
+    "exit_code": 0,
+    "peak_mb": 295,
+    "owned_payload_rows": 64,
+    "measured_allocations": 81
+  },
+  "gates": {
+    "checker": {
+      "passed": 4527,
+      "total": 4527,
+      "exit_code": 0,
+      "peak_mb": 2246
+    },
+    "driver": {
+      "passed": 200,
+      "total": 200,
+      "exit_code": 0,
+      "peak_mb": 1887
+    },
+    "program": {
+      "passed": 243,
+      "total": 243,
+      "exit_code": 0,
+      "peak_mb": 2070
+    },
+    "optin": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2059
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 3067,
+      "binary_sha256": "67636791d15420932e4e1605cbb30d840d54b633acf3fcb013bb0cb7723bc7b8"
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 490,
+      "normalized_matches_preceding_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    },
+    "original_react": {
+      "exit_code": 125,
+      "deadline_seconds": 900,
+      "memory_ceiling_mb": 3840,
+      "peak_mb": 3849,
+      "aggregate_complete": false,
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "passing_case_credit": 0
+    }
+  },
+  "artifact_sha256": {
+    "baseline.log.gz": "69b0d9722dc664f9e5e714aa42a87a1cae410cc3ccca43672395c79f6ddf4f68",
+    "baseline-source.json.gz": "c4a6d3620e9e336a78e04946e2ac2fd7cd0ef86d8481ba4e7628e6f702ef0be6",
+    "baseline-test-only.diff.gz": "fe113bafb003ceac978c16ec060b2edf81f3987496309e5e95cd508c0233b8a1",
+    "controls.log.gz": "0d00c820f2fd79221535ebd8398fca36fbd39f3e7bdbd0ef1aeea92fe14f30bd",
+    "source.json.gz": "7bba31ef2917b7f2b4b2141ec814466bf6b87dbf13f1c7a595a87e20558d63a6",
+    "source.diff.gz": "5de7b801273cdff210ee93da633c9ce56f771031a1a8499b8c6656e0fc73cb0e",
+    "checker.log.gz": "413e0c2c8be166c2eb023d6401a6e4e177d9982761fe61f67a9eadaa7c72877b",
+    "driver.log.gz": "ef1344cd407350afe0ed770b178311792a579bcaa34b8de59a5ba4d2c0b29da0",
+    "program.log.gz": "8ff484cf247dedd432a15291964cb34cbcdcfc3eb1e582d9d5e3f54c702cf6f3",
+    "optin.log.gz": "f7186f0993e4c04ef529985b52f8b5b3ee423e53abec59077be82eaf19a90a62",
+    "compiler.log.gz": "5153c90f1adbcb696919ef9656e0c24a348c56d7f8c5e1fcf9b2da4dd0011bb9",
+    "zod.log.gz": "0a441e2106916b81607f0f86648c70a046d42907bc27c3a950251da38b455539",
+    "zod-diagnostics.log.gz": "ce19d81ec524e4d4fa9e94229be01cb5b63522adaf4c893373a0d36f64aa6ecf",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "6cb2adc9f8ad35bb27cedd5bf23bf2315ec00e9fd73e21d72804b6a6ab59ec40",
+    "original-react.log.gz": "9b5b16ccc35ca5161d535b635b2a4693d5ca32b1759de3a56732ce4394aea98a",
+    "react-sample-command.log.gz": "b283495f087547e4554275d0e11c189db762ad4b71ff2472044e8a4665a5546e"
+  },
+  "sample_attempt": {
+    "sample_produced": false,
+    "reason": "process already terminal when sampled"
+  },
+  "original_fixture_sha256": {
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/typeRelationships/typeInference/intraExpressionInferencesJsx.tsx": "f271f61d3b23545ab6b70e36ce3460d5556af1ae924b1fadd4b079a72baebb22",
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/contextualTypes/jsxAttributes/contextuallyTypedStringLiteralsInJsxAttributes02.tsx": "40769aa7e1f87e582f861012dbad5cb28f533f731b0124af77341eed98aa6f1c",
+    "_submodules/typescript-go/_submodules/TypeScript/tests/lib/react16.d.ts": "b0c6dad63ec7918e061c89d5b35d0e77f332207cfcfc22cc8d72a9077e24532c"
+  }
+}
