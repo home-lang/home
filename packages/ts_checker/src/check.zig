@@ -165921,8 +165921,8 @@ pub const Checker = struct {
     /// deterministic unless a cycle-cut / deferral fired beneath it
     /// (tracked via `instantiation_defer_events`), so repeated visits
     /// of shared subtrees short-circuit here instead of re-walking
-    /// exponentially. Sub-walks under derived maps (`signature_subs`)
-    /// bypass the memo via the `subst_memo_subs` pointer pin.
+    /// exponentially. A signature's completed local binder map uses its own
+    /// memo scope; pointer pinning keeps results from different maps separate.
     fn substituteType(
         self: *Checker,
         t: TypeId,
@@ -166178,6 +166178,21 @@ pub const Checker = struct {
                 }
             }
             const effective_subs = if (signature_subs_changed) &signature_subs else subs;
+            // Local binders are now fixed. Share a memo for this stable map
+            // across parameters, return/receiver types and predicate metadata,
+            // without reusing results from the enclosing binder environment.
+            const needs_local_memo = self.subst_memo_subs != effective_subs;
+            const saved_memo_subs = self.subst_memo_subs;
+            const saved_memo = self.subst_memo;
+            if (needs_local_memo) {
+                self.subst_memo_subs = effective_subs;
+                self.subst_memo = .empty;
+            }
+            defer if (needs_local_memo) {
+                self.subst_memo.deinit(self.gpa);
+                self.subst_memo_subs = saved_memo_subs;
+                self.subst_memo = saved_memo;
+            };
             var new: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new.deinit(self.gpa);
             for (params_snapshot) |p| try new.append(self.gpa, try self.substituteType(p, effective_subs));
@@ -236068,6 +236083,82 @@ test "checker: substitution sharing batch preserves constrained binders under se
         try T.expectEqual(replacement, s.ti.objectMember(payload.constraint, value_name).?);
         try T.expectEqual(replacement, s.ti.objectMember(payload.default, value_name).?);
     }
+}
+
+test "checker: substitution sharing batch shares nested signature graphs within each binder environment" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), outer, types.Primitive.none, .bivariant);
+    const nested = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("V"), local, local, .bivariant);
+    const leaf = try s.ti.internSignature(&.{nested}, nested, false);
+    try s.checker.recordGenericSignatureParams(leaf, &.{nested});
+    const left = try s.checker.string_interner.intern("left");
+    const right = try s.checker.string_interner.intern("right");
+    var graph = leaf;
+    for (0..7) |_| graph = try s.ti.internObjectType(&.{
+        .{ .name = left, .type = graph, .is_optional = false, .is_readonly = true, .is_method = false },
+        .{ .name = right, .type = graph, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    const signature = try s.ti.internSignature(&.{ graph, graph }, graph, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    var previous_local: TypeId = types.Primitive.none;
+    var previous_nested: TypeId = types.Primitive.none;
+    for ([_]TypeId{ types.Primitive.string_t, types.Primitive.number_t }) |replacement| {
+        var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer map.deinit(T.allocator);
+        try map.put(T.allocator, outer, replacement);
+        const before = s.ti.pool.typeCount();
+        const rebuilt = try s.checker.substituteType(signature, &map);
+        try T.expect(s.ti.pool.typeCount() - before < 32);
+        const params = s.ti.signatureParams(rebuilt);
+        try T.expectEqual(params[0], params[1]);
+        try T.expectEqual(params[0], s.ti.signatureReturn(rebuilt).?);
+        const binder = s.checker.generic_signature_params.get(rebuilt).?[0];
+        try T.expect(binder != local and binder != previous_local);
+        previous_local = binder;
+        const binder_payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(binder)];
+        try T.expectEqual(replacement, binder_payload.constraint);
+        var cursor = params[0];
+        for (0..7) |_| {
+            const left_child = s.ti.objectMember(cursor, left).?;
+            try T.expectEqual(left_child, s.ti.objectMember(cursor, right).?);
+            cursor = left_child;
+        }
+        const nested_binder = s.checker.generic_signature_params.get(cursor).?[0];
+        try T.expect(nested_binder != nested and nested_binder != previous_nested);
+        previous_nested = nested_binder;
+        const nested_payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(nested_binder)];
+        try T.expectEqual(binder, nested_payload.constraint);
+        try T.expectEqual(binder, nested_payload.default);
+        try T.expectEqual(nested_binder, s.ti.signatureParams(cursor)[0]);
+        try T.expectEqual(nested_binder, s.ti.signatureReturn(cursor).?);
+    }
+}
+
+test "checker: substitution sharing batch preserves parameter receiver and predicate graph identity" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(try s.checker.string_interner.intern("U"), outer, types.Primitive.none, .bivariant);
+    const value = try s.checker.string_interner.intern("value");
+    const box = try s.ti.internObjectType(&.{.{ .name = value, .type = local, .is_optional = false, .is_readonly = true, .is_method = false }});
+    const signature = try s.ti.internSignatureWithThisType(&.{box}, types.Primitive.boolean_t, false, false, box);
+    try s.checker.recordGenericSignatureParams(signature, &.{local});
+    try s.checker.signature_predicates.put(T.allocator, signature, .{ .param_index = 0, .target_type = box, .is_asserts = true });
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, outer, types.Primitive.string_t);
+    const rebuilt = try s.checker.substituteType(signature, &map);
+    const parameter = s.ti.signatureParams(rebuilt)[0];
+    try T.expectEqual(parameter, s.checker.signatureThisParam(rebuilt).?);
+    const predicate = s.checker.signature_predicates.get(rebuilt).?;
+    try T.expectEqual(parameter, predicate.target_type);
+    try T.expectEqual(@as(u16, 0), predicate.param_index);
+    try T.expect(predicate.is_asserts);
+    const binder = s.checker.generic_signature_params.get(rebuilt).?[0];
+    try T.expectEqual(binder, s.ti.objectMember(parameter, value).?);
+    try T.expectEqual(types.Primitive.string_t, s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(binder)].constraint);
 }
 
 test "checker: substitution sharing batch avoids repeat member metadata traversals" {
