@@ -364,6 +364,20 @@ to **87/87** real configured cases. These focused results are not a restored
 full-corpus claim. Root-file admission and default-library/compiler-API input
 fidelity remain open in [#841](https://github.com/home-lang/home/issues/841).
 
+The program route also now separates upstream root files from other files on
+the fixture filesystem. Without a tsconfig, Home mirrors the pinned runner's
+all-files rule and its last-file-only rule for `noImplicitReferences`,
+`require(`, and triple-slash path references. Direct virtual tsconfigs select
+roots from `files` and `include`/`exclude`, including `allowJs` discovery;
+unselected files remain available to import and reference resolution. Empty
+virtual units remain addressable, missing configured roots stay visible as
+failures, and UMD globals are derived from the reachable program instead of
+every declaration present on disk. The focused controls and pinned fixture
+evidence are recorded in
+[the root-admission checkpoint](./bun-port-evidence/2026-10-08-ts-root-admission/README.md).
+Inherited config expansion, default-library/compiler-API fidelity, and honest
+unsupported/skip accounting remain open under #841.
+
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:
 

@@ -1953,7 +1953,6 @@ fn splitVirtualFiles(
             if (section_end > content_start and raw[section_end - 1] == '\r') section_end -= 1;
         }
 
-        if (content_start >= section_end) continue;
         const section_source = raw[content_start..section_end];
         try out.append(gpa, .{
             .path = m.path,
@@ -2033,6 +2032,186 @@ test "conformance: virtual section stripping preserves trailing newline count" {
     try T.expectEqualStrings(with_trailing, stripped_with);
 }
 
+test "conformance: empty virtual files remain addressable harness units" {
+    const raw =
+        \\// @filename: empty.ts
+        \\// @filename: main.ts
+        \\export const value = 1;
+    ;
+    var files = try splitVirtualFiles(T.allocator, raw);
+    defer files.deinit(T.allocator);
+
+    try T.expectEqual(@as(usize, 2), files.items.len);
+    try T.expectEqualStrings("empty.ts", files.items[0].path);
+    try T.expectEqualStrings("", files.items[0].source);
+    try T.expectEqualStrings("main.ts", files.items[1].path);
+}
+
+test "conformance: harness root selection follows all-files and last-file modes" {
+    const files = [_]VirtualFile{
+        .{ .path = "support.ts", .source = "const bad: number = 'x';", .extra_strip = 0 },
+        .{ .path = "package.json", .source = "{}", .extra_strip = 0 },
+        .{ .path = "main.ts", .source = "export const value = 1;", .extra_strip = 0 },
+    };
+
+    const all = try fixtureRootSelection(T.allocator, "", &files, .{});
+    defer T.allocator.free(all);
+    try T.expectEqualSlices(bool, &.{ true, false, true }, all);
+
+    const explicit_last = try fixtureRootSelection(
+        T.allocator,
+        "// @noImplicitReferences: true",
+        &files,
+        .{},
+    );
+    defer T.allocator.free(explicit_last);
+    try T.expectEqualSlices(bool, &.{ false, false, true }, explicit_last);
+
+    var require_files = files;
+    require_files[2].source = "const dep = require('./support');";
+    const required_last = try fixtureRootSelection(T.allocator, "", &require_files, .{});
+    defer T.allocator.free(required_last);
+    try T.expectEqualSlices(bool, &.{ false, false, true }, required_last);
+
+    var referenced_files = files;
+    referenced_files[2].source = "/// <reference path='support.ts' />";
+    const referenced_last = try fixtureRootSelection(T.allocator, "", &referenced_files, .{});
+    defer T.allocator.free(referenced_last);
+    try T.expectEqualSlices(bool, &.{ false, false, true }, referenced_last);
+}
+
+test "conformance: virtual tsconfig selects only configured roots" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source =
+            \\{
+            \\  "compilerOptions": { "allowJs": true },
+            \\  "include": ["src"],
+            \\  "exclude": ["src/ignored"]
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/src/main.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/helper.js", .source = "exports.value = 1;", .extra_strip = 0 },
+        .{ .path = "/project/src/ignored/error.ts", .source = "const bad: number = 'x';", .extra_strip = 0 },
+        .{ .path = "/project/outside.ts", .source = "const outside = true;", .extra_strip = 0 },
+    };
+    var options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer options.deinit(T.allocator);
+    const selected = try fixtureRootSelection(T.allocator, "", &files, options);
+    defer T.allocator.free(selected);
+
+    try T.expect(options.has_config);
+    try T.expectEqual(@as(usize, 2), options.root_files.len);
+    try T.expectEqualSlices(bool, &.{ false, true, true, false, false }, selected);
+}
+
+test "conformance: tsconfig files are case-insensitive roots outside exclude filtering" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source =
+            \\{
+            \\  "files": ["SRC/Main.ts"],
+            \\  "exclude": ["src"]
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/src/main.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/other.ts", .source = "export {};", .extra_strip = 0 },
+    };
+    var options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer options.deinit(T.allocator);
+    const selected = try fixtureRootSelection(T.allocator, "", &files, options);
+    defer T.allocator.free(selected);
+
+    try T.expectEqual(@as(usize, 1), options.root_files.len);
+    try T.expectEqualStrings("/project/SRC/Main.ts", options.root_files[0]);
+    try T.expectEqualSlices(bool, &.{ false, true, false }, selected);
+}
+
+test "conformance: tsconfig wildcard roots honor TypeScript extension priority" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source = "{ \"compilerOptions\": { \"allowJs\": true }, \"include\": [\"src/**/*\"] }",
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/src/a.d.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/a.js", .source = "exports.a = 1;", .extra_strip = 0 },
+        .{ .path = "/project/src/a.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/b.d.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/b.js", .source = "exports.b = 1;", .extra_strip = 0 },
+        .{ .path = "/project/src/c.d.mts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/c.mjs", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/src/c.mts", .source = "export {};", .extra_strip = 0 },
+    };
+    var options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer options.deinit(T.allocator);
+    const selected = try fixtureRootSelection(T.allocator, "", &files, options);
+    defer T.allocator.free(selected);
+
+    try T.expectEqual(@as(usize, 4), options.root_files.len);
+    try T.expectEqualSlices(bool, &.{ false, false, false, true, true, true, false, false, true }, selected);
+}
+
+test "conformance: missing configured roots remain retained failures" {
+    const raw =
+        \\// @filename: /tsconfig.json
+        \\{ "files": ["missing.ts"] }
+        \\// @filename: /available.ts
+        \\export const value = 1;
+    ;
+    const result = try run(T.allocator, .{
+        .name = "missing-root-control",
+        .path = "/available.ts",
+        .source = raw,
+        .raw_source = raw,
+    });
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.failed, result.outcome);
+    try T.expect(std.mem.indexOf(u8, result.detail, "/missing.ts") != null);
+}
+
+test "conformance: noImplicitReferences leaves unreferenced diagnostics outside the program" {
+    const raw =
+        \\// @noImplicitReferences: true
+        \\// @filename: support.ts
+        \\const hiddenError: number = "not a number";
+        \\// @filename: main.ts
+        \\export const value = 1;
+    ;
+    const result = try run(T.allocator, .{
+        .name = "root-admission-control",
+        .path = "support.ts",
+        .source = raw,
+        .raw_source = raw,
+    });
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: an empty upstream root set never falls back to concatenated source" {
+    const raw =
+        \\// @noImplicitReferences: true
+        \\// @filename: support.ts
+        \\const hiddenError: number = "not a number";
+        \\// @filename: package.json
+        \\{}
+    ;
+    const result = try run(T.allocator, .{
+        .name = "empty-root-control",
+        .path = "support.ts",
+        .source = raw,
+        .raw_source = raw,
+    });
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: implementation source shadows same-stem declaration root" {
     const files = [_]VirtualFile{
         .{ .path = "foo.d.ts", .source = "export declare const x: number;", .extra_strip = 0 },
@@ -2070,67 +2249,6 @@ fn canonicalVfsPath(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
         return gpa.dupe(u8, p);
     }
     return std.fmt.allocPrint(gpa, "/{s}", .{p});
-}
-
-fn collectUmdGlobalsFromVirtualFiles(
-    gpa: std.mem.Allocator,
-    files: []const VirtualFile,
-    out: *std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal),
-) !void {
-    for (files) |f| {
-        if (!virtualPathIsDeclarationFile(f.path)) continue;
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, f.source, search_start, "export")) |export_pos| {
-            search_start = export_pos + "export".len;
-            if (!conformanceIdentifierKeywordAt(f.source, export_pos, "export")) continue;
-            var as_pos = export_pos + "export".len;
-            while (as_pos < f.source.len and std.ascii.isWhitespace(f.source[as_pos])) : (as_pos += 1) {}
-            if (!conformanceIdentifierKeywordAt(f.source, as_pos, "as")) continue;
-            var namespace_pos = as_pos + "as".len;
-            while (namespace_pos < f.source.len and std.ascii.isWhitespace(f.source[namespace_pos])) : (namespace_pos += 1) {}
-            if (!conformanceIdentifierKeywordAt(f.source, namespace_pos, "namespace")) continue;
-            var name_start = namespace_pos + "namespace".len;
-            while (name_start < f.source.len and std.ascii.isWhitespace(f.source[name_start])) : (name_start += 1) {}
-            if (name_start >= f.source.len or !conformanceAsciiIdentifierStart(f.source[name_start])) continue;
-            var name_end = name_start + 1;
-            while (name_end < f.source.len and conformanceAsciiIdentifierContinue(f.source[name_end])) : (name_end += 1) {}
-            const name = f.source[name_start..name_end];
-            var exists = false;
-            for (out.items) |global| {
-                if (std.mem.eql(u8, global.name, name)) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (exists) continue;
-            const owned = try gpa.dupe(u8, name);
-            errdefer gpa.free(owned);
-            try out.append(gpa, .{ .name = owned });
-        }
-    }
-}
-
-test "conformance: collects UMD globals from declaration virtual files" {
-    const files = [_]VirtualFile{
-        .{
-            .path = "foo.d.ts",
-            .source =
-            \\export var x: number;
-            \\export as namespace Foo;
-            ,
-            .extra_strip = 0,
-        },
-        .{ .path = "a.ts", .source = "Foo;", .extra_strip = 0 },
-    };
-    var globals: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
-    defer {
-        for (globals.items) |global| std.testing.allocator.free(global.name);
-        globals.deinit(std.testing.allocator);
-    }
-
-    try collectUmdGlobalsFromVirtualFiles(std.testing.allocator, &files, &globals);
-    try T.expectEqual(@as(usize, 1), globals.items.len);
-    try T.expectEqualStrings("Foo", globals.items[0].name);
 }
 
 fn virtualPathIsDeclarationFile(path: []const u8) bool {
@@ -2342,6 +2460,8 @@ fn resolverStrategyFromCase(c: Case, module_option: []const u8) ts_resolver.Stra
 }
 
 const TsconfigResolverOptions = struct {
+    has_config: bool = false,
+    root_files: []const []const u8 = &.{},
     out_dir: []const u8 = "",
     declaration_dir: []const u8 = "",
     root_dir: []const u8 = "",
@@ -2351,12 +2471,14 @@ const TsconfigResolverOptions = struct {
     module_resolution: []const u8 = "",
     module_suffixes: []const []const u8 = &.{},
     import_helpers: ?bool = null,
+    allow_js: ?bool = null,
     check_js: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
     types_configured: bool = false,
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
+        freeStringList(gpa, self.root_files);
         if (self.out_dir.len != 0) gpa.free(self.out_dir);
         if (self.declaration_dir.len != 0) gpa.free(self.declaration_dir);
         if (self.root_dir.len != 0) gpa.free(self.root_dir);
@@ -2383,9 +2505,11 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         const parsed = tsconfig_mod.parseString(gpa, arena.allocator(), f.source) catch return .{};
         const options = parsed.compiler_options;
         var result: TsconfigResolverOptions = .{
+            .has_config = true,
             .config_file_path = try canonicalVfsPath(gpa, f.path),
         };
         errdefer result.deinit(gpa);
+        result.root_files = try selectTsconfigRootFiles(gpa, files, f.path, parsed);
         if (options.out_dir) |value| result.out_dir = try gpa.dupe(u8, value);
         if (options.declaration_dir) |value| result.declaration_dir = try gpa.dupe(u8, value);
         if (options.root_dir) |value| result.root_dir = try gpa.dupe(u8, value);
@@ -2394,6 +2518,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
         result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
         result.import_helpers = options.import_helpers;
+        result.allow_js = options.allow_js;
         result.check_js = options.check_js;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
@@ -2401,6 +2526,318 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         return result;
     }
     return .{};
+}
+
+/// Compute the same root-name set that the pinned TypeScript harness obtains
+/// from a virtual tsconfig. Explicit `files` entries are additive and are not
+/// filtered by `exclude`; `include` discovery applies extension and exclusion
+/// filters. Every returned path is canonical and owned. Missing explicit roots
+/// remain in the set so the caller can retain a fixture failure instead of
+/// silently compiling a different program.
+fn selectTsconfigRootFiles(
+    gpa: std.mem.Allocator,
+    files: []const VirtualFile,
+    config_path: []const u8,
+    config: tsconfig_mod.TsConfig,
+) ![]const []const u8 {
+    const canonical_config = try canonicalVfsPath(gpa, config_path);
+    defer gpa.free(canonical_config);
+    const config_dir = dirnameSlice(canonical_config);
+
+    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (roots.items) |path| gpa.free(path);
+        roots.deinit(gpa);
+    }
+
+    if (config.files) |explicit_files| {
+        for (explicit_files) |raw_path| {
+            const path = try resolveConfigRelativePath(gpa, config_dir, raw_path);
+            if (std.mem.endsWith(u8, path, ".json")) {
+                gpa.free(path);
+                continue;
+            }
+            try appendUniqueOwnedPath(gpa, &roots, path);
+        }
+    }
+    const literal_root_count = roots.items.len;
+
+    const include_patterns: []const []const u8 = config.include orelse
+        if (config.files == null) &[_][]const u8{"**/*"} else &.{};
+    if (include_patterns.len == 0) return roots.toOwnedSlice(gpa);
+
+    const allow_js = config.compiler_options.allow_js orelse false;
+    for (files) |file| {
+        if (!isDiscoveredProjectInput(file.path, allow_js)) continue;
+        const canonical = try canonicalVfsPath(gpa, file.path);
+        defer gpa.free(canonical);
+        const relative = relativePathFromConfigDir(canonical, config_dir) orelse continue;
+        if (try configPathExcluded(gpa, relative, canonical, config_dir, config)) continue;
+        if (!try anyConfigPatternMatches(gpa, include_patterns, relative)) continue;
+        try appendDiscoveredRootPath(
+            gpa,
+            &roots,
+            literal_root_count,
+            try gpa.dupe(u8, canonical),
+            allow_js,
+        );
+    }
+    return roots.toOwnedSlice(gpa);
+}
+
+fn resolveConfigRelativePath(gpa: std.mem.Allocator, config_dir: []const u8, raw_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolutePosix(raw_path)) return std.fs.path.resolvePosix(gpa, &.{raw_path});
+    return std.fs.path.resolvePosix(gpa, &.{ config_dir, raw_path });
+}
+
+fn appendUniqueOwnedPath(
+    gpa: std.mem.Allocator,
+    paths: *std.ArrayListUnmanaged([]const u8),
+    owned_path: []u8,
+) !void {
+    for (paths.items) |existing| {
+        if (std.ascii.eqlIgnoreCase(existing, owned_path)) {
+            gpa.free(owned_path);
+            return;
+        }
+    }
+    paths.append(gpa, owned_path) catch |err| {
+        gpa.free(owned_path);
+        return err;
+    };
+}
+
+const RootExtensionPriority = struct {
+    stem: []const u8,
+    group: u2,
+    rank: u3,
+    declaration: bool,
+    javascript: bool,
+};
+
+fn rootExtensionPriority(path: []const u8, allow_js: bool) ?RootExtensionPriority {
+    const Candidate = struct {
+        suffix: []const u8,
+        group: u2,
+        rank: u3,
+        declaration: bool = false,
+        javascript: bool = false,
+    };
+    const candidates = [_]Candidate{
+        .{ .suffix = ".d.ts", .group = 0, .rank = 2, .declaration = true },
+        .{ .suffix = ".d.cts", .group = 1, .rank = 1, .declaration = true },
+        .{ .suffix = ".d.mts", .group = 2, .rank = 1, .declaration = true },
+        .{ .suffix = ".tsx", .group = 0, .rank = 1 },
+        .{ .suffix = ".cts", .group = 1, .rank = 0 },
+        .{ .suffix = ".mts", .group = 2, .rank = 0 },
+        .{ .suffix = ".ts", .group = 0, .rank = 0 },
+        .{ .suffix = ".jsx", .group = 0, .rank = 4, .javascript = true },
+        .{ .suffix = ".cjs", .group = 1, .rank = 2, .javascript = true },
+        .{ .suffix = ".mjs", .group = 2, .rank = 2, .javascript = true },
+        .{ .suffix = ".js", .group = 0, .rank = 3, .javascript = true },
+    };
+    for (candidates) |candidate| {
+        if (candidate.javascript and !allow_js) continue;
+        if (!std.mem.endsWith(u8, path, candidate.suffix)) continue;
+        return .{
+            .stem = path[0 .. path.len - candidate.suffix.len],
+            .group = candidate.group,
+            .rank = candidate.rank,
+            .declaration = candidate.declaration,
+            .javascript = candidate.javascript,
+        };
+    }
+    return null;
+}
+
+fn appendDiscoveredRootPath(
+    gpa: std.mem.Allocator,
+    roots: *std.ArrayListUnmanaged([]const u8),
+    literal_root_count: usize,
+    owned_path: []u8,
+    allow_js: bool,
+) !void {
+    const candidate = rootExtensionPriority(owned_path, allow_js) orelse {
+        try appendUniqueOwnedPath(gpa, roots, owned_path);
+        return;
+    };
+    var index: usize = 0;
+    while (index < roots.items.len) {
+        const existing = roots.items[index];
+        if (std.ascii.eqlIgnoreCase(existing, owned_path)) {
+            gpa.free(owned_path);
+            return;
+        }
+        const priority = rootExtensionPriority(existing, allow_js) orelse {
+            index += 1;
+            continue;
+        };
+        if (priority.group != candidate.group or
+            !std.ascii.eqlIgnoreCase(priority.stem, candidate.stem))
+        {
+            index += 1;
+            continue;
+        }
+        const declaration_js_pair = priority.group == 0 and
+            ((priority.declaration and candidate.javascript) or
+                (candidate.declaration and priority.javascript));
+        if (declaration_js_pair) {
+            index += 1;
+            continue;
+        }
+        if (priority.rank < candidate.rank) {
+            gpa.free(owned_path);
+            return;
+        }
+        if (priority.rank > candidate.rank and index >= literal_root_count) {
+            gpa.free(roots.orderedRemove(index));
+            continue;
+        }
+        index += 1;
+    }
+    try roots.append(gpa, owned_path);
+}
+
+fn relativePathFromConfigDir(path: []const u8, config_dir: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, config_dir, "/")) {
+        return if (std.mem.startsWith(u8, path, "/")) path[1..] else path;
+    }
+    if (path.len <= config_dir.len or path[config_dir.len] != '/') return null;
+    if (!std.ascii.eqlIgnoreCase(path[0..config_dir.len], config_dir)) return null;
+    return path[config_dir.len + 1 ..];
+}
+
+fn isDiscoveredProjectInput(path: []const u8, allow_js: bool) bool {
+    if (std.mem.endsWith(u8, path, ".d.ts") or
+        std.mem.endsWith(u8, path, ".d.mts") or
+        std.mem.endsWith(u8, path, ".d.cts") or
+        std.mem.endsWith(u8, path, ".ts") or
+        std.mem.endsWith(u8, path, ".tsx") or
+        std.mem.endsWith(u8, path, ".mts") or
+        std.mem.endsWith(u8, path, ".cts")) return true;
+    return allow_js and isJsLikeVirtualFile(path);
+}
+
+fn configPathExcluded(
+    gpa: std.mem.Allocator,
+    relative: []const u8,
+    canonical: []const u8,
+    config_dir: []const u8,
+    config: tsconfig_mod.TsConfig,
+) !bool {
+    if (config.exclude) |patterns| return try anyConfigPatternMatches(gpa, patterns, relative);
+    if (pathContainsDirectoryIgnoreCase(relative, "node_modules") or
+        pathContainsDirectoryIgnoreCase(relative, "bower_components") or
+        pathContainsDirectoryIgnoreCase(relative, "jspm_packages")) return true;
+    for ([_]?[]const u8{ config.compiler_options.out_dir, config.compiler_options.declaration_dir }) |maybe_dir| {
+        if (maybe_dir) |raw_dir| {
+            const excluded_dir = try resolveConfigRelativePath(gpa, config_dir, raw_dir);
+            defer gpa.free(excluded_dir);
+            if (pathHasDirPrefixIgnoreCase(canonical, excluded_dir)) return true;
+        }
+    }
+    return false;
+}
+
+fn anyConfigPatternMatches(
+    gpa: std.mem.Allocator,
+    patterns: []const []const u8,
+    relative: []const u8,
+) !bool {
+    for (patterns) |raw_pattern| {
+        var pattern = raw_pattern;
+        while (std.mem.startsWith(u8, pattern, "./")) pattern = pattern[2..];
+        while (pattern.len > 0 and pattern[pattern.len - 1] == '/') pattern = pattern[0 .. pattern.len - 1];
+        if (pattern.len == 0) continue;
+        if (try configGlobMatchesIgnoreCase(gpa, pattern, relative)) return true;
+        if (std.mem.indexOfAny(u8, pattern, "*?") == null and pathHasDirPrefixIgnoreCase(relative, pattern)) return true;
+    }
+    return false;
+}
+
+fn configGlobMatchesIgnoreCase(
+    gpa: std.mem.Allocator,
+    pattern: []const u8,
+    path: []const u8,
+) !bool {
+    const lower_pattern = try lowerAsciiDupe(gpa, pattern);
+    defer gpa.free(lower_pattern);
+    const lower_path = try lowerAsciiDupe(gpa, path);
+    defer gpa.free(lower_path);
+    return tsconfig_mod.matchGlob(lower_pattern, lower_path);
+}
+
+fn lowerAsciiDupe(gpa: std.mem.Allocator, input: []const u8) ![]u8 {
+    const out = try gpa.alloc(u8, input.len);
+    for (input, 0..) |char, index| out[index] = std.ascii.toLower(char);
+    return out;
+}
+
+fn pathHasDirPrefixIgnoreCase(path: []const u8, dir: []const u8) bool {
+    if (dir.len == 0 or path.len < dir.len) return false;
+    if (!std.ascii.eqlIgnoreCase(path[0..dir.len], dir)) return false;
+    return path.len == dir.len or path[dir.len] == '/';
+}
+
+fn pathContainsDirectoryIgnoreCase(path: []const u8, directory: []const u8) bool {
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.ascii.eqlIgnoreCase(component, directory)) return true;
+    }
+    return false;
+}
+
+fn fixtureRootSelection(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    files: []const VirtualFile,
+    config: TsconfigResolverOptions,
+) ![]bool {
+    const selected = try gpa.alloc(bool, files.len);
+    @memset(selected, false);
+    errdefer gpa.free(selected);
+
+    if (config.has_config) {
+        for (files, 0..) |file, index| {
+            if (!isCodeVirtualFile(file.path)) continue;
+            const canonical = try canonicalVfsPath(gpa, file.path);
+            defer gpa.free(canonical);
+            selected[index] = stringListContainsIgnoreCase(config.root_files, canonical);
+        }
+        return selected;
+    }
+
+    if (files.len == 0) return selected;
+    const last = files[files.len - 1];
+    const last_only = (directiveBool(source, "noImplicitReferences") orelse false) or
+        std.mem.indexOf(u8, last.source, "require(") != null or
+        sourceContainsReferencePath(last.source);
+    if (last_only) {
+        selected[files.len - 1] = isCodeVirtualFile(last.path);
+        return selected;
+    }
+    for (files, 0..) |file, index| selected[index] = isCodeVirtualFile(file.path);
+    return selected;
+}
+
+fn stringListContainsIgnoreCase(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.ascii.eqlIgnoreCase(value, needle)) return true;
+    }
+    return false;
+}
+
+fn sourceContainsReferencePath(source: []const u8) bool {
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search_from, "reference")) |start| {
+        const whitespace = start + "reference".len;
+        search_from = whitespace;
+        if (whitespace >= source.len or !std.ascii.isWhitespace(source[whitespace])) continue;
+        const path_start = whitespace + 1;
+        if (path_start + "path".len <= source.len and
+            std.mem.eql(u8, source[path_start .. path_start + "path".len], "path")) return true;
+    }
+    return false;
 }
 
 fn dupeOptionalStringList(
@@ -3587,20 +4024,37 @@ fn appendPreloadedProgramFileDiagnostics(
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
     program_files: *std.ArrayListUnmanaged(ProgramFileEntry),
+    virtual_files: []const VirtualFile,
 ) !void {
     var i = program_files.items.len;
     while (i < program.files.items.len) : (i += 1) {
         const file = program.files.items[i];
         const path = try gpa.dupe(u8, file.path);
         errdefer gpa.free(path);
-        const diag_path = try gpa.dupe(u8, file.path);
+        const virtual = try virtualFileForCanonicalPath(gpa, virtual_files, file.path);
+        var diag_source = if (virtual) |item| item.path else file.path;
+        if (std.mem.startsWith(u8, diag_source, "./")) diag_source = diag_source[2..];
+        const diag_path = try gpa.dupe(u8, diag_source);
         errdefer gpa.free(diag_path);
         try program_files.append(gpa, .{
             .path = path,
             .diag_path = diag_path,
-            .extra_strip = 0,
+            .extra_strip = if (virtual) |item| item.extra_strip else 0,
         });
     }
+}
+
+fn virtualFileForCanonicalPath(
+    gpa: std.mem.Allocator,
+    virtual_files: []const VirtualFile,
+    canonical_path: []const u8,
+) !?VirtualFile {
+    for (virtual_files) |file| {
+        const canonical = try canonicalVfsPath(gpa, file.path);
+        defer gpa.free(canonical);
+        if (std.ascii.eqlIgnoreCase(canonical, canonical_path)) return file;
+    }
+    return null;
 }
 
 fn knownTypeReferenceName(known: []const []const u8, name: []const u8) bool {
@@ -3789,6 +4243,31 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         tsconfig_options.type_roots = try dupeDirectiveStringList(gpa, input_source, "typeRoots");
     }
     defer tsconfig_options.deinit(gpa);
+    const root_selection = try fixtureRootSelection(gpa, input_source, virtual_files.items, tsconfig_options);
+    defer gpa.free(root_selection);
+    if (tsconfig_options.has_config) {
+        const effective_allow_js = directiveBool(input_source, "allowJs") orelse
+            tsconfig_options.allow_js orelse
+            false;
+        for (tsconfig_options.root_files) |root_path| {
+            const virtual = try virtualFileForCanonicalPath(gpa, virtual_files.items, root_path);
+            if (virtual == null or
+                !isCodeVirtualFile(virtual.?.path) or
+                (isJsLikeVirtualFile(virtual.?.path) and !effective_allow_js))
+            {
+                const detail = try std.fmt.allocPrint(
+                    gpa,
+                    "configured root input is missing or unsupported: {s}",
+                    .{root_path},
+                );
+                return .{
+                    .name = c.name,
+                    .outcome = .failed,
+                    .detail = detail,
+                };
+            }
+        }
+    }
     const directive_source = if (input_source.len > 0) input_source else c.source;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
@@ -3865,11 +4344,10 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         gpa.free(pf.path);
         gpa.free(pf.diag_path);
     };
-    for (virtual_files.items) |f| {
+    for (virtual_files.items, 0..) |f, file_index| {
+        if (!root_selection[file_index]) continue;
         if (!isCodeVirtualFile(f.path)) continue;
-        if (isNodeModulesVirtualPath(f.path)) continue;
         if (declarationFileShadowedByImplementation(virtual_files.items, f.path)) continue;
-        if (configured_type_names.len != 0 and virtualFileIsUnderAnyTypeRoot(f.path, tsconfig_options.type_roots)) continue;
         const canon = try canonicalVfsPath(gpa, f.path);
         const file_source = if (std.mem.startsWith(u8, canon, "/.lib/")) block: {
             const mounted = try resolver.fs.readFile(gpa, canon);
@@ -3917,8 +4395,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         _ = try program.add(path, source);
     }
 
-    if (program_files.items.len == 0) return null;
-
     var known_reference_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (known_reference_paths.items) |path| gpa.free(path);
@@ -3929,13 +4405,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         errdefer gpa.free(canon);
         try known_reference_paths.append(gpa, canon);
     }
-
-    var known_umd_globals: std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal) = .empty;
-    defer {
-        for (known_umd_globals.items) |global| gpa.free(global.name);
-        known_umd_globals.deinit(gpa);
-    }
-    try collectUmdGlobalsFromVirtualFiles(gpa, virtual_files.items, &known_umd_globals);
 
     var known_type_reference_names: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
@@ -3951,7 +4420,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         &owned_program_sources,
     );
     try preloadTripleSlashTypeReferences(gpa, &resolver, &program, &known_type_reference_names, &owned_program_sources);
-    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
+    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files, virtual_files.items);
 
     // Compile every code file in the program. The driver's
     // `compileAll` runs each file through the same lex/parse/bind/
@@ -4020,7 +4489,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .known_reference_paths = known_reference_paths.items,
         .known_type_reference_names = known_type_reference_names.items,
         .compiler_type_reference_names = diagnostic_type_names,
-        .program_umd_globals = known_umd_globals.items,
         .deduplicate_packages = c.deduplicate_packages,
     };
     compile_options.emit.import_helpers = directiveBool(directive_source, "importHelpers") orelse
@@ -4039,7 +4507,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     };
     // loadImportClosure checks the final graph using the retained bound
     // sources; no second parse/bind/check pass is needed here.
-    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files);
+    try appendPreloadedProgramFileDiagnostics(gpa, &program, &program_files, virtual_files.items);
 
     var script_globals: ScriptGlobalSpaces = .{};
     defer script_globals.deinit(gpa);
@@ -5168,22 +5636,6 @@ fn isNodeModulesVirtualPath(path: []const u8) bool {
     while (std.mem.startsWith(u8, p, "./")) p = p[2..];
     return std.mem.startsWith(u8, p, "node_modules/") or
         std.mem.indexOf(u8, p, "/node_modules/") != null;
-}
-
-fn virtualFileIsUnderAnyTypeRoot(path: []const u8, roots: []const []const u8) bool {
-    var p = path;
-    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
-    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
-    for (roots) |raw_root| {
-        var root = raw_root;
-        while (std.mem.startsWith(u8, root, "/")) root = root[1..];
-        while (std.mem.startsWith(u8, root, "./")) root = root[2..];
-        while (root.len > 0 and root[root.len - 1] == '/') root = root[0 .. root.len - 1];
-        if (root.len == 0) continue;
-        if (!std.mem.startsWith(u8, p, root)) continue;
-        if (p.len == root.len or p[root.len] == '/') return true;
-    }
-    return false;
 }
 
 fn isJsLikeVirtualFile(path: []const u8) bool {
