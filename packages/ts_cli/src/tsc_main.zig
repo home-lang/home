@@ -2496,12 +2496,13 @@ const CheckerResolverAdapter = struct {
         const facts = blk: {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
-            break :blk ts_program.moduleExportFactsFromCompilation(
+            break :blk ts_program.moduleExportFactsFromCompilationWithQuery(
                 self.resolver.gpa,
                 self.resolver,
                 r.path,
                 compilation,
                 name,
+                &self.export_origin_query,
             );
         };
         const local_facts = ts_program.moduleLocalImportFactsFromCompilation(compilation, name);
@@ -2573,12 +2574,13 @@ const CheckerResolverAdapter = struct {
         const facts = blk: {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
-            break :blk ts_program.moduleExportFactsFromCompilation(
+            break :blk ts_program.moduleExportFactsFromCompilationWithQuery(
                 self.resolver.gpa,
                 self.resolver,
                 resolved.path,
                 compilation,
                 name,
+                &self.export_origin_query,
             );
         };
         const local_facts = ts_program.moduleLocalImportFactsFromCompilation(compilation, name);

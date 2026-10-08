@@ -6196,7 +6196,7 @@ fn moduleExportFactsFromResolvedModuleDepth(
         compilation.deinit();
         gpa.destroy(compilation);
     }
-    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth);
+    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth, null);
 }
 
 /// Query export facts from a module compilation that the caller already owns.
@@ -6208,7 +6208,21 @@ pub fn moduleExportFactsFromCompilation(
     compilation: *ts_driver.Compilation,
     name: []const u8,
 ) ModuleExportFacts {
-    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0) catch .{};
+    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0, null) catch .{};
+}
+
+/// Query the same export facts while reusing immutable owners and bound origin
+/// indexes retained by the caller. The query must use this resolver and remain
+/// alive for the duration of every fact consumer.
+pub fn moduleExportFactsFromCompilationWithQuery(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    module_path: []const u8,
+    compilation: *ts_driver.Compilation,
+    name: []const u8,
+    query: *export_origins.Query,
+) ModuleExportFacts {
+    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0, query) catch .{};
 }
 
 fn moduleExportFactsFromCompilationDepth(
@@ -6218,6 +6232,7 @@ fn moduleExportFactsFromCompilationDepth(
     compilation: *ts_driver.Compilation,
     name: []const u8,
     depth: u8,
+    shared_query: ?*export_origins.Query,
 ) !ModuleExportFacts {
     var facts: ModuleExportFacts = .{
         .exported_type = moduleExportsTypeSpaceNameFromCompilation(compilation, name) or
@@ -6229,9 +6244,10 @@ fn moduleExportFactsFromCompilationDepth(
     facts.cannot_be_named = !facts.exported_type and
         moduleExportNestedTypeSpaceNameFromCompilation(compilation, name);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
-    var origin_query = export_origins.Query.init(gpa, resolver);
-    defer origin_query.deinit();
-    try origin_query.borrow(module_path, compilation);
+    var local_query = export_origins.Query.init(gpa, resolver);
+    defer local_query.deinit();
+    const origin_query = shared_query orelse &local_query;
+    if (!origin_query.files.contains(module_path)) try origin_query.borrow(module_path, compilation);
     const resolved_origins = try origin_query.resolve(module_path, name);
     if (resolved_origins.complete and !resolved_origins.ambiguous) {
         facts.namespace_meaning = resolved_origins.namespace != null;
@@ -6326,10 +6342,7 @@ fn moduleExportFactsFromCompilationDepth(
                 if (specifier.len == 0) {
                     if (compilation.module.root.lookupLocal(export_spec.imported)) |local| {
                         if (local.flags.is_import) {
-                            var query = export_origins.Query.init(gpa, resolver);
-                            defer query.deinit();
-                            try query.borrow(module_path, compilation);
-                            const origins = try query.resolve(module_path, name);
+                            const origins = resolved_origins;
                             if (origins.complete and !origins.ambiguous) {
                                 facts.exported_type = facts.exported_type or origins.type != null or origins.namespace != null;
                                 facts.exported_value = facts.exported_value or origins.value != null or origins.type_only_value != null;
@@ -8453,42 +8466,44 @@ test "Program: export name enumeration traverses long cyclic star graphs" {
     try T.expectEqualStrings("Deep", names[0]);
 }
 
-test "Program: shared export names retain cyclic alias surface without rereading owners" {
-    const Fs = struct {
-        inner: ts_resolver.FileSystem,
-        source_reads: usize = 0,
-        deny_source_reads: bool = false,
-        const vt: ts_resolver.FileSystem.VTable = .{
-            .fileExists = exists,
-            .directoryExists = directory,
-            .readFile = read,
-            .readDir = entries,
-            .realpath = real,
-        };
-        fn self(p: *anyopaque) *@This() {
-            return @ptrCast(@alignCast(p));
-        }
-        fn exists(p: *anyopaque, path: []const u8) bool {
-            return self(p).inner.fileExists(path);
-        }
-        fn directory(p: *anyopaque, path: []const u8) bool {
-            return self(p).inner.directoryExists(path);
-        }
-        fn entries(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
-            return self(p).inner.readDir(gpa, path);
-        }
-        fn real(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-            return self(p).inner.realpath(gpa, path);
-        }
-        fn read(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-            const state = self(p);
-            if (std.mem.endsWith(u8, path, ".ts")) {
-                if (state.deny_source_reads) return error.UnexpectedSourceReread;
-                state.source_reads += 1;
-            }
-            return state.inner.readFile(gpa, path);
-        }
+const ExportQueryReadControlFs = struct {
+    inner: ts_resolver.FileSystem,
+    source_reads: usize = 0,
+    deny_source_reads: bool = false,
+    const vt: ts_resolver.FileSystem.VTable = .{
+        .fileExists = exists,
+        .directoryExists = directory,
+        .readFile = read,
+        .readDir = entries,
+        .realpath = real,
     };
+    fn self(p: *anyopaque) *@This() {
+        return @ptrCast(@alignCast(p));
+    }
+    fn exists(p: *anyopaque, path: []const u8) bool {
+        return self(p).inner.fileExists(path);
+    }
+    fn directory(p: *anyopaque, path: []const u8) bool {
+        return self(p).inner.directoryExists(path);
+    }
+    fn entries(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
+        return self(p).inner.readDir(gpa, path);
+    }
+    fn real(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        return self(p).inner.realpath(gpa, path);
+    }
+    fn read(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const state = self(p);
+        if (std.mem.endsWith(u8, path, ".ts")) {
+            if (state.deny_source_reads) return error.UnexpectedSourceReread;
+            state.source_reads += 1;
+        }
+        return state.inner.readFile(gpa, path);
+    }
+};
+
+test "Program: shared export names retain cyclic alias surface without rereading owners" {
+    const Fs = ExportQueryReadControlFs;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/p/owner.ts", "export interface Shape { value: number; } export const value = 1; export default value; export { value as 'space name' };");
@@ -8526,6 +8541,36 @@ test "Program: shared export names retain cyclic alias surface without rereading
     try T.expect(origin.complete and !origin.ambiguous and origin.type != null and origin.value == null);
     try T.expectEqualStrings("/p/owner.ts", origin.type.?.path);
     try T.expectEqual(@as(usize, 3), fs.source_reads);
+}
+
+test "Program: retained origin query preserves complete local export facts without rereading owners" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/owner.ts", "export declare function make<T>(): T; export class Box {};");
+    try vfs.addFile("/p/bridge.ts", "import { make } from './owner'; import type { Box } from './owner'; export { make, Box }; export type * as ns from './owner';");
+    var fs: ExportQueryReadControlFs = .{ .inner = vfs.fs() };
+    var resolver = ts_resolver.Resolver.init(T.allocator, .{ .ptr = &fs, .vtable = &ExportQueryReadControlFs.vt }, .{});
+    defer resolver.deinit();
+    var query = export_origins.Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const compilation = try query.compilation("/p/bridge.ts") orelse return error.TestUnexpectedResult;
+    const names = [_][]const u8{ "make", "Box", "ns", "Missing" };
+    var expected: [names.len]ModuleExportFacts = undefined;
+    for (names, 0..) |name, index| {
+        expected[index] = moduleExportFactsFromCompilation(T.allocator, &resolver, "/p/bridge.ts", compilation, name);
+        _ = try query.resolve("/p/bridge.ts", name);
+    }
+    try T.expect(expected[0].generic_function and expected[0].exported_value);
+    try T.expect(expected[1].exported_type and expected[1].type_only_import);
+    try T.expect(expected[2].exported_type and !expected[2].exported_value);
+    try T.expect(!expected[3].exported_type and !expected[3].exported_value);
+    const source_reads = fs.source_reads;
+    fs.deny_source_reads = true;
+    for (names, 0..) |name, index| {
+        const actual = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/bridge.ts", compilation, name, &query);
+        try T.expectEqualDeep(expected[index], actual);
+    }
+    try T.expectEqual(source_reads, fs.source_reads);
 }
 
 test "Program: serial parallel and streaming checks reuse the prepared graph" {
