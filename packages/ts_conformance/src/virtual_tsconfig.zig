@@ -368,6 +368,50 @@ test "virtual tsconfig: extends arrays merge left to right before the child" {
     try T.expectEqual(@as(?bool, true), resolved.config.?.compiler_options.no_implicit_any);
 }
 
+test "virtual tsconfig: explicit undefined options clear inherited values" {
+    const files = [_]File{
+        .{
+            .path = "/base.json",
+            .source =
+            \\{
+            \\  "compilerOptions": {
+            \\    "allowJs": true,
+            \\    "baseUrl": "./base",
+            \\    "paths": { "pkg": ["src/pkg"] },
+            \\    "types": ["node"],
+            \\    "noImplicitAny": true
+            \\  }
+            \\}
+            ,
+        },
+        .{
+            .path = "/tsconfig.json",
+            .source =
+            \\{
+            \\  "extends": "./base.json",
+            \\  "compilerOptions": {
+            \\    "allowJs": null,
+            \\    "baseUrl": null,
+            \\    "paths": null,
+            \\    "types": null,
+            \\    "noImplicitAny": null
+            \\  }
+            \\}
+            ,
+        },
+    };
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const resolved = try resolveRoot(T.allocator, arena.allocator(), &files);
+    try T.expect(resolved.failure == null);
+    const options = resolved.config.?.compiler_options;
+    try T.expectEqual(@as(?bool, null), options.allow_js);
+    try T.expect(options.base_url == null);
+    try T.expect(options.paths == null);
+    try T.expect(options.types == null);
+    try T.expectEqual(@as(?bool, null), options.no_implicit_any);
+}
+
 test "virtual tsconfig: inherited file specs stay relative to their declaring config" {
     const files = [_]File{
         .{ .path = "/base/tsconfig.base.json", .source = "{\"files\":[\"src/a.ts\"],\"include\":[\"generated/**/*\"]}" },

@@ -2218,6 +2218,96 @@ test "conformance: inherited strict options come from the virtual config graph" 
     try T.expect(configured.flags.no_unused_locals);
 }
 
+test "conformance: inherited null options clear parent compiler inputs" {
+    const raw =
+        \\// @filename: /base.json
+        \\{
+        \\  "compilerOptions": {
+        \\    "strict": false,
+        \\    "noImplicitAny": true,
+        \\    "skipLibCheck": true,
+        \\    "allowJs": true,
+        \\    "baseUrl": ".",
+        \\    "paths": { "pkg": ["src/pkg"] },
+        \\    "types": ["node"]
+        \\  },
+        \\  "files": ["/index.ts"]
+        \\}
+        \\// @filename: /tsconfig.json
+        \\{
+        \\  "extends": "./base.json",
+        \\  "compilerOptions": {
+        \\    "noImplicitAny": null,
+        \\    "skipLibCheck": null,
+        \\    "allowJs": null,
+        \\    "baseUrl": null,
+        \\    "paths": null,
+        \\    "types": null
+        \\  }
+        \\}
+        \\// @filename: /index.ts
+        \\export const value = 1;
+    ;
+    var files = try splitVirtualFiles(T.allocator, raw);
+    defer files.deinit(T.allocator);
+    const options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, files.items);
+    defer options.deinit(T.allocator);
+    const configured = try configuredStrictOptions(T.allocator, raw, null);
+
+    try T.expect(options.has_config);
+    try T.expectEqual(@as(?bool, null), options.allow_js);
+    try T.expectEqual(@as(usize, 0), options.base_url.len);
+    try T.expectEqual(@as(usize, 0), options.paths.len);
+    try T.expect(!options.types_configured);
+    try T.expect(!configured.flags.no_implicit_any);
+    try T.expect(!configured.skip_lib_check);
+}
+
+test "conformance: invalid extends elements retain exact TS5024 diagnostics" {
+    const raw =
+        \\// @filename: /base.json
+        \\{}
+        \\// @filename: /tsconfig.json
+        \\{ "extends": ["./base.json", null, 42], "files": ["/index.ts"] }
+        \\// @filename: /index.ts
+        \\export const value = 1;
+    ;
+    const result = try runProgram(T.allocator, .{
+        .name = "invalid-extends-elements-control",
+        .path = "/index.ts",
+        .source = "",
+        .raw_source = raw,
+        .expected_errors =
+        \\/tsconfig.json(1,30): error TS5024: Compiler option 'extends' requires a value of type string.
+        \\/tsconfig.json(1,36): error TS5024: Compiler option 'extends' requires a value of type string.
+        ,
+        .strict_flags = .{},
+    }) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: invalid scalar extends retains exact TS5024 diagnostic" {
+    const raw =
+        \\// @filename: /tsconfig.json
+        \\{ "extends": null, "files": ["/index.ts"] }
+        \\// @filename: /index.ts
+        \\export const value = 1;
+    ;
+    const result = try runProgram(T.allocator, .{
+        .name = "invalid-scalar-extends-control",
+        .path = "/index.ts",
+        .source = "",
+        .raw_source = raw,
+        .expected_errors =
+        \\/tsconfig.json(1,14): error TS5024: Compiler option 'extends' requires a value of type string or Array.
+        ,
+        .strict_flags = .{},
+    }) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: unresolved extended configs remain failed cases" {
     const raw =
         \\// @filename: /tsconfig.json
@@ -5950,7 +6040,11 @@ fn appendTsconfigParseDiagnostics(
         }
         for (config.option_parse_diagnostics) |diagnostic| {
             if (diagnostic.code != 5024) continue;
-            const value_offset = jsonOptionValueOffset(file.source, diagnostic.option) orelse continue;
+            const option_offset = jsonOptionValueOffset(file.source, diagnostic.option) orelse continue;
+            const value_offset = if (diagnostic.element_index) |element_index|
+                jsonArrayElementOffset(file.source, option_offset, element_index) orelse continue
+            else
+                option_offset;
             const pos = ts_diagnostics.positionToLineCol(file.source, @intCast(value_offset));
             const message = try std.fmt.allocPrint(
                 gpa,
@@ -5990,6 +6084,22 @@ fn jsonOptionValueOffset(source: []const u8, option: []const u8) ?usize {
         if (search_from >= source.len or source[search_from] != '"') continue;
         const colon = std.mem.indexOfScalarPos(u8, source, search_from + 1, ':') orelse return null;
         return skipJsonTrivia(source, colon + 1);
+    }
+    return null;
+}
+
+fn jsonArrayElementOffset(source: []const u8, array_start: usize, wanted_index: usize) ?usize {
+    if (array_start >= source.len or source[array_start] != '[') return null;
+    var cursor = skipJsonTrivia(source, array_start + 1);
+    var index: usize = 0;
+    while (cursor < source.len and source[cursor] != ']') {
+        if (index == wanted_index) return cursor;
+        cursor = jsonValueEnd(source, cursor) orelse return null;
+        cursor = skipJsonTrivia(source, cursor);
+        if (cursor < source.len and source[cursor] == ',') {
+            cursor = skipJsonTrivia(source, cursor + 1);
+        }
+        index += 1;
     }
     return null;
 }

@@ -353,6 +353,9 @@ pub const OptionParseDiagnostic = struct {
     substitution: []const u8 = "",
     pattern: []const u8 = "",
     got_type: []const u8 = "",
+    /// Index of an invalid list element.  The conformance renderer uses this
+    /// to anchor TS5024 to the element rather than the containing array.
+    element_index: ?usize = null,
 };
 
 /// Syntax diagnostics produced by the JSONC parser that TypeScript
@@ -421,6 +424,12 @@ pub const TsConfig = struct {
     /// choose the key or value anchor according to TypeScript's option
     /// diagnostic call site.
     compiler_option_locations: []const CompilerOptionLocation = &.{},
+    /// Known compiler options that were present in this config but converted
+    /// to `undefined` (an explicit JSON `null`, or an invalid value retained
+    /// alongside its diagnostic). TypeScript's extends merge uses ordinary
+    /// object assignment, so these entries clear a value inherited from a
+    /// parent even though the typed field itself is `null`.
+    compiler_option_unsets: [][]const u8 = &.{},
 
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
@@ -1734,7 +1743,9 @@ pub fn parseString(
     var config_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
     try collectRootInvalidJsonValueDiagnostics(arena, root, &config_diags);
 
-    // extends: string or [string]
+    // extends: string or [string]. Keep malformed values as diagnostics and
+    // recover the usable entries, matching TypeScript's config parser instead
+    // of rejecting the entire config file.
     if (root.get("extends")) |ext_v| {
         cfg.has_extends = true;
         switch (ext_v) {
@@ -1745,32 +1756,56 @@ pub fn parseString(
             },
             .array => |arr| {
                 const out = try arena.alloc([]const u8, arr.len);
-                for (arr, 0..) |a, i| {
-                    out[i] = a.asString() orelse return error.InvalidExtends;
+                var count: usize = 0;
+                for (arr, 0..) |item, index| {
+                    if (item.asString()) |value| {
+                        out[count] = value;
+                        count += 1;
+                    } else {
+                        try recordOptionElementTypeMismatch(
+                            arena,
+                            &config_diags,
+                            "extends",
+                            "string",
+                            index,
+                        );
+                    }
                 }
-                cfg.extends = out;
+                cfg.extends = out[0..count];
             },
-            else => return error.InvalidExtends,
+            else => try recordOptionTypeMismatch(
+                arena,
+                &config_diags,
+                "extends",
+                "string or Array",
+            ),
         }
     }
 
     if (root.get("files")) |v| {
-        if (v.asArray() != null) {
-            cfg.files = try parseStringArray(arena, v);
+        if (v == .null_) {
+            // Root file lists treat null as absent, so an extended value is
+            // still inherited.
+        } else if (v.asArray() != null) {
+            cfg.files = try parseStringArray(arena, v, "files", &config_diags);
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "files", "Array");
         }
     }
     if (root.get("include")) |v| {
-        if (v.asArray() != null) {
-            cfg.include = try parseStringArray(arena, v);
+        if (v == .null_) {
+            // See `files` above.
+        } else if (v.asArray() != null) {
+            cfg.include = try parseStringArray(arena, v, "include", &config_diags);
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "include", "Array");
         }
     }
     if (root.get("exclude")) |v| {
-        if (v.asArray() != null) {
-            cfg.exclude = try parseStringArray(arena, v);
+        if (v == .null_) {
+            // See `files` above.
+        } else if (v.asArray() != null) {
+            cfg.exclude = try parseStringArray(arena, v, "exclude", &config_diags);
         } else {
             try recordOptionTypeMismatch(arena, &config_diags, "exclude", "Array");
         }
@@ -1815,8 +1850,16 @@ pub fn parseString(
             }
             cfg.compiler_option_locations = option_locations;
             var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
-            try fillCompilerOptions(arena, &cfg.compiler_options, co, &opt_diags);
+            var option_unsets: std.ArrayListUnmanaged([]const u8) = .empty;
+            try fillCompilerOptions(
+                arena,
+                &cfg.compiler_options,
+                co,
+                &opt_diags,
+                &option_unsets,
+            );
             try config_diags.appendSlice(arena, opt_diags.items);
+            cfg.compiler_option_unsets = try option_unsets.toOwnedSlice(arena);
         }
     }
     if (root.get("home")) |home_v| {
@@ -1899,14 +1942,24 @@ fn recordInvalidJsonPropertyValue(
     });
 }
 
-fn parseStringArray(arena: std.mem.Allocator, v: jsonc.Value) ![][]const u8 {
+fn parseStringArray(
+    arena: std.mem.Allocator,
+    v: jsonc.Value,
+    option: []const u8,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+) ![][]const u8 {
     const arr = v.asArray() orelse return &.{};
     const out = try arena.alloc([]const u8, arr.len);
     var n: usize = 0;
-    for (arr) |item| {
+    for (arr, 0..) |item, index| {
         if (item.asString()) |s| {
             out[n] = s;
             n += 1;
+        } else if (item != .null_) {
+            // Null list elements convert to undefined and are filtered out
+            // without an error. Other element types produce TS5024 at the
+            // element and are filtered from the resulting list.
+            try recordOptionElementTypeMismatch(arena, diags, option, "string", index);
         }
     }
     return out[0..n];
@@ -2006,6 +2059,21 @@ fn recordOptionTypeMismatch(
     });
 }
 
+fn recordOptionElementTypeMismatch(
+    arena: std.mem.Allocator,
+    diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    option: []const u8,
+    expected_type: []const u8,
+    element_index: usize,
+) !void {
+    try diags.append(arena, .{
+        .code = 5024,
+        .option = option,
+        .expected_type = expected_type,
+        .element_index = element_index,
+    });
+}
+
 fn recordCommandLineOnlyOption(
     arena: std.mem.Allocator,
     diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
@@ -2069,6 +2137,7 @@ fn fillCompilerOptions(
     co: *CompilerOptions,
     obj: jsonc.Value.Object,
     diags: *std.ArrayListUnmanaged(OptionParseDiagnostic),
+    unsets: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     var i: usize = 0;
     while (i < obj.keys.len) : (i += 1) {
@@ -2145,10 +2214,13 @@ fn fillCompilerOptions(
         var matched = false;
         inline for (bool_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
-                if (value.asBool()) |b| {
+                if (value == .null_) {
+                    try unsets.append(arena, entry.name);
+                } else if (value.asBool()) |b| {
                     @field(co, entry.field) = b;
                 } else {
                     try recordOptionTypeMismatch(arena, diags, entry.name, "boolean");
+                    try unsets.append(arena, entry.name);
                 }
                 matched = true;
             }
@@ -2174,10 +2246,13 @@ fn fillCompilerOptions(
         };
         inline for (str_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
-                if (value.asString()) |s| {
+                if (value == .null_) {
+                    try unsets.append(arena, entry.name);
+                } else if (value.asString()) |s| {
                     @field(co, entry.field) = s;
                 } else {
                     try recordOptionTypeMismatch(arena, diags, entry.name, "string");
+                    try unsets.append(arena, entry.name);
                 }
                 matched = true;
             }
@@ -2197,10 +2272,13 @@ fn fillCompilerOptions(
         };
         inline for (list_table) |entry| {
             if (std.mem.eql(u8, key, entry.name)) {
-                if (value.asArray() != null) {
-                    @field(co, entry.field) = try parseStringArray(arena, value);
+                if (value == .null_) {
+                    try unsets.append(arena, entry.name);
+                } else if (value.asArray() != null) {
+                    @field(co, entry.field) = try parseStringArray(arena, value, entry.name, diags);
                 } else {
                     try recordOptionTypeMismatch(arena, diags, entry.name, "Array");
+                    try unsets.append(arena, entry.name);
                 }
                 matched = true;
             }
@@ -2212,55 +2290,76 @@ fn fillCompilerOptions(
         // error (TS6046). In both cases keep parsing, mirroring tsc's
         // recovery.
         if (std.mem.eql(u8, key, "module")) {
-            if (value.asString()) |s| {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+            } else if (value.asString()) |s| {
                 co.module = Module.fromString(s) orelse {
                     try recordInvalidEnumOption(arena, diags, "module");
+                    try unsets.append(arena, key);
                     continue;
                 };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "module", "string");
+                try unsets.append(arena, key);
             }
             continue;
         }
         if (std.mem.eql(u8, key, "moduleResolution")) {
-            if (value.asString()) |s| {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+            } else if (value.asString()) |s| {
                 co.module_resolution = ModuleResolution.fromString(s) orelse {
                     try recordInvalidEnumOption(arena, diags, "moduleResolution");
+                    try unsets.append(arena, key);
                     continue;
                 };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "moduleResolution", "string");
+                try unsets.append(arena, key);
             }
             continue;
         }
         if (std.mem.eql(u8, key, "target")) {
-            if (value.asString()) |s| {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+            } else if (value.asString()) |s| {
                 co.target = Target.fromString(s) orelse {
                     try recordInvalidEnumOption(arena, diags, "target");
+                    try unsets.append(arena, key);
                     continue;
                 };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "target", "string");
+                try unsets.append(arena, key);
             }
             continue;
         }
         if (std.mem.eql(u8, key, "jsx")) {
-            if (value.asString()) |s| {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+            } else if (value.asString()) |s| {
                 co.jsx = Jsx.fromString(s) orelse {
                     try recordInvalidEnumOption(arena, diags, "jsx");
+                    try unsets.append(arena, key);
                     continue;
                 };
             } else {
                 try recordOptionTypeMismatch(arena, diags, "jsx", "string");
+                try unsets.append(arena, key);
             }
             continue;
         }
 
         // `paths`.
         if (std.mem.eql(u8, key, "paths")) {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+                continue;
+            }
             const obj_v = value.asObject() orelse {
                 // `paths` itself must be an object (`object` kind in tsc).
                 try recordOptionTypeMismatch(arena, diags, "paths", "object");
+                try unsets.append(arena, key);
                 continue;
             };
             const npats = obj_v.keys.len;
@@ -2317,15 +2416,28 @@ fn fillCompilerOptions(
 /// `extends` chain — base = parent, child = current file.
 pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfig {
     var merged = base;
-    // Compiler options: child overrides base on every set field.
+    // Compiler options: child overrides base on every set field. A known
+    // option that converted to undefined also overrides: TypeScript merges
+    // these objects with `assign`, so `{ allowJs: null }` clears an inherited
+    // `allowJs: true` rather than behaving as though the key were absent.
     const co_info = @typeInfo(CompilerOptions).@"struct".field_names;
+    var combined_unsets: std.ArrayListUnmanaged([]const u8) = .empty;
     inline for (co_info) |fname| {
         if (comptime std.mem.eql(u8, fname, "extra")) continue;
         const child_v = @field(child.compiler_options, fname);
-        if (child_v != null) {
+        const child_unset = compilerOptionUnsetName(child.compiler_option_unsets, fname);
+        if (child_v != null or child_unset != null) {
             @field(merged.compiler_options, fname) = child_v;
         }
+        if (child_unset) |option_name| {
+            try combined_unsets.append(arena, option_name);
+        } else if (child_v == null) {
+            if (compilerOptionUnsetName(base.compiler_option_unsets, fname)) |option_name| {
+                try combined_unsets.append(arena, option_name);
+            }
+        }
     }
+    merged.compiler_option_unsets = try combined_unsets.toOwnedSlice(arena);
     // For `extra`, append child's entries (last-writer-wins on key
     // conflict per tsc semantics — child overrides base).
     var combined: std.ArrayListUnmanaged(ExtraEntry) = .empty;
@@ -2378,6 +2490,36 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     merged.has_extends = base.has_extends or child.has_extends;
     merged.has_excludes_root_key = base.has_excludes_root_key or child.has_excludes_root_key;
     return merged;
+}
+
+fn compilerOptionUnsetName(
+    option_names: []const []const u8,
+    field_name: []const u8,
+) ?[]const u8 {
+    for (option_names) |option_name| {
+        if (normalizedOptionNamesEqual(option_name, field_name)) return option_name;
+    }
+    return null;
+}
+
+/// Compare a JSON camelCase option name with its Zig snake_case field name.
+/// Ignoring underscores and ASCII case also covers names with acronym casing
+/// such as `tsBuildInfoFile` and the historical `downlevelIteration` spelling.
+fn normalizedOptionNamesEqual(a: []const u8, b: []const u8) bool {
+    var a_index: usize = 0;
+    var b_index: usize = 0;
+    while (true) {
+        while (a_index < a.len and a[a_index] == '_') a_index += 1;
+        while (b_index < b.len and b[b_index] == '_') b_index += 1;
+        if (a_index == a.len or b_index == b.len) {
+            while (a_index < a.len and a[a_index] == '_') a_index += 1;
+            while (b_index < b.len and b[b_index] == '_') b_index += 1;
+            return a_index == a.len and b_index == b.len;
+        }
+        if (std.ascii.toLower(a[a_index]) != std.ascii.toLower(b[b_index])) return false;
+        a_index += 1;
+        b_index += 1;
+    }
 }
 
 // =============================================================================
@@ -2554,6 +2696,64 @@ test "tsconfig: extends as array" {
     try t.expectEqual(@as(usize, 3), cfg.extends.len);
     try t.expectEqualStrings("./a.json", cfg.extends[0]);
     try t.expectEqualStrings("./c.json", cfg.extends[2]);
+}
+
+test "tsconfig: extends retains valid entries and diagnoses invalid elements" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "extends": ["./base.json", null, 42] }
+    );
+    try t.expectEqual(@as(usize, 1), cfg.extends.len);
+    try t.expectEqualStrings("./base.json", cfg.extends[0]);
+    try t.expectEqual(@as(usize, 2), cfg.option_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 5024), cfg.option_parse_diagnostics[0].code);
+    try t.expectEqual(@as(?usize, 1), cfg.option_parse_diagnostics[0].element_index);
+    try t.expectEqual(@as(?usize, 2), cfg.option_parse_diagnostics[1].element_index);
+    try t.expectEqualStrings("string", cfg.option_parse_diagnostics[1].expected_type);
+}
+
+test "tsconfig: invalid scalar extends and list elements retain diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const invalid_extends = try parseString(t.allocator, arena.allocator(),
+        \\{ "extends": null }
+    );
+    try t.expectEqual(@as(usize, 0), invalid_extends.extends.len);
+    try t.expectEqual(@as(usize, 1), invalid_extends.option_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 5024), invalid_extends.option_parse_diagnostics[0].code);
+    try t.expectEqualStrings("string or Array", invalid_extends.option_parse_diagnostics[0].expected_type);
+
+    const invalid_files = try parseString(t.allocator, arena.allocator(),
+        \\{ "files": ["index.ts", null, 42, true] }
+    );
+    try t.expectEqual(@as(usize, 1), invalid_files.files.?.len);
+    try t.expectEqualStrings("index.ts", invalid_files.files.?[0]);
+    try t.expectEqual(@as(usize, 2), invalid_files.option_parse_diagnostics.len);
+    try t.expectEqual(@as(?usize, 2), invalid_files.option_parse_diagnostics[0].element_index);
+    try t.expectEqual(@as(?usize, 3), invalid_files.option_parse_diagnostics[1].element_index);
+}
+
+test "tsconfig: null compiler options are explicit unsets without diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "allowJs": null,
+        \\    "baseUrl": null,
+        \\    "paths": null,
+        \\    "types": null,
+        \\    "module": null
+        \\  }
+        \\}
+    );
+    try t.expectEqual(@as(usize, 5), cfg.compiler_option_unsets.len);
+    try t.expectEqual(@as(usize, 0), cfg.option_parse_diagnostics.len);
+    const diags = try cfg.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, diags);
+    try t.expectEqual(@as(usize, 0), diags.len);
 }
 
 test "tsconfig: paths mapping" {
@@ -2821,6 +3021,62 @@ test "tsconfig.merge: child overrides base on every set field" {
     try t.expectEqual(@as(?Target, .es2024), m.compiler_options.target);
     // `noEmit` was only in base — preserved.
     try t.expectEqual(@as(?bool, true), m.compiler_options.no_emit);
+}
+
+test "tsconfig.merge: explicit undefined child options clear inherited values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "allowJs": true,
+        \\    "baseUrl": "./base",
+        \\    "paths": { "pkg": ["src/pkg"] },
+        \\    "types": ["node"],
+        \\    "module": "esnext"
+        \\  }
+        \\}
+    );
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "allowJs": null,
+        \\    "baseUrl": null,
+        \\    "paths": null,
+        \\    "types": null,
+        \\    "module": 42
+        \\  }
+        \\}
+    );
+    const merged = try merge(arena.allocator(), base, child);
+    try t.expectEqual(@as(?bool, null), merged.compiler_options.allow_js);
+    try t.expectEqual(@as(?[]const u8, null), merged.compiler_options.base_url);
+    try t.expectEqual(@as(?Paths, null), merged.compiler_options.paths);
+    try t.expectEqual(@as(?[][]const u8, null), merged.compiler_options.types);
+    try t.expectEqual(@as(?Module, null), merged.compiler_options.module);
+    try t.expectEqual(@as(usize, 5), merged.compiler_option_unsets.len);
+    try t.expectEqual(@as(usize, 1), child.option_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 5024), child.option_parse_diagnostics[0].code);
+}
+
+test "tsconfig.merge: null root file lists inherit parent values" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "files": ["index.ts"],
+        \\  "include": ["src/**/*"],
+        \\  "exclude": ["dist"]
+        \\}
+    );
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{ "files": null, "include": null, "exclude": null }
+    );
+    const merged = try merge(arena.allocator(), base, child);
+    try t.expectEqual(@as(usize, 0), child.option_parse_diagnostics.len);
+    try t.expectEqualStrings("index.ts", merged.files.?[0]);
+    try t.expectEqualStrings("src/**/*", merged.include.?[0]);
+    try t.expectEqualStrings("dist", merged.exclude.?[0]);
 }
 
 test "tsconfig.validate: clean config produces no diagnostics" {

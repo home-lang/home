@@ -384,9 +384,19 @@ package config defaults, cycle/missing-parent failures, and inherited
 module-mode conformance cases pass **2/2**, and the named category regression
 remains **87/87**. Exact scope and guarded resource evidence are recorded in
 [the virtual-tsconfig checkpoint](./bun-port-evidence/2026-10-08-tsconfig-extends/README.md).
-Default-library/compiler-API fidelity, null-override/config-diagnostic edge
-cases, and honest unsupported/skip accounting remain open under #841; these
-focused gates are not a complete-corpus claim.
+
+Inherited compiler options now also preserve TypeScript's distinction between
+an absent property and a present value converted to `undefined`. A child
+`null` therefore clears a parent compiler option, while `files`, `include`,
+and `exclude` set to `null` remain absent and inherit. Invalid `extends`
+entries retain usable parents and emit TS5024 at the exact scalar or array
+element; string-list nulls are filtered while other invalid elements retain
+their diagnostics. The behavior and locations match the TypeScript 6.0.3
+parser API oracle. Guarded results and the deliberately non-passing broad-run
+attempt are recorded in
+[the null-override checkpoint](./bun-port-evidence/2026-10-08-tsconfig-null-overrides/README.md).
+Default-library/compiler-API fidelity and honest unsupported/skip accounting
+remain open under #841; these focused gates are not a complete-corpus claim.
 
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:
