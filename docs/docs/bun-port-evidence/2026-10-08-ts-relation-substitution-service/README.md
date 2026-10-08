@@ -50,8 +50,12 @@ measurement on this integrated source is still running at the 2026-10-08
 18:06:59 UTC snapshot: the first fixture is unfinished, the second unstarted,
 and no original-case credit is claimed. A sample at about four minutes shows
 interface checking with repeated UMD namespace source scans. Its sampled 1.1 GB
-physical footprint is not a final peak. A terminal result must be retained in a
-later checkpoint; this snapshot does not prove a pass or resource failure.
+physical footprint is not a final peak. The subsequently retained terminal run exits 124 at the unchanged 900-second
+wall-clock limit. The first fixture remains unfinished and the second unstarted;
+there is no complete aggregate or passing-case credit. The timeout path does not
+report its final memory peak. A further sample at about thirteen minutes shows
+repeated UMD namespace scans, with sampled footprint 1.3 GB. Neither sampled
+footprint is a final peak or proof that earlier memory failures are solved.
 
 Fixtures, declarations, expected diagnostics, skips/TODOs, the 900-second original
 React deadline, normal lock and resource floors remain unchanged. The manifest

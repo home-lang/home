@@ -205,7 +205,9 @@
     "integrated-survey-controls-details.log.gz": "f0bdcce0030ae9843582a657d48d849a8891adc5ef34fa507eee4579d6260018",
     "integrated-react-sample.txt.gz": "db9f748e338208763df1bc7b5d45bda1ce5da3796f6c45316bb304881043bdc1",
     "integrated-react-sample-command.log.gz": "1229c1a2eb80199bbb8a541246502cb6422643e66c7b8fa3666055d3e8c91bec",
-    "integrated-original-react.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25"
+    "integrated-original-react.log.gz": "969635d6030bdb3de61e24d4c8a0f9436ef334409d3aadd4023f94aea5e62f24",
+    "integrated-react-final-sample.txt.gz": "122c27a51fa375d33d4ca548c563774ca7c05a55d8ca00ef347e858a9e721c2b",
+    "integrated-react-final-sample-command.log.gz": "5d35a7d95e387c67faa3257bdf151453a3fdde30cfb14139b88d7f56ad30678d"
   },
   "integrated_gates": {
     "checker": {
@@ -270,13 +272,33 @@
         "contextuallyTypedStringLiteralsInJsxAttributes02"
       ],
       "passing_case_credit": 0,
-      "exit_code": null
+      "exit_code": null,
+      "terminal_result": {
+        "exit_code": 124,
+        "deadline_seconds": 900,
+        "aggregate_complete": false,
+        "started_cases": [
+          "intraExpressionInferencesJsx"
+        ],
+        "unstarted_cases": [
+          "contextuallyTypedStringLiteralsInJsxAttributes02"
+        ],
+        "passing_case_credit": 0,
+        "final_peak_mb": null,
+        "final_peak_not_reported_by_timeout_path": true
+      }
     }
   },
   "integrated_react_sample": {
     "seconds_after_launch": 246,
     "observed_phase": "interface checking with repeated UMD namespace source scans",
     "sampled_physical_footprint": "1.1G",
+    "not_final_peak": true
+  },
+  "integrated_react_final_sample": {
+    "seconds_after_launch": 774,
+    "observed_phase": "interface checking with repeated UMD namespace source scans",
+    "sampled_physical_footprint": "1.3G",
     "not_final_peak": true
   }
 }
