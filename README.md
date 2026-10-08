@@ -227,6 +227,18 @@ rechecks all span zero. See the
 [accepted #849 report](docs/docs/TS_PERFORMANCE.md#grouped-require-binding-candidates-accepted-2026-10-08-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261008T181346Z-require-binding-index-849.tar.gz).
 
+An untimed C++ candidate audit keeps incomplete checking out of the ranking:
+
+| Candidate / source pin | Positive projects | Negative controls | Timing admission |
+|---|---:|---:|---|
+| OnlySpecs C++ / `8fd72a2a` | 20/20 accepted | **0/8 rejected correctly** | Excluded; zero samples |
+
+All eight invalid projects exited successfully without diagnostics. This is
+not a speed result or a confirmed canonical C++ selection. The existing Bun
+and Rust payload pins still verify locally. See the
+[admission and current-profile report](docs/docs/TS_PERFORMANCE.md#cpp-admission-and-current-source-profile-2026-10-08-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261008-current-profile-cpp-admission-838-850.tar.gz).
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

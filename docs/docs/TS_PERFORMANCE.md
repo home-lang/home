@@ -1084,6 +1084,90 @@ byte-identical normalized Zod output. Its **5,701** payload checksums verify;
 archive SHA-256:
 `3ef88a53c0e54347e486e4d87f865dd6cccba20f688b0856e6f925c51434e9bb`.
 
+### C++ admission and current-source profile (2026-10-08 UTC)
+
+The next investigation under [#838](https://github.com/home-lang/home/issues/838)
+audited the OnlySpecs C++ candidate at exact source
+[`8fd72a2a34f615d71e12f450d3e571683e16404b`](https://github.com/lidangzzz/TypeScript-C-Implementation-by-OnlySpecs/tree/8fd72a2a34f615d71e12f450d3e571683e16404b).
+This is a candidate probe, not confirmation that it is the intended canonical
+active port. Its README and source headers declare Apache-2.0; the GitHub
+repository metadata reports no detected license file. TypeRunner at
+[`21f9ce87a`](https://github.com/marcj/TypeRunner/tree/21f9ce87a72fbfe011be9bfcf404f6e76bd74fe6)
+instead documents a narrower proof-of-concept subset and stalled development.
+Neither project's third-party performance numbers enter Home's table.
+
+OnlySpecs configured and built unmodified with AppleClang
+`21.0.0.21000325`, CMake Release, C++20, `BUILD_TESTS=OFF`, target `tsc`, and
+one build worker. Disabling its separate test executables does not alter the
+compiler or Home's admission controls. The executable SHA-256 is
+`c2934fc0381d317f8d2861f8533a15ecfefbf43538808e2341280166e1d9631b`.
+The native CLI reports TypeScript Compiler v6.0.0 (C++ Implementation).
+
+| Untimed admission | Outcome | Interpretation |
+|---|---:|---|
+| Unchanged positive projects | 20/20 exit 0 silently | Insufficient evidence of equivalent checking |
+| Unchanged negative-control projects | **0/8 pass** | All eight exit 0 silently, with none of the required diagnostics |
+| Accepted timing samples | **0** | Excluded from the matrix |
+
+The failures cover imports, re-exports, both predicate scales, destructuring,
+variadic tuples, CommonJS, and recursive generics. They retain their existing
+expected TS2322/TS2339/TS2493/TS2540 multisets. The first audit runner stopped
+on the first negative-control `SystemExit`; a corrected exception handler
+then retained the complete 28-process probe. An independent input-retention
+probe reproduced all 28 semantic outcomes and saved every byte of every
+positive and negative project. No failure, compiler diagnostic, or control was
+discarded; neither probe collected timing samples.
+
+The source explains why silent positive acceptance is misleading: the
+[CLI diagnostic path](https://github.com/lidangzzz/TypeScript-C-Implementation-by-OnlySpecs/blob/8fd72a2a34f615d71e12f450d3e571683e16404b/src/cli/tsc_main.cpp#L75)
+reads diagnostics without calling `Program::compile()` or `Program::check()`.
+[Project creation](https://github.com/lidangzzz/TypeScript-C-Implementation-by-OnlySpecs/blob/8fd72a2a34f615d71e12f450d3e571683e16404b/src/compiler/program.cpp#L669)
+only adds parsed files, and `getSemanticDiagnostics` reads the existing
+diagnostic vector. We do not patch the competitor to activate a different
+workflow or treat this missing work as a performance win. Source status stayed
+clean before and after admission.
+
+The exact Bun `bd599f5af` and Rust `72b339e4` payloads remain available in this
+task's local cache. Their native executable hashes and complete payload
+inventory hashes match the checked-in Darwin ARM64 profile. This resolves the
+local payload availability concern from the earlier moving-canary download
+failure; it does not make the moving URL immutable, certify another machine's
+payloads, or replace the last admitted five-compiler matrix.
+
+Separately, clean Home source `30ab18c8cb6a1495f11780bf8065d4ad64dc1e76`
+was built with pinned Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+`-Denable_jsc=false`, and one worker. Frozen executable SHA-256:
+`9b5b834b77aa4ba400e79c7acd773732e44133be4414b7a85c0e4e79327a920f`.
+For diagnostic sampling only, local Mach-O symbol names were made visible and
+the object relinked. Original and renamed `__TEXT,__text` bytes are identical,
+SHA-256 `46f65426e7529763f8f22e4cd9869b7f190dc9d98866a76428beb010f897557f`.
+Both executables passed all **56** official semantic admissions. The diagnostic
+image is never used for timing, and all source, binary, and sampled input
+fingerprints stayed unchanged.
+
+One-second native samples of the unchanged 4,096-family generators show
+repeated `Program.fileReferencesGlobalName` scans and `importProgramGlobals`
+work on CommonJS; re-exports instead emphasize resolver and export-name
+queries. These are exploratory samples across worker threads, not latency
+measurements, percentages of whole-run CPU, causal speedup evidence, or proof
+that other work is absent. The next scoped optimization is
+[#850](https://github.com/home-lang/home/issues/850): complete per-pass global
+reference facts with exact scanner parity, semantic-environment preservation,
+source-update and allocation-failure controls.
+
+All work used the shared machine lock and unchanged **3,840 MB** guard. The
+Home build peaked at 2,986 MB, diagnostic profiling at 843 MB, and the initial
+C++ build at 172 MB; these tree footprints over-count shared pages. All **128**
+benchmark-harness tests pass. This checkpoint changes no compiler source and
+claims no new benchmark lead or production-project admission.
+
+The [raw evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-current-profile-cpp-admission-838-850.tar.gz)
+retains complete C++ configure/build output, both full admission probes, all
+28 exact projects, pinned source snapshots/inventory, profile instructions and
+raw samples, both scale corpora, identical instruction sections, and Bun/Rust
+payload inventories. All **9,794** payload checksums verify. Archive SHA-256:
+`7f538b457302bd0bc307065ca0b1d7895a05e3d16a1382100bae1d5a16b2bbb6`.
+
 ### Lazy forward-overload root index
 
 Issue [#837](https://github.com/home-lang/home/issues/837) traced the remaining

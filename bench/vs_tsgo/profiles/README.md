@@ -30,6 +30,13 @@ The Bun `canary` download label moves. A newer download is not this pin:
 archive, executable, payload, and revision must all match before measurement.
 Do not replace the expected hashes just to make a changed compiler run.
 
+The source-pinned OnlySpecs C++ candidate is not registered: its unmodified
+`8fd72a2a` CLI accepts all eight existing negative-control projects silently
+with exit 0. Positive acceptance alone cannot establish equivalent checking.
+The [complete admission report](../../../docs/docs/TS_PERFORMANCE.md#cpp-admission-and-current-source-profile-2026-10-08-utc)
+retains the failures and exact inputs. No C++ timing or canonical-upstream
+selection is claimed.
+
 ```sh
 ./bench/vs_tsgo/run.sh setup
 ./bench/vs_tsgo/run.sh corpus
