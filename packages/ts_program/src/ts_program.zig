@@ -1929,31 +1929,22 @@ pub const Program = struct {
         defer seen.deinit(self.gpa);
         for (self.files.items) |f| {
             if (f.redirect_target != null or !f.is_declaration) continue;
-            try collectProgramUmdGlobalsFromSource(self.gpa, f.source, &out, &seen);
+            const compilation = f.compilation orelse continue;
+            try collectProgramUmdGlobalsFromParsed(self.gpa, compilation, &out, &seen);
         }
         return try out.toOwnedSlice(self.gpa);
     }
 
-    fn collectProgramUmdGlobalsFromSource(
+    fn collectProgramUmdGlobalsFromParsed(
         gpa: std.mem.Allocator,
-        source: []const u8,
+        compilation: *const ts_driver.Compilation,
         out: *std.ArrayListUnmanaged(ts_driver.ProgramUmdGlobal),
         seen: *std.StringHashMapUnmanaged(void),
     ) ProgramError!void {
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, source, search_start, "export")) |export_pos| {
-            search_start = export_pos + "export".len;
-            if (!identifierKeywordAt(source, export_pos, "export")) continue;
-            var as_pos = export_pos + "export".len;
-            while (as_pos < source.len and std.ascii.isWhitespace(source[as_pos])) : (as_pos += 1) {}
-            if (!identifierKeywordAt(source, as_pos, "as")) continue;
-            var namespace_pos = as_pos + "as".len;
-            while (namespace_pos < source.len and std.ascii.isWhitespace(source[namespace_pos])) : (namespace_pos += 1) {}
-            if (!identifierKeywordAt(source, namespace_pos, "namespace")) continue;
-            var name_start = namespace_pos + "namespace".len;
-            while (name_start < source.len and std.ascii.isWhitespace(source[name_start])) : (name_start += 1) {}
-            const name_end = parseIdentifierEnd(source, name_start, source.len) orelse continue;
-            const name = source[name_start..name_end];
+        for (compilation.hir.umd_namespace_exports.items) |declaration| {
+            if (!declaration.is_top_level or !declaration.has_module_indicator) continue;
+            if (compilation.hir.parentOf(declaration.node) != compilation.root) continue;
+            const name = compilation.interner.get(declaration.name);
             if (seen.contains(name)) continue;
             const owned = try gpa.dupe(u8, name);
             errdefer gpa.free(owned);
@@ -14822,6 +14813,28 @@ test "Program: missing compiler type reference reports global TS2688" {
         );
     }
     try T.expect(found);
+}
+
+test "Program: parsed UMD facts retain only source-level declaration exports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/lib.d.ts",
+        \\export {};
+        \\/* export as namespace CommentOnly; */
+        \\export type Text = "export as namespace StringOnly;";
+        \\declare namespace Outer { export as namespace NestedOnly; }
+        \\export /* first */ as /* second */ namespace R\u0065al;
+    );
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true, .no_emit = true });
+    const globals = try program.collectProgramUmdGlobals();
+    defer Program.freeProgramUmdGlobals(T.allocator, globals);
+    try T.expectEqual(@as(usize, 1), globals.len);
+    try T.expectEqualStrings("Real", globals[0].name);
 }
 
 test "Program: declaration UMD globals reach script and module consumers" {

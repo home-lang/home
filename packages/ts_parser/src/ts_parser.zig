@@ -2485,7 +2485,7 @@ pub const Parser = struct {
                     depth -= 1;
                 },
                 .kw_import => {
-                    if (depth == 0) return true;
+                    if (depth == 0 and (i + 1 >= self.tokens.len or self.tokens[i + 1].kind != .open_paren)) return true;
                 },
                 .kw_export => if (depth == 0) {
                     if (i + 2 < self.tokens.len and
@@ -9963,10 +9963,13 @@ pub const Parser = struct {
 
         // `export as namespace Foo;` is a declaration-file/global UMD
         // export form. Keep it parseable for JS declaration conformance
-        // even though the current HIR has no dedicated representation.
+        // while retaining its parsed semantic name alongside the erased node.
         if (self.match(.kw_as)) {
             _ = try self.expect(.kw_namespace, "'namespace' after 'export as'");
-            _ = try self.expectIdentifierLike();
+            const name_token = try self.expectIdentifierLike();
+            const name = try self.internToken(name_token);
+            const is_top_level = self.block_depth == 0 and self.namespace_depth == 0 and self.ambient_depth == 0;
+            const has_module_indicator = self.hasNonNamespaceExportModuleIndicator(start.span.start);
             try self.consumeStatementTerminator();
             const end_pos = self.tokens[self.cursor - 1].span.end;
             // Three positional checks mirror upstream `bindSourceFile`
@@ -9987,10 +9990,17 @@ pub const Parser = struct {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1316, "Global module exports may only appear at top level.");
             } else if (!self.isAmbientContextAt(start.span.start)) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1315, "Global module exports may only appear in declaration files.");
-            } else if (!self.hasNonNamespaceExportModuleIndicator(start.span.start)) {
+            } else if (!has_module_indicator) {
                 try self.reportCodeAtWithSpan(start.span.start, start.line, span_len, 1314, "Global module exports may only appear in module files.");
             }
-            return try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+            const node = try self.builder.addBlock(.{ .start = start.span.start, .end = end_pos }, &.{});
+            try self.hir.umd_namespace_exports.append(self.gpa, .{
+                .node = node,
+                .name = name,
+                .is_top_level = is_top_level,
+                .has_module_indicator = has_module_indicator,
+            });
+            return node;
         }
 
         // export default <expr>;
@@ -31999,6 +32009,25 @@ test "parser: declaration-file top-level var check respects virtual filenames" {
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     try T.expectEqual(@as(u32, 1046), s.parser.diagnostics.items[0].code);
+}
+
+test "parser: parsed UMD facts retain decoded source-owned names and scope" {
+    var s = try newTestSetup(
+        \\// @filename: lib.d.ts
+        \\export {};
+        \\/* export as namespace CommentOnly; */
+        \\export /* first */ as /* second */ namespace F\u006fo;
+        \\declare namespace Outer { export as namespace Nested; }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 2), s.hir.umd_namespace_exports.items.len);
+    const first = s.hir.umd_namespace_exports.items[0];
+    try T.expectEqualStrings("Foo", s.parser.interner.get(first.name));
+    try T.expect(first.is_top_level and first.has_module_indicator);
+    const nested = s.hir.umd_namespace_exports.items[1];
+    try T.expectEqualStrings("Nested", s.parser.interner.get(nested.name));
+    try T.expect(!nested.is_top_level);
 }
 
 test "parser: export as namespace respects virtual declaration filename" {

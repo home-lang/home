@@ -1178,8 +1178,19 @@ pub const ColdData = struct {
 };
 
 /// SoA HIR.
+/// An erased `export as namespace` declaration retains its semantic name
+/// and source node. Parser tokenization has already excluded comments/strings
+/// and decoded escaped identifiers; binding eligibility remains explicit.
+pub const UmdNamespaceExport = struct {
+    node: NodeId,
+    name: StringId,
+    is_top_level: bool,
+    has_module_indicator: bool,
+};
+
 pub const Hir = struct {
     gpa: std.mem.Allocator,
+    umd_namespace_exports: std.ArrayListUnmanaged(UmdNamespaceExport) = .empty,
 
     // ----- Hot columns: 21 B/node before alignment padding -----
     kinds: std.ArrayListUnmanaged(NodeKind),
@@ -1386,6 +1397,7 @@ pub const Hir = struct {
     }
 
     pub fn deinit(self: *Hir) void {
+        self.umd_namespace_exports.deinit(self.gpa);
         self.kinds.deinit(self.gpa);
         self.spans.deinit(self.gpa);
         self.parents.deinit(self.gpa);

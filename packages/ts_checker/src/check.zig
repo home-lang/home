@@ -3903,6 +3903,8 @@ fn jsonStringContentEnd(src: []const u8, content_start: usize) ?usize {
     return null;
 }
 
+const UmdExportLookupKey = struct { root: NodeId, name: hir_mod.StringId, section: usize };
+
 const SourceFacts = struct {
     check_js_directive: ?bool = null,
     allow_js_directive: ?bool = null,
@@ -5346,6 +5348,9 @@ pub const Checker = struct {
     /// conservative keyword prefilter so ordinary type references do not
     /// repeatedly scan an entire source file looking for one.
     source_may_have_umd_namespace_export: bool = false,
+    /// Exact positive and negative lookups over immutable parsed declarations.
+    /// The all-sections key is distinct from an anchor-restricted lookup.
+    umd_export_lookup_cache: std.AutoHashMapUnmanaged(UmdExportLookupKey, ?usize) = .empty,
     /// `declare var name: any` compatibility lookup is source-based. Keep a
     /// conservative syntax prefilter so ordinary function-local declarations
     /// do not rescan a source that cannot contain that form.
@@ -5954,6 +5959,7 @@ pub const Checker = struct {
             markers.contains("@filename:") or markers.contains("@Filename:");
         self.source_may_have_umd_namespace_export =
             markers.contains("export") and markers.contains("namespace") and markers.contains("as");
+        self.umd_export_lookup_cache.clearRetainingCapacity();
         self.source_may_have_declare_any_var =
             markers.contains("declare") and markers.contains("var") and
             markers.contains(":") and markers.contains("any");
@@ -6089,6 +6095,7 @@ pub const Checker = struct {
     /// the virtual-section heuristic already covers.
     pub fn setIsDeclarationFile(self: *Checker, enabled: bool) void {
         self.whole_file_is_declaration_file = enabled;
+        self.umd_export_lookup_cache.clearRetainingCapacity();
     }
 
     pub fn setSkipDeclarationValidation(self: *Checker, enabled: bool) void {
@@ -6259,6 +6266,7 @@ pub const Checker = struct {
     pub fn setImporterPath(self: *Checker, path: []const u8) void {
         self.program_import_resolutions.clearRetainingCapacity();
         self.importer_path = path;
+        self.umd_export_lookup_cache.clearRetainingCapacity();
     }
 
     /// Tell the checker which `moduleResolution` variant the program
@@ -6574,6 +6582,7 @@ pub const Checker = struct {
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
+        self.umd_export_lookup_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
         self.visible_type_alias_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
@@ -15331,28 +15340,33 @@ pub const Checker = struct {
         return p;
     }
 
-    fn sourceHasUmdNamespaceExport(self: *Checker, name: hir_mod.StringId) bool {
-        if (!self.source_may_have_umd_namespace_export) return false;
-        const src = self.source orelse return false;
-        if (self.sourceHasVirtualFilenameSections() and self.sourceDirectiveIsTrue("@noImplicitReferences")) return false;
-        const name_str = self.string_interner.get(name);
-        var p: usize = 0;
-        while (std.mem.indexOfPos(u8, src, p, "export")) |export_pos| {
-            p = export_pos + "export".len;
-            if (!sourceIdentifierKeywordAt(src, export_pos, "export")) continue;
-            if (!self.sourcePositionIsDeclarationFile(export_pos)) continue;
-            var q = skipSourceWhitespace(src, export_pos + "export".len);
-            if (!sourceIdentifierKeywordAt(src, q, "as")) continue;
-            q = skipSourceWhitespace(src, q + "as".len);
-            if (!sourceIdentifierKeywordAt(src, q, "namespace")) continue;
-            q = skipSourceWhitespace(src, q + "namespace".len);
-            if (q + name_str.len > src.len) continue;
-            if (!std.mem.eql(u8, src[q .. q + name_str.len], name_str)) continue;
-            const end = q + name_str.len;
-            if (end < src.len and asciiIdentifierContinue(src[end])) continue;
-            return true;
+    fn lookupParsedUmdNamespaceExport(self: *Checker, root: NodeId, name: hir_mod.StringId, section: ?usize) ?usize {
+        if (!self.source_may_have_umd_namespace_export) return null;
+        const source = self.source orelse return null;
+        const key: UmdExportLookupKey = .{ .root = root, .name = name, .section = section orelse std.math.maxInt(usize) };
+        if (self.umd_export_lookup_cache.get(key)) |cached| return cached;
+        var result: ?usize = null;
+        for (self.hir.umd_namespace_exports.items) |declaration| {
+            if (declaration.name != name or !declaration.is_top_level or !declaration.has_module_indicator) continue;
+            const span = self.hir.spanOf(declaration.node);
+            if (span.end > source.len or !self.sourcePositionIsDeclarationFile(span.start)) continue;
+            if (root != hir_mod.none_node_id and self.rootBlockFor(declaration.node) != root) continue;
+            const owner_section = self.virtualSectionStartForNode(declaration.node);
+            if (section) |restricted| {
+                if (owner_section != restricted) continue;
+            }
+            // Parser insertion order follows source order, preserving the
+            // deterministic first eligible declaration used by old lookups.
+            result = owner_section;
+            break;
         }
-        return false;
+        self.umd_export_lookup_cache.put(self.gpa, key, result) catch {};
+        return result;
+    }
+
+    fn sourceHasUmdNamespaceExport(self: *Checker, name: hir_mod.StringId) bool {
+        if (self.sourceHasVirtualFilenameSections() and self.sourceDirectiveIsTrue("@noImplicitReferences")) return false;
+        return self.lookupParsedUmdNamespaceExport(hir_mod.none_node_id, name, null) != null;
     }
 
     fn programHasUmdGlobalName(self: *Checker, name: hir_mod.StringId) bool {
@@ -15368,62 +15382,15 @@ pub const Checker = struct {
     }
 
     fn sectionHasUmdNamespaceExport(self: *Checker, section_start: usize, name: hir_mod.StringId) bool {
-        const src = self.source orelse return false;
-        const name_str = self.string_interner.get(name);
-        const section_end = if (self.sourceHasVirtualFilenameSections()) blk: {
-            var line_start = std.mem.indexOfScalarPos(u8, src, section_start, '\n') orelse break :blk src.len;
-            line_start += 1;
-            while (line_start < src.len) {
-                const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
-                const line = src[line_start..line_end];
-                if (std.mem.indexOf(u8, line, "@filename:") != null or
-                    std.mem.indexOf(u8, line, "@Filename:") != null)
-                {
-                    break :blk line_start;
-                }
-                if (line_end == src.len) break;
-                line_start = line_end + 1;
-            }
-            break :blk src.len;
-        } else src.len;
-        var p = section_start;
-        while (p < section_end) {
-            const export_pos = std.mem.indexOfPos(u8, src, p, "export") orelse break;
-            if (export_pos >= section_end) break;
-            p = export_pos + "export".len;
-            if (!sourceIdentifierKeywordAt(src, export_pos, "export")) continue;
-            if (!self.sourcePositionIsDeclarationFile(export_pos)) continue;
-            var q = skipSourceWhitespace(src, export_pos + "export".len);
-            if (q >= section_end or !sourceIdentifierKeywordAt(src, q, "as")) continue;
-            q = skipSourceWhitespace(src, q + "as".len);
-            if (q >= section_end or !sourceIdentifierKeywordAt(src, q, "namespace")) continue;
-            q = skipSourceWhitespace(src, q + "namespace".len);
-            if (q + name_str.len > section_end) continue;
-            if (!std.mem.eql(u8, src[q .. q + name_str.len], name_str)) continue;
-            const end = q + name_str.len;
-            if (end < src.len and asciiIdentifierContinue(src[end])) continue;
-            return true;
-        }
-        return false;
+        return self.lookupParsedUmdNamespaceExport(hir_mod.none_node_id, name, section_start) != null;
     }
 
     fn findUmdNamespaceExportSection(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?usize {
-        if (!self.source_may_have_umd_namespace_export) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const anchor_section = self.virtualSectionStartForNode(anchor);
-        const restrict_to_anchor = self.sourceHasVirtualFilenameSections() and
-            self.sourceDirectiveIsTrue("@noImplicitReferences");
-        var seen_sections: std.AutoHashMapUnmanaged(usize, void) = .empty;
-        defer seen_sections.deinit(self.gpa);
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            const section = self.virtualSectionStartForNode(stmt);
-            if (restrict_to_anchor and section != anchor_section) continue;
-            if (seen_sections.contains(section)) continue;
-            seen_sections.put(self.gpa, section, {}) catch {};
-            if (self.sectionHasUmdNamespaceExport(section, name)) return section;
-        }
-        return null;
+        const restricted = self.sourceHasVirtualFilenameSections() and self.sourceDirectiveIsTrue("@noImplicitReferences");
+        const section: ?usize = if (restricted) self.virtualSectionStartForNode(anchor) else null;
+        return self.lookupParsedUmdNamespaceExport(root, name, section);
     }
 
     fn umdExportAssignmentTargetDeclInSection(self: *Checker, root_stmts: []const NodeId, section: usize) ?NodeId {
@@ -236129,6 +236096,105 @@ test "checker: TS2591 module global still fires in `.ts` virtual section" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: parsed UMD facts ignore comments strings and nested invalid declarations" {
+    const s = try newBoundSetup(
+        \\// @filename: lib.d.ts
+        \\export {};
+        \\/* export as namespace CommentOnly; */
+        \\export type Text = "export as namespace StringOnly;";
+        \\declare namespace Outer { export as namespace NestedOnly; }
+        \\export as namespace Actual;
+        \\// @filename: app.ts
+        \\Actual;
+    );
+    defer destroyBoundSetup(s);
+    const actual = try s.base.sint.intern("Actual");
+    try T.expect(s.base.checker.sourceHasUmdNamespaceExport(actual));
+    for ([_][]const u8{ "CommentOnly", "StringOnly", "NestedOnly", "Missing" }) |name| {
+        try T.expect(!s.base.checker.sourceHasUmdNamespaceExport(try s.base.sint.intern(name)));
+    }
+}
+
+test "checker: parsed UMD facts preserve comments between tokens and decoded names" {
+    const s = try newBoundSetup(
+        \\// @filename: lib.d.ts
+        \\export {};
+        \\export /* first */ as /* second */ namespace F\u006fo;
+        \\// @filename: app.ts
+        \\Foo;
+    );
+    defer destroyBoundSetup(s);
+    const name = try s.base.sint.intern("Foo");
+    try T.expect(s.base.checker.sourceHasUmdNamespaceExport(name));
+    const statements = hir_mod.blockStmts(&s.base.hir, s.base.root);
+    try T.expect(s.base.checker.findUmdNamespaceExportSection(name, statements[statements.len - 1]) != null);
+}
+
+test "checker: parsed UMD facts invalidate declaration-context lookups" {
+    const source = "export {}; export as namespace Foo;";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    const name = try s.sint.intern("Foo");
+    try T.expect(!s.checker.sourceHasUmdNamespaceExport(name));
+    s.checker.setIsDeclarationFile(true);
+    try T.expect(s.checker.sourceHasUmdNamespaceExport(name));
+    s.checker.setIsDeclarationFile(false);
+    try T.expect(!s.checker.sourceHasUmdNamespaceExport(name));
+    s.checker.setImporterPath("/lib.d.ts");
+    try T.expect(s.checker.sourceHasUmdNamespaceExport(name));
+    s.checker.setImporterPath("/lib.ts");
+    try T.expect(!s.checker.sourceHasUmdNamespaceExport(name));
+    s.checker.setImporterPath("/lib.d.ts");
+    s.checker.setSource(source);
+    try T.expect(s.checker.sourceHasUmdNamespaceExport(name));
+    const missing = try s.sint.intern("Missing");
+    for (0..2000) |_| try T.expect(!s.checker.sourceHasUmdNamespaceExport(missing));
+    try T.expectEqual(@as(usize, 2), s.checker.umd_export_lookup_cache.count());
+}
+
+test "checker: parsed UMD facts retain virtual section and root lookup boundaries" {
+    const s = try newBoundSetup(
+        \\// @noImplicitReferences: true
+        \\// @filename: first.d.ts
+        \\export {};
+        \\export as namespace First;
+        \\First;
+        \\// @filename: second.d.ts
+        \\export {};
+        \\export as namespace Second;
+        \\Second;
+        \\// @filename: app.ts
+        \\First;
+    );
+    defer destroyBoundSetup(s);
+    const statements = hir_mod.blockStmts(&s.base.hir, s.base.root);
+    const first = try s.base.sint.intern("First");
+    const second = try s.base.sint.intern("Second");
+    const first_anchor = statements[2];
+    const second_anchor = statements[5];
+    const app_anchor = statements[6];
+    const first_section = s.base.checker.virtualSectionStartForNode(first_anchor);
+    const second_section = s.base.checker.virtualSectionStartForNode(second_anchor);
+    try T.expectEqual(@as(?usize, first_section), s.base.checker.findUmdNamespaceExportSection(first, first_anchor));
+    try T.expectEqual(@as(?usize, second_section), s.base.checker.findUmdNamespaceExportSection(second, second_anchor));
+    try T.expectEqual(@as(?usize, null), s.base.checker.findUmdNamespaceExportSection(first, second_anchor));
+    try T.expectEqual(@as(?usize, null), s.base.checker.findUmdNamespaceExportSection(second, first_anchor));
+    try T.expectEqual(@as(?usize, null), s.base.checker.findUmdNamespaceExportSection(first, app_anchor));
+    try T.expect(!s.base.checker.sourceHasUmdNamespaceExport(first));
+}
+
+test "checker: parsed UMD facts require a real external module indicator" {
+    for ([_][]const u8{
+        "export as namespace Alone;",
+        "import('./other'); export as namespace Alone;",
+    }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        s.checker.setIsDeclarationFile(true);
+        try T.expect(!s.checker.sourceHasUmdNamespaceExport(try s.sint.intern("Alone")));
+    }
 }
 
 test "checker: TS2686 reports UMD global value use from an external module" {
