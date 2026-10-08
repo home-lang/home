@@ -5,7 +5,7 @@
   "zig": "0.17.0-dev.2163+89ff10d56",
   "memory_ceiling_mb": 3840,
   "source_sha256": {
-    "packages/ts_checker/src/check.zig": "a0796390b739bbe1683e474b3809fe2adffc48db6d35711ee4b645f611842008",
+    "packages/ts_checker/src/check.zig": "184f77651a184622be4b5e130c9e48e5c0e5bc19167e6232c5cd4aa45c63f889",
     "packages/ts_program/src/ts_program.zig": "0e8221a757c6b934478b9adf60926db18bc8ba9720f8d36d9bc0713a0037c35c",
     "packages/ts_cli/src/tsc_main.zig": "c7e12b424c0a1229b25f4001d3be4406bda298ac8a5ad0634fb752cfc16544f0",
     "packages/ts_conformance/src/ts_conformance.zig": "45d266abe134c667ec47a9fc7ac75487478c37a0f75ef0e236f9510f3fdf10d5"
@@ -22,9 +22,9 @@
   ],
   "gates": {
     "checker": {
-      "passed": 4482,
-      "total": 4482,
-      "peak_mb": 2071
+      "passed": 4483,
+      "total": 4483,
+      "peak_mb": 2117
     },
     "program": {
       "passed": 228,
@@ -41,7 +41,8 @@
       "failed": 23,
       "total": 1423,
       "peak_mb": 2245,
-      "exit_code": 1
+      "exit_code": 1,
+      "source_checkpoint": "d739fdfea"
     },
     "baseline_survey": {
       "passed": 582,
@@ -68,13 +69,134 @@
       "passed": 3,
       "total": 3,
       "peak_mb": 2079
+    },
+    "exact_prefix_200": {
+      "source_checkpoint": "d739fdfea",
+      "passed": 172,
+      "failed": 28,
+      "total": 200,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 308,
+      "boundary": "intermediate harness; input/options/library audit still open"
+    },
+    "initial_upstream_targets": {
+      "source_checkpoint": "d739fdfea",
+      "passed": 1,
+      "failed": 1,
+      "total": 2,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 190,
+      "remaining": "computedPropertyName: erroneous TS2564 on an any field"
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "source_checkpoint": "d739fdfea"
+    },
+    "initial_zod": {
+      "source_checkpoint": "d739fdfea",
+      "production_files": 106,
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ratchet_ceiling": 3,
+      "two_runs_normalized_equal": true,
+      "peaks_mb": [
+        993,
+        1084
+      ]
+    },
+    "initial_checker": {
+      "passed": 4482,
+      "total": 4482,
+      "peak_mb": 2071
+    },
+    "field_controls": {
+      "passed": 4,
+      "total": 4,
+      "peak_mb": 1793
+    },
+    "compiler_build_final": {
+      "steps": 3,
+      "peak_mb": 2939
+    },
+    "upstream_targets_final": {
+      "passed": 2,
+      "failed": 0,
+      "total": 2,
+      "skipped": 0,
+      "exit_code": 0
+    },
+    "exact_prefix_200_final": {
+      "passed": 172,
+      "failed": 28,
+      "total": 200,
+      "skipped": 0,
+      "exit_code": 1,
+      "peak_mb": 270,
+      "boundary": "intermediate harness; input/options/library audit still open"
+    },
+    "zod_final": {
+      "production_files": 106,
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ratchet_ceiling": 3,
+      "normalized_equal_to_initial": true,
+      "peak_mb": 1033
     }
   },
-  "compiler_sha256": "e1265b0d9d12a96bec2dbf478df080ede13b16f0afa2ccc8aa48f3dab3e8ac2e",
-  "opt_in_test_binary_sha256": "7516919309d0cc30219dcec8facf1481d710a8607b38407b11fb53c73da8c193",
+  "compiler_sha256": "13e11bd22175691ef4c30d6b325befc84057df16dfd0a9980199e352364725a7",
+  "opt_in_test_binary_sha256": "d1a29f364c17fc9fb72f4947a8b227d74b925577d666ccf65782c0be507e614c",
   "cleanup": {
     "inactive_local_zig_objects_deleted": 20,
     "bytes_approx_mib": 1445,
     "cache_indexes_reset": true
+  },
+  "initial_source_sha256": {
+    "packages/ts_checker/src/check.zig": "a0796390b739bbe1683e474b3809fe2adffc48db6d35711ee4b645f611842008",
+    "packages/ts_program/src/ts_program.zig": "0e8221a757c6b934478b9adf60926db18bc8ba9720f8d36d9bc0713a0037c35c",
+    "packages/ts_cli/src/tsc_main.zig": "c7e12b424c0a1229b25f4001d3be4406bda298ac8a5ad0634fb752cfc16544f0",
+    "packages/ts_conformance/src/ts_conformance.zig": "45d266abe134c667ec47a9fc7ac75487478c37a0f75ef0e236f9510f3fdf10d5"
+  },
+  "input_audit_issue": "https://github.com/home-lang/home/issues/841",
+  "initial_compiler_sha256": "e1265b0d9d12a96bec2dbf478df080ede13b16f0afa2ccc8aa48f3dab3e8ac2e",
+  "original_fixture_sha256": {
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/externalModules/typeOnlyMerge2.ts": "6744973542d9089942706ce00dc2e0f64221d24eb553b0a8259971b90e59cb3f",
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/externalModules/typeOnly/computedPropertyName.ts": "072b39d99201b4b8325957027de372848b13958ec0f1d7d46b1b23a0b1772b94",
+    "_submodules/typescript-go/testdata/baselines/reference/submodule/conformance/typeOnlyMerge2.errors.txt": "28454fb16844e5961df6c0449e38d7dc0e9685116e921a21884076b8c98e8206",
+    "_submodules/typescript-go/testdata/baselines/reference/submodule/conformance/computedPropertyName.errors.txt": "5723670398337ff06ad81e5fb7705982d859f2b70e4bae9b41569a61ba6622d5"
+  },
+  "initial_opt_in_test_binary_sha256": "7516919309d0cc30219dcec8facf1481d710a8607b38407b11fb53c73da8c193",
+  "artifact_sha256": {
+    "checker-final.log.gz": "547fd0583e4dd41b9e6dcbee902fa44408e2dde140311304065a0c500b3cf339",
+    "checker.log.gz": "bd74201ce0fe4031ca5179a728e35384e08c31bbd0eda7471f0710eb39f42e18",
+    "compiler-final.log.gz": "2c62684b5173de4a0dc3df65dc105c79a5fca571ac1bee707f2c62ead17ba461",
+    "compiler.log.gz": "12bcb4bdb27c2651ef9f950364bfc7b179c36174f24b6b8ba8e834d23e7c982a",
+    "conformance.log.gz": "486ed40ad23eb82460ec227bb033c88f2018757c04aac3d502a80745346204f3",
+    "doc-paths.log.gz": "354f14f2a202977a45bef9640c89512d5a99146f3b0db639e998639f4e30408f",
+    "evidence-lint-final.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "field-controls.log.gz": "424f68af87ad9edde70953dc48eafc40a59a8515a1d5fcb2c199b24a1e39c4c9",
+    "honesty-controls.log.gz": "03113486abc1d631a755948151d90580dfac0dca7e2add568e325cabbd89aef3",
+    "opt-in-build-final.log.gz": "41da45d94c9d98e38df563790648c6be13da78020c5b28e85538ca7deac55f2f",
+    "opt-in-build.log.gz": "ce47f20dc42ce2e9515c33de2040aa7e44fb049f4660b677d2b140e173d999c7",
+    "pickier.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "prefix-200-final.log.gz": "98bfcd8ac6a9d97f028d4b0e6cbf809c9a03b84edfe12440c15b7bb37d5ec2fa",
+    "prefix-200.log.gz": "fc9c19334ea954006a8357bc34bfdc28ff592dc0860b0c41ada51fd4abf6ca0f",
+    "program.log.gz": "d2d389436514264d967902b7ddda42d066f87d447c471cbe9cd4a0051a0f80f3",
+    "survey-controls-details.log.gz": "54187774549315d2ca4f9b8aa24064ee98189d7223ef041fd6532b420aed4dc3",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "upstream-broad-selection-cancelled-before-execution.log.gz": "6e600c62dfb8abd45c3b661a1c373cfa14ec5c4af50e20dc46569befc165348b",
+    "upstream-targets-before-init-fix.log.gz": "3e2b2c64b9dc6ede32a60eb319026ae95ddc5fda49c3a5b99f10840eab7b6c8c",
+    "upstream-targets-final.log.gz": "6d0431559af672d3b0a89b896546798ef2e203e9ace37f6b378c74555d4465d0",
+    "zod-final-diagnostics.log.gz": "20fd79cf326c2c948c2685bc1534f5e35f5b259f78a23424f97806a11369f03b",
+    "zod-final.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "zod-final.log.gz": "912856c4d911f4269c7f28efebe6ee3a68bbb654bafef4ef401a19cd0596ebe0",
+    "zod-initial-a-diagnostics.log.gz": "9d6fe8492c3b274fb98f2f7647c5694a437bbd53d700667961f34b509cf4dc16",
+    "zod-initial-a.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "zod-initial-a.log.gz": "d79a7f93c395cccb813e5029f4b41e20e84eafe1aaa727eaa3b80ce9f3a4a147",
+    "zod-initial-b-diagnostics.log.gz": "268400bbc76357937b35275b9f65cfc2f89e59c5befda37c4f5b9a0a9a37b143",
+    "zod-initial-b.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "zod-initial-b.log.gz": "a41c75689c9d0c015759ddd55c758194fdd2c4159f044d1930e760b494cd6097"
   }
 }

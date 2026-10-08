@@ -25,18 +25,44 @@ conflicting namespace-import diagnostics.
 
 Verified controls:
 
-- complete checker: 4,482/4,482, 2,071 MB peak;
+- initial complete checker: 4,482/4,482, 2,071 MB peak;
 - complete program tests: 228/228, 2,167 MB peak;
 - harness honesty controls: 4/4, 2,100 MB peak.
 - stripped ReleaseFast compiler: 3/3 build steps, 2,931 MB peak;
 - opt-in survey artifact: 3/3 tests, 2,079 MB peak.
 
-The full normal conformance run reports 1,400/1,423 passing tests and **23
+At source checkpoint `d739fdfea`, the full normal conformance run reports
+1,400/1,423 passing tests and **23
 failures**, exits 1, and peaks at 2,245 MB. All failing test names are recorded
 in `conformance-failures.json`. The baseline-aware survey measures 582/586,
 with four genuine mismatches and zero skips. Smoke/category surveys measure
 16/16 and 86/86 under the intermediate harness; these are bounded survey
 results, subject to the remaining input/options audit below.
+
+At the same checkpoint, an unchanged leading 200-case exact survey measures
+172 passes / 28 failures / zero skips, exits 1, and peaks at 308 MB. The first
+two upstream target cases measure 1/2: `typeOnlyMerge2` passes, while
+`computedPropertyName` exposes an additional TS2564 on an `any` field.
+The failed target log is retained before the initialization fix.
+
+The follow-up compiler rule exempts `any` and `unknown` field types, including
+aliases, from definite-assignment errors; computed fields honor `!`, and the
+check requires strict null checking. Required named and computed fields still
+produce TS2564. The three focused semantic controls (four tests with the module
+root) pass at 1,793 MB peak.
+The complete checker after this rule passes 4,483/4,483 at 2,117 MB peak.
+Both unchanged upstream targets now match their pinned diagnostic baselines:
+2/2 passes, zero failures or skips. The leading 200-case remeasurement remains
+172 passes / 28 failures / zero skips, exits 1, and peaks at 270 MB. The final
+stripped compiler builds in three steps at 2,939 MB peak.
+
+Ten real survey controls pass for missing corpora, empty selections, valid
+fixtures and mismatches on both survey families. Two initial pinned Zod runs
+are normalized-identical at 196 TS diagnostics and three HM9002 warnings over
+106 production files. The unchanged ratchet ceiling is three; these are retained
+error/recovery counts, not a passing Zod project.
+The final compiler's Zod run retains the same diagnostic output and recovery
+count, at 1,033 MB peak.
 
 All heavy commands use the normal machine lock and 3,840 MB ceiling. Generated
 inactive local Zig objects were reclaimed without changing sources or pinned
@@ -45,7 +71,8 @@ and ratchet ceilings remain unchanged.
 
 The input/options/library audit remains open: expected diagnostics still
 influence legacy strictness inference, and synthetic library declarations,
-file inclusion and variant selection need independent upstream verification.
+file inclusion and variant selection need independent upstream verification
+under [#841](https://github.com/home-lang/home/issues/841).
 Fresh results from this intermediate harness must be read with that boundary.
 Neither these controls nor TypeScript cases earn original Bun test-case credit.
 Full logical Bun parity remains incomplete.

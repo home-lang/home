@@ -43833,10 +43833,12 @@ pub const Checker = struct {
                         if (op_is_computed and
                             !op_is_method and
                             !op.is_static and
+                            self.strict_flags.strict_null_checks and
                             self.strict_flags.strict_property_initialization and
                             op.type_annotation != hir_mod.none_node_id and
                             !self.typeAnnotationContainsUnresolvedRef(op.type_annotation) and
                             op.value == hir_mod.none_node_id and
+                            !self.classFieldHasDefiniteAssertion(m) and
                             !self.classFieldHasOptionalToken(m) and
                             !self.classMemberSourceHasLeadingKeyword(m, "abstract") and
                             !self.classMemberSourceHasModifierBeforeKey(m, op.key, "declare") and
@@ -43844,7 +43846,9 @@ pub const Checker = struct {
                             !self.classHasLeadingDeclare(node) and
                             !self.virtualSectionIsDeclarationFile(node))
                         {
-                            if (!self.typeExplicitlyIncludesUndefined(dynamic_field_t)) {
+                            if (!self.classFieldTypeIsAnyOrUnknown(dynamic_field_t) and
+                                !self.typeExplicitlyIncludesUndefined(dynamic_field_t))
+                            {
                                 const dynamic_name = try self.strictPropertyInitNameFromKey(op.key, true);
                                 if (dynamic_name == null or !ctor_assigned_names.contains(dynamic_name.?)) {
                                     const key_text = self.computedKeyIdentifierText(op.key) orelse "computed";
@@ -44401,16 +44405,14 @@ pub const Checker = struct {
                     {
                         try self.report(op.value, TsCodes.ambient_initializer_not_allowed, "Initializers are not allowed in ambient contexts.");
                     }
-                    if (self.strict_flags.strict_property_initialization and
+                    if (self.strict_flags.strict_null_checks and self.strict_flags.strict_property_initialization and
                         !op.is_static and
                         (op.type_annotation != hir_mod.none_node_id or jsdoc_field_t != null) and
                         op.value == hir_mod.none_node_id and
                         (op.type_annotation == hir_mod.none_node_id or
                             !self.typeAnnotationContainsUnresolvedRef(op.type_annotation)) and
                         !self.typeExplicitlyIncludesUndefined(field_t) and
-                        !(self.classFieldTypeIsAnyOrUnknown(field_t) and
-                            (op.type_annotation == hir_mod.none_node_id or
-                                self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation))) and
+                        !self.classFieldTypeIsAnyOrUnknown(field_t) and
                         !self.classFieldHasDefiniteAssertion(m) and
                         !self.classFieldHasOptionalToken(m) and
                         !is_abstract_property and
@@ -205330,6 +205332,32 @@ test "checker: type-only spaces batch distinguishes erased and emitted computed 
     const s = b.base;
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+}
+
+test "checker: type-only spaces batch keeps definite assignment tied to field types" {
+    for ([_]bool{ true, false }) |strict_null_checks| {
+        const b = try newBoundSetup(
+            \\declare const token: unique symbol;
+            \\type Dynamic = any;
+            \\type Opaque = unknown;
+            \\class AnyKey { [token]: any; }
+            \\class UnknownKey { [token]: unknown; }
+            \\class AliasKey { [token]: Dynamic; }
+            \\class UnknownAliasKey { [token]: Opaque; }
+            \\class OptionalKey { [token]: string | undefined; }
+            \\class DefiniteKey { [token]!: string; }
+            \\class RequiredKey { [token]: string; }
+            \\class Named { value: Dynamic; opaque: Opaque; required: string; }
+        );
+        defer destroyBoundSetup(b);
+        const s = b.base;
+        s.checker.strict_flags = .{
+            .strict_null_checks = strict_null_checks,
+            .strict_property_initialization = true,
+        };
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (strict_null_checks) 2 else 0), checkerCountCode(s, TsCodes.property_not_initialized));
+    }
 }
 
 test "checker: const enum import conflicts with a same-name namespace merge" {
