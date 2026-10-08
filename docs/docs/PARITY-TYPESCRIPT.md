@@ -331,6 +331,12 @@ Previous green slice counts are withdrawn. All slices require fresh execution
 after removing result substitutions and auditing compiler options and library
 inputs. Retained historical logs describe the old harness's output only.
 
+Two recovery fixtures now have direct exact unit gates:
+`decoratorOnClassMethod12` rejects a dependent TS1241 after the authoritative
+TS2660, and `asyncFunctionDeclarationParameterEvaluation` retains TS2538
+alongside its unresolved-key TS2304. A leading-prefix count will be published
+only after a fresh serial run on current `main`.
+
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:
 

@@ -53318,6 +53318,62 @@ test "conformance: decorator fixtures emit at least one diagnostic naturally" {
     }
 }
 
+test "conformance: invalid super method decorator suppresses signature cascade" {
+    const r = try runOneEntry(T.allocator, .{
+        .name = "decoratorOnClassMethod12",
+        .path = "decoratorOnClassMethod12.ts",
+        .source =
+        \\// @target: ES5, ES2015
+        \\// @experimentaldecorators: true
+        \\namespace M {
+        \\    class S {
+        \\        decorator(target: Object, key: string): void { }
+        \\    }
+        \\    class C extends S {
+        \\        @(super.decorator)
+        \\        method() { }
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors = "decoratorOnClassMethod12.ts(6,11): error TS2660: 'super' can only be referenced in members of derived classes or object literal expressions.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    if (r.outcome != .passed) {
+        std.debug.print("decoratorOnClassMethod12 detail:\n{s}\n", .{r.detail});
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
+test "conformance: unresolved computed parameter key retains index diagnostic" {
+    const r = try runOneEntry(T.allocator, .{
+        .name = "asyncFunctionDeclarationParameterEvaluation",
+        .path = "asyncFunctionDeclarationParameterEvaluation.ts",
+        .source =
+        \\// @strict: false
+        \\async function f2({[z]: x}) {}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\asyncFunctionDeclarationParameterEvaluation.ts(1,21): error TS2304: Cannot find name 'z'.
+        \\asyncFunctionDeclarationParameterEvaluation.ts(1,21): error TS2538: Type 'any' cannot be used as an index type.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(r.name);
+        if (r.detail.len > 0) T.allocator.free(r.detail);
+    }
+    if (r.outcome != .passed) {
+        std.debug.print("asyncFunctionDeclarationParameterEvaluation detail:\n{s}\n", .{r.detail});
+    }
+    try T.expectEqual(Outcome.passed, r.outcome);
+}
+
 // BISECTION HARNESS — re-added by the §3.A heap-leak investigation
 // (see `docs/TS_PARITY_PLAN_HEAP_LEAK.md`). Placed BEFORE the adjacent
 // unit tests it was expected to corrupt — Zig executes tests in

@@ -28579,6 +28579,10 @@ pub const Checker = struct {
             }
             return reported;
         }
+        // An unresolved computed key is TypeScript's error type, which prints
+        // and indexes like `any`. Home represents it as the distinct
+        // `unmodeled` any-like sentinel; keep the TS2304 and still perform the
+        // parent indexed-access check so the dependent TS2538 is retained.
         if (types.Primitive.isAnyLike(key_t) or key_t == types.Primitive.unknown) {
             if (container_t < self.interner.pool.typeCount()) {
                 const flags = self.interner.pool.flagsOf(container_t);
@@ -40232,6 +40236,12 @@ pub const Checker = struct {
         signature_unresolved_code: u32,
         kind: []const u8,
     ) CheckError!void {
+        // `resolveDecorator` in TypeScript returns an error-call signature
+        // when checking the decorator expression already failed. Home keeps
+        // that state as the distinct `unmodeled` any-like recovery, so it
+        // must short-circuit here alongside source `any` and `unknown`.
+        // Otherwise the recovery is mistaken for a concrete non-callable
+        // value and adds a dependent TS1238/TS1240/TS1241 cascade.
         if (types.Primitive.isAnyLike(sig) or sig == types.Primitive.unknown or sig == types.Primitive.none) return;
         if (sig < self.interner.pool.typeCount() and !self.interner.pool.flagsOf(sig).is_signature) {
             const msg = try std.fmt.allocPrint(
@@ -218876,6 +218886,7 @@ test "checker: super in method decorator on derived class fires TS2660 not TS233
         if (d.code == TsCodes.super_not_in_derived_member) has_2660 = true;
     }
     try T.expect(has_2660);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.method_decorator_signature_unresolved));
 }
 
 test "checker: nested class decorators preserve outer method super" {
@@ -284149,6 +284160,24 @@ test "checker: parity scope batch validates inferred object parameter keys" {
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_matching_index_signature));
+}
+
+test "checker: unresolved computed parameter key retains TS2538" {
+    // TypeScript checks the unresolved key as its error-type `any` against the
+    // inferred binding-pattern object. The primary TS2304 therefore does not
+    // suppress the indexed-access TS2538. Mirrors
+    // `asyncFunctionDeclarationParameterEvaluation`.
+    const s = try newSetup("async function f({ [missing]: value }) {}");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_cannot_be_used_as_index,
+        "Type 'any' cannot be used as an index type.",
+    ));
 }
 
 test "checker: parity recovery batch checks diagnosed operands" {
