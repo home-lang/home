@@ -5793,6 +5793,7 @@ pub const ModuleExportFacts = struct {
     call_only_function: bool = false,
     module_is_external: bool = false,
     cannot_be_named: bool = false,
+    default_import_info: ?ts_driver.ExternalResolver.DefaultImportInfo = null,
 };
 
 pub const ModuleLocalImportFacts = struct {
@@ -6067,6 +6068,8 @@ pub fn compileModuleForExportFacts(
         (std.mem.endsWith(u8, module_path, ".js") and Program.sourceHasJsxSyntax(source));
     return ts_driver.compileSource(gpa, source, .{
         .is_tsx = is_tsx,
+        .is_declaration_file = std.mem.endsWith(u8, module_path, ".d.ts") or
+            std.mem.endsWith(u8, module_path, ".d.mts") or std.mem.endsWith(u8, module_path, ".d.cts"),
         .continue_on_error = true,
         .no_emit = true,
         .bind_only = true,
@@ -6340,6 +6343,44 @@ fn evaluateModuleExportFacts(
     const resolved_origins = try origin_query.resolve(module_path, name);
     if (resolved_origins.complete and !resolved_origins.ambiguous) {
         facts.namespace_meaning = resolved_origins.namespace != null;
+    }
+    if (std.mem.eql(u8, name, "default")) {
+        if (resolved_origins.complete and !resolved_origins.ambiguous)
+            facts.exported_type = facts.exported_type or resolved_origins.type != null;
+        const marker = try origin_query.resolve(module_path, "__esModule");
+        const direct_marker = moduleExportsTypeSpaceNameFromCompilation(compilation, "__esModule") or
+            moduleExportsValueSpaceNameFromCompilation(compilation, "__esModule");
+        var package_format_applies = resolver.config.strategy == .node16 or resolver.config.strategy == .nodenext;
+        // TypeScript's implied-format rule also applies within node_modules.
+        // This is format provenance, not the JS source-admission decision.
+        var components = std.mem.tokenizeAny(u8, module_path, "/\\");
+        while (components.next()) |component| {
+            if (std.mem.eql(u8, component, "node_modules")) package_format_applies = true;
+        }
+        var owner: ts_driver.ExternalResolver.DefaultImportInfo = .{
+            .is_declaration = compilation.is_declaration_file,
+            .is_javascript = std.mem.endsWith(u8, module_path, ".js") or std.mem.endsWith(u8, module_path, ".jsx") or
+                std.mem.endsWith(u8, module_path, ".mjs") or std.mem.endsWith(u8, module_path, ".cjs"),
+            .has_es_module_marker = if (direct_marker)
+                true
+            else if (marker.complete and !marker.ambiguous)
+                marker.type != null or marker.value != null or marker.type_only_value != null or marker.namespace != null
+            else
+                null,
+            .node_format = if (std.mem.endsWith(u8, module_path, ".mts") or std.mem.endsWith(u8, module_path, ".mjs") or
+                (!(std.mem.endsWith(u8, module_path, ".cts") or std.mem.endsWith(u8, module_path, ".cjs")) and resolver.containingPackageIsTypeModule(module_path)))
+                .esm
+            else
+                .commonjs,
+            .package_format_applies = package_format_applies,
+        };
+        for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+            if (compilation.hir.kindOf(stmt) == .import_decl) owner.has_esm_syntax = true;
+            if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+            if (ex.is_export_equals) owner.has_export_assignment = true else owner.has_esm_syntax = true;
+        }
+        facts.default_import_info = owner;
     }
     facts.module_is_external = moduleRootIsExternalOrCommonJsModule(
         &compilation.hir,
@@ -14129,6 +14170,44 @@ test "module export facts parse JSX-bearing JavaScript modules" {
     defer resolver.deinit();
     const facts = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/component.js", "C");
     try T.expect(facts.exported_value);
+}
+
+test "module export facts retain default owner shape rather than leaf format" {
+    var stage: []const u8 = "star owner";
+    errdefer std.debug.print("default owner control failed at {s}\n", .{stage});
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/package.json", "{\"type\":\"module\"}");
+    try vfs.addFile("/p/leaf.cts", "export default 1;");
+    try vfs.addFile("/p/star.ts", "export * from './leaf.cjs';");
+    try vfs.addFile("/p/types.d.ts", "export declare const named: number;");
+    try vfs.addFile("/p/marker.d.ts", "export declare const __esModule: true;");
+    try vfs.addFile("/p/type-default.ts", "export default interface Model { value: number; }");
+    try vfs.addFile("/p/esm.js", "export const named = 1;");
+    try vfs.addFile("/p/cjs.cjs", "exports.named = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const star = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/star.ts", "default");
+    try T.expect(!star.exported_type and !star.exported_value);
+    const star_owner = star.default_import_info orelse return error.TestUnexpectedResult;
+    try T.expect(star_owner.has_esm_syntax and star_owner.node_format == .esm);
+    stage = "declaration owner";
+    const declaration = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/types.d.ts", "default");
+    try T.expect(declaration.default_import_info.?.is_declaration);
+    try T.expectEqual(@as(?bool, false), declaration.default_import_info.?.has_es_module_marker);
+    stage = "interop marker";
+    const marker = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/marker.d.ts", "default");
+    try T.expectEqual(@as(?bool, true), marker.default_import_info.?.has_es_module_marker);
+    stage = "type-space default";
+    const type_default = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/type-default.ts", "default");
+    try T.expect(type_default.exported_type and !type_default.exported_value);
+    stage = "ESM JavaScript owner";
+    const esm = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/esm.js", "default");
+    try T.expect(esm.default_import_info.?.is_javascript and esm.default_import_info.?.has_esm_syntax);
+    stage = "CommonJS JavaScript owner";
+    const cjs = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/cjs.cjs", "default");
+    try T.expect(cjs.default_import_info.?.is_javascript and !cjs.default_import_info.?.has_esm_syntax);
+    try T.expect(cjs.default_import_info.?.node_format == .commonjs);
 }
 
 test "Program: qualified JSDoc typedef metadata stays separate from value expandos" {

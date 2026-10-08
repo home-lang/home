@@ -2450,6 +2450,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .verbatim_module_syntax = co.verbatim_module_syntax orelse false,
+            .allow_synthetic_default_imports = co.allow_synthetic_default_imports orelse true,
             .isolated_declarations = co.isolated_declarations orelse false,
             // `composite` implies `declaration` in tsc (unless the user
             // explicitly disables it, which tsconfig validation rejects).

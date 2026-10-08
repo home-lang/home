@@ -578,6 +578,7 @@ fn buildOneProject(
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
+    resolver_adapter.setProgramSources(&program, compile_opts);
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
@@ -2072,6 +2073,7 @@ pub const LspProject = struct {
         self.adapter = CheckerResolverAdapter.init(gpa, &self.resolver);
         self.service = ts_lsp.Service.init(gpa, &self.program);
         var compile_options: ts_driver.CompileOptions = if (self.config) |*c| ts_driver.optionsFromConfig(c) else .{};
+        self.adapter.setProgramSources(&self.program, compile_options);
         compile_options.external_resolver = .{ .ptr = &self.adapter, .vtable = &CheckerResolverAdapter.vtable };
         self.service.compile_options = compile_options;
         return self;
@@ -2097,6 +2099,7 @@ pub const LspProject = struct {
             // fresh on each edit so saved changes to dependencies show up.
             self.adapter.deinit();
             self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
+            self.adapter.setProgramSources(&self.program, self.service.compile_options);
         }
         return ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
     }
@@ -2262,6 +2265,10 @@ const ModuleExportCache = std.HashMapUnmanaged(
 
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
+    /// Borrow the actual source-admission inventory, which is immutable
+    /// while the Program's parallel checker workers are running.
+    admitted_program: ?*const ts_program.Program = null,
+    js_sources_enabled: bool = false,
     resolver_mutex: ResolverMutex = .{},
     cache_mutex: ResolverMutex = .{},
     cache_arena: std.heap.ArenaAllocator,
@@ -2278,6 +2285,19 @@ const CheckerResolverAdapter = struct {
             .cache_arena = std.heap.ArenaAllocator.init(gpa),
             .export_origin_query = ts_program.export_origins.Query.init(gpa, resolver),
         };
+    }
+
+    fn setProgramSources(self: *CheckerResolverAdapter, program: *const ts_program.Program, options: ts_driver.CompileOptions) void {
+        self.admitted_program = program;
+        self.js_sources_enabled = options.allow_js or options.check_js;
+    }
+
+    fn admittedJavaScript(self: *CheckerResolverAdapter, path: []const u8) bool {
+        if (!self.js_sources_enabled) return false;
+        if (!(std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or std.mem.endsWith(u8, path, ".cjs"))) return false;
+        const program = self.admitted_program orelse return false;
+        return program.lookupPath(path) != null;
     }
 
     fn deinit(self: *CheckerResolverAdapter) void {
@@ -2486,7 +2506,9 @@ const CheckerResolverAdapter = struct {
         const r = self.resolveModule(specifier, containing_file) orelse return null;
         return .{
             .path = r.path,
-            .is_declaration = r.is_declaration,
+            // The checker API's bit means typed resolution, including
+            // admitted JS source inference, not only declaration files.
+            .is_declaration = r.is_declaration or self.admittedJavaScript(r.path),
             .alternate_result = r.alternate_result,
             .project_reference_output = r.project_reference_output,
         };
@@ -2569,6 +2591,7 @@ const CheckerResolverAdapter = struct {
                 .generic_function = facts.generic_function,
                 .call_only_function = facts.call_only_function,
                 .module_is_external = facts.module_is_external,
+                .default_import_info = facts.default_import_info,
             };
         };
         self.cacheModuleExport(cache_key, result);
@@ -2634,6 +2657,7 @@ const CheckerResolverAdapter = struct {
                 .generic_function = facts.generic_function,
                 .call_only_function = facts.call_only_function,
                 .module_is_external = facts.module_is_external,
+                .default_import_info = facts.default_import_info,
             };
         };
         self.cacheModuleExport(cache_key, result);
@@ -3294,6 +3318,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     ts_cli.applyCompileOptions(&compile_opts, opts);
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
+    resolver_adapter.setProgramSources(&program, compile_opts);
     compile_opts.external_resolver = .{
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
@@ -4572,6 +4597,31 @@ test "tsc_main: resolver adapter preserves generic functions through js export s
     try std.testing.expect(info.exported_value);
     try std.testing.expect(info.generic_function);
     try std.testing.expect(info.call_only_function);
+}
+
+test "tsc_main: resolver admission distinguishes typed JS from untyped implementations" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/project.js", "exports.named = 1;");
+    try vfs.addFile("/unadmitted.js", "exports.named = 1;");
+    try vfs.addFile("/node_modules/explicit/index.js", "exports.named = 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/project.js", "exports.named = 1;");
+    _ = try program.add("/node_modules/explicit/index.js", "exports.named = 1;");
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    for ([_]ts_driver.CompileOptions{ .{}, .{ .allow_js = true }, .{ .check_js = true } }) |options| {
+        adapter.setProgramSources(&program, options);
+        const project = CheckerResolverAdapter.resolveImpl(&adapter, "./project.js", "/main.ts").?;
+        const explicit = CheckerResolverAdapter.resolveImpl(&adapter, "./node_modules/explicit/index.js", "/main.ts").?;
+        const unadmitted = CheckerResolverAdapter.resolveImpl(&adapter, "./unadmitted.js", "/main.ts").?;
+        try std.testing.expectEqual(options.allow_js or options.check_js, project.is_declaration);
+        try std.testing.expectEqual(options.allow_js or options.check_js, explicit.is_declaration);
+        try std.testing.expect(!unadmitted.is_declaration);
+    }
 }
 
 test "tsc_main: resolver adapter carries prepared local import facts" {

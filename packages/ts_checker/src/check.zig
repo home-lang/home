@@ -251,6 +251,20 @@ pub const ExternalResolver = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    /// Source-owner facts for synthetic default selection. These describe
+    /// the resolved file itself, not a declaration forwarded by a barrel.
+    pub const DefaultImportInfo = struct {
+        is_declaration: bool = false,
+        is_javascript: bool = false,
+        has_esm_syntax: bool = false,
+        has_export_assignment: bool = false,
+        has_es_module_marker: ?bool = null,
+        node_format: enum { esm, commonjs } = .commonjs,
+        /// Package-implied format also participates outside NodeNext when
+        /// the resolved file carries that format provenance.
+        package_format_applies: bool = false,
+    };
+
     pub const Resolution = struct {
         /// Resolved file path. Borrowed; lifetime is the resolver's
         /// arena (which must outlive the `Checker`'s
@@ -258,7 +272,8 @@ pub const ExternalResolver = struct {
         path: []const u8,
         /// True when `path` ends in `.d.ts` / `.d.cts` / `.d.mts`
         /// or `.ts` / `.tsx` / `.mts` / `.cts` ÃÂ¢ÃÂÃÂ i.e. tsc would
-        /// treat the resolution as "typed".
+        /// treat the resolution as "typed". A Program adapter also sets
+        /// this for an actually admitted JavaScript inference source.
         is_declaration: bool,
         /// When the resolution went through `package.json` `exports`
         /// and landed on an untyped JS file under an ESM importer, but
@@ -398,6 +413,9 @@ pub const ExternalResolver = struct {
         /// types use a known-false value to distinguish a resolved script
         /// from a module (TS2306).
         module_is_external: ?bool = null,
+        /// Available when the resolver retained enough owner/module facts
+        /// to decide synthetic-default eligibility. Null remains unknown.
+        default_import_info: ?DefaultImportInfo = null,
     };
     pub const InferredExportUnsafeReference = struct {
         /// Type name that makes the inferred exported value non-portable.
@@ -3521,6 +3539,9 @@ pub const StrictFlags = struct {
     /// original multi-valued directive is not present in the per-file
     /// program source.
     verbatim_module_syntax: bool = false,
+    /// TS 6 defaults this option to true. Explicit config/directive values
+    /// remain authoritative, including compatibility conformance inputs.
+    allow_synthetic_default_imports: bool = true,
     /// `declaration` (`--declaration` / `composite`). When true the
     /// compiler emits `.d.ts` files, which surfaces declaration-emit
     /// symbol-accessibility diagnostics ÃÂ¢ÃÂÃÂ notably the "private name in
@@ -57756,6 +57777,12 @@ pub const Checker = struct {
         if (try self.reportAtTypesPackageImport(node, spec)) return;
         if (self.importDeclRequestsModuleExports(node, imp) and
             try self.reportExternalFileIsNotAModule(node, spec)) return;
+        // Real Program imports use one owner-based default check for both
+        // relative specifiers and packages; virtual sections keep their
+        // source-section lookup below.
+        if (!self.sourceHasVirtualFilenameSections() and imp.default_binding != hir_mod.none_node_id and
+            !self.importDeclIsRequireAssignment(node))
+            try self.checkProgramEsmDefaultImportHasDefaultExport(node, imp, spec);
         if (std.mem.startsWith(u8, spec, ".")) {
             // TS2306: the relative specifier resolves to an existing
             // source file that is a plain script (no top-level
@@ -60152,6 +60179,7 @@ pub const Checker = struct {
             .node = node,
             .code = TsCodes.untyped_module,
             .message = final_msg,
+            .pos = self.moduleSpecifierQuotePos(node, spec),
             .chain = chain,
         });
     }
@@ -62863,18 +62891,15 @@ pub const Checker = struct {
     /// modules synthesise a default from their `export =`/module value
     /// and are therefore exempt. Mirrors `modulePreserve4`'s `./e.mjs`.
     fn checkEsmDefaultImportHasDefaultExport(self: *Checker, node: NodeId, imp: hir_mod.ImportPayload, spec: []const u8) CheckError!void {
-        if (imp.is_type_only) return;
         if (imp.default_binding == hir_mod.none_node_id) return;
         if (self.importDeclIsRequireAssignment(node)) return;
+        if (!self.sourceHasVirtualFilenameSections()) return;
+        if (imp.is_type_only) return;
         // A CommonJS-format importing file (`.cjs`/`.cts`) synthesises a
         // default via CommonJS interop, so the missing-default diagnostic
         // does not apply there (it already reports TS1293/TS8002 for the
         // ESM syntax). Mirrors `modulePreserve4`'s `main3.cjs`.
         if (self.sectionFileIsCommonJsFormat(node)) return;
-        if (!self.sourceHasVirtualFilenameSections()) {
-            try self.checkProgramEsmDefaultImportHasDefaultExport(imp, spec);
-            return;
-        }
         const from = self.virtualSectionFilenameForNode(node) orelse return;
         // tsc resolves a `.mjs`/`.cjs`/`.js` import specifier to its TS
         // source counterpart (`.mts`/`.cts`/`.ts`). Strip the output
@@ -63005,25 +63030,69 @@ pub const Checker = struct {
 
     fn checkProgramEsmDefaultImportHasDefaultExport(
         self: *Checker,
+        node: NodeId,
         imp: hir_mod.ImportPayload,
         spec: []const u8,
     ) CheckError!void {
         const resolver = self.external_resolver orelse return;
         const resolved = resolver.resolve(spec, self.importer_path) orelse return;
-        if (!std.mem.endsWith(u8, resolved.path, ".mts") and
-            !std.mem.endsWith(u8, resolved.path, ".mjs")) return;
+        // An unadmitted JS implementation has no typed module symbol to
+        // inspect. Its genuine TS7016 stays on the resolution path instead.
+        if (self.pathIsJsLike(resolved.path) and !resolved.is_declaration) return;
         const info = resolver.moduleExport(spec, self.importer_path, "default") orelse return;
-        if (info.exported_value) return;
+        if (info.exported_value or info.exported_type) return;
+        if (info.default_import_info) |owner| {
+            const usage_is_esm = !self.effectiveModuleKindIs("commonjs") and
+                !self.effectiveModuleKindIs("amd") and !self.effectiveModuleKindIs("umd") and
+                !(self.sourceModuleIsNodeFormatFamily() and self.sectionFileIsCommonJsFormatForNodeMode(node));
+            // Node ESM-to-CJS imports expose the CommonJS module object;
+            // ESM-to-ESM imports never synthesize a default.
+            if (usage_is_esm and owner.node_format == .commonjs and self.sourceModuleIsNodeFormatFamily()) return;
+            const forced_esm_format = sectionFilenameIsEsmFormat(resolved.path) or
+                ((self.sourceModuleIsNodeFormatFamily() or owner.package_format_applies) and owner.node_format == .esm);
+            if (!(usage_is_esm and forced_esm_format)) {
+                const allow_synthetic = if (self.sourceDirectiveValueMentions("allowSyntheticDefaultImports", "false"))
+                    false
+                else if (self.sourceDirectiveValueMentions("allowSyntheticDefaultImports", "true"))
+                    true
+                else
+                    self.strict_flags.allow_synthetic_default_imports;
+                if (allow_synthetic) {
+                    if (owner.is_declaration or (owner.is_javascript and !owner.has_esm_syntax)) {
+                        const marker = owner.has_es_module_marker orelse return;
+                        if (!marker) return;
+                    } else if (!owner.is_javascript and owner.has_export_assignment) return;
+                }
+            }
+        } else if (!sectionFilenameIsEsmFormat(resolved.path)) {
+            // Older adapters without owner facts cannot establish a missing
+            // synthetic default for an ambiguous-format source.
+            return;
+        }
         const display = stripProgramModuleExtension(resolved.path);
         const module_name = try std.fmt.allocPrint(self.diag_arena.allocator(), "\"{s}\"", .{display});
-        const msg = try std.fmt.allocPrint(
+        var code = TsCodes.no_default_export;
+        var msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Module '{s}' has no default export.",
             .{module_name},
         );
+        if (self.hir.kindOf(imp.default_binding) == .identifier) {
+            const local_name = self.string_interner.get(hir_mod.identifierOf(self.hir, imp.default_binding).name);
+            if (resolver.moduleExport(spec, self.importer_path, local_name)) |named| {
+                if (named.exported_type or named.exported_value) {
+                    code = TsCodes.no_default_export_named_import_suggestion;
+                    msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Module '{s}' has no default export. Did you mean to use 'import {{ {s} }} from {s}' instead?",
+                        .{ module_name, local_name, module_name },
+                    );
+                }
+            }
+        }
         try self.diagnostics.append(self.gpa, .{
             .node = imp.default_binding,
-            .code = TsCodes.no_default_export,
+            .code = code,
             .message = msg,
         });
     }
@@ -260631,6 +260700,8 @@ const StubExternalResolver = struct {
     canned_local_name: []const u8 = "",
     canned_local_exported_as: []const u8 = "",
     canned_exported_value_readonly: bool = false,
+    canned_default_import_info: ?ExternalResolver.DefaultImportInfo = null,
+    canned_exported_default_type: bool = false,
     canned_alternate_result: ?[]const u8 = null,
     canned_project_reference_output: ?[]const u8 = null,
     canned_blocked_by_exports_null: bool = false,
@@ -260673,7 +260744,7 @@ const StubExternalResolver = struct {
         const module_name = self.canned_module_name orelse return null;
         return .{
             .module_name = module_name,
-            .exported_type = false,
+            .exported_type = self.canned_exported_default_type and std.mem.eql(u8, name, "default"),
             .exported_value = std.mem.eql(u8, name, self.canned_exported_name),
             .declares_local = std.mem.eql(u8, name, self.canned_local_name),
             .local_exported_as = if (std.mem.eql(u8, name, self.canned_local_name))
@@ -260682,9 +260753,95 @@ const StubExternalResolver = struct {
                 "",
             .exported_value_readonly = self.canned_exported_value_readonly and
                 std.mem.eql(u8, name, self.canned_exported_name),
+            .default_import_info = self.canned_default_import_info,
         };
     }
 };
+
+test "checker: real default imports select source shape and implied format" {
+    const Owner = ExternalResolver.DefaultImportInfo;
+    const Case = struct {
+        path: []const u8 = "/target.ts",
+        owner: Owner,
+        module: []const u8 = "esnext",
+        package_esm: bool = false,
+        allow_synthetic: bool = true,
+        expected: usize,
+    };
+    for ([_]Case{
+        .{ .owner = .{ .has_esm_syntax = true }, .expected = 1 },
+        .{ .path = "/target.d.ts", .owner = .{ .is_declaration = true, .has_es_module_marker = false }, .expected = 0 },
+        .{ .path = "/target.d.ts", .owner = .{ .is_declaration = true, .has_es_module_marker = true }, .expected = 1 },
+        .{ .path = "/node_modules/pkg/index.d.ts", .owner = .{ .is_declaration = true, .has_es_module_marker = false, .node_format = .esm, .package_format_applies = true }, .expected = 1 },
+        .{ .path = "/target.d.ts", .owner = .{ .is_declaration = true, .has_es_module_marker = false }, .allow_synthetic = false, .expected = 1 },
+        .{ .path = "/target.d.mts", .owner = .{ .is_declaration = true, .has_es_module_marker = false, .node_format = .esm }, .expected = 1 },
+        .{ .path = "/target.d.mts", .owner = .{ .is_declaration = true, .has_es_module_marker = false, .node_format = .esm }, .module = "nodenext", .expected = 0 },
+        .{ .path = "/target.cts", .owner = .{ .has_esm_syntax = true }, .module = "nodenext", .package_esm = true, .expected = 0 },
+        .{ .owner = .{ .has_esm_syntax = true, .node_format = .esm }, .module = "nodenext", .package_esm = true, .expected = 1 },
+        .{ .path = "/target.js", .owner = .{ .is_javascript = true, .has_esm_syntax = true, .has_es_module_marker = false }, .expected = 1 },
+        .{ .path = "/target.js", .owner = .{ .is_javascript = true, .has_es_module_marker = false }, .expected = 0 },
+        .{ .path = "/target.js", .owner = .{ .is_javascript = true, .has_es_module_marker = true }, .expected = 1 },
+        .{ .owner = .{ .has_export_assignment = true }, .expected = 0 },
+    }) |case| {
+        for ([_][]const u8{ "import value from './target';", "import type value from './target';" }) |source| {
+            const s = try newSetup(source);
+            defer destroySetup(s);
+            var stub = StubExternalResolver{
+                .canned_path = case.path,
+                .canned_is_declaration = true,
+                .canned_module_name = "\"target\"",
+                .canned_default_import_info = case.owner,
+            };
+            s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+            s.checker.setImporterPath("/main.ts");
+            s.checker.setModuleKind(case.module);
+            s.checker.setPackageTypeModule(case.package_esm);
+            s.checker.setStrictFlags(.{ .allow_synthetic_default_imports = case.allow_synthetic });
+            try s.checker.checkSourceFile(s.root);
+            try T.expectEqual(case.expected, checkerCountCode(s, TsCodes.no_default_export));
+        }
+    }
+}
+
+test "checker: real package defaults are checked without adding errors to untyped JS" {
+    for ([_]bool{ false, true }) |typed| {
+        const s = try newSetup("import value from 'pkg';");
+        defer destroySetup(s);
+        var stub = StubExternalResolver{
+            .canned_path = if (typed) "/node_modules/pkg/index.d.mts" else "/node_modules/pkg/index.js",
+            .canned_is_declaration = typed,
+            .canned_module_name = "\"pkg\"",
+            .canned_default_import_info = .{ .has_esm_syntax = true, .node_format = .esm },
+        };
+        s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+        s.checker.setImporterPath("/main.ts");
+        s.checker.setModuleKind("esnext");
+        s.checker.setStrictFlags(.{ .no_implicit_any = true });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (typed) 1 else 0), checkerCountCode(s, TsCodes.no_default_export));
+        try T.expectEqual(@as(usize, if (typed) 0 else 1), checkerCountCode(s, TsCodes.untyped_module));
+    }
+}
+
+test "checker: real type-space defaults and named import suggestions stay distinct" {
+    for ([_]bool{ false, true }) |type_default| {
+        const s = try newSetup("import named from './target';");
+        defer destroySetup(s);
+        var stub = StubExternalResolver{
+            .canned_path = "/target.ts",
+            .canned_is_declaration = true,
+            .canned_module_name = "\"target\"",
+            .canned_exported_name = "named",
+            .canned_exported_default_type = type_default,
+            .canned_default_import_info = .{ .has_esm_syntax = true },
+        };
+        s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+        s.checker.setImporterPath("/main.ts");
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (type_default) 0 else 1), checkerCountCode(s, TsCodes.no_default_export_named_import_suggestion));
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_default_export));
+    }
+}
 
 test "checker: external owner local fact refines missing export to TS2459" {
     const s = try newSetup(
