@@ -65,3 +65,10 @@ the pre-predicate source stage. A retained process sample places the integrated
 work in `collectProgramCommonJsExports` calling `moduleExportAssignmentInfo`,
 which recompiles and fully checks a declaration owner during export discovery.
 These source-owner and semantic-resolution costs remain open under #842.
+
+The latest source includes the subsequently published nested-owner reuse on
+origin/main. Its program suite passes 232/232, its compiler builds at 3,036 MB
+peak, and Zod remains at 196 TS diagnostics and three recoveries at 632 MB.
+The latest source stage and diagnostic comparison are recorded separately in
+the manifest. Original-case resource stops are retained at their tested stages;
+no successful full-corpus remeasurement is claimed for this latest tree.

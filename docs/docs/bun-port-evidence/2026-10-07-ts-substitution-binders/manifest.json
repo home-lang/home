@@ -8,7 +8,7 @@
     "build.zig": "54834ed94b13911a77afaad49aec2aa33681d8d8928d363120143b72746ea61f",
     "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
     "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
-    "packages/ts_program/src/ts_program.zig": "adf94d7e7c0bd3bceec890944cc80a84dee072dd6a9c18cda2054b50602b78af",
+    "packages/ts_program/src/ts_program.zig": "ffed7fded0acf90bc3353b4693b09660f798946b51708146ed444c054aa106dd",
     "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9",
     "packages/ts_cli/src/tsc_main.zig": "9d74e21be0ad7de852bba5960cec5d0ef43496832bdb4491bfc255aabb0e4451",
     "packages/ts_program/src/export_origins.zig": "72e8fc7bd9221e7297c928abebf03ad6a3c4c2ff082e19360c3d0ea70a7cb6d0"
@@ -94,7 +94,9 @@
     "declaration-controls-final.log.gz": "0972efd90686c3a1b9e881d15bf4c23d4fdbe59b7fb7b3034d59ff97ebf455df",
     "integrated-compiler.log.gz": "5ca9b4092197937d5f4a3f62c757551c9298da6946a409940c09179949f34594",
     "program-disk-stop.log.gz": "947290d2493e4132103eddda418e70ba58a88c09e2c95100da97b72cccecc263",
+    "latest-zod-diagnostics.log.gz": "c5800bcfaaebd6c428834d8f5e49ec22d174cdf8ad1b6a1e614556ef84dba3d1",
     "original-cases-file-modes.log.gz": "d17e58fdb99d1d3b2f42b5bd64db36202c71d60bf33d97e0e24632d877761f4f",
+    "latest-compiler.log.gz": "99d812984fd9bce26443f3c0f12fa11847db99ac6ec61530d65597e9060539fe",
     "home-substitution-control-cache-cleanup.json.gz": "6614e8f16a51a5f17c21fd0e7debac3338fe508d611ade3af7e5c24814c9cb48",
     "integrated-driver.log.gz": "9cd4d0e00c266d8d596924351a93113761f28e025c327182bd1e876740aeafd9",
     "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
@@ -106,7 +108,9 @@
     "intermediate-original-cases-interrupted.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25",
     "integrated-optin.log.gz": "11353a1e653d8e90cf0e634c0d1f60c04a0e952e9dc75fc076c36d8ec33cefa3",
     "production-compiler-file-modes.log.gz": "c5e40deb61e4a4295f8c69e6bbc30199f774c4b57a83a6be502654d7250b065f",
+    "latest-zod.log.gz": "0586f128e5bf0d8aceadd055b80223655d96ae79a7326082ceafabd5033a99f8",
     "production-zod-file-modes-diagnostics.log.gz": "d4f88a1cb9f8697f851a04cc8073788b0e726b9a7692fccb99b0bc2ce7dcd7d1",
+    "latest-program.log.gz": "f7d2607a6d6912ab0e66e6b7d163b673037836faf057919457a5693ac3ac56da",
     "driver-full.log.gz": "09ba22df16b60bf6a31bc6143af5de3ff9b13b6d0d52b52efd90dc36de59b273",
     "integrated-parser.log.gz": "d480da34d731e79caa0d0f4023d210b35c0152338efdfb0c6e793b05503f5bce",
     "baseline-disk-stop.log.gz": "a3783307e01a9303b79c3196daf815d889f7db2f4f0fd6df67054d6b7d362637",
@@ -197,6 +201,34 @@
     "passed_credit": 0,
     "source_stage": "final predicate build before origin/main integration"
   },
-  "compiler_sha256": "2d4a94c0bf0700a631a326c98fce1bc47815b6f242efb755938db516729217c1",
-  "integrated_optin_binary_sha256": "cf32da9a45c9a4f7cef153e7f59054b24e128cadaa63102276bd2350dbaa9313"
+  "compiler_sha256": "5cd6f11dab1509c7f9083a42a3162ae615109beea33b9eb58b18669ed9ba87ca",
+  "integrated_optin_binary_sha256": "cf32da9a45c9a4f7cef153e7f59054b24e128cadaa63102276bd2350dbaa9313",
+  "integrated_stage_source_sha256": {
+    "build.zig": "54834ed94b13911a77afaad49aec2aa33681d8d8928d363120143b72746ea61f",
+    "packages/ts_checker/src/check.zig": "650bcfe56422ddf38f18c1b9478fb1d94985d6a5842810dba1da909673c1feb7",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_program/src/ts_program.zig": "adf94d7e7c0bd3bceec890944cc80a84dee072dd6a9c18cda2054b50602b78af",
+    "packages/ts_parser/src/ts_parser.zig": "c669d12866cfe39b372fc4ffe6c0e7a4da1c3e708e36eeabcf554ebc852fb0b9",
+    "packages/ts_cli/src/tsc_main.zig": "9d74e21be0ad7de852bba5960cec5d0ef43496832bdb4491bfc255aabb0e4451",
+    "packages/ts_program/src/export_origins.zig": "72e8fc7bd9221e7297c928abebf03ad6a3c4c2ff082e19360c3d0ea70a7cb6d0"
+  },
+  "latest_validated_commit": "d955372ee76aae2c0fbcb44a2b8b4773a67df016",
+  "latest_gates": {
+    "program": {
+      "passed": 232,
+      "total": 232,
+      "peak_mb": 2224
+    },
+    "compiler": {
+      "steps": 3,
+      "peak_mb": 3036
+    },
+    "zod": {
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "peak_mb": 632,
+      "equal_to_integrated_diagnostics": true
+    }
+  }
 }
