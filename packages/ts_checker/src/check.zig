@@ -14990,6 +14990,52 @@ pub const Checker = struct {
     }
 
     fn checkClassInterfaceMemberModifierMerges(self: *Checker, stmts: []const NodeId) CheckError!void {
+        var interfaces = self.classInterfaceMergeIndex(stmts) catch
+            return self.checkClassInterfaceMemberModifierMergesSlow(stmts);
+        defer {
+            for (interfaces.values()) |*nodes| nodes.deinit(self.gpa);
+            interfaces.deinit(self.gpa);
+        }
+        // A complete syntax pass found no eligible interfaces. No class can
+        // contribute a modifier-merge diagnostic in this statement container.
+        if (interfaces.count() == 0) return;
+        for (stmts) |class_raw| {
+            const class_node = self.unwrapExportDecl(class_raw);
+            if (class_node == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(class_node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const name = self.declarationName(class_node) orelse continue;
+            const candidates = interfaces.get(.{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(class_node),
+            }) orelse continue;
+            for (candidates.items) |iface_node| {
+                try self.checkClassInterfaceMemberModifierMerge(class_node, iface_node);
+            }
+        }
+    }
+
+    fn classInterfaceMergeIndex(self: *Checker, stmts: []const NodeId) std.mem.Allocator.Error!std.AutoArrayHashMapUnmanaged(DeclarationKey, std.ArrayListUnmanaged(NodeId)) {
+        var result: std.AutoArrayHashMapUnmanaged(DeclarationKey, std.ArrayListUnmanaged(NodeId)) = .empty;
+        errdefer {
+            for (result.values()) |*nodes| nodes.deinit(self.gpa);
+            result.deinit(self.gpa);
+        }
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .interface_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            const entry = try result.getOrPut(self.gpa, .{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(node),
+            });
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(self.gpa, node);
+        }
+        return result;
+    }
+
+    fn checkClassInterfaceMemberModifierMergesSlow(self: *Checker, stmts: []const NodeId) CheckError!void {
         for (stmts) |class_raw| {
             const class_node = self.unwrapExportDecl(class_raw);
             if (class_node == hir_mod.none_node_id) continue;
@@ -239922,6 +239968,127 @@ test "checker: constructor parameter property visibility controls access" {
     }
     try T.expect(private_found);
     try T.expect(protected_found);
+}
+
+test "checker: indexed class-interface modifier merges preserve scanner order and scopes" {
+    for ([_][]const u8{
+        \\export class A { private x: number; protected y(): void {} }
+        \\export interface A { x: number; y(): void; }
+        \\interface A { x: number; }
+        \\class B { constructor(private value: number) {} }
+        \\interface B { value: number; }
+        \\namespace Nested { class A { private other: number; } interface A { other: number; } }
+        \\interface Unmatched { x: number; }
+        ,
+        \\// @filename: first.ts
+        \\export class A { private x: number; }
+        \\export interface A { x: number; }
+        \\// @filename: second.ts
+        \\export class A { protected y: number; }
+        \\export interface A { y: number; }
+        ,
+    }) |source| {
+        const indexed = try newSetup(source);
+        defer destroySetup(indexed);
+        const slow = try newSetup(source);
+        defer destroySetup(slow);
+        try indexed.checker.checkClassInterfaceMemberModifierMerges(hir_mod.blockStmts(&indexed.hir, indexed.root));
+        try slow.checker.checkClassInterfaceMemberModifierMergesSlow(hir_mod.blockStmts(&slow.hir, slow.root));
+        var node: NodeId = 1;
+        while (node < indexed.hir.nodeCount()) : (node += 1) {
+            if (indexed.hir.kindOf(node) != .namespace_decl) continue;
+            try indexed.checker.checkClassInterfaceMemberModifierMerges(hir_mod.namespaceBody(&indexed.hir, node));
+            try slow.checker.checkClassInterfaceMemberModifierMergesSlow(hir_mod.namespaceBody(&slow.hir, node));
+        }
+        try T.expect(indexed.checker.diagnostics.items.len > 0);
+        try T.expectEqualDeep(slow.checker.diagnostics.items, indexed.checker.diagnostics.items);
+    }
+}
+
+test "checker: interface index construction failures release every partial group" {
+    const s = try newSetup("interface A { x: number; } interface B { y: number; } interface A { z: number; } class A { private x: number; }");
+    defer destroySetup(s);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index });
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = T.allocator;
+        if (s.checker.classInterfaceMergeIndex(statements)) |result| {
+            var index = result;
+            defer {
+                for (index.values()) |*nodes| nodes.deinit(s.checker.gpa);
+                index.deinit(s.checker.gpa);
+            }
+            try T.expect(!failing.has_induced_failure);
+            try T.expectEqual(@as(usize, 2), index.count());
+            break;
+        } else |err| {
+            try T.expectEqual(error.OutOfMemory, err);
+            try T.expect(failing.has_induced_failure);
+        }
+    }
+    try T.expect(fail_index > 1);
+}
+
+test "checker: failed interface index falls back to complete modifier scanner" {
+    const Once = struct {
+        failing: T.FailingAllocator,
+        fn allocator(self: *@This()) std.mem.Allocator {
+            return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+        }
+        fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const result = self.failing.allocator().rawAlloc(len, alignment, ret_addr);
+            if (self.failing.has_induced_failure) self.failing.fail_index = std.math.maxInt(usize);
+            return result;
+        }
+        fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret_addr: usize) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.failing.allocator().rawResize(memory, alignment, len, ret_addr);
+        }
+        fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, ret_addr: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.failing.allocator().rawRemap(memory, alignment, len, ret_addr);
+        }
+        fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.failing.allocator().rawFree(memory, alignment, ret_addr);
+        }
+    };
+    const source = "class A { private x: number; } interface A { x: number; } interface A { x: number; }";
+    const expected = try newSetup(source);
+    defer destroySetup(expected);
+    try expected.checker.checkClassInterfaceMemberModifierMergesSlow(hir_mod.blockStmts(&expected.hir, expected.root));
+    var counted = T.FailingAllocator.init(T.allocator, .{});
+    expected.checker.gpa = counted.allocator();
+    var probe = try expected.checker.classInterfaceMergeIndex(hir_mod.blockStmts(&expected.hir, expected.root));
+    const construction_allocations = counted.alloc_index;
+    for (probe.values()) |*nodes| nodes.deinit(counted.allocator());
+    probe.deinit(counted.allocator());
+    expected.checker.gpa = T.allocator;
+    try T.expect(construction_allocations > 0);
+    for (0..construction_allocations) |fail_index| {
+        const actual = try newSetup(source);
+        defer destroySetup(actual);
+        var once: Once = .{ .failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index }) };
+        actual.checker.gpa = once.allocator();
+        defer actual.checker.gpa = T.allocator;
+        try actual.checker.checkClassInterfaceMemberModifierMerges(hir_mod.blockStmts(&actual.hir, actual.root));
+        try T.expect(once.failing.has_induced_failure);
+        try T.expectEqualDeep(expected.checker.diagnostics.items, actual.checker.diagnostics.items);
+    }
+}
+
+test "checker: complete absence of interfaces needs no index allocation" {
+    const s = try newSetup("class A { private x: number; } class B { protected y: number; } function f() {} const value = 1;");
+    defer destroySetup(s);
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    s.checker.gpa = failing.allocator();
+    defer s.checker.gpa = T.allocator;
+    try s.checker.checkClassInterfaceMemberModifierMerges(hir_mod.blockStmts(&s.hir, s.root));
+    try T.expect(!failing.has_induced_failure);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: fields merged with parameter properties keep field visibility" {
