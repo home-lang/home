@@ -260843,6 +260843,47 @@ test "checker: real type-space defaults and named import suggestions stay distin
     }
 }
 
+test "checker: whole CommonJS path matching preserves duplicates misses and metadata replacement" {
+    const s = try newSetup("const item = require('./owner'); item.member;");
+    defer destroySetup(s);
+    s.checker.setImporterPath("/p/main.ts");
+    s.checker.setProgramCommonJsExports(&.{
+        .{ .module_path = "/p/named.js", .name = "member" },
+        .{ .module_path = "/p/owner.d.ts", .name = "" },
+        .{ .module_path = "/p/owner.mjs", .name = "" },
+    });
+    for (0..16) |_| {
+        try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner.js"));
+        try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.js"));
+        try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./missing"));
+    }
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/p/named.cts", .name = "" }});
+    try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner.js"));
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/p/named.cts", .name = "member" }});
+    try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
+    s.checker.setProgramCommonJsExports(&.{});
+    try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
+}
+
+test "checker: whole CommonJS path matching keeps external and fallback alternatives" {
+    const s = try newSetup("const item = require('./owner');");
+    defer destroySetup(s);
+    var stub = StubExternalResolver{ .canned_path = "/external/actual.d.cts", .canned_is_declaration = true };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/p/main.ts");
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/external/actual.js", .name = "" }});
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/p/owner.ts", .name = "" }});
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+    s.checker.setImporterPath("/other/main.ts");
+    try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/external/changed.js", .name = "" }});
+    stub.canned_path = "/external/changed.mts";
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./owner"));
+}
+
 test "checker: external owner local fact refines missing export to TS2459" {
     const s = try newSetup(
         \\import { hidden } from "./owner";
