@@ -357,6 +357,14 @@ pub const CompileOptions = struct {
     is_declaration_file: bool = false,
     /// Skip semantic diagnostics originating in declaration files.
     skip_lib_check: bool = false,
+    /// Skip semantic diagnostics only for declaration files loaded from the
+    /// compiler host's default-library directory. Unlike `skip_lib_check`,
+    /// fixture and package declaration files remain checked.
+    skip_default_lib_check: bool = false,
+    /// Canonical directory exposed by the compiler host for bundled
+    /// `lib.*.d.ts` files. Empty preserves the Program's local ancestor
+    /// lookup for callers that have not installed a compiler-host library.
+    default_library_path: []const u8 = "",
     /// Compiler option `alwaysStrict`: parse the file under strict-mode
     /// early-error rules even when it has no `"use strict"` prologue.
     always_strict: bool = false,
@@ -1837,6 +1845,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.skip_lib_check) |on| {
         opts.skip_lib_check = on;
     }
+    if (cfg.compiler_options.skip_default_lib_check) |on| {
+        opts.skip_default_lib_check = on;
+    }
     opts.allow_js = cfg.compiler_options.allow_js orelse false;
     opts.check_js = cfg.compiler_options.check_js orelse false;
     opts.check_js_disabled = cfg.compiler_options.check_js == false;
@@ -2404,7 +2415,9 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
         checker.setConfiguredLibraries(cfg.compiler_options.lib, cfg.compiler_options.no_lib orelse false);
-        checker.setConfiguredTargetLibTier(switch (cfg.compiler_options.target orelse .es5) {
+        // TypeScript's unspecified target resolves through LatestStandard,
+        // which is ES2025 at the pinned typescript-go revision.
+        checker.setConfiguredTargetLibTier(switch (cfg.compiler_options.target orelse .es2025) {
             .es3, .es5 => 5,
             .es2015 => 2015,
             .es2016 => 2016,
@@ -7511,6 +7524,20 @@ test "driver: optionsFromConfig checks JavaScript and honors noEmit" {
         if (diagnostic.code == ts_checker.check.TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: optionsFromConfig keeps skipDefaultLibCheck distinct" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "skipLibCheck": false, "skipDefaultLibCheck": true } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(!opts.skip_lib_check);
+    try T.expect(opts.skip_default_lib_check);
 }
 
 test "driver: optionsFromConfig carries Home-only options" {

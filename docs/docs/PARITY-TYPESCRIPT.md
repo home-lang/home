@@ -426,6 +426,23 @@ Mounting those pinned library bytes into every applicable conformance program
 and compiler-API input fidelity remain open in
 [#841](https://github.com/home-lang/home/issues/841).
 
+The conformance Program route now exposes all **108** declaration files from
+the pinned `typescript-go/internal/bundled/libs` directory under an isolated
+compiler-host namespace, so fixture files cannot shadow standard libraries.
+Effective `target`, explicit `lib`, `noLib`, `types`, `typeRoots`, and
+`skipDefaultLibCheck` inputs flow into Program without consulting expected
+diagnostics. Explicit library lookup follows the pinned case-insensitive alias
+map (`ES6` → `lib.es2015.d.ts`, `ES7` → `lib.es2016.d.ts`, and the legacy
+`esnext.*` aliases), while `noLib` suppresses both target-selected and explicit
+libraries. `skipDefaultLibCheck` applies only to files in the compiler-host
+library directory; fixture and package declarations remain checked. Exact
+scope, guarded passing gates, and the retained timeout for a DOM-heavy real
+fixture are recorded in
+[the bundled-library checkpoint](./bun-port-evidence/2026-10-08-ts-bundled-libraries/README.md).
+Single-source legacy routing and real compiler-API inputs remain open under
+[#841](https://github.com/home-lang/home/issues/841); this checkpoint is not a
+complete-corpus or performance claim.
+
 The previous exact-baseline category sweep covered 586 fixtures across 19
 folders; its passing count also requires revalidation:
 

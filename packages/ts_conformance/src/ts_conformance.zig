@@ -610,10 +610,13 @@ pub const Case = struct {
     /// conformance directives.
     strict_flags: ?ts_driver.StrictFlags = null,
     skip_lib_check: ?bool = null,
+    skip_default_lib_check: ?bool = null,
+    no_lib: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
     emit_target: ts_driver.EsTarget = .esnext,
+    compiler_target: ?tsconfig_mod.Target = null,
     report_deprecated_target_es5: bool = false,
     /// True for virtual `.js` / `.jsx` files where `allowJs` is on
     /// but `checkJs` is not. These still parse/bind/emit, but checker
@@ -2724,6 +2727,10 @@ const TsconfigResolverOptions = struct {
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
     types_configured: bool = false,
+    lib: []const []const u8 = &.{},
+    lib_configured: bool = false,
+    no_lib: ?bool = null,
+    skip_default_lib_check: ?bool = null,
 
     fn deinit(self: TsconfigResolverOptions, gpa: std.mem.Allocator) void {
         if (self.config_error.len != 0) gpa.free(self.config_error);
@@ -2742,6 +2749,7 @@ const TsconfigResolverOptions = struct {
         freeStringList(gpa, self.module_suffixes);
         freeStringList(gpa, self.type_roots);
         freeStringList(gpa, self.types);
+        freeStringList(gpa, self.lib);
     }
 };
 
@@ -2829,6 +2837,10 @@ fn resolverConfigOptionsFromVirtualTsconfig(
     result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
     result.types = try dupeOptionalStringList(gpa, options.types);
     result.types_configured = options.types != null;
+    result.lib = try dupeOptionalStringList(gpa, options.lib);
+    result.lib_configured = options.lib != null;
+    result.no_lib = options.no_lib;
+    result.skip_default_lib_check = options.skip_default_lib_check;
     return result;
 }
 
@@ -3424,10 +3436,13 @@ test "conformance: loaded corpus keeps current checkJs diagnostics for late-boun
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -3479,10 +3494,13 @@ test "conformance: broad loaded corpus keeps checkJs diagnostics for late-bound 
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -4522,6 +4540,93 @@ fn mountTestLibraries(gpa: std.mem.Allocator, root: []const u8, vfs: *ts_resolve
     }
 }
 
+/// The pinned compiler host exposes its embedded standard libraries from a
+/// namespace that cannot collide with files supplied by a fixture. Home's VFS
+/// has no URI scheme, so it reserves an equivalent absolute directory and
+/// mounts the exact pinned bytes there.
+const bundled_library_vfs_root = "/.typescript/lib";
+
+fn mountBundledLibraries(gpa: std.mem.Allocator, vfs: *ts_resolver.VirtualFs) !void {
+    const root = try std.fmt.allocPrint(gpa, "{s}/internal/bundled/libs", .{tsSuiteRootSlice()});
+    defer gpa.free(root);
+
+    var threaded = std.Io.Threaded.init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return error.MissingTypeScriptBundledLibrary,
+        else => return err,
+    };
+    defer dir.close(io);
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        const physical = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.path });
+        defer gpa.free(physical);
+        const source = try readFileAlloc(gpa, physical);
+        defer gpa.free(source);
+        const virtual = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ bundled_library_vfs_root, entry.path });
+        defer gpa.free(virtual);
+        try vfs.addFile(virtual, source);
+    }
+}
+
+test "conformance: bundled compiler-host libraries preserve pinned bytes and namespace" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try mountBundledLibraries(T.allocator, &vfs);
+
+    const physical_path = try std.fmt.allocPrint(
+        T.allocator,
+        "{s}/internal/bundled/libs/lib.es2025.full.d.ts",
+        .{tsSuiteRootSlice()},
+    );
+    defer T.allocator.free(physical_path);
+    const physical = try readFileAlloc(T.allocator, physical_path);
+    defer T.allocator.free(physical);
+    const virtual = try vfs.fs().readFile(T.allocator, bundled_library_vfs_root ++ "/lib.es2025.full.d.ts");
+    defer T.allocator.free(virtual);
+
+    try T.expectEqual(@as(usize, 108), vfs.files.count());
+    try T.expectEqualStrings(physical, virtual);
+    try T.expect(!vfs.fs().fileExists("/lib.es2025.full.d.ts"));
+}
+
+test "conformance: pinned bundled library bytes flow through Program" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try mountBundledLibraries(T.allocator, &vfs);
+    try vfs.addFile("/app.ts", "export {};\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/app.ts", "export {};\n");
+
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "lib": ["es2023.intl"], "skipDefaultLibCheck": true } }
+        ,
+    );
+    var options = ts_driver.optionsFromConfig(&cfg);
+    options.default_library_path = bundled_library_vfs_root;
+    options.no_emit = true;
+    options.continue_on_error = true;
+    try T.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+
+    const path = bundled_library_vfs_root ++ "/lib.es2023.intl.d.ts";
+    const id = program.lookupPath(path) orelse return error.TestUnexpectedResult;
+    const file = program.fileById(id);
+    try T.expectEqual(ts_program.IncludeKind.compiler_lib_reference, file.include_reason.?.kind);
+    try T.expect(std.mem.indexOf(u8, file.source, "NumberFormatOptionsUseGroupingRegistry") != null);
+    for (file.compilation.?.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2304);
+}
+
 fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const input_source = if (c.raw_source.len > 0) c.raw_source else c.source;
     var virtual_files = try splitVirtualFiles(gpa, input_source);
@@ -4542,6 +4647,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         defer gpa.free(canon);
         try vfs.addFile(canon, f.source);
     }
+    try mountBundledLibraries(gpa, &vfs);
     if (std.mem.indexOf(u8, input_source, "/.lib/") != null or directiveValue(input_source, "libFiles") != null) {
         const default_library_root = if (c.test_library_root == null)
             try std.fmt.allocPrint(gpa, "{s}/_submodules/TypeScript/tests/lib", .{tsSuiteRootSlice()})
@@ -4590,6 +4696,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         }
     }
     const directive_source = if (input_source.len > 0) input_source else c.source;
+    const configured = try configuredStrictOptions(gpa, directive_source, null);
+    const effective_no_lib = c.no_lib orelse configured.no_lib orelse tsconfig_options.no_lib;
     const raw_configured_type_names = try dupeDirectiveStringList(gpa, directive_source, "types");
     defer freeStringList(gpa, raw_configured_type_names);
     const types_directive_present = directiveValue(directive_source, "types") != null;
@@ -4637,6 +4745,36 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         &.{}
     else
         configured_type_names;
+
+    const directive_libs = try dupeDirectiveStringList(gpa, directive_source, "lib");
+    defer freeStringList(gpa, directive_libs);
+    const directive_libs_configured = directiveValue(directive_source, "lib") != null;
+    const effective_libs = if (directive_libs_configured) directive_libs else tsconfig_options.lib;
+    const effective_libs_configured = directive_libs_configured or tsconfig_options.lib_configured;
+    const effective_target = c.compiler_target orelse
+        selectedCompilerTarget(directive_source, null) orelse
+        tsconfig_mod.Target.fromString(tsconfig_options.target);
+    const effective_skip_default_lib_check = c.skip_default_lib_check orelse configured.skip_default_lib_check;
+    const compiler_config: tsconfig_mod.TsConfig = .{
+        .file_path = tsconfig_options.config_file_path,
+        .compiler_options = .{
+            .target = effective_target,
+            .lib = if (effective_libs_configured) @constCast(effective_libs) else null,
+            .no_lib = effective_no_lib,
+            .types = if (uses_automatic_type_names) null else @constCast(configured_type_names),
+            .type_roots = if (tsconfig_options.type_roots.len == 0) null else @constCast(tsconfig_options.type_roots),
+            .skip_lib_check = c.skip_lib_check orelse configured.skip_lib_check,
+            .skip_default_lib_check = effective_skip_default_lib_check,
+        },
+        .home_options = .{},
+        .extends = &.{},
+        .has_extends = false,
+        .files = null,
+        .include = null,
+        .exclude = null,
+        .references = &.{},
+        .unknown_type_acquisition_options = &.{},
+    };
 
     var owned_program_sources: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
@@ -4708,7 +4846,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     const library_roots = try dupeDirectiveStringList(gpa, input_source, "libFiles");
     defer freeStringList(gpa, library_roots);
     for (library_roots) |name| {
-        if (std.mem.eql(u8, name, "lib.d.ts") and !(directiveBool(input_source, "noLib") orelse false)) continue;
+        if (std.mem.eql(u8, name, "lib.d.ts") and !(effective_no_lib orelse false)) continue;
         const path = try std.fmt.allocPrint(gpa, "/.lib/{s}", .{name});
         defer gpa.free(path);
         const source = try resolver.fs.readFile(gpa, path);
@@ -4762,7 +4900,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     defer freeAmbientModuleResolutions(gpa, ambient_modules);
 
     const allow_js_project = try virtualFilesAllowJs(gpa, input_source, virtual_files.items);
-    const configured = try configuredStrictOptions(gpa, directive_source, null);
     const check_js_setting = directiveBool(directive_source, "checkJs") orelse tsconfig_options.check_js;
     const check_js_project = check_js_setting orelse false;
     const check_js_disabled = if (check_js_setting) |enabled| !enabled else false;
@@ -4791,6 +4928,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .is_declaration_file = c.is_declaration_file,
         .strict_flags = c.strict_flags orelse configured.flags,
         .skip_lib_check = c.skip_lib_check orelse configured.skip_lib_check,
+        .skip_default_lib_check = effective_skip_default_lib_check,
+        .default_library_path = bundled_library_vfs_root,
         .always_strict = c.always_strict,
         .allow_importing_ts_extensions = c.allow_importing_ts_extensions orelse
             directiveBool(directive_source, "allowImportingTsExtensions") orelse false,
@@ -4807,6 +4946,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
         .continue_on_error = true,
         .no_emit = true,
+        .pub_tsconfig = &compiler_config,
         .external_resolver = external,
         .module_resolution = module_resolution_label,
         .module_kind = module_kind_label,
@@ -5331,10 +5471,13 @@ pub const CorpusEntry = struct {
     is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
     skip_lib_check: ?bool = null,
+    skip_default_lib_check: ?bool = null,
+    no_lib: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
     emit_target: ts_driver.EsTarget = .esnext,
+    compiler_target: ?tsconfig_mod.Target = null,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// The selected upstream baseline contains diagnostics against the
@@ -5366,10 +5509,13 @@ pub const OwnedCorpusEntry = struct {
     is_declaration_file: bool = false,
     strict_flags: ?ts_driver.StrictFlags = null,
     skip_lib_check: ?bool = null,
+    skip_default_lib_check: ?bool = null,
+    no_lib: ?bool = null,
     always_strict: bool = false,
     syntax_target_es2015: bool = false,
     target_emit_es5: bool = false,
     emit_target: ts_driver.EsTarget = .esnext,
+    compiler_target: ?tsconfig_mod.Target = null,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip), owned. Empty when
@@ -5587,10 +5733,13 @@ fn buildVariantCorpusEntry(
         .is_declaration_file = isDeclarationFilePath(basename),
         .strict_flags = configured.flags,
         .skip_lib_check = configured.skip_lib_check,
+        .skip_default_lib_check = configured.skip_default_lib_check,
+        .no_lib = configured.no_lib,
         .always_strict = if (isDeclarationFilePath(basename)) false else configured.always_strict,
         .syntax_target_es2015 = emit_target != .es5,
         .target_emit_es5 = emit_target == .es5,
         .emit_target = emit_target,
+        .compiler_target = selectedCompilerTarget(variant_source, selected_baseline_path),
         .report_deprecated_target_es5 = options.exact_error_headers and
             target_selection_explicit and emit_target == .es5,
         .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(default_path, variant_source),
@@ -6879,6 +7028,12 @@ fn selectedEmitTarget(source: []const u8, baseline_path: ?[]const u8) ts_driver.
     return parseEmitTarget(firstCommaSeparatedValue(raw)) orelse .esnext;
 }
 
+fn selectedCompilerTarget(source: []const u8, baseline_path: ?[]const u8) ?tsconfig_mod.Target {
+    const raw = baselineOptionValue(baseline_path, "target") orelse
+        if (directiveValue(source, "target")) |value| firstCommaSeparatedValue(value) else return null;
+    return tsconfig_mod.Target.fromString(raw);
+}
+
 fn effectiveEmitTarget(target_emit_es5: bool, emit_target: ts_driver.EsTarget) ts_driver.EsTarget {
     return if (target_emit_es5) .es5 else emit_target;
 }
@@ -7259,6 +7414,8 @@ const StrictDirectiveState = struct {
     strict: ?bool = null,
     always_strict: ?bool = null,
     skip_lib_check: ?bool = null,
+    skip_default_lib_check: ?bool = null,
+    no_lib: ?bool = null,
     no_implicit_any: ?bool = null,
     no_implicit_this: ?bool = null,
     no_unused_parameters: ?bool = null,
@@ -7487,6 +7644,8 @@ const ConfiguredStrictOptions = struct {
     flags: ts_driver.StrictFlags,
     always_strict: bool,
     skip_lib_check: bool,
+    skip_default_lib_check: bool,
+    no_lib: ?bool,
 };
 
 /// Mirror the pinned TS7 GetStrictOptionValue: an unset strict option defaults
@@ -7533,6 +7692,10 @@ fn configuredStrictOptions(
         .flags = strictFlagsFromState(state, strict_on),
         .always_strict = state.always_strict orelse strict_on,
         .skip_lib_check = state.skip_lib_check orelse false,
+        // The pinned compiler harness enables this default before applying
+        // per-fixture options, so an explicit false still wins.
+        .skip_default_lib_check = state.skip_default_lib_check orelse true,
+        .no_lib = state.no_lib,
     };
 }
 
@@ -7580,6 +7743,10 @@ fn setStrictDirective(state: *StrictDirectiveState, name: []const u8, value: boo
         state.always_strict = value;
     } else if (std.ascii.eqlIgnoreCase(name, "skipLibCheck")) {
         state.skip_lib_check = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "skipDefaultLibCheck")) {
+        state.skip_default_lib_check = value;
+    } else if (std.ascii.eqlIgnoreCase(name, "noLib")) {
+        state.no_lib = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noImplicitAny")) {
         state.no_implicit_any = value;
     } else if (std.ascii.eqlIgnoreCase(name, "noImplicitThis")) {
@@ -7648,10 +7815,13 @@ pub fn runOwnedCorpus(
             .is_declaration_file = std.mem.endsWith(u8, entry.path, ".d.ts"),
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -7818,6 +7988,8 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
         .is_declaration_file = entry.is_declaration_file,
         .strict_flags = entry.strict_flags,
         .skip_lib_check = entry.skip_lib_check,
+        .skip_default_lib_check = entry.skip_default_lib_check,
+        .no_lib = entry.no_lib,
         .always_strict = entry.always_strict,
         // Honor an embedded `// @target: es2015`(+) directive even when
         // the pinned entry didn't set the flag explicitly, so
@@ -7829,6 +8001,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
         .target_emit_es5 = entry.target_emit_es5,
         .emit_target = entry.emit_target,
+        .compiler_target = entry.compiler_target,
         .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
         .raw_source = entry.raw_source,
@@ -54016,10 +54189,13 @@ test "conformance: parserharness matches its exact optional-parameter diagnostic
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -54305,10 +54481,13 @@ fn runClusterFixture(
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -54632,10 +54811,13 @@ test "conformance: bisect exact-baseline heap leak" {
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -55290,10 +55472,13 @@ fn runOptInTsSuiteFamily(
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,
@@ -55430,10 +55615,13 @@ test "conformance: opt-in full local TypeScript corpus survey" {
             .is_declaration_file = entry.is_declaration_file,
             .strict_flags = entry.strict_flags,
             .skip_lib_check = entry.skip_lib_check,
+            .skip_default_lib_check = entry.skip_default_lib_check,
+            .no_lib = entry.no_lib,
             .always_strict = entry.always_strict,
             .syntax_target_es2015 = entry.syntax_target_es2015,
             .target_emit_es5 = entry.target_emit_es5,
             .emit_target = entry.emit_target,
+            .compiler_target = entry.compiler_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
             .raw_source = entry.raw_source,

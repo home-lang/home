@@ -450,6 +450,14 @@ pub const Program = struct {
             std.mem.endsWith(u8, path, ".cjs");
     }
 
+    fn pathIsInsideDirectory(path: []const u8, raw_directory: []const u8) bool {
+        const directory = std.mem.trimEnd(u8, raw_directory, "/");
+        return directory.len != 0 and
+            path.len > directory.len and
+            std.mem.startsWith(u8, path, directory) and
+            path[directory.len] == '/';
+    }
+
     /// Replace the source bytes for an existing file (matched by path).
     /// Redirect paths update their canonical file and all sibling redirects,
     /// while the returned id still identifies the requested path. Allocation
@@ -959,6 +967,11 @@ pub const Program = struct {
         per_file.is_tsx = f.is_tsx;
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
+        if (per_file.skip_default_lib_check and
+            pathIsInsideDirectory(f.path, per_file.default_library_path))
+        {
+            per_file.skip_lib_check = true;
+        }
         per_file.file_id = f.id;
         per_file.suppress_import_helper_diagnostics = true;
         if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
@@ -3607,7 +3620,11 @@ pub const Program = struct {
                             new_in_round += 1;
                         },
                         .lib => {
-                            const candidate = self.resolveLibReferencePath(f.path, ref.name) catch |err| switch (err) {
+                            const candidate = self.resolveLibReferencePath(
+                                f.path,
+                                ref.name,
+                                options.default_library_path,
+                            ) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                             } orelse continue;
                             defer self.gpa.free(candidate);
@@ -3725,10 +3742,18 @@ pub const Program = struct {
         } else {
             added += try self.loadImplicitTypeLibraries(cfg, containing_file);
         }
+        // The pinned file loader gates both an explicit `lib` list and the
+        // target-selected default behind `noLib`. Type references remain
+        // independent and were loaded above.
+        if (cfg.compiler_options.no_lib == true) return added;
         if (cfg.compiler_options.lib) |libs| {
             for (libs) |lib_name| {
                 if (lib_name.len == 0) continue;
-                const candidate = self.resolveLibReferencePath(containing_file, lib_name) catch |err| switch (err) {
+                const candidate = self.resolveLibReferencePath(
+                    containing_file,
+                    lib_name,
+                    options.default_library_path,
+                ) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                 } orelse continue;
                 defer self.gpa.free(candidate);
@@ -3737,9 +3762,13 @@ pub const Program = struct {
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
                 added += 1;
             }
-        } else if (cfg.compiler_options.no_lib != true) {
+        } else {
             const default_lib = defaultLibNameForTarget(cfg.compiler_options.target);
-            const candidate = self.resolveLibFilePath(containing_file, default_lib.file_name) catch |err| switch (err) {
+            const candidate = self.resolveLibFilePath(
+                containing_file,
+                default_lib.file_name,
+                options.default_library_path,
+            ) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
             } orelse return added;
             defer self.gpa.free(candidate);
@@ -4007,15 +4036,77 @@ pub const Program = struct {
         };
     }
 
-    fn resolveLibReferencePath(self: *Program, containing_file: []const u8, name: []const u8) error{OutOfMemory}!?[]u8 {
+    fn resolveLibReferencePath(
+        self: *Program,
+        containing_file: []const u8,
+        name: []const u8,
+        default_library_path: []const u8,
+    ) error{OutOfMemory}!?[]u8 {
         if (name.len == 0) return null;
-        const file_name = try std.fmt.allocPrint(self.gpa, "lib.{s}.d.ts", .{name});
+        const file_name = try explicitLibFileName(self.gpa, name);
         defer self.gpa.free(file_name);
-        return self.resolveLibFilePath(containing_file, file_name);
+        return self.resolveLibFilePath(containing_file, file_name, default_library_path);
     }
 
-    fn resolveLibFilePath(self: *Program, containing_file: []const u8, file_name: []const u8) error{OutOfMemory}!?[]u8 {
+    /// Match the pinned `tsoptions.GetLibFileName`: explicit library names are
+    /// case-insensitive, filenames remain filenames, and compatibility aliases
+    /// resolve to the declaration file selected by TypeScript rather than to a
+    /// similarly named (and often nonexistent) file.
+    fn explicitLibFileName(gpa: std.mem.Allocator, name: []const u8) error{OutOfMemory}![]u8 {
+        const lower = try std.ascii.allocLowerString(gpa, name);
+        errdefer gpa.free(lower);
+        if (std.mem.startsWith(u8, lower, "lib.") and std.mem.endsWith(u8, lower, ".d.ts")) return lower;
+
+        const alias: ?[]const u8 = if (std.mem.eql(u8, lower, "es6"))
+            "lib.es2015.d.ts"
+        else if (std.mem.eql(u8, lower, "es7"))
+            "lib.es2016.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.asynciterable"))
+            "lib.es2018.asynciterable.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.symbol"))
+            "lib.es2019.symbol.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.bigint"))
+            "lib.es2020.bigint.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.weakref"))
+            "lib.es2021.weakref.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.object"))
+            "lib.es2024.object.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.regexp"))
+            "lib.es2024.regexp.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.string"))
+            "lib.es2024.string.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.float16"))
+            "lib.es2025.float16.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.iterator"))
+            "lib.es2025.iterator.d.ts"
+        else if (std.mem.eql(u8, lower, "esnext.promise"))
+            "lib.es2025.promise.d.ts"
+        else
+            null;
+        if (alias) |file_name| {
+            const result = try gpa.dupe(u8, file_name);
+            gpa.free(lower);
+            return result;
+        }
+
+        const file_name = try std.fmt.allocPrint(gpa, "lib.{s}.d.ts", .{lower});
+        gpa.free(lower);
+        return file_name;
+    }
+
+    fn resolveLibFilePath(
+        self: *Program,
+        containing_file: []const u8,
+        file_name: []const u8,
+        default_library_path: []const u8,
+    ) error{OutOfMemory}!?[]u8 {
         if (file_name.len == 0) return null;
+        if (default_library_path.len != 0) {
+            const candidate = try std.fs.path.join(self.gpa, &.{ default_library_path, file_name });
+            if (self.resolver.fs.fileExists(candidate)) return candidate;
+            self.gpa.free(candidate);
+            return null;
+        }
         var dir = std.fs.path.dirname(containing_file) orelse "";
         while (true) {
             const candidate = if (dir.len == 0)
@@ -8539,6 +8630,89 @@ test "Program: loadImportClosure follows compilerOptions.lib (TS1422 reason)" {
     try T.expectEqualStrings("File is library specified here.", lib.include_reason.?.relatedDiagnosticMessage().?);
 }
 
+test "Program: compiler-host libraries win over fixture paths and preserve pinned aliases" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"lib":["ES6","es7","esnext.object","esnext.promise","lib.dom.d.ts"]}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    const expected_paths = [_][]const u8{
+        "/.typescript/lib/lib.es2015.d.ts",
+        "/.typescript/lib/lib.es2016.d.ts",
+        "/.typescript/lib/lib.es2024.object.d.ts",
+        "/.typescript/lib/lib.es2025.promise.d.ts",
+        "/.typescript/lib/lib.dom.d.ts",
+    };
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/lib.es2015.d.ts", "declare const fixtureCollision: unique symbol;\n");
+    for (expected_paths) |path| try vfs.addFile(path, "interface LoadedFromCompilerHost {}\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+
+    var options = ts_driver.optionsFromConfig(&cfg);
+    options.default_library_path = "/.typescript/lib";
+    options.no_emit = true;
+    const added = try p.loadImportClosure(options);
+    try T.expectEqual(expected_paths.len, added);
+    for (expected_paths) |path| {
+        const id = p.lookupPath(path) orelse return error.TestUnexpectedResult;
+        const file = p.fileById(id);
+        try T.expectEqual(IncludeKind.compiler_lib_reference, file.include_reason.?.kind);
+        try T.expectEqualStrings("interface LoadedFromCompilerHost {}\n", file.source);
+    }
+    try T.expect(p.lookupPath("/proj/lib.es2015.d.ts") == null);
+}
+
+test "Program: skipDefaultLibCheck leaves fixture declarations checked" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"target":"es2025","skipDefaultLibCheck":true}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    const default_source = "declare const brokenDefault: MissingDefaultType;\n";
+    const fixture_source = "declare const brokenFixture: MissingFixtureType;\n";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "export {};\n");
+    try vfs.addFile("/proj/fixture.d.ts", fixture_source);
+    try vfs.addFile("/.typescript/lib/lib.es2025.full.d.ts", default_source);
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/proj/main.ts", "export {};\n");
+    const fixture_id = try p.add("/proj/fixture.d.ts", fixture_source);
+
+    var options = ts_driver.optionsFromConfig(&cfg);
+    options.default_library_path = "/.typescript/lib/";
+    options.no_emit = true;
+    options.continue_on_error = true;
+    _ = try p.loadImportClosure(options);
+
+    const default_id = p.lookupPath("/.typescript/lib/lib.es2025.full.d.ts") orelse return error.TestUnexpectedResult;
+    for (p.fileById(default_id).compilation.?.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2304);
+    }
+    var fixture_missing_type = false;
+    for (p.fileById(fixture_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2304 and std.mem.indexOf(u8, diagnostic.message, "MissingFixtureType") != null) {
+            fixture_missing_type = true;
+        }
+    }
+    try T.expect(fixture_missing_type);
+}
+
 test "Program: loadImportClosure follows default library for target (TS1425 reason)" {
     var arena = std.heap.ArenaAllocator.init(T.allocator);
     defer arena.deinit();
@@ -8599,11 +8773,11 @@ test "Program: loadImportClosure follows default library without explicit target
     try T.expectEqualStrings("", lib.include_reason.?.specifier_text);
 }
 
-test "Program: loadImportClosure respects compilerOptions.noLib" {
+test "Program: loadImportClosure noLib suppresses default and explicit libraries" {
     var arena = std.heap.ArenaAllocator.init(T.allocator);
     defer arena.deinit();
     var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
-        \\{"compilerOptions":{"target":"es2021","noLib":true}}
+        \\{"compilerOptions":{"target":"es2021","lib":["es2020"],"noLib":true}}
     );
     cfg.file_path = "/proj/tsconfig.json";
 
@@ -8611,6 +8785,7 @@ test "Program: loadImportClosure respects compilerOptions.noLib" {
     defer vfs.deinit();
     try vfs.addFile("/proj/main.ts", "export {};\n");
     try vfs.addFile("/proj/lib.es2021.full.d.ts", "interface Promise<T> {}\n");
+    try vfs.addFile("/proj/lib.es2020.d.ts", "interface PromiseConstructor {}\n");
 
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
     defer resolver.deinit();
@@ -8621,6 +8796,7 @@ test "Program: loadImportClosure respects compilerOptions.noLib" {
     const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
     try T.expectEqual(@as(usize, 0), added);
     try T.expect(p.lookupPath("/proj/lib.es2021.full.d.ts") == null);
+    try T.expect(p.lookupPath("/proj/lib.es2020.d.ts") == null);
 }
 
 test "Program: default library filenames match pinned typescript-go target map" {
