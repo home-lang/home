@@ -2414,9 +2414,10 @@ const CheckerResolverAdapter = struct {
         const names = blk: {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
-            break :blk ts_program.moduleExportNamesFromResolvedModule(
+            break :blk ts_program.moduleExportNamesFromQuery(
                 self.resolver.gpa,
                 self.resolver,
+                &self.export_origin_query,
                 resolved.path,
             ) catch return null;
         };

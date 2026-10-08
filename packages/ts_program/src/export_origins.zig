@@ -181,7 +181,9 @@ pub const Query = struct {
         try self.files.put(self.gpa, path, .{ .compilation = source, .owned = false });
     }
 
-    fn compilation(self: *Query, path: []const u8) !?*driver.Compilation {
+    /// Retain an immutable bound owner for export facts as well as origin
+    /// traversal. Repeated queries must inspect this same source identity.
+    pub fn compilation(self: *Query, path: []const u8) !?*driver.Compilation {
         if (self.files.get(path)) |entry| return entry.compilation;
         const source = self.resolver.fs.readFile(self.gpa, path) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

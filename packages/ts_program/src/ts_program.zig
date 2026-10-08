@@ -6066,6 +6066,19 @@ pub fn moduleExportNamesFromResolvedModule(
     resolver: *ts_resolver.Resolver,
     module_path: []const u8,
 ) ![]const []const u8 {
+    var query = export_origins.Query.init(gpa, resolver);
+    defer query.deinit();
+    return moduleExportNamesFromQuery(gpa, resolver, &query, module_path);
+}
+
+/// Enumerate the same complete export-star name surface while retaining
+/// already bound source owners across independent module queries.
+pub fn moduleExportNamesFromQuery(
+    gpa: std.mem.Allocator,
+    resolver: *ts_resolver.Resolver,
+    query: *export_origins.Query,
+    module_path: []const u8,
+) ![]const []const u8 {
     var names: std.StringHashMapUnmanaged(void) = .empty;
     errdefer {
         var it = names.keyIterator();
@@ -6083,7 +6096,7 @@ pub fn moduleExportNamesFromResolvedModule(
     try pending.append(gpa, module_path);
     var cursor: usize = 0;
     while (cursor < pending.items.len) : (cursor += 1) {
-        try collectModuleExportNames(gpa, resolver, pending.items[cursor], &names, &visited, &pending);
+        try collectModuleExportNames(gpa, resolver, query, pending.items[cursor], &names, &visited, &pending);
     }
 
     const result = try gpa.alloc([]const u8, names.count());
@@ -6100,6 +6113,7 @@ pub fn moduleExportNamesFromResolvedModule(
 fn collectModuleExportNames(
     gpa: std.mem.Allocator,
     resolver: *ts_resolver.Resolver,
+    query: *export_origins.Query,
     module_path: []const u8,
     names: *std.StringHashMapUnmanaged(void),
     visited: *std.StringHashMapUnmanaged(void),
@@ -6112,13 +6126,7 @@ fn collectModuleExportNames(
         return err;
     };
 
-    const source = try resolver.fs.readFile(gpa, module_path);
-    defer gpa.free(source);
-    var compilation = try compileModuleForExportFacts(gpa, module_path, source);
-    defer {
-        compilation.deinit();
-        gpa.destroy(compilation);
-    }
+    const compilation = try query.compilation(module_path) orelse return error.ExportModuleUnavailable;
 
     var type_it = compilation.module.root.types.iterator();
     while (type_it.next()) |entry| {
@@ -8443,6 +8451,81 @@ test "Program: export name enumeration traverses long cyclic star graphs" {
     }
     try T.expectEqual(@as(usize, 1), names.len);
     try T.expectEqualStrings("Deep", names[0]);
+}
+
+test "Program: shared export names retain cyclic alias surface without rereading owners" {
+    const Fs = struct {
+        inner: ts_resolver.FileSystem,
+        source_reads: usize = 0,
+        deny_source_reads: bool = false,
+        const vt: ts_resolver.FileSystem.VTable = .{
+            .fileExists = exists,
+            .directoryExists = directory,
+            .readFile = read,
+            .readDir = entries,
+            .realpath = real,
+        };
+        fn self(p: *anyopaque) *@This() {
+            return @ptrCast(@alignCast(p));
+        }
+        fn exists(p: *anyopaque, path: []const u8) bool {
+            return self(p).inner.fileExists(path);
+        }
+        fn directory(p: *anyopaque, path: []const u8) bool {
+            return self(p).inner.directoryExists(path);
+        }
+        fn entries(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
+            return self(p).inner.readDir(gpa, path);
+        }
+        fn real(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+            return self(p).inner.realpath(gpa, path);
+        }
+        fn read(p: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+            const state = self(p);
+            if (std.mem.endsWith(u8, path, ".ts")) {
+                if (state.deny_source_reads) return error.UnexpectedSourceReread;
+                state.source_reads += 1;
+            }
+            return state.inner.readFile(gpa, path);
+        }
+    };
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/owner.ts", "export interface Shape { value: number; } export const value = 1; export default value; export { value as 'space name' };");
+    try vfs.addFile("/p/left.ts", "export * from './owner'; export * as ns from './owner'; export type { Shape as Alias } from './owner'; export * from './right';");
+    try vfs.addFile("/p/right.ts", "export * from './owner'; export * from './left';");
+    var fs: Fs = .{ .inner = vfs.fs() };
+    var resolver = ts_resolver.Resolver.init(T.allocator, .{ .ptr = &fs, .vtable = &Fs.vt }, .{});
+    defer resolver.deinit();
+    var query = export_origins.Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const left = try moduleExportNamesFromQuery(T.allocator, &resolver, &query, "/p/left.ts");
+    defer {
+        for (left) |name| T.allocator.free(name);
+        T.allocator.free(left);
+    }
+    try T.expectEqual(@as(usize, 3), fs.source_reads);
+    fs.deny_source_reads = true;
+    const right = try moduleExportNamesFromQuery(T.allocator, &resolver, &query, "/p/right.ts");
+    defer {
+        for (right) |name| T.allocator.free(name);
+        T.allocator.free(right);
+    }
+    for ([_][]const []const u8{ left, right }) |names| {
+        try T.expectEqual(@as(usize, 5), names.len);
+        for ([_][]const u8{ "Shape", "value", "space name", "ns", "Alias" }) |expected| {
+            var found = false;
+            for (names) |name| if (std.mem.eql(u8, name, expected)) {
+                found = true;
+                break;
+            };
+            try T.expect(found);
+        }
+    }
+    const origin = try query.resolve("/p/right.ts", "Alias");
+    try T.expect(origin.complete and !origin.ambiguous and origin.type != null and origin.value == null);
+    try T.expectEqualStrings("/p/owner.ts", origin.type.?.path);
+    try T.expectEqual(@as(usize, 3), fs.source_reads);
 }
 
 test "Program: serial parallel and streaming checks reuse the prepared graph" {
