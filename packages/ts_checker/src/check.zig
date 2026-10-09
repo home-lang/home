@@ -4088,6 +4088,78 @@ const PriorValueDeclarationIndex = struct {
     }
 };
 
+/// Complete raw marker-line starts for one immutable physical source. This
+/// deliberately is not a directive parser: markers in strings and comments
+/// have the same meaning as the original prefix scanner.
+const VirtualSectionIndex = struct {
+    starts: std.ArrayListUnmanaged(usize) = .empty,
+    state: enum { unbuilt, indexed, slow } = .unbuilt,
+
+    fn deinit(self: *VirtualSectionIndex, allocator: std.mem.Allocator) void {
+        self.starts.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn build(allocator: std.mem.Allocator, source: []const u8) std.mem.Allocator.Error!std.ArrayListUnmanaged(usize) {
+        var starts: std.ArrayListUnmanaged(usize) = .empty;
+        errdefer starts.deinit(allocator);
+        var line_start: usize = 0;
+        while (line_start < source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+            const line = source[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                try starts.append(allocator, line_start);
+            }
+            if (line_end == source.len) break;
+            line_start = line_end + 1;
+        }
+        return starts;
+    }
+
+    fn start(self: *VirtualSectionIndex, allocator: std.mem.Allocator, source: []const u8, pos: usize) usize {
+        if (self.state == .unbuilt) {
+            self.state = .slow;
+            if (build(allocator, source)) |starts| {
+                self.starts = starts;
+                self.state = .indexed;
+            } else |_| {}
+        }
+        if (self.state == .slow) return startSlow(source, pos);
+        const limit = @min(pos, source.len);
+        var low: usize = 0;
+        var high = self.starts.items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (self.starts.items[middle] <= limit) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        return if (low == 0) 0 else self.starts.items[low - 1];
+    }
+
+    fn startSlow(source: []const u8, pos: usize) usize {
+        const limit = @min(pos, source.len);
+        var last: usize = 0;
+        var line_start: usize = 0;
+        while (line_start <= limit and line_start < source.len) {
+            const line_end = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse source.len;
+            const line = source[line_start..line_end];
+            if (std.mem.indexOf(u8, line, "@filename:") != null or
+                std.mem.indexOf(u8, line, "@Filename:") != null)
+            {
+                last = line_start;
+            }
+            if (line_end >= limit or line_end == source.len) break;
+            line_start = line_end + 1;
+        }
+        return last;
+    }
+};
+
 const JsDocNamedDeclarationKind = enum {
     typedef,
     callback,
@@ -5481,6 +5553,7 @@ pub const Checker = struct {
     prior_jsdoc_property_assignments: std.ArrayListUnmanaged(PriorJsDocPropertyAssignment) = .empty,
     prior_jsdoc_property_assignments_built: bool = false,
     source_has_virtual_sections: bool = false,
+    virtual_section_index: VirtualSectionIndex = .{},
     /// UMD globals require an `export as namespace` declaration. Cache a
     /// conservative keyword prefilter so ordinary type references do not
     /// repeatedly scan an entire source file looking for one.
@@ -6093,6 +6166,7 @@ pub const Checker = struct {
         self.jsdoc_callback_signatures.clearRetainingCapacity();
         self.prior_jsdoc_property_assignments.clearRetainingCapacity();
         self.prior_jsdoc_property_assignments_built = false;
+        self.virtual_section_index.deinit(self.gpa);
         self.source_has_virtual_sections =
             markers.contains("@filename:") or markers.contains("@Filename:");
         self.source_may_have_umd_namespace_export =
@@ -6720,6 +6794,7 @@ pub const Checker = struct {
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
+        self.virtual_section_index.deinit(self.gpa);
         self.umd_export_lookup_cache.deinit(self.gpa);
         self.visible_named_type_decls.deinit(self.gpa);
         self.visible_type_alias_decls.deinit(self.gpa);
@@ -15412,20 +15487,7 @@ pub const Checker = struct {
         if (!self.sourceHasVirtualFilenameSections()) return 0;
         if (self.virtual_section_start_cache.get(node)) |cached| return cached;
         const span = self.hir.spanOf(node);
-        const limit = @min(span.start, src.len);
-        var last: usize = 0;
-        var line_start: usize = 0;
-        while (line_start <= limit and line_start < src.len) {
-            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
-            const line = src[line_start..line_end];
-            if (std.mem.indexOf(u8, line, "@filename:") != null or
-                std.mem.indexOf(u8, line, "@Filename:") != null)
-            {
-                last = line_start;
-            }
-            if (line_end >= limit or line_end == src.len) break;
-            line_start = line_end + 1;
-        }
+        const last = self.virtual_section_index.start(self.gpa, src, span.start);
         self.virtual_section_start_cache.put(self.gpa, node, last) catch {};
         return last;
     }
@@ -15433,21 +15495,7 @@ pub const Checker = struct {
     fn virtualSectionStartForPos(self: *Checker, pos: usize) usize {
         const src = self.source orelse return 0;
         if (!self.sourceHasVirtualFilenameSections()) return 0;
-        const limit = @min(pos, src.len);
-        var last: usize = 0;
-        var line_start: usize = 0;
-        while (line_start <= limit and line_start < src.len) {
-            const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
-            const line = src[line_start..line_end];
-            if (std.mem.indexOf(u8, line, "@filename:") != null or
-                std.mem.indexOf(u8, line, "@Filename:") != null)
-            {
-                last = line_start;
-            }
-            if (line_end >= limit or line_end == src.len) break;
-            line_start = line_end + 1;
-        }
-        return last;
+        return self.virtual_section_index.start(self.gpa, src, pos);
     }
 
     fn virtualSectionStartIsJsLike(self: *Checker, section: usize) bool {
@@ -214673,6 +214721,122 @@ test "checker: recovered parameter use ranges match source scanning" {
             }
         }
     }
+}
+
+test "checker: virtual section facts preserve every byte position and raw marker line" {
+    for ([_][]const u8{
+        "",                                                      "plain source\n",                                                                             "@filename: first.ts",                                      "@Filename: first.js\n",
+        "before\n@filename: a.ts\nvalue\n@Filename: b.js\nlast", "before\r\ntext before @filename: a.ts\r\n\r\n'@Filename: b.js' @filename: c.ts\r\nlast\r\n", "@filename: first.js\n\n@filename: @Filename: second.ts\n", "@filenameX: not a section\n@FILENAME: not a section\n",
+    }) |source| {
+        var index: VirtualSectionIndex = .{};
+        defer index.deinit(T.allocator);
+        for (0..source.len + 3) |pos| {
+            try T.expectEqual(VirtualSectionIndex.startSlow(source, pos), index.start(T.allocator, source, pos));
+        }
+        try T.expectEqual(VirtualSectionIndex.startSlow(source, std.math.maxInt(usize)), index.start(T.allocator, source, std.math.maxInt(usize)));
+        try T.expectEqual(.indexed, index.state);
+    }
+    const source = "before\ntext @filename: late.ts\nafter";
+    var index: VirtualSectionIndex = .{};
+    defer index.deinit(T.allocator);
+    // A query on the preceding newline does not see the next line. A query
+    // at that line's first byte does see a marker later on the same line.
+    try T.expectEqual(@as(usize, 0), index.start(T.allocator, source, 6));
+    try T.expectEqual(@as(usize, 7), index.start(T.allocator, source, 7));
+}
+
+test "checker: virtual section node facts preserve clamped spans and source replacement" {
+    const source = "// @filename: a.js\nvar value = 1;\n// @Filename: b.ts\nvalue;";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    const node = hir_mod.blockStmts(&s.hir, s.root)[0];
+    for ([_]usize{ 0, 1, 19, source.len, source.len + 1, std.math.maxInt(u32) }) |pos| {
+        s.checker.virtual_section_start_cache.clearRetainingCapacity();
+        s.hir.spans.items[node] = .{ .start = @intCast(pos), .end = @intCast(pos) };
+        try T.expectEqual(VirtualSectionIndex.startSlow(source, pos), s.checker.virtualSectionStartForNode(node));
+    }
+    const replacement = "unchanged HIR\n// @filename: replacement.js\n";
+    s.checker.setSource(replacement);
+    try T.expectEqual(.unbuilt, s.checker.virtual_section_index.state);
+    try T.expectEqual(@as(usize, 0), s.checker.virtual_section_index.starts.capacity);
+    try T.expectEqual(@as(usize, 0), s.checker.virtual_section_start_cache.count());
+    try T.expectEqual(VirtualSectionIndex.startSlow(replacement, replacement.len), s.checker.virtualSectionStartForNode(node));
+    s.checker.setSource("no markers");
+    try T.expectEqual(@as(usize, 0), s.checker.virtualSectionStartForPos(100));
+    try T.expectEqual(.unbuilt, s.checker.virtual_section_index.state);
+    s.checker.source = null;
+    try T.expectEqual(@as(usize, 0), s.checker.virtualSectionStartForNode(node));
+    try T.expectEqual(@as(usize, 0), s.checker.virtualSectionStartForPos(100));
+}
+
+test "checker: every virtual section construction allocation failure frees partial facts" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(T.allocator);
+    for (0..96) |_| try source.appendSlice(T.allocator, "before\n// @filename: source.ts\nvalue\n");
+    const RefuseGrowth = struct {
+        failing: T.FailingAllocator,
+        fn allocator(self: *@This()) std.mem.Allocator {
+            return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+        }
+        fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.failing.allocator().rawAlloc(len, alignment, ret_addr);
+        }
+        fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+            return false;
+        }
+        fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+            return null;
+        }
+        fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.failing.allocator().rawFree(memory, alignment, ret_addr);
+        }
+    };
+    var counted: RefuseGrowth = .{ .failing = T.FailingAllocator.init(T.allocator, .{}) };
+    var starts = try VirtualSectionIndex.build(counted.allocator(), source.items);
+    const allocations = counted.failing.alloc_index;
+    starts.deinit(counted.allocator());
+    try T.expect(allocations > 1);
+    for (0..allocations) |fail_index| {
+        var failing: RefuseGrowth = .{ .failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index }) };
+        var index: VirtualSectionIndex = .{};
+        defer index.deinit(failing.allocator());
+        for (0..source.items.len + 2) |pos| {
+            try T.expectEqual(VirtualSectionIndex.startSlow(source.items, pos), index.start(failing.allocator(), source.items, pos));
+        }
+        try T.expectEqual(.slow, index.state);
+        try T.expectEqual(@as(usize, 0), index.starts.capacity);
+        try T.expect(failing.failing.has_induced_failure);
+        try T.expectEqual(failing.failing.allocated_bytes, failing.failing.freed_bytes);
+        try T.expectEqual(fail_index, failing.failing.alloc_index);
+    }
+}
+
+test "checker: complete virtual section facts preserve full checked JS diagnostics" {
+    const source =
+        \\// @checkjs: true
+        \\// @filename: first.js
+        \\/** @type {number} */ var value = 1;
+        \\value = "bad";
+        \\function f() { /** @type {boolean} */ let flag = true; flag = 1; }
+        \\// @Filename: second.js
+        \\/** @type {string} */ var value = "text";
+        \\value = 2;
+        \\// @filename: third.ts
+        \\const typed: boolean = 1;
+    ;
+    const indexed = try newSetup(source);
+    defer destroySetup(indexed);
+    const scalar = try newSetup(source);
+    defer destroySetup(scalar);
+    scalar.checker.virtual_section_index.state = .slow;
+    try indexed.checker.checkSourceFile(indexed.root);
+    try scalar.checker.checkSourceFile(scalar.root);
+    try T.expect(indexed.checker.diagnostics.items.len > 0);
+    try T.expectEqualDeep(scalar.checker.diagnostics.items, indexed.checker.diagnostics.items);
+    try T.expectEqual(.indexed, indexed.checker.virtual_section_index.state);
+    try T.expectEqual(@as(usize, 3), indexed.checker.virtual_section_index.starts.items.len);
 }
 
 test "checker: nearest prior value index preserves complete scope and section eligibility" {
