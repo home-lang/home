@@ -1804,3 +1804,61 @@ ownership, full async-hook support, release builds in
 [#855](https://github.com/home-lang/home/issues/855), other platforms and complete
 logical Bun parity under [#66](https://github.com/home-lang/home/issues/66)
 remain unfinished.
+
+## Core stream builtin ownership and direct cancellation (2026-10-09)
+
+Home now regenerates 280 builtin function bodies across 21 readable, byte/BYOB,
+writable, transform, encoding/compression and queuing-strategy families from its
+own source. The generator validates the linked function set, arity, construction,
+visibility, inline and name metadata, native dispatch and Node error IDs before
+producing linkable output. It decodes and validates every interval of the
+363-function source buffer, recomputes offsets and preserves all 83 unowned
+function bodies byte for byte. The generated class header stays byte-identical
+to the linked ABI. The external WebCoreJSBuiltins object is excluded from linking;
+Home compiles the generated replacement with the selected native compiler/flags.
+Sources, codegen helpers and external ABI metadata are explicit cache inputs,
+and dynamic builtin loading is rejected.
+
+The stream mirrors now include the pin's newer BYOB cancellation, promise-peek,
+read-once and adapter updates. Direct reader cancellation settles the separate
+pending read, discards buffered data, invokes the source cancel callback once
+with its reason, receiver and creation context, and propagates callback errors.
+An absent cancel callback uses the legacy direct-source close callback. Lazy
+cancellation avoids pulling; reentrant cancellation cannot create a new pending
+request after closure. releaseLock rejects the direct controller's pending read,
+and a late pull rejection after cancellation is ignored as a closed-stream event.
+Default and BYOB cancellation preserve their pinned behavior.
+
+Binding compilation passes 25/25 steps, peak tree footprint 763 MB. The complete
+stripped Debug executable passes 31/31, peak 5,628 MB under the unchanged
+8,192 MB build budget. All ten generator/ABI tests pass with 818 assertions.
+Native controls verify pending direct/default/BYOB reads, lazy cancellation,
+reason/receiver/creation context, forced GC, synchronous and asynchronous errors,
+reentrant pull, releaseLock, late pull rejection, concurrent cancellation and
+already closed/errored streams. Completion requires both a zero process exit
+and the final assertion marker. The parent executable reaches the supervised
+120-second bound on the pending direct read and receives no passing credit. Its
+first wrapper collected output only after completion, so that timeout has no
+raw child capture; the later wrapper persists output directly and terminal
+metadata. Changed-file Pickier, Zig formatting and whitespace checks pass.
+
+The 18 unchanged original entries produce 9,540 registered passes, zero failures,
+269 skips and three TODOs. There are 268 original React renderer-export skips
+and one ASAN-only case. TODOs cover the platform-guarded pipe read and the two
+original async-context stream/WebSocket fixtures. None receives passing credit.
+All 18 captures reach verified EOF and their case-level JUnit validates; all
+30 audited test/fixture inputs match the Bun pin and remain unchanged. The
+executable SHA256 is
+`20e77aa7d1ebe8d6898a43a51544dcc447a01bbce8006ff17035d0c16ff8d35b`.
+[Retained source, captures, JUnit and controls](./bun-port-evidence/2026-10-09-owned-core-streams/manifest.json)
+record the selected scope and all pending outcomes.
+
+This resolves the demonstrated direct-reader cancellation defects and activates
+owned stream bodies. It does not make the original unflushed-read TODO reach
+cancellation or correct the WebSocket fixture's premature disposal. Optional
+renderer coverage, ASAN/platform runs, all remaining core/registry builtins,
+native dependencies and bindings, full async hooks, release-build work in
+[#855](https://github.com/home-lang/home/issues/855) and whole-suite logical parity
+remain open under [#858](https://github.com/home-lang/home/issues/858),
+[#856](https://github.com/home-lang/home/issues/856) and
+[#66](https://github.com/home-lang/home/issues/66).
