@@ -315,6 +315,24 @@ map another repeated nearest-prior value-declaration scan under
 [#854](https://github.com/home-lang/home/issues/854); see the
 [profile report](docs/docs/TS_PERFORMANCE.md#landed-source-jsdoc-profile-2026-10-09-utc).
 
+That nearest-prior query is now
+[indexed](https://github.com/home-lang/home/commit/af5fb320a7bfb17f0654ff25cd8dec1211f3b4c9)
+with syntax-only candidates and complete scalar fallback:
+
+| #854 nearest-prior confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 29.169 ms | 28.265 ms | **+0.568 to +1.000 ms** |
+| 512 families, 30 pairs | 147.003 ms | 132.509 ms | **+6.169 to +19.478 ms** |
+| 8,192 families, five six-pair batches | 14,287.718 ms | 10,035.663 ms | **+3,907.759 to +5,880.549 ms** |
+
+Confirmed medians are **3.1%, 9.9% and 29.8% lower**; the large five-batch
+interval is also positive. All **472 rounds / 660 admissions** remain,
+including the `deep_types` screen warning and inconclusive adverse rechecks.
+See [full tables and scope](docs/docs/TS_PERFORMANCE.md#nearest-prior-value-declaration-index-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-nearest-prior-value-index-accepted-854.tar.gz).
+The latest full competitor matrix above predates this change; its ranking is
+not inferred from these Home-only A/Bs.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

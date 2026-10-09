@@ -185,6 +185,153 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Nearest-prior value declaration index (2026-10-09 UTC)
+
+Source [`af5fb320a7bfb17f0654ff25cd8dec1211f3b4c9`](https://github.com/home-lang/home/commit/af5fb320a7bfb17f0654ff25cd8dec1211f3b4c9)
+lands the measured declaration-query improvement under
+[#854](https://github.com/home-lang/home/issues/854). Exact parent source is
+`4bbbd191d83df1e8c6f44c8b0bd96a9490f57e0c`, compiler inputs equal the
+preceding class-owner source. Its complete previous-JSDoc/nearest-prior
+functions match the instruction-mapped profile below byte-for-byte. The
+sampled full-HIR var/let/const search is the actual target, not a guessed
+source/library/benchmark exception.
+
+The existing local-value index is not interchangeable: it selects first
+bindings per container (including functions/classes), with statement ordinal
+boundaries. This query needs nearest earlier simple-identifier var/let/const,
+lowest NodeId ties and exact function/virtual-section eligibility. The new
+complete syntax index groups declaration NodeIds by name and source start;
+strict binary search/reverse eligibility preserves those rules, including
+null-function recovery declarations whose positions lie inside the use
+function. The original outer-container JSDoc fallback and type lowering are
+unchanged; mutable TypeIds are never cached.
+
+All construction failures release partial groups and retain the complete
+original scalar scan. Source replacement releases/reset facts; HIR growth
+rebuilds complete candidates. Empty name buckets are derived from complete
+syntax, not numeric caps or filename shortcuts. No type approximation,
+diagnostic filtering or omitted body is introduced.
+
+Native parent SHA-256:
+`fb77a18ed4b9b14a7c0ef29366963166754de8904602c2516ea2d223389cbb82`;
+candidate:
+`69836df6bd81695ed3f78c2b147a7ec8ac908e5e406da5523b9da7ed3c4a895a`.
+Frozen production/test diff SHA-256:
+`4c50fe344ba488a79cdb63d904fbc0c7017219df9e9ce5bd3d784f652b872bd0`.
+Live bytes matched before commit. Host/toolchain remain M3 Pro / Mac15,6,
+Darwin27 arm64, Hyperfine1.20.0, Python3.9.6, pinned Zig2163, standalone
+stripped ReleaseFast with `-Denable_jsc=false`. No diagnostic image is timed.
+
+Before timing we declared official/512/8192 screens, independent official/512
+30-pair confirmation, all 20 family screens, independent checks of every
+>3%-slower or wholly negative warning plus carried predicates/reexports,
+separate class/interface risk checks, and all five six-pair large batches.
+Each phase passes all 66 admissions: both binaries on the 20 positive/nine
+negative official projects plus positive/negative unchanged scale projects.
+Checked-JS controls require TS2322×9, TS2339×3, TS2345×3, not partial/erased
+diagnostics. Three warmups per binary precede equally alternating fresh
+processes; source/input/binary/harness/patch fingerprints remain unchanged.
+All observations and each batch's admissions/warmups remain, under the same
+600-second execution/3,840 MB guard, 900-second lock wait and disk floors.
+
+Intervals below are paired parent-minus-candidate **mean** savings, not median
+differences. No original or subsequent phase is excluded.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 28.397 ms | 27.641 ms | 16/20 | +0.069 to +1.279 ms |
+| 512 families, six-pair screen | 128.661 ms | 118.902 ms | 5/6 | +0.100 to +17.005 ms |
+| 8,192 families, six-pair screen | 13,894.930 ms | 9,467.790 ms | 6/6 | +3,016.525 to +7,355.445 ms |
+| Official checked JS, 30-pair confirmation | 29.169 ms | 28.265 ms | 26/30 | +0.568 to +1.000 ms |
+| 512 families, 30-pair confirmation | 147.003 ms | 132.509 ms | 27/30 | +6.169 to +19.478 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 13,424.807 ms | 9,610.209 ms | 6/6 | +3,237.912 to +4,355.824 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 12,967.795 ms | 9,439.359 ms | 6/6 | +2,538.474 to +4,582.129 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 16,973.782 ms | 12,130.317 ms | 6/6 | +1,852.235 to +11,925.098 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 17,137.272 ms | 11,198.688 ms | 6/6 | +3,789.131 to +7,860.338 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 14,687.403 ms | 10,035.663 ms | 6/6 | +2,650.329 to +6,150.067 ms |
+| 8,192 families, all five batches (30 pairs total) | 14,287.718 ms | 10,035.663 ms | 30/30 | +3,907.759 to +5,880.549 ms |
+
+Independent official/512/8192 confirmation supports **3.1%, 9.9% and 29.8%
+lower medians**, respectively. All 30 large pairs favor the candidate; the
+supplemental **five-batch** t interval (df=4) is also positive,
+**+3,130.656 to +6,657.651 ms**. Batch mean savings are +3,796.868, +3,560.302,
++6,888.666, +5,824.734 and +4,400.198 ms. Variable absolute times, slower
+smaller-input pairs and the adverse initial 512-family pair remain, not a
+best-of selection. These are scoped results, not universal speedups.
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 28.827 ms | 28.078 ms | 9/10 | +0.204 to +0.959 ms |
+| `class_hierarchy` | 24.314 ms | 23.911 ms | 9/10 | +0.251 to +1.009 ms |
+| `commonjs_graph` | 25.723 ms | 25.555 ms | 7/10 | -0.242 to +0.482 ms |
+| `control_flow` | 25.893 ms | 26.064 ms | 2/10 | -0.656 to +0.059 ms |
+| `deep_types` | 25.375 ms | 27.308 ms | 4/10 | -5.151 to +2.325 ms |
+| `destructuring` | 15.849 ms | 16.266 ms | 3/10 | -0.637 to +0.564 ms |
+| `generic_calls` | 23.340 ms | 23.228 ms | 6/10 | -0.476 to +0.543 ms |
+| `import_graph` | 21.041 ms | 21.526 ms | 5/10 | -0.611 to +0.893 ms |
+| `interface_composition` | 36.255 ms | 36.643 ms | 5/10 | -1.802 to +2.897 ms |
+| `many_files` | 21.726 ms | 22.143 ms | 3/10 | -1.497 to +0.087 ms |
+| `null_safe_access` | 33.852 ms | 34.109 ms | 3/10 | -5.062 to +2.952 ms |
+| `overload_resolution` | 26.285 ms | 26.819 ms | 4/10 | -1.009 to +1.133 ms |
+| `recursive_generics` | 14.880 ms | 15.181 ms | 4/10 | -0.582 to +0.794 ms |
+| `reexport_graph` | 12.388 ms | 12.593 ms | 5/10 | -0.632 to +0.807 ms |
+| `startup` | 3.290 ms | 3.050 ms | 10/10 | +0.117 to +0.304 ms |
+| `structural_objects` | 23.217 ms | 23.400 ms | 5/10 | -0.542 to +0.385 ms |
+| `tsx_components` | 20.419 ms | 20.348 ms | 6/10 | -0.221 to +0.195 ms |
+| `type_predicates` | 33.459 ms | 33.345 ms | 5/10 | -0.336 to +0.345 ms |
+| `type_predicates_large` | 277.387 ms | 276.345 ms | 8/10 | -10.604 to +13.215 ms |
+| `variadic_tuples` | 31.622 ms | 32.089 ms | 6/10 | -0.677 to +0.272 ms |
+
+`deep_types` triggers the predeclared >3%-slower warning (~7.6% slower median),
+despite its interval spanning zero. It receives an extra independent 30-pair
+recheck alongside the carried predicates/reexports. Positive class/startup
+screens are retained but not promoted to confirmed gains of this JSDoc change.
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `deep_types` | 24.603 ms | 24.799 ms | 15/30 | -3.308 to +1.512 ms |
+| `reexport_graph` | 17.467 ms | 16.048 ms | 22/30 | -2.992 to +3.013 ms |
+| `type_predicates_large` | 350.175 ms | 372.888 ms | 12/30 | -117.987 to +159.554 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 26.269 ms | 26.034 ms | 18/30 | -1.213 to +1.277 ms |
+| `interface_composition` | 38.369 ms | 37.938 ms | 13/30 | -0.533 to +3.086 ms |
+
+The `deep_types` (~0.8% slower) and predicate (~6.5% slower) independent
+medians remain adverse, with inconclusive intervals; reexport/class/interface
+intervals also span zero. No equivalence or universal regression-free claim is
+made. All **472** original paired rounds (944 timing samples) and **660**
+admissions are independently recomputed, including the extra warning recheck.
+
+Full checker/Program/driver/CLI/entrypoint pass **4,542 / 247 / 200 / 74 / 35**,
+harness **136/136**, on the first draft with no failed/filtered/skipped test.
+Six controls compare every identifier across scopes/sections/exports/ignored
+patterns; **3,087** synthetic ordering/position cases and lowest NodeId ties;
+strict prior boundaries; null-function recovery; source reset; actual HIR
+growth; every deterministic construction allocation failure with full scalar
+fallback, partial-group cleanup and balanced bytes; and complete indexed/
+forced-scalar checked-JS diagnostics. Checker peak is 3,307 MB, build 3,011 MB;
+measurement peaks are retained in each run log under the unchanged guard.
+
+Pinned, unmodified Zod retains the complete primary message/position/code
+multiset: **195 TS + 3 HM9002**, zero added/removed, normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is not production admission. The latest full matrix above predates this
+change and remains **1/20 / 11/20**; no new rank is inferred from these A/Bs.
+C++ admission, other platforms and the all-benchmark leadership goal remain
+incomplete.
+
+The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009-nearest-prior-value-index-accepted-854.tar.gz)
+retains **1,585** verified payload checksums. SHA-256:
+`ff5837c1dd9008148a9a164552f0816c12100a3122fdaf26a7a9c10cc21bc3ad`.
+Every phase/round/admission, source diff, original scalar/source mapping,
+full test/build/Zod log, provenance and recalculation script remains. Exact
+positive/scale-negative bytes are archived; official negative temporary
+copies were deleted by the unchanged harness after their actual process
+records were captured. Labeled generator replays reconstruct them without
+running a compiler and are not claimed as original directories/new admissions.
+
 ## Landed-source JSDoc profile (2026-10-09 UTC)
 
 Follow-up [#854](https://github.com/home-lang/home/issues/854) profiles the
