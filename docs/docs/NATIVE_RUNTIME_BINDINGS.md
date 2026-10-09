@@ -1862,3 +1862,60 @@ native dependencies and bindings, full async hooks, release-build work in
 remain open under [#858](https://github.com/home-lang/home/issues/858),
 [#856](https://github.com/home-lang/home/issues/856) and
 [#66](https://github.com/home-lang/home/issues/66).
+
+## Complete core builtin generation and IPC listener receipt (2026-10-09)
+
+Home regenerates all 363 function bodies in all 37 linked core builtin families,
+including Buffer, CommonJS/import machinery, process/nextTick, console, glob,
+peek, plugins, Bake, WebAssembly and shell. The C++ buffer, source-provider
+scaffolding, constructors and initialization code are also generated from
+Home's codegen. No core function body is copied from the external buffer. The
+full function set is required, and generated class declarations match the
+selected linked ABI after excluding the source-location banner. The output
+retains the byte-identical linked header as the ABI contract. The JS-prefixed
+family naming rule now follows the canonical codegen helper. Source mirrors
+include the pin's newer getter, binding, module and nextTick changes.
+
+Wrapped Zig host calls now resolve a unique Home source identity and validate
+the exact host declaration, callable arity, function target, visibility and
+dispatch slot; bare Zig factories stay unsupported by this incremental path.
+The IPC handle-delivery export now calls the real Home implementation rather
+than the removed no-op stub. Descriptor listener adoption validates a stream
+socket before ownership transfer, uses the normal native poll/group lifecycle
+and releases unused hostname storage. Node's NODE_HANDLE `msg` field is
+snapshotted before asynchronous listen; older `message` envelopes remain
+supported. A transferred Node listener stays usable after the peer closes its
+original descriptor.
+
+Native binding compilation passes 25/25; complete Debug builds pass 31/31. The
+final build peaks at 5,632 MB under the existing 8,192 MB budget. Eleven ABI and
+generation tests pass with 743 assertions. Native IPC controls reject a regular
+file without consuming its fd, receive a Node listener in Home, serve a TCP
+exchange and close it, and preserve synchronous IPC across exec. Stream
+cancellation and Worker/WebSocket context controls also pass. Changed-file
+Pickier, Zig formatting and whitespace checks pass.
+
+The retained attempts include the wrong JS-family naming rejection, the missing
+C linkage error, Darwin's unsupported SO_ACCEPTCONN query, the Node `msg` versus
+`message` mismatch, and refused disk admission. None receives passing credit.
+The final implementation uses native listen() to support bound/already-listening
+stream descriptors. Only obsolete task-owned outputs were removed, with an
+inventory retained. The original glob tests created an untracked fixture tree;
+its generated-file inventory was retained and only those files were removed.
+
+Both original 32-entry runs complete successfully: 908 registered passes, zero
+failures, two skips and three TODOs. All captures reach verified EOF and JUnit
+validation succeeds. The 78 audited pinned test/fixture files match their pin;
+unchanged final inputs are verified. Original skips/TODOs receive no passing
+credit. The final executable SHA256 and complete case-level results are in
+[retained source and execution evidence](./bun-port-evidence/2026-10-09-complete-core-builtins/manifest.json).
+Main integration contains documentation/evidence changes only.
+
+This completes core builtin body/scaffolding generation for the recorded ABI,
+not the remaining registry modules or native dependency/object graph. IPC
+sending still lacks the pinned serializer's handle support, and received
+net.Socket/dgram.Socket variants remain unimplemented; listener receipt here
+does not establish full IPC or Windows parity. All-platform/ASAN execution,
+release memory work in [#855](https://github.com/home-lang/home/issues/855),
+original pending outcomes and full logical Bun parity under
+[#66](https://github.com/home-lang/home/issues/66) remain unfinished.
