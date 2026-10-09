@@ -10,6 +10,10 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+The later virtual-section source index is an exact-parent Home-only A/B,
+not a new competitor matrix. Its scaling gains and unresolved adverse
+recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
+
 ### Landed nearest-prior matrix (2026-10-09 UTC)
 
 Result `20261009T033439Z` measures source
@@ -255,6 +259,166 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Virtual-section prefix facts (2026-10-09 UTC)
+
+Source [`30330c16947900dd0d9ce441071649c7f822c2fc`](https://github.com/home-lang/home/commit/30330c16947900dd0d9ce441071649c7f822c2fc)
+lands a scoped source-index improvement under
+[#854](https://github.com/home-lang/home/issues/854). Exact parent source is
+`5ea87f0f81ce20d18782abcad2d0412797b9d3a0`, native SHA-256
+`69836df6bd81695ed3f78c2b147a7ec8ac908e5e406da5523b9da7ed3c4a895a`.
+Candidate native SHA-256 is
+`7ab04d806bc0557ff385a91cc993b95c3a727b7e82353ff3ea3e1b59301f822a`;
+frozen production/test diff SHA-256 is
+`ca4aed72f39a53c74aa538652b917cac602cbe31a6033d101f9854dea0f8001a`.
+The committed diff equals the frozen patch and the installed native equals
+the timed candidate. No diagnostic image is timed.
+
+The preceding landed-source profile maps repeated source-prefix scans in
+`virtualSectionStartForNode` (172/169 early/middle leaf observations, not
+whole-run CPU percentages). A complete lazy source-owned list now records
+raw marker-line starts in one physical-source pass. Binary search returns
+the last start at or before the clamped position. This deliberately is not
+a directive parser: `@filename:` and `@Filename:` anywhere on a line count,
+including comments/strings and a marker after the queried byte. A line is
+recorded once even with both spellings. Exact newline queries still belong
+to the preceding line; empty sources, trailing empty lines, EOF/wide positions
+and default start zero preserve the original scalar scan.
+
+Node and raw-position queries share these immutable position facts. Existing
+node caching, filename interpretation and section-end scanning are unchanged;
+no types or mutable HIR values are cached. Source replacement releases and
+resets the index. Every allocation failure releases all partial facts and
+uses the complete original scalar scanner for that source revision. There
+are no source/library/benchmark-name exceptions, semantic numeric caps,
+omitted bodies, diagnostic filtering or alignment workarounds.
+
+Host/toolchain remain Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27 arm64,
+Hyperfine 1.20.0, Python 3.9.6 and pinned Zig 2163; standalone stripped
+ReleaseFast uses `-Denable_jsc=false`. Three warmups per native binary precede
+alternating fresh-process pairs. The complete protocol was declared before
+timing: official/512/8192 screens, independent official/512 confirmation,
+all 20 family screens, independent 30-pair rechecks for every >3%-slower median
+or negative screen interval plus carried predicate/re-export risks,
+class/interface risk checks, and all five six-pair large batches.
+Every phase passes 66 admissions: both natives on 20 positive/nine negative
+official projects plus unchanged positive/negative scale projects.
+Checked-JS negative controls require TS2322×9, TS2339×3 and TS2345×3 at
+first/middle/last families, not erased or partial checking. Source, binary,
+patch, harness, input and tool fingerprints match before/after every phase.
+
+All **502** paired rounds (**1,004** raw times) and **660** admission checks
+verify. Every large batch and slow observation is retained, including higher
+variation in batches four/five. The unchanged 600-second/3840-MB machine-lock
+guard kept disk admission 1024 MB/continuation 512 MB; no guard was relaxed.
+First checker peak 3290 MB, corrected checker 3167 MB, Program 3044 MB,
+driver 2776 MB, CLI 2566 MB, entrypoint 2992 MB, native build 2885 MB;
+timing phases peak 251 MB, host low-water 28%. All job handles are terminal.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 26.936 ms | 26.470 ms | 14/20 | -1.447 to +0.609 ms |
+| 512 families, six-pair screen | 118.741 ms | 112.437 ms | 6/6 | +3.258 to +9.855 ms |
+| 8,192 families, six-pair screen | 8,528.752 ms | 7,253.681 ms | 6/6 | +1,199.774 to +1,320.240 ms |
+| Official checked JS, 30-pair confirmation | 27.475 ms | 27.284 ms | 23/30 | -0.791 to +0.576 ms |
+| 512 families, 30-pair confirmation | 119.253 ms | 114.483 ms | 25/30 | +2.752 to +5.372 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 8,525.480 ms | 7,185.194 ms | 6/6 | +1,282.705 to +1,398.093 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 8,531.539 ms | 7,218.829 ms | 6/6 | +1,264.306 to +1,367.185 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 8,575.845 ms | 7,232.368 ms | 6/6 | +1,215.612 to +1,616.995 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 9,049.089 ms | 7,549.525 ms | 6/6 | +727.883 to +2,869.344 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 8,980.750 ms | 7,694.942 ms | 6/6 | +936.006 to +1,990.802 ms |
+| 8,192 families, all five batches (30 pairs total) | 8,571.067 ms | 7,274.721 ms | 30/30 | +1,275.955 to +1,657.831 ms |
+
+Independent 512-family median is **4.0% lower**; the large median is **15.1%
+lower**, with all 30 pairs faster. The pooled large paired mean saving is
+1.466893 s, interval [1.275955, 1.657831] s. The supplemental five-batch t
+interval (df 4) is also positive: **[1.225320, 1.708466] s**, keeping each
+predeclared batch's mean and its variation. It is not 30 pairs after one
+warmup set. Official checking is **inconclusive**, not a confirmed gain.
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 27.735 ms | 27.401 ms | 9/10 | -0.466 to +1.406 ms |
+| `class_hierarchy` | 23.300 ms | 22.975 ms | 8/10 | +0.012 to +0.592 ms |
+| `commonjs_graph` | 25.196 ms | 25.553 ms | 6/10 | -0.969 to +3.306 ms |
+| `control_flow` | 25.645 ms | 25.665 ms | 5/10 | -0.146 to +0.484 ms |
+| `deep_types` | 21.044 ms | 21.235 ms | 1/10 | -0.317 to -0.051 ms |
+| `destructuring` | 14.829 ms | 14.758 ms | 6/10 | -0.107 to +0.329 ms |
+| `generic_calls` | 23.074 ms | 22.659 ms | 5/10 | -0.272 to +0.833 ms |
+| `import_graph` | 20.001 ms | 19.864 ms | 6/10 | -0.183 to +0.473 ms |
+| `interface_composition` | 34.954 ms | 34.887 ms | 6/10 | -4.242 to +1.906 ms |
+| `many_files` | 21.021 ms | 20.786 ms | 6/10 | -0.210 to +0.353 ms |
+| `null_safe_access` | 32.542 ms | 32.546 ms | 4/10 | -0.318 to +0.742 ms |
+| `overload_resolution` | 24.124 ms | 24.172 ms | 5/10 | -0.366 to +0.274 ms |
+| `recursive_generics` | 14.622 ms | 14.926 ms | 0/10 | -0.628 to -0.124 ms |
+| `reexport_graph` | 12.096 ms | 12.222 ms | 4/10 | -0.675 to +0.744 ms |
+| `startup` | 2.669 ms | 2.682 ms | 6/10 | -0.095 to +0.073 ms |
+| `structural_objects` | 22.705 ms | 22.622 ms | 8/10 | -0.133 to +0.334 ms |
+| `tsx_components` | 20.028 ms | 18.862 ms | 10/10 | +0.945 to +1.375 ms |
+| `type_predicates` | 32.837 ms | 32.803 ms | 4/10 | -0.453 to +0.233 ms |
+| `type_predicates_large` | 244.542 ms | 243.704 ms | 5/10 | -1.905 to +2.913 ms |
+| `variadic_tuples` | 32.085 ms | 32.006 ms | 5/10 | -0.479 to +0.563 ms |
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `deep_types` | 21.705 ms | 21.846 ms | 15/30 | -0.210 to +0.126 ms |
+| `recursive_generics` | 15.650 ms | 15.877 ms | 9/30 | -0.447 to +0.007 ms |
+| `reexport_graph` | 12.408 ms | 12.381 ms | 16/30 | -0.153 to +0.305 ms |
+| `type_predicates_large` | 253.623 ms | 253.723 ms | 13/30 | -2.133 to +1.808 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 24.099 ms | 23.780 ms | 20/30 | +0.038 to +0.412 ms |
+| `interface_composition` | 35.223 ms | 35.327 ms | 13/30 | -0.433 to +0.090 ms |
+
+**Adverse warnings remain unresolved.** The deep-types and recursive-generics
+screens have negative saving intervals (1/10 and 0/10 wins). Independent
+rechecks span zero, but recursive generics still has a **1.5%-slower median**,
+only 9/30 wins, and a nearly entirely negative interval. This does not prove
+equivalence or absence of regression. Deep types also retains a 0.7%-slower
+independent median; predicate, re-export and interface results are inconclusive.
+The class risk interval is positive. Acceptance is scoped to the supported
+checked-JS scaling improvement, not a universal speedup or regression-free
+claim; the warnings stay in #854's follow-up. Exploratory TSX screen improvement
+is not promoted to a confirmed feature gain.
+
+Complete checker **4,546**, Program 247, driver 200, CLI 74, entrypoint 35 and
+all 136 harness tests pass. Four new controls cover every byte through/beyond
+EOF, raw markers/case/duplicates, LF/CRLF, newline ownership, clamped HIR starts,
+source replacement/absence/null, every forced-growth construction allocation
+failure with balanced ownership/no repeated build, and complete mixed virtual
+JS/TS diagnostic parity. First full run was **4,545 pass/one failure**: a
+test incorrectly counted the failed allocation as a successful one. Only
+that assertion was corrected; the initial draft and complete failure log remain.
+
+Unmodified pinned Zod 4.5.2 (106 production files, package SHA-512 unchanged)
+retains the identical complete 198 primary-message/position/code diagnostic
+multiset: **195 TS errors plus 3 HM9002**, normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is **not production admission**. Compatibility, admitted C++, and
+Linux/Windows coverage remain unresolved. This Home-only A/B leaves the
+published five-compiler ranking at **1/20** Home leads and **11/20** ahead of
+native TypeScript 7; it cannot establish a new rank or causal cross-run change.
+
+The [raw evidence](../../bench/vs_tsgo/evidence/20261009-virtual-section-facts-accepted-854.tar.gz)
+archive has **1,617** payload checksums, all extracted bytes verified;
+archive SHA-256:
+`f3e2fa7d0920a883fc3e7bb3a15d63bdb146584f4102264fb570d1abf3b971e0`.
+It includes all round arrays/admissions, both drafts, logs/commands, complete
+test/diagnostic evidence, protocol/decision/lifecycle records, inputs,
+harness and independent verifiers. Official negative temporary directories
+were deleted by the original harness; actual process records remain, while
+nine separately labeled generator replays preserve the negative fixtures.
+Those replays are not the original directories, new admissions or timings.
+
+Repository-wide `bunx --bun pickier .` exits 1 on **11,461 errors and 10,613
+warnings** in unchanged files, including vendored fixtures; no auto-fixes were
+applied. The changed Zig file passes pinned `zig fmt --check`, the complete
+table/README verifier passes, and `git diff --check` passes. The separate
+[lint context](../../bench/vs_tsgo/evidence/20261009-virtual-section-lint-context-854.tar.gz)
+preserves the full read-only lint log, command and terminal-state record with
+five verified payload checksums, SHA-256
+`663498c41b11d231ac9fb85ddcbdd065decde0334636dbb51ad83d5b3fc045f9`.
 
 ## Landed nearest-prior profile (2026-10-09 UTC)
 

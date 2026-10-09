@@ -335,6 +335,26 @@ its ranking is not inferred from these Home-only A/Bs. A new diagnostic-only
 profile identifies repeated virtual-section and require-binding work; see the
 [updated profile](docs/docs/TS_PERFORMANCE.md#landed-nearest-prior-profile-2026-10-09-utc).
 
+The measured virtual-section prefix scans are now
+[indexed](https://github.com/home-lang/home/commit/30330c16947900dd0d9ce441071649c7f822c2fc)
+with complete raw source facts and scalar allocation-failure fallback:
+
+| #854 virtual-section confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 27.475 ms | 27.284 ms | −0.791 to +0.576 ms; inconclusive |
+| 512 families, 30 pairs | 119.253 ms | 114.483 ms | **+2.752 to +5.372 ms** |
+| 8,192 families, five six-pair batches | 8,571.067 ms | 7,274.721 ms | **+1,275.955 to +1,657.831 ms** |
+
+Scale medians are **4.0% and 15.1% lower**; all 30 large pairs favor the
+candidate, with a positive five-batch interval too. All **502 rounds / 660
+admissions** remain. Deep-type/recursive-generics screen warnings are retained;
+recursive generics remains **1.5% slower** in independent confirmation, with
+a nearly entirely negative interval spanning zero. This is not equivalence
+or a regression-free claim. See the
+[full results and unresolved risks](docs/docs/TS_PERFORMANCE.md#virtual-section-prefix-facts-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-virtual-section-facts-accepted-854.tar.gz).
+This later Home-only A/B does not update the competitor ranking above.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
