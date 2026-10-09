@@ -4164,6 +4164,64 @@ const VirtualSectionIndex = struct {
     }
 };
 
+/// First simple value binding in original container order. The prefix maximum
+/// includes every statement (not just candidates), preserving the scalar
+/// stop-at-first-span rule even for recovery/out-of-order source positions.
+const JsDocAncestorPrefixIndex = struct {
+    const Candidate = struct { declaration: NodeId, prefix_max_start: u32 };
+    const Candidates = std.AutoHashMapUnmanaged(hir_mod.StringId, Candidate);
+    containers: std.AutoHashMapUnmanaged(NodeId, Candidates) = .empty,
+    node_count: u32 = 0,
+    state: enum { unbuilt, indexed, slow } = .unbuilt,
+
+    fn deinit(self: *JsDocAncestorPrefixIndex, allocator: std.mem.Allocator) void {
+        var it = self.containers.valueIterator();
+        while (it.next()) |candidates| candidates.deinit(allocator);
+        self.containers.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn build(checker: *Checker, stmts: []const NodeId) std.mem.Allocator.Error!Candidates {
+        var candidates: Candidates = .empty;
+        errdefer candidates.deinit(checker.gpa);
+        var prefix_max: u32 = 0;
+        for (stmts) |stmt| {
+            prefix_max = @max(prefix_max, checker.hir.spanOf(stmt).start);
+            const decl = if (checker.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(checker.hir, stmt).decl else stmt;
+            if (decl == hir_mod.none_node_id) continue;
+            const kind = checker.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(checker.hir, decl);
+            if (variable.name == hir_mod.none_node_id or checker.hir.kindOf(variable.name) != .identifier) continue;
+            const name = hir_mod.identifierOf(checker.hir, variable.name).name;
+            const entry = try candidates.getOrPut(checker.gpa, name);
+            if (!entry.found_existing) entry.value_ptr.* = .{ .declaration = decl, .prefix_max_start = prefix_max };
+        }
+        return candidates;
+    }
+
+    fn ensure(self: *JsDocAncestorPrefixIndex, checker: *Checker, container: NodeId, stmts: []const NodeId) ?*const Candidates {
+        const count = checker.hir.nodeCount();
+        if (self.node_count != count) {
+            self.deinit(checker.gpa);
+            self.node_count = count;
+        }
+        if (self.containers.getPtr(container)) |candidates| return candidates;
+        if (self.state == .slow) return null;
+        var candidates = build(checker, stmts) catch {
+            self.state = .slow;
+            return null;
+        };
+        self.containers.put(checker.gpa, container, candidates) catch {
+            candidates.deinit(checker.gpa);
+            self.state = .slow;
+            return null;
+        };
+        self.state = .indexed;
+        return self.containers.getPtr(container).?;
+    }
+};
+
 const JsDocNamedDeclarationKind = enum {
     typedef,
     callback,
@@ -5534,6 +5592,7 @@ pub const Checker = struct {
     /// by virtual source section. Ordinals preserve recovery-node ordering too.
     local_value_decls_by_container: std.AutoHashMapUnmanaged(NodeId, LocalValueContainerIndex) = .empty,
     prior_value_declaration_index: PriorValueDeclarationIndex = .{},
+    jsdoc_ancestor_prefix_index: JsDocAncestorPrefixIndex = .{},
     /// Named `@typedef` and `@callback` blocks in a physical JS source.
     /// JSDoc lowering probes several declaration categories per reference;
     /// indexing once avoids repeated whole-source negative scans.
@@ -6162,6 +6221,7 @@ pub const Checker = struct {
         while (local_values_it.next()) |index| index.deinit(self.gpa);
         self.local_value_decls_by_container.clearRetainingCapacity();
         self.prior_value_declaration_index.deinit(self.gpa);
+        self.jsdoc_ancestor_prefix_index.deinit(self.gpa);
         self.jsdoc_named_declarations.clearRetainingCapacity();
         self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
         self.jsdoc_named_declarations_built = false;
@@ -6840,6 +6900,7 @@ pub const Checker = struct {
         while (local_values_it.next()) |index| index.deinit(self.gpa);
         self.local_value_decls_by_container.deinit(self.gpa);
         self.prior_value_declaration_index.deinit(self.gpa);
+        self.jsdoc_ancestor_prefix_index.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
         self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
         self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
@@ -96924,6 +96985,30 @@ pub const Checker = struct {
         if (self.nearestPriorValueDeclInSameFunction(node, id.name)) |decl| {
             if (try self.jsDocTypeForLeadingNode(decl)) |declared_t| return declared_t;
         }
+        const declaration = self.firstAncestorPriorJsDocDecl(node, id.name) orelse return null;
+        return try self.jsDocTypeForLeadingNode(declaration);
+    }
+
+    fn firstAncestorPriorJsDocDecl(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const use_start = self.hir.spanOf(node).start;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const stmts: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => null,
+            };
+            if (stmts) |items| {
+                const candidates = self.jsdoc_ancestor_prefix_index.ensure(self, cur, items) orelse
+                    return self.firstAncestorPriorJsDocDeclSlow(node, name);
+                const candidate = candidates.get(name) orelse continue;
+                if (use_start > candidate.prefix_max_start) return candidate.declaration;
+            }
+        }
+        return null;
+    }
+
+    fn firstAncestorPriorJsDocDeclSlow(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         const use_start = self.hir.spanOf(node).start;
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -96941,8 +97026,8 @@ pub const Checker = struct {
                     if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
                     const v = hir_mod.varDeclOf(self.hir, decl);
                     if (v.name == hir_mod.none_node_id or self.hir.kindOf(v.name) != .identifier) continue;
-                    if (hir_mod.identifierOf(self.hir, v.name).name != id.name) continue;
-                    return try self.jsDocTypeForLeadingNode(decl);
+                    if (hir_mod.identifierOf(self.hir, v.name).name != name) continue;
+                    return decl;
                 }
             }
         }
@@ -214992,6 +215077,194 @@ test "checker: complete virtual section facts preserve full checked JS diagnosti
     try T.expectEqualDeep(scalar.checker.diagnostics.items, indexed.checker.diagnostics.items);
     try T.expectEqual(.indexed, indexed.checker.virtual_section_index.state);
     try T.expectEqual(@as(usize, 3), indexed.checker.virtual_section_index.starts.items.len);
+}
+
+test "checker: JSDoc ancestor prefix facts preserve complete original container eligibility" {
+    for ([_][]const u8{
+        "var value = 1; let value = 2; value; export const exported = 3; exported; const { ignored } = { ignored: 1 }; ignored; function outer() { var value = 4; function inner() { value; } value; } class C { method() { value; } } missing;",
+        "namespace N { export const value = 1; value; namespace Inner { value; } } const value = 2; value;",
+        "// @checkjs: true\n// @filename: first.js\nvar value = 1;\n// @filename: second.js\nlet value = 2; value; missing;",
+    }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        for ([_][]const u8{ "value", "exported", "ignored", "missing" }) |text| {
+            const name = try s.sint.intern(text);
+            var node: NodeId = 0;
+            while (node < s.hir.nodeCount()) : (node += 1) {
+                try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(node, name), s.checker.firstAncestorPriorJsDocDecl(node, name));
+            }
+        }
+        try T.expectEqual(.indexed, s.checker.jsdoc_ancestor_prefix_index.state);
+        try T.expect(s.checker.jsdoc_ancestor_prefix_index.containers.count() > 0);
+        try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+    }
+}
+
+test "checker: JSDoc prefix maximum preserves every position ordering and unrelated barriers" {
+    const s = try newSetup("0; var value = 1; const value = 2; value;");
+    defer destroySetup(s);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const use = statements[3];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    for (0..7) |first| {
+        for (0..7) |second| {
+            for (0..7) |third| {
+                s.checker.jsdoc_ancestor_prefix_index.deinit(T.allocator);
+                for ([_]usize{ first, second, third }, statements[0..3]) |start, node| {
+                    s.hir.spans.items[node] = .{ .start = @intCast(start), .end = @intCast(start + 1) };
+                }
+                for (0..9) |position| {
+                    s.hir.spans.items[use] = .{ .start = @intCast(position), .end = @intCast(position + 1) };
+                    try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(use, name), s.checker.firstAncestorPriorJsDocDecl(use, name));
+                }
+            }
+        }
+    }
+    s.checker.jsdoc_ancestor_prefix_index.deinit(T.allocator);
+    s.hir.spans.items[statements[0]] = .{ .start = std.math.maxInt(u32), .end = std.math.maxInt(u32) };
+    s.hir.spans.items[statements[1]] = .{ .start = 0, .end = 1 };
+    s.hir.spans.items[use] = .{ .start = 100, .end = 101 };
+    try T.expectEqual(@as(?NodeId, null), s.checker.firstAncestorPriorJsDocDecl(use, name));
+    try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(use, name), s.checker.firstAncestorPriorJsDocDecl(use, name));
+}
+
+test "checker: JSDoc ancestor prefix retains first binding null and cross-section fallback semantics" {
+    const source =
+        \\// @checkjs: true
+        \\// @filename: values.js
+        \\/** @type {number} */ var value = 1;
+        \\function outer() {
+        \\  var value;
+        \\  function inner() { value; }
+        \\}
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    const use = try identifierNodeAtMarker(s, "value; }");
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    const declaration = s.checker.firstAncestorPriorJsDocDeclSlow(use, name) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(?NodeId, declaration), s.checker.firstAncestorPriorJsDocDecl(use, name));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.jsDocTypeForLeadingNode(declaration));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.jsDocTypeForPreviousIdentifierDecl(use));
+    s.checker.setSource(source);
+    try T.expectEqual(.unbuilt, s.checker.jsdoc_ancestor_prefix_index.state);
+    try T.expectEqual(@as(u32, 0), s.checker.jsdoc_ancestor_prefix_index.containers.count());
+
+    const sections = try newSetup("// @filename: first.js\nvar value = 1;\n// @filename: second.js\nvar value = 2; value;");
+    defer destroySetup(sections);
+    const first = hir_mod.blockStmts(&sections.hir, sections.root)[0];
+    const last_use = hir_mod.blockStmts(&sections.hir, sections.root)[2];
+    const value_name = hir_mod.identifierOf(&sections.hir, last_use).name;
+    // The original ancestor fallback has no virtual-section filter. Its
+    // first physical-container binding must not become the nearer section's.
+    try T.expectEqual(@as(?NodeId, first), sections.checker.firstAncestorPriorJsDocDecl(last_use, value_name));
+    try T.expectEqual(sections.checker.firstAncestorPriorJsDocDeclSlow(last_use, value_name), sections.checker.firstAncestorPriorJsDocDecl(last_use, value_name));
+}
+
+test "checker: JSDoc ancestor prefix facts rebuild after actual HIR order growth" {
+    const s = try newSetup("var value = 1; value;");
+    defer destroySetup(s);
+    const original = try T.allocator.dupe(NodeId, hir_mod.blockStmts(&s.hir, s.root));
+    defer T.allocator.free(original);
+    const use = original[1];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    try T.expectEqual(@as(?NodeId, original[0]), s.checker.firstAncestorPriorJsDocDecl(use, name));
+    const previous_count = s.checker.jsdoc_ancestor_prefix_index.node_count;
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const identifier = try builder.addIdentifier(.{ .start = 0, .end = 1 }, name);
+    const declaration = try builder.addVarDecl(.let_decl, .{ .start = 0, .end = 1 }, identifier, hir_mod.none_node_id, hir_mod.none_node_id);
+    const start: u32 = @intCast(s.hir.child_pool.items.len);
+    try s.hir.child_pool.append(T.allocator, declaration);
+    try s.hir.child_pool.appendSlice(T.allocator, original);
+    s.hir.block_payloads.items[s.hir.payloads.items[s.root]] = .{ .stmts_start = start, .stmts_len = @intCast(original.len + 1) };
+    s.hir.setParent(declaration, s.root);
+    try T.expect(s.hir.nodeCount() > previous_count);
+    try T.expectEqual(@as(?NodeId, declaration), s.checker.firstAncestorPriorJsDocDecl(use, name));
+    try T.expectEqual(s.hir.nodeCount(), s.checker.jsdoc_ancestor_prefix_index.node_count);
+    try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(use, name), s.checker.firstAncestorPriorJsDocDecl(use, name));
+}
+
+test "checker: every JSDoc prefix fact allocation failure frees partials and preserves scalar search" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(T.allocator);
+    for (0..96) |i| {
+        const line = try std.fmt.allocPrint(T.allocator, "var name{d} = 1; name{d};\n", .{ i, i });
+        defer T.allocator.free(line);
+        try source.appendSlice(T.allocator, line);
+    }
+    const s = try newSetup(source.items);
+    defer destroySetup(s);
+    var counted = T.FailingAllocator.init(T.allocator, .{ .resize_fail_index = 0 });
+    s.checker.gpa = counted.allocator();
+    try T.expect(s.checker.jsdoc_ancestor_prefix_index.ensure(&s.checker, s.root, hir_mod.blockStmts(&s.hir, s.root)) != null);
+    const allocations = counted.alloc_index;
+    s.checker.jsdoc_ancestor_prefix_index.deinit(counted.allocator());
+    s.checker.gpa = T.allocator;
+    try T.expect(allocations > 2);
+    for (0..allocations) |fail_index| {
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = T.allocator;
+        var node: NodeId = 1;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) != .identifier) continue;
+            const name = hir_mod.identifierOf(&s.hir, node).name;
+            try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(node, name), s.checker.firstAncestorPriorJsDocDecl(node, name));
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(.slow, s.checker.jsdoc_ancestor_prefix_index.state);
+        try T.expectEqual(@as(u32, 0), s.checker.jsdoc_ancestor_prefix_index.containers.count());
+        try T.expectEqual(fail_index, failing.alloc_index);
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        s.checker.jsdoc_ancestor_prefix_index.deinit(failing.allocator());
+    }
+}
+
+test "checker: JSDoc ancestor prefix failure retries on revision change and preserves full diagnostics" {
+    for ([_][]const u8{
+        \\// @checkjs: true
+        \\// @filename: values.js
+        \\/** @type {number} */ var value = 1;
+        \\function outer() { var value; function inner() { value = 'bad'; } }
+        \\value = 'bad';
+        ,
+        \\// @checkjs: true
+        \\// @filename: first.js
+        \\/** @type {number} */ var value = 1;
+        \\// @filename: second.js
+        \\/** @type {string} */ var value = 'text';
+        \\function f() { value = 1; const { missing } = {}; missing; }
+        ,
+    }) |source| {
+        const indexed = try newSetup(source);
+        defer destroySetup(indexed);
+        const scalar = try newSetup(source);
+        defer destroySetup(scalar);
+        scalar.checker.jsdoc_ancestor_prefix_index.state = .slow;
+        scalar.checker.jsdoc_ancestor_prefix_index.node_count = scalar.hir.nodeCount();
+        try indexed.checker.checkSourceFile(indexed.root);
+        try scalar.checker.checkSourceFile(scalar.root);
+        try T.expect(indexed.checker.diagnostics.items.len > 0);
+        try T.expectEqualDeep(scalar.checker.diagnostics.items, indexed.checker.diagnostics.items);
+    }
+    const s = try newSetup("var value = 1; value;");
+    defer destroySetup(s);
+    const use = hir_mod.blockStmts(&s.hir, s.root)[1];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    const actual = blk: {
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = T.allocator;
+        break :blk s.checker.firstAncestorPriorJsDocDecl(use, name);
+    };
+    try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(use, name), actual);
+    try T.expectEqual(.slow, s.checker.jsdoc_ancestor_prefix_index.state);
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    _ = try builder.addIdentifier(.{ .start = 0, .end = 1 }, try s.sint.intern("recoveryNode"));
+    try T.expectEqual(s.checker.firstAncestorPriorJsDocDeclSlow(use, name), s.checker.firstAncestorPriorJsDocDecl(use, name));
+    try T.expectEqual(.indexed, s.checker.jsdoc_ancestor_prefix_index.state);
 }
 
 test "checker: nearest prior value index preserves complete scope and section eligibility" {
