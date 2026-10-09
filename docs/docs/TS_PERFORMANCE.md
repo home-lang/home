@@ -10,9 +10,10 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-The later shared-require presence candidate was **rejected** after an
-independent class-hierarchy regression; its complete A/B evidence and
-restoration are [documented below](#shared-require-binding-presence-rejected-2026-10-09-utc).
+Both later require-presence candidates were **rejected**: the presence-only
+design for interface-composition regression and the earlier broad shared-cache
+design for class-hierarchy regression. Complete evidence is
+[documented below](#presence-specific-require-facts-rejected-2026-10-09-utc).
 Current `main` also contains subsequent #846 correctness changes. The matrix
 below remains the latest published five-compiler measurement, not a fresh
 measurement of those later changes or the rejected candidate.
@@ -338,6 +339,172 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Presence-specific require facts (rejected, 2026-10-09 UTC)
+
+The independent presence-only candidate under [#854](https://github.com/home-lang/home/issues/854)
+is **rejected and never pushed** to production. Its interface-composition
+confirmation regresses: 44.753 → 45.817 ms, only 10/30 pairs faster, paired
+mean-saving interval **[−6.423, −1.076] ms**. Positive target-scale gains do
+not override a confirmed independent regression. All results below remain;
+no retry-until-pass, alignment tweak, omitted work, semantic cap, source-name
+shortcut, or sample exclusion is introduced.
+
+Exact tested parent is
+[`68ea38d7a4654b45e91e5386f3d9ca8e8562e5f8`](https://github.com/home-lang/home/commit/68ea38d7a4654b45e91e5386f3d9ca8e8562e5f8).
+Clean parent native SHA-256:
+`34118002e25d69a8351a60ee493c504ca734b477ed31efc79fb03ee63a9ad331`.
+Candidate native:
+`de7d12e8370340759031a22b35a68b4f294fe2dc308c2842dbc4a5dc2873219b`;
+frozen production/test patch:
+`23c7c20dd5f2b3a871240b32fb8018fed736150a45eac10516e41a1896aeacbd`.
+This is a distinct design, not a retest of the rejected shared-cache binary.
+
+The prior design altered general local declaration/ordinal index construction.
+This candidate instead stores complete immutable membership by physical HIR
+root, binding name and virtual-section start, using the original require
+predicate. It owns no specifier strings or mutable types. Root syntax is
+scanned completely on demand, including natural absence; there is no raw
+source prefilter. Source replacement releases facts, HIR growth invalidates
+them, and construction failures release partial ownership and keep complete
+scalar queries. General local-value, specifier and ordinal indexes are unchanged.
+Presence still includes later same-section bindings, with no earlier-position
+or cross-section fallback rule. The archived source is not current runtime.
+
+Both full checker runs pass **4,554** tests; Program **251**, driver **200**,
+CLI **76**, entrypoint **38**, standalone native build and **136** harness
+tests pass without filtering. Seven controls cover complete scalar/node
+parity; root/section/ordering; absence/source replacement/null/detached nodes;
+multiple HIR roots; actual root growth; every forced-growth construction
+allocation failure/cleanup/retry; and full JS/typed diagnostic equality.
+This semantic success is necessary but does not erase adverse performance.
+
+Unmodified Zod 4.5.2 (106 production files, unchanged package SHA-512) retains
+the identical complete **198** primary-message/position/code diagnostic
+multiset: 195 TS errors plus 3 HM9002, normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is **not production admission**. The measurement entry point explicitly
+requires all module/build/Zod/harness gates before timing.
+
+The complete predeclared protocol includes official/512/8192 screens,
+independent official/512 confirmations, all 20 family screens, all five
+six-pair large batches, independent warning selection (>3%-slower median or
+negative interval), four carried adverse risks regardless of screen, and
+class/interface confirmation. The family screen selected an additional
+checked-JS recheck. Each phase passes all 66 positive/negative admissions
+on both frozen native binaries. Checked-JS first/middle/last controls require
+TS2322×9, TS2339×3 and TS2345×3, not erased or partial checking.
+Three warmups precede alternating fresh processes. Before/after executable,
+source-patch, input, harness and tool fingerprints match. All **532** paired
+rounds (**1,064** raw times) and **660** successful complete admission records
+verify; no observation is omitted and no diagnostic image supplies timing.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 29.572 ms | 29.105 ms | 13/20 | -0.056 to +0.883 ms |
+| 512 families, six-pair screen | 209.849 ms | 134.515 ms | 3/6 | -56.971 to +111.904 ms |
+| 8,192 families, six-pair screen | 16,777.862 ms | 9,850.214 ms | 5/6 | -1,027.474 to +15,554.682 ms |
+| Official checked JS, 30-pair confirmation | 29.938 ms | 29.991 ms | 18/30 | -4.646 to +2.181 ms |
+| 512 families, 30-pair confirmation | 121.349 ms | 115.059 ms | 26/30 | +4.278 to +9.173 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 8,342.326 ms | 6,978.889 ms | 6/6 | +313.382 to +3,425.266 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 7,908.671 ms | 6,557.446 ms | 5/6 | -1,315.897 to +2,483.741 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 8,125.610 ms | 6,760.708 ms | 5/6 | +304.048 to +1,953.589 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 7,721.234 ms | 6,503.883 ms | 6/6 | +936.371 to +1,481.801 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 8,606.116 ms | 6,543.746 ms | 6/6 | +1,234.003 to +2,889.555 ms |
+| 8,192 families, all five batches (30 pairs total) | 8,050.697 ms | 6,637.805 ms | 28/30 | +918.689 to +1,822.483 ms |
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 42.722 ms | 54.406 ms | 3/10 | -44.012 to +7.983 ms |
+| `class_hierarchy` | 25.017 ms | 25.637 ms | 5/10 | -1.266 to +1.106 ms |
+| `commonjs_graph` | 40.951 ms | 38.095 ms | 5/10 | -9.475 to +6.547 ms |
+| `control_flow` | 26.029 ms | 26.254 ms | 6/10 | -0.370 to +0.455 ms |
+| `deep_types` | 20.792 ms | 20.859 ms | 3/10 | -0.231 to +0.131 ms |
+| `destructuring` | 14.698 ms | 14.919 ms | 2/10 | -0.404 to +0.052 ms |
+| `generic_calls` | 23.137 ms | 23.216 ms | 5/10 | -0.567 to +0.488 ms |
+| `import_graph` | 17.030 ms | 17.196 ms | 4/10 | -0.577 to +0.363 ms |
+| `interface_composition` | 48.592 ms | 47.519 ms | 6/10 | -15.917 to +9.039 ms |
+| `many_files` | 21.560 ms | 21.811 ms | 2/10 | -3.133 to +0.634 ms |
+| `null_safe_access` | 32.286 ms | 32.006 ms | 6/10 | -0.112 to +0.800 ms |
+| `overload_resolution` | 26.453 ms | 26.085 ms | 4/10 | -1.415 to +0.924 ms |
+| `recursive_generics` | 20.595 ms | 22.578 ms | 2/10 | -4.301 to +1.444 ms |
+| `reexport_graph` | 11.787 ms | 11.368 ms | 7/10 | -0.733 to +2.319 ms |
+| `startup` | 2.692 ms | 2.661 ms | 7/10 | -0.006 to +0.110 ms |
+| `structural_objects` | 24.793 ms | 25.266 ms | 4/10 | -0.853 to +0.051 ms |
+| `tsx_components` | 18.639 ms | 18.672 ms | 5/10 | -0.240 to +0.147 ms |
+| `type_predicates` | 32.522 ms | 32.432 ms | 3/10 | -0.301 to +0.261 ms |
+| `type_predicates_large` | 250.320 ms | 249.204 ms | 6/10 | -13.491 to +7.829 ms |
+| `variadic_tuples` | 51.406 ms | 46.106 ms | 6/10 | -11.672 to +19.772 ms |
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 30.085 ms | 29.936 ms | 21/30 | -1.884 to +6.590 ms |
+| `deep_types` | 32.345 ms | 29.983 ms | 15/30 | -3.989 to +21.779 ms |
+| `recursive_generics` | 16.601 ms | 16.633 ms | 15/30 | -0.580 to +0.763 ms |
+| `reexport_graph` | 19.999 ms | 26.242 ms | 11/30 | -18.704 to +0.769 ms |
+| `type_predicates_large` | 308.094 ms | 292.604 ms | 17/30 | -21.880 to +41.461 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 28.873 ms | 27.661 ms | 19/30 | -1.194 to +1.734 ms |
+| `interface_composition` | 44.753 ms | 45.817 ms | 10/30 | -6.423 to -1.076 ms |
+
+Independent 512-family median is 5.2% lower and pooled 8,192-family median is
+17.5% lower. The large candidate is faster on 28/30 pairs; both adverse pairs
+remain. Pooled mean saving is 1.370586 seconds, interval [0.918689, 1.822483]
+seconds. The supplemental five-batch t interval (df 4) is [0.628334, 2.112838]
+seconds, retaining batch variation, not 30 pairs after one warmup set.
+Batch two's interval spans zero and its **12.371**-second candidate time
+remains. The highly variable initial screen also remains, including parent
+large times up to 27.301 seconds. No outlier filtering or selective batching.
+
+The family checked-JS screen has a 27.3%-slower candidate median and recursive
+generics 9.6% slower; both warnings are retained. Official confirmation and
+all five selected rechecks span zero. Re-exports retains a 31.2%-slower
+independent median and nearly negative interval; this is an unresolved warning,
+not equivalence or proof of no regression. Class confirmation is inconclusive,
+not a claim that the previous design's class regression is fixed. The negative
+independent interface interval determines rejection.
+
+The candidate and all new controls were removed with an exact source restore
+to the tested parent, and installed native restored byte-for-byte. The clean
+worktree then advanced to
+[`37b5225c2cf795e16bf3d20a436a606c0ae594e9`](https://github.com/home-lang/home/commit/37b5225c2cf795e16bf3d20a436a606c0ae594e9),
+preserving newer runtime work. A clean matching standalone build passes,
+with the same native `34118002` SHA-256 above. This restoration is not a
+new A/B or competitor rank. All jobs are terminal with exit records.
+The unchanged guard is **600** seconds / 3,840 MB with the shared machine
+lock and disk floors intact. First checker peak 3,408 MB (cached rerun 21 MB),
+Program 3,122 MB, driver 2,848 MB, CLI 2,821 MB, entrypoint 3,159 MB,
+candidate build 3,089 MB, restoration 3,001 MB and timing peak 283 MB.
+Shared-lock waits, variability and original logs remain.
+
+GitHub's initial issue helper returned HTTP 401. Plugin-management inspection
+found the existing authenticated account and standard REST issue access
+working; normal REST updates succeeded as `chrisbbreuer`. No credential,
+permission or plugin connection was changed, and no failure is relabeled
+success. This access check is not a benchmark-policy workaround.
+
+The [complete rejection archive](../../bench/vs_tsgo/evidence/20261009-presence-specific-facts-rejected-854.tar.gz)
+has **1,656** verified payload checksums, including all arrays/admissions,
+source/test patches, test/build/Zod evidence, command/guard logs, restoration,
+decision/lifecycle/access records, inputs, harness and independent verifiers.
+Archive SHA-256:
+`5dc948934a065562ddcf9c8528f418657e4f6f946e4127fee0ed63faf5b5da01`.
+Original negative temporary directories were deleted by the original harness;
+actual process records remain. Nine separately labeled generator replays
+preserve fixtures, not original directories, additional admissions or timings.
+No five-compiler ranking, C++ admission, other-platform result, Zod admission
+or universal leadership is inferred. The broader goal remains open.
+
+Repository-wide `bunx --bun pickier .` at restoration source `37b5225c2`
+exits 1 with **11,461 existing errors and 10,613 warnings** in unchanged
+code/fixtures. No auto-fixes were applied; new Markdown values/links and
+`git diff --check` verify. The separate
+[lint context](../../bench/vs_tsgo/evidence/20261009-presence-specific-facts-lint-context-854.tar.gz)
+retains full command/log and terminal-state records with five verified payload
+checksums, SHA-256
+`db18b488a6e2f1111c9b50ba74c9fdcf6e17d4fdf31f6c25f39acf5a7d4b8627`.
 
 ## Shared require-binding presence (rejected, 2026-10-09 UTC)
 

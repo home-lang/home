@@ -378,6 +378,23 @@ does not refresh the earlier five-compiler ranking. Linux workflow dispatch
 was refused because repository Actions are disabled; no new platform result
 or C++ admission is claimed.
 
+A distinct presence-only fact index was also **rejected** for confirmed
+interface-composition regression, despite independent target-scale gains:
+
+| Rejected #854 presence-only confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 29.938 ms | 29.991 ms | −4.646 to +2.181 ms; inconclusive |
+| 512 families, 30 pairs | 121.349 ms | 115.059 ms | +4.278 to +9.173 ms |
+| 8,192 families, five six-pair batches | 8,050.697 ms | 6,637.805 ms | +918.689 to +1,822.483 ms |
+| Interface composition, 30 pairs | 44.753 ms | 45.817 ms | **−6.423 to −1.076 ms** |
+
+Source and native are restored; the candidate was never pushed. All **532
+rounds / 660 admissions** remain, including variable samples and unresolved
+warnings. See the
+[full rejection report](docs/docs/TS_PERFORMANCE.md#presence-specific-require-facts-rejected-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-presence-specific-facts-rejected-854.tar.gz).
+No layout tweak or repeat-until-pass is used, and no new ranking is inferred.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
