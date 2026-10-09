@@ -133,7 +133,7 @@ comptime {
         // js2native_workarounds.zig (the noop left parseManifest undefined).
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
         // event_loop getActiveTasks now has its real export in js2native_workarounds.zig.
-        "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",
+        // IPC handle delivery has its real host export in js2native_workarounds.zig.
         // setSyntheticAllocationLimitForTesting now has its real export in
         // js2native_workarounds.zig (the noop left the OOM tests unable to
         // lower the limit, so they never threw the OOM they assert on).

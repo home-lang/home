@@ -214,12 +214,16 @@ export function serialize(_message, _handle, _options) {
 export function parseHandle(target, serialized, fd) {
   const emit = $newZigFunction("ipc.zig", "emitHandleIPCMessage", 3);
   const net = require("node:net");
+  // Node's NODE_HANDLE wire envelope uses msg. Older Bun envelopes used
+  // message; preserve that protocol spelling without conflating undefined
+  // with an absent property. Snapshot before the asynchronous listen callback.
+  const message = Object.hasOwn(serialized, "msg") ? serialized.msg : serialized.message;
   // const dgram = require("node:dgram");
   switch (serialized.type) {
     case "net.Server": {
       const server = new net.Server();
       server.listen({ fd }, () => {
-        emit(target, serialized.message, server);
+        emit(target, message, server);
       });
       return;
     }

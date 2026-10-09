@@ -64,7 +64,7 @@ export function validateCoreFamily(header: string, family: string, functions: Ar
   name: string, params: string[], constructAbility: string, constructKind: string,
   visibility: string, overriddenName: string, directives: Record<string, unknown>,
 }>, internal: boolean): void {
-  const lower = family[0].toLowerCase() + family.slice(1)
+  const lower = family.startsWith('JS') ? `js${family.slice(2)}` : family[0].toLowerCase() + family.slice(1)
   const data = header.match(new RegExp(`#define WEBCORE_FOREACH_${family.toUpperCase()}_BUILTIN_DATA\\(macro\\) ([\\s\\S]*?)\\n\\n`))
   if (!data) throw new Error(`Linked core ABI has no family ${family}`)
   const entries = [...data[1].matchAll(/macro\((\w+), (\w+), (\d+)\)/g)]

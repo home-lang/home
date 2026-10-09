@@ -29,22 +29,30 @@ export function requiredId(values: Map<string, number>, name: string): number {
 }
 
 export function nativeFunctionId(header: string, type: string, filename: string, symbol: string, length: number | null): number {
-  // Zig calls need matching exported adapters. C++ wrappers are accepted only
-  // when their complete generated signature matches the linked dispatch ABI.
-  if (type !== 'cpp') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
-  if (!header.includes(`#include "${filename.replace(/\.cpp$/, '.h')}"`)) {
+  // Wrapped host calls must match their complete signature and source identity.
+  // Bare Zig factories require another adapter shape and stay unsupported here.
+  if (type !== 'cpp' && type !== 'zig') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
+  let nativeTarget = symbol
+  if (type === 'zig') {
+    if (length === null || !/^src\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.zig$/.test(filename)) {
+      throw new Error(`Unsupported incremental Zig source or factory: ${filename} ${symbol}`)
+    }
+    const prefix = `/${filename}`.replaceAll('.zig', '_zig_').replace(/[^A-Za-z]/g, '_')
+    nativeTarget = `JS2Zig__${prefix}_${symbol.replace(/[^A-Za-z]/g, '_')}`
+    if (!header.includes(`BUN_DECLARE_HOST_FUNCTION(${nativeTarget});`)) throw new Error(`Linked native dispatch has no host declaration for ${filename} ${symbol}`)
+  } else if (!header.includes(`#include "${filename.replace(/\.cpp$/, '.h')}"`)) {
     throw new Error(`Linked native dispatch has no header for ${filename}`)
   }
   let target = symbol
   if (length !== null) {
-    if (!Number.isSafeInteger(length) || length < 0 || !/^[A-Za-z_][A-Za-z0-9_:]*$/.test(symbol)) {
+    if (!Number.isSafeInteger(length) || length < 0 || !/^[A-Za-z_][A-Za-z0-9_:.]*$/.test(symbol)) {
       throw new Error(`Invalid native wrapper signature: ${symbol}`)
     }
     target = `js2native_wrap_${symbol.replace(/[^A-Za-z]/g, '_')}`
     const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const wrappers = [...header.matchAll(new RegExp(`static ALWAYS_INLINE JSC::JSValue ${escaped}\\(Zig::GlobalObject\\* globalObject\\) \\{([^}]+)\\}`, 'g'))]
     const displayName = symbol.split(/[^A-Za-z0-9]/g).pop()
-    const expected = `return JSC::JSFunction::create(globalObject->vm(), globalObject, ${length}, "${displayName}"_s, ${symbol}, JSC::ImplementationVisibility::Public);`
+    const expected = `return JSC::JSFunction::create(globalObject->vm(), globalObject, ${length}, "${displayName}"_s, ${nativeTarget}, JSC::ImplementationVisibility::Public);`
     if (wrappers.length !== 1 || wrappers[0][1].replace(/\s+/g, ' ').trim() !== expected) {
       throw new Error(`Linked native wrapper signature mismatch: ${symbol}`)
     }

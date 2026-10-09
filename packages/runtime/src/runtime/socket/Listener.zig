@@ -245,10 +245,11 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     const kind: uws.SocketKind = if (ssl_enabled) .bun_listener_tls else .bun_listener_tcp;
 
     const hostname = bun.handleOom(hostname_or_unix.intoOwnedSlice(bun.default_allocator));
-    errdefer bun.default_allocator.free(hostname);
-    var connection: Listener.UnixOrHost = if (port) |port_| .{
+    var hostname_owned = true;
+    errdefer if (hostname_owned) bun.default_allocator.free(hostname);
+    var connection: Listener.UnixOrHost = if (socket_config.fd) |fd| .{ .fd = fd } else if (port) |port_| .{
         .host = .{ .host = hostname, .port = port_ },
-    } else if (socket_config.fd) |fd| .{ .fd = fd } else .{ .unix = hostname };
+    } else .{ .unix = hostname };
 
     var errno: c_int = 0;
     const listen_socket: *uws.ListenSocket = brk: {
@@ -266,14 +267,7 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
                 break :brk this.group.listenUnix(kind, this.secure_ctx, pathz.ptr, pathz.len, socket_flags, @sizeOf(?*anyopaque), &errno);
             },
             .fd => |fd| {
-                const err: bun.jsc.SystemError = .{
-                    .errno = @backingInt(bun.sys.SystemErrno.EINVAL),
-                    .code = .static("EINVAL"),
-                    .message = .static("Bun does not support listening on a file descriptor."),
-                    .syscall = .static("listen"),
-                    .fd = fd.uv(),
-                };
-                return globalObject.throwValue(err.toErrorInstance(globalObject));
+                break :brk this.group.listenFD(kind, this.secure_ctx, fd.native(), socket_flags, @sizeOf(?*anyopaque), &errno);
             },
         }
     } orelse {
@@ -292,6 +286,11 @@ pub fn listen(globalObject: *jsc.JSGlobalObject, opts: JSValue) bun.JSError!JSVa
     };
 
     this.connection = connection;
+    if (connection == .fd) {
+        // The fd variant does not retain the hostname allocation.
+        bun.default_allocator.free(hostname);
+        hostname_owned = false;
+    }
     this.listener = .{ .uws = listen_socket };
     if (socket_config.default_data != .zero) {
         this.strong_data = .create(socket_config.default_data, globalObject);

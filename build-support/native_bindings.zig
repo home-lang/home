@@ -33,7 +33,7 @@ pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.Lazy
     generate.addFileArg(b.path("build-support/bundle-core-builtins.ts"));
     generate.addArg(build_root);
     const output = generate.addOutputDirectoryArg("core-builtins");
-    generate.setName("generate Home core stream builtin functions");
+    generate.setName("generate Home core builtin functions");
     generate.setCwd(b.path("."));
     for ([_][]const u8{
         "build-support/core_builtin_abi.ts",
@@ -48,12 +48,9 @@ pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.Lazy
         "packages/runtime/upstream/src/jsc/bindings/ErrorCode.ts",
     }) |input| generate.addFileInput(b.path(input));
     for ([_][]const u8{
-        "ByteLengthQueuingStrategy",        "CompressionStream",               "CountQueuingStrategy",            "DecompressionStream",
-        "ReadableByteStreamController",     "ReadableByteStreamInternals",     "ReadableStream",                  "ReadableStreamBYOBReader",
-        "ReadableStreamBYOBRequest",        "ReadableStreamDefaultController", "ReadableStreamDefaultReader",     "ReadableStreamInternals",
-        "StreamInternals",                  "TextDecoderStream",               "TextEncoderStream",               "TransformStream",
-        "TransformStreamDefaultController", "TransformStreamInternals",        "WritableStreamDefaultController", "WritableStreamDefaultWriter",
-        "WritableStreamInternals",
+        "Bake",                             "BakeSSRResponse",          "BundlerPlugin",                   "CommonJS",                    "ConsoleObject",                "Glob",                        "ImportMetaObject", "Ipc",                      "JSBufferConstructor",       "JSBufferPrototype",               "NodeModuleObject",            "Peek",                    "ProcessObjectInternals", "UtilInspect",       "WasmStreaming",     "shell",
+        "ByteLengthQueuingStrategy",        "CompressionStream",        "CountQueuingStrategy",            "DecompressionStream",         "ReadableByteStreamController", "ReadableByteStreamInternals", "ReadableStream",   "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableStreamDefaultController", "ReadableStreamDefaultReader", "ReadableStreamInternals", "StreamInternals",        "TextDecoderStream", "TextEncoderStream", "TransformStream",
+        "TransformStreamDefaultController", "TransformStreamInternals", "WritableStreamDefaultController", "WritableStreamDefaultWriter", "WritableStreamInternals",
     }) |family| generate.addFileInput(b.path(b.fmt("packages/runtime/upstream/src/js/builtins/{s}.ts", .{family})));
     for ([_][]const u8{ "WebCoreJSBuiltins.cpp", "WebCoreJSBuiltins.h", "InternalModuleRegistry+enum.h", "GeneratedJS2Native.h", "ErrorCode+List.h" }) |name|
         generate.addFileInput(.{ .cwd_relative = b.fmt("{s}/codegen/{s}", .{ build_root, name }) });

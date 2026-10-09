@@ -27,6 +27,7 @@ const headers_jsc = @import("../http_jsc/headers_jsc.zig");
 const vm_exports = @import("./virtual_machine_exports.zig");
 const FileSink = @import("../runtime/webcore/FileSink.zig");
 const event_loop = @import("./event_loop.zig");
+const ipc = @import("./ipc.zig");
 
 const node_os = @import("../runtime/node/node_os.zig");
 const node_fs_binding = @import("../runtime/node/node_fs_binding.zig");
@@ -280,6 +281,7 @@ comptime {
     // and node:http activeTasks leak tests couldn't assert on the counts.
     @export(&host_fn.toJSHostFn(FileSink.TestingAPIs.fileSinkLiveCount), .{ .name = "JS2Zig___src_runtime_webcore_FileSink_zig__TestingAPIs_fileSinkLiveCount" });
     @export(&host_fn.toJSHostFn(event_loop.getActiveTasks), .{ .name = "JS2Zig___src_jsc_event_loop_zig__getActiveTasks" });
+    @export(&host_fn.toJSHostFn(ipc.emitHandleIPCMessage), .{ .name = "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage" });
 
     // ---- InternalSourceMap TestingAPIs (bun:internal-for-testing) --------
     // Real exports for the VLQ round-trip / find test hooks. native_stubs had

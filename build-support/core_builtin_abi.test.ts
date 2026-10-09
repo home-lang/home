@@ -35,8 +35,8 @@ nativeTest('generates core stream families with a byte-identical header and reje
     expect(result.exitCode, result.stderr.toString()).toBe(0)
     expect(readFileSync(path.join(baseline, 'WebCoreJSBuiltins.h'))).toEqual(readFileSync(path.join(nativeBuild, 'codegen/WebCoreJSBuiltins.h')))
     const manifest = JSON.parse(readFileSync(path.join(baseline, 'ownership.json'), 'utf8'))
-    expect(manifest.families).toHaveLength(21)
-    expect(manifest.owned_functions).toBe(280)
+    expect(manifest.families).toHaveLength(37)
+    expect(manifest.owned_functions).toBe(363)
     const original = decodeCoreBuiltins(read('WebCoreJSBuiltins.cpp'))
     const generated = decodeCoreBuiltins(readFileSync(path.join(baseline, 'WebCoreJSBuiltins.cpp'), 'utf8'))
     let retained = 0

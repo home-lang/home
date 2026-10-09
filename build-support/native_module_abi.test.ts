@@ -52,4 +52,18 @@ describe('incremental native module ABI', () => {
     expect(() => resolve(header + '\n' + wrapper)).toThrow('signature mismatch')
     expect(() => resolve(header + '\ncase 95: return js2native_wrap_jsFunctionPostMessage(global);')).toThrow('exactly one')
   })
+  test('validates Zig host source identity, declaration and complete wrapper signature', () => {
+    const host = 'JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage'
+    const wrapper = `static ALWAYS_INLINE JSC::JSValue js2native_wrap_emitHandleIPCMessage(Zig::GlobalObject* globalObject) { return JSC::JSFunction::create(globalObject->vm(), globalObject, 3, "emitHandleIPCMessage"_s, ${host}, JSC::ImplementationVisibility::Public); }`
+    const header = `BUN_DECLARE_HOST_FUNCTION(${host});\n${wrapper}\ncase 169: return js2native_wrap_emitHandleIPCMessage(global);`
+    const resolve = (source: string, file = 'src/jsc/ipc.zig', length: number | null = 3) => nativeFunctionId(source, 'zig', file, 'emitHandleIPCMessage', length)
+    expect(resolve(header)).toBe(169)
+    expect(() => resolve(header, 'src/other/ipc.zig')).toThrow('no host declaration')
+    expect(() => resolve(header, '../src/jsc/ipc.zig')).toThrow('Unsupported')
+    expect(() => resolve(header, 'src/jsc/ipc.zig', null)).toThrow('Unsupported')
+    expect(() => resolve(header, 'src/jsc/ipc.zig', 2)).toThrow('signature mismatch')
+    expect(() => resolve(header.replace(`BUN_DECLARE_HOST_FUNCTION(${host});`, ''))).toThrow('no host declaration')
+    expect(() => resolve(header.replace(`, ${host},`, ', missingHost,'))).toThrow('signature mismatch')
+    expect(() => resolve(header + '\ncase 170: return js2native_wrap_emitHandleIPCMessage(global);')).toThrow('exactly one')
+  })
 })

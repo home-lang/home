@@ -54,7 +54,9 @@ function resolveNativeFileId(call_type: NativeCallType, filename: string) {
   }
 
   filename = filename.replaceAll("/", sep);
-  const resolved = sourceFiles.find(file => file.endsWith(sep + filename));
+  const matches = sourceFiles.filter(file => file.endsWith(sep + filename));
+  const resolved = matches[0];
+  if (matches.length > 1) throw new Error(`Ambiguous native source identity: ${filename}`);
   if (!resolved) {
     const fnName = call_type === "bind" ? "bindgenFn" : call_type;
     throw new Error(`Could not find file ${filename} in $${fnName} call`);
@@ -73,7 +75,14 @@ export function registerNativeCall(
   symbol: string,
   create_fn_len: null | number,
 ) {
-  if (nativeCallResolver) return nativeCallResolver(call_type, filename, symbol, create_fn_len);
+  if (nativeCallResolver) {
+    if (call_type === "zig") {
+      const resolved = resolveNativeFileId(call_type, filename);
+      const relative = path.relative(path.resolve(import.meta.dir, "../.."), resolved).split(sep).join("/");
+      return nativeCallResolver(call_type, relative, symbol, create_fn_len);
+    }
+    return nativeCallResolver(call_type, filename, symbol, create_fn_len);
+  }
   const resolved_filename = resolveNativeFileId(call_type, filename);
 
   const maybe_wrapped_symbol = create_fn_len != null ? "js2native_wrap_" + symbol.replace(/[^A-Za-z]/g, "_") : symbol;
