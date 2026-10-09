@@ -68,7 +68,7 @@ interface BundledBuiltin {
 /**
  * Source .ts file --> Array<bundled js function code>
  */
-async function processFileSplit(filename: string): Promise<{ functions: BundledBuiltin[]; internal: boolean }> {
+export async function processFileSplit(filename: string): Promise<{ functions: BundledBuiltin[]; internal: boolean }> {
   const basename = path.basename(filename, ".ts");
   let contents = await Bun.file(filename).text();
 

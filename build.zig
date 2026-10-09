@@ -141,6 +141,7 @@ const native_vendor_roots = [_][]const u8{
 };
 
 const native_skip_paths = [_][]const u8{
+    "codegen/WebCoreJSBuiltins.cpp.o", // contains Home-owned core stream builtin bodies
     "src/jsc/bindings/uv-posix-stubs.c.o",
     "src/jsc/bindings/napi.cpp.o",
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
@@ -246,6 +247,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.cryptoObject1(b, bun_obj_root),
         native_bindings.serializedScriptValueObject(b, bun_obj_root),
         native_bindings.asyncHooksObject(b, bun_obj_root),
+        native_bindings.coreBuiltinsObject(b, bun_obj_root),
     };
     for (owned_objects) |object| {
         object.addStepDependencies(native_binding_step);

@@ -24,6 +24,43 @@ var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
 var cached_async_hooks_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
+var cached_core_builtins_object: ?std.Build.LazyPath = null;
+
+pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_core_builtins_object) |object| return object;
+    const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
+    const generate = b.addSystemCommand(&.{ "bun", "run" });
+    generate.addFileArg(b.path("build-support/bundle-core-builtins.ts"));
+    generate.addArg(build_root);
+    const output = generate.addOutputDirectoryArg("core-builtins");
+    generate.setName("generate Home core stream builtin functions");
+    generate.setCwd(b.path("."));
+    for ([_][]const u8{
+        "build-support/core_builtin_abi.ts",
+        "build-support/native_module_abi.ts",
+        "packages/runtime/upstream/src/codegen/bundle-functions.ts",
+        "packages/runtime/upstream/src/codegen/builtin-parser.ts",
+        "packages/runtime/upstream/src/codegen/client-js.ts",
+        "packages/runtime/upstream/src/codegen/helpers.ts",
+        "packages/runtime/upstream/src/codegen/replacements.ts",
+        "packages/runtime/upstream/src/codegen/generate-js2native.ts",
+        "packages/runtime/upstream/src/codegen/internal-module-registry-scanner.ts",
+        "packages/runtime/upstream/src/jsc/bindings/ErrorCode.ts",
+    }) |input| generate.addFileInput(b.path(input));
+    for ([_][]const u8{
+        "ByteLengthQueuingStrategy",        "CompressionStream",               "CountQueuingStrategy",            "DecompressionStream",
+        "ReadableByteStreamController",     "ReadableByteStreamInternals",     "ReadableStream",                  "ReadableStreamBYOBReader",
+        "ReadableStreamBYOBRequest",        "ReadableStreamDefaultController", "ReadableStreamDefaultReader",     "ReadableStreamInternals",
+        "StreamInternals",                  "TextDecoderStream",               "TextEncoderStream",               "TransformStream",
+        "TransformStreamDefaultController", "TransformStreamInternals",        "WritableStreamDefaultController", "WritableStreamDefaultWriter",
+        "WritableStreamInternals",
+    }) |family| generate.addFileInput(b.path(b.fmt("packages/runtime/upstream/src/js/builtins/{s}.ts", .{family})));
+    for ([_][]const u8{ "WebCoreJSBuiltins.cpp", "WebCoreJSBuiltins.h", "InternalModuleRegistry+enum.h", "GeneratedJS2Native.h", "ErrorCode+List.h" }) |name|
+        generate.addFileInput(.{ .cwd_relative = b.fmt("{s}/codegen/{s}", .{ build_root, name }) });
+    const object = compileObject(b, object_root, "WebCoreJSBuiltins.cpp", output.path(b, "WebCoreJSBuiltins.cpp"));
+    cached_core_builtins_object = object;
+    return object;
+}
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
 /// produced the rest of the linked Bun objects. Never silently use the stale
@@ -368,7 +405,7 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     const command = findCommand(parsed.value, basename) orelse
         std.debug.panic("no {s} command in {s}", .{ basename, database_path });
     if (command.arguments.len == 0) std.debug.panic("empty native compile command in {s}", .{database_path});
-    if (std.mem.eql(u8, basename, "UnifiedSource-src_jsc_bindings-1.cpp") and hasDynamicBuiltinLoading(command.arguments)) {
+    if ((std.mem.eql(u8, basename, "UnifiedSource-src_jsc_bindings-1.cpp") or std.mem.eql(u8, basename, "WebCoreJSBuiltins.cpp")) and hasDynamicBuiltinLoading(command.arguments)) {
         std.debug.panic("Home-owned builtin modules require embedded native artifacts; BUN_DYNAMIC_JS_LOAD_PATH would bypass Home's generated literals", .{});
     }
     const process_command = findCommand(parsed.value, "BunProcess.cpp") orelse
