@@ -14,15 +14,95 @@ Both later require-presence candidates were **rejected**: the presence-only
 design for interface-composition regression and the earlier broad shared-cache
 design for class-hierarchy regression. Complete evidence is
 [documented below](#presence-specific-require-facts-rejected-2026-10-09-utc).
-Current `main` also contains subsequent #846 correctness changes. The matrix
-below remains the latest published five-compiler measurement, not a fresh
-measurement of those later changes or the rejected candidate.
+The matrix below freshly measures the restored current-main compiler and
+subsequent #846 correctness work, with neither rejected candidate present.
+It is a full competitor comparison, not an exact-parent patch A/B.
 
 The virtual-section source index's exact-parent Home-only A/B is separate
 from the fresh competitor matrix below. Its scaling gains and unresolved
 adverse recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
 
-### Landed virtual-section matrix (2026-10-09 UTC)
+### Restored current-main matrix (2026-10-09 UTC)
+
+Result `20261009T194221Z` measures source
+[`624916ec4210bb13ebbc8e9368f9f28d9152cb89`](https://github.com/home-lang/home/commit/624916ec4210bb13ebbc8e9368f9f28d9152cb89),
+compiler inputs equal
+[`37b5225c2`](https://github.com/home-lang/home/commit/37b5225c2cf795e16bf3d20a436a606c0ae594e9).
+Native SHA-256:
+`34118002e25d69a8351a60ee493c504ca734b477ed31efc79fb03ee63a9ad331`.
+Both rejected require-presence variants are absent. This fresh whole-matrix
+comparison includes current #846 correctness work, but is not an A/B
+attributing cross-run changes to it or any one optimization.
+
+All five unchanged byte-pinned compilers pass **145/145 admissions** on the
+same 20 positive/nine negative projects, validation protocol **4**, including
+TS2322×9, TS2339×3 and TS2345×3 checked-JS errors. Three warmups precede
+30 fresh processes per compiler/workload with equally rotating order:
+**600 original rounds / 3,000 retained samples**. Before/after executable,
+payload, input, harness and project-context fingerprints match. No compiler,
+workload, diagnostic or observation is removed; diagnostic images are not timed.
+
+Host/tools remain Apple M3 Pro / Mac15,6, 11 logical cores, Darwin27 arm64,
+Node 26.10.0, Hyperfine 1.20.0 and Python 3.9.6. Compilers remain TS 6.0.3,
+direct native TS 7.0.2, Home 0.1.0, Rust tsc-rs 0.1.0/TS 7.1.0-dev and
+Bun 1.4.3-canary.1+bd599f5af, with original payload inventories unchanged.
+Home is pinned Zig 2163, stripped ReleaseFast with `-Denable_jsc=false`.
+Shared 600-second/3,840 MB guard and disk floors are unchanged; peak 394 MB,
+host low-water 32%. All jobs are terminal with recorded results.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 214.7 ms | 24.3 ms | 28.1 ms | 23.7 ms | 14.0 ms | 2.00× slower |
+| `class_hierarchy` | 188.4 ms | 21.4 ms | 23.3 ms | 17.8 ms | 13.7 ms | 1.71× slower |
+| `commonjs_graph` | 158.5 ms | 18.6 ms | 18.2 ms | 15.2 ms | 12.3 ms | 1.48× slower |
+| `control_flow` | 209.4 ms | 28.8 ms | 27.0 ms | 25.7 ms | 17.1 ms | 1.58× slower |
+| `deep_types` | 132.9 ms | 21.7 ms | 21.2 ms | 14.2 ms | 13.5 ms | 1.57× slower |
+| `destructuring` | 134.7 ms | 16.4 ms | 14.7 ms | 14.0 ms | 10.5 ms | 1.40× slower |
+| `generic_calls` | 197.3 ms | 24.8 ms | 24.6 ms | 21.0 ms | 15.7 ms | 1.57× slower |
+| `import_graph` | 152.3 ms | 16.0 ms | 18.6 ms | 12.8 ms | 17.6 ms | 1.45× slower |
+| `interface_composition` | 220.7 ms | 34.0 ms | 35.7 ms | 25.3 ms | 18.6 ms | 1.92× slower |
+| `many_files` | 197.9 ms | 22.2 ms | 21.0 ms | 15.5 ms | 12.6 ms | 1.67× slower |
+| `null_safe_access` | 188.0 ms | 26.4 ms | 31.9 ms | 22.1 ms | 15.9 ms | 2.01× slower |
+| `overload_resolution` | 197.8 ms | 32.6 ms | 23.6 ms | 26.2 ms | 19.8 ms | 1.19× slower |
+| `recursive_generics` | 157.2 ms | 40.2 ms | 14.6 ms | 33.0 ms | 9.4 ms | 1.55× slower |
+| `reexport_graph` | 99.3 ms | 10.6 ms | 12.1 ms | 9.0 ms | 8.9 ms | 1.37× slower |
+| `startup` | 64.1 ms | 7.4 ms | 2.9 ms | 5.9 ms | 6.3 ms | **2.03× faster** |
+| `structural_objects` | 192.3 ms | 27.8 ms | 23.4 ms | 23.3 ms | 17.3 ms | 1.36× slower |
+| `tsx_components` | 177.9 ms | 17.1 ms | 20.2 ms | 15.3 ms | 10.9 ms | 1.85× slower |
+| `type_predicates` | 241.2 ms | 40.7 ms | 33.3 ms | 34.7 ms | 23.2 ms | 1.43× slower |
+| `type_predicates_large` | 1,003.6 ms | 306.5 ms | 243.5 ms | 268.4 ms | 162.9 ms | 1.49× slower |
+| `variadic_tuples` | 270.6 ms | 47.8 ms | 33.0 ms | 35.6 ms | 20.2 ms | 1.63× slower |
+
+Home leads **1/20** (`startup`) and beats native TS 7 on **13/20**, using
+unrounded medians. Bun leads 18 and Rust leads imports. These descriptive
+medians are not statistical-significance, equivalence or causal patch claims.
+The new rows cannot establish a causal gain over older runs. Current gaps
+include null-safe access **2.01×**, checked JS **2.00×**, interfaces **1.92×**,
+TSX **1.85×** and class hierarchy **1.71×** slower than the fastest measured
+competitor. CommonJS is **1.48×** slower. Universal leadership, Zod
+production admission, canonical C++ admission and other-platform coverage
+remain incomplete (#416/#838/#548). Repository Actions was disabled at the
+recorded Linux dispatch attempt; no unsupported platform result is inferred.
+
+The [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009T194221Z.tar.gz)
+has **603** verified payload checksums with all original arrays/admissions.
+SHA-256:
+`16b959d655b2eaf2d16767951f24bb9d48d284a9604fa713d75d5b6dac89b80c`.
+The [run-context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009T194221Z-context-854.tar.gz)
+retains runner/log/command, recomputed statistics, table/verifier scripts and
+frozen harness/registry with **17** verified checksums. SHA-256:
+`0955caf39fda85a25b485c32daa6ae4a5115b686d684ab2c8cb9295a6dcd78e0`.
+
+Repository-wide `bunx --bun pickier .` reports 11,461 existing errors and
+10,613 warnings in unchanged code/fixtures; no auto-fixes were applied.
+Detailed/README row verifiers, profile count/hash/symbol checks and
+`git diff --check` pass. The separate
+[publication context](../../bench/vs_tsgo/evidence/20261009-restored-matrix-profile-publication-context-854.tar.gz)
+retains the full lint command/log, both report verifiers and terminal job
+records, with seven verified payload checksums, SHA-256
+`ae40e02b29276068406738962634471c9fc22effaa64f4cf592e9e5495b88200`.
+
+### Previous landed virtual-section matrix (2026-10-09 UTC)
 
 Result `20261009T045701Z` measures source
 [`71fa7dbe7`](https://github.com/home-lang/home/commit/71fa7dbe7ca391d2255ab72211c5bbc16df3e1e1),
@@ -339,6 +419,80 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Restored current-main profile (2026-10-09 UTC)
+
+Diagnostic-only sampling of source `624916ec4` / compiler inputs `37b5225c2`
+passes all **62 admissions** on the native/diagnostic images, including full
+8,192-family positive and TS2322×9/TS2339×3/TS2345×3 rejection controls.
+Native SHA-256 is `34118002e25d69a8351a60ee493c504ca734b477ed31efc79fb03ee63a9ad331`.
+The exact cached link object is
+`.zig-cache/o/62b7b0fc002c63dfcd24caf77e590450/home-tsc_zcu.o`, SHA-256
+`aa12e18240cc11c4e6188d65593754d2517087ec7e0f12929c78a6ff2d35e708`.
+Renaming 20,341 local symbols and relinking for readable stacks preserves the
+original/renamed object instruction sections byte-for-byte, SHA-256
+`dbb0d14c4cf5512bca7641a2ee20b0decb8760405355d6f9c081392d07dfe2f2`.
+Diagnostic image SHA-256 is
+`c3cb630ce987507c73073183cb107086194a0e10df09b17e5b3f769df559e6cf`.
+It supplies **zero timing samples**.
+
+Two separate one-second exploratory samples start at 0.1 and 3.0 seconds.
+These are not whole-run CPU percentages, causal speed proof or a new A/B.
+The complete 8,192-family input inventory remains
+`bfb2fb1bef4dcb4ad7df9bffa647b5d44bd35c6895b32772fb4044ce0ced829e`.
+Compiler exit is 0 with empty output, both samples succeed, and source/native/
+input provenance is unchanged. The same shared lock/time/memory/disk guard
+applies; peak 250 MB, host low-water 40%. Matrix/profile handles are terminal.
+
+| Exploratory leaf observations | Early | Later |
+|---|---:|---:|
+| Main-thread observations | 822 | 814 |
+| `memberAccessReceiverIsRequireAssignmentBinding` | 148 | 120 |
+| `resolveValueDeclInStmt` | 14 | 106 |
+| `jsDocTypeForPreviousIdentifierDecl` | 11 | 66 |
+| `moduleNamespaceTypeForLocalImport` | 53 | 65 |
+| `collectFunctionSignaturesFromStatements` | 57 | 56 |
+| `virtualSectionStartForNode` | 46 | 43 |
+| `requireImportAssignmentMemberType` | 43 | 32 |
+
+All other frames and counts remain in the raw samples. Bounds and displayed
+offsets come from this image's own symbols and samples, not previous addresses:
+
+| Source method | Unslid symbol start | Explicitly displayed offsets |
+|---|---|---|
+| `virtualSectionStartForNode` | `0x1000effac` | 0, 200 |
+| `memberAccessReceiverIsRequireAssignmentBinding` | `0x10067aff8` | 244, 416, 476 |
+| `jsDocTypeForPreviousIdentifierDecl` | `0x100304cf0` | 2156, 4344, 4356, 4432 |
+| `resolveValueDeclInStmt` | `0x100611e38` | 0, 24, 28, 52, 120, 212, 2408, 2416 |
+
+The previous-JSDoc source first queries the already indexed nearest-prior
+declaration; if it has no leading JSDoc result, its ancestor fallback scans
+container statements in original order, breaking at the first statement whose
+start is not before the use, and returns the first matching simple var/let/const
+declaration's live JSDoc lowering result. Assembly offsets 4344/4356/4432 map
+to that prefix loop's span/kind/name loads; 2156 is in the indexed portion.
+This fallback is distinct from the rejected require-presence work and is a
+concrete next target for exact source-order candidate facts, not type-result
+caching or a guessed filename/semantic cap. Current source has no fallback
+virtual-section filter to invent. Any replacement must preserve all these rules,
+including null results and recovery positions, with full scalar/OOM controls.
+
+Value-declaration resolution has repeated calls plus visibility, mutable HIR
+type reads/lowering and deprecation behavior. Displayed offsets include
+prologue/epilogue loads, so they are not proof that a particular internal scan
+consumes the whole leaf count. Full source/assembly is retained for further
+mapping. No third require-cache retest or alignment workaround is introduced.
+Collapsed samples can contain ellipses; displayed offsets are not an invented
+complete execution set.
+
+The [profile archive](../../bench/vs_tsgo/evidence/20261009-restored-current-jsdoc-profile-854.tar.gz)
+retains all admissions, input/source/assembly mapping, two raw samples, both
+instruction sections, symbols, runners/logs and verifiers with **33** verified
+payload checksums. SHA-256:
+`4e917dfa81fb99a50b33f2aabc1f570466fb3fb5f41fb968f17944ef850ec90a`.
+The unchanged scale-negative fixture is retained in the immutable prior
+presence-specific archive below. No diagnostic-image timing, new compatibility
+claim or universal performance result is inferred from sampling.
 
 ## Presence-specific require facts (rejected, 2026-10-09 UTC)
 
