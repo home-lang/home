@@ -1642,3 +1642,45 @@ This is scoped source ownership and native execution evidence. Linux, Windows,
 ASAN, complete-suite execution and ownership of the remaining external bindings
 and native dependencies stay open in [#810](https://github.com/home-lang/home/issues/810)
 and [#66](https://github.com/home-lang/home/issues/66).
+
+## Querystring and assertion builtin ownership (2026-10-09)
+
+Home generates `node:querystring`, `node:assert` and `node:assert/strict` from its
+mirrored TypeScript, alongside the owned URL and worker-thread modules. Each
+module is mapped to the linked registry enum and embedded in the native registry;
+all unowned module literal bytes are preserved. The new sources are explicit
+build inputs. Querystring's upstream CommonJS helper remains part of its source;
+the generator still requires complete builtin-function grammar and rejects
+unresolved imports, exports and runtime require wrappers.
+
+The querystring and assertion mirrors contained older getter access patterns.
+They now match pinned Bun `4982b91e3702094330f3be3883354c52b8c01323` byte for byte:
+query options, assertion error messages and constructors retain their first
+observed value. The existing native URL contract file covers changing option
+accessors, `assert/strict` identity and assertion message/constructor reads.
+Both the parent executable's linked builtins and the newly owned sources pass
+these controls. This establishes a source-alignment correction during activation,
+not a newly reproduced runtime defect in the parent.
+
+Native binding compilation passes 22/22 steps, with a 1,596 MB tree-footprint
+peak. The complete stripped Debug executable passes 28/28 steps, peak 5,640 MB
+under the same 8,192 MB build budget used for the preceding checkpoint. The
+expanded generation/ABI suite passes 8/8 tests and 262 assertions. Changed-file
+Pickier, Zig formatting and whitespace checks pass.
+
+All 17 selected original assertion/querystring entries complete successfully:
+140 registered passes, zero failures/skips/TODOs, plus seven successful standalone
+process checks. All 17 captures reach verified EOF; their raw streams and
+case-level JUnit evidence validate. The 24 audited source, test, helper and
+configuration inputs match the pin and remain unchanged during execution.
+The executable SHA256 is
+`324249f24a565fabe3b3030b50bfedfee8f59df359d4ba44a0005fe671bc6957`.
+[Retained source, raw captures and JUnit evidence](./bun-port-evidence/2026-10-09-owned-node-query-assert/manifest.json)
+contains 116 compressed artifacts. Each decompressed hash verifies, and restoring
+the 17 retained journals reproduces successful outcome validation.
+
+This expands owned builtin source and verifies the recorded Darwin selection.
+The internal assertion helpers, remaining builtins and native dependencies,
+other platforms, release-build memory work in
+[#855](https://github.com/home-lang/home/issues/855) and complete logical Bun
+parity in [#66](https://github.com/home-lang/home/issues/66) remain unfinished.
