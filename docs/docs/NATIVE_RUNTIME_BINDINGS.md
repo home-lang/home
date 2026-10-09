@@ -1736,7 +1736,9 @@ client delivery records `close:undefined` rather than the expected open/close
 context. The WebSocket assertion also fails in an isolated name-filtered run;
 Bun still classifies that case as TODO and exits zero, so this diagnostic is not
 a passing result. Running the original worker-message fixture separately exits
-one with `FAIL: worker message event lost context`. The pinned hook
+one with `FAIL: worker message event lost context`.
+The three original TODO gaps are tracked in
+[#856](https://github.com/home-lang/home/issues/856). The pinned hook
 implementation supports only TickObject init callbacks; other resource hooks
 and execution/trigger IDs remain unimplemented. Remaining builtin helpers,
 external native objects and dependencies, release-build memory work in
