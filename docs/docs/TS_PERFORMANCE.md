@@ -15,21 +15,114 @@ The later JSDoc ancestor-prefix index is **accepted** with a 9.1%-lower
 five batches. Official/512-family and independent declaration checks remain
 inconclusive; recursive generics retains an adverse warning. The
 [complete A/B report](#jsdoc-ancestor-prefix-facts-2026-10-09-utc) preserves all
-532 rounds / 660 admissions. The five-compiler matrix below **predates** this
-change and is not a refreshed ranking of the new source.
+532 rounds / 660 admissions. The five-compiler matrix below now measures the
+landed source independently; its ranking is not inferred from the Home-only A/B.
 
 Both later require-presence candidates were **rejected**: the presence-only
 design for interface-composition regression and the earlier broad shared-cache
 design for class-hierarchy regression. Complete evidence is
 [documented below](#presence-specific-require-facts-rejected-2026-10-09-utc).
-The matrix below measures the restored source `624916ec4` and subsequent
-[#846](https://github.com/home-lang/home/issues/846) correctness work,
-with neither rejected candidate present.
+The current matrix includes the accepted ancestor-prefix index and subsequent
+[#846](https://github.com/home-lang/home/issues/846) correctness work, with
+neither rejected candidate present. The restored-source snapshot remains
+below as a separately versioned historical comparison.
 It is a full competitor comparison, not an exact-parent patch A/B.
 
 The virtual-section source index's exact-parent Home-only A/B is separate
 from the fresh competitor matrix below. Its scaling gains and unresolved
 adverse recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
+
+### Landed JSDoc ancestor-prefix matrix (2026-10-09 UTC)
+
+Result `20261009T205353Z` measures clean source
+[`0d2b0097abf6dbb37630505b69e8a261c7d53c9a`](https://github.com/home-lang/home/commit/0d2b0097abf6dbb37630505b69e8a261c7d53c9a),
+compiler inputs equal
+[`11055ba4746b224735c8ec2cba2f5e449bfff980`](https://github.com/home-lang/home/commit/11055ba4746b224735c8ec2cba2f5e449bfff980).
+A clean matching standalone build reproduces native SHA-256
+`68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+The accepted ancestor-prefix index is present; both rejected require-presence
+variants are absent. This full competitor comparison is not an exact-parent
+patch A/B; changes versus earlier matrix runs do not establish causal gains.
+
+All five unchanged byte-pinned compilers pass **145/145 admissions** on the
+same 20 positive/nine negative projects, validation protocol **4**, including
+TS2322×9, TS2339×3 and TS2345×3 checked-JS negatives. The original strict,
+no-emit configuration, minimal ambient fixture library, `noLib` and
+`skipLibCheck` settings are identical for every compiler; this is a synthetic
+frontend suite, not a production-library admission claim. Canonical Bun
+success reports checked-source-file counts rather than silence; its exact
+one-line policy is preserved, not diagnostic filtering. Complete negative
+code multisets and nonzero exits are independently rechecked for every compiler.
+
+Three warmups precede 30 fresh native processes per compiler/workload in
+equally rotating order: **600 original rounds / 3,000 retained samples**.
+Before/after executable, payload, input, harness and project-context
+fingerprints match. No compiler, workload, diagnostic, round or observation
+is removed. No diagnostic image is timed.
+
+Host/tools remain Apple M3 Pro / Mac15,6, 11 logical cores, Darwin27 arm64,
+Node26.10.0, Hyperfine1.20.0 and Python3.9.6. Pins remain TS6.0.3, direct
+native TS7.0.2, Home0.1.0, Rust tsc-rs0.1.0/TS7.1.0-dev and
+Bun1.4.3-canary.1+bd599f5af; all original payload inventories remain unchanged.
+Home is pinned Zig2163, stripped ReleaseFast with `-Denable_jsc=false`.
+Shared **600**-second/3,840 MB guard, shared lock and disk floors are unchanged;
+matrix peak 391 MB, host low-water 40%. The measurement command exits 0.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 203.3 ms | 23.2 ms | 27.2 ms | 22.4 ms | 13.4 ms | 2.03× slower |
+| `class_hierarchy` | 191.6 ms | 21.8 ms | 23.8 ms | 18.4 ms | 14.0 ms | 1.70× slower |
+| `commonjs_graph` | 151.0 ms | 18.1 ms | 17.9 ms | 14.8 ms | 12.0 ms | 1.49× slower |
+| `control_flow` | 193.8 ms | 27.8 ms | 25.9 ms | 24.8 ms | 16.6 ms | 1.56× slower |
+| `deep_types` | 130.1 ms | 21.4 ms | 21.1 ms | 14.1 ms | 13.3 ms | 1.59× slower |
+| `destructuring` | 147.4 ms | 17.2 ms | 15.5 ms | 15.8 ms | 11.6 ms | 1.34× slower |
+| `generic_calls` | 189.0 ms | 23.5 ms | 23.7 ms | 19.5 ms | 15.1 ms | 1.56× slower |
+| `import_graph` | 128.9 ms | 14.7 ms | 17.1 ms | 11.3 ms | 15.1 ms | 1.51× slower |
+| `interface_composition` | 199.0 ms | 31.6 ms | 34.0 ms | 23.6 ms | 17.5 ms | 1.95× slower |
+| `many_files` | 198.1 ms | 22.5 ms | 21.7 ms | 16.0 ms | 13.2 ms | 1.65× slower |
+| `null_safe_access` | 189.6 ms | 26.4 ms | 32.4 ms | 22.6 ms | 16.5 ms | 1.97× slower |
+| `overload_resolution` | 211.8 ms | 34.6 ms | 24.7 ms | 27.6 ms | 21.2 ms | 1.16× slower |
+| `recursive_generics` | 152.8 ms | 40.0 ms | 14.5 ms | 32.5 ms | 9.4 ms | 1.54× slower |
+| `reexport_graph` | 96.7 ms | 10.5 ms | 12.5 ms | 8.9 ms | 8.6 ms | 1.46× slower |
+| `startup` | 63.9 ms | 7.5 ms | 2.9 ms | 5.9 ms | 6.3 ms | **2.04× faster** |
+| `structural_objects` | 192.1 ms | 27.0 ms | 23.2 ms | 22.7 ms | 16.7 ms | 1.39× slower |
+| `tsx_components` | 166.9 ms | 16.2 ms | 19.0 ms | 14.4 ms | 10.5 ms | 1.80× slower |
+| `type_predicates` | 235.1 ms | 40.5 ms | 32.7 ms | 34.1 ms | 23.4 ms | 1.40× slower |
+| `type_predicates_large` | 1,010.1 ms | 309.8 ms | 244.3 ms | 268.9 ms | 158.5 ms | 1.54× slower |
+| `variadic_tuples` | 247.5 ms | 45.8 ms | 31.8 ms | 34.0 ms | 19.2 ms | 1.66× slower |
+
+Home leads **1/20** (`startup`) and beats native TS7 on **12/20**, using
+unrounded medians. Bun leads18 and Rust leads imports. These are descriptive
+medians, not statistical-significance, equivalence or causal patch claims.
+Generic calls is slightly slower than TS7 in this snapshot; no causal
+regression is inferred from the earlier13/20 tally. Current gaps include
+checked JS **2.03×**, null-safe access **1.97×**, interfaces **1.95×**,
+TSX **1.80×** and class hierarchy **1.70×** slower than the fastest measured
+competitor. CommonJS is **1.49×** slower. The unchanged Zod198-diagnostic
+baseline is not production admission; canonical C++ and Linux/Windows coverage
+remain unresolved. Repository Actions was disabled at the recorded earlier
+dispatch; no unsupported platform result or new policy change is inferred.
+
+The first supplemental verifier incorrectly required silence for Bun's
+canonical positive status. Its correction uses the unchanged registry output
+policy; it does not weaken admission. A second attempt reached archive
+verification before the separate canonical `run.py evidence` step had been
+run. The original completed result was then packaged and fully verified.
+Both failure records remain; the original failing script was not captured,
+so no reconstruction is mislabeled as an original. **No measurement rerun,
+compiler patch, corpus change, pin change or discarded sample** occurred.
+
+The [matrix archive](../../bench/vs_tsgo/evidence/20261009T205353Z.tar.gz)
+has **603** verified payload checksums, including all original arrays and
+admissions. SHA-256:
+`3d65ea6df449742f89053f94b2ae444fb5815ecdfc658b495f4a184fccc98915`.
+The [context archive](../../bench/vs_tsgo/evidence/20261009T205353Z-context-854.tar.gz)
+retains clean-build/source provenance, full matrix command/log, report tools,
+strict verifiers, unchanged harness/profile, both verification-attempt records
+and evidence export. It has **28** verified payload checksums, SHA-256:
+`2ffe1ac71fa8281953be14098fb0a22ed3f95a5a23fff11d35c6fca965e89eb7`.
+The broader #416/#838 goal remains incomplete. Subsequent work must profile
+the actual landed source and preserve all existing adverse-risk controls.
 
 ### Restored current-main matrix (2026-10-09 UTC)
 
