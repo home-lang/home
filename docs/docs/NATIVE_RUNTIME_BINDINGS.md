@@ -1684,3 +1684,62 @@ The internal assertion helpers, remaining builtins and native dependencies,
 other platforms, release-build memory work in
 [#855](https://github.com/home-lang/home/issues/855) and complete logical Bun
 parity in [#66](https://github.com/home-lang/home/issues/66) remain unfinished.
+
+## Events, async-context and timer builtin ownership (2026-10-09)
+
+Home generates `node:events`, `node:async_hooks`, `node:timers`,
+`node:timers/promises`, `internal/async_hooks` and `internal/async_hooks_tick`
+from its own mirrored source. Together with the preceding modules, the explicit
+builtin ownership manifest now contains eleven entries. Home also compiles
+`NodeAsyncHooks.cpp` for async-context enablement and deferred cleanup. Its class
+header must match the selected native ABI; generation checks both C++ function
+signatures and preserves all unowned companion includes. The replaced external
+unity object is excluded from linking. Source, headers and both native unity
+inputs are explicit generation dependencies.
+
+The event and async-hook mirrors now match pinned Bun
+`4982b91e3702094330f3be3883354c52b8c01323`: `events.once()` rejects validation
+and already-aborted errors through its returned promise, and TickObject init
+hooks use independently removable per-instance callbacks with balanced enabled
+hook tracking. The timers sources already matched the pin. Native controls cover
+rejected event promises, shared callback removal/order, async-resource capture
+and context propagation through timer promises and event delivery. The parent
+linked builtins and newly owned sources both pass the corrected controls; this
+is source alignment and activation rather than a new parent runtime defect.
+The retained first control attempt had an incorrect expected error code for a
+null emitter; the pinned implementation rejects with a plain TypeError.
+
+Native binding compilation passes 23/23 steps with a 2,174 MB measured tree
+footprint peak. Complete stripped Debug builds pass 29/29 steps before and after
+main integration, peaking at 5,633 and 5,570 MB under the existing 8,192 MB build
+budget. Generation and ABI controls pass 8/8 tests with 307 assertions, including
+wrong-arity rejection for both async-context C++ wrappers. Changed-file Pickier,
+Zig formatting and whitespace checks pass. Only obsolete task-owned build-cache
+outputs were removed to maintain disk admission; the retained cleanup inventory
+identifies those files and preserves source and execution evidence.
+
+The eight original events, async-context and timer entries produce 202 registered
+passes, zero failures or skips, and three original TODOs. The tracking entry
+executes 74 context cases, including its original Home/Node subprocess comparison;
+its worker-message case remains TODO. The other TODOs are direct-stream
+cancellation and WebSocket client context. These TODOs receive no passing credit.
+All eight captures and JUnit reports validate, and 99 audited source, fixture
+and configuration inputs match the pin and retain their hashes.
+
+[Retained source and execution evidence](./bun-port-evidence/2026-10-09-owned-events-async-timers/manifest.json)
+records both corpus runs and supplementary TODO diagnostics. The integrated
+executable SHA256 is
+`ac88c42ab2397e28970e75b558b9109614d6e17c72da477e4b8debef5b6a37a6`.
+Running the original AsyncLocalStorage file with `--todo` preserves the original
+90,000 ms case deadline: direct-stream cancellation times out, and WebSocket
+client delivery records `close:undefined` rather than the expected open/close
+context. The WebSocket assertion also fails in an isolated name-filtered run;
+Bun still classifies that case as TODO and exits zero, so this diagnostic is not
+a passing result. Running the original worker-message fixture separately exits
+one with `FAIL: worker message event lost context`. The pinned hook
+implementation supports only TickObject init callbacks; other resource hooks
+and execution/trigger IDs remain unimplemented. Remaining builtin helpers,
+external native objects and dependencies, release-build memory work in
+[#855](https://github.com/home-lang/home/issues/855), platform verification and
+complete logical Bun parity in [#66](https://github.com/home-lang/home/issues/66)
+remain unfinished.
