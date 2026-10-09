@@ -221,6 +221,13 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/src/native/H2HeadersMaterializer.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/WebSocket.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/WebSocket.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSWebSocket.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSWebSocket.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/HomeWebSocketAsyncContext.h",
+        "packages/runtime/upstream/src/jsc/bindings/AsyncContextFrame.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/AsyncContextFrame.h",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.cpp",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.h",
         "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.cpp",
@@ -288,6 +295,9 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeAsyncHooks.cpp", "NodeAsyncHooks.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "JSWebSocket.cpp", "JSWebSocket.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "WebSocket.cpp", "WebSocket.h" },
+        .{ "UnifiedSource-src_jsc_bindings-0.cpp", "AsyncContextFrame.cpp", "AsyncContextFrame.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BroadcastChannel.cpp", "BroadcastChannel.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BunBroadcastChannelRegistry.cpp", "BunBroadcastChannelRegistry.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-1.cpp", "JSBroadcastChannel.cpp", "JSBroadcastChannel.h" },

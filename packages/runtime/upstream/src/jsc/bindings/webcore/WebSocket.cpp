@@ -31,6 +31,7 @@
 
 #include "config.h"
 #include "WebSocket.h"
+#include "HomeWebSocketAsyncContext.h"
 #include "WebSocketDeflate.h"
 #include "headers.h"
 #include "blob.h"
@@ -550,7 +551,7 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
     // Materialize host/path as WTF::String so the BunString wrappers hold a
     // stable WTFStringImpl backing (preserving 8-bit vs UTF-16 encoding).
     // ZigString wrappers over non-ASCII Latin1/UTF-16 data lose the encoding
-    // tag and corrupt the HTTP upgrade request build in Zig.
+    // tag and corrupt the HTTP upgrade request build on the native side.
     String hostString = m_url.host().toString();
     auto resource = resourceName(m_url);
     String unixSocketPathString;
@@ -603,7 +604,7 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
         port = userPort.value();
     }
 
-    // Hold WTF::Strings so the BunString wrappers stay valid for the Zig call.
+    // Hold WTF::Strings so the BunString wrappers stay valid for the native call.
     Vector<String, 8> headerNameStrings;
     Vector<String, 8> headerValueStrings;
     Vector<BunString, 8> headerNames;
@@ -694,7 +695,7 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
     }
     BunString targetAuth = Bun::toString(targetAuthorization);
 
-    // Pass SSLConfig pointer to Zig (ownership transferred - Zig will deinit when connection closes)
+    // Pass SSLConfig pointer to the upgrade client (ownership transferred - it is freed when the connection closes)
     // After this call, m_sslConfig should not be used by C++ anymore
     void* sslConfig = m_sslConfig.release();
 
@@ -743,8 +744,8 @@ ExceptionOr<void> WebSocket::connect(const String& url, const Vector<String>& pr
 
                 auto eventInit = createErrorEventInit(protectedThis, "Failed to connect"_s, globalObject);
                 auto message = eventInit.message;
-                protectedThis->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
-                protectedThis->dispatchEvent(CloseEvent::create(false, 1006, WTF::move(message)));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), CloseEvent::create(false, 1006, WTF::move(message)));
 
                 protectedThis->decPendingActivityCount();
             });
@@ -917,7 +918,7 @@ void WebSocket::sendWebSocketString(const String& message, const Opcode op)
 
 // Called from close()/terminate() while m_state == CONNECTING.
 //
-// The Zig-side upgrade client's cancel() clears its back-pointer to us
+// The native upgrade client's cancel() clears its back-pointer to us
 // without calling didAbruptClose, so none of didConnect /
 // didFailWithErrorCode / didClose will ever fire for this socket. We
 // must therefore finish the close ourselves: cancel the upgrade, queue
@@ -955,8 +956,8 @@ void WebSocket::failConnectingWebSocket()
                 // close event. Matches Chrome/Firefox and npm ws.
                 auto reason = "WebSocket is closed before the connection is established"_s;
                 auto eventInit = createErrorEventInit(protectedThis, reason, context.jsGlobalObject());
-                protectedThis->dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
-                protectedThis->dispatchEvent(CloseEvent::create(false, 1006, reason));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), CloseEvent::create(false, 1006, reason));
             }
             protectedThis->disablePendingActivity();
         });
@@ -1351,13 +1352,13 @@ void WebSocket::didConnect()
         if (this->hasEventListeners("open"_s)) {
             this->incPendingActivityCount();
             // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
-            dispatchEvent(Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
+            WebSocketAsyncContext::dispatch(*this, Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
             this->decPendingActivityCount();
         } else {
             this->incPendingActivityCount();
             context->postTask([this, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
-                protectedThis->dispatchEvent(Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), Event::create(eventNames().openEvent, Event::CanBubble::No, Event::IsCancelable::No));
                 protectedThis->decPendingActivityCount();
             });
         }
@@ -1393,7 +1394,7 @@ void WebSocket::didReceiveMessage(String&& message)
     if (this->hasEventListeners("message"_s)) {
         // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
         this->incPendingActivityCount();
-        dispatchEvent(MessageEvent::create(WTF::move(message), m_url.string()));
+        WebSocketAsyncContext::dispatch(*this, MessageEvent::create(WTF::move(message), m_url.string()));
         this->decPendingActivityCount();
         return;
     }
@@ -1402,7 +1403,7 @@ void WebSocket::didReceiveMessage(String&& message)
         this->incPendingActivityCount();
         context->postTask([this, message_ = WTF::move(message), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
             ASSERT(scriptExecutionContext());
-            protectedThis->dispatchEvent(MessageEvent::create(message_, protectedThis->m_url.string()));
+            WebSocketAsyncContext::dispatch(protectedThis.get(), MessageEvent::create(message_, protectedThis->m_url.string()));
             protectedThis->decPendingActivityCount();
         });
     }
@@ -1427,7 +1428,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
             // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
             this->incPendingActivityCount();
             RefPtr<Blob> blob = Blob::create(binaryData, scriptExecutionContext()->jsGlobalObject());
-            dispatchEvent(MessageEvent::create(eventName, blob.releaseNonNull(), m_url.string()));
+            WebSocketAsyncContext::dispatch(*this, MessageEvent::create(eventName, blob.releaseNonNull(), m_url.string()));
             this->decPendingActivityCount();
             return;
         }
@@ -1437,7 +1438,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
             this->incPendingActivityCount();
             context->postTask([this, name = eventName, blob = blob.releaseNonNull(), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
-                protectedThis->dispatchEvent(MessageEvent::create(name, blob, protectedThis->m_url.string()));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), MessageEvent::create(name, blob, protectedThis->m_url.string()));
                 protectedThis->decPendingActivityCount();
             });
         }
@@ -1447,7 +1448,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
         if (this->hasEventListeners(eventName)) {
             // the main reason for dispatching on a separate tick is to handle when you haven't yet attached an event listener
             this->incPendingActivityCount();
-            dispatchEvent(MessageEvent::create(eventName, ArrayBuffer::create(binaryData), m_url.string()));
+            WebSocketAsyncContext::dispatch(*this, MessageEvent::create(eventName, ArrayBuffer::create(binaryData), m_url.string()));
             this->decPendingActivityCount();
             return;
         }
@@ -1457,7 +1458,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
             this->incPendingActivityCount();
             context->postTask([this, name = eventName, buffer = WTF::move(arrayBuffer), protectedThis = Ref { *this }](ScriptExecutionContext& context) {
                 ASSERT(scriptExecutionContext());
-                protectedThis->dispatchEvent(MessageEvent::create(name, buffer, m_url.string()));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), MessageEvent::create(name, buffer, m_url.string()));
                 protectedThis->decPendingActivityCount();
             });
         }
@@ -1477,7 +1478,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
 
                 ErrorEvent::Init errorInit;
                 errorInit.message = "Failed to allocate memory for binary data"_s;
-                dispatchEvent(ErrorEvent::create(eventNames().errorEvent, errorInit));
+                WebSocketAsyncContext::dispatch(*this, ErrorEvent::create(eventNames().errorEvent, errorInit));
                 this->decPendingActivityCount();
                 return;
             }
@@ -1487,7 +1488,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
             init.data = buffer;
             init.origin = this->m_url.string();
 
-            dispatchEvent(MessageEvent::create(eventName, WTF::move(init), EventIsTrusted::Yes));
+            WebSocketAsyncContext::dispatch(*this, MessageEvent::create(eventName, WTF::move(init), EventIsTrusted::Yes));
             this->decPendingActivityCount();
             return;
         }
@@ -1506,7 +1507,7 @@ void WebSocket::didReceiveBinaryData(const AtomString& eventName, const std::spa
                 MessageEvent::Init init;
                 init.data = uint8array;
                 init.origin = protectedThis->m_url.string();
-                protectedThis->dispatchEvent(MessageEvent::create(name, WTF::move(init), EventIsTrusted::Yes));
+                WebSocketAsyncContext::dispatch(protectedThis.get(), MessageEvent::create(name, WTF::move(init), EventIsTrusted::Yes));
                 protectedThis->decPendingActivityCount();
             });
         }
@@ -1541,10 +1542,10 @@ void WebSocket::didReceiveClose(CleanStatus wasClean, unsigned short code, WTF::
         this->incPendingActivityCount();
         if (wasConnecting && isConnectionError) {
             auto eventInit = createErrorEventInit(*this, reason, context->jsGlobalObject());
-            dispatchEvent(ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
+            WebSocketAsyncContext::dispatch(*this, ErrorEvent::create(eventNames().errorEvent, WTF::move(eventInit), EventIsTrusted::Yes));
         }
         // https://html.spec.whatwg.org/multipage/web-sockets.html#feedback-from-the-protocol:concept-websocket-closed, we should synchronously fire a close event.
-        dispatchEvent(CloseEvent::create(wasClean == CleanStatus::Clean, code, reason));
+        WebSocketAsyncContext::dispatch(*this, CloseEvent::create(wasClean == CleanStatus::Clean, code, reason));
         this->decPendingActivityCount();
     }
 }
@@ -1609,7 +1610,7 @@ void WebSocket::didClose(unsigned unhandledBufferedAmount, unsigned short code, 
     ASSERT(m_pendingActivityCount > 0);
 
     if (this->hasEventListeners("close"_s)) {
-        this->dispatchEvent(CloseEvent::create(wasClean, code, reason));
+        WebSocketAsyncContext::dispatch(*this, CloseEvent::create(wasClean, code, reason));
 
         // we deinit if possible in the next tick
         if (auto* context = scriptExecutionContext()) {
@@ -1622,7 +1623,7 @@ void WebSocket::didClose(unsigned unhandledBufferedAmount, unsigned short code, 
     } else if (auto* context = scriptExecutionContext()) {
         context->postTask([this, code, wasClean, reason, protectedThis = Ref { *this }](ScriptExecutionContext& context) {
             ASSERT(scriptExecutionContext());
-            protectedThis->dispatchEvent(CloseEvent::create(wasClean, code, reason));
+            WebSocketAsyncContext::dispatch(protectedThis.get(), CloseEvent::create(wasClean, code, reason));
             protectedThis->disablePendingActivity();
         });
         return;
@@ -1893,6 +1894,12 @@ extern "C" void WebSocket__didAbruptClose(WebCore::WebSocket* webSocket, Bun::We
 extern "C" void WebSocket__didClose(WebCore::WebSocket* webSocket, uint16_t errorCode, BunString* reason)
 {
     WTF::String wtf_reason = reason->transferToWTFString();
+    // The Rust client only calls this after a completed close handshake
+    // (received Close → echoed Close, or sent Close on ws.close()). For a
+    // server-initiated close m_state is still OPEN here; transition to
+    // CLOSING so didClose() reports wasClean = true. Abnormal closes go
+    // through WebSocket__didAbruptClose instead.
+    webSocket->didStartClosingHandshake();
     webSocket->didClose(0, errorCode, WTF::move(wtf_reason));
 }
 

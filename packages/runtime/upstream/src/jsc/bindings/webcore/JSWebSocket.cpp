@@ -20,6 +20,7 @@
 
 #include "config.h"
 #include "JSWebSocket.h"
+#include "HomeWebSocketAsyncContext.h"
 
 #include "ActiveDOMObject.h"
 #include "EventNames.h"
@@ -213,7 +214,7 @@ static inline JSC::EncodedJSValue constructJSWebSocket3(JSGlobalObject* lexicalG
 
     Vector<String> protocols;
     int rejectUnauthorized = -1;
-    // Zig heap SSLConfig. RAII — freed on any early return, moved into
+    // Native heap SSLConfig. RAII — freed on any early return, moved into
     // WebSocket::create() on success.
     WebSocketSSLConfigPtr sslConfig;
     auto headersInit = std::optional<Converter<IDLUnion<IDLSequence<IDLSequence<IDLByteString>>, IDLRecord<IDLByteString, IDLByteString>>>::ReturnType>();
@@ -254,7 +255,7 @@ static inline JSC::EncodedJSValue constructJSWebSocket3(JSGlobalObject* lexicalG
             }
         }
 
-        // Parse TLS options using Zig's SSLConfig.fromJS for full TLS option support
+        // Parse TLS options using the native SSLConfig parser for full TLS option support
         JSValue tlsOptionsValue = Bun::getOwnPropertyIfExists(globalObject, options, PropertyName(Identifier::fromString(vm, "tls"_s)));
         RETURN_IF_EXCEPTION(throwScope, {});
         if (tlsOptionsValue && !tlsOptionsValue.isUndefinedOrNull() && tlsOptionsValue.isObject()) {
@@ -267,7 +268,7 @@ static inline JSC::EncodedJSValue constructJSWebSocket3(JSGlobalObject* lexicalG
                 }
             }
 
-            // Parse full TLS options using Zig's SSLConfig.fromJS
+            // Parse full TLS options using the native SSLConfig parser
             sslConfig = WebSocketSSLConfigPtr { Bun__WebSocket__parseSSLConfig(globalObject, JSValue::encode(tlsOptionsValue)) };
             RETURN_IF_EXCEPTION(throwScope, {});
         }
@@ -434,6 +435,7 @@ JSWebSocket::JSWebSocket(Structure* structure, JSDOMGlobalObject& globalObject, 
 void JSWebSocket::finishCreation(VM& vm)
 {
     Base::finishCreation(vm);
+    WebSocketAsyncContext::capture(*this, vm);
     ASSERT(inherits(info()));
 
     // static_assert(std::is_base_of<ActiveDOMObject, WebSocket>::value, "Interface is marked as [ActiveDOMObject] but implementation class does not subclass ActiveDOMObject.");

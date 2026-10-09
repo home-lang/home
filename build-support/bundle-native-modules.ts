@@ -68,7 +68,7 @@ async function main() {
   // Preflight native ownership and ABI layout before creating any output.
   // A unified object can contain several owned sources; replace all of them
   // together and leave every other include on its external ABI-matched source.
-  const privateHeaders = ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h'].map(name => ({
+  const privateHeaders = ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h', 'HomeWebSocketAsyncContext.h'].map(name => ({
     name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings/webcore', name)),
   }))
   const nativeUnits = ([
@@ -77,10 +77,10 @@ async function main() {
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
     [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h']], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
-    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
+    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
     [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
-    [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
-    [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
+    [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h'], ['jsc/bindings/webcore/WebSocket.cpp', 'WebSocket.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
+    [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h'], ['jsc/bindings/AsyncContextFrame.cpp', 'AsyncContextFrame.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
     [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h'], ['jsc/bindings/webcore/JSMessageEvent.cpp', 'JSMessageEvent.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {

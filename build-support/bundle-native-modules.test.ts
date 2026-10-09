@@ -32,7 +32,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp'].includes(basename)) {
         const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -93,11 +93,12 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
-      const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp', 'MessageEvent.cpp']
-        : basename === 'BunWorkerGlobalScope.cpp' ? [basename, 'BunAnalyzeTranspiledModule.cpp']
+      const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp', 'MessageEvent.cpp', 'JSWebSocket.cpp']
+        : basename === 'BunWorkerGlobalScope.cpp' ? [basename, 'BunAnalyzeTranspiledModule.cpp', 'AsyncContextFrame.cpp']
           : basename === 'JSAbortSignalCustom.cpp' ? [basename, 'JSBroadcastChannel.cpp']
             : basename === 'JSMessagePort.cpp' ? [basename, 'JSMessageEvent.cpp']
-              : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp'] : [basename]
+              : basename === 'Worker.cpp' ? [basename, 'WebSocket.cpp']
+                : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp'] : [basename]
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => ownedNames.includes(path.basename(relative))
         ? `#include ${JSON.stringify(path.basename(relative))}`
         : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
@@ -107,11 +108,11 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
       for (const name of ownedNames) {
-        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp'].includes(name) ? '' : 'webcore', name)
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'AsyncContextFrame.cpp'].includes(name) ? '' : 'webcore', name)
         expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
       }
     }
-    for (const privateHeader of ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h']) {
+    for (const privateHeader of ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h', 'HomeWebSocketAsyncContext.h']) {
       expect(readFileSync(path.join(output, privateHeader)))
         .toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/webcore', privateHeader)))
     }
@@ -181,7 +182,7 @@ nativeTest('rejects owned native class-header drift and invalid native ownership
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
@@ -193,7 +194,7 @@ nativeTest('rejects owned native class-header drift and invalid native ownership
       expect(existsSync(output)).toBe(false)
       writeFileSync(headerPath, original)
     }
-    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]]]) {
+    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]]]) {
       const unit = path.join(temporary, 'unified', unitName)
       const original = read(unit)
       const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`

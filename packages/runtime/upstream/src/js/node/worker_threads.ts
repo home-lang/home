@@ -4,6 +4,7 @@ declare const self: typeof globalThis;
 type WebWorker = InstanceType<typeof globalThis.Worker>;
 
 const EventEmitter = require("node:events");
+const { AsyncResource } = require("node:async_hooks");
 const Readable = require("internal/streams/readable");
 const { throwNotImplemented, warnNotImplementedOnce } = require("internal/shared");
 
@@ -415,6 +416,7 @@ class Worker extends EventEmitter {
 
   constructor(filename: string, options: NodeWorkerOptions = {}) {
     super();
+    const eventResource = new AsyncResource("WORKER");
 
     options = packJSTransferables(options);
 
@@ -445,13 +447,15 @@ class Worker extends EventEmitter {
     // The transfer is committed - release fds that were transferred but are
     // not referenced from workerData (nothing will deserialize them).
     options[kFinalizeJSTransferables]?.();
-    this.#worker.addEventListener("close", this.#onClose.bind(this), {
+    // Parent-side events belong to the Worker's creation resource, including
+    // listeners registered later from a different AsyncLocalStorage context.
+    this.#worker.addEventListener("close", eventResource.bind(this.#onClose, this), {
       once: true,
     });
-    this.#worker.addEventListener("error", this.#onError.bind(this));
-    this.#worker.addEventListener("message", this.#onMessage.bind(this));
-    this.#worker.addEventListener("messageerror", this.#onMessageError.bind(this));
-    this.#worker.addEventListener("open", this.#onOpen.bind(this), {
+    this.#worker.addEventListener("error", eventResource.bind(this.#onError, this));
+    this.#worker.addEventListener("message", eventResource.bind(this.#onMessage, this));
+    this.#worker.addEventListener("messageerror", eventResource.bind(this.#onMessageError, this));
+    this.#worker.addEventListener("open", eventResource.bind(this.#onOpen, this), {
       once: true,
     });
 
