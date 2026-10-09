@@ -30506,7 +30506,7 @@ pub const Checker = struct {
         const imp = hir_mod.importOf(self.hir, parent);
         const spec = self.string_interner.get(imp.module);
         if (imp.namespace_binding != decl and
-            !(imp.default_binding == decl and std.mem.startsWith(u8, spec, ".") and self.importDeclIsRequireAssignment(parent))) return null;
+            !(imp.default_binding == decl and self.importDeclIsRequireAssignment(parent))) return null;
         // For `import x = require("./m")` where `./m` uses `export =`,
         // type `x` as the export-assignment target (the expression value
         // such as `() => void`, else the named decl's static type) rather
@@ -30518,11 +30518,15 @@ pub const Checker = struct {
             if (try self.virtualCommonJsRepeatedWholeObjectExportType(parent, imp.module)) |whole_t| return whole_t;
             if (try self.virtualCommonJsModuleExportObjectType(parent, spec)) |commonjs_t| return commonjs_t;
             if (try self.programCommonJsWholeExportType(parent, spec)) |whole_t| return whole_t;
+            if (try self.programCommonJsNamedExportObjectType(parent, spec, false)) |commonjs_t| return commonjs_t;
         }
         if (imp.namespace_binding == decl and self.sourceDirectiveValueMentions("esModuleInterop", "true")) {
             const export_t = (try self.virtualExportAssignmentExpressionType(parent, imp.module)) orelse
                 (try self.virtualExportAssignmentTargetStaticType(parent, imp.module));
             if (export_t) |target_t| return try self.commonJsInteropNamespaceType(target_t);
+        }
+        if (imp.namespace_binding == decl) {
+            if (try self.programCommonJsNamedExportObjectType(parent, spec, true)) |commonjs_t| return commonjs_t;
         }
         return try self.moduleNamespaceTypeForSpecifier(imp.module, parent);
     }
@@ -30560,11 +30564,15 @@ pub const Checker = struct {
                 if (try self.virtualCommonJsRepeatedWholeObjectExportType(stmt, imp.module)) |whole_t| return whole_t;
                 if (try self.virtualCommonJsModuleExportObjectType(stmt, self.string_interner.get(imp.module))) |commonjs_t| return commonjs_t;
                 if (try self.programCommonJsWholeExportType(stmt, self.string_interner.get(imp.module))) |whole_t| return whole_t;
+                if (try self.programCommonJsNamedExportObjectType(stmt, self.string_interner.get(imp.module), false)) |commonjs_t| return commonjs_t;
             }
             if (imp.namespace_binding == binding and self.sourceDirectiveValueMentions("esModuleInterop", "true")) {
                 const export_t = (try self.virtualExportAssignmentExpressionType(stmt, imp.module)) orelse
                     (try self.virtualExportAssignmentTargetStaticType(stmt, imp.module));
                 if (export_t) |target_t| return try self.commonJsInteropNamespaceType(target_t);
+            }
+            if (imp.namespace_binding == binding) {
+                if (try self.programCommonJsNamedExportObjectType(stmt, self.string_interner.get(imp.module), true)) |commonjs_t| return commonjs_t;
             }
             return try self.moduleNamespaceTypeForSpecifier(imp.module, stmt);
         }
@@ -31038,6 +31046,19 @@ pub const Checker = struct {
                 self.string_interner.get(import.module),
                 member.name,
             )) |defined| return defined.type;
+        }
+        if (try self.localImportModuleInfo(object.name, target)) |import_info| {
+            const import = hir_mod.importOf(self.hir, import_info.import_node);
+            const binds_module_object = import.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(import.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, import.default_binding).name == object.name;
+            if (binds_module_object) {
+                if (try self.programCommonJsNamedExportWriteType(
+                    import_info.import_node,
+                    self.string_interner.get(import_info.specifier),
+                    member.name,
+                )) |write_t| return write_t;
+            }
         }
         const module_t = (try self.moduleNamespaceTypeForLocalImport(object.name, target)) orelse return null;
         return try self.lookupObjectMember(module_t, member.name);
@@ -63845,12 +63866,14 @@ pub const Checker = struct {
             if (!self.importDeclIsRequireAssignment(stmt) and
                 imp.default_binding != hir_mod.none_node_id and
                 self.hir.kindOf(imp.default_binding) == .identifier and
-                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name and
-                std.mem.startsWith(u8, spec_text, "."))
+                hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
             {
-                const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
-                if (try self.virtualRelativeModuleExportValueType(stmt, imp.module, default_name)) |t| return t;
-                if (try self.virtualCommonJsModuleExportObjectType(stmt, spec_text)) |t| return t;
+                if (std.mem.startsWith(u8, spec_text, ".")) {
+                    const default_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+                    if (try self.virtualRelativeModuleExportValueType(stmt, imp.module, default_name)) |t| return t;
+                    if (try self.virtualCommonJsModuleExportObjectType(stmt, spec_text)) |t| return t;
+                }
+                if (try self.programCommonJsNamedExportObjectType(stmt, spec_text, false)) |t| return t;
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
@@ -64300,14 +64323,107 @@ pub const Checker = struct {
     fn programCommonJsNamedExportTypeForPath(self: *Checker, resolved_path: []const u8, name: []const u8) CheckError!?TypeId {
         for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
             if (!std.mem.eql(u8, exported.name, name)) continue;
-            const owner_schema = exported.named_export_schema orelse continue;
-            if (!try self.programSchemaSupported(owner_schema)) continue;
-            return self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
-                error.UnsupportedProgramType => continue,
-                error.OutOfMemory => return error.OutOfMemory,
-            };
+            if (try self.programCommonJsNamedExportSchemaType(exported, true)) |typ| return typ;
         }
         return null;
+    }
+
+    fn programCommonJsNamedExportWriteType(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (self.program_commonjs_exports.len == 0) return null;
+        const name_text = self.string_interner.get(name);
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_base) |base| {
+            if (try self.programCommonJsNamedExportWriteTypeForPath(
+                self.string_interner.get(base),
+                name_text,
+            )) |typ| return typ;
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base == base) return null;
+            if (try self.programCommonJsNamedExportWriteTypeForPath(
+                self.string_interner.get(base),
+                name_text,
+            )) |typ| return typ;
+        }
+        return null;
+    }
+
+    fn programCommonJsNamedExportWriteTypeForPath(
+        self: *Checker,
+        resolved_path: []const u8,
+        name: []const u8,
+    ) CheckError!?TypeId {
+        for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (!std.mem.eql(u8, exported.name, name)) continue;
+            if (try self.programCommonJsNamedExportSchemaType(exported, false)) |typ| return typ;
+        }
+        return null;
+    }
+
+    fn programCommonJsNamedExportSchemaType(
+        self: *Checker,
+        exported: ProgramCommonJsExport,
+        widen_for_read: bool,
+    ) CheckError!?TypeId {
+        const owner_schema = exported.named_export_schema orelse return null;
+        if (!try self.programSchemaSupported(owner_schema)) return null;
+        const typ = self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
+            error.UnsupportedProgramType => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        return if (widen_for_read) try self.widenFreshLiteralType(typ) else typ;
+    }
+
+    fn programCommonJsNamedExportObjectType(
+        self: *Checker,
+        node: NodeId,
+        spec: []const u8,
+        is_readonly: bool,
+    ) CheckError!?TypeId {
+        if (self.program_commonjs_exports.len == 0) return null;
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_base) |base| {
+            if (try self.programCommonJsNamedExportObjectTypeForPath(
+                self.string_interner.get(base),
+                is_readonly,
+            )) |typ| return typ;
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base == base) return null;
+            if (try self.programCommonJsNamedExportObjectTypeForPath(
+                self.string_interner.get(base),
+                is_readonly,
+            )) |typ| return typ;
+        }
+        return null;
+    }
+
+    fn programCommonJsNamedExportObjectTypeForPath(
+        self: *Checker,
+        resolved_path: []const u8,
+        is_readonly: bool,
+    ) CheckError!?TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exported.name.len == 0) continue;
+            const member_type = (try self.programCommonJsNamedExportSchemaType(exported, true)) orelse
+                types.Primitive.any;
+            try self.appendOrReplaceObjectMember(&members, .{
+                .name = self.string_interner.intern(exported.name) catch return error.OutOfMemory,
+                .type = member_type,
+                .is_optional = false,
+                .is_readonly = is_readonly,
+                .is_method = false,
+            });
+        }
+        if (members.items.len == 0) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn programCommonJsModuleHasWholeExport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
@@ -91202,6 +91318,9 @@ pub const Checker = struct {
                     if (try self.programCommonJsWholeExportType(v.init, specifier)) |whole_t| {
                         init_type = whole_t;
                         self.hir.setType(v.init, whole_t);
+                    } else if (try self.programCommonJsNamedExportObjectType(v.init, specifier, false)) |commonjs_t| {
+                        init_type = commonjs_t;
+                        self.hir.setType(v.init, commonjs_t);
                     }
                 }
                 init_type = try self.narrowWhileConditionedDestructuringSource(node, v, init_type);
@@ -262401,14 +262520,11 @@ test "checker: whole CommonJS path matching preserves duplicates misses and meta
     try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
 }
 
-test "checker: named CommonJS schemas type imported reads" {
-    const s = try newSetup(
-        \\import { value } from './owner';
-        \\const bad: string = value;
-    );
+test "checker: CommonJS schemas separate widened reads from fresh writes" {
+    const s = try newSetup("");
     defer destroySetup(s);
     s.checker.setImporterPath("/p/main.ts");
-    const number: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    const number: ProgramClassSchema.Expression = .{ .number = 1 };
     const declaration: ProgramClassSchema.Declaration = .{
         .path = "/p/owner.js",
         .position = 0,
@@ -262425,9 +262541,23 @@ test "checker: named CommonJS schemas type imported reads" {
         .name = "value",
         .named_export_schema = &schema,
     }});
-    try s.checker.checkSourceFile(s.root);
-
-    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    const value_name = try s.sint.intern("value");
+    for ([_]bool{ false, true }) |is_readonly| {
+        const module_t = (try s.checker.programCommonJsNamedExportObjectType(
+            s.root,
+            "./owner",
+            is_readonly,
+        )) orelse return error.TestUnexpectedResult;
+        const member = s.ti.objectMemberInfo(module_t, value_name) orelse return error.TestUnexpectedResult;
+        try T.expectEqual(is_readonly, member.is_readonly);
+        try T.expectEqual(types.Primitive.number_t, member.type);
+    }
+    const write_t = (try s.checker.programCommonJsNamedExportWriteType(
+        s.root,
+        "./owner",
+        value_name,
+    )) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(f64, 1), s.checker.numberLiteralValueFromType(write_t) orelse return error.TestUnexpectedResult);
 }
 
 test "checker: whole CommonJS path matching keeps external and fallback alternatives" {

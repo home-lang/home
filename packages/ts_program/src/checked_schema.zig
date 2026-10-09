@@ -50,7 +50,14 @@ pub fn namedExportTypes(
         while (true) {
             if (namedExportTarget(compilation, assignment.target)) |target_name| {
                 if (std.mem.eql(u8, target_name, name)) {
-                    const typ = compilation.hir.typeOf(assignment.value);
+                    // The checked flow table retains the fresh assignment
+                    // constraint on a CommonJS module object's mutable
+                    // property. Importing checkers regularize this for reads
+                    // (`number` for `exports.value = 1`) while retaining the
+                    // fresh `1` for writes such as
+                    // `require("./owner").value = 2`.
+                    const typ = namedExportFlowType(compilation, assignment.target) orelse
+                        compilation.hir.typeOf(assignment.value);
                     if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
                         try result.append(gpa, typ);
                 }
@@ -61,6 +68,23 @@ pub fn namedExportTypes(
         }
     }
     return result.toOwnedSlice(gpa);
+}
+
+fn namedExportFlowType(compilation: *const driver.Compilation, target: hir.NodeId) ?TypeId {
+    const prop_name = propertyAccessName(compilation, target) orelse return null;
+    const object = propertyAccessObject(compilation, target) orelse return null;
+    const object_name = if (compilation.hir.kindOf(object) == .identifier) blk: {
+        const identifier = hir.identifierOf(&compilation.hir, object);
+        if (!std.mem.eql(u8, compilation.interner.get(identifier.name), "exports")) return null;
+        break :blk identifier.name;
+    } else if (wholeExportTarget(compilation, object))
+        compilation.interner.lookup("module.exports") orelse return null
+    else
+        return null;
+    return compilation.checked_types.commonjs_export_narrows.get(.{
+        .obj_name = object_name,
+        .prop_name = prop_name,
+    });
 }
 
 fn wholeExportTarget(compilation: *const driver.Compilation, target: hir.NodeId) bool {
@@ -349,7 +373,7 @@ test "checked schema: whole CommonJS export retains inferred class fields and re
     }
 }
 
-test "checked schema: named CommonJS export retains its widened checked type" {
+test "checked schema: named CommonJS export retains its fresh checked assignment type" {
     const source = "exports.value = 1;";
     const compilation = try driver.compileSource(T.allocator, source, .{
         .allow_js = true,
@@ -368,6 +392,6 @@ test "checked schema: named CommonJS export retains its widened checked type" {
     defer @constCast(result).deinit(T.allocator);
     try T.expect(try result.isSupported(T.allocator));
     const body = result.declaration.body orelse return error.TestUnexpectedResult;
-    try T.expect(body.* == .primitive);
-    try T.expectEqual(Primitive.number_t, body.primitive);
+    try T.expect(body.* == .number);
+    try T.expectEqual(@as(f64, 1), body.number);
 }

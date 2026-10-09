@@ -14813,18 +14813,75 @@ test "Program: records whole CommonJS export assignments" {
     try T.expect(saw_f);
 }
 
-test "Program: checked named CommonJS exports type imported reads and preserve import writes" {
+test "Program: checked CommonJS exports type every imported module-object form" {
     const owner_source = "exports.value = 1;\n";
-    const consumer_source =
-        \\import { value } from "./owner";
-        \\const bad: string = value;
-        \\value = 2;
-    ;
+    const consumers = [_]struct {
+        path: []const u8,
+        source: []const u8,
+        assignable_diagnostics: usize,
+        has_fresh_write: bool,
+        other_diagnostic: u32,
+    }{
+        .{
+            .path = "/default.ts",
+            .source =
+            \\import owner from "./owner";
+            \\const bad: string = owner.value;
+            \\owner.value = 2;
+            ,
+            .assignable_diagnostics = 2,
+            .has_fresh_write = true,
+            .other_diagnostic = 0,
+        },
+        .{
+            .path = "/destructure.js",
+            .source =
+            \\const { value } = require("./owner");
+            \\/** @type {string} */ const bad = value;
+            ,
+            .assignable_diagnostics = 1,
+            .has_fresh_write = false,
+            .other_diagnostic = 0,
+        },
+        .{
+            .path = "/import-equals.ts",
+            .source =
+            \\import owner = require("./owner");
+            \\const bad: string = owner.value;
+            \\owner.value = 2;
+            ,
+            .assignable_diagnostics = 2,
+            .has_fresh_write = true,
+            .other_diagnostic = 0,
+        },
+        .{
+            .path = "/named.ts",
+            .source =
+            \\import { value } from "./owner";
+            \\const bad: string = value;
+            \\value = 2;
+            ,
+            .assignable_diagnostics = 1,
+            .has_fresh_write = false,
+            .other_diagnostic = 2632,
+        },
+        .{
+            .path = "/namespace.ts",
+            .source =
+            \\import * as owner from "./owner";
+            \\const bad: string = owner.value;
+            \\owner.value = 2;
+            ,
+            .assignable_diagnostics = 1,
+            .has_fresh_write = false,
+            .other_diagnostic = 2540,
+        },
+    };
     for ([_]bool{ false, true }) |parallel| {
         var vfs = ts_resolver.VirtualFs.init(T.allocator);
         defer vfs.deinit();
         try vfs.addFile("/owner.js", owner_source);
-        try vfs.addFile("/main.ts", consumer_source);
+        for (consumers) |consumer| try vfs.addFile(consumer.path, consumer.source);
         var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
         defer resolver.deinit();
         var checker_resolver = NamespaceImportTestResolver{
@@ -14834,7 +14891,8 @@ test "Program: checked named CommonJS exports type imported reads and preserve i
         var p = Program.init(T.allocator, &resolver);
         defer p.deinit();
         _ = try p.add("/owner.js", owner_source);
-        const main = try p.add("/main.ts", consumer_source);
+        var consumer_ids: [consumers.len]FileId = undefined;
+        for (consumers, &consumer_ids) |consumer, *id| id.* = try p.add(consumer.path, consumer.source);
         const options: ts_driver.CompileOptions = .{
             .allow_js = true,
             .check_js = true,
@@ -14847,10 +14905,33 @@ test "Program: checked named CommonJS exports type imported reads and preserve i
             try p.compileAllParallel(options, 2)
         else
             try p.compileAll(options);
-        const compilation = p.fileById(main).compilation.?;
-        try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
-        try expectCompilationHasDiagnosticCode(compilation, 2322);
-        try expectCompilationHasDiagnosticCode(compilation, 2632);
+        for (consumers, consumer_ids) |consumer, id| {
+            const compilation = p.fileById(id).compilation.?;
+            try T.expectEqual(
+                consumer.assignable_diagnostics + @intFromBool(consumer.other_diagnostic != 0),
+                compilation.diagnostics.items.len,
+            );
+            var assignable_diagnostics: usize = 0;
+            var saw_widened_read = false;
+            var saw_fresh_write = false;
+            for (compilation.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == 2322) {
+                    assignable_diagnostics += 1;
+                    if (std.mem.eql(u8, diagnostic.message, "Type 'number' is not assignable to type 'string'.")) {
+                        saw_widened_read = true;
+                    } else if (std.mem.eql(u8, diagnostic.message, "Type '2' is not assignable to type '1'.")) {
+                        saw_fresh_write = true;
+                    } else {
+                        return error.TestUnexpectedResult;
+                    }
+                } else {
+                    try T.expectEqual(consumer.other_diagnostic, diagnostic.code);
+                }
+            }
+            try T.expectEqual(consumer.assignable_diagnostics, assignable_diagnostics);
+            try T.expect(saw_widened_read);
+            try T.expectEqual(consumer.has_fresh_write, saw_fresh_write);
+        }
     }
 }
 
