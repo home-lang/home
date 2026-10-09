@@ -16,6 +16,7 @@ var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_worker_object: ?std.Build.LazyPath = null;
 var cached_worker_scope_object: ?std.Build.LazyPath = null;
 var cached_js_message_port_object: ?std.Build.LazyPath = null;
+var cached_broadcast_channel_object: ?std.Build.LazyPath = null;
 var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
@@ -113,6 +114,16 @@ pub fn jsMessagePortObject(b: *std.Build, object_root: []const u8) std.Build.Laz
     return object;
 }
 
+/// Build the native cross-context channel and shared subscriber registry from
+/// Home's source, retaining the linked unity object's remaining companions.
+pub fn broadcastChannelObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_broadcast_channel_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-0.cpp", output.path(b, "HomeBroadcastChannel.cpp"));
+    cached_broadcast_channel_object = object;
+    return object;
+}
+
 pub fn jsAbortSignalObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_js_abort_signal_object) |object| return object;
     const output = nativeModules(b, object_root);
@@ -203,6 +214,16 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.h",
         "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.cpp",
         "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/BroadcastChannel.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/BroadcastChannel.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/BunBroadcastChannelRegistry.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSBroadcastChannel.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSBroadcastChannel.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessageEvent.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/MessageEvent.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessageEvent.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessageEvent.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSAbortSignalCustom.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/AbortSignal.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMessagePort.cpp",
@@ -232,6 +253,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings-0.cpp",
+        "unified/UnifiedSource-src_jsc_bindings_webcore-0.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp",
@@ -244,6 +266,11 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     // absolute includes used by isolated build fixtures.
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
+        .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BroadcastChannel.cpp", "BroadcastChannel.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BunBroadcastChannelRegistry.cpp", "BunBroadcastChannelRegistry.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-1.cpp", "JSBroadcastChannel.cpp", "JSBroadcastChannel.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessageEvent.cpp", "MessageEvent.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSMessageEvent.cpp", "JSMessageEvent.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-1.cpp", "JSAbortSignalCustom.cpp", "AbortSignal.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "MessagePort.cpp", "MessagePort.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "JSWorker.cpp", "JSWorker.h" },

@@ -147,9 +147,10 @@ const native_skip_paths = [_][]const u8{
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
     "unified/UnifiedSource-src_jsc_bindings-0.cpp.o", // contains Home-owned WorkerGlobalScope
     "unified/UnifiedSource-src_jsc_bindings-4.cpp.o", // contains Home-owned ScriptExecutionContext
-    "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp.o", // contains Home-owned AbortSignal GC reachability
-    "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp.o", // contains Home-owned JSMessagePort
-    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort and JSWorker
+    "unified/UnifiedSource-src_jsc_bindings_webcore-0.cpp.o", // contains Home-owned BroadcastChannel and registry
+    "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp.o", // contains Home-owned AbortSignal and JSBroadcastChannel
+    "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp.o", // contains Home-owned JSMessagePort and JSMessageEvent
+    "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort, MessageEvent and JSWorker
     "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp.o", // contains Home-owned MessagePortPipe
     "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp.o", // contains Home-owned Worker
     "unified/UnifiedSource-src_uws_sys-0.cpp.o", // contains Home-owned uWS parser and C ABI
@@ -223,21 +224,31 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     };
     defer dir.close(io);
 
-    m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.scriptExecutionContextObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.globalGcObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.messagePortObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.messagePortPipeObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.workerObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.workerScopeObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.jsMessagePortObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.jsAbortSignalObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.uwsObject(b, bun_obj_root));
-    m.addObjectFile(native_bindings.cryptoObject0(b, bun_obj_root));
-    m.addObjectFile(native_bindings.cryptoObject1(b, bun_obj_root));
-    m.addObjectFile(native_bindings.serializedScriptValueObject(b, bun_obj_root));
+    // This target lets CI verify and cache owned C++ units independently of
+    // the full compiler executable. The executable links these same objects.
+    const native_binding_step = b.step("native-runtime-bindings", "Compile Home-owned native runtime binding objects");
+    const owned_objects = [_]std.Build.LazyPath{
+        native_bindings.processObject(b, bun_obj_root),
+        native_bindings.registryObject(b, bun_obj_root),
+        native_bindings.scriptExecutionContextObject(b, bun_obj_root),
+        native_bindings.napiObject(b, bun_obj_root),
+        native_bindings.globalGcObject(b, bun_obj_root),
+        native_bindings.messagePortObject(b, bun_obj_root),
+        native_bindings.messagePortPipeObject(b, bun_obj_root),
+        native_bindings.workerObject(b, bun_obj_root),
+        native_bindings.workerScopeObject(b, bun_obj_root),
+        native_bindings.jsMessagePortObject(b, bun_obj_root),
+        native_bindings.jsAbortSignalObject(b, bun_obj_root),
+        native_bindings.broadcastChannelObject(b, bun_obj_root),
+        native_bindings.uwsObject(b, bun_obj_root),
+        native_bindings.cryptoObject0(b, bun_obj_root),
+        native_bindings.cryptoObject1(b, bun_obj_root),
+        native_bindings.serializedScriptValueObject(b, bun_obj_root),
+    };
+    for (owned_objects) |object| {
+        object.addStepDependencies(native_binding_step);
+        m.addObjectFile(object);
+    }
 
     var walker = dir.walk(b.allocator) catch return true;
     defer walker.deinit();
@@ -326,6 +337,7 @@ fn linkZigJs(b: *std.Build, m: *std.Build.Module, root: []const u8) void {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const strip_executables = b.option(bool, "strip", "Strip symbols from Home compiler executables") orelse false;
 
     // ========================================================================
     // Workspace-Level Dependencies
@@ -393,7 +405,7 @@ pub fn build(b: *std.Build) void {
     // Performance options
     const enable_ir_cache = b.option(bool, "ir-cache", "Enable IR caching for faster recompilation") orelse true;
     const parallel_build = b.option(bool, "parallel", "Enable parallel compilation") orelse true;
-    const strip_home_tsc = b.option(bool, "home-tsc-strip", "Strip symbols from the home-tsc executable") orelse false;
+    const strip_home_tsc = b.option(bool, "home-tsc-strip", "Strip symbols from the home-tsc executable") orelse strip_executables;
 
     // Safety options
     // Zig 0.17 moved the build-facing optimize enum to `std.lang.Optimize`,
@@ -976,6 +988,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
+            .strip = strip_executables,
             .optimize = optimize,
         }),
     });
@@ -1141,6 +1154,11 @@ pub fn build(b: *std.Build) void {
     const install_homecheck_symlink = b.addInstallBinFile(exe.getEmittedBin(), "homecheck");
     install_homecheck_symlink.step.dependOn(&exe.step);
     b.getInstallStep().dependOn(&install_homecheck_symlink.step);
+
+    const home_step = b.step("home", "Build and install the complete Home compiler and runtime");
+    home_step.dependOn(&install_home_exe.step);
+    home_step.dependOn(&install_hm_symlink.step);
+    home_step.dependOn(&install_homecheck_symlink.step);
 
     // Run command
     const run_cmd = b.addRunArtifact(exe);
@@ -2395,6 +2413,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
+            .strip = strip_executables,
             .optimize = .debug,
         }),
     });
@@ -2468,6 +2487,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
+            .strip = strip_executables,
             .optimize = .safe,
         }),
     });
@@ -2512,6 +2532,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
+            .strip = strip_executables,
             .optimize = .small,
         }),
     });
@@ -2561,6 +2582,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
+            .strip = strip_executables,
             .optimize = .fast,
         }),
     });

@@ -72,14 +72,15 @@ async function main() {
     name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings/webcore', name)),
   }))
   const nativeUnits = ([
-    [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
+    [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
+    [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h']], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
-    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
+    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
     [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
     [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
     [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
-    [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
+    [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h'], ['jsc/bindings/webcore/JSMessageEvent.cpp', 'JSMessageEvent.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {
       const source = path.join(homeSource, relativeSource)
