@@ -115,22 +115,22 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261009T033439Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261009T045701Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 62.7 ms | 7.2 ms | 2.8 ms | 5.6 ms | 6.1 ms | **2.02× faster** |
-| 256 independent files | 194.5 ms | 21.5 ms | 21.4 ms | 15.5 ms | 12.6 ms | 1.70× slower |
-| 128-module import chain | 129.1 ms | 14.7 ms | 20.4 ms | 10.9 ms | 14.6 ms | 1.87× slower |
-| 64 modules through 8 barrel re-exports | 95.7 ms | 10.3 ms | 12.1 ms | 8.7 ms | 8.7 ms | 1.40× slower |
-| Deep conditional / mapped / template types | 130.9 ms | 21.4 ms | 21.3 ms | 14.1 ms | 13.4 ms | 1.58× slower |
-| Recursive generics | 150.7 ms | 39.1 ms | 14.2 ms | 31.9 ms | 9.7 ms | 1.47× slower |
-| Checked JavaScript with JSDoc | 198.5 ms | 22.9 ms | 26.8 ms | 22.3 ms | 13.8 ms | 1.95× slower |
-| Control-flow narrowing (256 unions) | 188.5 ms | 27.2 ms | 25.6 ms | 24.0 ms | 16.3 ms | 1.57× slower |
-| 256 type-predicate families | 233.4 ms | 40.1 ms | 32.8 ms | 34.0 ms | 23.4 ms | 1.40× slower |
-| 2,048 type-predicate families | 981.7 ms | 299.3 ms | 238.4 ms | 263.4 ms | 156.7 ms | 1.52× slower |
+| Startup (one small file) | 68.1 ms | 7.8 ms | 3.2 ms | 6.3 ms | 6.7 ms | **2.00× faster** |
+| 256 independent files | 212.4 ms | 23.0 ms | 22.5 ms | 17.2 ms | 13.7 ms | 1.64× slower |
+| 128-module import chain | 148.4 ms | 16.2 ms | 23.2 ms | 12.7 ms | 16.9 ms | 1.82× slower |
+| 64 modules through 8 barrel re-exports | 117.5 ms | 12.3 ms | 14.5 ms | 10.7 ms | 9.8 ms | 1.48× slower |
+| Deep conditional / mapped / template types | 149.9 ms | 23.3 ms | 22.8 ms | 15.7 ms | 14.7 ms | 1.55× slower |
+| Recursive generics | 162.0 ms | 42.1 ms | 15.7 ms | 34.3 ms | 9.9 ms | 1.58× slower |
+| Checked JavaScript with JSDoc | 218.4 ms | 24.8 ms | 29.0 ms | 24.3 ms | 14.2 ms | 2.04× slower |
+| Control-flow narrowing (256 unions) | 225.2 ms | 31.1 ms | 28.8 ms | 27.7 ms | 18.0 ms | 1.60× slower |
+| 256 type-predicate families | 275.5 ms | 46.2 ms | 37.1 ms | 38.6 ms | 26.5 ms | 1.40× slower |
+| 2,048 type-predicate families | 1,099.7 ms | 349.6 ms | 268.7 ms | 287.5 ms | 174.3 ms | 1.54× slower |
 
 Home has the lowest median on **1 / 20** admitted workloads (startup)
 and is faster than native TypeScript 7 on **11 / 20**. These are
@@ -143,10 +143,10 @@ matrix in [#838](https://github.com/home-lang/home/issues/838) exposes the next
 performance gaps. Export-owner reuse in
 [#839](https://github.com/home-lang/home/issues/839) improves the unchanged
 re-export graph by **1.232×** in independent same-parent paired confirmation.
-The current validation-protocol-4 matrix measures source `b9e6d2591` (compiler `af5fb320a`), including
+The current validation-protocol-4 matrix measures source `71fa7dbe7` (compiler `30330c169`), including
 the landed #853/#854 indexes; it is not a patch A/B. Its checked-JS median remains
-**1.95×** slower than the fastest competitor; CommonJS **1.98×**, null-safe access
-**1.96×**, TSX **1.90×**, and interfaces **1.88×** remain gaps. The earlier nested-owner
+**2.04×** slower than the fastest competitor; CommonJS **2.03×**, null-safe access
+**1.97×**, interfaces **1.87×**, and TSX **1.75×** remain gaps. The earlier nested-owner
 experiment measures source `30d3824da`, against exact parent `eaaddf213`.
 The initial overload regression warning and all ten targeted rechecks are
 retained in the docs; CommonJS's recheck has a 0.7% slower median. Cross-run
@@ -353,7 +353,10 @@ a nearly entirely negative interval spanning zero. This is not equivalence
 or a regression-free claim. See the
 [full results and unresolved risks](docs/docs/TS_PERFORMANCE.md#virtual-section-prefix-facts-2026-10-09-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261009-virtual-section-facts-accepted-854.tar.gz).
-This later Home-only A/B does not update the competitor ranking above.
+The later full matrix above measures this landed source separately; its
+ranking is not inferred from the Home-only A/B. Current diagnostic-only
+samples map remaining require-binding and previous-JSDoc work in the
+[new profile](docs/docs/TS_PERFORMANCE.md#landed-virtual-section-profile-2026-10-09-utc).
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full

@@ -10,11 +10,83 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-The later virtual-section source index is an exact-parent Home-only A/B,
-not a new competitor matrix. Its scaling gains and unresolved adverse
-recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
+The virtual-section source index's exact-parent Home-only A/B is separate
+from the fresh competitor matrix below. Its scaling gains and unresolved
+adverse recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
 
-### Landed nearest-prior matrix (2026-10-09 UTC)
+### Landed virtual-section matrix (2026-10-09 UTC)
+
+Result `20261009T045701Z` measures source
+[`71fa7dbe7`](https://github.com/home-lang/home/commit/71fa7dbe7ca391d2255ab72211c5bbc16df3e1e1),
+compiler inputs equal
+[`30330c169`](https://github.com/home-lang/home/commit/30330c16947900dd0d9ce441071649c7f822c2fc).
+Native SHA-256:
+`7ab04d806bc0557ff385a91cc993b95c3a727b7e82353ff3ea3e1b59301f822a`.
+This fresh whole-matrix comparison includes virtual-section prefix facts;
+cross-run differences are not an A/B proving this patch caused a regression
+or improvement in any other compiler/family.
+
+All five unchanged byte-pinned compilers pass the same 20 positive/nine
+negative projects: **145/145 admissions**, validation protocol **4**, including
+all 15 checked-JS errors (TS2322×9, TS2339×3, TS2345×3). Three warmups precede
+30 fresh processes per compiler/workload with equally rotating order:
+**600 original rounds / 3,000 retained samples**. Executable/payload/input/
+harness/project-context fingerprints match before admission and after timing.
+No compiler, family or observation is removed.
+
+Host/tools remain M3 Pro / Mac15,6, 11 logical cores, Darwin 27 arm64,
+Node 26.10.0, Hyperfine 1.20.0 and Python 3.9.6. Compilers remain TS 6.0.3,
+direct native TS 7.0.2, Home 0.1.0, Rust tsc-rs 0.1.0/TS 7.1.0-dev and
+Bun 1.4.3-canary.1+bd599f5af; original extra payload inventories are unchanged.
+Home uses pinned Zig 2163, stripped ReleaseFast, `-Denable_jsc=false`.
+The shared 600-second/3,840 MB guard and disk floors are unchanged;
+peak 381 MB, host low-water 24%. No diagnostic image supplies timings.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 218.4 ms | 24.8 ms | 29.0 ms | 24.3 ms | 14.2 ms | 2.04× slower |
+| `class_hierarchy` | 241.6 ms | 26.4 ms | 27.8 ms | 22.3 ms | 16.9 ms | 1.65× slower |
+| `commonjs_graph` | 178.8 ms | 20.9 ms | 28.7 ms | 17.1 ms | 14.1 ms | 2.03× slower |
+| `control_flow` | 225.2 ms | 31.1 ms | 28.8 ms | 27.7 ms | 18.0 ms | 1.60× slower |
+| `deep_types` | 149.9 ms | 23.3 ms | 22.8 ms | 15.7 ms | 14.7 ms | 1.55× slower |
+| `destructuring` | 218.9 ms | 25.0 ms | 21.6 ms | 21.7 ms | 15.9 ms | 1.36× slower |
+| `generic_calls` | 233.1 ms | 27.3 ms | 27.3 ms | 23.8 ms | 17.7 ms | 1.54× slower |
+| `import_graph` | 148.4 ms | 16.2 ms | 23.2 ms | 12.7 ms | 16.9 ms | 1.82× slower |
+| `interface_composition` | 241.1 ms | 36.2 ms | 38.1 ms | 27.2 ms | 20.4 ms | 1.87× slower |
+| `many_files` | 212.4 ms | 23.0 ms | 22.5 ms | 17.2 ms | 13.7 ms | 1.64× slower |
+| `null_safe_access` | 215.8 ms | 29.5 ms | 35.8 ms | 25.3 ms | 18.2 ms | 1.97× slower |
+| `overload_resolution` | 249.2 ms | 38.4 ms | 28.5 ms | 30.9 ms | 23.9 ms | 1.19× slower |
+| `recursive_generics` | 162.0 ms | 42.1 ms | 15.7 ms | 34.3 ms | 9.9 ms | 1.58× slower |
+| `reexport_graph` | 117.5 ms | 12.3 ms | 14.5 ms | 10.7 ms | 9.8 ms | 1.48× slower |
+| `startup` | 68.1 ms | 7.8 ms | 3.2 ms | 6.3 ms | 6.7 ms | **2.00× faster** |
+| `structural_objects` | 230.9 ms | 32.0 ms | 26.9 ms | 26.6 ms | 19.5 ms | 1.38× slower |
+| `tsx_components` | 193.9 ms | 18.0 ms | 21.1 ms | 16.1 ms | 12.1 ms | 1.75× slower |
+| `type_predicates` | 275.5 ms | 46.2 ms | 37.1 ms | 38.6 ms | 26.5 ms | 1.40× slower |
+| `type_predicates_large` | 1,099.7 ms | 349.6 ms | 268.7 ms | 287.5 ms | 174.3 ms | 1.54× slower |
+| `variadic_tuples` | 266.1 ms | 47.6 ms | 33.8 ms | 35.8 ms | 19.9 ms | 1.70× slower |
+
+Using unrounded medians, Home leads **1/20** (`startup`) and beats native TS 7
+on **11/20**. Bun leads 18, Rust leads imports. These are descriptive
+medians, not statistical significance, equivalence or causal cross-run claims.
+`generic_calls` displays TS 7/Home both 27.3 ms; Home's unrounded median is
+higher, so it is not counted as beating TS 7. Current gaps are checked JS
+**2.04×**, CommonJS **2.03×**, null-safe **1.97×**, interfaces **1.87×** and
+TSX **1.75×** slower than the fastest measured competitor. Exact-parent #854
+evidence separately supports checked-JS scale gains and retains the adverse
+recursive-generics warning. All-benchmark leadership, canonical admitted C++,
+other platforms and Zod production admission remain incomplete (#416/#838/#548).
+
+The [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009T045701Z.tar.gz)
+has **603** verified payload checksums including all original round arrays
+and complete admissions. SHA-256:
+`900c9ab76a4649f562d0dc1747b97d6e578c2f0bd15f8125f18aa15d8056029e`.
+The [run-context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009T045701Z-context-854.tar.gz)
+retains runner/log/command, recomputed statistics, table/verifier scripts
+and frozen harness/registry, with **17** verified checksums. SHA-256:
+`512ce4c6f1b3aef5f3e045984603aa914cb6eced575e0b6282752c2c7cea4303`.
+Matrix and current-source profile job handles are terminal.
+
+### Previous landed nearest-prior matrix (2026-10-09 UTC)
 
 Result `20261009T033439Z` measures source
 [`b9e6d2591`](https://github.com/home-lang/home/commit/b9e6d25916804d238c17dc9caee4e1d05fdd3032),
@@ -259,6 +331,73 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Landed virtual-section profile (2026-10-09 UTC)
+
+Diagnostic-only sampling of source `71fa7dbe7` / compiler `30330c169`,
+native SHA-256
+`7ab04d806bc0557ff385a91cc993b95c3a727b7e82353ff3ea3e1b59301f822a`,
+passes all **62 admissions** on native/diagnostic images, including complete
+8,192-family positive and TS2322×9/TS2339×3/TS2345×3 rejection controls.
+The exact cached link object is
+`.zig-cache/o/f8dba37497bb3b7d9b38666de3232423/home-tsc_zcu.o`, SHA-256
+`d08dc0b23e922fdf5bd5f0a07898c20920591f10715a596dfd54abafbbda6483`.
+Renaming 20,337 local symbols and relinking for readable stacks preserves
+original/renamed object instruction sections byte-for-byte, SHA-256
+`d85187627a244581eb27def017220627fe430a8f2637f0d0258d1c0feff91b9c`.
+Diagnostic image SHA-256 is
+`3ab6f8184056722c10b4d1c65366de98661f30e8e931f21b7dbb0acc45464e5e`.
+It supplies **zero timing samples**. Native build flags/tool pins are unchanged.
+
+Two separate one-second exploratory samples start at 0.1 and 3.0 seconds.
+The later offset is declared before sampling, reflecting the shorter native
+large run; the previous profile used 5.0 seconds. These are not whole-run CPU
+percentages, causal speed evidence or directly comparable time windows.
+The complete input inventory hash remains
+`bfb2fb1bef4dcb4ad7df9bffa647b5d44bd35c6895b32772fb4044ce0ced829e`.
+The compiler finishes silently with exit 0, every sample succeeds, and source/
+native/input provenance is unchanged. Peak tree 315 MB, host low-water 41%,
+under the same machine-lock/time/memory/disk guard; job handles are terminal.
+
+| Exploratory leaf observations | Early | Later |
+|---|---:|---:|
+| Main-thread observations | 810 | 811 |
+| `memberAccessReceiverIsRequireAssignmentBinding` | 130 | 108 |
+| `resolveValueDeclInStmt` | 23 | 96 |
+| `jsDocTypeForPreviousIdentifierDecl` | 8 | 77 |
+| `collectFunctionSignaturesFromStatements` | 52 | 70 |
+| `moduleNamespaceTypeForLocalImport` | 56 | 69 |
+| `virtualSectionStartForNode` | 46 | 48 |
+| `requireImportAssignmentMemberType` | 52 | 41 |
+
+Raw samples retain all other frames/counts. Current `virtualSectionStartForNode`
+is mapped at unslid `0x10019a2c8`; explicitly displayed offsets 0/200 match
+the source/marker-presence guard and return path, and full assembly retains
+the node cache plus call to `VirtualSectionIndex.start`. The root-statement
+require-binding query maps at `0x100720020`, displayed offsets 244/416/476:
+loop decrement and declaration-kind/name loads in the complete per-query
+root loop. Source verifies identifier/root/virtual-section checks,
+require-import default bindings, export unwrapping and var/let/const
+`require(...)` candidates. These repeated syntax queries, and the remaining
+previous-JSDoc fallback, are concrete #854 follow-up candidates; no new
+runtime optimization or performance claim is made here.
+
+Symbol bounds are derived from this diagnostic image's own `nm` output,
+not copied from the previous profile. Collapsed raw samples can contain
+ellipses: only explicitly displayed offsets are listed, not an invented
+complete set. The first verifier missed the image-name text preceding those
+offsets; its draft archive/version remains recoverable in the task cache,
+and the published archive retains that verifier and first archive metadata.
+Corrected parsing and instruction bounds verify without resampling or
+altering any observation.
+
+The [profile archive](../../bench/vs_tsgo/evidence/20261009-landed-virtual-section-jsdoc-profile-854.tar.gz)
+has **29** verified payload checksums, including full admission process records,
+exact inputs, both raw samples, instruction sections, symbols, source/assembly
+mapping, runners/logs and verifier versions. SHA-256:
+`e22df848c73e855a6ad5a77d23a8af0c244df3b14f2fab268dc30b33daf837ca`.
+Scale-negative fixture bytes remain in the immutable virtual-section A/B
+archive below and are used unchanged, not silently regenerated.
 
 ## Virtual-section prefix facts (2026-10-09 UTC)
 
