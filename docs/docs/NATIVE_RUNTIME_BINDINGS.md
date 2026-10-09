@@ -1597,3 +1597,48 @@ now uses a dedicated artifact sharing the same root module and generated inputs;
 verified to omit documentation emission. Production, focused harness and the
 explicit docs target are undergoing sequential verification with unchanged
 runtime settings and test deadlines. No memory-limited attempt is a passing build.
+
+## BroadcastChannel and MessageEvent source ownership (2026-10-09)
+
+Home now compiles `BroadcastChannel.cpp`, `BunBroadcastChannelRegistry.cpp`,
+`JSBroadcastChannel.cpp`, `MessageEvent.cpp` and `JSMessageEvent.cpp` from its
+mirrored source. Generation validates each matching class header before output,
+retains every unowned companion include and rejects missing or duplicate owned
+sources. The external channel unity object is excluded from linking. These
+sources and headers are explicit cache inputs. The shared subscriber registry
+keeps weak references across threads and resolves them on the receiver's thread;
+MessageEvent retains the upstream locking around variant mutation and GC visits.
+
+The native binding target passes 22/22 steps. Four Zig binding controls and eight
+generator/ABI controls pass, including 251 generator assertions. The isolated
+fixture now includes its required ScriptExecutionContext unit; negative controls
+check the intended rejection reason instead of accepting an unrelated missing
+input. All 22 audited C++ source/header, test, helper and configuration files
+match pinned Bun `4982b91e3702094330f3be3883354c52b8c01323` and retain their hashes.
+
+The complete Debug executable passes 28/28 build steps, peaking at 5,635 MB under
+an 8,192 MB tree-footprint ceiling. The rebased build also passes 28/28 steps at a measured 5,687 MB peak.
+Its three-second sample records LLVM AArch64 code generation. The original six-entry Atomics/BroadcastChannel selection has
+46 registered passes, zero failures/skips/TODOs and one successful Node process
+check. All six captures reached verified EOF; their JUnit and raw capture hashes
+validate. Six native worker/message-port lifecycle controls also pass. The combined source
+after main integration repeats all six entries with the same 46 registered passes,
+one Node process check and complete validated captures. Its executable SHA256 is
+`d686344103f9ac639c3273a05aaa37c191349206ccf706848866879542421824`.
+[Retained source and execution evidence](./bun-port-evidence/2026-10-09-native-broadcast-ownership/manifest.json)
+includes both runs and all unsuccessful attempts.
+
+ReleaseFast attempts remain unsuccessful at the selected build budgets:
+3,879 and 3,855 MB observed against 3,840 MB; stripped output reached 4,186 MB
+against 3,840 MB, 5,276 MB against 5,120 MB and 8,215 MB against 8,192 MB.
+ReleaseSmall reached 8,391 MB against 8,192 MB. The initial PATH toolchain also
+failed configuration because it lacked the required optimize enum. None of these
+attempts receives successful-build credit. Debug behavior does not resolve the
+[release-build memory issue (#855)](https://github.com/home-lang/home/issues/855)
+or establish equivalent performance. Corpus workloads,
+case deadlines and the 3,840 MB test-run budget were preserved.
+
+This is scoped source ownership and native execution evidence. Linux, Windows,
+ASAN, complete-suite execution and ownership of the remaining external bindings
+and native dependencies stay open in [#810](https://github.com/home-lang/home/issues/810)
+and [#66](https://github.com/home-lang/home/issues/66).
