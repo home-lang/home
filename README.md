@@ -291,7 +291,23 @@ All **442 paired rounds / 660 admissions**, the adverse first large batch and
 inconclusive risk checks remain in the
 [full report](docs/docs/TS_PERFORMANCE.md#classinterface-modifier-merge-index-2026-10-08-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261008-class-interface-index-accepted-853.tar.gz).
-The separate whole-file JSDoc class-owner scan remains open in #853.
+The separate whole-file JSDoc class-owner scan is now
+[indexed](https://github.com/home-lang/home/commit/ac348835050d26963166dc276b8774d6d9a8a383)
+in a later, separately frozen #853 experiment:
+
+| Class-local typedef owner confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 29.662 ms | 28.097 ms | **+1.339 to +1.753 ms** |
+| 512 JSDoc families, 30 pairs | 157.129 ms | 131.756 ms | **+23.146 to +33.404 ms** |
+| 8,192 families, five six-pair batches | 18,790.065 ms | 12,398.067 ms | **+5,665.278 to +6,661.269 ms** |
+
+These medians are **5.3%, 16.1% and 34.0% lower**; all 30 pairs per confirmation
+favor the candidate. The large five-batch interval is also positive. All
+**442 rounds / 660 admissions**, including variable large observations and
+adverse-but-inconclusive predicate/re-export rechecks, remain in the
+[full report](docs/docs/TS_PERFORMANCE.md#class-local-typedef-owner-index-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-class-typedef-owner-index-accepted-853.tar.gz).
+Neither Home-only A/B establishes a new five-compiler ranking or universal speedup.
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full

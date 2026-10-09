@@ -110,6 +110,169 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Class-local typedef owner index (2026-10-09 UTC)
+
+Source [`ac348835050d26963166dc276b8774d6d9a8a383`](https://github.com/home-lang/home/commit/ac348835050d26963166dc276b8774d6d9a8a383)
+lands the separate class-local JSDoc typedef ownership improvement in
+[#853](https://github.com/home-lang/home/issues/853). Parent source is
+`b513c85d39a00b9f0d7266ae8b46bc7de3cbc0cb`, already including the earlier
+modifier-merge index. Samples from those experiments are not merged.
+The current parent's entire typedef pass and class-search function match the
+previously instruction-mapped source byte-for-byte: per typed typedef tag,
+`reportClassLocalTypedefTemplateReferences` searches every HIR node for the
+smallest class strictly containing its comment. The older sample addresses
+are not mislabeled as a new profile of the later parent binary.
+
+The new complete class-span index is built lazily and owned by one typedef
+pass. Sorted nested/disjoint ranges support binary-search ownership, with
+strict start/end boundaries and lowest NodeId ties preserved. Empty/reversed
+ranges cannot contain a comment. Crossing ranges or allocation failure free
+partial data and use the complete scalar search for all remaining queries.
+JSDoc parsing, template/type checking and diagnostic emission remain unchanged.
+No persistent checker fields, foreign TypeIds, source-name shortcuts, numeric
+semantic caps, approximate types or body omission are added.
+
+The scalar search now tests actual owner absence instead of using the widest
+u32 width as an unset sentinel. A synthetic widest-range control verifies
+that logical boundary correction on both paths; this is not a claim of
+successful compilation of a 4 GB file.
+
+Native parent SHA-256 is
+`9e9cc2a1d108640694c066b7afb36e2b286a73a03d92271d30b3fa657c54f8ea`;
+candidate is
+`fb77a18ed4b9b14a7c0ef29366963166754de8904602c2516ea2d223389cbb82`.
+Frozen production/test diff SHA-256:
+`b90fd86e1421a2b0cc6d6cd8a2d64d5eed556b1498288957582ca0b096c74a83`.
+Its live working-tree bytes matched before commit. The standalone native
+build uses pinned Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+`-Denable_jsc=false`, on M3 Pro / Mac15,6, Darwin 27 arm64, Hyperfine 1.20.0
+and Python 3.9.6. Diagnostic images never supply these timing samples.
+
+All phases were declared before timing and require 66 successful admissions:
+both binaries on 20 official positive/nine negative projects, plus unchanged
+512/8,192-family positive/negative generators. Every checked-JS control
+requires TS2322×9, TS2339×3 and TS2345×3, not partial/erased diagnostics.
+After three warmups per binary, fresh processes alternate pair order equally.
+Binary/input/harness/patch fingerprints match before/after every phase.
+All five separate six-pair large batches retain their own admissions, warmups
+and fingerprints under the unchanged 600-second execution bound and 3,840 MB
+tree guard. They are not represented as one continuous 30-pair run.
+
+Intervals below describe paired parent-minus-candidate **mean** savings,
+not differences between the displayed medians. No observation is filtered.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 29.612 ms | 28.146 ms | 20/20 | +1.326 to +1.722 ms |
+| 512 families, six-pair screen | 157.622 ms | 130.732 ms | 6/6 | +23.734 to +30.319 ms |
+| 8,192 families, six-pair screen | 18,588.827 ms | 12,295.112 ms | 6/6 | +6,251.493 to +6,312.807 ms |
+| Official checked JS, 30-pair confirmation | 29.662 ms | 28.097 ms | 30/30 | +1.339 to +1.753 ms |
+| 512 families, 30-pair confirmation | 157.129 ms | 131.756 ms | 30/30 | +23.146 to +33.404 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 21,232.136 ms | 15,186.577 ms | 6/6 | +3,440.071 to +7,025.335 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 18,255.094 ms | 11,941.947 ms | 6/6 | +6,147.551 to +6,444.165 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 17,907.636 ms | 11,408.930 ms | 6/6 | +6,307.982 to +6,701.440 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 18,872.256 ms | 12,670.743 ms | 6/6 | +5,767.170 to +7,126.680 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 20,875.306 ms | 13,336.153 ms | 6/6 | +3,853.595 to +8,818.746 ms |
+| 8,192 families, all five batches (30 pairs total) | 18,790.065 ms | 12,398.067 ms | 30/30 | +5,665.278 to +6,661.269 ms |
+
+Independent confirmation supports **5.3%, 16.1% and 34.0% lower medians** at
+official/512/8,192-family sizes, respectively. Every one of the 30 paired
+observations per confirmation favors the candidate. The supplemental
+**five-batch** t interval (df=4) is also positive: **+5,509.152 to +6,817.395 ms**.
+Batch mean savings are +5,232.703, +6,295.858, +6,504.711, +6,446.925 and
++6,336.170 ms. Variable first/last batches and large individual observations,
+including the final 22.731-second candidate run, remain. These are scoped
+results, not universal leadership or performance-equivalence proof.
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 31.922 ms | 29.148 ms | 10/10 | +0.766 to +2.577 ms |
+| `class_hierarchy` | 23.898 ms | 23.336 ms | 9/10 | -15.997 to +44.182 ms |
+| `commonjs_graph` | 24.016 ms | 23.954 ms | 7/10 | -0.439 to +0.771 ms |
+| `control_flow` | 26.028 ms | 26.077 ms | 3/10 | -0.429 to +0.482 ms |
+| `deep_types` | 20.621 ms | 21.179 ms | 5/10 | -2.783 to +5.961 ms |
+| `destructuring` | 14.124 ms | 14.082 ms | 5/10 | -0.149 to +0.191 ms |
+| `generic_calls` | 22.223 ms | 22.335 ms | 5/10 | -0.601 to +0.231 ms |
+| `import_graph` | 19.724 ms | 19.759 ms | 4/10 | -1.171 to +0.235 ms |
+| `interface_composition` | 35.450 ms | 34.681 ms | 7/10 | -2.545 to +12.932 ms |
+| `many_files` | 22.339 ms | 21.539 ms | 8/10 | -0.025 to +2.014 ms |
+| `null_safe_access` | 31.327 ms | 31.530 ms | 5/10 | -0.470 to +0.195 ms |
+| `overload_resolution` | 22.946 ms | 22.926 ms | 6/10 | -0.218 to +0.325 ms |
+| `recursive_generics` | 13.905 ms | 13.835 ms | 8/10 | -0.199 to +0.416 ms |
+| `reexport_graph` | 12.565 ms | 11.265 ms | 7/10 | -0.595 to +2.943 ms |
+| `startup` | 2.622 ms | 2.588 ms | 5/10 | -0.054 to +0.086 ms |
+| `structural_objects` | 23.923 ms | 23.952 ms | 4/10 | -0.786 to +1.510 ms |
+| `tsx_components` | 19.489 ms | 19.455 ms | 8/10 | +0.020 to +0.366 ms |
+| `type_predicates` | 32.728 ms | 32.830 ms | 7/10 | -0.228 to +0.728 ms |
+| `type_predicates_large` | 246.493 ms | 249.880 ms | 9/10 | -1.751 to +8.075 ms |
+| `variadic_tuples` | 38.851 ms | 39.103 ms | 5/10 | -6.043 to +3.545 ms |
+
+No screen median exceeds the 3%-slower threshold and no screen interval is
+wholly negative. The full family screen is retained, including wide intervals.
+The predeclared carried-predicate/re-export checks still run, as do separate
+class/interface checks; a positive small TSX screen is not promoted into an
+independent-confirmation claim for this JSDoc change.
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `reexport_graph` | 11.459 ms | 11.479 ms | 13/30 | -0.806 to +0.301 ms |
+| `type_predicates_large` | 242.898 ms | 245.442 ms | 11/30 | -7.941 to +7.407 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 22.427 ms | 22.432 ms | 14/30 | -0.144 to +0.181 ms |
+| `interface_composition` | 33.055 ms | 33.042 ms | 18/30 | -0.081 to +0.340 ms |
+
+Predicates/re-exports have adverse recheck medians (~1.0%/~0.2% slower) with
+inconclusive intervals. Class/interface intervals also span zero. None is
+called equivalent or universally regression-free. All **442** paired rounds
+(884 timing samples) and **660** admissions remain, independently recalculated
+from raw order/exits/arrays, negative codes and before/after fingerprints.
+
+Full checker/Program/driver/CLI/entrypoint gates pass **4,536 / 247 / 200 / 74 / 35**;
+harness passes **136/136**. Five controls compare all source-byte positions,
+**93,750** ordered synthetic three-range queries, widest spans, strict bounds,
+ties and crossing fallback; fail every forced reallocating growth allocation;
+check partial cleanup/balanced bytes; compare complete indexed/forced-scalar/
+failed-index typedef diagnostics across nested/exported classes, expressions
+and virtual sections; and verify lazy/empty ownership needs no allocation.
+
+The first full checker passed **4,535 / one failed** in the new OOM control:
+in-place remaps made its allocation-growth assumption nondeterministic. The
+corrected TEST allocator refuses remaps, retains the multiple-growth assertion
+and tests every actual growth allocation, including OOM after partial ownership.
+Production code was unchanged by this correction. The original full failed
+log/diff remains; no named filter or skip was introduced.
+
+Native build passed, but disk admission subsequently refused corrected
+checker/driver/entrypoint/harness before execution at 565–566 MB free. All exit
+123 logs/commands remain. With no open handles, only 100 inventoried old
+compiler/test cache output files in 50 task-worktree directories were removed
+(1,297,717,280 rebuildable bytes). Source, evidence, benchmark binaries and
+diagnostic profile objects stayed intact; the manifest records every target.
+The refused gates were rerun successfully with the same 1,024/512 MB disk
+floors, 600-second execution bound, 900-second lock wait and 3,840 MB limit.
+Checker peak was 3,373 MB, build 2,919 MB; measurements peak at 235–275 MB.
+
+Pinned, unmodified Zod's 106 production files retain the complete primary
+message/position/code multiset: **195 TS + 3 HM9002**, zero added/removed;
+normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is **not production admission**. No C++ admission, other-platform result
+or all-benchmark leadership is established. The latest full matrix above
+still leads **1/20** and beats native TS7 **12/20**, pending a fresh matrix.
+
+The [complete evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261009-class-typedef-owner-index-accepted-853.tar.gz)
+contains **1,570** verified payload checksums; SHA-256:
+`2b1a5411fea8319951b831cd0497988daef540f93024a773e03cce15426b6ca5`.
+Every phase/round/admission, source/test diff, mapping proof, full gate/build/
+Zod log, original failure, guard refusal, cache-removal manifest and
+recalculation script is retained. Positive and scale-negative project bytes
+are archived. Official negative temporary copies were deleted by the unchanged
+harness after their actual process records were captured; separately labeled
+generator replays reconstruct those inputs without executing a compiler and
+are not mislabeled as original directories or new admissions.
+
 ## Class/interface modifier-merge index (2026-10-08 UTC)
 
 Source [`bbabc2f4dd2417b4a71460b722b0a07930136c88`](https://github.com/home-lang/home/commit/bbabc2f4dd2417b4a71460b722b0a07930136c88)
