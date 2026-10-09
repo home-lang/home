@@ -4031,6 +4031,63 @@ const ClassTypedefOwnerIndex = struct {
     }
 };
 
+/// Complete syntax candidates for nearest-prior value queries. Type results
+/// remain live; source replacement and HIR growth invalidate the candidates.
+const PriorValueDeclarationIndex = struct {
+    const Groups = std.AutoArrayHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId));
+    groups: Groups = .empty,
+    node_count: u32 = 0,
+    state: enum { unbuilt, indexed, slow } = .unbuilt,
+
+    fn deinit(self: *PriorValueDeclarationIndex, allocator: std.mem.Allocator) void {
+        for (self.groups.values()) |*nodes| nodes.deinit(allocator);
+        self.groups.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn build(checker: *Checker) std.mem.Allocator.Error!Groups {
+        var groups: Groups = .empty;
+        errdefer {
+            for (groups.values()) |*nodes| nodes.deinit(checker.gpa);
+            groups.deinit(checker.gpa);
+        }
+        var node: NodeId = 0;
+        while (node < checker.hir.nodeCount()) : (node += 1) {
+            const kind = checker.hir.kindOf(node);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const declaration = hir_mod.varDeclOf(checker.hir, node);
+            if (declaration.name == hir_mod.none_node_id or checker.hir.kindOf(declaration.name) != .identifier) continue;
+            const name = hir_mod.identifierOf(checker.hir, declaration.name).name;
+            const group = try groups.getOrPut(checker.gpa, name);
+            if (!group.found_existing) group.value_ptr.* = .empty;
+            try group.value_ptr.append(checker.gpa, node);
+        }
+        for (groups.values()) |*nodes| {
+            std.mem.sort(NodeId, nodes.items, checker.hir, struct {
+                fn lessThan(hir: *const Hir, a: NodeId, b: NodeId) bool {
+                    const a_start = hir.spanOf(a).start;
+                    const b_start = hir.spanOf(b).start;
+                    if (a_start != b_start) return a_start < b_start;
+                    // Reverse lookup must see the lowest NodeId first on ties.
+                    return a > b;
+                }
+            }.lessThan);
+        }
+        return groups;
+    }
+
+    fn ensure(self: *PriorValueDeclarationIndex, checker: *Checker) bool {
+        const count = checker.hir.nodeCount();
+        if (self.state != .unbuilt and self.node_count == count) return self.state == .indexed;
+        self.deinit(checker.gpa);
+        self.node_count = count;
+        self.state = .slow;
+        self.groups = build(checker) catch return false;
+        self.state = .indexed;
+        return true;
+    }
+};
+
 const JsDocNamedDeclarationKind = enum {
     typedef,
     callback,
@@ -5400,6 +5457,7 @@ pub const Checker = struct {
     /// First local value declaration and exact statement boundaries, partitioned
     /// by virtual source section. Ordinals preserve recovery-node ordering too.
     local_value_decls_by_container: std.AutoHashMapUnmanaged(NodeId, LocalValueContainerIndex) = .empty,
+    prior_value_declaration_index: PriorValueDeclarationIndex = .{},
     /// Named `@typedef` and `@callback` blocks in a physical JS source.
     /// JSDoc lowering probes several declaration categories per reference;
     /// indexing once avoids repeated whole-source negative scans.
@@ -6026,6 +6084,7 @@ pub const Checker = struct {
         var local_values_it = self.local_value_decls_by_container.valueIterator();
         while (local_values_it.next()) |index| index.deinit(self.gpa);
         self.local_value_decls_by_container.clearRetainingCapacity();
+        self.prior_value_declaration_index.deinit(self.gpa);
         self.jsdoc_named_declarations.clearRetainingCapacity();
         self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
         self.jsdoc_named_declarations_built = false;
@@ -6701,6 +6760,7 @@ pub const Checker = struct {
         var local_values_it = self.local_value_decls_by_container.valueIterator();
         while (local_values_it.next()) |index| index.deinit(self.gpa);
         self.local_value_decls_by_container.deinit(self.gpa);
+        self.prior_value_declaration_index.deinit(self.gpa);
         self.jsdoc_named_declarations.deinit(self.gpa);
         self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
         self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
@@ -96693,6 +96753,41 @@ pub const Checker = struct {
     }
 
     fn nearestPriorValueDeclInSameFunction(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (!self.prior_value_declaration_index.ensure(self)) return self.nearestPriorValueDeclInSameFunctionSlow(node, name);
+        const group = self.prior_value_declaration_index.groups.get(name) orelse return null;
+        const use_start = self.hir.spanOf(node).start;
+        const use_function = self.enclosingFunctionLike(node);
+        var low: usize = 0;
+        var high = group.items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (self.hir.spanOf(group.items[middle]).start < use_start) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        while (low > 0) {
+            low -= 1;
+            const candidate = group.items[low];
+            const start = self.hir.spanOf(candidate).start;
+            const candidate_function = self.enclosingFunctionLike(candidate);
+            if (candidate_function != use_function) {
+                if (candidate_function != null or use_function == null) continue;
+                const function_span = self.hir.spanOf(use_function.?);
+                if (start < function_span.start or start >= function_span.end) continue;
+            }
+            if (self.source_has_virtual_sections and
+                self.virtualSectionStartForNode(candidate) != self.virtualSectionStartForNode(node))
+            {
+                continue;
+            }
+            return candidate;
+        }
+        return null;
+    }
+
+    fn nearestPriorValueDeclInSameFunctionSlow(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         const use_start = self.hir.spanOf(node).start;
         const use_function = self.enclosingFunctionLike(node);
         var nearest = hir_mod.none_node_id;
@@ -214577,6 +214672,155 @@ test "checker: recovered parameter use ranges match source scanning" {
                 );
             }
         }
+    }
+}
+
+test "checker: nearest prior value index preserves complete scope and section eligibility" {
+    for ([_][]const u8{
+        "var value = 0; export const exported = 1; function outer(value: number) { let value = 2; { const value = 3; value; } function inner() { const value = 4; value; } value; return () => { let value = 5; return value; }; } function sibling() { var value = 6; value; } value; exported; missing;",
+        "namespace First { export const value = 1; value; } namespace Second { let value = 2; value; } class C { field = 0; method() { const value = 3; value; } } const { ignored } = { ignored: 1 }; ignored;",
+        "// @checkjs: true\n// @filename: first.js\nvar value = 1; function f() { let value = 2; value; } value;\n// @filename: second.js\nconst value = 3; value; missing;",
+    }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        var node: NodeId = 1;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) != .identifier) continue;
+            const name = hir_mod.identifierOf(&s.hir, node).name;
+            try T.expectEqual(s.checker.nearestPriorValueDeclInSameFunctionSlow(node, name), s.checker.nearestPriorValueDeclInSameFunction(node, name));
+        }
+        try T.expectEqual(.indexed, s.checker.prior_value_declaration_index.state);
+        const missing_name = try s.sint.intern("notDeclaredAnywhere");
+        try T.expectEqual(@as(?NodeId, null), s.checker.nearestPriorValueDeclInSameFunction(s.root, missing_name));
+    }
+}
+
+test "checker: prior value index preserves every position order and lowest node ties" {
+    const s = try newSetup("var value = 1; let value = 2; const value = 3; value;");
+    defer destroySetup(s);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const use = statements[3];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    for (0..7) |first| {
+        for (0..7) |second| {
+            for (0..7) |third| {
+                s.checker.prior_value_declaration_index.deinit(T.allocator);
+                for ([_]usize{ first, second, third }, statements[0..3]) |start, node| {
+                    s.hir.spans.items[node] = .{ .start = @intCast(start), .end = @intCast(start + 1) };
+                }
+                for (0..9) |position| {
+                    s.hir.spans.items[use] = .{ .start = @intCast(position), .end = @intCast(position + 1) };
+                    try T.expectEqual(s.checker.nearestPriorValueDeclInSameFunctionSlow(use, name), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+                }
+            }
+        }
+    }
+}
+
+test "checker: prior value index keeps null-function recovery and source invalidation" {
+    const source = "function outer() { var value = 1; value; }";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    const function = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, function).body;
+    const statements = hir_mod.blockStmts(&s.hir, body);
+    const declaration = statements[0];
+    const use = statements[1];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    // Recovery can leave the declaration outside the parent chain while its
+    // source position is still inside this function. Preserve that exception.
+    s.hir.parents.items[declaration] = hir_mod.none_node_id;
+    try T.expectEqual(@as(?NodeId, declaration), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+    try T.expectEqual(s.checker.nearestPriorValueDeclInSameFunctionSlow(use, name), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+    s.checker.setSource(source);
+    try T.expectEqual(.unbuilt, s.checker.prior_value_declaration_index.state);
+    try T.expectEqual(@as(usize, 0), s.checker.prior_value_declaration_index.groups.count());
+    try T.expectEqual(@as(u32, 0), s.checker.prior_value_declaration_index.node_count);
+    try T.expectEqual(@as(?NodeId, declaration), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+}
+
+test "checker: prior value index rebuilds when the HIR grows" {
+    const s = try newSetup("var value = 1; value;");
+    defer destroySetup(s);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const first = statements[0];
+    const use = statements[1];
+    const name = hir_mod.identifierOf(&s.hir, use).name;
+    try T.expectEqual(@as(?NodeId, first), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+    const previous_count = s.checker.prior_value_declaration_index.node_count;
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const start = s.hir.spanOf(use).start - 1;
+    const identifier = try builder.addIdentifier(.{ .start = start, .end = start + 1 }, name);
+    const declaration = try builder.addVarDecl(.let_decl, .{ .start = start, .end = start + 1 }, identifier, hir_mod.none_node_id, hir_mod.none_node_id);
+    try T.expect(s.hir.nodeCount() > previous_count);
+    try T.expectEqual(@as(?NodeId, declaration), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+    try T.expectEqual(s.hir.nodeCount(), s.checker.prior_value_declaration_index.node_count);
+    try T.expectEqual(s.checker.nearestPriorValueDeclInSameFunctionSlow(use, name), s.checker.nearestPriorValueDeclInSameFunction(use, name));
+}
+
+test "checker: every prior value index construction failure releases groups and scans completely" {
+    const source = "var a = 1; let b = 2; const c = 3; var a = 4; const d = 5; a; b; c; d; absent;";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    var counted = T.FailingAllocator.init(T.allocator, .{ .resize_fail_index = 0 });
+    s.checker.gpa = counted.allocator();
+    var groups = try PriorValueDeclarationIndex.build(&s.checker);
+    const allocations = counted.alloc_index;
+    for (groups.values()) |*nodes| nodes.deinit(counted.allocator());
+    groups.deinit(counted.allocator());
+    s.checker.gpa = T.allocator;
+    try T.expect(allocations > 1);
+    for (0..allocations) |fail_index| {
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        s.checker.prior_value_declaration_index.deinit(T.allocator);
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = T.allocator;
+        var node: NodeId = 1;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) != .identifier) continue;
+            const name = hir_mod.identifierOf(&s.hir, node).name;
+            try T.expectEqual(s.checker.nearestPriorValueDeclInSameFunctionSlow(node, name), s.checker.nearestPriorValueDeclInSameFunction(node, name));
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(.slow, s.checker.prior_value_declaration_index.state);
+        try T.expectEqual(@as(usize, 0), s.checker.prior_value_declaration_index.groups.capacity());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    }
+}
+
+test "checker: indexed and scalar nearest prior queries preserve full checked JS diagnostics" {
+    for ([_][]const u8{
+        \\// @checkjs: true
+        \\// @filename: values.js
+        \\/** @type {number} */ var value = 1;
+        \\value = "bad";
+        \\function outer() {
+        \\  /** @type {string} */ let value = "text";
+        \\  value = 2;
+        \\  function nested() { /** @type {boolean} */ const local = true; local = "bad"; }
+        \\  value = 3;
+        \\}
+        ,
+        \\// @checkjs: true
+        \\// @filename: first.js
+        \\/** @type {number} */ const value = 1;
+        \\value = "bad";
+        \\// @filename: second.js
+        \\/** @type {string} */ let value = "text";
+        \\value = 2;
+        ,
+    }) |source| {
+        const indexed = try newSetup(source);
+        defer destroySetup(indexed);
+        const scalar = try newSetup(source);
+        defer destroySetup(scalar);
+        scalar.checker.prior_value_declaration_index.state = .slow;
+        scalar.checker.prior_value_declaration_index.node_count = scalar.hir.nodeCount();
+        try indexed.checker.checkSourceFile(indexed.root);
+        try scalar.checker.checkSourceFile(scalar.root);
+        try T.expect(indexed.checker.diagnostics.items.len > 0);
+        try T.expectEqualDeep(scalar.checker.diagnostics.items, indexed.checker.diagnostics.items);
     }
 }
 
