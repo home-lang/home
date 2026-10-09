@@ -440,6 +440,25 @@ Raw collapsed counts/ellipses and both stopped diagnostic-build attempts are
 retained. Earlier diagnostic profiles prove pre-link object-byte equality,
 not final native-executable equality. No diagnostic image is timed.
 
+A later ordered namespace-import candidate under #857 was **rejected** for
+confirmed independent destructuring regression, despite target-scale gains:
+
+| #857 namespace-import confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 26.820 ms | 26.733 ms | -0.117 to +0.761 ms |
+| 512 families, 30 pairs | 113.317 ms | 110.763 ms | +1.166 to +3.012 ms |
+| 8,192 families, five six-pair batches | 6,823.087 ms | 6,281.212 ms | +506.044 to +630.443 ms |
+| Destructuring, independent 30 pairs | 13.908 ms | 14.030 ms | **-0.237 to -0.029 ms** |
+| Class hierarchy, 30 pairs | 21.975 ms | 22.001 ms | -0.140 to +0.214 ms |
+| Interface composition, 30 pairs | 32.604 ms | 32.529 ms | +0.002 to +0.373 ms |
+
+The candidate was never pushed; source and native are restored. All **592
+rounds / 660 admissions**, warnings and shared-lock waits remain in the
+[complete rejection report](docs/docs/TS_PERFORMANCE.md#ordered-namespace-import-candidates-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-namespace-import-candidates-rejected-857.tar.gz).
+No repeat-to-pass or alignment tuning is used; the separate five-compiler
+ranking above is not changed by this rejected Home-only A/B.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

@@ -10,6 +10,12 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+The later ordered namespace-import candidate is **rejected**, fully restored
+and never pushed: independent destructuring confirmation regresses despite
+target-scale gains. Its [complete report](#ordered-namespace-import-candidates-2026-10-09-utc)
+retains all 592 rounds / 660 admissions and every warning. The matrix below
+still measures the accepted compiler without that rejected candidate.
+
 The later JSDoc ancestor-prefix index is **accepted** with a 9.1%-lower
 8,192-family exact-parent Home median and all 30 large pairs faster across
 five batches. Official/512-family and independent declaration checks remain
@@ -521,6 +527,171 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Ordered namespace-import candidates (2026-10-09 UTC)
+
+The candidate under [#857](https://github.com/home-lang/home/issues/857) is
+**rejected and never pushed**. Independent destructuring confirmation rises
+from 13.908 to 14.030 ms, only 9/30 pairs faster, with paired mean-saving
+95% interval **[-0.237, -0.029] ms**. Positive checked-JS scaling results do
+not override a confirmed independent regression. The candidate and all eight
+index-specific controls are removed, native restored byte-for-byte, and newer
+runtime work preserved. No retest-to-pass, layout/alignment tuning, semantic
+cap, source-name shortcut, omitted checking or sample exclusion is used.
+
+Exact tested parent:
+[`88a8c2d39c5608be367e75f8379d572b4f571c29`](https://github.com/home-lang/home/commit/88a8c2d39c5608be367e75f8379d572b4f571c29).
+Parent/restored native SHA-256:
+`68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+Rejected candidate native:
+`1b3330a32a5ebcec0cc7783a2d086531a28e5675ff2298b0e95cc636527cd612`.
+Final source/test patch:
+`e3234d7b55a978c565876fd382220f26850e4b6688dfff553281637d9e122fc6`.
+Frozen protocol:
+`a64c278e7e156d223bd628c1cb2bef3c50fcba9d5d0926abdddd5ba8e0567809`.
+The [exact-native profile](#exact-native-profile-and-byte-scope-audit-2026-10-09-utc)
+maps displayed offsets 188/200 to this helper's root-statement scan; no
+invented per-function CPU counts are used to choose it.
+
+This separate design grouped complete direct-import syntax candidates by
+physical HIR root and interned local name, preserving original statement
+order and namespace-binding precedence. Default-binding require eligibility
+remained live against current source, as did every original CommonJS,
+interoperability, Program and namespace-type lowering branch. It cached no
+mutable type or require predicate, added no section/visibility/prior-position
+filter, and did not couple general local-declaration indexes. Source replacement
+released facts; actual HIR growth invalidated them. Every construction failure
+freed partial ownership and used the complete scalar statements; already
+complete roots remained usable while failed uncached roots did not rebuild.
+These facts describe the archived rejected implementation, not current runtime.
+
+Eight controls cover full root/name scalar selection parity and natural
+absence; live source require eligibility/reset; namespace precedence and real
+HIR growth; every forced-growth allocation failure/cleanup; completed-root
+retention and growth retry after failure; first missing-module null rather
+than later-import substitution and recovery/use-before-import positions;
+malformed non-identifier namespace precedence, missing source and invalid
+spans; and complete typed/checked-JS diagnostic parity against scalar fallback.
+Initial five-control **4,558** and seven-control **4,560** full checker passes
+remain. Final eight-control checker passes **4,561** tests, with cached
+confirmation; Program **251**, driver **200**, CLI **76**, entrypoint **38**,
+native build and **136** harness tests pass unfiltered before timing.
+
+Unmodified pinned Zod 4.5.2 (106 production files) retains identical complete
+**198** primary-message/position/code diagnostics: 195 TS plus 3 HM9002,
+normalized SHA-256
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is **not production admission**. The entry point requires complete
+module/build/Zod/harness gates before creating any timing sample.
+
+All **592** original fresh-process alternating-pair rounds and **660**
+admissions verify, with stable native/input/harness/runner fingerprints.
+Three warmups per binary precede every phase/batch. All complete positive and
+negative controls repeat before each phase; official/512/8192 checked-JS
+negatives require all TS2322×9, TS2339×3 and TS2345×3 errors at first/middle/last
+families. The full 20-family screen, all five six-pair large batches, seven
+independent 30-pair carried/adverse rechecks and independent 30-pair class/interface
+checks remain. Recheck selection is the frozen >3%-slower median or wholly
+negative screen interval plus checkjs/deep/recursive/predicate/reexport carries.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 25.660 ms | 25.650 ms | 9/20 | -0.201 to +0.229 ms |
+| 512 families, six-pair screen | 110.263 ms | 111.034 ms | 4/6 | -2.168 to +2.326 ms |
+| 8,192 families, six-pair screen | 6,894.239 ms | 6,401.857 ms | 6/6 | +439.000 to +637.418 ms |
+| Official checked JS, 30-pair confirmation | 26.820 ms | 26.733 ms | 18/30 | -0.117 to +0.761 ms |
+| 512 families, 30-pair confirmation | 113.317 ms | 110.763 ms | 28/30 | +1.166 to +3.012 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 6,830.906 ms | 6,238.544 ms | 6/6 | +506.875 to +663.471 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 6,801.149 ms | 6,262.904 ms | 6/6 | +474.145 to +656.200 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 6,980.379 ms | 6,357.736 ms | 6/6 | +418.310 to +939.443 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 6,841.696 ms | 6,270.456 ms | 6/6 | +472.241 to +675.177 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 6,820.405 ms | 6,306.709 ms | 6/6 | +224.310 to +652.261 ms |
+| 8,192 families, all five batches (30 pairs total) | 6,823.087 ms | 6,281.212 ms | 30/30 | +506.044 to +630.443 ms |
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 27.194 ms | 27.227 ms | 6/10 | -0.646 to +0.602 ms |
+| `class_hierarchy` | 23.697 ms | 23.323 ms | 7/10 | -3.590 to +11.315 ms |
+| `commonjs_graph` | 18.482 ms | 18.610 ms | 4/10 | -0.332 to +0.257 ms |
+| `control_flow` | 25.672 ms | 26.019 ms | 4/10 | -0.893 to -0.038 ms |
+| `deep_types` | 21.531 ms | 21.190 ms | 5/10 | -0.327 to +0.433 ms |
+| `destructuring` | 14.651 ms | 15.151 ms | 2/10 | -0.593 to -0.068 ms |
+| `generic_calls` | 22.953 ms | 22.597 ms | 6/10 | -0.098 to +0.795 ms |
+| `import_graph` | 17.125 ms | 17.314 ms | 4/10 | -0.333 to +0.093 ms |
+| `interface_composition` | 35.292 ms | 34.478 ms | 9/10 | +0.071 to +1.583 ms |
+| `many_files` | 21.768 ms | 21.745 ms | 6/10 | -0.341 to +0.599 ms |
+| `null_safe_access` | 32.221 ms | 32.311 ms | 5/10 | -0.407 to +0.200 ms |
+| `overload_resolution` | 24.726 ms | 24.339 ms | 5/10 | -0.990 to +1.237 ms |
+| `recursive_generics` | 15.078 ms | 15.032 ms | 5/10 | -1.053 to +0.450 ms |
+| `reexport_graph` | 11.863 ms | 11.743 ms | 6/10 | -0.270 to +0.322 ms |
+| `startup` | 2.846 ms | 2.853 ms | 4/10 | -0.052 to +0.052 ms |
+| `structural_objects` | 23.140 ms | 23.076 ms | 6/10 | -0.513 to +1.130 ms |
+| `tsx_components` | 19.098 ms | 18.926 ms | 6/10 | -0.133 to +0.388 ms |
+| `type_predicates` | 32.556 ms | 32.685 ms | 5/10 | -0.653 to +0.405 ms |
+| `type_predicates_large` | 251.777 ms | 253.140 ms | 4/10 | -106.523 to +231.885 ms |
+| `variadic_tuples` | 31.956 ms | 31.576 ms | 4/10 | -0.776 to +0.955 ms |
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 25.701 ms | 25.714 ms | 16/30 | -0.159 to +0.157 ms |
+| `control_flow` | 24.738 ms | 24.857 ms | 13/30 | -0.242 to +0.066 ms |
+| `deep_types` | 20.209 ms | 20.248 ms | 11/30 | -0.199 to +0.083 ms |
+| `destructuring` | 13.908 ms | 14.030 ms | 9/30 | -0.237 to -0.029 ms |
+| `recursive_generics` | 13.853 ms | 13.952 ms | 16/30 | -0.130 to +0.173 ms |
+| `reexport_graph` | 10.833 ms | 10.790 ms | 18/30 | -0.057 to +0.201 ms |
+| `type_predicates_large` | 235.674 ms | 237.005 ms | 11/30 | -3.191 to +0.182 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 21.975 ms | 22.001 ms | 16/30 | -0.140 to +0.214 ms |
+| `interface_composition` | 32.604 ms | 32.529 ms | 16/30 | +0.002 to +0.373 ms |
+
+Independent 512-family median is 2.3% lower; pooled 8,192-family median is
+7.9% lower with 30/30 pairs faster. Large paired mean saving is 0.568243 seconds,
+interval [0.506044, 0.630443] seconds; supplemental five-batch t interval
+(df 4) is [0.461711, 0.674775] seconds. All batch intervals are positive, but
+the variable fifth batch retains its 6.857-second candidate observation.
+The initial 512-family screen is slower and inconclusive, not replaced by
+confirmation. Official confirmation and its carried recheck remain inconclusive.
+
+Both control-flow and destructuring screen intervals are negative and both
+receive independent confirmation. Control flow retains a slower independent
+median with interval spanning zero. Destructuring's independent interval is
+wholly negative and determines rejection. Deep types, recursive generics and
+large predicates retain slower independent medians with zero-spanning intervals;
+the predicate interval is nearly negative. None is equivalence or proof of
+no regression. Class confirmation is inconclusive; interface confirmation is
+positive but does not erase the destructuring loss. Variable class/predicate
+screen observations remain without outlier removal.
+
+The exact owned patch was reversed with `apply_patch`, restoring source to
+the tested parent and removing all eight index-specific controls. Original
+native was restored before clean fast-forward to
+[`1d50e79971dfd0beb244502505f3497f20b08b07`](https://github.com/home-lang/home/commit/1d50e79971dfd0beb244502505f3497f20b08b07),
+preserving newer Worker/WebSocket/runtime work. A clean matching standalone
+build passes with the same `68c6ed51` native SHA-256. Subsequent core-stream
+runtime commits were also preserved by fast-forward to `f1e2d94c9`; its clean
+matching standalone build reproduces the same native (cached 55 ms).
+This is restoration/provenance evidence, not a new A/B or competitor ranking.
+
+All jobs are terminal with recorded exits. Guards remain **600** seconds /
+3,840 MB, shared machine lock and 1,024/512 MB disk floors. Final checker peak
+3,448 MB (earlier 3,405/3,407), Program 3,242, driver 2,911, CLI 2,678,
+entrypoint 3,134, candidate build 3,080, restoration 3,101 and timing 282 MB.
+Shared-lock waits behind unrelated runtime tasks are preserved; no unrelated
+process was stopped, guard raised or completed measurement restarted.
+
+The [complete rejection archive](../../bench/vs_tsgo/evidence/20261009-namespace-import-candidates-rejected-857.tar.gz)
+has **1,725** verified payload checksums, including all raw arrays/admissions,
+initial/final source/test patches, full test/build/Zod/guard evidence,
+decision/lifecycle/restoration, exact scale inputs, harness and strict verifiers.
+SHA-256:
+`76786c37f15e3f68a9f950a8e2853a1d78004a1739ccf724005425d7494ed3ae`.
+Original negative temporary directories were deleted by the original harness;
+actual process records remain. Nine labeled untimed generator replays preserve
+fixtures, not original directories or additional admissions/timings.
+No universal performance, current-source ranking, Zod, canonical C++ or
+other-platform completion is inferred. The broader #416 goal remains open.
 
 ## Exact-native profile and byte-scope audit (2026-10-09 UTC)
 
