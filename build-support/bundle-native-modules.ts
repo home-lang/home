@@ -47,7 +47,7 @@ async function main() {
 
   // This is an explicit ownership manifest, not an assertion that all of the
   // mirrored builtins have been ported. Other literal bytes stay unchanged.
-  const ownedModules = ['node/url.ts', 'node/worker_threads.ts']
+  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts']
   let constants = read(path.join(generated, 'InternalModuleRegistryConstants.h'))
   // Validate every owned module against the linked ABI before starting bundler
   // workers or writing output. A late module mismatch must not leave a partial

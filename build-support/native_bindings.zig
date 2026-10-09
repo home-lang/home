@@ -242,6 +242,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/js/node/url.ts",
         "packages/runtime/upstream/src/js/node/worker_threads.ts",
         "packages/runtime/upstream/src/js/node/querystring.ts",
+        "packages/runtime/upstream/src/js/node/assert.ts",
+        "packages/runtime/upstream/src/js/node/assert.strict.ts",
         "packages/runtime/upstream/src/js/internal/url.ts",
         "packages/runtime/upstream/src/js/internal/validators.ts",
     }) |input| generate.addFileInput(b.path(input));

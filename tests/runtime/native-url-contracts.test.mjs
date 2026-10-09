@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import baseAssert from 'node:assert'
+import querystring from 'node:querystring'
 import { basename } from 'node:path'
 import { format, parse } from 'node:url'
 
@@ -86,3 +88,54 @@ for (const protocol of ['javascript', 'javAscript', 'JAVASCRIPT']) {
   assert.equal(parsed.href, "javascript:alert(1);a='@example.com'")
 }
 console.log('native URL contract regressions passed')
+
+
+// Option accessors must be read once; changing values are observable through
+// both direct querystring use and legacy URL formatting.
+assert.equal(assert, baseAssert.strict)
+let encodeReads = 0
+assert.equal(querystring.stringify({ key: 'two words' }, '&', '=', {
+  get encodeURIComponent() {
+    assert.equal(++encodeReads, 1)
+    return encodeURIComponent
+  },
+}), 'key=two%20words')
+assert.equal(encodeReads, 1)
+let maxKeyReads = 0
+let decodeReads = 0
+assert.deepEqual(Object.entries(querystring.parse('first=one&second=two&third=three', '&', '=', {
+  get maxKeys() {
+    assert.equal(++maxKeyReads, 1)
+    return 2
+  },
+  get decodeURIComponent() {
+    assert.equal(++decodeReads, 1)
+    return decodeURIComponent
+  },
+})), [['first', 'one'], ['second', 'two']])
+assert.equal(maxKeyReads, 1)
+assert.equal(decodeReads, 1)
+
+let errorMessageReads = 0
+let errorConstructorReads = 0
+let observedError
+try {
+  baseAssert.ifError({
+    get message() {
+      assert.equal(++errorMessageReads, 1)
+      return ''
+    },
+    get constructor() {
+      assert.equal(++errorConstructorReads, 1)
+      return { name: 'ReadOnceError' }
+    },
+    stack: undefined,
+  })
+} catch (error) {
+  observedError = error
+}
+assert.equal(errorMessageReads, 1)
+assert.equal(errorConstructorReads, 1)
+assert.equal(observedError.code, 'ERR_ASSERTION')
+assert.equal(observedError.message, 'ifError got unwanted exception: ReadOnceError')
+console.log('native querystring/assert accessor regressions passed')

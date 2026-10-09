@@ -62,10 +62,11 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       timeout: 15000,
     })
     expect(result.exitCode, result.stderr.toString()).toBe(0)
-    for (const name of ['NodeUrl', 'NodeWorkerThreads']) {
+    for (const name of ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict']) {
       const source = read(path.join(output, name + '.js'))
       expect(source).not.toMatch(/^\s*(?:export|import)\s/m)
-      expect(source).not.toContain('__commonJS')
+      if (name === 'NodeUrl' || name === 'NodeWorkerThreads') expect(source).not.toContain('__commonJS')
+      expect(source).not.toContain('import.meta.require(')
       // Check complete function grammar without executing native intrinsics.
       expect(() => new Function(`return ${source.replace(/@([A-Za-z_])/g, '__intrinsic__$1')}`)).not.toThrow()
     }
@@ -79,11 +80,8 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     const external = read(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
     const generated = read(path.join(output, 'InternalModuleRegistryConstants.h'))
     expect(generated).not.toBe(external)
-    const stripOwned = (header: string) => replaceModuleLiteral(
-      replaceModuleLiteral(replaceModuleLiteral(header, 'NodeUrl', 'OWNED_URL'), 'NodeWorkerThreads', 'OWNED_WORKERS'),
-      'InternalForTesting',
-      'OWNED_INTERNAL_FOR_TESTING',
-    )
+    const stripOwned = (header: string) => ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'InternalForTesting']
+      .reduce((value, name) => replaceModuleLiteral(value, name, 'OWNED_' + name), header)
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
