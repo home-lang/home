@@ -1915,7 +1915,9 @@ This completes core builtin body/scaffolding generation for the recorded ABI,
 not the remaining registry modules or native dependency/object graph. IPC
 sending still lacks the pinned serializer's handle support, and received
 net.Socket/dgram.Socket variants remain unimplemented; listener receipt here
-does not establish full IPC or Windows parity. All-platform/ASAN execution,
+does not establish full IPC or Windows parity. Remaining send-side and received
+socket/datagram variants are tracked in
+[#860](https://github.com/home-lang/home/issues/860). All-platform/ASAN execution,
 release memory work in [#855](https://github.com/home-lang/home/issues/855),
 original pending outcomes and full logical Bun parity under
 [#66](https://github.com/home-lang/home/issues/66) remain unfinished.
