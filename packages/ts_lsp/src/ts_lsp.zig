@@ -3697,12 +3697,10 @@ pub const Service = struct {
             // Unknown file — nothing to do, return empty rendered diagnostics.
             return gpa.dupe(u8, "");
         }
-        // Step 2: recompile through the whole-program pipeline, as
-        // didOpen does. `recompileChanged` compiles the file in isolation
-        // and loses the types of its imports (every imported name becomes
-        // unchecked); `compileAll` only rebuilds files whose compilation
-        // `updateSource` dropped. New imports are loaded first. Importers
-        // of this file are not re-checked until they change themselves.
+        // Step 2: recompile through the whole-program pipeline, as didOpen
+        // does. `updateSource` invalidates the changed file's transitive
+        // importers, so `compileAll` refreshes every checked consumer while
+        // retaining unrelated compilations. New imports are loaded first.
         _ = self.program.loadImportClosure(self.compile_options) catch 0;
         try self.program.compileAll(self.compile_options);
         // Step 3: render fresh diagnostics for the editor.
@@ -7912,6 +7910,32 @@ test "Service: didChangeFile recompiles + returns fresh diagnostics" {
     const f = program.fileById(0);
     try T.expect(f.compilation != null);
     try T.expectEqualStrings("let x: number = 1;", f.source);
+}
+
+test "Service: dependency revisions refresh importer diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/dep.ts", "export const value: string = 'old';");
+    try vfs.addFile("/main.ts", "import { value } from './dep'; const result: number = value;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/dep.ts", "export const value: string = 'old';");
+    _ = try program.add("/main.ts", "import { value } from './dep'; const result: number = value;");
+    try program.compileAll(.{ .strict = true, .no_emit = true });
+
+    var svc = Service.init(T.allocator, &program);
+    svc.compile_options = .{ .strict = true, .no_emit = true };
+    const before = try svc.diagnostics(T.allocator, "/main.ts");
+    defer T.allocator.free(before);
+    try T.expect(std.mem.indexOf(u8, before, "TS2322") != null);
+
+    const changed = try svc.didChangeFile(T.allocator, "/dep.ts", "export const value: number = 1;");
+    defer T.allocator.free(changed);
+    const after = try svc.diagnostics(T.allocator, "/main.ts");
+    defer T.allocator.free(after);
+    try T.expect(std.mem.indexOf(u8, after, "TS2322") == null);
 }
 
 test "Service: didChangeFile on unknown file returns empty diagnostics" {

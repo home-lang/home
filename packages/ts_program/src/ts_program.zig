@@ -522,32 +522,69 @@ pub const Program = struct {
             path[directory.len] == '/';
     }
 
+    fn markCanonicalRevision(self: *const Program, canonical_id: FileId, affected: []bool) void {
+        affected[canonical_id] = true;
+        for (self.files.items) |file| {
+            if (file.redirect_target == canonical_id) affected[file.id] = true;
+        }
+    }
+
+    fn closeRevisionImporters(self: *const Program, affected: []bool) void {
+        var grew = true;
+        while (grew) {
+            grew = false;
+            for (self.files.items) |file| {
+                if (affected[file.id]) continue;
+                for (file.imports.items) |dependency| {
+                    if (dependency >= affected.len) continue;
+                    const canonical_dependency = self.canonicalFileId(dependency);
+                    if (!affected[dependency] and !affected[canonical_dependency]) continue;
+                    affected[file.id] = true;
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn invalidateRevisionFiles(self: *Program, affected: []const bool) void {
+        for (self.files.items) |file| {
+            if (!affected[file.id]) continue;
+            self.dropCompilation(file);
+            file.imports.clearRetainingCapacity();
+        }
+    }
+
     /// Replace the source bytes for an existing file (matched by path).
     /// Redirect paths update their canonical file and all sibling redirects,
-    /// while the returned id still identifies the requested path. Allocation
-    /// completes before any published source or compilation state changes.
+    /// while the returned id still identifies the requested path. Every
+    /// transitive importer is invalidated because its checked types may depend
+    /// on the revised exports. Allocation completes before any published
+    /// source or compilation state changes.
     pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) !?FileId {
         const id = self.by_path.get(path) orelse return null;
         const canonical_id = self.canonicalFileId(id);
         const canonical = self.files.items[canonical_id];
         const source_slot = self.sources.getPtr(canonical.path) orelse return error.NotFound;
+        const affected = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(affected);
+        @memset(affected, false);
+        self.markCanonicalRevision(canonical_id, affected);
+        self.closeRevisionImporters(affected);
         const new_dupe = try self.gpa.dupe(u8, new_source);
 
         // Everything after the duplicate succeeds is allocation-free. Keep
         // the old map entry, source slices, compilations, owners, imports, and
         // marker snapshots intact if allocation fails.
         const old_source = source_slot.*;
-        self.dropCompilation(canonical);
+        self.invalidateRevisionFiles(affected);
         source_slot.* = new_dupe;
         canonical.source = new_dupe;
         canonical.source_markers = null;
-        canonical.imports.clearRetainingCapacity();
         for (self.files.items) |file| {
             if (file.redirect_target != canonical_id) continue;
-            self.dropCompilation(file);
             file.source = new_dupe;
             file.source_markers = null;
-            file.imports.clearRetainingCapacity();
         }
         self.gpa.free(old_source);
         return id;
@@ -4194,10 +4231,10 @@ pub const Program = struct {
         return null;
     }
 
-    /// Re-compile only the subset of files whose paths appear in
-    /// `changed_paths`. Files not listed reuse their existing
-    /// `compilation` (or remain unset if they were never compiled).
-    /// Returns the count of files re-compiled.
+    /// Re-compile files whose paths appear in `changed_paths` and every
+    /// transitive importer whose checked types can depend on them. Files
+    /// outside that reverse dependency closure reuse their existing
+    /// compilation. Returns the count of canonical files re-compiled.
     ///
     /// Pairs with `ts_watch.Watcher.tick()` for the watch-mode
     /// loop:
@@ -4211,32 +4248,29 @@ pub const Program = struct {
         changed_paths: []const []const u8,
         options: ts_driver.CompileOptions,
     ) ProgramError!u32 {
-        var canonical_ids: std.ArrayListUnmanaged(FileId) = .empty;
-        defer canonical_ids.deinit(self.gpa);
+        const affected = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(affected);
+        @memset(affected, false);
+        // `updateSource` may already have invalidated the reverse closure and
+        // cleared its old edges. Preserve that closure by admitting every
+        // canonical file whose compilation is currently absent.
+        for (self.files.items) |file| {
+            if (file.redirect_target == null and file.compilation == null) affected[file.id] = true;
+        }
         for (changed_paths) |path| {
             const requested_id = self.by_path.get(path) orelse continue;
             const canonical_id = self.canonicalFileId(requested_id);
-            if (std.mem.indexOfScalar(FileId, canonical_ids.items, canonical_id) != null) continue;
-            try canonical_ids.append(self.gpa, canonical_id);
+            self.markCanonicalRevision(canonical_id, affected);
         }
+        self.closeRevisionImporters(affected);
 
         try self.prepareNameStore();
         var count: u32 = 0;
-        for (canonical_ids.items) |id| {
-            const f = self.files.items[id];
-            // Free the previous compilation so the new one owns
-            // a fresh HIR + symbol table.
-            self.dropCompilation(f);
-            // Clear any cached import edges — they'll be repopulated
-            // by resolveImports below.
-            f.imports.clearRetainingCapacity();
-
-            try self.compileFile(f, options);
-            try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
-            count += 1;
+        for (self.files.items) |file| {
+            if (file.redirect_target == null and affected[file.id]) count += 1;
         }
-        // Cross-file imports may now resolve to different ids.
-        try self.resolveImports();
+        self.invalidateRevisionFiles(affected);
+        try self.compileAll(options);
         return count;
     }
 
@@ -8385,7 +8419,7 @@ test "Program: duplicate package-id redirect survives source update and recompil
     defer r.deinit();
     var p = Program.init(T.allocator, &r);
     defer p.deinit();
-    _ = try p.add("/app/a.ts", "import 'pkg';\n");
+    const app_id = try p.add("/app/a.ts", "import 'pkg';\n");
     const nested_id = try p.add("/app/nested/consumer.ts", "import 'pkg';\n");
 
     const added = try p.loadImportClosure(.{});
@@ -8421,9 +8455,11 @@ test "Program: duplicate package-id redirect survives source update and recompil
         "/app/node_modules/pkg/index.d.ts",
         "/app/nested/node_modules/pkg/index.d.ts",
     };
-    try T.expectEqual(@as(u32, 1), try p.recompileChanged(&changed_paths, .{}));
+    try T.expectEqual(@as(u32, 3), try p.recompileChanged(&changed_paths, .{}));
     try T.expect(canonical.compilation != null);
     try T.expect(redirect.compilation == null);
+    try T.expect(p.fileById(app_id).compilation != null);
+    try T.expect(p.fileById(nested_id).compilation != null);
     try T.expectEqual(canonical_id, p.by_package_id.get(package_id).?);
 }
 
@@ -10254,7 +10290,7 @@ test "Program: updateSource publishes source and redirects atomically" {
     try T.expect(second_redirect.source_markers == null);
 }
 
-test "Program: recompileChanged only recompiles listed paths" {
+test "Program: recompileChanged preserves unrelated files" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -10292,6 +10328,32 @@ test "Program: recompileChanged only recompiles listed paths" {
     try T.expect(b.compilation.?.interner.sharesStorageWith(&a_owner.interner));
     try T.expectEqual(original_name, b.compilation.?.interner.lookup("b").?);
     try T.expectEqual(b.id, b.compilation.?.module.file_id);
+}
+
+test "Program: source revisions recompile transitive importers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/dep.ts", "export const value: string = 'old';");
+    try vfs.addFile("/middle.ts", "export { value } from './dep';");
+    try vfs.addFile("/main.ts", "import { value } from './middle'; const result: number = value;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const dep = try p.add("/dep.ts", "export const value: string = 'old';");
+    const middle = try p.add("/middle.ts", "export { value } from './dep';");
+    const main = try p.add("/main.ts", "import { value } from './middle'; const result: number = value;");
+    const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+    try p.compileAll(options);
+    try expectCompilationHasDiagnosticCode(p.fileById(main).compilation.?, 2322);
+
+    _ = try p.updateSource("/dep.ts", "export const value: number = 1;");
+    try T.expect(p.fileById(dep).compilation == null);
+    try T.expect(p.fileById(middle).compilation == null);
+    try T.expect(p.fileById(main).compilation == null);
+    const changed = [_][]const u8{"/dep.ts"};
+    try T.expectEqual(@as(u32, 3), try p.recompileChanged(&changed, options));
+    try expectCompilationLacksDiagnosticCode(p.fileById(main).compilation.?, 2322);
 }
 
 test "Program: emitAllToCache emits JS for every file" {

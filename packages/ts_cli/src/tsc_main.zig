@@ -2324,6 +2324,11 @@ const CheckerResolverAdapter = struct {
         self: *CheckerResolverAdapter,
         path: []const u8,
     ) ?*ts_driver.Compilation {
+        if (self.admitted_program) |program| {
+            if (program.lookupPath(path)) |id| {
+                if (program.fileById(id).compilation) |compilation| return compilation;
+            }
+        }
         self.cache_mutex.lock();
         if (self.module_compilation_cache.get(path)) |cached| {
             self.cache_mutex.unlock();
@@ -3759,6 +3764,14 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
             if (changed.items.len == 0) continue;
             buildStatusMessage(6032, "File change detected. Starting incremental compilation...\n", .{});
+            // Export/default facts cached by the resolver adapter describe a
+            // particular source revision. Recreate the caches before checking
+            // the revised reverse dependency closure. The external-resolver
+            // pointer remains valid because `resolver_adapter` keeps its
+            // address.
+            resolver_adapter.deinit();
+            resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
+            resolver_adapter.setProgramSources(&program, compile_opts);
             _ = program.recompileChanged(changed.items, compile_opts) catch |err| {
                 std.debug.print("recompile error: {s}\n", .{@errorName(err)});
                 continue;
@@ -3773,11 +3786,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 .any_errors = &watch_any_errors,
                 .error_count = &watch_error_count,
             };
-            for (changed.items) |path| {
-                const file_id = program.lookupPath(path) orelse continue;
-                const f = program.fileById(file_id);
+            // A dependency revision can add or remove diagnostics in any
+            // transitive importer. Publish the complete current project set,
+            // as tsc watch does, instead of only the physically changed path.
+            for (program.files.items) |f| {
+                if (f.redirect_target != null) continue;
                 const c = f.compilation orelse continue;
-                streamDiagsCallback(&watch_stream_ctx, path, c.diagnostics.items);
+                streamDiagsCallback(&watch_stream_ctx, f.path, c.diagnostics.items);
             }
             reportWatchErrorStatus(watch_error_count);
             // Re-emit each changed file's JS to disk.
@@ -4622,6 +4637,37 @@ test "tsc_main: resolver admission distinguishes typed JS from untyped implement
         try std.testing.expectEqual(options.allow_js or options.check_js, explicit.is_declaration);
         try std.testing.expect(!unadmitted.is_declaration);
     }
+}
+
+test "tsc_main: resolver adapter uses admitted in-memory JavaScript revision" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", "exports.oldValue = 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.js", "exports.currentValue = 1;");
+    const options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .no_emit = true };
+    try program.compileAll(options);
+
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    adapter.setProgramSources(&program, options);
+    const current = CheckerResolverAdapter.moduleExportImpl(
+        &adapter,
+        "./owner.js",
+        "/consumer.ts",
+        "currentValue",
+    ) orelse return error.TestUnexpectedResult;
+    const old = CheckerResolverAdapter.moduleExportImpl(
+        &adapter,
+        "./owner.js",
+        "/consumer.ts",
+        "oldValue",
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(current.exported_value);
+    try std.testing.expect(!old.exported_value);
 }
 
 test "tsc_main: resolver adapter carries prepared local import facts" {
