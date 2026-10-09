@@ -119,6 +119,8 @@ pub const Options = struct {
     module_resolution: ?[]const u8 = null,
     /// `--jsx=…`.
     jsx: ?[]const u8 = null,
+    /// `--maxNodeModuleJsDepth=N`. Null means defer to tsconfig/default zero.
+    max_node_module_js_depth: ?f64 = null,
     /// `--declaration` / `-d`. `null` means defer to tsconfig.
     declaration: ?bool = null,
     /// `--sourceMap`. `null` means defer to tsconfig.
@@ -148,6 +150,9 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
         if (tsconfig_mod.Jsx.fromString(value)) |jsx| {
             ts_driver.applyJsxOption(compile_opts, jsx);
         }
+    }
+    if (opts.max_node_module_js_depth) |value| {
+        compile_opts.max_node_module_js_depth = value;
     }
     if (opts.home_options.sound) |value| {
         compile_opts.home_options.sound = value;
@@ -233,6 +238,17 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.show_all_help = true;
         } else if (std.mem.eql(u8, a, "--strict")) {
             opts.strict = true;
+        } else if (std.mem.eql(u8, a, "--maxNodeModuleJsDepth")) {
+            i += 1;
+            if (i >= args.len) {
+                ctx.missing_value_option = "maxNodeModuleJsDepth";
+                return error.MissingValue;
+            }
+            opts.max_node_module_js_depth = parseNumberOption(args[i], "maxNodeModuleJsDepth", ctx) catch
+                return error.InvalidEnumOption;
+        } else if (parseEqFlag(a, "--maxNodeModuleJsDepth=")) |value| {
+            opts.max_node_module_js_depth = parseNumberOption(value, "maxNodeModuleJsDepth", ctx) catch
+                return error.InvalidEnumOption;
         } else if (std.mem.eql(u8, a, "--home-sound")) {
             opts.home_options.sound = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--no-home-sound")) {
@@ -388,6 +404,20 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
 fn parseEqFlag(a: []const u8, prefix: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, a, prefix)) return a[prefix.len..];
     return null;
+}
+
+fn parseNumberOption(value: []const u8, option: []const u8, ctx: *ParseContext) error{InvalidNumber}!f64 {
+    const number = std.fmt.parseFloat(f64, value) catch {
+        ctx.enum_option = option;
+        ctx.enum_allowed_values = "number";
+        return error.InvalidNumber;
+    };
+    if (!std.math.isFinite(number)) {
+        ctx.enum_option = option;
+        ctx.enum_allowed_values = "number";
+        return error.InvalidNumber;
+    }
+    return number;
 }
 
 /// TypeScript boolean options default to true when present, but consume an
@@ -1461,6 +1491,30 @@ test "parseArgs: --target / --module / --outDir / --jsx" {
     try T.expectEqualStrings("react-jsx", opts.jsx.?);
 }
 
+test "parseArgs: maxNodeModuleJsDepth accepts number forms and overrides config" {
+    const separate_argv = [_][]const u8{ "--maxNodeModuleJsDepth", "-1" };
+    const separate = try parseArgs(T.allocator, &separate_argv);
+    defer T.allocator.free(separate.files);
+    try T.expectEqual(@as(?f64, -1), separate.max_node_module_js_depth);
+
+    const equals_argv = [_][]const u8{"--maxNodeModuleJsDepth=2.5"};
+    const equals = try parseArgs(T.allocator, &equals_argv);
+    defer T.allocator.free(equals.files);
+    try T.expectEqual(@as(?f64, 2.5), equals.max_node_module_js_depth);
+
+    var compile_opts: ts_driver.CompileOptions = .{ .max_node_module_js_depth = 4 };
+    applyCompileOptions(&compile_opts, equals);
+    try T.expectEqual(@as(f64, 2.5), compile_opts.max_node_module_js_depth);
+}
+
+test "parseArgsCtx: maxNodeModuleJsDepth rejects non-numbers" {
+    var ctx: ParseContext = .{};
+    const argv = [_][]const u8{"--maxNodeModuleJsDepth=deep"};
+    try T.expectError(error.InvalidEnumOption, parseArgsCtx(T.allocator, &argv, &ctx));
+    try T.expectEqualStrings("maxNodeModuleJsDepth", ctx.enum_option);
+    try T.expectEqualStrings("number", ctx.enum_allowed_values);
+}
+
 test "CLI options: target and jsx reach checking and emit" {
     const argv = [_][]const u8{ "--target", "es2022", "--jsx", "react" };
     const cli_opts = try parseArgs(T.allocator, &argv);
@@ -1668,6 +1722,7 @@ test "parseArgsCtx: trailing value-flags each report their canonical name" {
         .{ .flag = "--target", .name = "target" },
         .{ .flag = "--module", .name = "module" },
         .{ .flag = "--jsx", .name = "jsx" },
+        .{ .flag = "--maxNodeModuleJsDepth", .name = "maxNodeModuleJsDepth" },
     };
     for (cases) |c| {
         var ctx: ParseContext = .{};

@@ -286,6 +286,7 @@ pub const CompilerOptions = struct {
     // -- JS support --
     allow_js: ?bool = null,
     check_js: ?bool = null,
+    max_node_module_js_depth: ?f64 = null,
 
     // -- Class semantics --
     use_define_for_class_fields: ?bool = null,
@@ -2293,6 +2294,22 @@ fn fillCompilerOptions(
         }
         if (matched) continue;
 
+        // Numeric options. TypeScript accepts any JSON number here; the file
+        // loader compares its integral traversal depth directly with this
+        // value, so fractional and negative values remain meaningful without
+        // a separate integer-validation rule.
+        if (std.mem.eql(u8, key, "maxNodeModuleJsDepth")) {
+            if (value == .null_) {
+                try unsets.append(arena, key);
+            } else if (value.asNumber()) |number| {
+                co.max_node_module_js_depth = number;
+            } else {
+                try recordOptionTypeMismatch(arena, diags, key, "number");
+                try unsets.append(arena, key);
+            }
+            continue;
+        }
+
         // Enum-typed. A non-string value is a value-type mismatch
         // (TS5024); an unrecognized string value is an enum-argument
         // error (TS6046). In both cases keep parsing, mirroring tsc's
@@ -4213,6 +4230,31 @@ test "tsconfig.parse: pretty is a typed compiler option" {
         \\{ "compilerOptions": { "pretty": false } }
     );
     try t.expectEqual(@as(?bool, false), cfg.compiler_options.pretty);
+}
+
+test "tsconfig.parse: maxNodeModuleJsDepth is numeric and supports explicit unsets" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const parent = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "maxNodeModuleJsDepth": 2 } }
+    );
+    try t.expectEqual(@as(?f64, 2), parent.compiler_options.max_node_module_js_depth);
+    try t.expectEqual(@as(usize, 0), parent.option_parse_diagnostics.len);
+
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "maxNodeModuleJsDepth": null } }
+    );
+    try t.expectEqual(@as(usize, 1), child.compiler_option_unsets.len);
+    const merged = try merge(arena.allocator(), parent, child);
+    try t.expectEqual(@as(?f64, null), merged.compiler_options.max_node_module_js_depth);
+
+    const invalid = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "maxNodeModuleJsDepth": "deep" } }
+    );
+    try t.expectEqual(@as(usize, 1), invalid.option_parse_diagnostics.len);
+    try t.expectEqual(@as(u32, 5024), invalid.option_parse_diagnostics[0].code);
+    try t.expectEqualStrings("number", invalid.option_parse_diagnostics[0].expected_type);
 }
 
 test "tsconfig.parse: moduleSuffixes preserves order and blank fallback" {

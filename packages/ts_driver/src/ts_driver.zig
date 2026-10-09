@@ -395,6 +395,10 @@ pub const CompileOptions = struct {
     /// `allowJs`. A file-level `// @ts-check` directive still enables
     /// checking when this project option is false.
     check_js: bool = false,
+    /// Maximum external-library traversal depth at which JavaScript files in
+    /// `node_modules` enter the Program. TypeScript's default is zero, which
+    /// leaves package implementations untyped unless the project opts in.
+    max_node_module_js_depth: f64 = 0,
     /// `checkJs` is explicitly `false` (not merely unset). A JavaScript file
     /// without `// @ts-check` then reports no checker diagnostics at all,
     /// not even the plain-JS set: typescript-go's `IsPlainJSFile` requires
@@ -1852,6 +1856,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     opts.allow_js = tsconfig_mod.effectiveAllowJs(cfg.compiler_options);
     opts.check_js = cfg.compiler_options.check_js orelse false;
     opts.check_js_disabled = cfg.compiler_options.check_js == false;
+    opts.max_node_module_js_depth = cfg.compiler_options.max_node_module_js_depth orelse 0;
     opts.no_emit = cfg.compiler_options.no_emit orelse false;
     if (cfg.compiler_options.types) |names| {
         opts.compiler_type_reference_names = names;
@@ -7496,13 +7501,14 @@ test "driver: optionsFromConfig checkJs implies allowJs and honors noEmit" {
     const cfg = try tsconfig_mod.parseString(
         T.allocator,
         arena.allocator(),
-        \\{ "compilerOptions": { "checkJs": true, "noEmit": true } }
+        \\{ "compilerOptions": { "checkJs": true, "noEmit": true, "maxNodeModuleJsDepth": 2 } }
         ,
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(opts.allow_js);
     try T.expect(opts.check_js);
     try T.expect(opts.no_emit);
+    try T.expectEqual(@as(f64, 2), opts.max_node_module_js_depth);
 
     var c = try compileSource(
         T.allocator,
