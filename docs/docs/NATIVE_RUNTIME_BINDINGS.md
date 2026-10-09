@@ -1797,7 +1797,9 @@ waits for an unflushed write before reaching cancellation and does not isolate
 that callback defect. ReadableStreamInternals also has older mirrored source,
 including missing pinned BYOB cancellation updates; its builtin body is still
 externally generated. These gaps stay under
-[#856](https://github.com/home-lang/home/issues/856). Remaining builtin/native
+[#856](https://github.com/home-lang/home/issues/856), with core stream builtin
+ownership and cancellation tracked in
+[#858](https://github.com/home-lang/home/issues/858). Remaining builtin/native
 ownership, full async-hook support, release builds in
 [#855](https://github.com/home-lang/home/issues/855), other platforms and complete
 logical Bun parity under [#66](https://github.com/home-lang/home/issues/66)
