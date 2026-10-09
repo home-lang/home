@@ -3952,6 +3952,85 @@ const SourceFunctionSpan = struct {
     parent: u32 = std.math.maxInt(u32),
 };
 
+/// Syntax-only ownership for one JSDoc typedef pass. The index is complete
+/// before use; allocation failure or crossing ranges retains the full scan.
+const ClassTypedefOwnerIndex = struct {
+    const Entry = struct {
+        node: NodeId,
+        start: u32,
+        end: u32,
+        parent: ?u32 = null,
+    };
+    spans: std.ArrayListUnmanaged(Entry) = .empty,
+    state: enum { unbuilt, indexed, slow } = .unbuilt,
+
+    fn deinit(self: *ClassTypedefOwnerIndex, allocator: std.mem.Allocator) void {
+        self.spans.deinit(allocator);
+    }
+
+    fn build(allocator: std.mem.Allocator, hir: *const Hir) (std.mem.Allocator.Error || error{NonNestedClassSpans})!std.ArrayListUnmanaged(Entry) {
+        var spans: std.ArrayListUnmanaged(Entry) = .empty;
+        errdefer spans.deinit(allocator);
+        var node: NodeId = 1;
+        while (node < hir.nodeCount()) : (node += 1) {
+            const kind = hir.kindOf(node);
+            if (kind != .class_decl and kind != .class_expr) continue;
+            const span = hir.spanOf(node);
+            // Empty/reversed ranges cannot strictly contain a comment.
+            if (span.end <= span.start) continue;
+            try spans.append(allocator, .{ .node = node, .start = span.start, .end = span.end });
+        }
+        std.mem.sort(Entry, spans.items, {}, struct {
+            fn lessThan(_: void, a: Entry, b: Entry) bool {
+                if (a.start != b.start) return a.start < b.start;
+                if (a.end != b.end) return a.end > b.end;
+                // Equal ranges must select the lowest NodeId, as the scan does.
+                return a.node > b.node;
+            }
+        }.lessThan);
+        var parent: ?u32 = null;
+        for (spans.items, 0..) |*span, index| {
+            while (parent) |p| {
+                if (spans.items[p].end > span.start) break;
+                parent = spans.items[p].parent;
+            }
+            if (parent) |p| {
+                if (span.end > spans.items[p].end) return error.NonNestedClassSpans;
+            }
+            span.parent = parent;
+            parent = @intCast(index);
+        }
+        return spans;
+    }
+
+    fn owner(self: *ClassTypedefOwnerIndex, checker: *Checker, comment_start: usize) NodeId {
+        if (self.state == .unbuilt) {
+            self.state = .slow;
+            if (build(checker.gpa, checker.hir)) |spans| {
+                self.spans = spans;
+                self.state = .indexed;
+            } else |_| {}
+        }
+        if (self.state == .slow) return checker.classContainingTypedefCommentSlow(comment_start);
+        var low: usize = 0;
+        var high = self.spans.items.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (self.spans.items[middle].start < comment_start) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if (low == 0) return hir_mod.none_node_id;
+        var index = low - 1;
+        while (self.spans.items[index].end <= comment_start) {
+            index = self.spans.items[index].parent orelse return hir_mod.none_node_id;
+        }
+        return self.spans.items[index].node;
+    }
+};
+
 const JsDocNamedDeclarationKind = enum {
     typedef,
     callback,
@@ -8251,6 +8330,12 @@ pub const Checker = struct {
     };
 
     fn checkJSDocTypedefTypeTags(self: *Checker, root: NodeId) CheckError!void {
+        var owners: ClassTypedefOwnerIndex = .{};
+        defer owners.deinit(self.gpa);
+        try self.checkJSDocTypedefTypeTagsWithOwners(root, &owners);
+    }
+
+    fn checkJSDocTypedefTypeTagsWithOwners(self: *Checker, root: NodeId, owners: *ClassTypedefOwnerIndex) CheckError!void {
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
         var search_start: usize = 0;
@@ -8276,7 +8361,7 @@ pub const Checker = struct {
             }
             for (tags, 0..) |tag, tag_index| {
                 if (tag.kind != .typedef_tag or tag.type_text.len == 0) continue;
-                try self.reportClassLocalTypedefTemplateReferences(src, body, comment_start, tag.type_text, root);
+                try self.reportClassLocalTypedefTemplateReferences(src, body, owners.owner(self, comment_start), tag.type_text, root);
                 var pushed_template_scope = false;
                 defer if (pushed_template_scope) self.popNarrowScope();
                 for (tags[0..tag_index]) |template_tag| {
@@ -8333,16 +8418,9 @@ pub const Checker = struct {
         }
     }
 
-    fn reportClassLocalTypedefTemplateReferences(
-        self: *Checker,
-        src: []const u8,
-        typedef_body: []const u8,
-        comment_start: usize,
-        type_text: []const u8,
-        root: NodeId,
-    ) CheckError!void {
+    fn classContainingTypedefCommentSlow(self: *Checker, comment_start: usize) NodeId {
         var owner = hir_mod.none_node_id;
-        var owner_len: u32 = std.math.maxInt(u32);
+        var owner_len: u32 = 0;
         var node: NodeId = 1;
         while (node < self.hir.nodeCount()) : (node += 1) {
             const kind = self.hir.kindOf(node);
@@ -8350,11 +8428,22 @@ pub const Checker = struct {
             const span = self.hir.spanOf(node);
             if (comment_start <= span.start or comment_start >= span.end) continue;
             const len = span.end - span.start;
-            if (len < owner_len) {
+            if (owner == hir_mod.none_node_id or len < owner_len) {
                 owner = node;
                 owner_len = len;
             }
         }
+        return owner;
+    }
+
+    fn reportClassLocalTypedefTemplateReferences(
+        self: *Checker,
+        src: []const u8,
+        typedef_body: []const u8,
+        owner: NodeId,
+        type_text: []const u8,
+        root: NodeId,
+    ) CheckError!void {
         if (owner == hir_mod.none_node_id) return;
         const class_jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, owner) orelse return;
         if (std.mem.indexOf(u8, class_jsdoc.body, "@template") == null) return;
@@ -214489,6 +214578,161 @@ test "checker: recovered parameter use ranges match source scanning" {
             }
         }
     }
+}
+
+test "checker: class typedef ownership matches strict source containment" {
+    for ([_][]const u8{
+        "const before = 1; export class Outer { field = class Inner { method() { return class Deep {}; } }; } const after = class Last {};",
+        "// @filename: first.js\nclass First {}\n// @filename: second.js\nconst Second = class { field = class Nested {}; };",
+        "class Outer { method() { class Inner {} return Inner; } } class Other {}",
+        "function ordinary() { return 1; }",
+    }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        var owners: ClassTypedefOwnerIndex = .{};
+        defer owners.deinit(T.allocator);
+        for (0..source.len + 1) |pos| {
+            try T.expectEqual(s.checker.classContainingTypedefCommentSlow(pos), owners.owner(&s.checker, pos));
+        }
+        try T.expectEqual(.indexed, owners.state);
+    }
+}
+
+test "checker: class owner index retains ties boundaries and crossing fallback" {
+    const s = try newSetup("class A {} class B {} class C {}");
+    defer destroySetup(s);
+    const classes = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(@as(usize, 3), classes.len);
+    // Every ordered three-range assignment on five coordinates includes
+    // nested/disjoint, equal-start/end/range, empty, reversed and crossing
+    // ranges. NodeId-order ties must still match the scalar scan.
+    for (0..25) |first| {
+        for (0..25) |second| {
+            for (0..25) |third| {
+                for ([_]usize{ first, second, third }, classes) |value, node| {
+                    s.hir.spans.items[node] = .{ .start = @intCast(value / 5), .end = @intCast(value % 5) };
+                }
+                var owners: ClassTypedefOwnerIndex = .{};
+                defer owners.deinit(T.allocator);
+                for (0..6) |pos| {
+                    try T.expectEqual(s.checker.classContainingTypedefCommentSlow(pos), owners.owner(&s.checker, pos));
+                }
+            }
+        }
+    }
+    s.hir.spans.items[classes[0]] = .{ .start = 0, .end = 3 };
+    s.hir.spans.items[classes[1]] = .{ .start = 2, .end = 4 };
+    s.hir.spans.items[classes[2]] = .{ .start = 4, .end = 4 };
+    var crossing: ClassTypedefOwnerIndex = .{};
+    defer crossing.deinit(T.allocator);
+    try T.expectEqual(s.checker.classContainingTypedefCommentSlow(2), crossing.owner(&s.checker, 2));
+    try T.expectEqual(.slow, crossing.state);
+    try T.expectEqual(@as(usize, 0), crossing.spans.capacity);
+
+    // A valid widest representable span is not an "unset width" sentinel.
+    for (classes) |node| s.hir.spans.items[node] = .{ .start = 0, .end = std.math.maxInt(u32) };
+    var widest: ClassTypedefOwnerIndex = .{};
+    defer widest.deinit(T.allocator);
+    try T.expectEqual(classes[0], widest.owner(&s.checker, 1));
+    try T.expectEqual(classes[0], s.checker.classContainingTypedefCommentSlow(1));
+    try T.expectEqual(hir_mod.none_node_id, widest.owner(&s.checker, std.math.maxInt(u32)));
+}
+
+test "checker: every class owner index allocation failure frees partial data" {
+    const source = "class A {} class B {} class C {} class D {} class E {} class F {} class G {} class H {} class I {} class J {} class K {} class L {} class M {} class N {} class O {} class P {} class Q {} class R {} class S {} class T {}";
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    // In-place remaps may avoid later alloc calls. Force remap refusal so
+    // every growth allocation is exercised deterministically, including OOM
+    // after an already-owned partial array.
+    var counted = T.FailingAllocator.init(T.allocator, .{ .resize_fail_index = 0 });
+    var spans = try ClassTypedefOwnerIndex.build(counted.allocator(), &s.hir);
+    const construction_allocations = counted.alloc_index;
+    spans.deinit(counted.allocator());
+    try T.expect(construction_allocations > 1);
+    for (0..construction_allocations) |fail_index| {
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = T.allocator;
+        var owners: ClassTypedefOwnerIndex = .{};
+        defer owners.deinit(failing.allocator());
+        for (0..source.len + 1) |pos| {
+            try T.expectEqual(s.checker.classContainingTypedefCommentSlow(pos), owners.owner(&s.checker, pos));
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(.slow, owners.state);
+        try T.expectEqual(@as(usize, 0), owners.spans.capacity);
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    }
+}
+
+test "checker: indexed and failed class owner indexes preserve complete typedef diagnostics" {
+    for ([_][]const u8{
+        \\// @checkjs: true
+        \\// @filename: owners.js
+        \\/** @template T */ export class Outer {
+        \\  /** @typedef {T} Local */ field = 0;
+        \\  method() {
+        \\    /** @template U */ class Inner {
+        \\      /** @typedef {{ inner: U, outer: T }} Nested */ field = 0;
+        \\    }
+        \\  }
+        \\}
+        \\/** @template E */ const Expression = class {
+        \\  /** @typedef {E} LocalExpression */ field = 0;
+        \\};
+        ,
+        \\// @checkjs: true
+        \\// @filename: first.js
+        \\/** @template T */ class First { /** @typedef {T} Local */ field = 0; }
+        \\// @filename: second.js
+        \\/** @template U */ class Second { /** @typedef {U} Local */ field = 0; }
+        \\// @filename: third.ts
+        \\/** @template V */ class Third { /** @typedef {V} Local */ field = 0; }
+        ,
+    }) |source| {
+        const expected = try newSetup(source);
+        defer destroySetup(expected);
+        var slow: ClassTypedefOwnerIndex = .{ .state = .slow };
+        try expected.checker.checkJSDocTypedefTypeTagsWithOwners(expected.root, &slow);
+        try T.expect(expected.checker.diagnostics.items.len > 0);
+        for ([_]bool{ false, true }) |fail_build| {
+            const actual = try newSetup(source);
+            defer destroySetup(actual);
+            var owners: ClassTypedefOwnerIndex = .{};
+            defer owners.deinit(T.allocator);
+            if (fail_build) {
+                var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+                actual.checker.gpa = failing.allocator();
+                _ = owners.owner(&actual.checker, 0);
+                actual.checker.gpa = T.allocator;
+                try T.expect(failing.has_induced_failure);
+                try T.expectEqual(.slow, owners.state);
+            }
+            try actual.checker.checkJSDocTypedefTypeTagsWithOwners(actual.root, &owners);
+            try T.expectEqualDeep(expected.checker.diagnostics.items, actual.checker.diagnostics.items);
+        }
+    }
+}
+
+test "checker: absent classes and absent typedef tags need no class owner allocation" {
+    const s = try newSetup("// @checkjs: true\nfunction ordinary() {} /** @typedef {number} Value */ const value = 1;");
+    defer destroySetup(s);
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    s.checker.gpa = failing.allocator();
+    defer s.checker.gpa = T.allocator;
+    var empty: ClassTypedefOwnerIndex = .{};
+    defer empty.deinit(failing.allocator());
+    try T.expectEqual(hir_mod.none_node_id, empty.owner(&s.checker, 1));
+    try T.expectEqual(.indexed, empty.state);
+    try T.expect(!failing.has_induced_failure);
+
+    const no_tags = try newSetup("// @checkjs: true\nclass Ordinary {} function method() {}");
+    defer destroySetup(no_tags);
+    var lazy: ClassTypedefOwnerIndex = .{};
+    defer lazy.deinit(T.allocator);
+    try no_tags.checker.checkJSDocTypedefTypeTagsWithOwners(no_tags.root, &lazy);
+    try T.expectEqual(.unbuilt, lazy.state);
 }
 
 test "checker: indexed source function containment matches the full scan" {
