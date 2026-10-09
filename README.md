@@ -358,6 +358,26 @@ ranking is not inferred from the Home-only A/B. Current diagnostic-only
 samples map remaining require-binding and previous-JSDoc work in the
 [new profile](docs/docs/TS_PERFORMANCE.md#landed-virtual-section-profile-2026-10-09-utc).
 
+A later shared require-binding presence candidate was **rejected** despite
+scale gains because independent class-hierarchy confirmation regressed:
+
+| Rejected #854 shared-presence confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 26.802 ms | 26.968 ms | −0.094 to +0.498 ms; inconclusive |
+| 512 families, 30 pairs | 115.434 ms | 110.414 ms | +0.588 to +5.410 ms |
+| 8,192 families, five six-pair batches | 7,577.868 ms | 6,487.183 ms | +958.507 to +1,789.384 ms |
+| Class hierarchy, 30 pairs | 22.280 ms | 22.405 ms | **−0.429 to −0.041 ms** |
+
+The full candidate was restored and never pushed to production. All **502
+rounds / 660 admissions**, including variable observations and inconclusive
+carried risks, remain in the
+[rejection report](docs/docs/TS_PERFORMANCE.md#shared-require-binding-presence-rejected-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-shared-require-presence-rejected-854.tar.gz).
+Current `main` includes later #846 correctness work; this Home-only rejection
+does not refresh the earlier five-compiler ranking. Linux workflow dispatch
+was refused because repository Actions are disabled; no new platform result
+or C++ admission is claimed.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
