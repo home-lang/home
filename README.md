@@ -404,6 +404,27 @@ value resolution; see the
 [new source/assembly profile](docs/docs/TS_PERFORMANCE.md#restored-current-main-profile-2026-10-09-utc).
 Sampling does not establish whole-run CPU percentages or a new optimization gain.
 
+A distinct JSDoc ancestor-prefix index is now **accepted** under #854. Its
+exact-parent Home-only confirmation improves the 8,192-family median by
+**9.1%**, with all 30 pairs faster across five batches. Smaller cases remain
+inconclusive, as do the independent declaration checks:
+
+| #854 JSDoc ancestor-prefix confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 28.625 ms | 28.648 ms | -0.054 to +0.351 ms |
+| 512 families, 30 pairs | 114.294 ms | 111.934 ms | -1.461 to +2.965 ms |
+| 8,192 families, five six-pair batches | 7,712.274 ms | 7,007.293 ms | +622.101 to +730.809 ms |
+| Class hierarchy, 30 pairs | 22.629 ms | 22.543 ms | -0.062 to +0.428 ms |
+| Interface composition, 30 pairs | 33.850 ms | 33.772 ms | -0.373 to +0.200 ms |
+
+All **532 rounds / 660 admissions** remain. Recursive generics retains a
+slower independent median and nearly negative interval; no equivalence or
+regression-free claim is made. See the
+[complete results and warnings](docs/docs/TS_PERFORMANCE.md#jsdoc-ancestor-prefix-facts-2026-10-09-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261009-jsdoc-ancestor-prefix-accepted-854.tar.gz).
+The five-compiler matrix above predates this change; no new competitor ranking,
+universal leadership, Zod admission or other-platform result is inferred.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

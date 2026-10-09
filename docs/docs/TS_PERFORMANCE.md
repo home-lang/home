@@ -10,12 +10,21 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+The later JSDoc ancestor-prefix index is **accepted** with a 9.1%-lower
+8,192-family exact-parent Home median and all 30 large pairs faster across
+five batches. Official/512-family and independent declaration checks remain
+inconclusive; recursive generics retains an adverse warning. The
+[complete A/B report](#jsdoc-ancestor-prefix-facts-2026-10-09-utc) preserves all
+532 rounds / 660 admissions. The five-compiler matrix below **predates** this
+change and is not a refreshed ranking of the new source.
+
 Both later require-presence candidates were **rejected**: the presence-only
 design for interface-composition regression and the earlier broad shared-cache
 design for class-hierarchy regression. Complete evidence is
 [documented below](#presence-specific-require-facts-rejected-2026-10-09-utc).
-The matrix below freshly measures the restored current-main compiler and
-subsequent #846 correctness work, with neither rejected candidate present.
+The matrix below measures the restored source `624916ec4` and subsequent
+[#846](https://github.com/home-lang/home/issues/846) correctness work,
+with neither rejected candidate present.
 It is a full competitor comparison, not an exact-parent patch A/B.
 
 The virtual-section source index's exact-parent Home-only A/B is separate
@@ -493,6 +502,153 @@ payload checksums. SHA-256:
 The unchanged scale-negative fixture is retained in the immutable prior
 presence-specific archive below. No diagnostic-image timing, new compatibility
 claim or universal performance result is inferred from sampling.
+
+## JSDoc ancestor-prefix facts (2026-10-09 UTC)
+
+The distinct candidate under [#854](https://github.com/home-lang/home/issues/854)
+is **accepted** in
+[`11055ba4746b224735c8ec2cba2f5e449bfff980`](https://github.com/home-lang/home/commit/11055ba4746b224735c8ec2cba2f5e449bfff980).
+The complete frozen protocol supports a 9.1%-lower 8,192-family median,
+7.712274 → 7.007293 seconds, with all 30 pairs faster across all five
+predeclared batches. No independent interval is wholly negative, but
+inconclusive and adverse estimates remain unresolved, not equivalence.
+This scoped Home-only A/B does not refresh the five-compiler matrix or prove
+universal leadership. The rejected require-presence implementations remain absent.
+
+Exact parent:
+[`abe538a8638ed4542abfa7b256f3a2711a1f59c6`](https://github.com/home-lang/home/commit/abe538a8638ed4542abfa7b256f3a2711a1f59c6).
+Clean parent native SHA-256:
+`34118002e25d69a8351a60ee493c504ca734b477ed31efc79fb03ee63a9ad331`.
+Candidate/landed native:
+`68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+Frozen source/test patch:
+`0719bd67d2b1310753cc8097b099ccef43b18bd326e07ebbff5122443c7cf951`.
+Frozen protocol:
+`d0cc1b2f8998136289cde70a86f979a37dfabe706ccb67eece5b4bc873bc6664`.
+The committed patch matches the tested patch byte-for-byte; no layout tweak,
+sample exclusion, repeat-until-pass, semantic cap or source-name shortcut is used.
+
+The mapped previous-JSDoc ancestor fallback repeatedly walks block/namespace
+statements. Its new immutable facts retain the first simple value binding by
+name in original container order. Each candidate stores the maximum start
+position through **every** preceding statement, including unrelated/recovery
+nodes. Strictly exceeding that maximum preserves the original stop-at-first-span
+rule even for out-of-order or equal positions; sorting declarations alone
+would not. Direct export unwrapping and first-binding/null behavior are unchanged.
+The nearest-prior lookup and live JSDoc lowering remain unchanged; there is
+no mutable type cache, new virtual-section filter or general local-index coupling.
+Source replacement releases ownership, HIR growth invalidates facts, and every
+construction allocation failure frees partials and preserves full scalar lookup.
+
+Six controls cover complete node/name scalar parity through nested scopes,
+exports/patterns/sections; all 3,087 small position combinations and a maximum-u32
+unrelated barrier; first binding/null/section/source replacement; actual HIR
+root-order growth; every forced-growth allocation failure/cleanup; and full JS
+diagnostic equality plus failure retry on revision change.
+Both unfiltered checker runs pass **4,553** tests; Program **251**, driver
+**200**, CLI **76**, entrypoint **38**, native build and **136** harness tests
+pass. Timing requires all module/build/Zod/harness gates before its first sample.
+
+Unmodified Zod 4.5.2 (106 production files) retains the identical complete
+**198** primary-message/position/code multiset: 195 TS errors and 3 HM9002.
+Normalized SHA-256:
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is **not production admission**; package bytes and diagnostics are unchanged.
+
+All **532** original alternating fresh-process rounds and **660** admissions
+are verified with stable native/input/harness/runner fingerprints. Three
+warmups per binary precede each phase/batch. Every phase repeats all complete
+positive/negative admissions; official/512/8192 checked-JS negatives require
+TS2322×9, TS2339×3 and TS2345×3 at first/middle/last families.
+Official/scale screens, independent official/512 confirmations, all 20 family
+screens, five six-pair large batches, five carried-risk rechecks and independent
+30-pair class/interface controls are retained. Recheck selection is the frozen
+>3%-slower median or wholly negative screen interval, plus all five carried
+risks regardless of the new screen. No observations are removed.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 25.946 ms | 25.880 ms | 14/20 | -0.042 to +0.257 ms |
+| 512 families, six-pair screen | 113.007 ms | 112.363 ms | 5/6 | -0.055 to +2.795 ms |
+| 8,192 families, six-pair screen | 7,758.223 ms | 7,024.731 ms | 6/6 | +598.092 to +750.393 ms |
+| Official checked JS, 30-pair confirmation | 28.625 ms | 28.648 ms | 20/30 | -0.054 to +0.351 ms |
+| 512 families, 30-pair confirmation | 114.294 ms | 111.934 ms | 23/30 | -1.461 to +2.965 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 7,582.381 ms | 6,914.782 ms | 6/6 | +413.052 to +818.854 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 7,909.772 ms | 7,303.897 ms | 6/6 | +417.626 to +826.192 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 7,674.694 ms | 6,890.669 ms | 6/6 | +580.864 to +888.743 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 7,788.488 ms | 7,041.545 ms | 6/6 | +647.991 to +808.036 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 7,689.371 ms | 6,999.119 ms | 6/6 | +606.784 to +756.409 ms |
+| 8,192 families, all five batches (30 pairs total) | 7,712.274 ms | 7,007.293 ms | 30/30 | +622.101 to +730.809 ms |
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 26.164 ms | 26.297 ms | 6/10 | -0.153 to +0.215 ms |
+| `class_hierarchy` | 23.050 ms | 22.523 ms | 8/10 | -0.267 to +0.918 ms |
+| `commonjs_graph` | 18.025 ms | 17.203 ms | 7/10 | -0.019 to +0.830 ms |
+| `control_flow` | 26.090 ms | 25.708 ms | 8/10 | -0.403 to +1.786 ms |
+| `deep_types` | 22.016 ms | 22.177 ms | 3/10 | -3.060 to +0.931 ms |
+| `destructuring` | 14.338 ms | 14.281 ms | 8/10 | -0.023 to +0.145 ms |
+| `generic_calls` | 23.519 ms | 23.231 ms | 7/10 | -0.046 to +1.075 ms |
+| `import_graph` | 16.978 ms | 16.848 ms | 5/10 | -1.328 to +2.492 ms |
+| `interface_composition` | 33.734 ms | 33.824 ms | 6/10 | -0.604 to +0.489 ms |
+| `many_files` | 21.460 ms | 21.149 ms | 6/10 | -0.715 to +0.935 ms |
+| `null_safe_access` | 33.786 ms | 33.905 ms | 5/10 | -0.232 to +0.699 ms |
+| `overload_resolution` | 23.404 ms | 23.381 ms | 4/10 | -0.455 to +0.354 ms |
+| `recursive_generics` | 14.127 ms | 14.050 ms | 5/10 | -0.132 to +0.173 ms |
+| `reexport_graph` | 13.528 ms | 14.112 ms | 5/10 | -3.280 to +5.445 ms |
+| `startup` | 2.782 ms | 2.759 ms | 5/10 | -0.044 to +0.074 ms |
+| `structural_objects` | 22.514 ms | 22.386 ms | 5/10 | -1.115 to +0.441 ms |
+| `tsx_components` | 19.112 ms | 19.370 ms | 3/10 | -0.268 to +0.059 ms |
+| `type_predicates` | 32.873 ms | 32.679 ms | 8/10 | -0.365 to +0.804 ms |
+| `type_predicates_large` | 285.977 ms | 283.387 ms | 5/10 | -45.459 to +19.010 ms |
+| `variadic_tuples` | 30.492 ms | 30.522 ms | 5/10 | -0.300 to +0.485 ms |
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 25.935 ms | 25.901 ms | 13/30 | -0.166 to +0.132 ms |
+| `deep_types` | 20.232 ms | 20.173 ms | 15/30 | -0.425 to +1.059 ms |
+| `recursive_generics` | 13.996 ms | 14.132 ms | 11/30 | -0.670 to +0.041 ms |
+| `reexport_graph` | 10.794 ms | 10.738 ms | 18/30 | -0.805 to +0.520 ms |
+| `type_predicates_large` | 238.079 ms | 237.896 ms | 14/30 | -3.285 to +1.067 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 22.629 ms | 22.543 ms | 17/30 | -0.062 to +0.428 ms |
+| `interface_composition` | 33.850 ms | 33.772 ms | 13/30 | -0.373 to +0.200 ms |
+
+Pooled large paired mean saving is 0.676455 seconds, interval
+[0.622101, 0.730809] seconds. The supplemental five-batch t interval (df 4)
+is [0.606433, 0.746477] seconds, preserving batch variation, not treating
+30 pairs as one warmup set. All five batch intervals are positive.
+Official and 512-family confirmations span zero, despite a 2.1%-lower
+512-family median. Re-export screening retains its 4.3%-slower median;
+the independent recheck spans zero. Recursive generics retains a 1.0%-slower
+independent median, only 11/30 pairs faster and nearly negative interval
+[-0.670, +0.041] ms. These are unresolved warnings, not evidence of equivalence
+or a regression-free result. Class/interface confirmations are inconclusive;
+no prior require-cache regression is relabeled fixed by these different runs.
+
+Host is Apple M3 Pro / Mac15,6, 11 logical cores, Darwin27 arm64,
+Hyperfine 1.20.0 and Python 3.9.6. Both native binaries use pinned Zig2163,
+stripped ReleaseFast, `-Denable_jsc=false`, emission disabled. Diagnostic
+images are never timed. All jobs are terminal; guards remain **600** seconds /
+3,840 MB with the shared machine lock and 1,024/512 MB disk floors.
+Checker peak 3,282 MB (cached confirmation 21), Program 3,121, driver 2,781,
+CLI 2,669, entrypoint 3,028, build 2,923 and timing peak 276 MB. Original
+logs and variability remain; no guard refusal or failed timing attempt occurred.
+
+The [complete accepted archive](../../bench/vs_tsgo/evidence/20261009-jsdoc-ancestor-prefix-accepted-854.tar.gz)
+has **1,659** verified payload checksums, including every array/admission,
+all patches, complete test/build/Zod/guard/lifecycle evidence, source/input
+provenance, harness and independent verifiers. SHA-256:
+`336e6b45731608f04309aa999b5ead588c847968709d7b7f81347bf7adca8ff4`.
+Original negative temporary directories were removed by the original harness;
+actual process records remain. Nine separately labeled untimed generator
+replays preserve fixtures, not original directories or extra admissions.
+Repository-wide read-only `bunx --bun pickier .` retains the existing
+11,461 errors and 10,613 warnings; no auto-fix or fabricated lint pass.
+The five-compiler ranking, C++/other-platform coverage, Zod admission and the
+broader #416 goal remain incomplete; no new ranking is inferred from this A/B.
 
 ## Presence-specific require facts (rejected, 2026-10-09 UTC)
 
