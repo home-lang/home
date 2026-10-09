@@ -22,6 +22,7 @@ var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
+var cached_async_hooks_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -184,6 +185,14 @@ pub fn serializedScriptValueObject(b: *std.Build, object_root: []const u8) std.B
     return object;
 }
 
+pub fn asyncHooksObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_async_hooks_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-3.cpp", output.path(b, "HomeNodeAsyncHooks.cpp"));
+    cached_async_hooks_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -210,6 +219,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/EventLoopTaskNoContext.cpp",
         "packages/runtime/src/native/H2HeadersMaterializer.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.h",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.cpp",
         "packages/runtime/upstream/src/jsc/bindings/BunWorkerGlobalScope.h",
         "packages/runtime/upstream/src/jsc/bindings/BunAnalyzeTranspiledModule.cpp",
@@ -244,6 +255,12 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/js/node/querystring.ts",
         "packages/runtime/upstream/src/js/node/assert.ts",
         "packages/runtime/upstream/src/js/node/assert.strict.ts",
+        "packages/runtime/upstream/src/js/node/events.ts",
+        "packages/runtime/upstream/src/js/node/async_hooks.ts",
+        "packages/runtime/upstream/src/js/node/timers.ts",
+        "packages/runtime/upstream/src/js/node/timers.promises.ts",
+        "packages/runtime/upstream/src/js/internal/async_hooks.ts",
+        "packages/runtime/upstream/src/js/internal/async_hooks_tick.ts",
         "packages/runtime/upstream/src/js/internal/url.ts",
         "packages/runtime/upstream/src/js/internal/validators.ts",
     }) |input| generate.addFileInput(b.path(input));
@@ -255,6 +272,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings-0.cpp",
+        "unified/UnifiedSource-src_jsc_bindings-3.cpp",
+        "unified/UnifiedSource-src_jsc_bindings-4.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-0.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp",
@@ -268,6 +287,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     // absolute includes used by isolated build fixtures.
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeAsyncHooks.cpp", "NodeAsyncHooks.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BroadcastChannel.cpp", "BroadcastChannel.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "BunBroadcastChannelRegistry.cpp", "BunBroadcastChannelRegistry.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-1.cpp", "JSBroadcastChannel.cpp", "JSBroadcastChannel.h" },

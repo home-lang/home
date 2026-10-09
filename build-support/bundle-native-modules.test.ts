@@ -8,7 +8,7 @@ const nativeBuild = path.dirname(process.env.HOME_BUN_OBJ_ROOT || '/Users/chris/
 const available = existsSync(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
 const nativeTest = available ? test : test.skip
 const read = (file: string) => readFileSync(file, 'utf8')
-const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'UnifiedSource-src_jsc_bindings-4.cpp']
+const units = ['UnifiedSource-src_jsc_bindings-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'UnifiedSource-src_jsc_bindings-0.cpp', 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'UnifiedSource-src_jsc_bindings-4.cpp', 'UnifiedSource-src_jsc_bindings-3.cpp']
 
 function createNativeFixture(temporary: string) {
   const codegen = path.join(temporary, 'codegen')
@@ -32,7 +32,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp'].includes(basename)) {
         const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -62,7 +62,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       timeout: 15000,
     })
     expect(result.exitCode, result.stderr.toString()).toBe(0)
-    for (const name of ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict']) {
+    for (const name of ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick']) {
       const source = read(path.join(output, name + '.js'))
       expect(source).not.toMatch(/^\s*(?:export|import)\s/m)
       if (name === 'NodeUrl' || name === 'NodeWorkerThreads') expect(source).not.toContain('__commonJS')
@@ -80,7 +80,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     const external = read(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
     const generated = read(path.join(output, 'InternalModuleRegistryConstants.h'))
     expect(generated).not.toBe(external)
-    const stripOwned = (header: string) => ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'InternalForTesting']
+    const stripOwned = (header: string) => ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick', 'InternalForTesting']
       .reduce((value, name) => replaceModuleLiteral(value, name, 'OWNED_' + name), header)
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
@@ -90,7 +90,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       .toContain('#include "H2HeadersMaterializer.cpp"')
     expect(read(path.join(output, 'H2HeadersMaterializer.cpp')))
       .toBe(`#line 1 ${JSON.stringify(materializer)}\n${read(materializer)}`)
-    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['ScriptExecutionContext.cpp', units[8]]]) {
+    for (const [basename, unitName] of [['MessagePort.cpp', units[1]], ['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['BunWorkerGlobalScope.cpp', units[4]], ['JSMessagePort.cpp', units[5]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]]]) {
       const generatedUnit = read(path.join(output, 'Home' + basename))
       const externalUnit = read(path.join(nativeBuild, 'unified', unitName))
       const ownedNames = basename === 'MessagePort.cpp' ? [basename, 'JSWorker.cpp', 'MessageEvent.cpp']
@@ -107,7 +107,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
       for (const name of ownedNames) {
-        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp'].includes(name) ? '' : 'webcore', name)
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp'].includes(name) ? '' : 'webcore', name)
         expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
       }
     }
@@ -159,6 +159,17 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
     expect(mismatch.signalCode).toBeUndefined()
     expect(mismatch.exitCode).toBe(1)
     expect(existsSync(wrapperOutput)).toBe(false)
+    for (const [symbol, length] of [['jsSetAsyncHooksEnabled', 1], ['jsCleanupLater', 0]] as const) {
+      const signature = `globalObject, ${length}, "${symbol}"_s, ${symbol},`
+      expect(wrappers).toContain(signature)
+      writeFileSync(wrapperHeader, wrappers.replace(signature, `globalObject, ${length + 1}, "${symbol}"_s, ${symbol},`))
+      const output = path.join(temporary, symbol + '-output')
+      const result = generate(temporary, output)
+      expect(result.signalCode).toBeUndefined()
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain(`Linked native wrapper signature mismatch: ${symbol}`)
+      expect(existsSync(output)).toBe(false)
+    }
   } finally {
     rmSync(temporary, { recursive: true })
   }
@@ -170,7 +181,7 @@ nativeTest('rejects owned native class-header drift and invalid native ownership
   const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h']) {
+    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h']) {
       const headerPath = path.join(webcore, header)
       const original = readFileSync(headerPath)
       writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
@@ -182,7 +193,7 @@ nativeTest('rejects owned native class-header drift and invalid native ownership
       expect(existsSync(output)).toBe(false)
       writeFileSync(headerPath, original)
     }
-    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]]]) {
+    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]]]) {
       const unit = path.join(temporary, 'unified', unitName)
       const original = read(unit)
       const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`

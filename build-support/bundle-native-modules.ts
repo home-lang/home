@@ -47,7 +47,7 @@ async function main() {
 
   // This is an explicit ownership manifest, not an assertion that all of the
   // mirrored builtins have been ported. Other literal bytes stay unchanged.
-  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts']
+  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts']
   let constants = read(path.join(generated, 'InternalModuleRegistryConstants.h'))
   // Validate every owned module against the linked ABI before starting bundler
   // workers or writing output. A late module mismatch must not leave a partial
@@ -75,6 +75,7 @@ async function main() {
     [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
     [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
+    [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h']], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
     [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
     [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
