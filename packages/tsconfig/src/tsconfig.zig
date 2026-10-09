@@ -295,6 +295,13 @@ pub const CompilerOptions = struct {
     extra: std.ArrayListUnmanaged(ExtraEntry) = .empty,
 };
 
+/// TypeScript computes `allowJs` from `checkJs` when `allowJs` was not
+/// specified. An explicit `allowJs: false` remains authoritative and makes
+/// `checkJs: true` an invalid option combination.
+pub fn effectiveAllowJs(options: CompilerOptions) bool {
+    return options.allow_js orelse (options.check_js orelse false);
+}
+
 /// Home-specific checker controls live outside `compilerOptions` so the
 /// TypeScript-compatible option surface remains untouched when they are not
 /// requested. Every field is optional to preserve inheritance semantics:
@@ -688,7 +695,8 @@ pub const TsConfig = struct {
         if (co.exact_optional_property_types == true and !strict_null_checks_enabled) {
             try appendTs5052(gpa, &diags, "exactOptionalPropertyTypes", "exactOptionalPropertyTypes", "strictNullChecks");
         }
-        if (co.check_js == true and co.allow_js != true) {
+        const allow_js = effectiveAllowJs(co);
+        if (co.check_js == true and !allow_js) {
             try appendTs5052(gpa, &diags, "checkJs", "checkJs", "allowJs");
         }
         if (co.emit_decorator_metadata == true and co.experimental_decorators != true) {
@@ -705,7 +713,7 @@ pub const TsConfig = struct {
                 try appendTs5051(gpa, &diags, "sourceRoot", "sourceRoot");
             }
         }
-        if (co.isolated_declarations == true and co.allow_js == true) {
+        if (co.isolated_declarations == true and allow_js) {
             try appendTs5053(gpa, &diags, "allowJs", "allowJs", "isolatedDeclarations");
         }
         if (co.jsx_factory) |jsx_factory| {
@@ -3433,6 +3441,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     const cfg = try parseString(t.allocator, arena.allocator(),
         \\{
         \\  "compilerOptions": {
+        \\    "allowJs": false,
         \\    "checkJs": true,
         \\    "emitDecoratorMetadata": true,
         \\    "exactOptionalPropertyTypes": true,
@@ -3451,6 +3460,41 @@ test "tsconfig.validate: dependent options report TS5052" {
     try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
     try t.expectEqual(@as(u32, 5052), diags[3].code);
     try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
+}
+
+test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const implicit = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "checkJs": true
+        \\  }
+        \\}
+    );
+    try t.expect(effectiveAllowJs(implicit.compiler_options));
+    const implicit_diags = try implicit.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, implicit_diags);
+    try t.expectEqual(@as(usize, 0), implicit_diags.len);
+
+    const disabled: CompilerOptions = .{ .allow_js = false, .check_js = true };
+    try t.expect(!effectiveAllowJs(disabled));
+
+    const isolated = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "checkJs": true,
+        \\    "declaration": true,
+        \\    "isolatedDeclarations": true
+        \\  }
+        \\}
+    );
+    const isolated_diags = try isolated.validate(t.allocator);
+    defer freeValidationDiagnostics(t.allocator, isolated_diags);
+    try t.expectEqual(@as(usize, 1), isolated_diags.len);
+    try t.expectEqual(@as(u32, 5053), isolated_diags[0].code);
+    try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", isolated_diags[0].message);
 }
 
 test "tsconfig.validate: verbatimModuleSyntax rejects legacy wrapper modules" {

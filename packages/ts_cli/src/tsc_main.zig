@@ -251,7 +251,7 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, 
         project_dir,
         effectiveIncludePatterns(cfg),
         excludes.items,
-        cfg.compiler_options.allow_js orelse false,
+        tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
         &input_files,
         &owned,
     );
@@ -494,7 +494,7 @@ fn buildOneProject(
             project_dir,
             effectiveIncludePatterns(cfg),
             excludes.items,
-            cfg.compiler_options.allow_js orelse false,
+            tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
         ) catch return .errors;
@@ -670,7 +670,7 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             project_dir,
             effectiveIncludePatterns(cfg),
             excludes.items,
-            cfg.compiler_options.allow_js orelse false,
+            tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
         ) catch return .build;
@@ -1213,7 +1213,7 @@ fn appendProjectCleanOutputs(
             project_dir,
             effectiveIncludePatterns(cfg),
             excludes.items,
-            cfg.compiler_options.allow_js orelse false,
+            tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
         );
@@ -3133,7 +3133,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 project_dir,
                 include_patterns,
                 exclude_patterns,
-                c.compiler_options.allow_js orelse false,
+                tsconfig_mod.effectiveAllowJs(c.compiler_options),
                 &input_files,
                 &owned_paths,
             );
@@ -3271,7 +3271,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     if (force_consistent_casing and reportCaseOnlyInputFileDiagnostics(gpa, input_files.items, case_only_root_context)) std.process.exit(1);
 
     const allow_js: bool = blk: {
-        if (loaded_cfg) |c| break :blk (c.compiler_options.allow_js orelse false);
+        if (loaded_cfg) |c| break :blk tsconfig_mod.effectiveAllowJs(c.compiler_options);
         break :blk false;
     };
     var extension_errors: bool = false;
@@ -4673,7 +4673,7 @@ test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
 }
 
-test "tsc_main: project discovery admits JavaScript only with allowJs" {
+test "tsc_main: project discovery uses effective allowJs" {
     try std.testing.expect(isProjectInputExtension("src/app.ts", false));
     try std.testing.expect(!isProjectInputExtension("src/app.js", false));
     try std.testing.expect(!isProjectInputExtension("src/app.jsx", false));
@@ -4685,6 +4685,11 @@ test "tsc_main: project discovery admits JavaScript only with allowJs" {
     try std.testing.expect(isProjectInputExtension("src/app.mjs", true));
     try std.testing.expect(isProjectInputExtension("src/app.cjs", true));
     try std.testing.expect(!isProjectInputExtension("src/app.json", true));
+
+    const implicit: tsconfig_mod.CompilerOptions = .{ .check_js = true };
+    try std.testing.expect(isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(implicit)));
+    const disabled: tsconfig_mod.CompilerOptions = .{ .allow_js = false, .check_js = true };
+    try std.testing.expect(!isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(disabled)));
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {

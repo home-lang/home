@@ -1849,7 +1849,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.skip_default_lib_check) |on| {
         opts.skip_default_lib_check = on;
     }
-    opts.allow_js = cfg.compiler_options.allow_js orelse false;
+    opts.allow_js = tsconfig_mod.effectiveAllowJs(cfg.compiler_options);
     opts.check_js = cfg.compiler_options.check_js orelse false;
     opts.check_js_disabled = cfg.compiler_options.check_js == false;
     opts.no_emit = cfg.compiler_options.no_emit orelse false;
@@ -7490,13 +7490,13 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     try T.expect(!opts.is_tsx);
 }
 
-test "driver: optionsFromConfig checks JavaScript and honors noEmit" {
+test "driver: optionsFromConfig checkJs implies allowJs and honors noEmit" {
     var arena = std.heap.ArenaAllocator.init(T.allocator);
     defer arena.deinit();
     const cfg = try tsconfig_mod.parseString(
         T.allocator,
         arena.allocator(),
-        \\{ "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true } }
+        \\{ "compilerOptions": { "checkJs": true, "noEmit": true } }
         ,
     );
     const opts = optionsFromConfig(&cfg);

@@ -2201,6 +2201,29 @@ test "conformance: virtual tsconfig selects only configured roots" {
     try T.expectEqualSlices(bool, &.{ false, true, true, false, false }, selected);
 }
 
+test "conformance: checkJs implies allowJs for virtual project roots" {
+    const files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source = "{ \"compilerOptions\": { \"checkJs\": true }, \"include\": [\"src\"] }",
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/src/main.js", .source = "exports.value = 1;", .extra_strip = 0 },
+        .{ .path = "/project/outside.js", .source = "exports.outside = true;", .extra_strip = 0 },
+    };
+    var options = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &files);
+    defer options.deinit(T.allocator);
+    const selected = try fixtureRootSelection(T.allocator, "", &files, options);
+    defer T.allocator.free(selected);
+
+    try T.expect(options.has_config);
+    try T.expectEqual(@as(?bool, null), options.allow_js);
+    try T.expectEqual(@as(?bool, true), options.check_js);
+    try T.expectEqual(@as(usize, 1), options.root_files.len);
+    try T.expectEqualStrings("/project/src/main.js", options.root_files[0]);
+    try T.expectEqualSlices(bool, &.{ false, true, false }, selected);
+}
+
 test "conformance: tsconfig files are case-insensitive roots outside exclude filtering" {
     const files = [_]VirtualFile{
         .{
@@ -2890,7 +2913,7 @@ fn selectTsconfigRootFiles(
         if (config.files == null) &[_][]const u8{"**/*"} else &.{};
     if (include_patterns.len == 0) return roots.toOwnedSlice(gpa);
 
-    const allow_js = config.compiler_options.allow_js orelse false;
+    const allow_js = tsconfig_mod.effectiveAllowJs(config.compiler_options);
     for (files) |file| {
         if (!isDiscoveredProjectInput(file.path, allow_js)) continue;
         const canonical = try canonicalVfsPath(gpa, file.path);
