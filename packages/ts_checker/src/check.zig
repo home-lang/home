@@ -62377,9 +62377,7 @@ pub const Checker = struct {
                 }
                 continue;
             }
-            if (std.mem.startsWith(u8, spec, ".") and
-                try self.programCommonJsModuleExportsName(node, spec, sp.imported))
-            {
+            if (try self.programCommonJsModuleExportsName(node, spec, sp.imported)) {
                 continue;
             }
             if (!std.mem.startsWith(u8, spec, ".") and self.sourceHasVirtualFilenameSections()) {
@@ -63886,6 +63884,12 @@ pub const Checker = struct {
                     if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
                     return null;
                 }
+                // Bare package imports can resolve to an admitted checked-JS
+                // Program source just like relative imports. Prefer that
+                // concrete CommonJS export schema before the ambient/virtual
+                // bare-module fallback, which may only know the binding as
+                // `any`.
+                if (try self.programCommonJsNamedExportType(stmt, spec_text, sp.imported)) |t| return t;
                 return try self.virtualBareModuleExportType(stmt, spec_text, sp.imported);
             }
         }

@@ -879,6 +879,7 @@ fn buildInfoOptionsJson(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) ![]u
     try appendBuildInfoStringOption(gpa, &buf, &first, "mapRoot", co.map_root);
     try appendBuildInfoStringOption(gpa, &buf, &first, "sourceRoot", co.source_root);
     try appendBuildInfoStringOption(gpa, &buf, &first, "tsBuildInfoFile", co.ts_buildinfo_file);
+    try appendBuildInfoNumberOption(gpa, &buf, &first, "maxNodeModuleJsDepth", co.max_node_module_js_depth);
 
     if (co.module) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "module", moduleOptionName(value));
     if (co.module_resolution) |value| try appendBuildInfoStringOption(gpa, &buf, &first, "moduleResolution", moduleResolutionOptionName(value));
@@ -919,6 +920,20 @@ fn appendBuildInfoBoolOption(
     const actual = value orelse return;
     try appendBuildInfoOptionKey(gpa, buf, first, name);
     try buf.appendSlice(gpa, if (actual) "true" else "false");
+}
+
+fn appendBuildInfoNumberOption(
+    gpa: std.mem.Allocator,
+    buf: *std.ArrayListUnmanaged(u8),
+    first: *bool,
+    name: []const u8,
+    value: ?f64,
+) !void {
+    const actual = value orelse return;
+    try appendBuildInfoOptionKey(gpa, buf, first, name);
+    const rendered = try std.fmt.allocPrint(gpa, "{d}", .{actual});
+    defer gpa.free(rendered);
+    try buf.appendSlice(gpa, rendered);
 }
 
 fn appendBuildInfoStringOption(
@@ -4454,6 +4469,17 @@ test "tsc_main: command-line skipLibCheck overrides config in both directions" {
     try std.testing.expect(compile_opts.skip_lib_check);
 }
 
+test "tsc_main: build info retains maxNodeModuleJsDepth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "maxNodeModuleJsDepth": 2 } }
+    );
+    const options_json = try buildInfoOptionsJson(std.testing.allocator, cfg);
+    defer std.testing.allocator.free(options_json);
+    try std.testing.expect(std.mem.indexOf(u8, options_json, "\"maxNodeModuleJsDepth\":2") != null);
+}
+
 test "tsc_main: TS5058 specified path does not exist diagnostic" {
     const msg = try specifiedPathDoesNotExistDiagnostic(std.testing.allocator, "./missing.json");
     defer std.testing.allocator.free(msg);
@@ -4637,6 +4663,54 @@ test "tsc_main: resolver admission distinguishes typed JS from untyped implement
         try std.testing.expectEqual(options.allow_js or options.check_js, explicit.is_declaration);
         try std.testing.expect(!unadmitted.is_declaration);
     }
+}
+
+test "tsc_main: resolver admission follows maxNodeModuleJsDepth" {
+    const main_source =
+        \\import { value } from 'pkg';
+        \\const bad: string = value;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", main_source);
+    try vfs.addFile("/proj/node_modules/pkg/package.json", "{\"main\":\"index.js\"}");
+    try vfs.addFile("/proj/node_modules/pkg/index.js", "exports.value = 1;\n");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{
+        .strategy = .nodenext,
+        .module_kind = "nodenext",
+    });
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+
+    var default_program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer default_program.deinit();
+    _ = try default_program.add("/proj/main.ts", main_source);
+    var default_options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .no_emit = true };
+    adapter.setProgramSources(&default_program, default_options);
+    default_options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 0), try default_program.loadImportClosure(default_options));
+    try std.testing.expect(!CheckerResolverAdapter.resolveImpl(&adapter, "pkg", "/proj/main.ts").?.is_declaration);
+
+    var depth_one_program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer depth_one_program.deinit();
+    _ = try depth_one_program.add("/proj/main.ts", main_source);
+    var depth_one_options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .max_node_module_js_depth = 1,
+    };
+    adapter.setProgramSources(&depth_one_program, depth_one_options);
+    depth_one_options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try depth_one_program.loadImportClosure(depth_one_options));
+    try std.testing.expect(CheckerResolverAdapter.resolveImpl(&adapter, "pkg", "/proj/main.ts").?.is_declaration);
+    const main_id = depth_one_program.lookupPath("/proj/main.ts") orelse return error.TestUnexpectedResult;
+    var saw_imported_type_error = false;
+    for (depth_one_program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) saw_imported_type_error = true;
+    }
+    try std.testing.expect(saw_imported_type_error);
 }
 
 test "tsc_main: resolver adapter uses admitted in-memory JavaScript revision" {

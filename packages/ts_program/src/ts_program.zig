@@ -185,6 +185,11 @@ pub const File = struct {
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
     is_tsx: bool,
+    /// Lowest external-library traversal depth at which this file was
+    /// discovered. Root files start at zero. A resolved path containing the
+    /// `/node_modules/` segment increments its importer's depth, matching
+    /// TypeScript's `currentNodeModulesDepth` accounting.
+    node_modules_depth: u32,
     /// Resolver-derived implied Node format for ambiguous extensions.
     package_type_module: bool,
     /// First-seen reason this file is in the program. `null` until set
@@ -442,6 +447,7 @@ pub const Program = struct {
             .imports = .empty,
             .is_declaration = isDeclarationPath(path),
             .is_tsx = std.mem.endsWith(u8, path, ".tsx") or std.mem.endsWith(u8, path, ".jsx"),
+            .node_modules_depth = 0,
             .package_type_module = self.resolver.containingPackageIsTypeModule(path),
             .include_reason = null,
             .redirect_target = null,
@@ -477,6 +483,7 @@ pub const Program = struct {
             .imports = .empty,
             .is_declaration = target.is_declaration,
             .is_tsx = target.is_tsx,
+            .node_modules_depth = target.node_modules_depth,
             .package_type_module = target.package_type_module,
             .include_reason = null,
             .redirect_target = target_id,
@@ -512,6 +519,24 @@ pub const Program = struct {
             std.mem.endsWith(u8, path, ".jsx") or
             std.mem.endsWith(u8, path, ".mjs") or
             std.mem.endsWith(u8, path, ".cjs");
+    }
+
+    fn pathContainsNodeModules(path: []const u8) bool {
+        // Resolver paths are normalized with forward slashes. Keep the same
+        // segment test used by TypeScript's `pathContainsNodeModules` rather
+        // than treating every bare package specifier as an external library.
+        // Home also preserves project-relative resolver paths, where the
+        // leading segment has no slash before it.
+        return std.mem.startsWith(u8, path, "node_modules/") or
+            std.mem.indexOf(u8, path, "/node_modules/") != null;
+    }
+
+    fn importedNodeModulesDepth(importer_depth: u32, resolved_path: []const u8) u32 {
+        return if (pathContainsNodeModules(resolved_path)) importer_depth +| 1 else importer_depth;
+    }
+
+    fn exceedsNodeModulesJsDepth(depth: u32, maximum: f64) bool {
+        return @as(f64, @floatFromInt(depth)) > maximum;
     }
 
     fn pathIsInsideDirectory(path: []const u8, raw_directory: []const u8) bool {
@@ -3648,6 +3673,7 @@ pub const Program = struct {
             else
                 try self.compileAll(discovery_options);
             var new_in_round: usize = 0;
+            var depth_changed_in_round = false;
             // Snapshot the count: files appended this round are scanned
             // in the next iteration, keeping the fixpoint simple.
             const n = self.files.items.len;
@@ -3666,13 +3692,12 @@ pub const Program = struct {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
-                    if (!options.allow_js and isJsLikePath(res.path)) continue;
-                    if (self.by_path.get(res.path) != null) continue;
-                    _ = self.addResolvedIncludeFileFromResolution(res) catch |err| switch (err) {
+                    const admission = self.admitResolvedImport(f.node_modules_depth, res, options) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
-                    new_in_round += 1;
+                    if (admission.added) new_in_round += 1;
+                    depth_changed_in_round = depth_changed_in_round or admission.depth_changed;
                 }
                 // Triple-slash directives pull files into the program
                 // with distinct explainFiles reasons: path (TS1400),
@@ -3687,13 +3712,18 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                             };
                             defer self.gpa.free(candidate);
-                            if (self.by_path.get(candidate) != null) continue;
+                            if (self.by_path.get(candidate)) |existing_id| {
+                                depth_changed_in_round = depth_changed_in_round or
+                                    self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
+                                continue;
+                            }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
                             const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .reference_file, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
                         },
@@ -3709,12 +3739,13 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
-                            if (self.by_path.get(res.path) != null) continue;
-                            const new_id = self.addResolvedIncludeFileFromResolution(res) catch |err| switch (err) {
+                            const admission = self.admitResolvedImport(f.node_modules_depth, res, options) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
-                            } orelse continue;
-                            try self.recordReferenceIncludeReason(new_id, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
+                            };
+                            depth_changed_in_round = depth_changed_in_round or admission.depth_changed;
+                            if (!admission.added) continue;
+                            try self.recordReferenceIncludeReason(admission.target_id.?, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
                             new_in_round += 1;
                         },
                         .lib => {
@@ -3726,13 +3757,18 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                             } orelse continue;
                             defer self.gpa.free(candidate);
-                            if (self.by_path.get(candidate) != null) continue;
+                            if (self.by_path.get(candidate)) |existing_id| {
+                                depth_changed_in_round = depth_changed_in_round or
+                                    self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
+                                continue;
+                            }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
                             const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .lib_reference, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
                         },
@@ -3740,7 +3776,7 @@ pub const Program = struct {
                 }
             }
             added += new_in_round;
-            if (new_in_round == 0) break;
+            if (new_in_round == 0 and !depth_changed_in_round) break;
         }
         if (had_checked_sources and added != 0) {
             // A caller may have checked an incomplete graph explicitly.
@@ -3768,14 +3804,14 @@ pub const Program = struct {
             if (options.emit.import_helpers) {
                 const specifier = try quotedSpecifier(self.gpa, "tslib");
                 defer self.gpa.free(specifier);
-                added += try self.loadCompilerInjectedImport(f, "tslib", specifier, .imported_helper);
+                added += try self.loadCompilerInjectedImport(f, "tslib", specifier, .imported_helper, options);
             }
             if (compilerOptionsUsesAutomaticJsxRuntime(options) and sourceHasJsxSyntax(f.source)) {
                 const runtime = try compilerOptionsJsxRuntimeModule(self.gpa, options);
                 defer self.gpa.free(runtime);
                 const specifier = try quotedSpecifier(self.gpa, runtime);
                 defer self.gpa.free(specifier);
-                added += try self.loadCompilerInjectedImport(f, runtime, specifier, .jsx_runtime_import);
+                added += try self.loadCompilerInjectedImport(f, runtime, specifier, .jsx_runtime_import, options);
             }
         }
         return added;
@@ -3787,14 +3823,15 @@ pub const Program = struct {
         module_name: []const u8,
         specifier_text: []const u8,
         kind: IncludeKind,
+        options: ts_driver.CompileOptions,
     ) ProgramError!usize {
         const res = self.resolver.resolve(module_name, importer.path) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return 0,
         };
-        const target_id = try self.addResolvedIncludeFileFromResolution(res);
-        if (target_id == null) return 0;
-        try self.recordReferenceIncludeReasonWithProjectOutput(target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
+        const admission = try self.admitResolvedImport(importer.node_modules_depth, res, options);
+        if (!admission.added) return 0;
+        try self.recordReferenceIncludeReasonWithProjectOutput(admission.target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
         return 1;
     }
 
@@ -3832,13 +3869,13 @@ pub const Program = struct {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => continue,
                 };
-                const target_id = try self.addResolvedIncludeFileFromResolution(res);
-                if (target_id == null) continue;
-                try self.recordReferenceIncludeReason(target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
+                const admission = try self.admitResolvedImport(0, res, options);
+                if (!admission.added) continue;
+                try self.recordReferenceIncludeReason(admission.target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
                 added += 1;
             }
         } else {
-            added += try self.loadImplicitTypeLibraries(cfg, containing_file);
+            added += try self.loadImplicitTypeLibraries(cfg, containing_file, options);
         }
         // The pinned file loader gates both an explicit `lib` list and the
         // target-selected default behind `noLib`. Type references remain
@@ -3883,6 +3920,7 @@ pub const Program = struct {
         self: *Program,
         cfg: *const tsconfig_mod.TsConfig,
         containing_file: []const u8,
+        options: ts_driver.CompileOptions,
     ) ProgramError!usize {
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
@@ -3909,9 +3947,9 @@ pub const Program = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,
             };
-            const target_id = try self.addResolvedIncludeFileFromResolution(res);
-            if (target_id == null) continue;
-            try self.recordReferenceIncludeReason(target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
+            const admission = try self.admitResolvedImport(0, res, options);
+            if (!admission.added) continue;
+            try self.recordReferenceIncludeReason(admission.target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
             added += 1;
         }
         return added;
@@ -4058,6 +4096,69 @@ pub const Program = struct {
             }
         }
         return added_id;
+    }
+
+    const ImportAdmission = struct {
+        target_id: ?FileId = null,
+        added: bool = false,
+        depth_changed: bool = false,
+    };
+
+    /// Record the lowest discovery depth for a target and its canonical
+    /// package file. A newly created redirect can expose a shallower route to
+    /// an already-loaded canonical source, so both identities participate.
+    fn setDiscoveredNodeModulesDepth(self: *Program, id: FileId, depth: u32, newly_added: bool) bool {
+        var changed = false;
+        const file = self.files.items[id];
+        if (newly_added) {
+            file.node_modules_depth = depth;
+        } else if (depth < file.node_modules_depth) {
+            file.node_modules_depth = depth;
+            changed = true;
+        }
+
+        const canonical_id = self.canonicalFileId(id);
+        if (canonical_id != id) {
+            const canonical = self.files.items[canonical_id];
+            if (depth < canonical.node_modules_depth) {
+                canonical.node_modules_depth = depth;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /// Apply TypeScript's node_modules JavaScript admission rule to one
+    /// resolved edge. Declaration and project files are never depth-elided;
+    /// only JavaScript whose resolved path is inside node_modules is bounded.
+    fn admitResolvedImport(
+        self: *Program,
+        importer_depth: u32,
+        res: ts_resolver.Resolution,
+        options: ts_driver.CompileOptions,
+    ) ProgramError!ImportAdmission {
+        const is_js = isJsLikePath(res.path);
+        if (is_js and !options.allow_js) return .{};
+
+        const external_library = pathContainsNodeModules(res.path);
+        const depth = importedNodeModulesDepth(importer_depth, res.path);
+        if (is_js and external_library and exceedsNodeModulesJsDepth(depth, options.max_node_module_js_depth)) {
+            return .{};
+        }
+
+        if (self.by_path.get(res.path)) |existing_id| {
+            return .{
+                .target_id = existing_id,
+                .depth_changed = self.setDiscoveredNodeModulesDepth(existing_id, depth, false),
+            };
+        }
+
+        const target_id = try self.addResolvedIncludeFileFromResolution(res);
+        if (target_id) |id| {
+            _ = self.setDiscoveredNodeModulesDepth(id, depth, true);
+            return .{ .target_id = id, .added = true };
+        }
+        return .{};
     }
 
     const DefaultLibName = struct {
@@ -8331,12 +8432,18 @@ test "Program: imported file records TS1393 include reason (specifier + importer
     try T.expect(p.fileById(a_id).include_reason == null);
 }
 
-test "Program: loadImportClosure keeps JavaScript external unless allowJs is enabled" {
+test "Program: loadImportClosure bounds node_modules JavaScript by configured depth" {
+    try T.expect(Program.pathContainsNodeModules("node_modules/dep/index.js"));
+    try T.expect(Program.pathContainsNodeModules("/proj/node_modules/dep/index.js"));
+    try T.expect(!Program.pathContainsNodeModules("/proj/node_modules-like/dep/index.js"));
+
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/proj/main.ts", "import value from 'dep';\n");
     try vfs.addFile("/proj/node_modules/dep/package.json", "{\"main\":\"index.js\"}");
-    try vfs.addFile("/proj/node_modules/dep/index.js", "module.exports = 1;\n");
+    try vfs.addFile("/proj/node_modules/dep/index.js", "module.exports = require('./middle');\n");
+    try vfs.addFile("/proj/node_modules/dep/middle.js", "module.exports = require('./leaf');\n");
+    try vfs.addFile("/proj/node_modules/dep/leaf.js", "module.exports = 1;\n");
 
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
     defer resolver.deinit();
@@ -8347,11 +8454,49 @@ test "Program: loadImportClosure keeps JavaScript external unless allowJs is ena
     try T.expectEqual(@as(usize, 0), try typed_program.loadImportClosure(.{}));
     try T.expect(typed_program.lookupPath("/proj/node_modules/dep/index.js") == null);
 
-    var js_program = Program.init(T.allocator, &resolver);
-    defer js_program.deinit();
-    _ = try js_program.add("/proj/main.ts", "import value from 'dep';\n");
-    try T.expectEqual(@as(usize, 1), try js_program.loadImportClosure(.{ .allow_js = true }));
-    try T.expect(js_program.lookupPath("/proj/node_modules/dep/index.js") != null);
+    var default_depth_program = Program.init(T.allocator, &resolver);
+    defer default_depth_program.deinit();
+    _ = try default_depth_program.add("/proj/main.ts", "import value from 'dep';\n");
+    try T.expectEqual(@as(usize, 0), try default_depth_program.loadImportClosure(.{ .allow_js = true }));
+    try T.expect(default_depth_program.lookupPath("/proj/node_modules/dep/index.js") == null);
+
+    var depth_two_program = Program.init(T.allocator, &resolver);
+    defer depth_two_program.deinit();
+    _ = try depth_two_program.add("/proj/main.ts", "import value from 'dep';\n");
+    try T.expectEqual(@as(usize, 2), try depth_two_program.loadImportClosure(.{
+        .allow_js = true,
+        .max_node_module_js_depth = 2,
+    }));
+    try T.expect(depth_two_program.lookupPath("/proj/node_modules/dep/index.js") != null);
+    try T.expect(depth_two_program.lookupPath("/proj/node_modules/dep/middle.js") != null);
+    try T.expect(depth_two_program.lookupPath("/proj/node_modules/dep/leaf.js") == null);
+}
+
+test "Program: shallower node_modules route reprocesses previously elided descendants" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import 'pkg'; import './late-one';\n");
+    try vfs.addFile("/proj/late-one.js", "require('./late-two');\n");
+    try vfs.addFile("/proj/late-two.js", "require('pkg/shared');\n");
+    try vfs.addFile("/proj/node_modules/pkg/package.json", "{\"main\":\"deep.js\"}");
+    try vfs.addFile("/proj/node_modules/pkg/deep.js", "require('./shared');\n");
+    try vfs.addFile("/proj/node_modules/pkg/shared.js", "require('./leaf');\n");
+    try vfs.addFile("/proj/node_modules/pkg/leaf.js", "module.exports = 1;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", "import 'pkg'; import './late-one';\n");
+
+    try T.expectEqual(@as(usize, 5), try program.loadImportClosure(.{
+        .allow_js = true,
+        .max_node_module_js_depth = 2,
+    }));
+    const shared_id = program.lookupPath("/proj/node_modules/pkg/shared.js") orelse return error.TestUnexpectedResult;
+    const leaf_id = program.lookupPath("/proj/node_modules/pkg/leaf.js") orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(u32, 1), program.fileById(shared_id).node_modules_depth);
+    try T.expectEqual(@as(u32, 2), program.fileById(leaf_id).node_modules_depth);
 }
 
 test "Program: triple-slash type reference preserves resolution-mode" {
