@@ -1745,3 +1745,60 @@ external native objects and dependencies, release-build memory work in
 [#855](https://github.com/home-lang/home/issues/855), platform verification and
 complete logical Bun parity in [#66](https://github.com/home-lang/home/issues/66)
 remain unfinished.
+
+## Worker and WebSocket creation-context delivery (2026-10-09)
+
+Parent-side Worker events now run through a creation-time AsyncResource. Online,
+message, message-error, error and exit handlers restore that snapshot before
+emitting to user listeners, including listeners registered in another context.
+Home also compiles `WebSocket.cpp`, `JSWebSocket.cpp` and `AsyncContextFrame.cpp`
+from its own source. The WebSocket wrapper retains its creation context in a
+GC-traced private property; native open/message/error/close delivery restores
+that value and restores the previous context through a scope guard. Synchronous
+user `dispatchEvent()` retains the caller's context. There is no extra native
+root or native class-layout change. WebSocket headers now match the selected
+pinned ABI before generation. Sources, class headers and the private helper
+are explicit cache inputs.
+
+Binding compilation passes 23/23 steps, with a 1,700 MB tree-footprint peak. The
+complete stripped Debug executable passes 29/29, peak 5,657 MB under the existing
+8,192 MB build budget. Generation/ABI controls pass 8/8 tests and 350 assertions.
+Native controls cover creation versus listener-registration context, Worker
+error/exit, WebSocket open/message/close/error, callback `this`, private metadata
+visibility, restoration, synchronous dispatch and forced GC in parent and worker
+VMs. Parent execution reproduces lost Worker context. The first C++ attempt
+failed on cast namespace and Ref dereference syntax; corrected compilation
+passes. An initial private error control incorrectly expected 1006 for an HTTP
+upgrade rejection; the pinned contract uses 1002. Its callback assertion left
+that diagnostic waiting, so only its exact supervised process was stopped.
+The failed log and source are retained. Corrected controls terminate successfully.
+Changed-file Pickier, Zig formatting and whitespace checks pass.
+
+All 19 selected original Worker/WebSocket/async-context entries validate:
+199 registered passes, zero failures/skips, one original TODO and one successful
+standalone process check. The process check runs unchanged
+`async-context-worker_threads-message.js`, which failed before this change.
+Its tracking-suite TODO remains explicitly counted and receives no registered
+passing credit. All 19 captures and JUnit reports validate. All 133 audited
+test/fixture/ABI inputs match the pin and remain unchanged. The executable SHA256
+is `50ed2a9c8dee92b5be2b1c2311e3a3585c58da73ee7c520e62bdd26997ae4490`.
+Main integration contains only documentation and archived evidence changes;
+compiled inputs remain the tested ones.
+
+[Retained source, captures, JUnit and diagnostics](./bun-port-evidence/2026-10-09-native-async-delivery/manifest.json)
+preserve the open gaps. The original WebSocket TODO now observes `close:value`
+but lacks its expected open event: its `using` server is disposed inside the
+run callback before awaiting the asynchronous exchange. A server kept alive
+through the exchange passes context checks. That fixture stays unchanged and
+its TODO assertion remains unresolved. Direct-stream probes show cancellation
+never calls the underlying cancel callback, and a pending unflushed direct read
+remains unsettled after reader cancellation. The original direct-stream TODO
+waits for an unflushed write before reaching cancellation and does not isolate
+that callback defect. ReadableStreamInternals also has older mirrored source,
+including missing pinned BYOB cancellation updates; its builtin body is still
+externally generated. These gaps stay under
+[#856](https://github.com/home-lang/home/issues/856). Remaining builtin/native
+ownership, full async-hook support, release builds in
+[#855](https://github.com/home-lang/home/issues/855), other platforms and complete
+logical Bun parity under [#66](https://github.com/home-lang/home/issues/66)
+remain unfinished.
