@@ -427,6 +427,19 @@ its ranking is not inferred from this Home-only A/B. Universal leadership,
 Zod admission and other-platform coverage remain incomplete. See the
 [new matrix and full evidence](docs/docs/TS_PERFORMANCE.md#landed-jsdoc-ancestor-prefix-matrix-2026-10-09-utc).
 
+The latest [exact-native profile and audit](docs/docs/TS_PERFORMANCE.md#exact-native-profile-and-byte-scope-audit-2026-10-09-utc)
+samples the unchanged compiler after 31 complete admissions. Explicit native
+PCs identify two further statement scans; these are locations, not CPU shares:
+
+| Native scan candidate | Early displayed offsets | Middle displayed offsets |
+|---|---|---|
+| Local namespace-import lookup ([#857](https://github.com/home-lang/home/issues/857)) | 188, 200 | 188, 200 |
+| Function-signature collection | 36, 56 | 36, 96 |
+
+Raw collapsed counts/ellipses and both stopped diagnostic-build attempts are
+retained. Earlier diagnostic profiles prove pre-link object-byte equality,
+not final native-executable equality. No diagnostic image is timed.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

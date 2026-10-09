@@ -500,7 +500,7 @@ All five compilers also pass five isolated feature controls plus their
 combined gate: **35** retained process records with exact fixture bytes and
 unchanged provenance. This establishes the new gate before the matrix rather
 than weakening it around a failure. The diagnostic image passed all **58**
-official image admissions and has identical original/renamed instruction bytes,
+official image admissions and has identical original/renamed **object** instruction bytes,
 SHA-256 `1c9d4cd471ae2c71e2e73dff7a4deb0205bb81ef02f4d921fb48976a8da505bb`.
 It is never used for timing. An unchanged 8,192-family checked-JS generator
 exits zero silently, with stable source/input/binary fingerprints.
@@ -521,6 +521,104 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Exact-native profile and byte-scope audit (2026-10-09 UTC)
+
+Direct sampling of the **unchanged native executable** at source
+[`b6608b14c631db91be6099e78c957ab67a3b5266`](https://github.com/home-lang/home/commit/b6608b14c631db91be6099e78c957ab67a3b5266)
+replaces reliance on relinked diagnostic images for choosing the next scan.
+Native SHA-256:
+`68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+All **31** complete native admissions pass: all 20 official positives/nine
+negatives plus the 8,192-family positive and full 15-error negative. The
+sampled process exits zero silently. Binary/source/input fingerprints remain
+unchanged, with positive inventory
+`bfb2fb1bef4dcb4ad7df9bffa647b5d44bd35c6895b32772fb4044ce0ced829e`
+and negative inventory
+`439cf46bb43c4386f85b07af49583ff7ae3ad1ba6b7e73989fa776dce372b467`.
+There are **zero diagnostic images sampled or timed** in this new method.
+
+The stronger audit first found that renaming local symbols preserves object
+instruction bytes, but relinking through clang does **not** preserve final
+native executable text. Native text has 9,675,688 bytes, SHA-256
+`77288d82ae38d7d741276d9f2734dce2f2d6916af69a11d4c14ed953e0f25e5c`;
+the rejected relinked image has 9,674,440 bytes, SHA-256
+`732298add1119f7332c21be55ad844656cdef69524cba540045f743b9063473c`.
+That attempt stopped before admission or sampling. The canonical unstripped
+ReleaseFast build then reached 3,885 MB and was stopped by the unchanged
+3,840 MB guard, exit **125**. The native binary was restored byte-for-byte.
+An LLVM metadata-only symbol-addition capability probe also returned unsupported
+for Mach-O; no generated probe image was admitted, sampled or timed.
+All attempts remain; no guard increase, source/optimizer/alignment adjustment,
+repeat-to-pass or weakened byte-equality assertion was used.
+
+The successful method uses the retained exact cached native link image and
+object `.zig-cache/o/11a829d35bce9e9be525665ca4e81af0/home-tsc_zcu.o`,
+object SHA-256
+`36aba5ab5e5bf1c982bac3265552fa50c992938ec7cf67bf6b2e46f685a00f92`.
+Its complete 9,674,440-byte text layout matches the native prefix outside
+**159,369 explicitly declared linker relocations** covering 633,752 bytes at
+relocation sites: **zero undeclared changed bytes**. The comparison excludes
+whole relocation-sized words, not only immediate operand bits; it does not
+prove opcode identity at those sites. The native has an additional
+1,248-byte thunk tail, outside this object's mapping. This is a precise
+link-layout/address proof, **not** a claim of native/diagnostic byte equality.
+The retained `_main` anchor and native section layout give link delta
+`0x100001768` and **5,889** text-symbol ranges. Symbol aliases and locations
+outside the mapped object are retained without invented names. No executable
+is rebuilt, relinked or modified for the successful sampling step.
+
+Two one-second windows start at 0.1 and 3.0 seconds, with **826 / 823** main
+thread observations. The raw stripped-native report collapses local symbols
+under global `main`; therefore its group counts cannot establish per-function
+leaf counts. The offline resolver adjusts explicit PCs for the actual ASLR
+load address and maps them to verified source/object ranges. **Ellipses,
+unmapped PCs, aliases and collapsed group counts remain undistributed**.
+Displayed frame locations can include callers, not just active leaves.
+Neither these locations nor the group counts are whole-run CPU percentages,
+causal speed evidence or a new benchmark ranking.
+
+| Native function | Preferred start | Early explicitly displayed offsets | Middle explicitly displayed offsets |
+|---|---|---|---|
+| `memberAccessReceiverIsRequireAssignmentBinding` | `0x100688e68` | 244, 476 | 416, 476 |
+| `moduleNamespaceTypeForLocalImport` | `0x1002ed7bc` | 188, 200 | 188, 200 |
+| `collectFunctionSignaturesFromStatements` | `0x1003ae10c` | 36, 56 | 36, 96 |
+| `resolveValueDeclInStmt` | `0x10061f5e4` | 24, 120, 168, 636 | 24, 212 |
+| `jsDocTypeForPreviousIdentifierDecl` | `0x10030e3fc` | 640, 712, 1588, 4996, 5480 | none explicitly displayed |
+| `virtualSectionStartForNode` | `0x1000f2cc0` | 0 | 0, 188 |
+
+Native disassembly maps namespace-import offsets 188/200 to root-statement
+loop decrement/import-kind testing; signature offsets 36/56/96 are also scan
+instructions. The next candidate is
+[#857](https://github.com/home-lang/home/issues/857): complete ordered syntax
+candidates by physical root/local name, live require eligibility and type
+lowering, source/HIR invalidation and complete scalar OOM fallback. No new
+section/visibility/prior-position filter, mutable type cache, general local-index
+coupling or source-name shortcut is permitted. Full semantic gates and frozen
+exact-parent/full-family/independent adverse-risk A/B are required before a
+candidate source push. This profile does not claim an optimization gain.
+
+The [complete profile/audit archive](../../bench/vs_tsgo/evidence/20261009-exact-native-prefix-profile-854.tar.gz)
+contains **73** verified payload checksums: raw native samples and resolved
+call graphs, byte/relocation/layout/symbol evidence, exact source/native
+disassembly, all admission records and scale inputs, runners/verifiers, both
+failed approaches and unsupported capability probe. SHA-256:
+`0f0fb7ebcbf75e736903fd8cc8952cae9414af218289fea157f4523cdd051d60`.
+Native profiling peak is 299 MB; read-only map verification 143 MB and archive
+133 MB. Guards remain 600 seconds / 3,840 MB with shared lock/disk floors.
+The archive waited for an unrelated runtime build and completed after it ended;
+no unrelated process was stopped. Subsequent runtime commits were preserved
+by clean fast-forward to `a96bb9a40`, and the matching standalone rebuild
+reproduced the same native SHA-256. The recorded sampled source remains `b6608b14c`.
+
+Earlier diagnostic archives are preserved as separately versioned exploratory
+samples of their relinked images. Their original/renamed **pre-link object**
+checks do not prove final native executable instruction equality. Their leaf
+counts must not be relabeled exact native counts. All accepted/rejected A/B
+timings used native binaries, so this scope correction does not change those
+raw measurements or establish a different ranking. The latest five-compiler
+matrix still has Home **1/20** leads and **12/20** versus native TS7; Zod,
+canonical C++ and other-platform admission remain incomplete.
 
 ## Restored current-main profile (2026-10-09 UTC)
 
