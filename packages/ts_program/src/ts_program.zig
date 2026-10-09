@@ -1995,44 +1995,33 @@ pub const Program = struct {
         file: *File,
         exports: []ts_driver.ProgramCommonJsExport,
     ) ProgramError!void {
-        var target: ?*ts_driver.ProgramCommonJsExport = null;
-        for (exports) |*exported| {
-            if (exported.whole_export_schema == null and exported.name.len == 0 and
-                std.mem.eql(u8, exported.module_path, file.path))
-            {
-                target = exported;
-                break;
-            }
-        }
-        const exported = target orelse return;
         const compilation = file.compilation orelse return;
         if (!compilation.checked_types_ready or compilation.hir.kindOf(compilation.root) != .block_stmt) return;
-        const whole_types = checked_schema.wholeExportTypes(self.gpa, compilation) catch return error.OutOfMemory;
-        defer self.gpa.free(whole_types);
-        if (whole_types.len == 0) return;
-        var position: ?u32 = null;
-        for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |statement| {
-            if (compilation.hir.kindOf(statement) != .assignment) continue;
-            const assignment = hir_mod_ns.assignmentOf(&compilation.hir, statement);
-            if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
-            const name = commonJsExportAssignmentMetadataName(
-                &compilation.hir,
-                &compilation.interner,
-                assignment,
-            ) orelse continue;
-            if (name.len == 0) {
-                position = compilation.hir.spanOf(statement).start;
-                break;
+        for (exports) |*exported| {
+            if (!std.mem.eql(u8, exported.module_path, file.path)) continue;
+            if (exported.name.len == 0) {
+                if (exported.whole_export_schema != null) continue;
+            } else if (exported.named_export_schema != null) continue;
+            const position = commonJsExportAssignmentPosition(compilation, exported.name) orelse continue;
+            const export_types = if (exported.name.len == 0)
+                checked_schema.wholeExportTypes(self.gpa, compilation) catch return error.OutOfMemory
+            else
+                checked_schema.namedExportTypes(self.gpa, compilation, exported.name) catch return error.OutOfMemory;
+            defer self.gpa.free(export_types);
+            if (export_types.len == 0) continue;
+            const schema = checked_schema.collect(
+                self.gpa,
+                file.path,
+                compilation,
+                export_types,
+                position,
+            ) catch return error.OutOfMemory;
+            if (exported.name.len == 0) {
+                exported.whole_export_schema = schema;
+            } else {
+                exported.named_export_schema = schema;
             }
         }
-        const export_position = position orelse return;
-        exported.whole_export_schema = checked_schema.collect(
-            self.gpa,
-            file.path,
-            compilation,
-            whole_types,
-            export_position,
-        ) catch return error.OutOfMemory;
     }
 
     fn collectProgramUmdGlobals(self: *const Program) ProgramError![]const ts_driver.ProgramUmdGlobal {
@@ -3019,7 +3008,7 @@ pub const Program = struct {
         items: []const ts_driver.ProgramCommonJsExport,
     ) bool {
         for (items) |item| {
-            if (item.name.len != 0 or item.whole_export_is_any) continue;
+            if (item.name.len == 0 and item.whole_export_is_any) continue;
             for (self.files.items) |consumer| {
                 for (consumer.imports.items) |dependency| {
                     if (dependency < self.files.items.len and
@@ -3032,6 +3021,7 @@ pub const Program = struct {
 
     fn freeProgramCommonJsExports(gpa: std.mem.Allocator, items: []const ts_driver.ProgramCommonJsExport) void {
         for (items) |item| {
+            if (item.named_export_schema) |owner_schema| @constCast(owner_schema).deinit(gpa);
             if (item.whole_export_schema) |owner_schema| @constCast(owner_schema).deinit(gpa);
             gpa.free(item.module_path);
             gpa.free(item.name);
@@ -5865,6 +5855,24 @@ fn commonJsExportAssignmentMetadataName(
     }
 }
 
+fn commonJsExportAssignmentPosition(
+    compilation: *const ts_driver.Compilation,
+    expected_name: []const u8,
+) ?u32 {
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |statement| {
+        if (compilation.hir.kindOf(statement) != .assignment) continue;
+        const assignment = hir_mod_ns.assignmentOf(&compilation.hir, statement);
+        if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
+        const name = commonJsExportAssignmentMetadataName(
+            &compilation.hir,
+            &compilation.interner,
+            assignment,
+        ) orelse continue;
+        if (std.mem.eql(u8, name, expected_name)) return compilation.hir.spanOf(statement).start;
+    }
+    return null;
+}
+
 fn commonJsWholeExportAssignmentTarget(
     hir: *const hir_mod_ns.Hir,
     interner: anytype,
@@ -8016,6 +8024,7 @@ fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32
 const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
     names_available: bool = true,
+    admitted_javascript: bool = false,
 
     const export_names = [_][]const u8{ "initialize", "$constructor", "consume", "TypeOnly", "Opaque", "KEY" };
 
@@ -8032,7 +8041,10 @@ const NamespaceImportTestResolver = struct {
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *NamespaceImportTestResolver = @ptrCast(@alignCast(self_ptr));
         const result = self.resolver.resolve(specifier, containing_file) catch return null;
-        return .{ .path = result.path, .is_declaration = result.is_declaration };
+        return .{
+            .path = result.path,
+            .is_declaration = result.is_declaration or self.admitted_javascript,
+        };
     }
 
     fn moduleExport(
@@ -14799,6 +14811,47 @@ test "Program: records whole CommonJS export assignments" {
     }
     try T.expect(saw_whole);
     try T.expect(saw_f);
+}
+
+test "Program: checked named CommonJS exports type imported reads and preserve import writes" {
+    const owner_source = "exports.value = 1;\n";
+    const consumer_source =
+        \\import { value } from "./owner";
+        \\const bad: string = value;
+        \\value = 2;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/main.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{
+            .resolver = &resolver,
+            .admitted_javascript = true,
+        };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const main = try p.add("/main.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const compilation = p.fileById(main).compilation.?;
+        try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+        try expectCompilationHasDiagnosticCode(compilation, 2322);
+        try expectCompilationHasDiagnosticCode(compilation, 2632);
+    }
 }
 
 test "Program: CommonJS export table is canonical while retaining source order" {

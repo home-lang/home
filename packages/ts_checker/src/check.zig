@@ -748,6 +748,10 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
 pub const ProgramCommonJsExport = struct {
     module_path: []const u8,
     name: []const u8,
+    /// Named-export type projected from the checked JavaScript owner. Null
+    /// while that owner has not been checked or when the type falls outside
+    /// the lossless program-schema subset.
+    named_export_schema: ?*const ProgramClassSchema.Schema = null,
     /// Whole-export type projected from the declaration module's checked
     /// owner. Null while that owner has not been checked or when its type is
     /// outside the lossless program-schema subset.
@@ -63855,6 +63859,7 @@ pub const Checker = struct {
                 if (try self.localNamespaceValueTypeInVirtualSection(stmt, local_name)) |namespace_t| return namespace_t;
                 if (std.mem.startsWith(u8, spec_text, ".")) {
                     if (try self.virtualRelativeModuleExportValueType(anchor, imp.module, sp.imported)) |t| return t;
+                    if (try self.programCommonJsNamedExportType(stmt, spec_text, sp.imported)) |t| return t;
                     if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
                     return null;
                 }
@@ -64276,6 +64281,33 @@ pub const Checker = struct {
             }
         }
         return false;
+    }
+
+    fn programCommonJsNamedExportType(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.program_commonjs_exports.len == 0) return null;
+        const name_text = self.string_interner.get(name);
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_base) |base| {
+            if (try self.programCommonJsNamedExportTypeForPath(self.string_interner.get(base), name_text)) |typ| return typ;
+        }
+        if (resolution.fallback_base) |base| {
+            if (resolution.external_base == base) return null;
+            if (try self.programCommonJsNamedExportTypeForPath(self.string_interner.get(base), name_text)) |typ| return typ;
+        }
+        return null;
+    }
+
+    fn programCommonJsNamedExportTypeForPath(self: *Checker, resolved_path: []const u8, name: []const u8) CheckError!?TypeId {
+        for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (!std.mem.eql(u8, exported.name, name)) continue;
+            const owner_schema = exported.named_export_schema orelse continue;
+            if (!try self.programSchemaSupported(owner_schema)) continue;
+            return self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
+                error.UnsupportedProgramType => continue,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+        }
+        return null;
     }
 
     fn programCommonJsModuleHasWholeExport(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
@@ -262367,6 +262399,35 @@ test "checker: whole CommonJS path matching preserves duplicates misses and meta
     try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
     s.checker.setProgramCommonJsExports(&.{});
     try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
+}
+
+test "checker: named CommonJS schemas type imported reads" {
+    const s = try newSetup(
+        \\import { value } from './owner';
+        \\const bad: string = value;
+    );
+    defer destroySetup(s);
+    s.checker.setImporterPath("/p/main.ts");
+    const number: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/p/owner.js",
+        .position = 0,
+        .name = "value",
+        .body = &number,
+    };
+    var schema: ProgramClassSchema.Schema = .{
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+        .declaration = &declaration,
+    };
+    defer schema.arena.deinit();
+    s.checker.setProgramCommonJsExports(&.{.{
+        .module_path = "/p/owner.js",
+        .name = "value",
+        .named_export_schema = &schema,
+    }});
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: whole CommonJS path matching keeps external and fallback alternatives" {

@@ -36,6 +36,33 @@ pub fn wholeExportTypes(
     return result.toOwnedSlice(gpa);
 }
 
+pub fn namedExportTypes(
+    gpa: std.mem.Allocator,
+    compilation: *const driver.Compilation,
+    name: []const u8,
+) ![]const TypeId {
+    var result: std.ArrayListUnmanaged(TypeId) = .empty;
+    errdefer result.deinit(gpa);
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return result.toOwnedSlice(gpa);
+    for (hir.blockStmts(&compilation.hir, compilation.root)) |statement| {
+        if (compilation.hir.kindOf(statement) != .assignment) continue;
+        var assignment = hir.assignmentOf(&compilation.hir, statement);
+        while (true) {
+            if (namedExportTarget(compilation, assignment.target)) |target_name| {
+                if (std.mem.eql(u8, target_name, name)) {
+                    const typ = compilation.hir.typeOf(assignment.value);
+                    if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
+                        try result.append(gpa, typ);
+                }
+            }
+            if (assignment.value == hir.none_node_id or compilation.hir.kindOf(assignment.value) != .assignment) break;
+            assignment = hir.assignmentOf(&compilation.hir, assignment.value);
+            if (assignment.op != null) break;
+        }
+    }
+    return result.toOwnedSlice(gpa);
+}
+
 fn wholeExportTarget(compilation: *const driver.Compilation, target: hir.NodeId) bool {
     const member = switch (compilation.hir.kindOf(target)) {
         .member_access => hir.memberOf(&compilation.hir, target),
@@ -53,6 +80,45 @@ fn wholeExportTarget(compilation: *const driver.Compilation, target: hir.NodeId)
     return compilation.hir.kindOf(member.object) == .identifier and
         std.mem.eql(u8, compilation.interner.get(hir.identifierOf(&compilation.hir, member.object).name), "module") and
         std.mem.eql(u8, compilation.interner.get(member.name), "exports");
+}
+
+fn namedExportTarget(compilation: *const driver.Compilation, target: hir.NodeId) ?[]const u8 {
+    const name = propertyAccessName(compilation, target) orelse return null;
+    const object = propertyAccessObject(compilation, target) orelse return null;
+    if (compilation.hir.kindOf(object) == .identifier and
+        std.mem.eql(u8, compilation.interner.get(hir.identifierOf(&compilation.hir, object).name), "exports"))
+    {
+        return compilation.interner.get(name);
+    }
+    const exports_name = propertyAccessName(compilation, object) orelse return null;
+    if (!std.mem.eql(u8, compilation.interner.get(exports_name), "exports")) return null;
+    const module_object = propertyAccessObject(compilation, object) orelse return null;
+    if (compilation.hir.kindOf(module_object) != .identifier or
+        !std.mem.eql(u8, compilation.interner.get(hir.identifierOf(&compilation.hir, module_object).name), "module"))
+    {
+        return null;
+    }
+    return compilation.interner.get(name);
+}
+
+fn propertyAccessName(compilation: *const driver.Compilation, node: hir.NodeId) ?hir.StringId {
+    return switch (compilation.hir.kindOf(node)) {
+        .member_access => hir.memberOf(&compilation.hir, node).name,
+        .element_access => blk: {
+            const index = hir.elementOf(&compilation.hir, node).index;
+            if (compilation.hir.kindOf(index) != .literal_string) break :blk null;
+            break :blk hir.literalStringOf(&compilation.hir, index).value;
+        },
+        else => null,
+    };
+}
+
+fn propertyAccessObject(compilation: *const driver.Compilation, node: hir.NodeId) ?hir.NodeId {
+    return switch (compilation.hir.kindOf(node)) {
+        .member_access => hir.memberOf(&compilation.hir, node).object,
+        .element_access => hir.elementOf(&compilation.hir, node).object,
+        else => null,
+    };
 }
 
 pub fn collect(
@@ -281,4 +347,27 @@ test "checked schema: whole CommonJS export retains inferred class fields and re
         try T.expectEqualStrings("value", class_body.object[0].name);
         try T.expect(class_body.object[0].type.* == .primitive);
     }
+}
+
+test "checked schema: named CommonJS export retains its widened checked type" {
+    const source = "exports.value = 1;";
+    const compilation = try driver.compileSource(T.allocator, source, .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .importer_path = "/owner.js",
+    });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const export_types = try namedExportTypes(T.allocator, compilation, "value");
+    defer T.allocator.free(export_types);
+    try T.expectEqual(@as(usize, 1), export_types.len);
+    const result = try collect(T.allocator, "/owner.js", compilation, export_types, 0);
+    defer @constCast(result).deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const body = result.declaration.body orelse return error.TestUnexpectedResult;
+    try T.expect(body.* == .primitive);
+    try T.expectEqual(Primitive.number_t, body.primitive);
 }
