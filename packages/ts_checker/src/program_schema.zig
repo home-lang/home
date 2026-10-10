@@ -211,18 +211,39 @@ pub const Schema = struct {
         return pendingSupported(gpa, &pending, &visited, false, false);
     }
 
-    /// These closed index domains have an exact concrete representation in
-    /// the Program instantiator. Other keys still need their own finite-key or
-    /// symbolic mapped representation; do not erase them into a string index.
-    pub fn recordIndexKeySupported(key: *const Expression) bool {
+    /// Closed primitive domains and finite property literals have exact
+    /// concrete representations. Symbolic domains still need mapped lowering;
+    /// finite keys must never be widened into an open index signature.
+    pub fn recordIndexKeySupported(key: *const Expression, gpa: std.mem.Allocator) !bool {
+        var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
+        defer visited.deinit(gpa);
+        return recordKeySupported(key, gpa, &visited);
+    }
+
+    fn recordKeySupported(key: *const Expression, gpa: std.mem.Allocator, visited: *std.AutoHashMapUnmanaged(*const Expression, void)) !bool {
+        const entry = try visited.getOrPut(gpa, key);
+        if (entry.found_existing) return false;
+        defer _ = visited.remove(key);
         return switch (key.*) {
             .primitive => |primitive| primitive == types.Primitive.any or
                 primitive == types.Primitive.string_t or
                 primitive == types.Primitive.number_t or
-                primitive == types.Primitive.symbol_t,
+                primitive == types.Primitive.symbol_t or
+                primitive == types.Primitive.never,
+            .string, .number => true,
             .union_type => |members| blk: {
-                for (members) |member| if (!recordIndexKeySupported(member)) break :blk false;
+                for (members) |member| if (!try recordKeySupported(member, gpa, visited)) break :blk false;
                 break :blk true;
+            },
+            .reference => |reference| blk: {
+                if (reference.projection_only or reference.contextual_projection or
+                    reference.declaration.contextual_only or reference.declaration.is_class or reference.declaration.is_function)
+                    break :blk false;
+                // A closed alias has no substitution-dependent key domain.
+                // Generic key parameters require exact mapped admission.
+                if (reference.declaration.parameters.len != 0 or reference.arguments.len != 0) break :blk false;
+                const body = reference.declaration.body orelse break :blk false;
+                break :blk try recordKeySupported(body, gpa, visited);
             },
             else => false,
         };
@@ -255,7 +276,7 @@ pub const Schema = struct {
                     }
                 },
                 .record => |record| {
-                    if ((allow_readonly_record and record.readonly) or recordIndexKeySupported(record.key)) {
+                    if ((allow_readonly_record and record.readonly) or try recordIndexKeySupported(record.key, gpa)) {
                         try pending.append(gpa, record.key);
                         try pending.append(gpa, record.value);
                     } else if (!allow_opaque) {

@@ -111139,14 +111139,9 @@ pub const Checker = struct {
                 break :blk try self.interner.internObjectType(values);
             },
             .record => |record| blk: {
-                const key_t = try self.programDeferredLowerExpression(record.key, context, active, depth + 1);
+                const key_t = try self.resolveGenericType(try self.programDeferredLowerExpression(record.key, context, active, depth + 1));
                 const value_t = try self.programDeferredLowerExpression(record.value, context, active, depth + 1);
-                break :blk try self.interner.internObjectTypeWithIndexAndSymbol(
-                    &.{},
-                    if (key_t == types.Primitive.any or key_t == types.Primitive.string_t) value_t else types.Primitive.none,
-                    if (key_t == types.Primitive.number_t) value_t else types.Primitive.none,
-                    if (key_t == types.Primitive.symbol_t) value_t else types.Primitive.none,
-                );
+                break :blk try self.lowerProgramRecord(key_t, value_t, record.readonly);
             },
             .reference => |reference| blk: {
                 if (active.contains(reference.declaration)) return error.UnsupportedProgramType;
@@ -112736,6 +112731,50 @@ pub const Checker = struct {
         return result;
     }
 
+    fn lowerProgramRecord(self: *Checker, key_t: TypeId, value_t: TypeId, readonly: bool) ProgramTypeError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var string_index = types.Primitive.none;
+        var number_index = types.Primitive.none;
+        var symbol_index = types.Primitive.none;
+        const union_key = key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_union;
+        const count = if (union_key) self.interner.unionMembers(key_t).len else @as(usize, 1);
+        for (0..count) |index| {
+            // Reacquire members across property-name interning and allocation.
+            const key = if (union_key) self.interner.unionMembers(key_t)[index] else key_t;
+            if (self.typeIsAnyLike(key) or key == types.Primitive.string_t) {
+                string_index = value_t;
+            } else if (key == types.Primitive.number_t) {
+                number_index = value_t;
+            } else if (key == types.Primitive.symbol_t) {
+                symbol_index = value_t;
+            } else if (key == types.Primitive.never) {
+                continue;
+            } else {
+                if (key >= self.interner.pool.typeCount()) return error.UnsupportedProgramType;
+                const flags = self.interner.pool.flagsOf(key);
+                if (!flags.is_literal or (!flags.is_string and !flags.is_number)) return error.UnsupportedProgramType;
+                const name = (try self.propertyNameFromLiteralType(key)) orelse return error.UnsupportedProgramType;
+                var duplicate = false;
+                for (members.items) |member| if (member.name == name) {
+                    duplicate = true;
+                    break;
+                };
+                if (!duplicate) try members.append(self.gpa, .{
+                    .name = name,
+                    .type = value_t,
+                    .is_optional = false,
+                    .is_readonly = readonly,
+                    .is_method = false,
+                });
+            }
+        }
+        const result = try self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, number_index, symbol_index);
+        if (readonly and (string_index != types.Primitive.none or number_index != types.Primitive.none or symbol_index != types.Primitive.none))
+            try self.readonly_index_types.put(self.gpa, result, {});
+        return result;
+    }
+
     fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
         switch (expression.*) {
             .unsupported => return if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
@@ -112791,39 +112830,9 @@ pub const Checker = struct {
             },
             .record => |record| {
                 if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
-                const key_t = try self.lowerProgramExpression(record.key, declaration, args);
+                const key_t = try self.resolveGenericType(try self.lowerProgramExpression(record.key, declaration, args));
                 const value_t = try self.lowerProgramExpression(record.value, declaration, args);
-                if (self.typeIsAnyLike(key_t)) {
-                    const result = try self.interner.internObjectTypeWithIndexAndSymbol(
-                        &.{},
-                        value_t,
-                        types.Primitive.none,
-                        types.Primitive.none,
-                    );
-                    if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
-                    return result;
-                }
-                var singleton = [_]TypeId{key_t};
-                const keys = if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_union)
-                    self.interner.unionMembers(key_t)
-                else
-                    singleton[0..];
-                var string_index = types.Primitive.none;
-                var number_index = types.Primitive.none;
-                var symbol_index = types.Primitive.none;
-                for (keys) |key| {
-                    if (key == types.Primitive.string_t)
-                        string_index = value_t
-                    else if (key == types.Primitive.number_t)
-                        number_index = value_t
-                    else if (key == types.Primitive.symbol_t)
-                        symbol_index = value_t
-                    else
-                        return error.UnsupportedProgramType;
-                }
-                const result = try self.interner.internObjectTypeWithIndexAndSymbol(&.{}, string_index, number_index, symbol_index);
-                if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
-                return result;
+                return self.lowerProgramRecord(key_t, value_t, record.readonly);
             },
             .utility => |utility| switch (utility.kind) {
                 .extract => {
@@ -208374,6 +208383,55 @@ test "checker: source-owned mapped utilities preserve selected members" {
     };
     const record_t = try s.checker.instantiateProgramDeclaration(&declaration, &.{}, &.{});
     try T.expectEqual(types.Primitive.any, s.ti.objectStringIndex(record_t));
+}
+
+test "checker: source-owned Record preserves finite keys readonly members and mixed index domains" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const left: ProgramClassSchema.Expression = .{ .string = "left" };
+    const one: ProgramClassSchema.Expression = .{ .number = 1 };
+    const boolean: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.boolean_t };
+    const symbol: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.symbol_t };
+    const never: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.never };
+    const keys: ProgramClassSchema.Expression = .{ .union_type = &.{ &left, &one, &symbol } };
+    const record: ProgramClassSchema.Expression = .{ .record = .{ .key = &keys, .value = &boolean, .readonly = true } };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Map", .body = &record };
+    try T.expect(try ProgramClassSchema.Schema.declarationSupported(&declaration, T.allocator));
+    const result = try s.checker.instantiateProgramDeclaration(&declaration, &.{}, &.{});
+    for ([_][]const u8{ "left", "1" }) |name| {
+        const member = s.ti.objectMemberInfo(result, try s.sint.intern(name)).?;
+        try T.expectEqual(types.Primitive.boolean_t, member.type);
+        try T.expect(member.is_readonly);
+        try T.expect(!member.is_optional);
+    }
+    try T.expectEqual(types.Primitive.none, s.ti.objectStringIndex(result));
+    try T.expectEqual(types.Primitive.none, s.ti.objectNumberIndex(result));
+    try T.expectEqual(types.Primitive.boolean_t, s.ti.objectSymbolIndex(result));
+    try T.expect(s.checker.readonly_index_types.contains(result));
+    try T.expect(s.ti.objectMemberInfo(result, try s.sint.intern("other")) == null);
+    const empty_record: ProgramClassSchema.Expression = .{ .record = .{ .key = &never, .value = &boolean } };
+    const empty_decl: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 1, .name = "Empty", .body = &empty_record };
+    try T.expect(try ProgramClassSchema.Schema.declarationSupported(&empty_decl, T.allocator));
+    const empty = try s.checker.instantiateProgramDeclaration(&empty_decl, &.{}, &.{});
+    try T.expectEqual(@as(usize, 0), s.ti.objectMembers(empty).len);
+    try T.expectEqual(types.Primitive.none, s.ti.objectStringIndex(empty));
+    const invalid_record: ProgramClassSchema.Expression = .{ .record = .{ .key = &boolean, .value = &boolean } };
+    const invalid_decl: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 2, .name = "Invalid", .body = &invalid_record };
+    try T.expect(!try ProgramClassSchema.Schema.declarationSupported(&invalid_decl, T.allocator));
+    try T.expectError(error.UnsupportedProgramType, s.checker.lowerProgramRecord(types.Primitive.boolean_t, types.Primitive.boolean_t, false));
+}
+
+test "checker: Record key admission follows shared closed aliases and rejects cycles without truncation" {
+    const literal: ProgramClassSchema.Expression = .{ .string = "key" };
+    var alias: ProgramClassSchema.Declaration = .{ .path = "/keys.ts", .position = 0, .name = "Keys", .body = &literal };
+    const reference: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &alias, .arguments = &.{} } };
+    const repeated: ProgramClassSchema.Expression = .{ .union_type = &.{ &reference, &reference } };
+    try T.expect(try ProgramClassSchema.Schema.recordIndexKeySupported(&repeated, T.allocator));
+    alias.body = &reference;
+    try T.expect(!try ProgramClassSchema.Schema.recordIndexKeySupported(&reference, T.allocator));
+    alias.body = &literal;
+    alias.contextual_only = true;
+    try T.expect(!try ProgramClassSchema.Schema.recordIndexKeySupported(&reference, T.allocator));
 }
 
 test "checker: source-owned rest tuple signatures retain their call boundary" {

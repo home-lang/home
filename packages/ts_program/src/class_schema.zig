@@ -412,7 +412,7 @@ pub const Builder = struct {
                     }
                 },
                 .record => |record| {
-                    if (!schema.Schema.recordIndexKeySupported(record.key)) return false;
+                    if (!try schema.Schema.recordIndexKeySupported(record.key, self.gpa)) return false;
                     try pending.append(self.gpa, record.key);
                     try pending.append(self.gpa, record.value);
                 },
@@ -1625,7 +1625,7 @@ test "class schema: Record index domains are whole-type transferable" {
     try T.expect(!result.declaration.contextual_only);
 }
 
-test "class schema: Record admission does not erase finite or unsupported value domains" {
+test "class schema: Record admission preserves finite keys and rejects unsupported value domains" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export interface Finite { data: Record<"left" | "right", string>; }
         \\export interface Unsupported { data: Record<string, MissingType>; }
@@ -1633,7 +1633,12 @@ test "class schema: Record admission does not erase finite or unsupported value 
     defer graph.deinit();
     const finite = try graph.class(0, "Finite");
     defer finite.deinit(T.allocator);
-    try T.expect(!try finite.isSupported(T.allocator));
+    try T.expect(try finite.isSupported(T.allocator));
+    const record = finite.declaration.body.?.object[0].type.record;
+    try T.expectEqual(@as(usize, 2), record.key.union_type.len);
+    try T.expectEqualStrings("left", record.key.union_type[0].string);
+    try T.expectEqualStrings("right", record.key.union_type[1].string);
+    try T.expectEqual(Primitive.string_t, record.value.primitive);
     const unsupported = try graph.class(0, "Unsupported");
     defer unsupported.deinit(T.allocator);
     try T.expect(!try unsupported.isSupported(T.allocator));
