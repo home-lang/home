@@ -132,7 +132,7 @@ Values are medians of 30 fresh processes after three warmups; lower is better.
 | 256 type-predicate families | 235.1 ms | 40.5 ms | 32.7 ms | 34.1 ms | 23.4 ms | 1.40× slower |
 | 2,048 type-predicate families | 1,010.1 ms | 309.8 ms | 244.3 ms | 268.9 ms | 158.5 ms | 1.54× slower |
 
-Home has the lowest median on **1 / 20** admitted workloads (startup)
+In this dated matrix, Home has the lowest median on **1 / 20** admitted workloads (startup)
 and is faster than native TypeScript 7 on **12 / 20**. These are
 descriptive medians, not statistical-significance claims. The complete
 table, methodology, machine and toolchain versions are in
@@ -501,7 +501,25 @@ and [raw evidence](bench/vs_tsgo/evidence/20261010-simple-value-name-guard-incom
 No timings were repeated or excluded. Incomplete execution and zero-spanning
 intervals do not establish improvement or equivalence; competitor ranks stay unchanged.
 
-These numbers were measured with the standalone compiler build
+Imported Record/indexed-interface fixes are now
+[landed](https://github.com/home-lang/home/commit/a6570c80599122f4c263527bc35a1c27d65987c3).
+Their results are **untimed admission checks**, not a refreshed performance ranking:
+
+| Admission check | Result | Remaining limitation |
+|---|---|---|
+| Existing five-compiler benchmark protocol | 145/145 checks pass | No new timing samples |
+| String, number, symbol and mixed Record domains | Silent positives; exact negative errors | Finite and symbolic keys remain incomplete |
+| Imported indexed literals and return types | Silent positive; three exact negative errors | General fixtures, not all TypeScript programs |
+| Complete pinned Zod 4.5.2 graph | 241 TS errors and two HM9002 warnings | Not admitted; zero timing samples |
+
+The clean parent reported 195 TS errors and three HM9002 warnings on Zod;
+the wider exact type graph exposes additional failures, so this is not a
+diagnostic-count improvement. See the
+[admission report](docs/docs/TS_PERFORMANCE.md#imported-record-and-indexed-interface-admission-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-record-indexed-admission-863.tar.gz).
+The dated timing matrix above does not measure this newer compiler.
+
+The timing tables were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
 benchmarked yet. Expect it to show mostly in the `startup` row.

@@ -10,6 +10,11 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+The timing matrix below is the dated `20261009T205353Z` snapshot. It does not
+measure the later [Record and indexed-interface fixes](#imported-record-and-indexed-interface-admission-2026-10-10-utc).
+Their complete synthetic admission checks pass, but no updated timing rank
+is inferred from those checks.
+
 The later ordered namespace-import candidate is **rejected**, fully restored
 and never pushed: independent destructuring confirmation regresses despite
 target-scale gains. Its [complete report](#ordered-namespace-import-candidates-2026-10-09-utc)
@@ -527,6 +532,112 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Imported Record and indexed interface admission 2026 10 10 UTC
+
+The general fixes under [#863](https://github.com/home-lang/home/issues/863)
+are [landed](https://github.com/home-lang/home/commit/a6570c80599122f4c263527bc35a1c27d65987c3).
+Closed Record index domains, imported literal aliases and indexed-interface
+returns retain their checked types. The existing five-compiler benchmark
+protocol passes all **145 admission checks**, but these are **untimed results,
+not a speedup or refreshed ranking**. Complete Zod admission, finite/symbolic
+Record domains, canonical C++ admission and other-platform coverage remain
+incomplete; universal benchmark leadership is not established.
+
+### Exact semantics and diagnostic controls
+
+`Record<string, V>`, `Record<number, V>`, `Record<symbol, V>` and their key-domain
+unions use the existing exact Program index representation. Their complete
+value graphs, generic interface members and readonly flags are preserved.
+Qualified imports no longer reduce these supported graphs to partial
+projections. Finite or symbolic keys are not widened into string indices;
+their unfinished representation remains visible.
+
+Two general defects were exposed by the wider graph: literal checking did
+not resolve imported alias instances, and a return-shape predicate treated
+object intersections as non-objects. Literal checking now resolves the alias;
+return checking uses the structural intersection relation. Recursive traversal
+reacquires immutable union/intersection members by index so interning cannot
+invalidate borrowed pool slices. No library/filename special case, `any`
+fallback, skipped diagnostic, semantic cap or benchmark shortcut was added.
+
+Home, pinned TS 6.0.3 and native TS 7.0.2 receive identical strict diagnostic
+projects. General probes use the benchmark's shared `noLib` ambient shim;
+full Zod uses its normal target libraries. Negative controls are untimed copies,
+never replacement timed sources.
+
+| Diagnostic case | Parent or retained pre-fix Home | Final Home | TS 6 and native TS 7 |
+|---|---|---|---|
+| Four closed Record-domain positives | TS2304 and TS2339 | Silent success | Silent success |
+| Each closed Record-domain negative | Wrong error set from missing inherited types | Two TS2322 and one TS2339 | Same exact errors |
+| Full inherited/qualified Record fixture | Not separately compared | Silent positive; six TS2322, one TS2339 and one TS2542 negative | Same exact result |
+| General indexed-interface fixture | Four false-positive TS2322 | Silent positive; three TS2322 negative | Same exact result |
+| Isolated original upstream JSON-schema declarations | Positive silent, both negative controls missed | Silent positive; two TS2322 negative | Same exact result |
+| Finite Record-key fixture | Fails admission | Still fails admission | Silent positive; exact negative errors |
+
+All **48 final Home processes** are retained: **46 supported checks pass**
+and **two finite-key checks fail**. The earlier 24 positive import checks,
+48 recursive-constructor checks and 24 cyclic-import checks did not reproduce
+the defect and are retained. The first property-removal reduction introduced
+reference-compiler excess-property errors and is rejected as a reproducer.
+Later reductions require silent reference admission and separate the return
+and literal failures; neither requires recursion. Failed or inapplicable
+probes are not discarded.
+
+### Complete Zod remains unadmitted
+
+All three compilers receive the identical strict NodeNext, ES2022, no-emit
+configuration and **106 unmodified production files** from the pinned Zod
+4.5.2 npm archive. Its SHA-512 and every production-file SHA-256 verify.
+Configuration SHA-256:
+`80c3c21c184d02b7ee451da35640c461cad77061b7a72f5058541cb3c8916d05`.
+Upstream tests are excluded as the same project boundary for every compiler,
+not as a compiler-specific exception.
+
+| Complete graph revision | Home TS errors | Home HM9002 warnings | TS 6 and native TS 7 |
+|---|---:|---:|---|
+| Clean parent | 195 | 3 | Silent success |
+| Initial Record transfer candidate | 244 | 2 | Same unchanged graph; silent success |
+| Landed literal, return and pool-safety fixes | 241 | 2 | Same unchanged graph; silent success |
+
+The erroneous missing `$ZodError` heritage is resolved and the isolated
+JSON-schema controls pass, but many other errors become visible under the
+wider exact graph. More diagnostics are not a quality or performance gain.
+Final counts include 186 TS2345, 20 TS2339, 11 TS7006, 10 TS2322, five TS2774,
+two each TS2304/TS2344/TS2698/TS4110, and one TS18048. Zod remains **unadmitted
+and untimed** under [#548](https://github.com/home-lang/home/issues/548).
+No sources, configuration, libraries or error checks were relaxed.
+
+### Qualification and retained evidence
+
+Final source gates ran on parent
+`ec18f7fb3bed4a614f02d0c1eb91da099f9a3491` plus exact patch SHA-256
+`70a8d18950fd305be59e4a91124cb34abcefa19ce1bf74a98de2d93618970495`:
+Program **255**, checker **4,553**, driver **200**, CLI **76**, entrypoint
+**38**, and benchmark harness **136** tests pass. Formatting and diff checks
+pass. The unchanged protocol-4 admission passes all **145 processes** across
+five pinned compilers, 20 positive workloads and nine negative-control projects,
+with identical before/after artifact provenance. Bun retains the existing
+checked-files success policy; no output rule changed.
+
+Both newer runtime commits through
+`c1e00c785b2d62a57286d237a0a3ea5399dd3db3` are preserved. Compiler/build/benchmark
+paths and the patch match; a fresh post-sync build matches the qualified native
+byte-for-byte:
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`.
+Earlier results retain their own image identities, not relabeled final-image
+tests. Heavy compiler jobs use the unchanged 600-second, 3,840-MB guard and
+shared machine lock.
+
+The [raw evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261010-record-indexed-admission-863.tar.gz)
+retains the pinned archive, exact production and diagnostic projects, all
+process outputs, earlier failures, rejected reductions, patches, qualified
+source, canonical inputs, full test logs, independent verifiers and main-sync
+proof. All **2,022 payload checksums** verify. Archive SHA-256:
+`7d8b465183c7071fba65fc16e381694135175e1733ab617a828238fa42749586`.
+Native binaries are identified by hash, not republished. The first packaging
+attempt requested nonexistent `build.zig.zon` and failed before archive creation;
+that failure and correction are retained, with no compiler or timing rerun.
 
 ## Simple value name guard 2026 10 10 UTC
 
