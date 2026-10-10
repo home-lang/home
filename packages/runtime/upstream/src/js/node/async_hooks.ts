@@ -133,74 +133,37 @@ class AsyncLocalStorage {
     $assert(this.getStore() === store);
   }
 
-  exit(cb, ...args) {
-    return this.run(undefined, cb, ...args);
-  }
-
-  // This function is litered with $asserts to ensure that everything that
-  // is assumed to be true is *actually* true.
-  run(store_value, callback, ...args) {
-    $debug("run " + (this as any).__id__);
-    var context = get() as any[]; // we make sure to .slice() before mutating
-    var hasPrevious = false;
-    var previous_value;
-    var i = 0;
-    var contextWasAlreadyInit = !context;
-    // we must renable it when asyncLocalStorage.run() is called https://nodejs.org/api/async_context.html#asynclocalstoragedisable
-    const wasDisabled = this.#disabled;
-    this.#disabled = false;
-    if (contextWasAlreadyInit) {
-      set((context = [this, store_value]));
-    } else {
-      // it's safe to mutate context now that it was cloned
-      context = context!.slice();
-      i = context.indexOf(this);
-      if (i > -1) {
-        $assert(i % 2 === 0);
-        hasPrevious = true;
-        previous_value = context[i + 1];
-        context[i + 1] = store_value;
-      } else {
-        i = context.length;
-        context.push(this, store_value);
-        $assert(i % 2 === 0);
-        $assert(context.length % 2 === 0);
-      }
-      set(context);
-    }
-    $assert(i > -1, "i was not set");
-    $assert(this.getStore() === store_value, "run: store_value was not set");
+  exit(callback, ...args) {
+    validateFunction(callback, "callback");
+    if (this.#disabled) return callback(...args);
+    const previous = get();
+    this.#disabled = true;
     try {
       return callback(...args);
     } finally {
-      // Note: early `return` will prevent `throw` above from working. I think...
-      // Set AsyncContextFrame to undefined if we are out of context values
-      if (!wasDisabled) {
-        var context2 = get()! as any[]; // we make sure to .slice() before mutating
-        if (context2 === context && contextWasAlreadyInit) {
-          $assert(context2.length === 2, "context was mutated without copy");
-          set(undefined);
-        } else {
-          context2 = context2.slice(); // array is cloned here
-          $assert(context2[i] === this);
-          if (hasPrevious) {
-            context2[i + 1] = previous_value;
-            set(context2);
-          } else {
-            // i wonder if this is a fair assert to make
-            context2.splice(i, 2);
-            $assert(context2.length % 2 === 0);
-            set(context2.length ? context2 : undefined);
-          }
-        }
-        $assert(
-          this.getStore() === previous_value,
-          "run: previous_value",
-          Bun.inspect(previous_value),
-          "was not restored, i see",
-          this.getStore(),
-        );
-      }
+      this.#disabled = false;
+      set(previous);
+    }
+  }
+
+  run(store_value, callback, ...args) {
+    validateFunction(callback, "callback");
+    const previous = get();
+    this.#disabled = false;
+    const context = previous ? previous.slice() : [];
+    const index = context.indexOf(this);
+    if (index >= 0) {
+      context[index + 1] = store_value;
+    } else {
+      context.push(this, store_value);
+    }
+    set(context);
+    try {
+      return callback(...args);
+    } finally {
+      // The callback may replace or remove the active context. Restore the
+      // actual outer snapshot rather than indexing the callback's final array.
+      set(previous);
     }
   }
 
