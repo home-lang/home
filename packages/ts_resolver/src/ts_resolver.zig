@@ -1394,6 +1394,37 @@ pub const Resolver = struct {
         return null;
     }
 
+    /// Package-json implementation targets participate in the resolver's
+    /// current extension pass. `tryNodeModules` deliberately searches
+    /// TypeScript/declarations before JavaScript, so a `main: "entry.js"`
+    /// target may substitute `entry.ts`/`entry.d.ts` in the first pass but
+    /// must not accept `entry.js` until the fallback pass. This is the
+    /// `loadFileNameFromPackageJSONField` distinction in the upstream
+    /// resolver; ordinary source-written specifiers keep using
+    /// `tryFileWithExtensions`.
+    fn tryPackageJsonFieldWithExtensions(self: *Resolver, path: []const u8) ResolveError!?Resolution {
+        if (!isImplementationOutputPath(path)) return self.tryFileWithExtensions(path);
+        const source_base = stripOutputExtension(path) orelse return null;
+        const stripped_ext = path[source_base.len..];
+        self.traceMsg(
+            6132,
+            "File name '{s}' has a '{s}' extension - stripping it.",
+            .{ path, stripped_ext },
+        );
+        for (sourceExtensionsForOutputPath(path)) |ext| {
+            if (!self.extensionIsActive(ext)) continue;
+            if (try self.tryModuleSuffixedFile(source_base, ext, .relative)) |resolution| return resolution;
+        }
+        return null;
+    }
+
+    fn extensionIsActive(self: *const Resolver, extension: []const u8) bool {
+        for (self.config.extensions) |active| {
+            if (std.mem.eql(u8, active, extension)) return true;
+        }
+        return std.mem.eql(u8, extension, ".json") and self.config.resolve_json;
+    }
+
     fn tryArbitraryExtensionDeclaration(self: *Resolver, base: []const u8) ResolveError!?Resolution {
         const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return null;
         const slash = std.mem.lastIndexOfScalar(u8, base, '/');
@@ -1467,7 +1498,7 @@ pub const Resolver = struct {
                     }
                     const target = try self.joinPath(dir, v.string);
                     self.traceMsg(6101, "'package.json' has '{s}' field '{s}' that references '{s}'.", .{ key, v.string, target });
-                    if (try self.tryFileWithExtensions(target)) |r| {
+                    if (try self.tryPackageJsonFieldWithExtensions(target)) |r| {
                         // In alternate (declaration-only) mode, a JS
                         // `main`/`module` target that resolves to a
                         // non-declaration file does NOT count — tsc's
@@ -2062,10 +2093,18 @@ pub const Resolver = struct {
         if (subpath.len > 0) {
             const cand = try self.joinPath(at_root, subpath);
             if (try self.tryFileWithExtensions(cand)) |r| {
-                if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                if (isSupportedTypeScriptPath(r.path)) return try self.withAtTypesPackageId(.{
+                    .path = r.path,
+                    .source = .node_modules,
+                    .is_declaration = r.is_declaration,
+                }, at_root, at_pkg_json);
             }
             if (try self.tryDirectoryIndex(cand)) |r| {
-                if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                if (isSupportedTypeScriptPath(r.path)) return try self.withAtTypesPackageId(.{
+                    .path = r.path,
+                    .source = .node_modules,
+                    .is_declaration = r.is_declaration,
+                }, at_root, at_pkg_json);
             }
             return null;
         }
@@ -2073,16 +2112,34 @@ pub const Resolver = struct {
             const outcome = try self.resolvePackageSubpath(at_root, at_pkg_json, ".");
             switch (outcome) {
                 .resolved => |r| if (isSupportedTypeScriptPath(r.path)) {
-                    return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+                    return try self.withAtTypesPackageId(.{
+                        .path = r.path,
+                        .source = .node_modules,
+                        .is_declaration = r.is_declaration,
+                    }, at_root, at_pkg_json);
                 },
                 .blocked, .none => {},
             }
         }
         const fallback = try self.joinPath(at_root, "index");
         if (try self.tryFileWithExtensions(fallback)) |r| {
-            if (isSupportedTypeScriptPath(r.path)) return .{ .path = r.path, .source = .node_modules, .is_declaration = r.is_declaration };
+            if (isSupportedTypeScriptPath(r.path)) return try self.withAtTypesPackageId(.{
+                .path = r.path,
+                .source = .node_modules,
+                .is_declaration = r.is_declaration,
+            }, at_root, at_pkg_json);
         }
         return null;
+    }
+
+    fn withAtTypesPackageId(
+        self: *Resolver,
+        resolution: Resolution,
+        package_root: []const u8,
+        package_json: []const u8,
+    ) ResolveError!Resolution {
+        if (!self.fs.fileExists(package_json)) return resolution;
+        return self.withPackageId(resolution, package_root, package_json, false);
     }
 
     /// Outcome of `resolvePackageSubpath`. The `blocked` variant is
@@ -5326,6 +5383,27 @@ test "Resolver: @types/<pkg> fallback — bare pkg with no types resolves throug
     const res = try r.resolve("foo", "/main.ts");
     try T.expectEqualStrings("/node_modules/@types/foo/index.d.ts", res.path);
     try T.expect(res.is_declaration);
+}
+
+test "Resolver: preferred package search reaches sibling @types before JavaScript main" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/node_modules/m4/package.json",
+        \\{ "name": "m4", "version": "1.0.0", "main": "entry.js" }
+    );
+    try vfs.addFile("/node_modules/m4/entry.js", "exports.test = 'implementation';");
+    try vfs.addFile("/node_modules/@types/m4/package.json",
+        \\{ "name": "m4", "version": "1.0.0", "types": "entry.d.ts" }
+    );
+    try vfs.addFile("/node_modules/@types/m4/entry.d.ts", "export declare const foo: number;");
+    try vfs.addFile("/main.ts", "import * as m4 from 'm4'; void m4.foo;");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    const res = try r.resolve("m4", "/main.ts");
+    try T.expectEqualStrings("/node_modules/@types/m4/entry.d.ts", res.path);
+    try T.expect(res.is_declaration);
+    try T.expectEqualStrings("m4/entry.d.ts@1.0.0", res.package_id.?);
 }
 
 test "Resolver: @types-only package resolves conditional declaration exports" {

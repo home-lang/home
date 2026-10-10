@@ -4798,6 +4798,45 @@ test "tsc_main: resolver admission follows maxNodeModuleJsDepth" {
     try std.testing.expect(saw_imported_type_error);
 }
 
+test "tsc_main: resolver adapter prefers sibling declarations over admitted package JavaScript" {
+    const main_source =
+        \\import * as m4 from 'm4';
+        \\const value: number = m4.foo;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", main_source);
+    try vfs.addFile("/proj/node_modules/m4/package.json", "{\"name\":\"m4\",\"version\":\"1.0.0\",\"main\":\"entry.js\"}");
+    try vfs.addFile("/proj/node_modules/m4/entry.js", "exports.test = 'implementation';\n");
+    try vfs.addFile("/proj/node_modules/@types/m4/package.json", "{\"name\":\"m4\",\"version\":\"1.0.0\",\"types\":\"entry.d.ts\"}");
+    try vfs.addFile("/proj/node_modules/@types/m4/entry.d.ts", "export declare const foo: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", main_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .max_node_module_js_depth = 3,
+        .no_emit = true,
+    };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try std.testing.expect(program.lookupPath("/proj/node_modules/m4/entry.js") == null);
+
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    adapter.setProgramSources(&program, options);
+    const resolved = CheckerResolverAdapter.resolveImpl(&adapter, "m4", "/proj/main.ts") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("/proj/node_modules/@types/m4/entry.d.ts", resolved.path);
+    try std.testing.expect(resolved.is_declaration);
+    const foo = CheckerResolverAdapter.moduleExportImpl(&adapter, "m4", "/proj/main.ts", "foo") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(foo.exported_value);
+    const implementation_only = CheckerResolverAdapter.moduleExportImpl(&adapter, "m4", "/proj/main.ts", "test") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!implementation_only.exported_value);
+}
+
 test "tsc_main: resolver adapter uses admitted in-memory JavaScript revision" {
     var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
     defer vfs.deinit();

@@ -3540,7 +3540,18 @@ pub const Program = struct {
                     // reference text; Home's interner drops the original
                     // quotes, so we normalize to double quotes.
                     const target = self.files.items[target_id];
-                    if (target.include_reason == null) {
+                    // An automatic visible-`@types` scan can discover the
+                    // same declaration before a real source import does.
+                    // Upstream explains that file through the concrete
+                    // import, which carries the importer, source span and
+                    // package identity; replace only the weaker implicit
+                    // reason and preserve every explicit/root reason.
+                    const replace_implicit = if (target.include_reason) |reason|
+                        reason.kind == .implicit_type_reference
+                    else
+                        false;
+                    if (target.include_reason == null or replace_implicit) {
+                        if (replace_implicit) self.clearIncludeReason(target);
                         const package_id = if (res.package_id) |id| try self.gpa.dupe(u8, id) else "";
                         errdefer if (package_id.len != 0) self.gpa.free(package_id);
                         const project_reference_output = if (res.project_reference_output) |output| try self.gpa.dupe(u8, output) else "";
@@ -3559,6 +3570,15 @@ pub const Program = struct {
                 }
             }
         }
+    }
+
+    fn clearIncludeReason(self: *Program, file: *File) void {
+        if (file.include_reason) |reason| {
+            if (reason.specifier_text.len != 0) self.gpa.free(reason.specifier_text);
+            if (reason.package_id.len != 0) self.gpa.free(reason.package_id);
+            if (reason.project_reference_output.len != 0) self.gpa.free(reason.project_reference_output);
+        }
+        file.include_reason = null;
     }
 
     fn staticModuleSpecifier(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
@@ -8877,6 +8897,50 @@ test "Program: loadImportClosure follows implicit @types package (TS1420/TS1421 
     try T.expectEqualStrings("@types/node/index.d.ts@2.0.0", type_file.include_reason.?.package_id);
     try T.expectEqual(@as(?u32, null), type_file.include_reason.?.relatedDiagnosticCode());
     try T.expect(type_file.include_reason.?.relatedDiagnosticMessage() == null);
+}
+
+test "Program: imported sibling @types declaration supersedes JavaScript implementation" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"allowJs":true,"maxNodeModuleJsDepth":3}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const root_source = "import * as m4 from 'm4';\nconst value: number = m4.foo;\n";
+    try vfs.addFile("/proj/root.ts", root_source);
+    try vfs.addFile("/proj/node_modules/m4/package.json",
+        \\{"name":"m4","version":"1.0.0","main":"entry.js"}
+    );
+    try vfs.addFile("/proj/node_modules/m4/entry.js", "exports.test = 'implementation';\n");
+    try vfs.addFile("/proj/node_modules/@types/m4/package.json",
+        \\{"name":"m4","version":"1.0.0","types":"entry.d.ts"}
+    );
+    try vfs.addFile("/proj/node_modules/@types/m4/entry.d.ts", "export declare const foo: number;\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/root.ts", root_source);
+
+    var options = ts_driver.optionsFromConfig(&cfg);
+    options.no_emit = true;
+    try T.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try T.expect(program.lookupPath("/proj/node_modules/m4/entry.js") == null);
+    const declaration_id = program.lookupPath("/proj/node_modules/@types/m4/entry.d.ts") orelse return error.TestUnexpectedResult;
+    const declaration = program.fileById(declaration_id);
+    const reason = declaration.include_reason orelse return error.TestUnexpectedResult;
+    try T.expectEqual(IncludeKind.import, reason.kind);
+    try T.expectEqualStrings("\"m4\"", reason.specifier_text);
+    try T.expectEqualStrings("m4/entry.d.ts@1.0.0", reason.package_id);
+
+    const root_id = program.lookupPath("/proj/root.ts") orelse return error.TestUnexpectedResult;
+    for (program.fileById(root_id).compilation.?.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 2339);
+    }
 }
 
 test "Program: loadImportClosure skips implicit @types when compilerOptions.types is empty" {
