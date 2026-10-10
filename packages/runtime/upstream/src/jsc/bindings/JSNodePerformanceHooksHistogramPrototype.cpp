@@ -7,6 +7,8 @@
 #include "JSNodePerformanceHooksHistogram.h"
 #include "wtf/text/ASCIILiteral.h"
 #include <wtf/MathExtras.h>
+#include <cmath>
+#include <limits>
 #include <JavaScriptCore/JSCInlines.h>
 #include <JavaScriptCore/JSBigIntInlines.h>
 #include <JavaScriptCore/JSGlobalObject.h>
@@ -60,24 +62,28 @@ JSC_DEFINE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncRecord, (JSGlob
         return {};
     }
 
-    if (callFrame->argumentCount() < 1) {
-        Bun::ERR::MISSING_ARGS(scope, globalObject, "record requires at least one argument"_s);
-        return {};
-    }
-
-    JSValue arg = callFrame->uncheckedArgument(0);
+    JSValue arg = callFrame->argument(0);
     int64_t value;
     if (arg.isNumber()) {
-        value = truncateDoubleToInt64(arg.asNumber());
+        double number = arg.asNumber();
+        if (!std::isfinite(number) || std::trunc(number) != number) {
+            Bun::ERR::OUT_OF_RANGE(scope, globalObject, "value"_s, "an integer"_s, arg);
+            return {};
+        }
+        if (number < 1 || number > JSC::maxSafeInteger()) {
+            Bun::ERR::OUT_OF_RANGE(scope, globalObject, "value"_s, 1.0, JSC::maxSafeInteger(), arg);
+            return {};
+        }
+        value = static_cast<int64_t>(number);
     } else if (arg.isBigInt()) {
+        if (JSBigInt::compare(arg, int64_t { 1 }) == JSBigInt::ComparisonResult::LessThan
+            || JSBigInt::compare(arg, std::numeric_limits<int64_t>::max()) == JSBigInt::ComparisonResult::GreaterThan) {
+            Bun::ERR::OUT_OF_RANGE(scope, globalObject, "value is out of range (must be >= 1 and <= 9223372036854775807)"_s);
+            return {};
+        }
         value = JSBigInt::toBigInt64(arg);
     } else {
         Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "value"_s, "number or BigInt"_s, arg);
-        return {};
-    }
-
-    if (value < 1) {
-        Bun::ERR::OUT_OF_RANGE(scope, globalObject, "value is out of range (must be >= 1)"_s);
         return {};
     }
 

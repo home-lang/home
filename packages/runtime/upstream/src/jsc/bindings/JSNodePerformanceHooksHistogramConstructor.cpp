@@ -16,7 +16,7 @@
 #include <JavaScriptCore/JSObjectInlines.h>
 #include <JavaScriptCore/ThrowScope.h>
 #include <JavaScriptCore/Options.h>
-#include <JavaScriptCore/JSBigInt.h>
+#include <JavaScriptCore/JSBigIntInlines.h>
 
 namespace Bun {
 
@@ -45,8 +45,7 @@ static JSNodePerformanceHooksHistogram* createHistogramInternal(JSGlobalObject* 
             lowest = truncateDoubleToInt64(dbl);
         }
     } else if (lowestVal.isBigInt()) {
-        auto* bigInt = uncheckedDowncast<JSBigInt>(lowestVal);
-        lowest = JSBigInt::toBigInt64(bigInt);
+        lowest = JSBigInt::toBigInt64(lowestVal);
     }
 
     if (highestVal.isNumber()) {
@@ -55,8 +54,7 @@ static JSNodePerformanceHooksHistogram* createHistogramInternal(JSGlobalObject* 
             highest = truncateDoubleToInt64(dbl);
         }
     } else if (highestVal.isBigInt()) {
-        auto* bigInt = uncheckedDowncast<JSBigInt>(highestVal);
-        highest = JSBigInt::toBigInt64(bigInt);
+        highest = JSBigInt::toBigInt64(highestVal);
     }
 
     if (figuresVal.isNumber()) {

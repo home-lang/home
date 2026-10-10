@@ -102,3 +102,22 @@ console.log('native histogram integer validation and exact BigInt transport pass
 let optionReads = 0
 createHistogram({ get lowest() { optionReads++; return 1n }, get highest() { optionReads++; return 10n }, get figures() { optionReads++; return 1 } })
 assert.equal(optionReads, 3)
+
+const records = createHistogram()
+for (const value of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 0n, -1n, 9223372036854775808n, 18446744073709551617n]) {
+  assert.throws(() => records.record(value), { code: 'ERR_OUT_OF_RANGE' })
+  assert.equal(records.countBigInt, 0n)
+  assert.equal(records.exceedsBigInt, 0n)
+}
+for (const value of [undefined, null, '1', true, {}]) {
+  assert.throws(() => records.record(value), { code: 'ERR_INVALID_ARG_TYPE' })
+}
+assert.throws(() => records.record(), { code: 'ERR_INVALID_ARG_TYPE' })
+records.record(1n)
+records.record(9223372036854775807n)
+assert.equal(records.countBigInt, 1n)
+assert.equal(records.exceedsBigInt, 1n)
+const direct = new records.constructor(1n, 10n, 1)
+direct.record(5n)
+assert.equal(direct.minBigInt, 5n)
+console.log('native histogram recording validates before conversion and preserves counters')
