@@ -4461,21 +4461,6 @@ fn isJsLikeCorpusFile(path: []const u8) bool {
     return home_test.corpus.isJavaScriptFile(path);
 }
 
-fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
-    return std.mem.eql(u8, relative_path, "js/bun/jsc/bun-jsc.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/jsc-stress/jsc-stress.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/typescript/type-export.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js") or
-        std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js") or
-        std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js") or
-        std.mem.eql(u8, relative_path, "js/node/module/sourcemap-simd.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts") or
-        std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts");
-}
-
 fn resolveBunCorpusTarget(path: []const u8) ?BunCorpusTarget {
     const without_dot = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
     var end = without_dot.len;
@@ -4617,22 +4602,6 @@ test "explicit Home test-runner flags override native VM dispatch" {
     try std.testing.expect(!argsForceHomeTestRunner(&ordinary));
     try std.testing.expect(argsForceHomeTestRunner(&home));
     try std.testing.expect(argsForceHomeTestRunner(&zig));
-}
-
-test "ported Bun corpus matrices requiring runtime services use the full native VM" {
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc/bun-jsc.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/jsc-stress.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/jsc-stress/fixtures/simd-baseline.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/import-attributes/import-attributes.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/typescript/type-export.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/column-types.test.js"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sql-timezone.test.js"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sqlite.test.js"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/node/module/sourcemap-simd.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap.test.ts"));
-    try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/resolve/resolve.test.ts"));
-    try std.testing.expect(!bunCorpusFileRequiresFullVm("js/bun/jsc/heapStats-mimalloc.test.ts"));
 }
 
 test "Bun resolver fixture dependencies are scoped to the exact upstream test" {
@@ -5228,27 +5197,6 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         if (index != 0 or args.len < 2) return error.ExpectedPreparedVendorName;
         return runPreparedBunVendor(allocator, args[1], args[2..]);
     }
-    // VM-introspection tests must run in Home's full Bun-compatible VM. The
-    // generic corpus adapter intentionally uses a plain JSGlobalContext and
-    // therefore cannot expose VM-owned APIs such as bun:jsc heap/JIT state,
-    // structured cloning, sampling profiles, or source origins.
-    if (build_options.enable_jsc) {
-        if (argTargetsBunCorpus(args)) |target| {
-            switch (target) {
-                .file => |file| {
-                    if (bunCorpusFileRequiresFullVm(file.relative_path)) {
-                        runTestsViaVM(allocator, args) catch |err| {
-                            std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
-                            std.process.exit(1);
-                        };
-                        return;
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
     // An explicit native-VM request applies to corpus paths too. This check
     // must precede the corpus adapter: Bun tests often spawn `bun test` with a
     // non-`.test` fixture path, and the child must retain test-runner mode
@@ -5426,8 +5374,8 @@ pub fn main(init: std.process.Init) !void {
                 .mask = home_rt.sys.sigemptyset(),
                 .flags = 0,
             };
-            home_rt.sys.sigaction(@intCast(@intFromEnum(std.posix.SIG.PIPE)), &action, null);
-            home_rt.sys.sigaction(@intCast(@intFromEnum(std.posix.SIG.XFSZ)), &action, null);
+            home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.PIPE)), &action, null);
+            home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.XFSZ)), &action, null);
         }
         // The Home CLI does not enter through bun.js.Run, whose shutdown path
         // normally retains the public N-API/libuv/V8 symbols for dlopen().

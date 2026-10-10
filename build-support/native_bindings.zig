@@ -27,6 +27,7 @@ var cached_native_modules: ?std.Build.LazyPath = null;
 var cached_string_width_object: ?std.Build.LazyPath = null;
 var cached_string_decoder_object: ?std.Build.LazyPath = null;
 var cached_util_types_object: ?std.Build.LazyPath = null;
+var cached_sqlite_statement_object: ?std.Build.LazyPath = null;
 var cached_core_builtins_object: ?std.Build.LazyPath = null;
 
 pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
@@ -255,6 +256,14 @@ pub fn utilTypesObject(b: *std.Build, object_root: []const u8) std.Build.LazyPat
     return object;
 }
 
+pub fn sqliteStatementObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_sqlite_statement_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "JSSQLStatement.cpp", output.path(b, "JSSQLStatement.cpp"));
+    cached_sqlite_statement_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -325,6 +334,21 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/webcore/RegisteredEventListener.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/RegisteredEventListener.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/HomeAbortListenerState.h",
+        "packages/runtime/upstream/src/js/bun/ffi.ts",
+        "packages/runtime/upstream/src/js/bun/sql.ts",
+        "packages/runtime/upstream/src/js/bun/sqlite.ts",
+        "packages/runtime/upstream/src/js/internal/sql/errors.ts",
+        "packages/runtime/upstream/src/js/internal/sql/mysql.ts",
+        "packages/runtime/upstream/src/js/internal/sql/postgres.ts",
+        "packages/runtime/upstream/src/js/internal/sql/query.ts",
+        "packages/runtime/upstream/src/js/internal/sql/shared.ts",
+        "packages/runtime/upstream/src/js/internal/sql/sqlite.ts",
+        "packages/runtime/upstream/src/jsc/bindings/JSFFIFunction.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/JSFFIFunction.h",
+        "packages/runtime/upstream/src/jsc/bindings/sqlite/JSSQLStatement.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/sqlite/JSSQLStatement.h",
+        "packages/runtime/upstream/src/jsc/bindings/sqlite/lazy_sqlite3.h",
+        "packages/runtime/upstream/src/jsc/bindings/sqlite/sqlite3_error_codes.h",
         "packages/runtime/src/jsc/internal-stream-wrap.js",
         "packages/runtime/upstream/src/codegen/builtin-parser.ts",
         "packages/runtime/upstream/src/codegen/client-js.ts",
@@ -582,6 +606,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeVMSourceTextModule.cpp", "NodeVMSourceTextModule.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeVMSyntheticModule.cpp", "NodeVMSyntheticModule.h" },
         .{ "UnifiedSource-src_jsc_bindings-2.cpp", "JSInspectorProfiler.cpp", "JSInspectorProfiler.h" },
+        .{ "UnifiedSource-src_jsc_bindings-2.cpp", "JSFFIFunction.cpp", "JSFFIFunction.h" },
 
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeAsyncHooks.cpp", "NodeAsyncHooks.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "Path.cpp", "Path.h" },
@@ -623,6 +648,14 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         const header = b.fmt("{s}/{s}", .{ std.fs.path.dirname(source).?, entry[2] });
         generate.addFileInput(.{ .cwd_relative = header });
     }
+    const modules_unity = b.fmt("{s}/unified/UnifiedSource-src_jsc_modules-0.cpp", .{build_root});
+    const modules_source = std.Io.Dir.cwd().readFileAlloc(io, modules_unity, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read native module unity");
+    defer b.allocator.free(modules_source);
+    const module_source = unifiedSourcePath(b.allocator, modules_source, modules_unity, "NodeModuleModule.cpp") catch @panic("cannot locate native module source");
+    defer b.allocator.free(module_source);
+    const sqlite_header = std.fs.path.resolve(b.allocator, &.{ std.fs.path.dirname(module_source).?, "../bindings/sqlite/JSSQLStatement.h" }) catch @panic("OOM");
+    defer b.allocator.free(sqlite_header);
+    generate.addFileInput(.{ .cwd_relative = sqlite_header });
     cached_native_modules = output;
     return output;
 }

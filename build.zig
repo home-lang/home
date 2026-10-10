@@ -161,6 +161,7 @@ const native_skip_paths = [_][]const u8{
     "unified/UnifiedSource-src_uws_sys-0.cpp.o", // contains Home-owned uWS parser and C ABI
     "unified/UnifiedSource-src_jsc_bindings_node_crypto-0.cpp.o", // contains Home-owned Node crypto
     "unified/UnifiedSource-src_jsc_bindings_node_crypto-1.cpp.o", // contains Home-owned Node crypto key objects
+    "src/jsc/bindings/sqlite/JSSQLStatement.cpp.o", // compiled from Home
     "src/jsc/bindings/webcore/SerializedScriptValue.cpp.o", // contains Home-owned KeyObject structured cloning
 };
 
@@ -254,6 +255,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.utilTypesObject(b, bun_obj_root),
         native_bindings.stringDecoderObject(b, bun_obj_root),
         native_bindings.coreBuiltinsObject(b, bun_obj_root),
+        native_bindings.sqliteStatementObject(b, bun_obj_root),
     };
     for (owned_objects) |object| {
         object.addStepDependencies(native_binding_step);

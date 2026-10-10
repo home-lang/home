@@ -595,6 +595,38 @@ try {
     assert.equal(samples.length, 8)
     assert.deepEqual(samples.map(sample => Number(sample[1])).sort(), [0, 1, 2, 3, 4, 5, 6, 7])
   }
+
+  // Corpus files requiring native APIs use the same coordinator and complete
+  // journal contract as other original files. Child native-VM dispatch remains
+  // explicit so that nested test invocations cannot recurse into coordination.
+  for (const [file, count] of [
+    ['js/bun/sqlite/column-types.test.js', 9],
+    ['js/bun/sqlite/sql-timezone.test.js', 2],
+  ]) {
+    const report = join(directory, 'corpus-' + count)
+    const original = join(import.meta.dir, '../../packages/runtime/test/test', file)
+    const corpusEnv = { ...process.env, HOME_BUN_CORPUS_REPORT_DIR: report, BUN_DEBUG_QUIET_LOGS: '1' }
+    delete corpusEnv.HOME_NATIVE_VM
+    delete corpusEnv.HOME_CORPUS_FULL_VM
+    delete corpusEnv.HOME_NATIVE_RUN
+    const result = spawnSync(process.execPath, ['test', original], {
+      cwd: join(import.meta.dir, '../..'),
+      env: corpusEnv,
+      encoding: 'utf8', timeout: 30000,
+    })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    const rows = readFileSync(join(report, 'events.jsonl'), 'utf8').trim().split('\n').map(row => JSON.parse(row))
+    assert.equal(rows.filter(row => row.event === 'selected' && row.path === file).length, 1)
+    const completed = rows.find(row => row.event === 'completed')
+    assert.equal(completed.source_unchanged, true)
+    assert.equal(completed.output_complete, true)
+    const finished = rows.at(-1)
+    assert.equal(finished.event, 'finished')
+    assert.equal(finished.summary.files, 1)
+    assert.equal(finished.summary.passed, count)
+    assert.equal(finished.summary.failed, 0)
+    assert.equal(finished.summary.failed_files, 0)
+  }
   console.log('native test CLI option and isolation regressions passed')
 } finally {
   rmSync(directory, { recursive: true })
