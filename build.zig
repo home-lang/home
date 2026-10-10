@@ -168,6 +168,9 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/ProcessBindingUV.cpp.o", // compiled from Home
     "src/jsc/bindings/JSBuffer.cpp.o", // compiled from Home
     "src/jsc/bindings/sqlite/JSSQLStatement.cpp.o", // compiled from Home
+    "src/jsc/bindings/webcore/ResourceTiming.cpp.o", // compiled from Home
+    "src/jsc/bindings/webcore/PerformanceResourceTiming.cpp.o", // compiled from Home
+    "src/jsc/bindings/webcore/NetworkLoadMetrics.cpp.o", // compiled from Home
     "src/jsc/bindings/webcore/SerializedScriptValue.cpp.o", // contains Home-owned KeyObject structured cloning
 };
 
@@ -271,6 +274,10 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         const poll_object = native_bindings.pollObject(b, bun_obj_root);
         poll_object.addStepDependencies(native_binding_step);
         m.addObjectFile(poll_object);
+    }
+    for (native_bindings.resourceTimingObjects(b, bun_obj_root)) |object| {
+        object.addStepDependencies(native_binding_step);
+        m.addObjectFile(object);
     }
     for (owned_objects) |object| {
         object.addStepDependencies(native_binding_step);

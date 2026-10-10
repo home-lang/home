@@ -1,5 +1,5 @@
 // Hardcoded module "node:perf_hooks"
-const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList } = require('internal/shared');
+const { kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList, PerformanceResourceTiming, markResourceTiming, getResourceTimings, clearResourceTimings, setResourceTimingBufferSize } = require('internal/shared');
 const { validateInteger, validateObject, validateFunction } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
@@ -99,14 +99,6 @@ function eventLoopUtilization(utilization1, utilization2) {
   return { idle, active, utilization: active / (idle + active) };
 }
 
-// PerformanceEntry is not a valid constructor, so we have to fake it.
-class PerformanceResourceTiming {
-  constructor() {
-    throwNotImplemented("PerformanceResourceTiming");
-  }
-}
-$toClass(PerformanceResourceTiming, "PerformanceResourceTiming", PerformanceEntry);
-
 const kNodeObserver = Symbol("kNodeObserver");
 const kObserverCallback = Symbol("kObserverCallback");
 const kObserverMode = Symbol("kObserverMode");
@@ -173,7 +165,12 @@ class PerformanceObserverForNodeTypes extends NodePerformanceObserver {
     if (nodeTypes.length && !registration) {
       registration = this[kNodeObserver] = new NodeEntryObserver(list => this.#enqueueEntries(list.getEntries()), this);
     }
-    if (registration) registration.observe(mode === "single" ? [...registration.types, ...nodeTypes] : nodeTypes);
+    if (registration) {
+      registration.observe(mode === "single" ? [...registration.types, ...nodeTypes] : nodeTypes);
+      if (mode === "single" && type === "resource" && buffered) {
+        for (const entry of getResourceTimings()) registration.bufferEntry(entry);
+      }
+    }
   }
 
   takeRecords() {
@@ -215,26 +212,34 @@ export default {
       return performance.clearMeasures(...arguments);
     },
     getEntries(_) {
-      return performance.getEntries(...arguments);
+      return [...performance.getEntries(...arguments), ...getResourceTimings()].sort((a, b) => a.startTime - b.startTime);
     },
     getEntriesByName(_) {
-      return performance.getEntriesByName(...arguments);
+      const name = `${arguments[0]}`;
+      const type = arguments.length > 1 && arguments[1] !== undefined ? `${arguments[1]}` : undefined;
+      return [...performance.getEntriesByName(...arguments), ...getResourceTimings(name, type)].sort((a, b) => a.startTime - b.startTime);
     },
     getEntriesByType(_) {
-      return performance.getEntriesByType(...arguments);
+      return [...performance.getEntriesByType(...arguments), ...getResourceTimings(undefined, `${arguments[0]}`)].sort((a, b) => a.startTime - b.startTime);
     },
     setResourceTimingBufferSize(_) {
+      setResourceTimingBufferSize(arguments[0]);
       return performance.setResourceTimingBufferSize(...arguments);
     },
     timeOrigin: performance.timeOrigin,
     toJSON(_) {
       return performance.toJSON(...arguments);
     },
-    onresourcetimingbufferfull: performance.onresourcetimingbufferfull,
+    get onresourcetimingbufferfull() { return performance.onresourcetimingbufferfull; },
+    set onresourcetimingbufferfull(callback) { performance.onresourcetimingbufferfull = callback; },
+    addEventListener() { return performance.addEventListener(...arguments); },
+    removeEventListener() { return performance.removeEventListener(...arguments); },
+    dispatchEvent() { return performance.dispatchEvent(...arguments); },
+    markResourceTiming,
     nodeTiming: createPerformanceNodeTiming(),
     now: () => performance.now(),
     eventLoopUtilization: eventLoopUtilization,
-    clearResourceTimings: function () { return performance.clearResourceTimings(...arguments); },
+    clearResourceTimings: function () { clearResourceTimings(); return performance.clearResourceTimings(...arguments); },
   },
   // performance: {
   //   clearMarks: [Function: clearMarks],

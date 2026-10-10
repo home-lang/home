@@ -21,6 +21,7 @@ var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_poll_object: ?std.Build.LazyPath = null;
 var cached_socket_loop_object: ?std.Build.LazyPath = null;
+var cached_resource_timing_objects: ?[3]std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
@@ -207,6 +208,19 @@ pub fn socketLoopObject(b: *std.Build, object_root: []const u8) std.Build.LazyPa
     const object = compileObject(b, object_root, "loop.c", source);
     cached_socket_loop_object = object;
     return object;
+}
+
+pub fn resourceTimingObjects(b: *std.Build, object_root: []const u8) [3]std.Build.LazyPath {
+    if (cached_resource_timing_objects) |objects| return objects;
+    var objects: [3]std.Build.LazyPath = undefined;
+    for ([_][]const u8{ "ResourceTiming", "PerformanceResourceTiming", "NetworkLoadMetrics" }, 0..) |name, index| {
+        const files = b.addWriteFiles();
+        const basename = b.fmt("{s}.cpp", .{name});
+        const source = files.addCopyFile(b.path(b.fmt("packages/runtime/upstream/src/jsc/bindings/webcore/{s}", .{basename})), basename);
+        objects[index] = compileObject(b, object_root, basename, source);
+    }
+    cached_resource_timing_objects = objects;
+    return objects;
 }
 
 /// Compile Node crypto from Home's mirrored source. The native runtime links
@@ -852,6 +866,21 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
             const owned = std.Io.Dir.cwd().readFileAlloc(io, owned_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read Home poll ABI");
             defer b.allocator.free(owned);
             if (!std.mem.eql(u8, external, owned)) std.debug.panic("Home poll ABI mismatch: {s} differs from {s}", .{ owned_path, external_path });
+            compile.addFileInput(b.path(owned_path));
+            compile.addFileInput(.{ .cwd_relative = external_path });
+        }
+    }
+    if (std.mem.eql(u8, basename, "ResourceTiming.cpp") or std.mem.eql(u8, basename, "PerformanceResourceTiming.cpp") or std.mem.eql(u8, basename, "NetworkLoadMetrics.cpp")) {
+        const selected_root = std.fs.path.dirname(command.file) orelse @panic("resource timing source has no header root");
+        compile.addArgs(&.{ "-I", selected_root });
+        for ([_][]const u8{ "ResourceTiming.h", "ResourceLoadTiming.h", "PerformanceResourceTiming.h", "PerformanceEntry.h", "NetworkLoadMetrics.h" }) |header| {
+            const external_path = b.fmt("{s}/{s}", .{ selected_root, header });
+            const owned_path = b.fmt("packages/runtime/upstream/src/jsc/bindings/webcore/{s}", .{header});
+            const external = std.Io.Dir.cwd().readFileAlloc(io, external_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read selected resource ABI");
+            defer b.allocator.free(external);
+            const owned = std.Io.Dir.cwd().readFileAlloc(io, owned_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read Home resource ABI");
+            defer b.allocator.free(owned);
+            if (!std.mem.eql(u8, external, owned)) std.debug.panic("Home resource timing ABI mismatch: {s} differs from {s}", .{ owned_path, external_path });
             compile.addFileInput(b.path(owned_path));
             compile.addFileInput(.{ .cwd_relative = external_path });
         }

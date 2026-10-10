@@ -163,7 +163,7 @@ const observerCounts = new Map();
 const kObservers = new Set();
 
 /** Entry types routed through this JS-side registry instead of the native observer. */
-const kNodeEntryTypes = new Set(["net", "dns", "http"]);
+const kNodeEntryTypes = new Set(["net", "dns", "http", "resource"]);
 
 function hasObserver(type) {
   return (observerCounts.get(type) ?? 0) > 0;
@@ -309,6 +309,98 @@ function makeNodeEntryList(entries) {
   return new PerformanceObserverEntryList(kEntryListToken, entries);
 }
 
+const resourceStates = new WeakMap();
+let resourceBuffer = [];
+let resourceSecondaryBuffer = [];
+let resourceBufferSize = 250;
+let resourceBufferFullPending = false;
+
+function resourceState(receiver) {
+  const state = resourceStates.get(receiver);
+  if (!state) throw $ERR_INVALID_THIS("PerformanceResourceTiming");
+  return state;
+}
+
+class PerformanceResourceTiming extends globalThis.PerformanceEntry {
+  constructor() { throw $ERR_ILLEGAL_CONSTRUCTOR(); }
+  get name() { return resourceState(this).url; }
+  get entryType() { resourceState(this); return "resource"; }
+  get startTime() { return resourceState(this).timing.startTime; }
+  get duration() { const timing = resourceState(this).timing; return timing.endTime - timing.startTime; }
+  get initiatorType() { return resourceState(this).initiator; }
+  get workerStart() { return resourceState(this).timing.finalServiceWorkerStartTime; }
+  get redirectStart() { return resourceState(this).timing.redirectStartTime; }
+  get redirectEnd() { return resourceState(this).timing.redirectEndTime; }
+  get fetchStart() { return resourceState(this).timing.postRedirectStartTime; }
+  get domainLookupStart() { return resourceState(this).timing.finalConnectionTimingInfo?.domainLookupStartTime; }
+  get domainLookupEnd() { return resourceState(this).timing.finalConnectionTimingInfo?.domainLookupEndTime; }
+  get connectStart() { return resourceState(this).timing.finalConnectionTimingInfo?.connectionStartTime; }
+  get connectEnd() { return resourceState(this).timing.finalConnectionTimingInfo?.connectionEndTime; }
+  get secureConnectionStart() { return resourceState(this).timing.finalConnectionTimingInfo?.secureConnectionStartTime; }
+  get nextHopProtocol() { return resourceState(this).timing.finalConnectionTimingInfo?.ALPNNegotiatedProtocol; }
+  get requestStart() { return resourceState(this).timing.finalNetworkRequestStartTime; }
+  get finalResponseHeadersStart() { return resourceState(this).timing.finalNetworkResponseStartTime; }
+  get firstInterimResponseStart() { return resourceState(this).timing.firstInterimNetworkResponseStartTime ?? 0; }
+  get responseStart() { const timing = resourceState(this).timing; return timing.firstInterimNetworkResponseStartTime || timing.finalNetworkResponseStartTime; }
+  get responseEnd() { return resourceState(this).timing.endTime; }
+  get encodedBodySize() { return resourceState(this).timing.encodedBodySize; }
+  get decodedBodySize() { return resourceState(this).timing.decodedBodySize; }
+  get transferSize() { const state = resourceState(this); return state.cache === "local" ? 0 : state.cache === "validated" ? 300 : state.timing.encodedBodySize + 300; }
+  get deliveryType() { return resourceState(this).delivery; }
+  get responseStatus() { return resourceState(this).status; }
+  get renderBlockingStatus() { return resourceState(this).timing.renderBlocking === true ? "blocking" : "non-blocking"; }
+  get contentType() { return resourceState(this).body?.contentType ?? ""; }
+  get contentEncoding() { return resourceState(this).body?.contentEncoding ?? ""; }
+  toJSON() {
+    resourceState(this);
+    const result = {};
+    for (const name of resourceTimingProperties) result[name] = this[name];
+    return result;
+  }
+}
+const resourceTimingProperties = ["name", "entryType", "startTime", "duration", "initiatorType", "nextHopProtocol", "workerStart", "redirectStart", "redirectEnd", "fetchStart", "domainLookupStart", "domainLookupEnd", "connectStart", "connectEnd", "secureConnectionStart", "requestStart", "finalResponseHeadersStart", "firstInterimResponseStart", "responseStart", "responseEnd", "transferSize", "encodedBodySize", "decodedBodySize", "deliveryType", "responseStatus", "renderBlockingStatus", "contentType", "contentEncoding"];
+for (const name of [...resourceTimingProperties, "toJSON"]) {
+  Object.defineProperty(PerformanceResourceTiming.prototype, name, { enumerable: true });
+}
+Object.defineProperty(PerformanceResourceTiming.prototype, Symbol.toStringTag, { value: "PerformanceResourceTiming", configurable: true });
+
+function bufferResourceTiming(entry) {
+  if (resourceBuffer.length < resourceBufferSize && !resourceBufferFullPending) {
+    resourceBuffer.push(entry);
+    return;
+  }
+  resourceSecondaryBuffer.push(entry);
+  if (resourceBufferFullPending) return;
+  resourceBufferFullPending = true;
+  setImmediate(() => {
+    while (resourceSecondaryBuffer.length) {
+      const before = resourceSecondaryBuffer.length;
+      performance.dispatchEvent(new Event("resourcetimingbufferfull"));
+      const preserve = Math.max(Math.min(resourceBufferSize - resourceBuffer.length, resourceSecondaryBuffer.length), 0);
+      resourceBuffer.push(...resourceSecondaryBuffer.splice(0, preserve));
+      if (resourceSecondaryBuffer.length >= before) resourceSecondaryBuffer = [];
+    }
+    resourceBufferFullPending = false;
+  });
+}
+
+// The global argument is part of the public Node signature.
+// eslint-disable-next-line pickier/no-unused-vars
+function markResourceTiming(timing, url, initiator, global, cache, body, status, delivery = "") {
+  if (cache !== "" && cache !== "local") throw $ERR_INTERNAL_ASSERTION("cache must be an empty string or 'local'");
+  const entry = Object.create(PerformanceResourceTiming.prototype);
+  resourceStates.set(entry, { timing, url, initiator, cache, body, status, delivery });
+  for (const observer of kObservers) observer.bufferEntry(entry);
+  bufferResourceTiming(entry);
+  return entry;
+}
+function getResourceTimings(name, type) {
+  if (type !== undefined && type !== "resource") return [];
+  return resourceBuffer.filter(entry => name === undefined || entry.name === name).sort((a, b) => a.startTime - b.startTime);
+}
+function clearResourceTimings() { resourceBuffer = []; }
+function setResourceTimingBufferSize(size) { resourceBufferSize = size; }
+
 //
 
 export default {
@@ -330,6 +422,11 @@ export default {
   NodeEntryObserver,
   makeNodeEntryList,
   PerformanceObserverEntryList,
+  PerformanceResourceTiming,
+  markResourceTiming,
+  getResourceTimings,
+  clearResourceTimings,
+  setResourceTimingBufferSize,
 
   kHandle: Symbol("kHandle"),
   kAutoDestroyed: Symbol("kAutoDestroyed"),
