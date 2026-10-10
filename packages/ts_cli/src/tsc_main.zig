@@ -23,6 +23,7 @@ const ts_watch = @import("ts_watch");
 const d_hm = @import("d_hm");
 const ts_lsp = @import("ts_lsp");
 const ts_lsp_server = @import("ts_lsp_server");
+const config_diagnostics = @import("config_diagnostics.zig");
 
 const ts_empty_files_list_in_config: u32 = 18002;
 
@@ -296,38 +297,87 @@ fn referencedProjectBuildInfoOverwriteDiagnostic(gpa: std.mem.Allocator, output_
     );
 }
 
-fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) !bool {
-    const diags = try cfg.validate(gpa);
-    defer tsconfig_mod.freeValidationDiagnostics(gpa, diags);
-    if (diags.len == 0) return false;
-    for (diags) |d| {
-        const formatted = try formatConfigValidationDiagnostic(gpa, cfg, d);
+fn printConfigValidationDiagnostics(
+    gpa: std.mem.Allocator,
+    cfg: tsconfig_mod.TsConfig,
+    source: []const u8,
+    diagnostics: []const tsconfig_mod.ValidationDiagnostic,
+    pretty: bool,
+    color: bool,
+) !void {
+    for (diagnostics) |d| {
+        const formatted = try config_diagnostics.format(gpa, cfg, source, d, pretty, color);
         defer gpa.free(formatted);
         printStdout("{s}\n", .{formatted});
     }
-    return true;
 }
 
-fn formatConfigValidationDiagnostic(
-    gpa: std.mem.Allocator,
-    cfg: tsconfig_mod.TsConfig,
-    diagnostic: tsconfig_mod.ValidationDiagnostic,
-) ![]u8 {
-    if (diagnostic.location) |location| {
-        if (cfg.file_path.len > 0) {
-            return ts_diagnostics.formatDefault(gpa, .{
-                .file = cfg.file_path,
-                .line = location.line,
-                .col = location.column + 1,
-                .code = diagnostic.code,
-                .code_prefix = .TS,
-                .severity = .err,
-                .message = diagnostic.message,
-                .span_len = 0,
-            });
+fn printResolvedConfig(loaded_cfg: ?tsconfig_mod.TsConfig, input_files: []const []const u8) void {
+    printStdout("{{\n", .{});
+    printStdout("  \"compileOnSave\": false,\n", .{});
+    printStdout("  \"compilerOptions\": {{\n", .{});
+    if (loaded_cfg) |c| {
+        const co = c.compiler_options;
+        var option_count: usize = 0;
+        if (co.target != null) option_count += 1;
+        if (co.module != null) option_count += 1;
+        if (co.out_dir != null) option_count += 1;
+        if (co.strict != null) option_count += 1;
+        if (co.declaration != null) option_count += 1;
+        var option_index: usize = 0;
+        if (co.target) |t| {
+            option_index += 1;
+            printStdout("    \"target\": \"{s}\"{s}\n", .{ @tagName(t), if (option_index < option_count) "," else "" });
+        }
+        if (co.module) |m| {
+            option_index += 1;
+            printStdout("    \"module\": \"{s}\"{s}\n", .{ @tagName(m), if (option_index < option_count) "," else "" });
+        }
+        if (co.out_dir) |d| {
+            option_index += 1;
+            printStdout("    \"outDir\": \"{s}\"{s}\n", .{ d, if (option_index < option_count) "," else "" });
+        }
+        if (co.strict) |s| {
+            option_index += 1;
+            printStdout("    \"strict\": {s}{s}\n", .{ if (s) "true" else "false", if (option_index < option_count) "," else "" });
+        }
+        if (co.declaration) |d| {
+            option_index += 1;
+            printStdout("    \"declaration\": {s}{s}\n", .{ if (d) "true" else "false", if (option_index < option_count) "," else "" });
         }
     }
-    return std.fmt.allocPrint(gpa, "error TS{d}: {s}", .{ diagnostic.code, diagnostic.message });
+    printStdout("  }},\n", .{});
+    printStdout("  \"files\": [\n", .{});
+    for (input_files, 0..) |path, i| {
+        printStdout("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.len) "," else "" });
+    }
+    printStdout("  ]\n", .{});
+    printStdout("}}\n", .{});
+}
+
+fn reportErrorSummary(
+    pretty: bool,
+    error_count: usize,
+    files_with_errors: usize,
+    first_error_file: []const u8,
+    first_error_line: usize,
+    error_file_counts: []const ErrorFileCount,
+) void {
+    if (!pretty or error_count == 0) return;
+    if (error_count == 1) {
+        if (files_with_errors == 1 and first_error_file.len != 0) {
+            buildStatusMessage(6259, "Found 1 error in {s}\n", .{first_error_file});
+        } else {
+            buildStatusMessage(6216, "Found 1 error.\n", .{});
+        }
+    } else if (files_with_errors > 1) {
+        buildStatusMessage(6261, "Found {d} errors in {d} files.\n", .{ error_count, files_with_errors });
+        printErrorFileSummaryTable(error_file_counts);
+    } else if (files_with_errors == 1 and first_error_file.len != 0) {
+        buildStatusMessage(6260, "Found {d} errors in the same file, starting at: {s}:{d}\n", .{ error_count, first_error_file, first_error_line });
+    } else {
+        buildStatusMessage(6217, "Found {d} errors.\n", .{error_count});
+    }
 }
 
 /// Emit a tsc status message. tsc prints these
@@ -419,7 +469,13 @@ fn projectIsUpToDate(
     return true;
 }
 
-const BuildOneProjectResult = enum { up_to_date, built_dts_unchanged, built_dts_changed, errors };
+const BuildOneProjectResult = enum {
+    up_to_date,
+    built_dts_unchanged,
+    built_dts_changed,
+    errors_outputs_skipped,
+    errors_outputs_generated,
+};
 
 fn shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts: bool) bool {
     return upstream_dependency_built_with_unchanged_dts;
@@ -441,14 +497,26 @@ fn buildOneProject(
 ) BuildOneProjectResult {
     const cfg_src = RealFs.read(arena, config_path) catch {
         printStdout("error reading {s}\n", .{config_path});
-        return .errors;
+        return .errors_outputs_skipped;
     };
     var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch {
         printStdout("error parsing {s}\n", .{config_path});
-        return .errors;
+        return .errors_outputs_skipped;
     };
     cfg.file_path = config_path;
-    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return .errors;
+    const config_validation_diags = cfg.validate(gpa) catch return .errors_outputs_skipped;
+    defer tsconfig_mod.freeValidationDiagnostics(gpa, config_validation_diags);
+    const project_pretty = cfg.compiler_options.pretty orelse default_pretty;
+    printConfigValidationDiagnostics(
+        gpa,
+        cfg,
+        cfg_src,
+        config_validation_diags,
+        project_pretty,
+        project_pretty,
+    ) catch return .errors_outputs_skipped;
+    const config_summary = config_diagnostics.summarize(cfg, config_validation_diags);
+    const config_errors = config_summary.hasErrors();
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -459,7 +527,7 @@ fn buildOneProject(
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .errors;
+        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .errors_outputs_skipped;
     } else {
         var exclude_storage: [2][]const u8 = undefined;
         expandProjectGlobs(
@@ -470,7 +538,7 @@ fn buildOneProject(
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
-        ) catch return .errors;
+        ) catch return .errors_outputs_skipped;
     }
     if (input_files.items.len == 0) {
         if (verbose) printStdout("  (no input files)\n", .{});
@@ -479,18 +547,18 @@ fn buildOneProject(
 
     // Output directories are resolved against the project's own dir.
     const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
-        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors)
+        (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
     else
         out_dir;
 
     // Incremental up-to-date check (tsc's getUpToDateStatus, simplified to
     // input/output mtime comparison). Skipped under `--force`.
-    if (!force) {
+    if (!force and !config_errors) {
         if (projectBuildInfoVersionMismatch(gpa, arena, config_path, cfg)) |stored_version| {
             if (verbose) {
                 const default_options = ts_emit.tsbuildinfo.Options{};
@@ -542,10 +610,10 @@ fn buildOneProject(
     for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch {
             printStdout("error reading {s}\n", .{path});
-            return .errors;
+            return .errors_outputs_skipped;
         };
         defer gpa.free(src);
-        _ = program.add(path, src) catch return .errors;
+        _ = program.add(path, src) catch return .errors_outputs_skipped;
     }
 
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
@@ -555,16 +623,17 @@ fn buildOneProject(
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
-    var had_errors = false;
+    var had_errors = config_errors;
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
-        .use_pretty = cfg.compiler_options.pretty orelse default_pretty,
-        .use_color = false,
+        .use_pretty = project_pretty,
+        .use_color = project_pretty,
+        .filter = if (config_errors) .syntax_only else .all,
         .any_errors = &had_errors,
     };
-    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return .errors;
-    if (cfg.compiler_options.composite orelse false) {
+    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch return .errors_outputs_skipped;
+    if (!config_errors and (cfg.compiler_options.composite orelse false)) {
         const composite_summary = printCompositeProjectFileListDiagnostics(
             gpa,
             &program,
@@ -575,7 +644,7 @@ fn buildOneProject(
         );
         if (composite_summary.error_count > 0) had_errors = true;
     }
-    if (compile_opts.no_emit) return if (had_errors) .errors else .built_dts_unchanged;
+    if (compile_opts.no_emit) return if (had_errors) .errors_outputs_skipped else .built_dts_unchanged;
 
     var reported_unchanged_timestamps = false;
     var changed_dts = false;
@@ -602,7 +671,7 @@ fn buildOneProject(
             }
         }
     }
-    if (had_errors) return .errors;
+    if (had_errors) return .errors_outputs_generated;
     return if (changed_dts) .built_dts_changed else .built_dts_unchanged;
 }
 
@@ -612,7 +681,6 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
     const cfg_src = RealFs.read(arena, config_path) catch return .build;
     var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return .build;
     cfg.file_path = config_path;
-    if (printConfigValidationDiagnostics(gpa, cfg) catch true) return .build;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2845,6 +2913,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         defer gpa.free(project_status);
         @memset(project_status, .up_to_date);
         var build_had_errors = false;
+        var build_outputs_generated = false;
         for (ord.order) |pi| {
             var blocked_dep: ?usize = null;
             var blocked_dep_status: BuildProjectStatus = .up_to_date;
@@ -2878,15 +2947,28 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
             switch (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts, default_pretty)) {
                 .up_to_date => project_status[pi] = .up_to_date,
-                .built_dts_unchanged => project_status[pi] = .built_dts_unchanged,
-                .built_dts_changed => project_status[pi] = .built_dts_changed,
-                .errors => {
+                .built_dts_unchanged => {
+                    project_status[pi] = .built_dts_unchanged;
+                    build_outputs_generated = true;
+                },
+                .built_dts_changed => {
+                    project_status[pi] = .built_dts_changed;
+                    build_outputs_generated = true;
+                },
+                .errors_outputs_skipped => {
                     project_status[pi] = .errors;
                     build_had_errors = true;
                 },
+                .errors_outputs_generated => {
+                    project_status[pi] = .errors;
+                    build_had_errors = true;
+                    build_outputs_generated = true;
+                },
             }
         }
-        if (build_had_errors) std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
+        if (build_had_errors) {
+            std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(build_outputs_generated)));
+        }
         return;
     } else {
         var parse_ctx: ts_cli.ParseContext = .{};
@@ -3108,11 +3190,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
-    if (loaded_cfg) |c| {
-        if (try printConfigValidationDiagnostics(gpa, c)) {
-            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
-        }
-    }
+    const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
+    const pretty = opts.pretty orelse config_pretty orelse default_pretty;
+    const diagnostic_color = pretty;
 
     // Determine the file list. Precedence:
     //   1. positional args (CLI wins)
@@ -3154,6 +3234,20 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
+    var config_validation_diags: ?[]tsconfig_mod.ValidationDiagnostic = null;
+    defer if (config_validation_diags) |diagnostics| {
+        tsconfig_mod.freeValidationDiagnostics(gpa, diagnostics);
+    };
+    if (!opts.show_config) {
+        if (loaded_cfg) |c| {
+            config_validation_diags = try c.validate(gpa);
+        }
+    }
+    const pending_config_summary = if (loaded_cfg) |c|
+        config_diagnostics.summarize(c, config_validation_diags orelse &.{})
+    else
+        config_diagnostics.Summary{};
+
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
             if (opts.files.len == 0) {
@@ -3190,6 +3284,14 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
         std.debug.print("error: no input files; pass paths or --project=<path>\n", .{});
         std.process.exit(2);
+    }
+
+    // `--showConfig` converts the parsed command line before a Program is
+    // created. Program option diagnostics such as TS5108 therefore do not
+    // participate, even though file discovery does.
+    if (opts.show_config) {
+        printResolvedConfig(loaded_cfg, input_files.items);
+        return;
     }
 
     // §4.A.12 — read-side of `.tsbuildinfo` round-trip. When
@@ -3346,54 +3448,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
     if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
 
-    // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
-    // path the program will compile. `--listFilesOnly` exits before
-    // running the pipeline; `--listFiles` continues afterward.
-    if (opts.list_files or opts.list_files_only) {
-        for (program.files.items) |file| {
-            printStdout("{s}\n", .{file.path});
-        }
-        if (opts.list_files_only) return;
-    }
-
-    // §2.1 — `--showConfig`. Print a minimal JSON view of the
-    // resolved tsconfig + the discovered file list. Then exit.
-    if (opts.show_config) {
-        printStdout("{{\n", .{});
-        printStdout("  \"compileOnSave\": false,\n", .{});
-        printStdout("  \"compilerOptions\": {{\n", .{});
-        if (loaded_cfg) |c| {
-            const co = c.compiler_options;
-            if (co.target) |t| printStdout("    \"target\": \"{s}\",\n", .{@tagName(t)});
-            if (co.module) |m| printStdout("    \"module\": \"{s}\",\n", .{@tagName(m)});
-            if (co.out_dir) |d| printStdout("    \"outDir\": \"{s}\",\n", .{d});
-            if (co.strict) |s| printStdout("    \"strict\": {s},\n", .{if (s) "true" else "false"});
-            if (co.declaration) |d| printStdout("    \"declaration\": {s},\n", .{if (d) "true" else "false"});
-        }
-        printStdout("  }},\n", .{});
-        printStdout("  \"files\": [\n", .{});
-        for (input_files.items, 0..) |path, i| {
-            printStdout("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.items.len) "," else "" });
-        }
-        printStdout("  ]\n", .{});
-        printStdout("}}\n", .{});
-        return;
-    }
-
     // Stream diagnostics as each file finishes compiling. Brings
     // time-to-first-diagnostic down from whole-program time to
     // per-file check time — Phase 5 §5.8 / §5.A.10.
-    var any_errors_streaming: bool = false;
-    // Default ANSI colors on when stdout is a TTY; off when piped/redirected.
-    const stdout_is_tty: bool = blk: {
-        var tty_threaded = std.Io.Threaded.init(gpa, .{});
-        defer tty_threaded.deinit();
-        const tty_io = tty_threaded.io();
-        const stdout = std.Io.File.stdout();
-        break :blk stdout.isTty(tty_io) catch false;
-    };
-    const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
-    const pretty = opts.pretty orelse config_pretty orelse default_pretty;
+    var any_errors_streaming = false;
     var stream_error_count: usize = 0;
     var stream_files_with_errors: usize = 0;
     var stream_first_error_file: []const u8 = "";
@@ -3405,7 +3463,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         .gpa = gpa,
         .program = &program,
         .use_pretty = pretty,
-        .use_color = stdout_is_tty,
+        .use_color = diagnostic_color,
         .any_errors = &any_errors_streaming,
         .error_count = &stream_error_count,
         .files_with_errors = &stream_files_with_errors,
@@ -3417,31 +3475,98 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     if (opts.watch) {
         buildStatusMessage(6031, "Starting compilation in watch mode...\n", .{});
     }
-    program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
-        std.debug.print("compile error: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-    if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
-    if (loaded_cfg) |c| {
-        if (c.compiler_options.composite orelse false) {
-            const composite_summary = printCompositeProjectFileListDiagnostics(
+
+    // Upstream first gathers syntax diagnostics. Only when syntax is clean
+    // does it add option diagnostics, and option errors suppress global and
+    // semantic diagnostics. `--listFilesOnly` follows the same syntax/options
+    // path but never asks for semantic diagnostics. Preserve streaming for
+    // ordinary clean configs; defer only for these exceptional paths.
+    const defer_program_diagnostics = pending_config_summary.hasErrors() or opts.list_files_only;
+    if (defer_program_diagnostics) {
+        var syntax_probe: SyntaxDiagnosticProbe = .{};
+        program.compileAllStreaming(compile_opts, &syntax_probe, SyntaxDiagnosticProbe.receive) catch |err| {
+            std.debug.print("compile error: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        if (syntax_probe.has_errors) {
+            stream_ctx.filter = .syntax_only;
+            for (program.files.items) |file| {
+                const compilation = file.compilation orelse continue;
+                streamDiagsCallback(&stream_ctx, file.path, compilation.diagnostics.items);
+            }
+        } else if (pending_config_summary.hasErrors()) {
+            try printConfigValidationDiagnostics(
                 gpa,
-                &program,
-                input_files.items,
-                c.file_path,
+                loaded_cfg.?,
+                cfg_src,
+                config_validation_diags.?,
                 pretty,
-                stdout_is_tty,
+                diagnostic_color,
             );
-            if (composite_summary.error_count > 0) {
-                any_errors_streaming = true;
-                stream_error_count += composite_summary.error_count;
-                stream_files_with_errors += composite_summary.files_with_errors;
-                if (stream_first_error_file.len == 0) {
-                    stream_first_error_file = composite_summary.first_error_file;
-                    stream_first_error_line = composite_summary.first_error_line;
-                    stream_first_error_col = composite_summary.first_error_col;
+            any_errors_streaming = true;
+            stream_error_count = pending_config_summary.count;
+            stream_files_with_errors = if (pending_config_summary.file_error_count > 0) 1 else 0;
+            stream_first_error_file = pending_config_summary.first_error_file;
+            stream_first_error_line = pending_config_summary.first_error_line;
+            stream_first_error_col = pending_config_summary.first_error_col;
+            if (pending_config_summary.file_error_count > 0) {
+                try stream_error_file_counts.append(gpa, .{
+                    .path = pending_config_summary.first_error_file,
+                    .count = pending_config_summary.file_error_count,
+                });
+            }
+        }
+    } else {
+        program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
+            std.debug.print("compile error: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
+    if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
+    if (!defer_program_diagnostics) {
+        if (loaded_cfg) |c| {
+            if (c.compiler_options.composite orelse false) {
+                const composite_summary = printCompositeProjectFileListDiagnostics(
+                    gpa,
+                    &program,
+                    input_files.items,
+                    c.file_path,
+                    pretty,
+                    diagnostic_color,
+                );
+                if (composite_summary.error_count > 0) {
+                    any_errors_streaming = true;
+                    stream_error_count += composite_summary.error_count;
+                    stream_files_with_errors += composite_summary.files_with_errors;
+                    if (stream_first_error_file.len == 0) {
+                        stream_first_error_file = composite_summary.first_error_file;
+                        stream_first_error_line = composite_summary.first_error_line;
+                        stream_first_error_col = composite_summary.first_error_col;
+                    }
                 }
             }
+        }
+    }
+
+    // tsc lists files after reporting diagnostics and after deciding whether
+    // emit is skipped. `--listFilesOnly` never reaches the emit loop.
+    if (opts.list_files or opts.list_files_only) {
+        for (program.files.items) |file| {
+            printStdout("{s}\n", .{file.path});
+        }
+        if (opts.list_files_only) {
+            reportErrorSummary(
+                pretty,
+                stream_error_count,
+                stream_files_with_errors,
+                stream_first_error_file,
+                stream_first_error_line,
+                stream_error_file_counts.items,
+            );
+            if (any_errors_streaming) {
+                std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(false)));
+            }
+            return;
         }
     }
     // tsc's post-compilation summary (CategoryMessage). Non-watch
@@ -3453,23 +3578,15 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // `CreateReportErrorSummary`, the non-watch summary is pretty-only.
     if (opts.watch) {
         reportWatchErrorStatus(stream_error_count);
-    } else if (!pretty) {
-        // Plain `file(line,col): error TSxxxx` output has no summary.
-    } else if (stream_error_count == 1) {
-        if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
-            buildStatusMessage(6259, "Found 1 error in {s}\n", .{stream_first_error_file});
-        } else {
-            buildStatusMessage(6216, "Found 1 error.\n", .{});
-        }
-    } else if (stream_error_count > 1) {
-        if (stream_files_with_errors > 1) {
-            buildStatusMessage(6261, "Found {d} errors in {d} files.\n", .{ stream_error_count, stream_files_with_errors });
-            printErrorFileSummaryTable(stream_error_file_counts.items);
-        } else if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
-            buildStatusMessage(6260, "Found {d} errors in the same file, starting at: {s}:{d}\n", .{ stream_error_count, stream_first_error_file, stream_first_error_line });
-        } else {
-            buildStatusMessage(6217, "Found {d} errors.\n", .{stream_error_count});
-        }
+    } else {
+        reportErrorSummary(
+            pretty,
+            stream_error_count,
+            stream_files_with_errors,
+            stream_first_error_file,
+            stream_first_error_line,
+            stream_error_file_counts.items,
+        );
     }
 
     // `--explainFiles`: list every file with its inclusion reason. Input
@@ -3534,6 +3651,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     var any_errors = any_errors_streaming;
+    var outputs_generated = false;
 
     // TS5055/5056: before emitting, verify no output file would overwrite
     // an input file or be written twice (tsc's `verifyEmitFilePath`). Such
@@ -3615,6 +3733,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
 
         const js_bytes: []const u8 = sm_owned_js orelse c.js;
         writeOrDie(gpa, out_path, js_bytes);
+        outputs_generated = true;
         if (emit_source_map) {
             const map_bytes: []const u8 = sm_owned_map orelse "{}";
             const map_path = sm_map_path_owned.?;
@@ -3708,6 +3827,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 RealFs.write(gpa, bi_path, bi) catch |err| {
                     std.debug.print("warning: could not write {s}: {s}\n", .{ bi_path, @errorName(err) });
                 };
+                outputs_generated = true;
             }
         }
     }
@@ -3792,7 +3912,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 .gpa = gpa,
                 .program = &program,
                 .use_pretty = pretty,
-                .use_color = stdout_is_tty,
+                .use_color = diagnostic_color,
                 .any_errors = &watch_any_errors,
                 .error_count = &watch_error_count,
             };
@@ -3818,7 +3938,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
-    if (any_errors) std.process.exit(1);
+    if (any_errors) {
+        std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(outputs_generated)));
+    }
 }
 
 fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
@@ -3828,6 +3950,23 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
         .emit => 5024,
     };
 }
+
+const DiagnosticFilter = enum { all, syntax_only };
+
+const SyntaxDiagnosticProbe = struct {
+    has_errors: bool = false,
+
+    fn receive(self: *SyntaxDiagnosticProbe, _: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+        for (diagnostics) |diagnostic| {
+            if (diagnostic.category == .error_ and
+                (diagnostic.phase == .lex or diagnostic.phase == .parse))
+            {
+                self.has_errors = true;
+                return;
+            }
+        }
+    }
+};
 
 /// Context carried through `Program.compileAllStreaming`'s
 /// per-file callback. `program` lets the callback resolve
@@ -3839,6 +3978,7 @@ const StreamCtx = struct {
     program: *const ts_program.Program,
     use_pretty: bool,
     use_color: bool,
+    filter: DiagnosticFilter = .all,
     any_errors: *bool,
     /// Running count of non-emit diagnostics, for the TS6216/TS6217
     /// "Found N errors" summary. Optional so the build-mode caller can
@@ -3873,6 +4013,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
     var file_had_error = false;
     var file_error_count: usize = 0;
     for (diags) |d| {
+        if (ctx.filter == .syntax_only and d.phase != .lex and d.phase != .parse) continue;
         const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
@@ -4445,14 +4586,15 @@ test "tsc_main: TS5112 positional files beside discovered config diagnostic" {
 test "tsc_main: TypeScript 7 removed option diagnostic retains config value location" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+    const source =
         \\{
         \\  "compilerOptions": {
         \\    "ignoreDeprecations": "6.0",
         \\    "moduleResolution": "node10"
         \\  }
         \\}
-    );
+    ;
+    var cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
     cfg.file_path = "/repo/tsconfig.json";
     const diagnostics = try cfg.validate(std.testing.allocator);
     defer tsconfig_mod.freeValidationDiagnostics(std.testing.allocator, diagnostics);
@@ -4460,12 +4602,35 @@ test "tsc_main: TypeScript 7 removed option diagnostic retains config value loca
     for (diagnostics) |diagnostic| {
         if (diagnostic.code == 5108) removed = diagnostic;
     }
-    const formatted = try formatConfigValidationDiagnostic(std.testing.allocator, cfg, removed.?);
+    const formatted = try config_diagnostics.format(std.testing.allocator, cfg, source, removed.?, false, false);
     defer std.testing.allocator.free(formatted);
     try std.testing.expectEqualStrings(
         "/repo/tsconfig.json(4,25): error TS5108: Option 'moduleResolution=node10' has been removed. Please remove it from your configuration.",
         formatted,
     );
+}
+
+test "tsc_main: option-diagnostic precedence probes syntax errors only" {
+    var probe: SyntaxDiagnosticProbe = .{};
+    const semantic = [_]ts_driver.Diagnostic{.{
+        .phase = .bind,
+        .pos = 0,
+        .line = 1,
+        .code = 2322,
+        .message = "Type mismatch.",
+    }};
+    probe.receive("/repo/a.ts", &semantic);
+    try std.testing.expect(!probe.has_errors);
+
+    const syntax = [_]ts_driver.Diagnostic{.{
+        .phase = .parse,
+        .pos = 0,
+        .line = 1,
+        .code = 1109,
+        .message = "Expression expected.",
+    }};
+    probe.receive("/repo/a.ts", &syntax);
+    try std.testing.expect(probe.has_errors);
 }
 
 test "tsc_main: ignoreConfig only suppresses config discovery beside positional files" {

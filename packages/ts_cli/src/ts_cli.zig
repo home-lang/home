@@ -74,6 +74,19 @@ pub const ExitCode = enum(u8) {
     internal_error = 3,
 };
 
+/// TypeScript's process status distinguishes diagnostics for which emit was
+/// skipped (1) from diagnostics reported alongside generated output (2).
+/// The historical enum names predate that distinction, so keep the mapping in
+/// one place instead of inferring a diagnostic's category at each caller.
+pub fn diagnosticsExitCode(outputs_generated: bool) ExitCode {
+    return if (outputs_generated) .config_error else .type_errors;
+}
+
+test "CLI: diagnostic exit status follows whether emit produced output" {
+    try std.testing.expectEqual(ExitCode.type_errors, diagnosticsExitCode(false));
+    try std.testing.expectEqual(ExitCode.config_error, diagnosticsExitCode(true));
+}
+
 pub const Options = struct {
     /// Files passed positionally on the CLI.
     files: []const []const u8 = &.{},
