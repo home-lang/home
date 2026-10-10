@@ -11559,16 +11559,17 @@ test "Program: named merged namespaces retain nested interface graphs" {
     });
     var declarations = try p.collectProgramDeclarationsForChecking();
     defer declarations.deinit();
-    var direct_props_projection = false;
-    var star_props_projection = false;
+    var direct_props_whole = false;
+    var star_props_whole = false;
     for (declarations.types) |entry| {
         if (!std.mem.eql(u8, entry.namespace_path, "StandardSchema") or
-            !std.mem.eql(u8, entry.export_name, "Props") or !entry.projection_only) continue;
-        if (std.mem.eql(u8, entry.target_path, "/proj/standard.ts")) direct_props_projection = true;
-        if (std.mem.eql(u8, entry.target_path, "/proj/barrel.ts")) star_props_projection = true;
+            !std.mem.eql(u8, entry.export_name, "Props")) continue;
+        try T.expect(!entry.projection_only);
+        if (std.mem.eql(u8, entry.target_path, "/proj/standard.ts")) direct_props_whole = true;
+        if (std.mem.eql(u8, entry.target_path, "/proj/barrel.ts")) star_props_whole = true;
     }
-    try T.expect(direct_props_projection);
-    try T.expect(star_props_projection);
+    try T.expect(direct_props_whole);
+    try T.expect(star_props_whole);
     for ([_]FileId{ standard_id, barrel_id }) |id| {
         const compilation = p.fileById(id).compilation.?;
         try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
@@ -13953,6 +13954,139 @@ test "Program: named imports preserve generic interfaces with built-in Error her
     try expectCompilationLacksDiagnosticCode(compilation, 2339);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+}
+
+test "Program: imported interfaces retain exact Record index domains" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface Base<T> {
+        \\  value: T;
+        \\  strings: Record<string, string>;
+        \\  numbers: Record<number, boolean>;
+        \\  symbols: Record<symbol, number>;
+        \\  mixed: Record<string | number | symbol, string>;
+        \\  frozen: Readonly<Record<string, number>>;
+        \\}
+    ;
+    const barrel =
+        \\export * from "./owner.js";
+    ;
+    const consumer =
+        \\import type { Base } from "./barrel.js";
+        \\import type * as api from "./barrel.js";
+        \\interface Derived<T> extends Base<T> { extra: string; }
+        \\declare const item: Derived<number>;
+        \\declare const qualified: api.Base<number>;
+        \\declare const key: symbol;
+        \\const value: number = item.value;
+        \\const text: string = item.strings["key"];
+        \\const flag: boolean = item.numbers[1];
+        \\const count: number = item.symbols[key];
+        \\const first: string = item.mixed["key"];
+        \\const second: string = item.mixed[1];
+        \\const third: string = item.mixed[key];
+        \\const frozen: number = item.frozen["key"];
+        \\const transferred: string = qualified.strings["key"];
+        \\void value; void text; void flag; void count;
+        \\void first; void second; void third; void frozen; void transferred;
+    ;
+    const invalid = consumer ++
+        \\const badValue: string = item.value;
+        \\const badText: boolean = item.strings["key"];
+        \\const badFlag: string = item.numbers[1];
+        \\const badCount: string = item.symbols[key];
+        \\const badMixed: boolean = item.mixed[key];
+        \\const badQualified: boolean = qualified.strings["key"];
+        \\item.missing;
+        \\item.frozen["key"] = 2;
+        \\void badValue; void badText; void badFlag; void badCount;
+        \\void badMixed; void badQualified;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    _ = try p.add("/proj/barrel.ts", barrel);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(consumer_id).compilation.?.diagnostics.items.len);
+    const diagnostics = p.fileById(invalid_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 8), diagnostics.len);
+    var assignments: usize = 0;
+    var missing: usize = 0;
+    var readonly: usize = 0;
+    for (diagnostics) |diagnostic| switch (diagnostic.code) {
+        2322 => assignments += 1,
+        2339 => missing += 1,
+        2542 => readonly += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqual(@as(usize, 6), assignments);
+    try T.expectEqual(@as(usize, 1), missing);
+    try T.expectEqual(@as(usize, 1), readonly);
+}
+
+test "Program: imported indexed interface retains literal context and return identity" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner =
+        \\export type Kind = "node" | "leaf";
+        \\export type Base = { [key: string]: unknown; kind?: Kind | Kind[]; };
+        \\export interface Node extends Base { kind: "node"; }
+        \\export interface Leaf extends Base { kind: "leaf"; }
+    ;
+    const consumer =
+        \\import type * as api from "./owner.js";
+        \\export function node(): api.Node {
+        \\  const value: api.Node = { kind: "node", payload: 1 };
+        \\  return value;
+        \\}
+        \\export function leaf(): api.Leaf {
+        \\  const value: api.Leaf = { kind: "leaf", payload: "data" };
+        \\  return value;
+        \\}
+    ;
+    const invalid =
+        \\import type * as api from "./owner.js";
+        \\const wrongNode: api.Node = { kind: "leaf" };
+        \\const wrongBase: api.Base = { kind: "other" };
+        \\export function wrongReturn(value: api.Leaf): api.Node { return value; }
+        \\void wrongNode; void wrongBase;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+    const diagnostics = p.fileById(invalid_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 3), diagnostics.len);
+    for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
 test "Program: relative module augmentation summary adds methods to imported class" {

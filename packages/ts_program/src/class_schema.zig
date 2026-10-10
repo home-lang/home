@@ -384,7 +384,7 @@ pub const Builder = struct {
 
     /// Qualified aliases are ordinary declaration edges when their complete
     /// graph is already losslessly representable by the Program schema. Keep
-    /// contextual/projection-only edges, classes, declared functions, records,
+    /// contextual/projection-only edges, classes, declared functions,
     /// and unsupported built-in instantiations out of whole-type admission.
     fn qualifiedDeclarationGraphSupported(self: *Builder, target: *const schema.Declaration) !bool {
         if (target.contextual_only or target.is_class or target.is_function) return false;
@@ -410,6 +410,11 @@ pub const Builder = struct {
                         try pending.append(self.gpa, index.key);
                         try pending.append(self.gpa, index.value);
                     }
+                },
+                .record => |record| {
+                    if (!schema.Schema.recordIndexKeySupported(record.key)) return false;
+                    try pending.append(self.gpa, record.key);
+                    try pending.append(self.gpa, record.value);
                 },
                 .utility => |utility| {
                     if (utility.kind != .extract and utility.kind != .exclude) return false;
@@ -457,7 +462,7 @@ pub const Builder = struct {
                     try pending.append(self.gpa, mapped.template);
                 },
                 .infer => |parameter| if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint),
-                .opaque_leaf, .builtin_reference, .record, .typeof_class, .unsupported => return false,
+                .opaque_leaf, .builtin_reference, .typeof_class, .unsupported => return false,
             }
         }
         return true;
@@ -1600,6 +1605,40 @@ test "class schema: function signatures retain readonly record domains" {
     try T.expect(try result.isSupported(T.allocator));
 }
 
+test "class schema: Record index domains are whole-type transferable" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Metadata {
+        \\  strings: Record<string, string>;
+        \\  numbers: Record<number, boolean>;
+        \\  symbols: Record<symbol, number>;
+        \\  mixed: Record<string | number | symbol, string>;
+        \\  frozen: Readonly<Record<string, number>>;
+        \\}
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Metadata");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const members = result.declaration.body.?.object;
+    try T.expectEqual(@as(usize, 5), members.len);
+    try T.expect(members[4].type.record.readonly);
+    try T.expect(!result.declaration.contextual_only);
+}
+
+test "class schema: Record admission does not erase finite or unsupported value domains" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Finite { data: Record<"left" | "right", string>; }
+        \\export interface Unsupported { data: Record<string, MissingType>; }
+    }});
+    defer graph.deinit();
+    const finite = try graph.class(0, "Finite");
+    defer finite.deinit(T.allocator);
+    try T.expect(!try finite.isSupported(T.allocator));
+    const unsupported = try graph.class(0, "Unsupported");
+    defer unsupported.deinit(T.allocator);
+    try T.expect(!try unsupported.isSupported(T.allocator));
+}
+
 test "class schema: built-in Error heritage retains its checker-owned shape" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export interface TypedError<T> extends Error { value: T; }
@@ -1978,7 +2017,7 @@ test "class schema: qualified imports retain callable shells around opaque leave
     try T.expect(shadowed.declaration.body.?.* == .unsupported);
 }
 
-test "class schema: imported callable constraints retain contextual qualified issue arrays" {
+test "class schema: imported callable constraints retain whole qualified Record issue arrays" {
     const graph = try TestGraph.init(&.{
         .{ .path = "/errors.ts", .text =
         \\export type QualifiedRawIssue = Record<string, unknown> & { readonly code: string };
@@ -1999,13 +2038,21 @@ test "class schema: imported callable constraints retain contextual qualified is
     try T.expect(try result.isSupported(T.allocator));
     const constraint = result.declaration.body.?.function.type_parameters[0].constraint.?;
     try T.expect(constraint.* == .reference);
-    try T.expect(constraint.reference.contextual_projection);
+    try T.expect(!constraint.reference.contextual_projection);
+    try T.expect(!constraint.reference.projection_only);
     const schema_members = constraint.reference.declaration.body.?.object;
     try T.expectEqualStrings("_zod", schema_members[0].name);
     const payload = schema_members[0].type.object[0].type.function.result.reference.declaration.body.?.object;
     try T.expectEqualStrings("issues", payload[1].name);
     try T.expect(payload[1].type.* == .array);
     try T.expect(payload[1].type.array.* == .reference);
+    const issue = payload[1].type.array.reference;
+    try T.expect(!issue.projection_only);
+    const intersection = issue.declaration.body.?.intersection;
+    try T.expectEqual(Primitive.string_t, intersection[0].record.key.primitive);
+    try T.expectEqual(Primitive.unknown, intersection[0].record.value.primitive);
+    try T.expectEqualStrings("code", intersection[1].object[0].name);
+    try T.expectEqual(Primitive.string_t, intersection[1].object[0].type.primitive);
 }
 
 test "class schema: contextual read coverage follows defaulted qualified aliases" {

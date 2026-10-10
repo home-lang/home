@@ -180496,17 +180496,26 @@ pub const Checker = struct {
     }
 
     fn contextualReturnLacksRequiredObjectShape(self: *Checker, source_ret: TypeId, target_ret: TypeId) CheckError!bool {
+        if (source_ret == target_ret) return false;
+        const resolved_source = try self.resolveGenericType(source_ret);
+        const resolved_target = try self.resolveGenericType(target_ret);
+        if (resolved_source != source_ret or resolved_target != target_ret)
+            return self.contextualReturnLacksRequiredObjectShape(resolved_source, resolved_target);
         if (source_ret == types.Primitive.any or source_ret == types.Primitive.unknown) return false;
         if (target_ret >= self.interner.pool.typeCount()) return false;
         const target_flags = self.interner.pool.flagsOf(target_ret);
         if (target_flags.is_union) {
-            for (self.interner.unionMembers(target_ret)) |member| {
+            const length = self.interner.unionMembers(target_ret).len;
+            for (0..length) |index| {
+                const member = self.interner.unionMembers(target_ret)[index];
                 if (!try self.contextualReturnLacksRequiredObjectShape(source_ret, member)) return false;
             }
             return true;
         }
         if (target_flags.is_intersection) {
-            for (self.interner.intersectionMembers(target_ret)) |member| {
+            const length = self.interner.intersectionMembers(target_ret).len;
+            for (0..length) |index| {
+                const member = self.interner.intersectionMembers(target_ret)[index];
                 if (try self.contextualReturnLacksRequiredObjectShape(source_ret, member)) return true;
             }
             return false;
@@ -180532,6 +180541,10 @@ pub const Checker = struct {
         if (source_ret >= self.interner.pool.typeCount()) return true;
         if (self.isThisTypeParameter(source_ret)) return false;
         const source_flags = self.interner.pool.flagsOf(source_ret);
+        // Intersections retain the combined object surface of their
+        // constituents. The object flag belongs to the constituents, not to
+        // the intersection itself; use the structural relation for this case.
+        if (source_flags.is_intersection) return !try self.checkerAssignableTo(source_ret, target_ret);
         return !source_flags.is_object_type;
     }
 
@@ -186013,14 +186026,25 @@ pub const Checker = struct {
         if (target_t == types.Primitive.string_t or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return true;
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_instantiation) {
+            const resolved = try self.resolveGenericType(target_t);
+            if (resolved != target_t) return self.stringLiteralAssignableToType(sid, resolved);
+        }
         if (flags.is_union) {
-            for (self.interner.unionMembers(target_t)) |member| {
+            // Alias resolution may grow the interned member pool. Reacquire
+            // each immutable member by index rather than holding its slice
+            // across a recursive resolution.
+            const length = self.interner.unionMembers(target_t).len;
+            for (0..length) |index| {
+                const member = self.interner.unionMembers(target_t)[index];
                 if (try self.stringLiteralAssignableToType(sid, member)) return true;
             }
             return false;
         }
         if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(target_t)) |member| {
+            const length = self.interner.intersectionMembers(target_t).len;
+            for (0..length) |index| {
+                const member = self.interner.intersectionMembers(target_t)[index];
                 if (self.typeIsEmptyObjectType(member)) continue;
                 if (!try self.stringLiteralAssignableToType(sid, member)) return false;
             }
@@ -186479,6 +186503,12 @@ pub const Checker = struct {
     }
 
     fn literalExpressionAssignableToTarget(self: *Checker, value_node: NodeId, target_t: TypeId) CheckError!bool {
+        if (target_t >= types.Primitive.first_dynamic and target_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(target_t).is_instantiation)
+        {
+            const resolved = try self.resolveGenericType(target_t);
+            if (resolved != target_t) return self.literalExpressionAssignableToTarget(value_node, resolved);
+        }
         // A conditional initializer contextually types BOTH branches
         // against the target, keeping their fresh literal types rather
         // than widening the conditional's result — so `let x: "foo" =
@@ -186523,7 +186553,9 @@ pub const Checker = struct {
         if (try self.enumMemberExpressionAssignableToEnumTarget(value_node, target_t)) return true;
         if (flags.is_union) {
             if (self.interner.pool.payloadOf(target_t) >= self.interner.pool.union_payloads.items.len) return false;
-            for (self.interner.unionMembers(target_t)) |member| {
+            const length = self.interner.unionMembers(target_t).len;
+            for (0..length) |index| {
+                const member = self.interner.unionMembers(target_t)[index];
                 if (try self.literalExpressionAssignableToTarget(value_node, member)) return true;
             }
             return false;

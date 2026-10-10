@@ -211,6 +211,23 @@ pub const Schema = struct {
         return pendingSupported(gpa, &pending, &visited, false, false);
     }
 
+    /// These closed index domains have an exact concrete representation in
+    /// the Program instantiator. Other keys still need their own finite-key or
+    /// symbolic mapped representation; do not erase them into a string index.
+    pub fn recordIndexKeySupported(key: *const Expression) bool {
+        return switch (key.*) {
+            .primitive => |primitive| primitive == types.Primitive.any or
+                primitive == types.Primitive.string_t or
+                primitive == types.Primitive.number_t or
+                primitive == types.Primitive.symbol_t,
+            .union_type => |members| blk: {
+                for (members) |member| if (!recordIndexKeySupported(member)) break :blk false;
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn pendingSupported(
         gpa: std.mem.Allocator,
         pending: *std.ArrayListUnmanaged(*const Expression),
@@ -238,11 +255,7 @@ pub const Schema = struct {
                     }
                 },
                 .record => |record| {
-                    const key_is_any = switch (record.key.*) {
-                        .primitive => |primitive| primitive == types.Primitive.any,
-                        else => false,
-                    };
-                    if ((allow_readonly_record and record.readonly) or key_is_any) {
+                    if ((allow_readonly_record and record.readonly) or recordIndexKeySupported(record.key)) {
                         try pending.append(gpa, record.key);
                         try pending.append(gpa, record.value);
                     } else if (!allow_opaque) {
