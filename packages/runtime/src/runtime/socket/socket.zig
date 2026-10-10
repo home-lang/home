@@ -1832,7 +1832,7 @@ pub fn NewSocket(comptime ssl: bool) type {
                 .socket = TLSSocket.Socket.detached,
                 .connection = if (this.connection) |c| c.clone() else null,
                 .protos = if (cfg) |c| if (c.protos) |p|
-                    bun.handleOom(bun.default_allocator.dupe(u8, std.mem.span(p)))
+                    bun.handleOom(bun.default_allocator.dupe(u8, p))
                 else
                     null else null,
                 .server_name = if (cfg) |c| if (c.server_name) |sn|
@@ -2352,7 +2352,7 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
         .socket = TLSSocket.Socket.detached,
         .connection = null,
         .protos = if (socket_config) |cfg| if (cfg.protos) |p|
-            bun.handleOom(bun.default_allocator.dupe(u8, std.mem.span(p)))
+            bun.handleOom(bun.default_allocator.dupe(u8, p))
         else
             null else null,
         .server_name = if (socket_config) |cfg| if (cfg.server_name) |sn|

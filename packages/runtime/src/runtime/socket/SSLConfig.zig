@@ -20,7 +20,7 @@ ssl_max_version: i32 = 0,
 request_cert: i32 = 0,
 reject_unauthorized: i32 = 0,
 ssl_ciphers: ?[*:0]const u8 = null,
-protos: ?[*:0]const u8 = null,
+protos: ?[]const u8 = null,
 client_renegotiation_limit: u32 = 0,
 client_renegotiation_window: u32 = 0,
 requires_custom_request_ctx: bool = false,
@@ -150,6 +150,12 @@ pub fn isSame(this: *const SSLConfig, other: *const SSLConfig) bool {
                     if (second != null) return false;
                 }
             },
+            ?[]const u8 => {
+                if (first) |a| {
+                    const b = second orelse return false;
+                    if (!std.mem.eql(u8, a, b)) return false;
+                } else if (second != null) return false;
+            },
             ?[][*:0]const u8 => {
                 // Compare optional arrays of strings (e.g., key, cert, ca)
                 if (first) |slice1| {
@@ -214,7 +220,7 @@ pub fn deinit(this: *SSLConfig) void {
         .request_cert = {},
         .reject_unauthorized = {},
         .ssl_ciphers = freeString(&this.ssl_ciphers),
-        .protos = freeString(&this.protos),
+        .protos = blk: { if (this.protos) |bytes| bun.default_allocator.free(bytes); this.protos = null; break :blk {}; },
         .client_renegotiation_limit = {},
         .client_renegotiation_window = {},
         .requires_custom_request_ctx = {},
@@ -254,7 +260,7 @@ pub fn clone(this: *const SSLConfig) SSLConfig {
         .request_cert = this.request_cert,
         .reject_unauthorized = this.reject_unauthorized,
         .ssl_ciphers = cloneString(this.ssl_ciphers),
-        .protos = cloneString(this.protos),
+        .protos = if (this.protos) |bytes| bun.handleOom(bun.default_allocator.dupe(u8, bytes)) else null,
         .client_renegotiation_limit = this.client_renegotiation_limit,
         .client_renegotiation_window = this.client_renegotiation_window,
         .requires_custom_request_ctx = this.requires_custom_request_ctx,
@@ -275,6 +281,10 @@ pub fn contentHash(this: *SSLConfig) u64 {
                 if (value) |s| {
                     hasher.update(bun.asByteSlice(s));
                 }
+                hasher.update(&.{0});
+            },
+            ?[]const u8 => {
+                if (value) |bytes| { hasher.update(std.mem.asBytes(&bytes.len)); hasher.update(bytes); }
                 hasher.update(&.{0});
             },
             ?[][*:0]const u8 => {
@@ -442,8 +452,12 @@ pub fn fromGenerated(
 
     const protocols = switch (generated.alpn_protocols) {
         .none => null,
-        .string => |*val| val.get().toOwnedSliceZ(bun.default_allocator),
-        .buffer => |*val| try bun.dupeZ(bun.default_allocator, u8, val.byteSlice()),
+        .string => |*val| blk: {
+            var view = val.get().toUTF8(bun.default_allocator);
+            defer view.deinit();
+            break :blk try bun.default_allocator.dupe(u8, view.slice());
+        },
+        .buffer => |*val| try bun.default_allocator.dupe(u8, val.byteSlice()),
     };
     if (protocols) |some_protocols| {
         result.protos = some_protocols;
@@ -562,7 +576,7 @@ fn handleSingleFile(
 pub fn takeProtos(this: *SSLConfig) ?[]const u8 {
     defer this.protos = null;
     const protos = this.protos orelse return null;
-    return bun.handleOom(bun.memory.dropSentinel(protos, bun.default_allocator));
+    return @constCast(protos);
 }
 
 pub fn takeServerName(this: *SSLConfig) ?[]const u8 {

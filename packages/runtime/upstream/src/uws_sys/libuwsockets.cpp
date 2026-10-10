@@ -631,6 +631,10 @@ extern "C"
       uwsApp->removeServerName(hostname_pattern);
     }
   }
+  void *Home__uws_server_name_native_handle(uws_app_t *app, const char *hostname, size_t length) {
+    return ((uWS::SSLApp *)app)->getServerNameNativeHandle(std::string(hostname, length));
+  }
+
   void uws_add_server_name(int ssl, uws_app_t *app,
                            const char *hostname_pattern)
   {

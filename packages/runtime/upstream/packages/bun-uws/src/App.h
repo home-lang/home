@@ -195,6 +195,15 @@ public:
         return std::move(*this);
     }
 
+    /* Borrowed context owned by the app's registered SNI entries. */
+    void *getServerNameNativeHandle(const std::string &hostname) {
+        if constexpr (SSL) {
+            for (auto &entry : pendingServerNames)
+                if (entry.hostname == hostname) return entry.ctx;
+        }
+        return nullptr;
+    }
+
     /* Returns the SSL_CTX* of this app, or nullptr. */
     void *getNativeHandle() {
         return sslCtx;

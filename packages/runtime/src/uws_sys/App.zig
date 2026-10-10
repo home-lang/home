@@ -345,6 +345,9 @@ pub fn NewApp(comptime ssl: bool) type {
         pub fn getNativeHandle(app: *ThisApp) ?*anyopaque {
             return c.uws_get_native_handle(ssl_flag, app);
         }
+        pub fn getServerNameNativeHandle(app: *ThisApp, name: []const u8) ?*anyopaque {
+            return c.Home__uws_server_name_native_handle(@ptrCast(app), name.ptr, name.len);
+        }
         pub fn removeServerName(app: *ThisApp, hostname_pattern: [*:0]const u8) void {
             return c.uws_remove_server_name(ssl_flag, @as(*uws_app_t, @ptrCast(app)), hostname_pattern);
         }
@@ -429,6 +432,7 @@ pub const c = struct {
     pub extern fn uws_constructor_failed(ssl: i32, app: *uws_app_t) bool;
     pub extern fn uws_num_subscribers(ssl: i32, app: *uws_app_t, topic: [*c]const u8, topic_length: usize) c_uint;
     pub extern fn uws_publish(ssl: i32, app: *uws_app_t, topic: [*c]const u8, topic_length: usize, message: [*c]const u8, message_length: usize, opcode: Opcode, compress: bool) bool;
+    pub extern fn Home__uws_server_name_native_handle(app: *anyopaque, name: [*]const u8, len: usize) ?*anyopaque;
     pub extern fn uws_get_native_handle(ssl: i32, app: *anyopaque) ?*anyopaque;
     pub extern fn uws_remove_server_name(ssl: i32, app: *uws_app_t, hostname_pattern: [*c]const u8) void;
     pub extern fn uws_add_server_name(ssl: i32, app: *uws_app_t, hostname_pattern: [*c]const u8) void;
