@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { closeSync, fstatSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 
@@ -43,6 +44,8 @@ try {
   const ordinaryFD = openSync(ordinaryFile, 'r')
   try {
     assert.throws(() => Bun.listen({ fd: ordinaryFD, socket: { data() {} } }), { code: 'ENOTSOCK' })
+    assert.ok(fstatSync(ordinaryFD).isFile())
+    await assert.rejects(async () => Bun.udpSocket({ fd: ordinaryFD, socket: { data() {} } }), { code: 'ENOTSOCK' })
     assert.ok(fstatSync(ordinaryFD).isFile())
   } finally {
     closeSync(ordinaryFD)
@@ -124,6 +127,32 @@ try {
   assert.equal(transferCode, 0, transferErrors)
   assert.equal(transferOutput.trim(), 'native Home accepts and closes a Node-transferred IPC listener')
   console.log('native IPC listener transfer and descriptor ownership regressions passed')
+
+  for (const [fixture, expected, option] of [
+    ['ipc-receive-handles-peer.js', 'Home received TCP and UDP descriptors from Node'],
+    ['ipc-send-handles-peer.js', 'Home sent TCP and UDP descriptors to Node'],
+    ['ipc-send-handles-peer.js', 'Home sent TCP and UDP descriptors to Node', 'keep-open'],
+    ['ipc-handle-failure-peer.js', 'Home fails rejected IPC handles without losing socket ownership'],
+    ['ipc-handle-failure-peer.js', 'Home fails rejected IPC handles without losing socket ownership', 'disconnect'],
+  ]) {
+    const peerPath = fileURLToPath(new URL(`./fixtures/${fixture}`, import.meta.url))
+    const peer = Bun.spawn([node, peerPath, process.execPath, ...(option ? [option] : [])], { stdout: 'pipe', stderr: 'pipe' })
+    const [output, errors, code] = await Promise.all([peer.stdout.text(), peer.stderr.text(), peer.exited])
+    assert.equal(code, 0, errors)
+    assert.equal(output.trim(), expected)
+    console.log(`native IPC ${fixture} (${option || 'default'}) with Node peer passed`)
+    if (fixture !== 'ipc-handle-failure-peer.js') {
+      const homePeer = Bun.spawn([process.execPath, 'run', peerPath, process.execPath, ...(option ? [option] : [])], {
+        env: { ...process.env, HOME_NATIVE_VM: '1', BUN_DEBUG_QUIET_LOGS: '1' },
+        stdout: 'pipe', stderr: 'pipe',
+      })
+      const [homeOutput, homeErrors, homeCode] = await Promise.all([homePeer.stdout.text(), homePeer.stderr.text(), homePeer.exited])
+      assert.equal(homeCode, 0, homeErrors)
+      assert.equal(homeOutput.trim(), expected)
+      console.log(`native IPC ${fixture} (${option || 'default'}) with Home peer passed`)
+    }
+  }
+  console.log('native bidirectional IPC TCP and UDP descriptor regressions passed')
 } finally {
   rmSync(directory, { recursive: true, force: true })
 }

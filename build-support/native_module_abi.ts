@@ -30,20 +30,29 @@ export function requiredId(values: Map<string, number>, name: string): number {
 
 export function nativeFunctionId(header: string, type: string, filename: string, symbol: string, length: number | null): number {
   // Wrapped host calls must match their complete signature and source identity.
-  // Bare Zig factories require another adapter shape and stay unsupported here.
+  // Bare Zig factories use a distinct encoded-value adapter shape.
   if (type !== 'cpp' && type !== 'zig') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
+  if (!/^[A-Za-z_][A-Za-z0-9_:.]*$/.test(symbol)) throw new Error(`Invalid native symbol: ${symbol}`)
   let nativeTarget = symbol
   if (type === 'zig') {
-    if (length === null || !/^src\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.zig$/.test(filename)) {
+    if (!/^src\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.zig$/.test(filename)) {
       throw new Error(`Unsupported incremental Zig source or factory: ${filename} ${symbol}`)
     }
     const prefix = `/${filename}`.replaceAll('.zig', '_zig_').replace(/[^A-Za-z]/g, '_')
     nativeTarget = `JS2Zig__${prefix}_${symbol.replace(/[^A-Za-z]/g, '_')}`
-    if (!header.includes(`BUN_DECLARE_HOST_FUNCTION(${nativeTarget});`)) throw new Error(`Linked native dispatch has no host declaration for ${filename} ${symbol}`)
+    if (length === null) {
+      const declaration = `extern "C" SYSV_ABI JSC::EncodedJSValue ${nativeTarget}_workaround(Zig::GlobalObject*);`
+      const escaped = nativeTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const bodies = [...header.matchAll(new RegExp(`static ALWAYS_INLINE JSC::JSValue ${escaped}\\(Zig::GlobalObject\\* global\\) \\{([^}]+)\\}`, 'g'))]
+      const expected = `return JSValue::decode(${nativeTarget}_workaround(global));`
+      if (header.split(declaration).length !== 2 || bodies.length !== 1 || bodies[0][1].replace(/\s+/g, ' ').trim() !== expected) {
+        throw new Error(`Linked native factory signature mismatch: ${filename} ${symbol}`)
+      }
+    } else if (!header.includes(`BUN_DECLARE_HOST_FUNCTION(${nativeTarget});`)) throw new Error(`Linked native dispatch has no host declaration for ${filename} ${symbol}`)
   } else if (!header.includes(`#include "${filename.replace(/\.cpp$/, '.h')}"`)) {
     throw new Error(`Linked native dispatch has no header for ${filename}`)
   }
-  let target = symbol
+  let target = nativeTarget
   if (length !== null) {
     if (!Number.isSafeInteger(length) || length < 0 || !/^[A-Za-z_][A-Za-z0-9_:.]*$/.test(symbol)) {
       throw new Error(`Invalid native wrapper signature: ${symbol}`)

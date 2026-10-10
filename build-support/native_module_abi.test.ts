@@ -60,10 +60,24 @@ describe('incremental native module ABI', () => {
     expect(resolve(header)).toBe(169)
     expect(() => resolve(header, 'src/other/ipc.zig')).toThrow('no host declaration')
     expect(() => resolve(header, '../src/jsc/ipc.zig')).toThrow('Unsupported')
-    expect(() => resolve(header, 'src/jsc/ipc.zig', null)).toThrow('Unsupported')
+    expect(() => resolve(header, 'src/jsc/ipc.zig', null)).toThrow('factory signature mismatch')
     expect(() => resolve(header, 'src/jsc/ipc.zig', 2)).toThrow('signature mismatch')
     expect(() => resolve(header.replace(`BUN_DECLARE_HOST_FUNCTION(${host});`, ''))).toThrow('no host declaration')
     expect(() => resolve(header.replace(`, ${host},`, ', missingHost,'))).toThrow('signature mismatch')
     expect(() => resolve(header + '\ncase 170: return js2native_wrap_emitHandleIPCMessage(global);')).toThrow('exactly one')
+  })
+  test('validates the encoded-value adapter for bare Zig factories', () => {
+    const target = 'JS2Zig___src_runtime_node_node_net_binding_zig__getDefaultAutoSelectFamily'
+    const declaration = `extern "C" SYSV_ABI JSC::EncodedJSValue ${target}_workaround(Zig::GlobalObject*);`
+    const wrapper = `static ALWAYS_INLINE JSC::JSValue ${target}(Zig::GlobalObject* global) { return JSValue::decode(${target}_workaround(global)); }`
+    const header = `${declaration}\n${wrapper}\ncase 101: return ${target}(global);`
+    const resolve = (source: string) => nativeFunctionId(source, 'zig', 'src/runtime/node/node_net_binding.zig', 'getDefaultAutoSelectFamily', null)
+    expect(resolve(header)).toBe(101)
+    expect(() => resolve(header.replace(declaration, ''))).toThrow('factory signature mismatch')
+    expect(() => resolve(header + '\n' + declaration)).toThrow('factory signature mismatch')
+    expect(() => nativeFunctionId(header, 'zig', 'src/runtime/node/node_net_binding.zig', 'getDefaultAutoSelectFamily;', null)).toThrow('Invalid native symbol')
+    expect(() => resolve(header.replace(`decode(${target}_workaround(global))`, 'decode(wrong(global))'))).toThrow('factory signature mismatch')
+    expect(() => resolve(header + '\n' + wrapper)).toThrow('factory signature mismatch')
+    expect(() => resolve(header + `\ncase 102: return ${target}(global);`)).toThrow('exactly one')
   })
 })

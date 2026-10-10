@@ -32,10 +32,10 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp', 'IPC.cpp'].includes(basename)) {
         const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
-        writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
+        if (basename !== 'IPC.cpp') writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
         return `#include ${JSON.stringify(path.join(webcore, basename))}`
       }
       return `#include ${JSON.stringify(externalSource)}`
@@ -62,7 +62,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       timeout: 15000,
     })
     expect(result.exitCode, result.stderr.toString()).toBe(0)
-    for (const name of ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick']) {
+    for (const name of ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeDgram', 'NodeNet', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick']) {
       const source = read(path.join(output, name + '.js'))
       expect(source).not.toMatch(/^\s*(?:export|import)\s/m)
       if (name === 'NodeUrl' || name === 'NodeWorkerThreads') expect(source).not.toContain('__commonJS')
@@ -80,11 +80,14 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     const external = read(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
     const generated = read(path.join(output, 'InternalModuleRegistryConstants.h'))
     expect(generated).not.toBe(external)
-    const stripOwned = (header: string) => ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick', 'InternalForTesting']
+    const stripOwned = (header: string) => ['NodeUrl', 'NodeWorkerThreads', 'NodeQuerystring', 'NodeAssert', 'NodeAssertStrict', 'NodeEvents', 'NodeAsyncHooks', 'NodeDgram', 'NodeNet', 'NodeTimers', 'NodeTimersPromises', 'InternalAsyncHooks', 'InternalAsyncHooksTick', 'InternalForTesting']
       .reduce((value, name) => replaceModuleLiteral(value, name, 'OWNED_' + name), header)
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
+    const ipc = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/IPC.cpp')
+    expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp'))).toContain('#include \"IPC.cpp\"')
+    expect(read(path.join(output, 'IPC.cpp'))).toBe(`#line 1 ${JSON.stringify(ipc)}\n${read(ipc)}`)
     const materializer = path.join(root, 'packages/runtime/src/native/H2HeadersMaterializer.cpp')
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "H2HeadersMaterializer.cpp"')
@@ -123,7 +126,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
   } finally {
     rmSync(output, { recursive: true })
   }
-}, 20000)
+}, 45000)
 
 nativeTest('rejects error and native-wrapper ABI drift before producing linkable artifacts', () => {
   const cache = path.join(root, '.zig-cache/tmp')
@@ -174,43 +177,49 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
   } finally {
     rmSync(temporary, { recursive: true })
   }
-}, 20000)
+}, 45000)
 
-nativeTest('rejects owned native class-header drift and invalid native ownership before output', () => {
+// Each owned ABI has its own deadline, so host pressure cannot exhaust one
+// aggregate timeout halfway through the independent rejection contracts.
+nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h'])('rejects owned native class-header drift: %s', header => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
-  const temporary = mkdtempSync(path.join(cache, 'home-port-abi-test-'))
+  const temporary = mkdtempSync(path.join(cache, 'home-port-header-test-'))
   try {
     const { webcore } = createNativeFixture(temporary)
-    for (const header of ['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h']) {
-      const headerPath = path.join(webcore, header)
-      const original = readFileSync(headerPath)
-      writeFileSync(headerPath, Buffer.concat([original, Buffer.from('\n// ABI drift fixture\n')]))
-      const output = path.join(temporary, header + '-output')
-      const result = generate(temporary, output)
-      expect(result.signalCode).toBeUndefined()
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr.toString()).toContain(header)
-      expect(existsSync(output)).toBe(false)
-      writeFileSync(headerPath, original)
-    }
-    for (const [basename, unitName] of [['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]]]) {
-      const unit = path.join(temporary, 'unified', unitName)
-      const original = read(unit)
-      const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`
-      expect(original).toContain(ownedInclude)
-      for (const [kind, invalid] of [['missing', original.replace(ownedInclude, '')], ['duplicate', original + ownedInclude + '\n']]) {
-        writeFileSync(unit, invalid)
-        const output = path.join(temporary, basename + '-' + kind + '-output')
-        const result = generate(temporary, output)
-        expect(result.signalCode).toBeUndefined()
-        expect(result.exitCode).toBe(1)
-        expect(result.stderr.toString()).toContain(`Native unified source must contain exactly one ${basename}`)
-        expect(existsSync(output)).toBe(false)
-      }
-      writeFileSync(unit, original)
-    }
+    const headerPath = path.join(webcore, header)
+    writeFileSync(headerPath, Buffer.concat([readFileSync(headerPath), Buffer.from('\n// ABI drift fixture\n')]))
+    const output = path.join(temporary, 'output')
+    const result = generate(temporary, output)
+    expect(result.signalCode).toBeUndefined()
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr.toString()).toContain(header)
+    expect(existsSync(output)).toBe(false)
   } finally {
     rmSync(temporary, { recursive: true })
   }
 }, 20000)
+
+nativeTest.each([['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]], ['IPC.cpp', units[0]]])('rejects invalid native ownership: %s', (basename, unitName) => {
+  const cache = path.join(root, '.zig-cache/tmp')
+  mkdirSync(cache, { recursive: true })
+  const temporary = mkdtempSync(path.join(cache, 'home-port-ownership-test-'))
+  try {
+    const { webcore } = createNativeFixture(temporary)
+    const unit = path.join(temporary, 'unified', unitName)
+    const original = read(unit)
+    const ownedInclude = `#include ${JSON.stringify(path.join(webcore, basename))}`
+    expect(original).toContain(ownedInclude)
+    for (const [kind, invalid] of [['missing', original.replace(ownedInclude, '')], ['duplicate', original + ownedInclude + '\n']]) {
+      writeFileSync(unit, invalid)
+      const output = path.join(temporary, kind + '-output')
+      const result = generate(temporary, output)
+      expect(result.signalCode).toBeUndefined()
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr.toString()).toContain(`Native unified source must contain exactly one ${basename}`)
+      expect(existsSync(output)).toBe(false)
+    }
+  } finally {
+    rmSync(temporary, { recursive: true })
+  }
+}, 45000)

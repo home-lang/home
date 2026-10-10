@@ -12,6 +12,12 @@ pub const Socket = opaque {
     pub fn create(loop: *Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: ?*c_int, user_data: ?*anyopaque) ?*udp.Socket {
         return us_create_udp_socket(loop, data_cb, drain_cb, close_cb, recv_error_cb, host, port, options, err, user_data);
     }
+    pub fn adoptFD(loop: *Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, fd_: bun.FD, err: *c_int, user_data: ?*anyopaque) ?*udp.Socket {
+        return HomeUDPSocketAdoptFD(loop, data_cb, drain_cb, close_cb, recv_error_cb, fd_.native(), err, user_data);
+    }
+    pub fn fd(this: *udp.Socket) bun.FD {
+        return .fromNative(HomeUDPSocketFD(this));
+    }
 
     pub fn send(this: *udp.Socket, payloads: []const [*]const u8, lengths: []const usize, addresses: []const ?*const anyopaque) c_int {
         home_rt.assert(payloads.len == lengths.len and payloads.len == addresses.len);
@@ -80,6 +86,8 @@ pub const Socket = opaque {
     }
 
     extern fn us_create_udp_socket(loop: ?*Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: ?*c_int, user_data: ?*anyopaque) ?*udp.Socket;
+    extern fn HomeUDPSocketAdoptFD(*Loop, *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, *const fn (*udp.Socket) callconv(.c) void, *const fn (*udp.Socket) callconv(.c) void, *const fn (*udp.Socket, c_int) callconv(.c) void, bun.uws.LIBUS_SOCKET_DESCRIPTOR, *c_int, ?*anyopaque) ?*udp.Socket;
+    extern fn HomeUDPSocketFD(*udp.Socket) bun.uws.LIBUS_SOCKET_DESCRIPTOR;
     extern fn us_udp_socket_connect(socket: *udp.Socket, hostname: [*c]const u8, port: c_uint) c_int;
     extern fn us_udp_socket_disconnect(socket: *udp.Socket) c_int;
     extern fn us_udp_socket_send(socket: *udp.Socket, [*c]const [*c]const u8, [*c]const usize, [*c]const ?*const anyopaque, c_int) c_int;
@@ -123,6 +131,7 @@ pub const PacketBuffer = opaque {
 pub const Loop = @import("./Loop.zig").PosixLoop;
 
 const home_rt = @import("home");
+const bun = home_rt;
 const std = @import("std");
 
 test "udp.Socket / PacketBuffer expose the us_udp_* API surface" {

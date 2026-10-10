@@ -253,25 +253,27 @@ Socket.prototype.bind = function (port_, address_ /* , callback */) {
     */
   }
 
-  // Open an existing fd instead of creating a new one.
-  if (port !== null && typeof port === "object" && isInt32(port.fd) && port.fd > 0) {
-    throwNotImplemented("Socket.prototype.bind({ fd })");
-    /*
-    const fd = port.fd;
-    const exclusive = !!port.exclusive;
+  // Adopt a transferred/bound UDP descriptor through the native poll lifecycle.
+  if (port !== null && typeof port === "object" && isInt32(port.fd) && port.fd >= 0) {
+    const family = this.type === "udp4" ? "IPv4" : "IPv6";
     const state = this[kStateSymbol];
-
-    const type = guessHandleType(fd);
-    if (type !== 'UDP')
-      throw new ERR_INVALID_FD_TYPE(type);
-    const err = state.handle.open(fd);
-
-    if (err)
-      throw new ErrnoException(err, 'open');
-
-    startListening(this);
+    Bun.udpSocket({
+      fd: port.fd,
+      socket: {
+        data: (_socket, data, port, address) => this.emit("message", data, { port, address, size: data.length, family }),
+        error: error => this.emit("error", error),
+      },
+    }).$then(socket => {
+      state.handle.socket = socket;
+      state.receiving = true;
+      state.bindState = BIND_STATE_BOUND;
+      if (state.unrefOnBind) { socket.unref(); state.unrefOnBind = false; }
+      this.emit("listening");
+    }, error => {
+      state.bindState = BIND_STATE_UNBOUND;
+      this.emit("error", error);
+    });
     return this;
-    */
   }
 
   let address;
