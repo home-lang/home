@@ -1,3 +1,4 @@
+const protocol_state = @import("h2_protocol_state.zig");
 const MAX_PAYLOAD_SIZE_WITHOUT_FRAME = 16384 - FrameHeader.byteSize - 1;
 const BunSocket = union(enum) {
     none: void,
@@ -232,7 +233,7 @@ const FullSettingsPayload = packed struct(u336) {
     _enableConnectProtocolType: u16 = @backingInt(SettingsType.SETTINGS_ENABLE_CONNECT_PROTOCOL),
     enableConnectProtocol: u32 = 0,
     pub const byteSize: usize = 42;
-    pub fn toJS(this: *FullSettingsPayload, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
+    pub fn toJS(this: *const FullSettingsPayload, globalObject: *jsc.JSGlobalObject) jsc.JSValue {
         var result = JSValue.createEmptyObject(globalObject, 8);
         result.put(globalObject, jsc.ZigString.static("headerTableSize"), jsc.JSValue.jsNumber(this.headerTableSize));
         result.put(globalObject, jsc.ZigString.static("enablePush"), jsc.JSValue.jsBoolean(this.enablePush > 0));
@@ -257,11 +258,27 @@ const FullSettingsPayload = packed struct(u336) {
             else => {},
         }
     }
-    pub fn write(this: *FullSettingsPayload, comptime Writer: type, writer: Writer) bool {
+    pub fn write(this: *const FullSettingsPayload, comptime Writer: type, writer: Writer) bool {
         var swap = this.*;
 
         h2_byteswap.byteSwapAllFields(FullSettingsPayload, &swap);
         return writeBytes(writer, std.mem.asBytes(&swap)[0..FullSettingsPayload.byteSize]);
+    }
+};
+
+const SettingsSnapshot = struct {
+    standard: FullSettingsPayload,
+    custom: [MAX_CUSTOM_SETTINGS]SettingsPayloadUnit = @splat(.{ .type = 0, .value = 0 }),
+    count: u8 = 0,
+
+    fn toJS(this: *const SettingsSnapshot, global: *jsc.JSGlobalObject) JSValue {
+        const result = this.standard.toJS(global);
+        const custom = JSValue.createEmptyObject(global, this.count);
+        for (this.custom[0..this.count]) |unit| {
+            custom.putIndex(global, unit.type, JSValue.jsNumber(unit.value)) catch return .zero;
+        }
+        result.put(global, jsc.ZigString.static("customSettings"), custom);
+        return result;
     }
 };
 
@@ -692,6 +709,14 @@ pub const H2FrameParser = struct {
     maxRejectedStreams: u32 = 100,
     maxOutstandingSettings: u32 = 10,
     outstandingSettings: u32 = 0,
+    pendingLocalSettings: std.ArrayListUnmanaged(SettingsSnapshot) = .empty,
+    acknowledgedLocalSettings: FullSettingsPayload = .{},
+    localCustomSettings: [MAX_CUSTOM_SETTINGS]SettingsPayloadUnit = @splat(.{ .type = 0, .value = 0 }),
+    localCustomCount: u8 = 0,
+    remoteCustomSettings: [MAX_CUSTOM_SETTINGS]SettingsPayloadUnit = @splat(.{ .type = 0, .value = 0 }),
+    remoteCustomCount: u8 = 0,
+    remoteCustomIdentifiers: [MAX_CUSTOM_SETTINGS]u16 = @splat(0),
+    remoteCustomIdentifierCount: u8 = 0,
     rejectedStreams: u32 = 0,
     maxSessionMemory: u32 = 10, //this limit is in MB
     queuedDataSize: u64 = 0, // this is in bytes
@@ -987,7 +1012,7 @@ pub const H2FrameParser = struct {
                                 log("dataFrame flow control limited {} {} {} {} {} {}", .{ frame_remaining, this.remoteWindowSize, this.remoteUsedWindowSize, client.remoteWindowSize, client.remoteUsedWindowSize, max_size });
                                 // flow control limited: frame stays queued, nothing to clean up.
                                 // Return backpressure if the connection window is exhausted.
-                                return if (client.remoteWindowSize == client.remoteUsedWindowSize) .backpressure else .no_action;
+                                return if (client.remoteUsedWindowSize >= client.remoteWindowSize) .backpressure else .no_action;
                             }
                             if (max_size < frame_remaining) {
                                 // Break the frame into smaller chunks. Copy the sendable
@@ -1324,6 +1349,48 @@ pub const H2FrameParser = struct {
         }
     }
 
+    fn receiveSettingLimit(this: *const H2FrameParser, comptime field: []const u8) u32 {
+        // A peer can apply any submitted update before its ACK reaches us.
+        // Retain the largest valid allowance until that update is acknowledged.
+        var limit: u32 = @field(this.acknowledgedLocalSettings, field);
+        for (this.pendingLocalSettings.items) |snapshot| limit = @max(limit, @field(snapshot.standard, field));
+        return limit;
+    }
+
+    fn settingsSnapshot(this: *const H2FrameParser, standard: FullSettingsPayload, remote: bool) SettingsSnapshot {
+        return .{ .standard = standard, .custom = if (remote) this.remoteCustomSettings else this.localCustomSettings, .count = if (remote) this.remoteCustomCount else this.localCustomCount };
+    }
+
+    fn writeSettings(this: *H2FrameParser, snapshot: SettingsSnapshot, preface: bool) void {
+        var buffer: [24 + FrameHeader.byteSize + FullSettingsPayload.byteSize + MAX_CUSTOM_SETTINGS * SettingsPayloadUnit.byteSize]u8 = undefined;
+        var writer = fixedWriter(&buffer);
+        if (preface) _ = writeBytes(&writer, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+        var header = FrameHeader{ .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS), .flags = 0, .streamIdentifier = 0, .length = @intCast(FullSettingsPayload.byteSize + snapshot.count * SettingsPayloadUnit.byteSize) };
+        _ = header.write(@TypeOf(&writer), &writer);
+        _ = snapshot.standard.write(@TypeOf(&writer), &writer);
+        for (snapshot.custom[0..snapshot.count]) |unit| {
+            var encoded = unit;
+            h2_byteswap.byteSwapAllFields(SettingsPayloadUnit, &encoded);
+            _ = writeBytes(&writer, std.mem.asBytes(&encoded)[0..SettingsPayloadUnit.byteSize]);
+        }
+        const size = (if (preface) @as(usize, 24) else 0) + FrameHeader.byteSize + FullSettingsPayload.byteSize + snapshot.count * SettingsPayloadUnit.byteSize;
+        _ = this.write(buffer[0..size]);
+    }
+
+    fn updateRemoteCustom(this: *H2FrameParser, unit: SettingsPayloadUnit) void {
+        if (std.mem.indexOfScalar(u16, this.remoteCustomIdentifiers[0..this.remoteCustomIdentifierCount], unit.type) == null) return;
+        for (this.remoteCustomSettings[0..this.remoteCustomCount]) |*existing| {
+            if (existing.type == unit.type) {
+                existing.value = unit.value;
+                return;
+            }
+        }
+        if (this.remoteCustomCount < MAX_CUSTOM_SETTINGS) {
+            this.remoteCustomSettings[this.remoteCustomCount] = unit;
+            this.remoteCustomCount += 1;
+        }
+    }
+
     pub fn setSettings(this: *H2FrameParser, settings: FullSettingsPayload) bool {
         log("HTTP_FRAME_SETTINGS ack false", .{});
 
@@ -1332,22 +1399,11 @@ pub const H2FrameParser = struct {
             return false;
         }
 
-        var buffer: [FrameHeader.byteSize + FullSettingsPayload.byteSize]u8 = undefined;
-        @memset(&buffer, 0);
-        var writer = fixedWriter(&buffer);
-        var settingsHeader: FrameHeader = .{
-            .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
-            .flags = 0,
-            .streamIdentifier = 0,
-            .length = FullSettingsPayload.byteSize,
-        };
-        _ = settingsHeader.write(@TypeOf(&writer), &writer);
-
+        const snapshot = this.settingsSnapshot(settings, false);
+        bun.handleOom(this.pendingLocalSettings.append(this.allocator, snapshot));
         this.outstandingSettings += 1;
-
         this.localSettings = settings;
-        _ = this.localSettings.write(@TypeOf(&writer), &writer);
-        _ = this.write(&buffer);
+        this.writeSettings(snapshot, false);
         return true;
     }
 
@@ -1494,21 +1550,10 @@ pub const H2FrameParser = struct {
 
     pub fn sendPrefaceAndSettings(this: *H2FrameParser) void {
         log("sendPrefaceAndSettings", .{});
-        // PREFACE + Settings Frame
-        var preface_buffer: [24 + FrameHeader.byteSize + FullSettingsPayload.byteSize]u8 = undefined;
-        @memset(&preface_buffer, 0);
-        var writer = fixedWriter(&preface_buffer);
-        _ = writeBytes(&writer, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-        var settingsHeader: FrameHeader = .{
-            .type = @backingInt(FrameType.HTTP_FRAME_SETTINGS),
-            .flags = 0,
-            .streamIdentifier = 0,
-            .length = FullSettingsPayload.byteSize,
-        };
+        const snapshot = this.settingsSnapshot(this.localSettings, false);
+        bun.handleOom(this.pendingLocalSettings.append(this.allocator, snapshot));
         this.outstandingSettings += 1;
-        _ = settingsHeader.write(@TypeOf(&writer), &writer);
-        _ = this.localSettings.write(@TypeOf(&writer), &writer);
-        _ = this.write(&preface_buffer);
+        this.writeSettings(snapshot, true);
     }
 
     pub fn sendSettingsACK(this: *H2FrameParser) void {
@@ -1943,9 +1988,19 @@ pub const H2FrameParser = struct {
                 return content.end;
             }
             if (stream) |s| {
-                s.remoteWindowSize += windowSizeIncrement.uint31;
+                const updated = (protocol_state.Window{ .limit = s.remoteWindowSize, .consumed = s.remoteUsedWindowSize }).adjust(windowSizeIncrement.uint31) orelse {
+                    this.endStream(s, .FLOW_CONTROL_ERROR);
+                    return content.end;
+                };
+                s.remoteWindowSize = updated.limit;
+                s.remoteUsedWindowSize = updated.consumed;
             } else {
-                this.remoteWindowSize += windowSizeIncrement.uint31;
+                const updated = (protocol_state.Window{ .limit = this.remoteWindowSize, .consumed = this.remoteUsedWindowSize }).adjust(windowSizeIncrement.uint31) orelse {
+                    this.sendGoAway(0, .FLOW_CONTROL_ERROR, "Connection flow-control window exceeded", this.lastStreamID, true);
+                    return content.end;
+                };
+                this.remoteWindowSize = updated.limit;
+                this.remoteUsedWindowSize = updated.consumed;
             }
             log("windowSizeIncrement stream {} value {}", .{ frame.streamIdentifier, windowSizeIncrement });
             return content.end;
@@ -2033,7 +2088,7 @@ pub const H2FrameParser = struct {
             // Size = name length + value length + HPACK entry overhead per header
             headerListSize += header.name.len + header.value.len + HPACK_ENTRY_OVERHEAD;
             count += 1;
-            if (rejected or headerListSize > this.localSettings.maxHeaderListSize or this.maxHeaderListPairs < count) {
+            if (rejected or headerListSize > this.receiveSettingLimit("maxHeaderListSize") or this.maxHeaderListPairs < count) {
                 rejected = true;
                 continue;
             }
@@ -2126,7 +2181,7 @@ pub const H2FrameParser = struct {
             return data.len;
         };
 
-        if (frame.length > this.localSettings.maxFrameSize) {
+        if (frame.length > this.receiveSettingLimit("maxFrameSize")) {
             log("received data frame with length: {d} and max frame size: {d}", .{ frame.length, this.localSettings.maxFrameSize });
             this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "Invalid dataframe frame size", this.lastStreamID, true);
             return data.len;
@@ -2245,7 +2300,7 @@ pub const H2FrameParser = struct {
             this.sendGoAway(frame.streamIdentifier, ErrorCode.PROTOCOL_ERROR, "GoAway frame on stream", this.lastStreamID, true);
             return data.len;
         }
-        if (frame.length < 8 or frame.length > this.localSettings.maxFrameSize) {
+        if (frame.length < 8 or frame.length > this.receiveSettingLimit("maxFrameSize")) {
             this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "invalid GoAway frame size", this.lastStreamID, true);
             return data.len;
         }
@@ -2483,7 +2538,7 @@ pub const H2FrameParser = struct {
             header_offset += header.next;
             header_list_size += header.name.len + header.value.len + HPACK_ENTRY_OVERHEAD;
             field_count += 1;
-            if (rejected or header_list_size > this.localSettings.maxHeaderListSize or field_count > this.maxHeaderListPairs) {
+            if (rejected or header_list_size > this.receiveSettingLimit("maxHeaderListSize") or field_count > this.maxHeaderListPairs) {
                 rejected = true;
                 continue;
             }
@@ -2590,7 +2645,7 @@ pub const H2FrameParser = struct {
                 this.sendGoAway(frame.streamIdentifier, ErrorCode.PROTOCOL_ERROR, "Invalid promised stream id", this.lastStreamID, true);
                 return content.end;
             }
-            const local_window_size = if (this.outstandingSettings > 0) DEFAULT_WINDOW_SIZE else this.localSettings.initialWindowSize;
+            const local_window_size = this.acknowledgedLocalSettings.initialWindowSize;
             const promised_stream = Stream.new(Stream.init(
                 promised_id,
                 local_window_size,
@@ -2608,7 +2663,7 @@ pub const H2FrameParser = struct {
                 this.pendingHeaderBlock.reset();
                 bun.handleOom(this.pendingHeaderBlock.appendSlice(header_fragment));
                 this.globalThis.vm().reportExtraMemory(header_fragment.len);
-                if (this.pendingHeaderBlock.list.items.len > this.localSettings.maxHeaderListSize) {
+                if (this.pendingHeaderBlock.list.items.len > this.receiveSettingLimit("maxHeaderListSize")) {
                     this.pendingHeaderBlock.reset();
                     this.sendGoAway(frame.streamIdentifier, ErrorCode.ENHANCE_YOUR_CALM, "Compressed header block exceeds maxHeaderListSize", this.lastStreamID, true);
                     return content.end;
@@ -2649,7 +2704,7 @@ pub const H2FrameParser = struct {
             if (this.pendingPushStreamID != 0) {
                 bun.handleOom(this.pendingHeaderBlock.appendSlice(payload));
                 this.globalThis.vm().reportExtraMemory(payload.len);
-                if (this.pendingHeaderBlock.list.items.len > this.localSettings.maxHeaderListSize) {
+                if (this.pendingHeaderBlock.list.items.len > this.receiveSettingLimit("maxHeaderListSize")) {
                     this.pendingHeaderBlock.reset();
                     this.pendingPushStreamID = 0;
                     this.pendingHeaderFlags = 0;
@@ -2679,7 +2734,7 @@ pub const H2FrameParser = struct {
             }
             bun.handleOom(this.pendingHeaderBlock.appendSlice(payload));
             this.globalThis.vm().reportExtraMemory(payload.len);
-            if (this.pendingHeaderBlock.list.items.len > this.localSettings.maxHeaderListSize) {
+            if (this.pendingHeaderBlock.list.items.len > this.receiveSettingLimit("maxHeaderListSize")) {
                 this.pendingHeaderBlock.reset();
                 this.continuationStreamID = 0;
                 stream.isWaitingMoreHeaders = false;
@@ -2720,7 +2775,7 @@ pub const H2FrameParser = struct {
             return data.len;
         };
 
-        if (frame.length > this.localSettings.maxFrameSize) {
+        if (frame.length > this.receiveSettingLimit("maxFrameSize")) {
             this.sendGoAway(frame.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "invalid Headers frame size", this.lastStreamID, true);
             return data.len;
         }
@@ -2777,7 +2832,7 @@ pub const H2FrameParser = struct {
                 this.pendingHeaderBlock.reset();
                 bun.handleOom(this.pendingHeaderBlock.appendSlice(fragment));
                 this.globalThis.vm().reportExtraMemory(fragment.len);
-                if (this.pendingHeaderBlock.list.items.len > this.localSettings.maxHeaderListSize) {
+                if (this.pendingHeaderBlock.list.items.len > this.receiveSettingLimit("maxHeaderListSize")) {
                     this.pendingHeaderBlock.reset();
                     this.sendGoAway(frame.streamIdentifier, ErrorCode.ENHANCE_YOUR_CALM, "Compressed header block exceeds maxHeaderListSize", this.lastStreamID, true);
                     return content.end;
@@ -2810,6 +2865,22 @@ pub const H2FrameParser = struct {
         return data.len;
     }
 
+    fn applyRemoteInitialWindow(this: *H2FrameParser, old_size: u32, new_size: u32) bool {
+        const delta = @as(i64, new_size) - @as(i64, old_size);
+        if (delta == 0) return true;
+        var it = this.streams.valueIterator();
+        while (it.next()) |item| {
+            const stream = item.*;
+            const updated = (protocol_state.Window{ .limit = stream.remoteWindowSize, .consumed = stream.remoteUsedWindowSize }).adjust(delta) orelse {
+                this.sendGoAway(0, .FLOW_CONTROL_ERROR, "Stream window exceeded after SETTINGS", this.lastStreamID, true);
+                return false;
+            };
+            stream.remoteWindowSize = updated.limit;
+            stream.remoteUsedWindowSize = updated.consumed;
+        }
+        return true;
+    }
+
     pub fn handleSettingsFrame(this: *H2FrameParser, frame: FrameHeader, data: []const u8) usize {
         const isACK = frame.flags & @backingInt(SettingsFlags.ACK) != 0;
 
@@ -2830,32 +2901,25 @@ pub const H2FrameParser = struct {
                 // we received an ACK
                 log("settings frame ACK", .{});
 
-                // we can now write any request
-                if (this.outstandingSettings > 0) {
-                    this.outstandingSettings -= 1;
-
-                    // Per RFC 7540 Section 6.9.2: When INITIAL_WINDOW_SIZE changes, adjust
-                    // all existing stream windows by the difference. Now that our SETTINGS
-                    // is ACKed, the peer knows about our window size, so we can enforce it.
-                    if (this.outstandingSettings == 0 and this.localSettings.initialWindowSize != DEFAULT_WINDOW_SIZE) {
-                        const old_size: i64 = DEFAULT_WINDOW_SIZE;
-                        const new_size: i64 = this.localSettings.initialWindowSize;
-                        const delta = new_size - old_size;
-                        var it = this.streams.valueIterator();
-                        while (it.next()) |item| {
-                            const stream = item.*;
-                            // Adjust the stream's local window size by the delta
-                            if (delta >= 0) {
-                                stream.windowSize +|= @intCast(@as(u64, @intCast(delta)));
-                            } else {
-                                stream.windowSize -|= @intCast(@as(u64, @intCast(-delta)));
-                            }
+                // ACK order identifies the settings actually acknowledged,
+                // not the most recent update queued by the caller.
+                if (protocol_state.acknowledgeSettings(&this.outstandingSettings)) {
+                    const acknowledged = this.pendingLocalSettings.orderedRemove(0);
+                    const old_size = this.acknowledgedLocalSettings.initialWindowSize;
+                    const new_size = acknowledged.standard.initialWindowSize;
+                    const delta = @as(i64, new_size) - @as(i64, old_size);
+                    var it = this.streams.valueIterator();
+                    while (it.next()) |item| {
+                        const stream = item.*;
+                        if (delta >= 0) {
+                            stream.windowSize +|= @intCast(delta);
+                        } else {
+                            stream.windowSize -|= @intCast(-delta);
                         }
-                        log("adjusted stream windows by delta {} (old: {}, new: {})", .{ delta, old_size, new_size });
                     }
+                    this.acknowledgedLocalSettings = acknowledged.standard;
+                    this.dispatch(.onLocalSettings, acknowledged.toJS(this.handlers.globalObject));
                 }
-
-                this.dispatch(.onLocalSettings, this.localSettings.toJS(this.handlers.globalObject));
             } else {
                 defer _ = this.flush();
                 defer this.incrementWindowSizeIfNeeded();
@@ -2864,20 +2928,12 @@ pub const H2FrameParser = struct {
                 if (this.remoteSettings == null) {
 
                     // ok empty settings so default settings
-                    var remoteSettings: FullSettingsPayload = .{};
+                    const remoteSettings: FullSettingsPayload = .{};
                     this.remoteSettings = remoteSettings;
                     log("remoteSettings.initialWindowSize: {} {} {}", .{ remoteSettings.initialWindowSize, this.remoteUsedWindowSize, this.remoteWindowSize });
 
-                    if (remoteSettings.initialWindowSize >= this.remoteWindowSize) {
-                        var it = this.streams.valueIterator();
-                        while (it.next()) |item| {
-                            const stream = item.*;
-                            if (remoteSettings.initialWindowSize >= stream.remoteWindowSize) {
-                                stream.remoteWindowSize = remoteSettings.initialWindowSize;
-                            }
-                        }
-                    }
-                    this.dispatch(.onRemoteSettings, remoteSettings.toJS(this.handlers.globalObject));
+                    if (!this.applyRemoteInitialWindow(DEFAULT_WINDOW_SIZE, remoteSettings.initialWindowSize)) return 0;
+                    this.dispatch(.onRemoteSettings, this.settingsSnapshot(remoteSettings, true).toJS(this.handlers.globalObject));
                 }
             }
 
@@ -2888,6 +2944,7 @@ pub const H2FrameParser = struct {
             defer _ = this.flush();
             defer this.incrementWindowSizeIfNeeded();
             var remoteSettings: FullSettingsPayload = this.remoteSettings orelse .{};
+            const previous_initial_window = remoteSettings.initialWindowSize;
             var i: usize = 0;
             const payload = content.data;
             while (i < payload.len) {
@@ -2907,22 +2964,15 @@ pub const H2FrameParser = struct {
                     return content.end;
                 }
                 remoteSettings.updateWith(unit);
+                this.updateRemoteCustom(unit);
                 log("remoteSettings: {} {} isServer: {}", .{ setting_type, unit.value, this.isServer });
             }
             this.readBuffer.reset();
             this.remoteSettings = remoteSettings;
             this.sendSettingsACK();
             log("remoteSettings.initialWindowSize: {} {} {}", .{ remoteSettings.initialWindowSize, this.remoteUsedWindowSize, this.remoteWindowSize });
-            if (remoteSettings.initialWindowSize >= this.remoteWindowSize) {
-                var it = this.streams.valueIterator();
-                while (it.next()) |item| {
-                    const stream = item.*;
-                    if (remoteSettings.initialWindowSize >= stream.remoteWindowSize) {
-                        stream.remoteWindowSize = remoteSettings.initialWindowSize;
-                    }
-                }
-            }
-            this.dispatch(.onRemoteSettings, remoteSettings.toJS(this.handlers.globalObject));
+            if (!this.applyRemoteInitialWindow(previous_initial_window, remoteSettings.initialWindowSize)) return content.end;
+            this.dispatch(.onRemoteSettings, this.settingsSnapshot(remoteSettings, true).toJS(this.handlers.globalObject));
             return content.end;
         }
         // needs more data
@@ -2950,10 +3000,7 @@ pub const H2FrameParser = struct {
         // setting being applied AFTER receiving SETTINGS_ACK. Until then, the peer
         // hasn't seen our settings and uses the default window size.
         // So we must accept data up to DEFAULT_WINDOW_SIZE until our SETTINGS is ACKed.
-        const local_window_size = if (this.outstandingSettings > 0)
-            DEFAULT_WINDOW_SIZE
-        else
-            this.localSettings.initialWindowSize;
+        const local_window_size = this.acknowledgedLocalSettings.initialWindowSize;
         const stream = Stream.new(Stream.init(
             streamIdentifier,
             local_window_size,
@@ -2987,7 +3034,7 @@ pub const H2FrameParser = struct {
         if (this.streams.get(streamIdentifier)) |stream| return stream;
         if (streamIdentifier > this.lastPeerStreamID) this.lastPeerStreamID = streamIdentifier;
         if (streamIdentifier > this.lastStreamID) this.lastStreamID = streamIdentifier;
-        const local_window_size = if (this.outstandingSettings > 0) DEFAULT_WINDOW_SIZE else this.localSettings.initialWindowSize;
+        const local_window_size = this.acknowledgedLocalSettings.initialWindowSize;
         const stream = Stream.new(Stream.init(
             streamIdentifier,
             local_window_size,
@@ -3082,7 +3129,7 @@ pub const H2FrameParser = struct {
             this.remainingLength = header.length;
             log("new frame {} {} {} {}", .{ header.type, header.length, header.flags, header.streamIdentifier });
             if (!this.validateContinuationSequence(header)) return bytes.len;
-            if (header.length > this.localSettings.maxFrameSize) {
+            if (header.length > this.receiveSettingLimit("maxFrameSize")) {
                 this.currentFrame = null;
                 this.sendGoAway(header.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "Frame exceeds SETTINGS_MAX_FRAME_SIZE", this.lastStreamID, true);
                 return bytes.len;
@@ -3120,7 +3167,7 @@ pub const H2FrameParser = struct {
         this.currentFrame = header;
         this.remainingLength = header.length;
         if (!this.validateContinuationSequence(header)) return bytes.len;
-        if (header.length > this.localSettings.maxFrameSize) {
+        if (header.length > this.receiveSettingLimit("maxFrameSize")) {
             this.currentFrame = null;
             this.sendGoAway(header.streamIdentifier, ErrorCode.FRAME_SIZE_ERROR, "Frame exceeds SETTINGS_MAX_FRAME_SIZE", this.lastStreamID, true);
             return bytes.len;
@@ -3173,13 +3220,16 @@ pub const H2FrameParser = struct {
             return globalObject.throw("Expected settings to be a object", .{});
         }
 
+        var settings = this.localSettings;
+        var custom_units = this.localCustomSettings;
+        var custom_count = this.localCustomCount;
         if (try options.get(globalObject, "headerTableSize")) |headerTableSize| {
             if (headerTableSize.isNumber()) {
                 const value = headerTableSize.asNumber();
                 if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64) {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected headerTableSize to be a number between 0 and 2^32-1", .{}).throw();
                 }
-                this.localSettings.headerTableSize = @intFromFloat(value);
+                settings.headerTableSize = @intFromFloat(value);
             } else if (!headerTableSize.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected headerTableSize to be a number", .{}).throw();
             }
@@ -3187,7 +3237,7 @@ pub const H2FrameParser = struct {
 
         if (try options.get(globalObject, "enablePush")) |enablePush| {
             if (enablePush.isBoolean()) {
-                this.localSettings.enablePush = if (enablePush.asBoolean()) 1 else 0;
+                settings.enablePush = if (enablePush.asBoolean()) 1 else 0;
             } else if (!enablePush.isUndefined()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE, "Expected enablePush to be a boolean", .{}).throw();
             }
@@ -3200,7 +3250,7 @@ pub const H2FrameParser = struct {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected initialWindowSize to be a number between 0 and 2^32-1", .{}).throw();
                 }
                 log("initialWindowSize: {d}", .{@as(u32, @intFromFloat(value))});
-                this.localSettings.initialWindowSize = @intFromFloat(value);
+                settings.initialWindowSize = @intFromFloat(value);
             } else if (!initialWindowSize.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected initialWindowSize to be a number", .{}).throw();
             }
@@ -3212,7 +3262,7 @@ pub const H2FrameParser = struct {
                 if (value < 16384 or value > MAX_FRAME_SIZE_F64) {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxFrameSize to be a number between 16,384 and 2^24-1", .{}).throw();
                 }
-                this.localSettings.maxFrameSize = @intFromFloat(value);
+                settings.maxFrameSize = @intFromFloat(value);
             } else if (!maxFrameSize.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxFrameSize to be a number", .{}).throw();
             }
@@ -3224,7 +3274,7 @@ pub const H2FrameParser = struct {
                 if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64) {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxConcurrentStreams to be a number between 0 and 2^32-1", .{}).throw();
                 }
-                this.localSettings.maxConcurrentStreams = @intFromFloat(value);
+                settings.maxConcurrentStreams = @intFromFloat(value);
             } else if (!maxConcurrentStreams.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxConcurrentStreams to be a number", .{}).throw();
             }
@@ -3236,7 +3286,7 @@ pub const H2FrameParser = struct {
                 if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64) {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxHeaderListSize to be a number between 0 and 2^32-1", .{}).throw();
                 }
-                this.localSettings.maxHeaderListSize = @intFromFloat(value);
+                settings.maxHeaderListSize = @intFromFloat(value);
             } else if (!maxHeaderListSize.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxHeaderListSize to be a number", .{}).throw();
             }
@@ -3248,7 +3298,7 @@ pub const H2FrameParser = struct {
                 if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64) {
                     return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxHeaderSize to be a number between 0 and 2^32-1", .{}).throw();
                 }
-                this.localSettings.maxHeaderListSize = @intFromFloat(value);
+                settings.maxHeaderListSize = @intFromFloat(value);
             } else if (!maxHeaderSize.isEmptyOrUndefinedOrNull()) {
                 return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected maxHeaderSize to be a number", .{}).throw();
             }
@@ -3288,8 +3338,21 @@ pub const H2FrameParser = struct {
                     const setting_value = iter.value;
                     if (setting_value.isNumber()) {
                         const value = setting_value.asNumber();
-                        if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64) {
+                        if (value < 0 or value > MAX_HEADER_TABLE_SIZE_F64 or !std.math.isFinite(value) or @floor(value) != value) {
                             return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Invalid custom setting value", .{}).throw();
+                        }
+                        const unit = SettingsPayloadUnit{ .type = @intCast(setting_id), .value = @intFromFloat(value) };
+                        var existing_index: ?usize = null;
+                        for (custom_units[0..custom_count], 0..) |existing, index| if (existing.type == unit.type) {
+                            existing_index = index;
+                            break;
+                        };
+                        if (existing_index) |index| {
+                            custom_units[index] = unit;
+                        } else {
+                            if (custom_count == MAX_CUSTOM_SETTINGS) return globalObject.ERR(.HTTP2_TOO_MANY_CUSTOM_SETTINGS, "Number of custom settings exceeds MAX_ADDITIONAL_SETTINGS", .{}).throw();
+                            custom_units[custom_count] = unit;
+                            custom_count += 1;
                         }
                     } else {
                         return globalObject.ERR(.HTTP2_INVALID_SETTING_VALUE_RangeError, "Expected custom setting value to be a number", .{}).throw();
@@ -3297,6 +3360,9 @@ pub const H2FrameParser = struct {
                 }
             }
         }
+        this.localSettings = settings;
+        this.localCustomSettings = custom_units;
+        this.localCustomCount = custom_count;
         return;
     }
 
@@ -3330,9 +3396,6 @@ pub const H2FrameParser = struct {
         }
         const oldWindowSize = this.windowSize;
         this.windowSize = windowSizeValue;
-        if (this.localSettings.initialWindowSize < windowSizeValue) {
-            this.localSettings.initialWindowSize = windowSizeValue;
-        }
         // Send a connection-level WINDOW_UPDATE frame to the peer so it knows
         // about the increased window.  Per RFC 9113 Section 6.9, the
         // INITIAL_WINDOW_SIZE setting only applies to stream-level windows;
@@ -3341,14 +3404,6 @@ pub const H2FrameParser = struct {
             const increment: u31 = @truncate(windowSizeValue - oldWindowSize);
             this.sendWindowUpdate(0, UInt31WithReserved.init(increment, false));
         }
-        var it = this.streams.valueIterator();
-        while (it.next()) |item| {
-            const stream = item.*;
-            if (stream.usedWindowSize > windowSizeValue) {
-                continue;
-            }
-            stream.windowSize = windowSizeValue;
-        }
         return .js_undefined;
     }
 
@@ -3356,13 +3411,12 @@ pub const H2FrameParser = struct {
         jsc.markBinding(@src());
         var result = JSValue.createEmptyObject(globalObject, 9);
         result.put(globalObject, jsc.ZigString.static("effectiveLocalWindowSize"), jsc.JSValue.jsNumber(this.windowSize));
-        result.put(globalObject, jsc.ZigString.static("effectiveRecvDataLength"), jsc.JSValue.jsNumber(this.windowSize - this.usedWindowSize));
+        result.put(globalObject, jsc.ZigString.static("effectiveRecvDataLength"), jsc.JSValue.jsNumber(this.usedWindowSize));
         result.put(globalObject, jsc.ZigString.static("nextStreamID"), jsc.JSValue.jsNumber(this.getNextStreamID()));
         result.put(globalObject, jsc.ZigString.static("lastProcStreamID"), jsc.JSValue.jsNumber(this.lastStreamID));
 
-        const settings: FullSettingsPayload = this.remoteSettings orelse .{};
-        result.put(globalObject, jsc.ZigString.static("remoteWindowSize"), jsc.JSValue.jsNumber(settings.initialWindowSize));
-        result.put(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(this.localSettings.initialWindowSize));
+        result.put(globalObject, jsc.ZigString.static("remoteWindowSize"), jsc.JSValue.jsNumber(this.remoteWindowSize -| this.remoteUsedWindowSize));
+        result.put(globalObject, jsc.ZigString.static("localWindowSize"), jsc.JSValue.jsNumber(this.acknowledgedLocalSettings.initialWindowSize));
         result.put(globalObject, jsc.ZigString.static("deflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
         result.put(globalObject, jsc.ZigString.static("inflateDynamicTableSize"), jsc.JSValue.jsNumber(this.localSettings.headerTableSize));
         result.put(globalObject, jsc.ZigString.static("outboundQueueSize"), jsc.JSValue.jsNumber(this.outboundQueueSize));
@@ -5442,6 +5496,24 @@ pub const H2FrameParser = struct {
                 }
             }
         }
+        const remote_ids = try options.get(globalObject, "remoteCustomSettings") orelse blk: {
+            const settings_options = try options.get(globalObject, "settings") orelse break :blk .js_undefined;
+            break :blk try settings_options.get(globalObject, "remoteCustomSettings") orelse .js_undefined;
+        };
+        if (!remote_ids.isUndefinedOrNull()) {
+            if (!remote_ids.jsType().isArray()) return globalObject.throwInvalidArgumentTypeValue("remoteCustomSettings", "Array", remote_ids);
+            var ids = try remote_ids.arrayIterator(globalObject);
+            while (try ids.next()) |id| {
+                if (!id.isNumber()) return globalObject.throwInvalidArgumentTypeValue("remoteCustomSettings entry", "number", id);
+                const value = id.asNumber();
+                if (!std.math.isFinite(value) or value < 0 or value > 65535 or @floor(value) != value) return globalObject.throwInvalidArguments("Invalid custom setting identifier", .{});
+                const identifier: u16 = @intFromFloat(value);
+                if (std.mem.indexOfScalar(u16, this.remoteCustomIdentifiers[0..this.remoteCustomIdentifierCount], identifier) != null) continue;
+                if (this.remoteCustomIdentifierCount == MAX_CUSTOM_SETTINGS) return globalObject.ERR(.HTTP2_TOO_MANY_CUSTOM_SETTINGS, "Number of custom settings exceeds MAX_ADDITIONAL_SETTINGS", .{}).throw();
+                this.remoteCustomIdentifiers[this.remoteCustomIdentifierCount] = identifier;
+                this.remoteCustomIdentifierCount += 1;
+            }
+        }
         var is_server = false;
         if (try options.get(globalObject, "type")) |type_js| {
             is_server = type_js.isNumber() and type_js.to(u32) == 0;
@@ -5486,6 +5558,8 @@ pub const H2FrameParser = struct {
 
         this.readBuffer.deinit();
         this.pendingHeaderBlock.deinit();
+        this.pendingLocalSettings.clearAndFree(this.allocator);
+        this.outstandingSettings = 0;
         this.writeBuffer.clearAndFree(this.allocator);
         this.writeBufferOffset = 0;
 

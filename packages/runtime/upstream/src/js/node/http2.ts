@@ -3183,8 +3183,18 @@ function scheduleDestroyIfNotDestroyed(target) {
     setImmediate(destroyIfNotDestroyedNT, target);
   }
 }
-function settingsCallbackNT(self, callback, start) {
-  callback(null, self.localSettings, Date.now() - start);
+function settingsCallbackNT(callback, start, settings) {
+  callback(null, settings, Date.now() - start);
+}
+function cancelPendingSettings(callbacks) {
+  for (const pending of callbacks) {
+    if (pending) {
+      const error = new Error("HTTP2 SETTINGS cancelled");
+      error.code = "ERR_HTTP2_SETTINGS_CANCEL";
+      process.nextTick(pending[0], error);
+    }
+  }
+  callbacks.length = 0;
 }
 function rejectNoPayloadContentLengthNT(req) {
   req.rstCode = constants.NGHTTP2_PROTOCOL_ERROR;
@@ -3467,6 +3477,7 @@ class ServerHttp2Session extends Http2Session {
     maxFrameSize: 16384,
     maxHeaderListSize: 65535,
     maxHeaderSize: 65535,
+    customSettings: {},
   };
   #encrypted: boolean = false;
   #pendingSettingsAck: boolean = true;
@@ -3474,6 +3485,7 @@ class ServerHttp2Session extends Http2Session {
   // SETTINGS counts as the first). node destroys the session with
   // ERR_HTTP2_MAX_PENDING_SETTINGS_ACK when this exceeds maxOutstandingSettings.
   #pendingSettingsAckCount: number = 1;
+  #settingsCallbacks: Array<[Function, number] | null> = [null];
   #maxOutstandingSettings: number = 10;
   #remoteSettings: Settings | null = null;
   #pingCallbacks: Array<[Function, number]> | null = null;
@@ -3551,7 +3563,7 @@ class ServerHttp2Session extends Http2Session {
         self.#connections--;
         if (stream.id % 2 === 1) self.#peerInitiatedStreams--;
         stream.destroy();
-        if (self.#connections === 0 && self.#closed) {
+        if (self.#connections === 0 && self.#closed && self.#pendingSettingsAckCount === 0) {
           self.destroy();
         }
       } else if (state === 5) {
@@ -3618,9 +3630,12 @@ class ServerHttp2Session extends Http2Session {
     localSettings(self: ServerHttp2Session, settings: Settings) {
       if (!self) return;
       self.#localSettings = settings;
-      self.#pendingSettingsAck = false;
       if (self.#pendingSettingsAckCount > 0) self.#pendingSettingsAckCount--;
+      self.#pendingSettingsAck = self.#pendingSettingsAckCount > 0;
+      const pending = self.#settingsCallbacks.shift();
+      if (pending) process.nextTick(settingsCallbackNT, pending[0], pending[1], settings);
       self.emit("localSettings", settings);
+      if (self.#closed && self.#connections === 0 && self.#pendingSettingsAckCount === 0) scheduleDestroyIfNotDestroyed(self);
     },
     remoteSettings(self: ServerHttp2Session, settings: Settings) {
       if (!self) return;
@@ -3839,6 +3854,7 @@ class ServerHttp2Session extends Http2Session {
     if (options?.settings !== undefined) {
       validateSettings(options.settings);
     }
+    this.#localSettings = { ...this.#localSettings, ...options?.settings, enablePush: false, customSettings: { ...options?.settings?.customSettings } };
     this.#parser = new H2FrameParser({
       native: nativeSocket,
       context: this,
@@ -4018,10 +4034,14 @@ class ServerHttp2Session extends Http2Session {
       return;
     }
     this.#pendingSettingsAck = true;
-    this.#parser?.settings(settings);
-    if (typeof callback === "function") {
-      const start = Date.now();
-      this.once("localSettings", settingsCallbackNT.bind(null, this, callback, start));
+    this.#settingsCallbacks.push(typeof callback === "function" ? [callback, Date.now()] : null);
+    try {
+      this.#parser?.settings(settings);
+    } catch (error) {
+      this.#settingsCallbacks.pop();
+      this.#pendingSettingsAckCount--;
+      this.#pendingSettingsAck = this.#pendingSettingsAckCount > 0;
+      throw error;
     }
   }
 
@@ -4041,7 +4061,7 @@ class ServerHttp2Session extends Http2Session {
     this.goaway(constants.NGHTTP2_NO_ERROR, 0, Buffer.alloc(0));
     this[kGoawaySent] = true;
     this.#parser?.flush?.();
-    if (this.#connections === 0) {
+    if (this.#connections === 0 && this.#pendingSettingsAckCount === 0) {
       setImmediate(destroyIfNotDestroyedNT, this);
     }
   }
@@ -4053,6 +4073,7 @@ class ServerHttp2Session extends Http2Session {
     }
     cancelPendingPings(this.#pingCallbacks);
     this.#pingCallbacks = null;
+    cancelPendingSettings(this.#settingsCallbacks);
     if (typeof error === "number") {
       code = error;
       error = code !== NGHTTP2_NO_ERROR ? $ERR_HTTP2_SESSION_ERROR(code) : undefined;
@@ -4156,6 +4177,7 @@ class ClientHttp2Session extends Http2Session {
     maxFrameSize: 16384,
     maxHeaderListSize: 65535,
     maxHeaderSize: 65535,
+    customSettings: {},
   };
   #encrypted: boolean = false;
   #pendingSettingsAck: boolean = true;
@@ -4163,6 +4185,7 @@ class ClientHttp2Session extends Http2Session {
   // SETTINGS counts as the first). node destroys the session with
   // ERR_HTTP2_MAX_PENDING_SETTINGS_ACK when this exceeds maxOutstandingSettings.
   #pendingSettingsAckCount: number = 1;
+  #settingsCallbacks: Array<[Function, number] | null> = [null];
   #maxOutstandingSettings: number = 10;
   #remoteSettings: Settings | null = null;
   #pingCallbacks: Array<[Function, number]> | null = null;
@@ -4280,7 +4303,7 @@ class ClientHttp2Session extends Http2Session {
         } else {
           stream.destroy();
         }
-        if (self.#connections === 0 && self.#closed) {
+        if (self.#connections === 0 && self.#closed && self.#pendingSettingsAckCount === 0) {
           self.destroy();
         }
       } else if (state === 5) {
@@ -4349,9 +4372,12 @@ class ClientHttp2Session extends Http2Session {
     localSettings(self: ClientHttp2Session, settings: Settings) {
       if (!self) return;
       self.#localSettings = settings;
-      self.#pendingSettingsAck = false;
       if (self.#pendingSettingsAckCount > 0) self.#pendingSettingsAckCount--;
+      self.#pendingSettingsAck = self.#pendingSettingsAckCount > 0;
+      const pending = self.#settingsCallbacks.shift();
+      if (pending) process.nextTick(settingsCallbackNT, pending[0], pending[1], settings);
       self.emit("localSettings", settings);
+      if (self.#closed && self.#connections === 0 && self.#pendingSettingsAckCount === 0) scheduleDestroyIfNotDestroyed(self);
     },
     remoteSettings(self: ClientHttp2Session, settings: Settings) {
       if (!self) return;
@@ -4686,10 +4712,14 @@ class ClientHttp2Session extends Http2Session {
       return;
     }
     this.#pendingSettingsAck = true;
-    this.#parser?.settings(settings);
-    if (typeof callback === "function") {
-      const start = Date.now();
-      this.once("localSettings", settingsCallbackNT.bind(null, this, callback, start));
+    this.#settingsCallbacks.push(typeof callback === "function" ? [callback, Date.now()] : null);
+    try {
+      this.#parser?.settings(settings);
+    } catch (error) {
+      this.#settingsCallbacks.pop();
+      this.#pendingSettingsAckCount--;
+      this.#pendingSettingsAck = this.#pendingSettingsAckCount > 0;
+      throw error;
     }
   }
 
@@ -4803,6 +4833,7 @@ class ClientHttp2Session extends Http2Session {
     if (options?.settings !== undefined) {
       validateSettings(options.settings);
     }
+    this.#localSettings = { ...this.#localSettings, ...options?.settings, customSettings: { ...options?.settings?.customSettings } };
     this.#parser = new H2FrameParser({
       native: nativeSocket,
       context: this,
@@ -4832,7 +4863,7 @@ class ClientHttp2Session extends Http2Session {
     this.goaway(constants.NGHTTP2_NO_ERROR, 0, Buffer.alloc(0));
     this[kGoawaySent] = true;
     this.#parser?.flush?.();
-    if (this.#connections === 0) {
+    if (this.#connections === 0 && this.#pendingSettingsAckCount === 0) {
       setImmediate(destroyIfNotDestroyedNT, this);
     }
   }
@@ -4844,6 +4875,7 @@ class ClientHttp2Session extends Http2Session {
     }
     cancelPendingPings(this.#pingCallbacks);
     this.#pingCallbacks = null;
+    cancelPendingSettings(this.#settingsCallbacks);
     if (typeof error === "number") {
       code = error;
       error = code !== constants.NGHTTP2_NO_ERROR ? $ERR_HTTP2_SESSION_ERROR(code) : undefined;
