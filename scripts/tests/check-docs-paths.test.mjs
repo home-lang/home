@@ -38,14 +38,17 @@ describe("documentation path policy", () => {
     const result = checkDocsPaths(root);
 
     expect(result.files.length).toBeGreaterThan(10);
+    expect(
+      result.files.some((file) => file.endsWith("bun-native-create-accounting-baseline.json")),
+    ).toBeTrue();
     expect(result.violations).toEqual([]);
   });
 
-  test("fails the command when a leaked home path reaches the corpus", () => {
+  test("fails the command when a leaked home path reaches JSON documentation", () => {
     const temporary = mkdtempSync(join(tmpdir(), "home-doc-paths-"));
     try {
       mkdirSync(join(temporary, "docs"));
-      writeFileSync(join(temporary, "docs", "leak.md"), "/Users/alice/Code/home\n");
+      writeFileSync(join(temporary, "docs", "leak.json"), '{"root":"/Users/alice/Code/home"}\n');
 
       const command = Bun.spawnSync([
         process.execPath,
@@ -54,7 +57,7 @@ describe("documentation path policy", () => {
       ]);
 
       expect(command.exitCode).toBe(1);
-      expect(command.stderr.toString()).toContain("docs/leak.md:1:1 contains /Users/alice");
+      expect(command.stderr.toString()).toContain("docs/leak.json:1:10 contains /Users/alice");
     } finally {
       rmSync(temporary, { force: true, recursive: true });
     }

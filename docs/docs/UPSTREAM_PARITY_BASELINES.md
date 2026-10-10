@@ -10,6 +10,19 @@ latest official upstream and plan tasks from that diff" workflow. It records
 where Home ported *from* for each upstream, how to compute the live delta, and
 how to triage the result.
 
+## Portable paths in retained baselines
+
+Published Markdown and JSON documentation must not expose a contributor's
+home-directory layout. Retained manifests use `<repo>` for the Home checkout,
+repository-relative paths where a working directory is already explicit, and
+`~/Code/...` for external reference checkouts. Path normalization changes only
+metadata: recorded hashes, measurements, and compressed raw artifacts remain
+unchanged.
+
+Run `bun run check:docs-paths` before publishing a new baseline. The check
+scans `README.md` plus every `.md` and `.json` file below `docs/`, while keeping
+generic examples such as `/Users/username` and `/home/user` valid.
+
 | Upstream | Pin (where Home ported from) | Pin location | Reference checkout | Diff computable today? |
 |---|---|---|---|---|
 | **Bun** (engine) | `fd0b6f1a271fca0b8124b69f230b100f4d636af6` | `packages/runtime/UPSTREAM_SHA.txt` (enforced by `scripts/sync-bun-tests.sh`) | `~/Code/bun` | ✅ yes — after `git fetch` |

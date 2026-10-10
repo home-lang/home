@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { extname, relative, resolve, sep } from "node:path";
 
 const allowedPlaceholderUsers = new Set(["...", "user", "username"]);
+const documentationExtensions = new Set([".json", ".md"]);
 const posixHomePattern = /(\/(?:Users|home)\/([A-Za-z0-9._-]+))(?=\/|\s|$|["'`<>),.;:])/g;
 const windowsHomePattern = /([A-Za-z]:\\Users\\([A-Za-z0-9._-]+))(?=\\|\s|$|["'`<>),.;:])/g;
 
@@ -16,15 +17,15 @@ function normalizedRelativePath(root, file) {
   return relative(root, file).split(sep).join("/");
 }
 
-function markdownFilesBelow(directory) {
+function documentationFilesBelow(directory) {
   const files = [];
   if (!existsSync(directory)) return files;
 
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...markdownFilesBelow(path));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(...documentationFilesBelow(path));
+    } else if (entry.isFile() && documentationExtensions.has(extname(entry.name))) {
       files.push(path);
     }
   }
@@ -56,7 +57,7 @@ export function findPersonalHomePaths(text, file = "<input>") {
 }
 
 export function checkDocsPaths(root) {
-  const files = markdownFilesBelow(resolve(root, "docs"));
+  const files = documentationFilesBelow(resolve(root, "docs"));
   const readme = resolve(root, "README.md");
   if (existsSync(readme)) files.push(readme);
   files.sort();
@@ -87,5 +88,5 @@ if (import.meta.main) {
     process.exit(1);
   }
 
-  console.log(`Documentation paths are portable (${files.length} Markdown files checked).`);
+  console.log(`Documentation paths are portable (${files.length} Markdown/JSON files checked).`);
 }
