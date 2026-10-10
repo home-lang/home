@@ -1912,12 +1912,22 @@ credit. The final executable SHA256 and complete case-level results are in
 Main integration contains documentation/evidence changes only.
 
 This completes core builtin body/scaffolding generation for the recorded ABI,
-not the remaining registry modules or native dependency/object graph. IPC
-sending still lacks the pinned serializer's handle support, and received
-net.Socket/dgram.Socket variants remain unimplemented; listener receipt here
-does not establish full IPC or Windows parity. Remaining send-side and received
+not the remaining registry modules or native dependency/object graph. At this earlier checkpoint, IPC
+sending lacked handle support and received net.Socket/dgram.Socket variants
+remained unimplemented; listener receipt alone did not establish full IPC
+or Windows parity. The next checkpoint implements the basic socket/datagram paths. Remaining send-side and received
 socket/datagram variants are tracked in
 [#860](https://github.com/home-lang/home/issues/860). All-platform/ASAN execution,
 release memory work in [#855](https://github.com/home-lang/home/issues/855),
 original pending outcomes and full logical Bun parity under
 [#66](https://github.com/home-lang/home/issues/66) remain unfinished.
+
+### Native IPC sockets and datagrams (2026-10-09)
+
+Home now generates `node:net` and `node:dgram` from its owned sources and compiles the IPC C++ serializer bridge. `node:net` is synchronized with the pinned Bun source before ownership, with native attachment for transferred readable/writable descriptors and support for descriptor zero. Bare Zig factory dispatch validates its encoded-value adapter, source identity, declaration, wrapper and unique dispatch case.
+
+IPC serialization transfers listeners, TCP sockets and UDP sockets through real native descriptors. The send queue owns a duplicated descriptor until acknowledgement, attaches SCM_RIGHTS only to the first positive write, resets the cursor when retransmitting, closes the duplicate on all terminal paths and releases transferred TCP ownership after ACK unless `keepOpen` is requested. Rejected handles and disconnects fail pending callbacks; failed serialization does not leave a partial queued frame. Received TCP handles attach to the native socket lifecycle, and received UDP handles adopt the native poll lifecycle.
+
+Both original 11-suite runs validate 316 registered passes, zero failures and four original skips. All 36 audited pinned test/fixture files match. The final Debug build succeeds 31/31 steps (5,658 MB peak tree footprint under the 8,192 MB bound); generator/ABI checks pass 45 tests and 767 assertions. Eight native protocol controls pass between Node/Home and Home/Home. Controls cover listener receipt, 2 MiB envelopes, both TCP ownership modes, closing the original UDP socket before using the receiver's copy, NACK retransmission/exhaustion, messages queued behind a handle, disconnect callbacks and rejection of ordinary-file descriptors without consuming them. Raw captures, journals, JUnit, failed attempts, generated sources and immutable source snapshots are retained in the [SHA256 evidence manifest](./bun-port-evidence/2026-10-09-ipc-socket-handles/manifest.json). Targeted Pickier source checks pass; the repository-wide scan stops at its safety limit of 165,616 files. The source is [31f4be120](https://github.com/home-lang/home/commit/31f4be120).
+
+This is a bounded IPC checkpoint under #66 and #860. Windows handle transport, cluster connection tracking, malformed/closed handles, GC/stress, complete native and registry ownership, the entire Bun suite, Release/ASAN and other-platform parity remain open. Original skips receive no passing credit.
