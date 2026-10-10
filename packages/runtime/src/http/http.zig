@@ -190,6 +190,10 @@ pub fn onOpen(
             assert(is_ssl == client.url.isHTTPS());
         }
     }
+    if (client.resource_connect_start_ns != 0 and client.resource_connect_end_ns == 0) {
+        client.resource_connect_end_ns = bun.timespec.now(.force_real_time).ns();
+        if (comptime is_ssl) client.resource_tls_start_ns = client.resource_connect_end_ns;
+    }
     client.registerAbortTracker(is_ssl, socket);
     log("Connected {s} \n", .{client.url.href});
 
@@ -732,6 +736,9 @@ resource_first_interim_ns: u64 = 0,
 resource_redirect_start_ns: u64 = 0,
 resource_redirect_end_ns: u64 = 0,
 resource_hop_start_ns: u64 = 0,
+resource_connect_start_ns: u64 = 0,
+resource_connect_end_ns: u64 = 0,
+resource_tls_start_ns: u64 = 0,
 
 tls_props: ?SSLConfig.SharedPtr = null,
 /// The custom SSL context used for this request (null = default context).
@@ -1289,6 +1296,9 @@ pub fn start(this: *HTTPClient, body: HTTPRequestBody, body_out_str: *MutableStr
     this.resource_response_start_ns = 0;
     this.resource_first_interim_ns = 0;
     this.resource_hop_start_ns = bun.timespec.now(.force_real_time).ns();
+    this.resource_connect_start_ns = 0;
+    this.resource_connect_end_ns = 0;
+    this.resource_tls_start_ns = 0;
 
     if (this.isHTTPS()) {
         this.start_(true);
@@ -2635,6 +2645,9 @@ pub const HTTPClientResult = struct {
     resource_redirect_start_ns: u64 = 0,
     resource_redirect_end_ns: u64 = 0,
     resource_hop_start_ns: u64 = 0,
+    resource_connect_start_ns: u64 = 0,
+    resource_connect_end_ns: u64 = 0,
+    resource_tls_start_ns: u64 = 0,
     resource_encoded_body_size: ?usize = null,
     has_more: bool = false,
     redirected: bool = false,
@@ -2738,6 +2751,9 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
             .resource_redirect_start_ns = this.resource_redirect_start_ns,
             .resource_redirect_end_ns = this.resource_redirect_end_ns,
             .resource_hop_start_ns = this.resource_hop_start_ns,
+            .resource_connect_start_ns = this.resource_connect_start_ns,
+            .resource_connect_end_ns = this.resource_connect_end_ns,
+            .resource_tls_start_ns = this.resource_tls_start_ns,
             .resource_encoded_body_size = this.state.total_body_received,
             .metadata = metadata,
             .body = this.state.body_out_str,
@@ -2759,6 +2775,9 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
         .resource_redirect_start_ns = this.resource_redirect_start_ns,
         .resource_redirect_end_ns = this.resource_redirect_end_ns,
         .resource_hop_start_ns = this.resource_hop_start_ns,
+        .resource_connect_start_ns = this.resource_connect_start_ns,
+        .resource_connect_end_ns = this.resource_connect_end_ns,
+        .resource_tls_start_ns = this.resource_tls_start_ns,
         .resource_encoded_body_size = this.state.total_body_received,
         .body = this.state.body_out_str,
         .metadata = null,

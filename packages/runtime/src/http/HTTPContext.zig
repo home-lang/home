@@ -398,6 +398,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                     // handshake completed but we may have ssl errors
                     client.flags.did_have_handshaking_error = handshake_error.error_no != 0;
                     if (handshake_success) {
+                        if (client.resource_connect_start_ns != 0) client.resource_connect_end_ns = bun.timespec.now(.force_real_time).ns();
                         if (client.flags.reject_unauthorized) {
                             // only reject the connection if reject_unauthorized == true
                             if (client.flags.did_have_handshaking_error) {
@@ -828,6 +829,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                 }
             }
 
+            if (client.http_proxy == null) client.resource_connect_start_ns = bun.timespec.now(.force_real_time).ns();
             const socket = try HTTPSocket.connectGroup(
                 &this.group,
                 kind,

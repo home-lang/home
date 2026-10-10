@@ -487,6 +487,13 @@ pub const FetchTasklet = struct {
         timing.putZigString(global, jsc.ZigString.static("finalNetworkResponseStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_response_start_ns)));
         timing.putZigString(global, jsc.ZigString.static("encodedBodySize"), JSValue.jsNumber(encoded_size));
         timing.putZigString(global, jsc.ZigString.static("decodedBodySize"), JSValue.jsNumber(this.resource_decoded_body_size));
+        const connection = JSValue.createEmptyObject(global, 3);
+        connection.protect();
+        defer connection.unprotect();
+        if (this.result.resource_connect_start_ns != 0) connection.putZigString(global, jsc.ZigString.static("connectionStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_connect_start_ns)));
+        if (this.result.resource_connect_end_ns != 0) connection.putZigString(global, jsc.ZigString.static("connectionEndTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_connect_end_ns)));
+        if (this.result.resource_tls_start_ns != 0) connection.putZigString(global, jsc.ZigString.static("secureConnectionStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_tls_start_ns)));
+        timing.putZigString(global, jsc.ZigString.static("finalConnectionTimingInfo"), connection);
         const body = JSValue.createEmptyObject(global, 2);
         body.protect();
         defer body.unprotect();
