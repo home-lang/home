@@ -87,3 +87,16 @@ export function replaceModuleLiteral(header: string, name: string, replacement: 
   if (matches.length !== 1) throw new Error(`Expected exactly one generated literal for ${name}`)
   return header.replace(pattern, () => replacement)
 }
+
+
+export function assertRegistryOwnership(abi: Map<string, number>, modules: readonly string[]): void {
+  const boundary = requiredId(abi, 'InternalForTesting')
+  const expected = new Set([...abi].filter(([, id]) => id < boundary).map(([name]) => name))
+  const owned = modules.map(moduleEnum)
+  if (new Set(owned).size !== owned.length) throw new Error('Duplicate owned registry identity')
+  const missing = [...expected].filter(name => !owned.includes(name))
+  const extra = owned.filter(name => !expected.has(name))
+  if (missing.length || extra.length) {
+    throw new Error(`Registry ownership mismatch: missing ${missing.join(', ')}; extra ${extra.join(', ')}`)
+  }
+}

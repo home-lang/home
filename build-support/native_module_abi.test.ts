@@ -95,3 +95,13 @@ case 84: return ${target}(global);`
   })
 
 })
+
+
+test('complete registry ownership rejects omissions, extras and duplicate identities', async () => {
+  const { assertRegistryOwnership } = await import('./native_module_abi')
+  const abi = new Map([['NodeEvents', 0], ['NodeWasi', 1], ['InternalForTesting', 2], ['NodeBuffer', 3]])
+  expect(() => assertRegistryOwnership(abi, ['node/events.ts', 'node/wasi.ts'])).not.toThrow()
+  expect(() => assertRegistryOwnership(abi, ['node/events.ts'])).toThrow('missing NodeWasi')
+  expect(() => assertRegistryOwnership(abi, ['node/events.ts', 'node/wasi.ts', 'node/buffer.ts'])).toThrow('extra NodeBuffer')
+  expect(() => assertRegistryOwnership(abi, ['node/events.ts', 'node/wasi.ts', 'node/events.js'])).toThrow('Duplicate owned registry identity')
+})
