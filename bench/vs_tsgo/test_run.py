@@ -468,6 +468,78 @@ class CheckJsWorkloadTests(unittest.TestCase):
             negative.assert_called_once_with({"home": ["home"]})
 
 
+class NullSafeWorkloadTests(unittest.TestCase):
+    def fixture(self, root):
+        corpus = root / "corpus"
+        run.generate_null_safe_access(corpus / "null_safe_access", 5)
+        return corpus
+
+    def test_controls_check_inferred_locals_at_three_positions_without_changing_timed_source(self):
+        complete = "error TS2322: wrong\n" * 18 + "error TS2339: missing\n" * 3 + "error TS2345: argument\n" * 3 + "error TS2493: bounds\n" * 3
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = self.fixture(Path(temporary))
+            source = corpus / "null_safe_access/src/null-safe-access.ts"
+            before = source.read_bytes()
+            writes = []
+            original_write = run.write
+
+            def retain_write(path, content):
+                writes.append((path, content))
+                original_write(path, content)
+
+            with mock.patch.object(run, "CORPUS", corpus), mock.patch.object(
+                run, "manifest", return_value={"generated": {"null_safe_access_families": 5}}
+            ), mock.patch.object(run, "write", side_effect=retain_write), mock.patch.object(
+                run.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, complete, "")
+            ):
+                trace = []
+                run.validate_null_safe_access_negatives({"home": ["home"]}, trace=trace)
+            self.assertEqual(before, source.read_bytes())
+            self.assertEqual(1, len(writes))
+            self.assertNotEqual(source, writes[0][0])
+            content = writes[0][1]
+            for index in (0, 2, 4):
+                body = content.split(f"function readNullable{index}(", 1)[1].split(f"const nullableInput{index}", 1)[0]
+                for token in ("invalidLabel: boolean = label", "invalidScore: string = score",
+                              "invalidFormatted: number = formatted", "invalidFallback: number = value!.fallback",
+                              "invalidOptionalLabel: string = value?.profile?.label",
+                              "invalidOptionalCall: string = value?.profile?.format?.(label)",
+                              "format?.(123)", "metrics?.[2]", "profile?.missing"):
+                    self.assertIn(token, body)
+            self.assertEqual(27, len(trace[0]["expected_codes"]))
+            self.assertTrue(trace[0]["passed"])
+
+    def test_controls_reject_partial_diagnostics_silent_success_and_abnormal_exits(self):
+        complete = "error TS2322: wrong\n" * 18 + "error TS2339: missing\n" * 3 + "error TS2345: argument\n" * 3 + "error TS2493: bounds\n" * 3
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = self.fixture(Path(temporary))
+            for code, output in ((0, ""), (0, complete), (1, "error TS2322: wrong\n"), (-11, complete), (3, complete)):
+                with self.subTest(code=code, output=output), mock.patch.object(run, "CORPUS", corpus), mock.patch.object(
+                    run, "manifest", return_value={"generated": {"null_safe_access_families": 5}}
+                ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")):
+                    with self.assertRaisesRegex(SystemExit, "failed null_safe_access negative controls"):
+                        run.validate_null_safe_access_negatives({"home": ["home"]})
+
+    def test_positive_nullsafe_cannot_skip_negative_admission(self):
+        with mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), mock.patch.object(
+            run, "validate_null_safe_access_negatives"
+        ) as negative:
+            run.validate({"home": ["home"]}, "null_safe_access")
+            negative.assert_called_once_with({"home": ["home"]})
+
+    def test_missing_source_anchor_fails_before_compiler_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus = self.fixture(Path(temporary))
+            source = corpus / "null_safe_access/src/null-safe-access.ts"
+            source.write_text("export const unrelated = 1;\n")
+            with mock.patch.object(run, "CORPUS", corpus), mock.patch.object(
+                run, "manifest", return_value={"generated": {"null_safe_access_families": 5}}
+            ), mock.patch.object(run.subprocess, "run") as execute:
+                with self.assertRaises(ValueError):
+                    run.validate_null_safe_access_negatives({"home": ["home"]})
+                execute.assert_not_called()
+
+
 class AdmissionTests(unittest.TestCase):
     def test_predicate_and_destructuring_controls_require_normal_diagnostic_exit(self):
         families = (

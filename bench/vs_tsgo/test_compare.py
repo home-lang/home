@@ -14,11 +14,18 @@ import compare
 
 class ComparisonTests(unittest.TestCase):
     def test_jsdoc_comparisons_require_the_new_validation_protocol(self):
-        for schema in (None, 1, 2, 3, 5):
+        for schema in (None, 1, 2, 3, 6):
             self.assertIn("Provisional", compare.format_workload_comparison("checkjs_jsdoc", 1, 2, schema))
         self.assertEqual("**2.00× faster**", compare.format_workload_comparison("checkjs_jsdoc", 1, 2, 4))
         self.assertEqual("**2.00× faster**", compare.format_workload_comparison("reexport_graph", 1, 2, 4))
         self.assertEqual("**2.00× faster**", compare.format_workload_comparison("variadic_tuples", 1, 2, 4))
+        for workload in ("checkjs_jsdoc", "reexport_graph", "variadic_tuples"):
+            self.assertEqual("**2.00× faster**", compare.format_workload_comparison(workload, 1, 2, 5))
+
+    def test_nullsafe_comparisons_require_schema_five_inferred_local_controls(self):
+        for schema in (None, 1, 2, 3, 4, 6):
+            self.assertIn("Provisional", compare.format_workload_comparison("null_safe_access", 1, 2, schema))
+        self.assertEqual("**2.00× faster**", compare.format_workload_comparison("null_safe_access", 1, 2, 5))
 
     def test_exact_tie_is_not_a_win(self):
         self.assertEqual("1.00× (near tie)", compare.format_comparison(100, 100))
@@ -267,6 +274,69 @@ class InterleavedIntegrityTests(unittest.TestCase):
         self.write_admission(admission)
         with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
             compare.validate_admission(self.directory, self.metadata, names, ["checkjs_jsdoc"])
+
+    def nullsafe_admission(self):
+        admission = self.jsdoc_admission()
+        self.metadata["validation_schema"] = 5
+        codes = sorted(["2322"] * 18 + ["2339", "2345", "2493"] * 3)
+        for record in admission["records"]:
+            record["workload"] = "null_safe_access"
+            if record["kind"] == "negative":
+                record.update(expected_codes=codes, codes=codes,
+                              stdout="".join(f"error TS{code}: expected\n" for code in codes))
+        self.write_admission(admission)
+        return admission
+
+    def test_schema_five_requires_every_nullsafe_negative_record(self):
+        admission = self.nullsafe_admission()
+        names = list(self.metadata["compilers"])
+        compare.validate_admission(self.directory, self.metadata, names, ["null_safe_access"])
+        admission["records"] = [record for record in admission["records"] if record["kind"] != "negative"]
+        self.write_admission(admission)
+        with self.assertRaisesRegex(ValueError, "coverage is incomplete"):
+            compare.validate_admission(self.directory, self.metadata, names, ["null_safe_access"])
+
+    def test_schema_five_rejects_weakened_nullsafe_error_contract(self):
+        admission = self.nullsafe_admission()
+        negative = next(record for record in admission["records"] if record["kind"] == "negative")
+        negative.update(expected_codes=["2322"], codes=["2322"], stdout="error TS2322: expected\n")
+        self.write_admission(admission)
+        with self.assertRaisesRegex(ValueError, "null-safe negative contract changed"):
+            compare.validate_admission(self.directory, self.metadata, list(self.metadata["compilers"]), ["null_safe_access"])
+
+    def test_schema_five_retains_the_complete_jsdoc_contract(self):
+        admission = self.jsdoc_admission()
+        self.metadata["validation_schema"] = 5
+        names = list(self.metadata["compilers"])
+        compare.validate_admission(self.directory, self.metadata, names, ["checkjs_jsdoc"])
+        negative = next(record for record in admission["records"] if record["kind"] == "negative")
+        negative.update(expected_codes=["2322"], codes=["2322"], stdout="error TS2322: expected\n")
+        self.write_admission(admission)
+        with self.assertRaisesRegex(ValueError, "JSDoc negative contract changed"):
+            compare.validate_admission(self.directory, self.metadata, names, ["checkjs_jsdoc"])
+
+    def test_legacy_schema_four_nullsafe_admission_remains_readable(self):
+        self.extra_compiler_rounds()
+        self.metadata["validation_schema"] = 4
+        path = self.directory / "admission.jsonl"
+        admission = json.loads(path.read_text())
+        for record in admission["records"]:
+            record["workload"] = "null_safe_access"
+        self.write_admission(admission)
+        compare.validate_admission(self.directory, self.metadata, list(self.metadata["compilers"]), ["null_safe_access"])
+
+    def test_schema_five_cannot_use_a_legacy_schedule(self):
+        self.metadata.update(validation_schema=5, schedule="sequential")
+        with self.assertRaisesRegex(ValueError, "protocol 5 requires round-robin"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_three_compiler_schema_five_requires_retained_admission(self):
+        self.extra_compiler_rounds()
+        self.metadata["validation_schema"] = 5
+        self.metadata["compilers"] = {name: name for name in ("tsc", "tsgo", "home")}
+        del self.metadata["admission"]
+        with self.assertRaisesRegex(ValueError, "retained admission evidence"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
 
     def test_jsdoc_schema_four_rejects_weakened_error_contract(self):
         admission = self.jsdoc_admission()

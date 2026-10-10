@@ -1168,6 +1168,44 @@ def validate(commands: dict[str, list[str]], workload: str, *, profiles: dict | 
         validate_recursive_generic_negatives(commands, **options)
     elif workload == "checkjs_jsdoc":
         validate_checkjs_jsdoc_negatives(commands, **options)
+    elif workload == "null_safe_access":
+        validate_null_safe_access_negatives(commands, **options)
+
+
+def validate_null_safe_access_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
+    # Validate the inferred locals inside the timed functions, not just their
+    # explicit exported tuple annotations. A checker must preserve optional
+    # access/call results, nullish fallbacks, arguments and tuple bounds.
+    families = manifest()["generated"]["null_safe_access_families"]
+    indices = sorted({0, families // 2, families - 1})
+    with tempfile.TemporaryDirectory(prefix="home-bench-nullsafe-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "null_safe_access", project)
+        source = project / "src/null-safe-access.ts"
+        content = source.read_text(encoding="utf-8")
+        for index in indices:
+            start = content.index(f"function readNullable{index}(")
+            anchor = content.index("  const fallback = value!.fallback;", start)
+            invalid = """  const invalidLabel: boolean = label;
+  const invalidScore: string = score;
+  const invalidFormatted: number = formatted;
+  const invalidFallback: number = value!.fallback;
+  const invalidOptionalLabel: string = value?.profile?.label;
+  const invalidOptionalCall: string = value?.profile?.format?.(label);
+  value?.profile?.format?.(123);
+  value?.profile?.metrics?.[2];
+  value?.profile?.missing;
+  void invalidLabel; void invalidScore; void invalidFormatted;
+  void invalidFallback; void invalidOptionalLabel; void invalidOptionalCall;
+"""
+            content = content[:anchor] + invalid + content[anchor:]
+        write(source, content)
+        expected = ["2322"] * (6 * len(indices)) + ["2339", "2345", "2493"] * len(indices)
+        for name, command in commands.items():
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                "null_safe_access", expected_codes=expected, trace=trace)
+            if not passed:
+                raise SystemExit(f"{name} failed null_safe_access negative controls:\n{result.stdout + result.stderr}")
 
 
 def validate_checkjs_jsdoc_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
@@ -1400,7 +1438,7 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None,
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",
-        "validation_schema": 4,
+        "validation_schema": 5,
         "workloads": workloads,
         "compilers": versions,
         "provenance": {

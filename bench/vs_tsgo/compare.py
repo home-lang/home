@@ -49,12 +49,14 @@ def format_comparison(home_median: float, competitor_median: float) -> str:
 
 
 def format_workload_comparison(workload: str, home_median: float, competitor_median: float, validation_schema=None) -> str:
-    if workload in ("import_graph", "reexport_graph") and validation_schema not in (2, 3, 4):
+    if workload in ("import_graph", "reexport_graph") and validation_schema not in (2, 3, 4, 5):
         return "Ineligible (graph types unvalidated)"
-    if workload == "variadic_tuples" and validation_schema not in (3, 4):
+    if workload == "variadic_tuples" and validation_schema not in (3, 4, 5):
         return "Provisional (tuple controls unvalidated)"
-    if workload == "checkjs_jsdoc" and validation_schema != 4:
+    if workload == "checkjs_jsdoc" and validation_schema not in (4, 5):
         return "Provisional (JSDoc controls unvalidated)"
+    if workload == "null_safe_access" and validation_schema != 5:
+        return "Provisional (null-safe controls unvalidated)"
     return format_comparison(home_median, competitor_median)
 
 
@@ -106,8 +108,10 @@ def validate_admission(directory: Path, metadata: dict, names: list[str], worklo
         raise ValueError("admission record count is invalid")
     required_negatives = {"destructuring", "type_predicates", "type_predicates_large", "import_graph",
                           "reexport_graph", "variadic_tuples", "commonjs_graph", "recursive_generics"}
-    if metadata.get("validation_schema") == 4:
+    if metadata.get("validation_schema") in (4, 5):
         required_negatives.add("checkjs_jsdoc")
+    if metadata.get("validation_schema") == 5:
+        required_negatives.add("null_safe_access")
     expected = {(name, workload, "positive") for name in names for workload in workloads}
     expected |= {(name, workload, "negative") for name in names for workload in workloads if workload in required_negatives}
     seen = set()
@@ -141,18 +145,22 @@ def validate_admission(directory: Path, metadata: dict, names: list[str], worklo
             if (record["exit_code"] not in (1, 2) or not isinstance(expected_codes, list)
                     or not expected_codes or codes != sorted(expected_codes)):
                 raise ValueError("negative admission is invalid")
-            if key[1] == "checkjs_jsdoc" and metadata.get("validation_schema") == 4:
+            if key[1] == "checkjs_jsdoc" and metadata.get("validation_schema") in (4, 5):
                 required = ["2322"] * 9 + ["2339"] * 3 + ["2345"] * 3
                 if sorted(expected_codes) != sorted(required):
                     raise ValueError("JSDoc negative contract changed")
+            if key[1] == "null_safe_access" and metadata.get("validation_schema") == 5:
+                required = ["2322"] * 18 + ["2339", "2345", "2493"] * 3
+                if sorted(expected_codes) != sorted(required):
+                    raise ValueError("null-safe negative contract changed")
     if seen != expected:
         raise ValueError("admission coverage is incomplete")
 
 
 def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     if metadata.get("schedule") != "round-robin interleaved":
-        if metadata.get("validation_schema") == 4:
-            raise ValueError("validation protocol 4 requires round-robin interleaved samples")
+        if metadata.get("validation_schema") in (4, 5):
+            raise ValueError(f"validation protocol {metadata['validation_schema']} requires round-robin interleaved samples")
         if set(metadata.get("compilers", {})) - {"tsc", "tsgo", "home"}:
             raise ValueError("additional compilers require round-robin interleaved samples")
         return
@@ -183,7 +191,7 @@ def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
                     or not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("sha256", "")))
                     or type(artifact.get("size")) is not int or artifact["size"] < 1):
                 raise ValueError("additional compiler executable provenance is incomplete")
-    if extras or metadata.get("validation_schema") == 4:
+    if extras or metadata.get("validation_schema") in (4, 5):
         if provenance is None:
             raise ValueError("retained admission requires verified provenance")
         validate_admission(directory, metadata, names, workloads)
@@ -295,6 +303,7 @@ def main() -> int:
     print("Legacy graph rows without schema-2 rejection controls are retained as timings, not fair speed claims (#487).")
     print("Legacy tuple rows without schema-3 rejection controls are provisional; schema 3 also retains the graph gates.")
     print("Legacy JSDoc rows without validation-schema-4 rejection controls are provisional, not fair speed claims (#852).")
+    print("Legacy null-safe rows without validation-schema-5 inferred-local controls are provisional, not fair speed claims (#864).")
     return 0
 
 
