@@ -130,6 +130,13 @@ argv: []const []const u8 = &[_][]const u8{},
 
 origin_timer: bun.Timer = undefined,
 origin_timestamp: u64 = 0,
+/// Measured Home lifecycle milestones, in milliseconds from performance origin.
+performance_engine_start: f64 = -1,
+performance_environment: f64 = -1,
+performance_bootstrap_complete: f64 = -1,
+performance_loop_start: f64 = -1,
+performance_loop_exit: f64 = -1,
+
 /// For fake timers: override performance.now() with a specific value (in nanoseconds)
 /// When null, use the real timer. When set, return this value instead.
 overridden_performance_now: ?u64 = null,
@@ -881,6 +888,14 @@ pub fn enterUWSLoop(this: *VirtualMachine) void {
     loop.run();
 }
 
+pub fn performanceElapsed(this: *const VirtualMachine) f64 {
+    return @as(f64, @floatFromInt(this.origin_timer.read())) / 1_000_000.0;
+}
+
+pub fn performanceLoopStarted(this: *VirtualMachine) void {
+    if (this.performance_loop_start < 0) this.performance_loop_start = this.performanceElapsed();
+}
+
 pub fn onBeforeExit(this: *VirtualMachine) void {
     this.exit_handler.dispatchOnBeforeExit();
     var dispatch = false;
@@ -980,6 +995,7 @@ pub fn onExit(this: *VirtualMachine) void {
         };
     }
 
+    if (this.performance_loop_exit < 0) this.performance_loop_exit = this.performanceElapsed();
     this.exit_handler.dispatchOnExit();
     this.is_shutting_down = true;
     this.timer.event_loop_delay.shutdown(this);
@@ -1367,6 +1383,7 @@ pub fn initWithModuleGraph(
         vm.is_main_thread = true;
     }
     is_smol_mode = opts.smol;
+    vm.performance_engine_start = vm.performanceElapsed();
     vm.global = JSGlobalObject.create(
         vm,
         vm.console,
@@ -1377,11 +1394,13 @@ pub fn initWithModuleGraph(
     );
     vm.regular_event_loop.global = vm.global;
     vm.jsc_vm = vm.global.vm();
+    vm.performance_environment = vm.performanceElapsed();
     uws.Loop.get().internal_loop_data.jsc_vm = vm.jsc_vm;
     bun.ParentDeathWatchdog.installOnEventLoop(jsc.EventLoopHandle.init(vm));
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
 }
@@ -1490,6 +1509,7 @@ pub fn init(opts: Options) !*VirtualMachine {
 
     vm.transpiler.macro_context = js_ast.Macro.MacroContext.init(&vm.transpiler);
 
+    vm.performance_engine_start = vm.performanceElapsed();
     vm.global = JSGlobalObject.create(
         vm,
         vm.console,
@@ -1500,6 +1520,7 @@ pub fn init(opts: Options) !*VirtualMachine {
     );
     vm.regular_event_loop.global = vm.global;
     vm.jsc_vm = vm.global.vm();
+    vm.performance_environment = vm.performanceElapsed();
     uws.Loop.get().internal_loop_data.jsc_vm = vm.jsc_vm;
     vm.smol = opts.smol;
     vm.dns_result_order = opts.dns_result_order;
@@ -1510,6 +1531,7 @@ pub fn init(opts: Options) !*VirtualMachine {
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
 }
@@ -1663,6 +1685,7 @@ pub fn initWorker(
     vm.smol = opts.smol;
     vm.transpiler.macro_context = js_ast.Macro.MacroContext.init(&vm.transpiler);
 
+    vm.performance_engine_start = vm.performanceElapsed();
     vm.global = JSGlobalObject.create(
         vm,
         vm.console,
@@ -1673,9 +1696,11 @@ pub fn initWorker(
     );
     vm.regular_event_loop.global = vm.global;
     vm.jsc_vm = vm.global.vm();
+    vm.performance_environment = vm.performanceElapsed();
     uws.Loop.get().internal_loop_data.jsc_vm = vm.jsc_vm;
     vm.transpiler.setAllocator(allocator);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
 }
@@ -1735,14 +1760,17 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
     vm.regular_event_loop.tasks.ensureUnusedCapacity(64) catch unreachable;
     vm.regular_event_loop.concurrent_tasks = .{};
     vm.event_loop = &vm.regular_event_loop;
+    vm.performance_engine_start = vm.performanceElapsed();
     if (comptime bun.Environment.isWindows) {
         vm.eventLoop().ensureWaker();
         vm.global = BakeCreateProdGlobal(vm.console);
         vm.jsc_vm = vm.global.vm();
+        vm.performance_environment = vm.performanceElapsed();
         uws.Loop.get().internal_loop_data.jsc_vm = vm.jsc_vm;
     } else {
         vm.global = BakeCreateProdGlobal(vm.console);
         vm.jsc_vm = vm.global.vm();
+        vm.performance_environment = vm.performanceElapsed();
         vm.eventLoop().ensureWaker();
     }
 
@@ -1767,6 +1795,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
 }
@@ -4341,6 +4370,7 @@ pub const ExitHandler = struct {
     /// can re-enter process.exit().
     pub export fn Bun__Process__beginExitDispatch(vm: *VirtualMachine) bool {
         if (vm.exit_handler.did_dispatch_exit) return false;
+        if (vm.performance_loop_exit < 0) vm.performance_loop_exit = vm.performanceElapsed();
         vm.exit_handler.did_dispatch_exit = true;
         return true;
     }

@@ -45,16 +45,15 @@ const constants = {
 };
 
 // PerformanceEntry is not a valid constructor, so we have to fake it.
-class PerformanceNodeTiming {
-  bootstrapComplete: number = 0;
-  environment: number = 0;
-  idleTime: number = 0;
-  loopExit: number = 0;
-  loopStart: number = 0;
-  nodeStart: number = 0;
-  v8Start: number = 0;
+class PerformanceNodeTiming extends PerformanceEntry {
+  get bootstrapComplete() { return readLoopUtilization(true).bootstrapComplete; }
+  get environment() { return readLoopUtilization(true).environment; }
+  get idleTime() { return readLoopUtilization().idle; }
+  get loopExit() { return readLoopUtilization(true).loopExit; }
+  get loopStart() { return readLoopUtilization(true).loopStart; }
+  get nodeStart() { return 0; }
+  get v8Start() { return readLoopUtilization(true).v8Start; }
 
-  // we have to fake the properties since it's not real
   get name() {
     return "node";
   }
@@ -64,7 +63,7 @@ class PerformanceNodeTiming {
   }
 
   get startTime() {
-    return this.nodeStart;
+    return 0;
   }
 
   get duration() {
@@ -87,18 +86,12 @@ class PerformanceNodeTiming {
     };
   }
 }
-$toClass(PerformanceNodeTiming, "PerformanceNodeTiming", PerformanceEntry);
-
-function createPerformanceNodeTiming() {
-  const object = Object.create(PerformanceNodeTiming.prototype);
-
-  object.bootstrapComplete = object.environment = object.nodeStart = object.v8Start = performance.timeOrigin;
-  object.loopStart = object.idleTime = 1;
-  object.loopExit = -1;
-  return object;
-}
 
 const readLoopUtilization = $cpp("JS2Native.cpp", "Home::createPerformanceBinding");
+function createPerformanceNodeTiming() {
+  return Object.create(PerformanceNodeTiming.prototype);
+}
+
 function eventLoopUtilization(utilization1, utilization2) {
   const current = readLoopUtilization();
   if (current.idle === 0 && current.active === 0) return { idle: 0, active: 0, utilization: 0 };

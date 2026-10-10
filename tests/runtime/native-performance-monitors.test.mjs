@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { createHistogram, monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks'
+import { createHistogram, monitorEventLoopDelay, PerformanceEntry, PerformanceNodeTiming, performance as nodePerformance } from 'node:perf_hooks'
 
 async function waitFor(condition) {
   const deadline = Date.now() + 2000
@@ -161,3 +161,45 @@ await new Promise((resolve, reject) => {
   })
 })
 console.log('native worker-local utilization counters passed')
+
+const timing = nodePerformance.nodeTiming
+assert(timing instanceof PerformanceEntry)
+assert(timing instanceof PerformanceNodeTiming)
+assert.throws(() => new PerformanceNodeTiming(), TypeError)
+assert.equal(timing.startTime, 0)
+assert.equal(timing.nodeStart, 0)
+assert(timing.v8Start >= 0)
+assert(timing.environment >= timing.v8Start)
+assert(timing.bootstrapComplete >= timing.environment)
+assert(timing.bootstrapComplete <= performance.now())
+assert(timing.loopStart >= 0)
+assert.equal(timing.loopExit, -1)
+const idleTime = timing.idleTime
+await new Promise(resolve => setTimeout(resolve, 20))
+assert(timing.idleTime > idleTime)
+const timingJSON = timing.toJSON()
+assert.equal(timingJSON.name, 'node')
+assert.equal(timingJSON.entryType, 'node')
+assert.equal(timingJSON.bootstrapComplete, timing.bootstrapComplete)
+assert.equal(timingJSON.environment, timing.environment)
+assert(timingJSON.duration >= timingJSON.bootstrapComplete)
+const exitTiming = spawnSync(process.execPath, ['-e', `
+  const { performance: perf } = require('node:perf_hooks');
+  setTimeout(() => {}, 1);
+  process.on('exit', () => console.log(JSON.stringify(perf.nodeTiming.toJSON())));
+`], { env: { ...process.env, BUN_DEBUG_QUIET_LOGS: '1' }, encoding: 'utf8', timeout: 10000 })
+assert.equal(exitTiming.status, 0, exitTiming.stderr)
+const exited = JSON.parse(exitTiming.stdout.trim())
+assert(exited.loopExit >= exited.loopStart)
+assert(exited.loopExit <= exited.duration)
+assert(exited.loopStart >= 0)
+console.log('native startup milestones, live idle timing, serialization and loop exit passed')
+const explicitExitTiming = spawnSync(process.execPath, ['-e', `
+  const { performance: perf } = require('node:perf_hooks');
+  process.on('exit', () => console.log(JSON.stringify(perf.nodeTiming.toJSON())));
+  setTimeout(() => process.exit(0), 1);
+`], { env: { ...process.env, BUN_DEBUG_QUIET_LOGS: '1' }, encoding: 'utf8', timeout: 10000 })
+assert.equal(explicitExitTiming.status, 0, explicitExitTiming.stderr)
+const explicitExit = JSON.parse(explicitExitTiming.stdout.trim())
+assert(explicitExit.loopExit >= explicitExit.loopStart)
+assert(explicitExit.loopExit <= explicitExit.duration)

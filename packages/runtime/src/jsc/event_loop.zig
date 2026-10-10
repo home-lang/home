@@ -377,6 +377,7 @@ pub fn usocketsLoop(this: *const EventLoop) *uws.Loop {
 }
 
 pub fn autoTick(this: *EventLoop) void {
+    this.virtual_machine.performanceLoopStarted();
     const loop = this.usocketsLoop();
     const ctx = this.virtual_machine;
 
@@ -469,6 +470,7 @@ fn noopForeverTimer(_: *uws.Timer) callconv(.c) void {
 }
 
 pub fn autoTickActive(this: *EventLoop) void {
+    this.virtual_machine.performanceLoopStarted();
     var loop = this.usocketsLoop();
     var ctx = this.virtual_machine;
 

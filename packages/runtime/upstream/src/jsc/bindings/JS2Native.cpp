@@ -16,6 +16,7 @@ extern "C" JSC::EncodedJSValue FileReader__JSReadableStreamSource__load(JSC::JSG
 extern "C" JSC::EncodedJSValue ByteStream__JSReadableStreamSource__load(JSC::JSGlobalObject* global);
 
 extern "C" void* Home__VirtualMachine__socketLoop(void* vm);
+extern "C" void Home__VirtualMachine__performanceTiming(void* vm, double* out);
 #if !OS(WINDOWS)
 extern "C" void Home__loop_utilization(void* loop, double* idle, double* active);
 #endif
@@ -24,19 +25,26 @@ JSC_DEFINE_HOST_FUNCTION(readLoopUtilization, (JSC::JSGlobalObject * globalObjec
 {
     auto& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-    UNUSED_PARAM(callFrame);
-#if OS(WINDOWS)
-    JSC::throwTypeError(globalObject, scope, "Event-loop utilization measurement requires libuv metrics support"_s);
-    return {};
-#else
     double idle = 0, active = 0;
+#if OS(WINDOWS)
+    if (!callFrame->argument(0).toBoolean(globalObject)) {
+        JSC::throwTypeError(globalObject, scope, "Event-loop utilization measurement requires libuv metrics support"_s);
+        return {};
+    }
+#else
     Home__loop_utilization(Home__VirtualMachine__socketLoop(bunVM(globalObject)), &idle, &active);
+#endif
     auto* result = JSC::constructEmptyObject(globalObject);
     result->putDirect(vm, JSC::Identifier::fromString(vm, "idle"_s), JSC::jsNumber(idle));
     result->putDirect(vm, JSC::Identifier::fromString(vm, "active"_s), JSC::jsNumber(active));
+    double timing[5];
+    Home__VirtualMachine__performanceTiming(bunVM(globalObject), timing);
+    const ASCIILiteral names[] = { "v8Start"_s, "environment"_s, "bootstrapComplete"_s, "loopStart"_s, "loopExit"_s };
+    for (size_t index = 0; index < 5; index++) {
+        result->putDirect(vm, JSC::Identifier::fromString(vm, names[index]), JSC::jsNumber(timing[index]));
+    }
     RETURN_IF_EXCEPTION(scope, {});
     return JSC::JSValue::encode(result);
-#endif
 }
 static JSC::JSValue createPerformanceBinding(Zig::GlobalObject* globalObject)
 {

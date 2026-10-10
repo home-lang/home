@@ -16,6 +16,14 @@ pub export fn Home__VirtualMachine__socketLoop(vm: *jsc.VirtualMachine) *anyopaq
     return @ptrCast(vm.eventLoop().usocketsLoop());
 }
 
+pub export fn Home__VirtualMachine__performanceTiming(vm: *jsc.VirtualMachine, out: [*]f64) void {
+    out[0] = vm.performance_engine_start;
+    out[1] = vm.performance_environment;
+    out[2] = vm.performance_bootstrap_complete;
+    out[3] = vm.performance_loop_start;
+    out[4] = vm.performance_loop_exit;
+}
+
 /// Caller must check for termination exception
 pub export fn Bun__drainMicrotasks() void {
     jsc.VirtualMachine.get().eventLoop().tick();
@@ -237,6 +245,7 @@ comptime {
     _ = Bun__VirtualMachine__isShuttingDown;
     _ = Bun__getVM;
     _ = Home__VirtualMachine__socketLoop;
+    _ = Home__VirtualMachine__performanceTiming;
     _ = Bun__drainMicrotasks;
     _ = Bun__readOriginTimer;
     _ = Bun__readOriginTimerStart;
