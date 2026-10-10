@@ -1,7 +1,7 @@
 // Hardcoded module "node:fs/promises"
 const types = require("node:util/types");
 const EventEmitter = require("node:events");
-const fs = $zig("node_fs_binding.zig", "createBinding") as $ZigGeneratedClasses.NodeJSFS;
+const fs = require("internal/fs/binding") as $ZigGeneratedClasses.NodeJSFS;
 const { glob } = require("internal/fs/glob");
 const { validateInteger, validateBoolean, validateObject, validateAbortSignal } = require("internal/validators");
 
@@ -26,7 +26,7 @@ const kFlag = Symbol("kFlag");
 const kLocked = Symbol("kLocked");
 const kCloseSync = Symbol("kCloseSync");
 
-const SymbolDispose = Symbol.dispose;
+var SymbolDispose = Symbol.dispose;
 
 // Default chunk size for FileHandle.pull/pullSync/writer (matches Node.js).
 const kIterDefaultChunkSize = 131072;
@@ -37,7 +37,12 @@ let Interface; // lazy value for require("node:readline").Interface.
 
 function watch(
   filename: string | Buffer | URL,
-  options: { encoding?: BufferEncoding; persistent?: boolean; recursive?: boolean; signal?: AbortSignal } = {},
+  options: {
+    encoding?: BufferEncoding;
+    persistent?: boolean;
+    recursive?: boolean;
+    signal?: AbortSignal;
+  } = {},
 ) {
   type Event = {
     eventType: string;
@@ -56,8 +61,40 @@ function watch(
     options = { encoding: options };
   }
   const queue = $createFIFO();
+  const ignoreMatcher = require("internal/fs/watch").createIgnoreMatcher(options?.ignore);
+  const signal = options?.signal;
+  validateAbortSignal(signal, "options.signal");
+  function makeAbortError() {
+    return $makeAbortError(undefined, { cause: signal!.reason });
+  }
+
+  // node never creates the native handle when the signal is already
+  // aborted (its async generator throws on first next() before opening
+  // it); creating one here would leak it, since the "abort" event never
+  // fires for a pre-aborted signal.
+  if (signal?.aborted) {
+    return {
+      [Symbol.asyncIterator]() {
+        let closed = false;
+        return {
+          async next() {
+            if (closed) return { value: undefined, done: true };
+            closed = true;
+            throw makeAbortError();
+          },
+          return() {
+            closed = true;
+            return { value: undefined, done: true };
+          },
+        };
+      },
+    };
+  }
 
   const watcher = fs.watch(filename, options || {}, (eventType: string, filename: string | Buffer | undefined) => {
+    if (eventType !== "close" && eventType !== "error" && filename != null && ignoreMatcher?.(filename)) {
+      return;
+    }
     queue.push({ eventType, filename });
     if (nextEventResolve) {
       const resolve = nextEventResolve;
@@ -66,20 +103,41 @@ function watch(
     }
   });
 
+  function onAbort() {
+    watcher.close();
+    if (nextEventResolve) {
+      const resolve = nextEventResolve;
+      nextEventResolve = null;
+      resolve();
+    }
+  }
+  signal?.addEventListener("abort", onAbort, { once: true });
+  // {once: true} only auto-removes when the event fires; detach explicitly on
+  // the other exit paths so a long-lived signal doesn't retain this closure.
+  function removeAbortListener() {
+    signal?.removeEventListener("abort", onAbort);
+  }
+
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
       return {
         async next() {
           while (!closed) {
+            if (signal?.aborted) {
+              closed = true;
+              throw makeAbortError();
+            }
             let event: Event;
             while ((event = queue.shift() as Event)) {
               if (event.eventType === "close") {
                 closed = true;
+                removeAbortListener();
                 return { value: undefined, done: true };
               }
               if (event.eventType === "error") {
                 closed = true;
+                removeAbortListener();
                 throw event.filename;
               }
               return { value: event, done: false };
@@ -95,6 +153,7 @@ function watch(
           if (!closed) {
             watcher.close();
             closed = true;
+            removeAbortListener();
             if (nextEventResolve) {
               const resolve = nextEventResolve;
               nextEventResolve = null;
@@ -111,27 +170,44 @@ function watch(
 // attempt to use the native code version if possible
 // and on MacOS, simple cases of recursive directory trees can be done in a single `clonefile()`
 // using filter and other options uses a lazily loaded js fallback ported from node.js
-function cp(src, dest, options) {
-  if (!options) return fs.cp(src, dest);
-  if (typeof options !== "object") {
-    throw new TypeError("options must be an object");
+async function cp(src, dest, options) {
+  const { validateCpOptions } = require("internal/fs/cp-sync");
+  const { getValidatedFsPath } = require("internal/validators");
+  options = validateCpOptions(options);
+  src = getValidatedFsPath(src, "src");
+  dest = getValidatedFsPath(dest, "dest");
+  const { filter, dereference, preserveTimestamps, verbatimSymlinks, mode, errorOnExist, force, recursive } = options;
+  if (!filter && !dereference && !preserveTimestamps && !verbatimSymlinks && !mode && !errorOnExist && force) {
+    const { ok, checked } = await require("internal/fs/cp").tryNativeFastPath(src, dest, options);
+    if (ok) {
+      return fs.cp(src, dest, recursive, errorOnExist, force, mode);
+    }
+    return require("internal/fs/cp").cpFn(src, dest, options, checked);
   }
-  if (options.dereference || options.filter || options.preserveTimestamps || options.verbatimSymlinks) {
-    return require("internal/fs/cp")(src, dest, options);
-  }
-  return fs.cp(src, dest, options.recursive, options.errorOnExist, options.force ?? true, options.mode);
+  return require("internal/fs/cp").cpFn(src, dest, options);
+}
+
+function settleFromNodeCallback(resolve, reject, err, value) {
+  if (err) reject(err);
+  else resolve(value);
 }
 
 async function opendir(dir: string, options) {
-  return new (require("node:fs").Dir)(1, dir, options);
+  // Delegate to the callback form so the eager path check (ENOTDIR/ENOENT at
+  // open time, like node) runs on an async stat instead of blocking.
+  const { promise, resolve, reject } = Promise.withResolvers();
+  require("node:fs").opendir(dir, options, settleFromNodeCallback.bind(null, resolve, reject));
+  return promise;
 }
 
 const private_symbols = {
   kRef,
   kUnref,
   kFd,
+  kTransfer,
+  kTransferList,
+  kDeserialize,
   FileHandle: null as any,
-  fs,
 };
 
 const _readFile = fs.readFile.bind(fs);
@@ -214,8 +290,35 @@ const exports = {
   unlink: asyncWrap(fs.unlink, "unlink"),
   utimes: asyncWrap(fs.utimes, "utimes"),
   lutimes: asyncWrap(fs.lutimes, "lutimes"),
-  rm: asyncWrap(fs.rm, "rm"),
-  rmdir: asyncWrap(fs.rmdir, "rmdir"),
+  rm: async function rm(path, options) {
+    if (!options?.recursive) {
+      // node validates in JS and reports ERR_FS_EISDIR for directories
+      // (same check as rmSync)
+      let stats;
+      try {
+        stats = await fs.lstat(path);
+      } catch {
+        // let the native call produce the error (respects force/ENOENT)
+      }
+      if (stats?.isDirectory()) {
+        throw require("internal/fs/cp-sync").fsEisdirError({
+          code: "EISDIR",
+          message: "is a directory",
+          path,
+          syscall: "rm",
+          errno: $processBindingConstants.os.errno.EISDIR,
+        });
+      }
+    }
+    return fs.rm(path, options);
+  },
+  rmdir: async function rmdir(path, options) {
+    // node throws for any defined `recursive`, not just truthy ones
+    if (options?.recursive !== undefined) {
+      throw $ERR_INVALID_ARG_VALUE("options.recursive", options.recursive, "is no longer supported");
+    }
+    return fs.rmdir(path, options);
+  },
   writev: async (fd, buffers, position) => {
     var bytesWritten = await fs.writev(fd, buffers, position);
     return {
@@ -236,7 +339,7 @@ const exports = {
   opendir,
 
   // "$data" is reuse of private symbol
-  // this is used to export the private symbols to 'fs.js' without making it public.
+  // this is used to export the private symbols to internal/fs/streams and node:http2 without making them public.
   $data: private_symbols,
 };
 export default exports;
@@ -498,7 +601,10 @@ function asyncWrap(fn: any, name: string) {
       }
       try {
         this[kRef]();
-        return { buffer, bytesWritten: await write(fd, buffer, offset, length, position) };
+        return {
+          buffer,
+          bytesWritten: await write(fd, buffer, offset, length, position),
+        };
       } finally {
         this[kUnref]();
       }
@@ -532,7 +638,11 @@ function asyncWrap(fn: any, name: string) {
 
       try {
         this[kRef]();
-        return await writeFile(fd, data, { encoding, flag: this[kFlag], signal });
+        return await writeFile(fd, data, {
+          encoding,
+          flag: this[kFlag],
+          signal,
+        });
       } finally {
         this[kUnref]();
       }
@@ -1239,15 +1349,26 @@ function asyncWrap(fn: any, name: string) {
     }
 
     [kTransfer]() {
-      throw new Error("BUN TODO FileHandle.kTransfer");
+      if (this[kClosePromise] || this[kRefs] > 1) {
+        throw new DOMException("Cannot transfer FileHandle while in use", "DataCloneError");
+      }
+
+      const fd = this[kFd];
+      const flag = this[kFlag];
+      this[kFd] = -1;
+      return {
+        data: { fd, flag },
+        deserializeInfo: "internal/fs/promises:FileHandle",
+      };
     }
 
     [kTransferList]() {
-      throw new Error("BUN TODO FileHandle.kTransferList");
+      return [];
     }
 
-    [kDeserialize](_) {
-      throw new Error("BUN TODO FileHandle.kDeserialize");
+    [kDeserialize]({ fd, flag }) {
+      this[kFd] = fd;
+      this[kFlag] = flag;
     }
 
     [kRef]() {

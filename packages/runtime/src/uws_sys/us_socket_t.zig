@@ -220,6 +220,11 @@ pub const us_socket_t = opaque {
         return rc;
     }
 
+    extern "c" fn HomeIPCSocketWrite(*us_socket_t, [*]const u8, c_int, *c_int) c_int;
+    pub fn writeIPC(this: *us_socket_t, data: []const u8, error_code: *c_int) i32 {
+        return HomeIPCSocketWrite(this, data.ptr, @intCast(@min(data.len, max_i32)), error_code);
+    }
+
     pub fn writeFd(this: *us_socket_t, data: []const u8, file_descriptor: bun.FD) i32 {
         if (bun.Environment.isWindows) @compileError("TODO: implement writeFd on Windows");
         const rc = c.us_socket_ipc_write_fd(this, data.ptr, @intCast(@min(data.len, max_i32)), file_descriptor.native());

@@ -73,24 +73,7 @@ pub const PathWatcher = struct {
 
     const log = Output.scoped(.@"fs.watch", .visible);
 
-    pub const ChangeEvent = struct {
-        hash: Watcher.HashType = 0,
-        event_type: EventType = .change,
-        timestamp: u64 = 0,
-
-        pub fn emit(this: *ChangeEvent, hash: Watcher.HashType, timestamp: u64, event_type: EventType) bool {
-            const time_diff = timestamp -| this.timestamp;
-            // skip consecutive duplicates
-            if ((this.timestamp == 0 or time_diff > 1) or this.event_type != event_type and this.hash != hash) {
-                this.timestamp = timestamp;
-                this.event_type = event_type;
-                this.hash = hash;
-
-                return true;
-            }
-            return false;
-        }
-    };
+    pub const ChangeEvent = @import("watch_event_state.zig").ChangeEvent(Watcher.HashType, u64, EventType);
 
     const Callback = *const fn (ctx: ?*anyopaque, event: Event, is_file: bool) void;
     const UpdateEndCallback = *const fn (ctx: ?*anyopaque) void;
@@ -164,7 +147,7 @@ pub const PathWatcher = struct {
         var outbuf: bun.PathBuffer = undefined;
         const event_path = switch (bun.sys.readlink(path, &outbuf)) {
             .err => |err| brk: {
-                if (err.errno == @intFromEnum(bun.sys.E.NOENT)) {
+                if (err.errno == @backingInt(bun.sys.E.NOENT)) {
                     return .{ .err = .{
                         .errno = err.errno,
                         .syscall = .open,

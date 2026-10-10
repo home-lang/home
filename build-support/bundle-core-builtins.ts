@@ -60,6 +60,7 @@ async function main() {
         const member = lower + fn.name[0].toUpperCase() + fn.name.slice(1) + 'CodeSource'
         if (replacements.has(member)) throw new Error(`Duplicate owned core function ${member}`)
         if (fn.source.includes('import.meta.require(') || fn.source.includes('@bundleError(')) throw new Error(`Unresolved core builtin ${member}`)
+        if (/@(?:getPromiseInternalField|putPromiseInternalField|promiseFieldFlags|promiseStateMask)\b/.test(fn.source)) throw new Error(`Removed WebKit promise layout intrinsic in ${member}`)
         new Function(`return ${fn.source.replace(/@([A-Za-z_])/g, '__intrinsic__$1')}`)
         replacements.set(member, fn.source)
       }

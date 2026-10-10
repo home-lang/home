@@ -481,6 +481,7 @@ pub const SendQueue = struct {
     /// after `deinit` returns.
     after_close_task: ?jsc.Task = null,
     write_in_progress: bool = false,
+    write_error: ?bun.sys.Error = null,
     close_event_sent: bool = false,
 
     windows: switch (Environment.isWindows) {
@@ -647,7 +648,10 @@ pub const SendQueue = struct {
         // disconnect handler can release the queue; finalizers only free refs.
         if (this.queue.items.len > 0 or this.waiting_for_ack != null) {
             const global = this.getGlobalThis();
-            const failure = global.ERR(.IPC_CHANNEL_CLOSED, "IPC channel closed before send completed", .{}).toJS();
+            const failure = if (this.write_error) |err|
+                err.toJS(global) catch global.ERR(.IPC_CHANNEL_CLOSED, "IPC channel closed before send completed", .{}).toJS()
+            else
+                global.ERR(.IPC_CHANNEL_CLOSED, "IPC channel closed before send completed", .{}).toJS();
             for (this.queue.items) |*item| item.fail(global, failure);
             this.queue.clearRetainingCapacity();
             if (bun.take(&this.waiting_for_ack)) |waiting| {
@@ -941,11 +945,12 @@ pub const SendQueue = struct {
                 // write request is queued. it will call _onWriteComplete when it completes.
             },
             false => {
-                if (fd) |fd_unwrapped| {
-                    this._onWriteComplete(socket.writeFd(data, fd_unwrapped));
-                } else {
-                    this._onWriteComplete(socket.write(data));
+                var write_errno: c_int = 0;
+                const written = if (fd) |fd_unwrapped| socket.writeFd(data, fd_unwrapped) else socket.writeIPC(data, &write_errno);
+                if (written < 0) {
+                    this.write_error = .{ .errno = if (write_errno != 0) @intCast(write_errno) else @backingInt(bun.sys.getErrno(written)), .syscall = .write };
                 }
+                this._onWriteComplete(written);
             },
         };
     }
@@ -963,7 +968,8 @@ pub const SendQueue = struct {
 
         this.windows.windows_write = null;
         if (this.getSocket()) |socket| socket.unref(); // write complete; unref
-        if (status.toError(.write)) |_| {
+        if (status.toError(.write)) |err| {
+            this.write_error = err;
             this._onWriteComplete(-1);
         } else {
             this._onWriteComplete(@intCast(write_len));

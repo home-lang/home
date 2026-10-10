@@ -1084,7 +1084,9 @@ export function onPullDirectStream(controller: ReadableStreamDirectController) {
         controller._handleError = $handleDirectStreamErrorReject.bind(controller);
       }
 
-      result.catch(controller._handleError);
+      // The controller forwards the rejection to pending read requests. The
+      // chained notification promise has no consumer of its own.
+      $markPromiseAsHandled(result.catch(controller._handleError));
     }
   } catch (e) {
     return $handleDirectStreamErrorReject.$call(controller, e);

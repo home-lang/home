@@ -196,6 +196,14 @@ pub fn NewSocketHandler(comptime is_ssl: bool) type {
             };
         }
 
+        pub fn writeIPC(this: ThisSocket, data: []const u8, error_code: *c_int) i32 {
+            error_code.* = 0;
+            return switch (this.socket) {
+                .connected => |socket| socket.writeIPC(data, error_code),
+                else => this.write(data),
+            };
+        }
+
         pub fn writeFd(this: ThisSocket, data: []const u8, file_descriptor: bun.FD) i32 {
             return switch (this.socket) {
                 .upgradedDuplex, .pipe => this.write(data),

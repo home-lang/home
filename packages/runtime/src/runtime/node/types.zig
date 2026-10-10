@@ -743,13 +743,13 @@ pub const PathLike = union(enum) {
                 if (arg.as(jsc.DOMURL)) |domurl| {
                     var str: bun.String = domurl.fileSystemPath() catch |err| switch (err) {
                         error.NotFileUrl => {
-                            return ctx.ERR(.INVALID_URL, "URL must be a non-empty \"file:\" path", .{}).throw();
+                            return ctx.ERR(.INVALID_URL_SCHEME, "URL must be a non-empty \"file:\" path", .{}).throw();
                         },
                         error.InvalidPath => {
-                            return ctx.ERR(.INVALID_URL, "URL must be a non-empty \"file:\" path", .{}).throw();
+                            return ctx.ERR(.INVALID_FILE_URL_PATH, "URL must be a non-empty \"file:\" path", .{}).throw();
                         },
                         error.InvalidHost => {
-                            return ctx.ERR(.INVALID_URL, "URL must be a non-empty \"file:\" path", .{}).throw();
+                            return ctx.ERR(.INVALID_FILE_URL_HOST, "URL must be a non-empty \"file:\" path", .{}).throw();
                         },
                     };
                     defer str.deref();

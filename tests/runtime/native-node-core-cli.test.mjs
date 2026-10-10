@@ -599,4 +599,24 @@ try {
 } finally {
   rmSync(directory, { recursive: true })
 }
+for (const pending of [false, true]) {
+  const chunks = ['first', new Uint8Array([45, 115, 101, 99, 111, 110, 100])]
+  const source = {
+    [Symbol.asyncIterator]() {
+      let index = 0
+      return {
+        next() {
+          const result = index < chunks.length ? { value: chunks[index++], done: false } : { done: true }
+          if (!pending) return Promise.resolve(result)
+          return new Promise(resolve => queueMicrotask(() => resolve(result)))
+        },
+      }
+    },
+  }
+  assert.equal(await new Response(source).text(), 'first-second')
+}
+const iteratorError = new Error('native async iterator rejection')
+const rejectedSource = { [Symbol.asyncIterator]() { return { next() { return Promise.reject(iteratorError) } } } }
+await assert.rejects(new Response(rejectedSource).text(), error => error === iteratorError)
+console.log('native fulfilled, pending and rejected iterator promise controls passed')
 console.log('native node core CLI regressions passed')

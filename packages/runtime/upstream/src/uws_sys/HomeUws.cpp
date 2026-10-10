@@ -1,4 +1,5 @@
 #include "HomeListenerFD.cpp"
 #include "HomeUDPFD.cpp"
+#include "HomeIPCWrite.cpp"
 #include "libuwsockets.cpp"
 #include "libuwsockets_h3.cpp"

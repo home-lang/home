@@ -5418,6 +5418,17 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (comptime build_options.enable_jsc) {
+        // Match native runtime startup before spawning threads: failed pipe
+        // and file-size-limited writes must report errno to JavaScript.
+        if (comptime home_rt.Environment.isPosix) {
+            var action: home_rt.sys.Sigaction = .{
+                .handler = .{ .handler = std.posix.SIG.IGN },
+                .mask = home_rt.sys.sigemptyset(),
+                .flags = 0,
+            };
+            home_rt.sys.sigaction(@intCast(@intFromEnum(std.posix.SIG.PIPE)), &action, null);
+            home_rt.sys.sigaction(@intCast(@intFromEnum(std.posix.SIG.XFSZ)), &action, null);
+        }
         // The Home CLI does not enter through bun.js.Run, whose shutdown path
         // normally retains the public N-API/libuv/V8 symbols for dlopen().
         // Reference the same complete export list from our real entrypoint so

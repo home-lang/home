@@ -124,30 +124,9 @@ pub const PathWatcher = struct {
 
     /// Per-handler duplicate suppression.
     ///
-    /// The predicate is intentionally identical to `win_watcher.zig` and the old
-    /// `path_watcher.zig` so POSIX and Windows agree on which bursts are coalesced.
-    /// It suppresses only when, within the same millisecond, *both* the hash and
-    /// the event type match the previous emission — arguably too aggressive, but
-    /// changing it here would diverge from Windows; fixing all three together is
-    /// a separate change.
-    pub const ChangeEvent = struct {
-        hash: u64 = 0,
-        event_type: EventType = .change,
-        timestamp: i64 = 0,
-
-        fn shouldEmit(this: *ChangeEvent, hash: u64, timestamp: i64, event_type: EventType) bool {
-            const time_diff = timestamp - this.timestamp;
-            if ((this.timestamp == 0 or time_diff > 1) or
-                this.event_type != event_type and this.hash != hash)
-            {
-                this.timestamp = timestamp;
-                this.event_type = event_type;
-                this.hash = hash;
-                return true;
-            }
-            return false;
-        }
-    };
+    /// Only consecutive exact duplicates within the coalescing window are
+    /// suppressed, matching the current Bun POSIX and Windows implementations.
+    pub const ChangeEvent = @import("watch_event_state.zig").ChangeEvent(u64, i64, EventType);
 
     pub const Callback = *const fn (ctx: ?*anyopaque, event: Event, is_file: bool) void;
     pub const UpdateEndCallback = *const fn (ctx: ?*anyopaque) void;
@@ -158,7 +137,7 @@ pub const PathWatcher = struct {
         const timestamp = bun.milliTimestamp();
         const hash = bun.hash(rel_path);
         for (this.handlers.keys(), this.handlers.values()) |ctx, *last| {
-            if (last.shouldEmit(hash, timestamp, event_type)) {
+            if (last.emit(hash, timestamp, event_type)) {
                 onPathUpdateFn(ctx, event_type.toEvent(rel_path), is_file);
             }
         }
@@ -411,10 +390,10 @@ const Platform = switch (Environment.os) {
             pub fn deinit(_: *@This()) void {}
         };
         fn init(_: *PathWatcherManager) bun.sys.Maybe(void) {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOTSUP), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOTSUP), .syscall = .watch } };
         }
         fn addWatch(_: *PathWatcherManager, _: *PathWatcher) bun.sys.Maybe(void) {
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOTSUP), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOTSUP), .syscall = .watch } };
         }
         fn removeWatch(_: *PathWatcherManager, _: *PathWatcher) void {}
     },
@@ -464,7 +443,7 @@ const Linux = struct {
         // a daemon — detach it instead of stashing a handle we'd never join.
         var thread = std.Thread.spawn(.{}, threadMain, .{manager}) catch {
             manager.platform.fd.close();
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOMEM), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOMEM), .syscall = .watch } };
         };
         thread.detach();
         return .success;
@@ -578,7 +557,7 @@ const Linux = struct {
                 else => |errno| {
                     // Fatal: surface to every watcher, then exit the thread.
                     const err: bun.sys.Error = .{
-                        .errno = @truncate(@intFromEnum(errno)),
+                        .errno = @truncate(@backingInt(errno)),
                         .syscall = .read,
                     };
                     manager.mutex.lock();
@@ -719,7 +698,7 @@ const Darwin = struct {
             onFSEventFlush,
             @ptrCast(watcher),
         ) catch |e| return .{ .err = .{
-            .errno = @intFromEnum(switch (e) {
+            .errno = @backingInt(switch (e) {
                 error.FailedToCreateCoreFoudationSourceLoop => bun.sys.E.INVAL,
                 else => bun.sys.E.NOMEM,
             }),
@@ -812,7 +791,7 @@ const Kqueue = struct {
         // Daemon reader — the manager is process-global and never torn down.
         var thread = std.Thread.spawn(.{}, threadMain, .{manager}) catch {
             manager.platform.kq.close();
-            return .{ .err = .{ .errno = @intFromEnum(bun.sys.E.NOMEM), .syscall = .watch } };
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOMEM), .syscall = .watch } };
         };
         thread.detach();
         return .success;
@@ -872,7 +851,7 @@ const Kqueue = struct {
             const errno = bun.sys.getErrno(krc);
             fd.close();
             if (subpath.len > 0) return .success; // best-effort on children
-            return .{ .err = .{ .errno = @truncate(@intFromEnum(errno)), .syscall = .kevent } };
+            return .{ .err = .{ .errno = @truncate(@backingInt(errno)), .syscall = .kevent } };
         }
 
         bun.handleOom(plat.entries.put(bun.default_allocator, @intCast(fd.native()), .{
