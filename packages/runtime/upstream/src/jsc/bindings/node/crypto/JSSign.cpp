@@ -321,6 +321,24 @@ JSUint8Array* signWithKey(JSC::JSGlobalObject* lexicalGlobalObject, JSSign* this
     // Move mdCtx out of JSSign object
     ncrypto::EVPMDCtxPointer mdCtx = WTF::move(thisObject->m_mdCtx);
 
+    // EdDSA signs the complete message in one shot; a streaming digest is not
+    // an admissible input to its signing operation.
+    if (pkey.isOneShotVariant()) {
+        ERR_clear_error();
+        OPENSSL_PUT_ERROR(EVP, EVP_R_COMMAND_NOT_SUPPORTED);
+        throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Streaming signing is not supported for this key"_s);
+        return nullptr;
+    }
+
+    // Key-agreement schemes have no signature operation. Reject them before
+    // generic digest/padding controls can report an unrelated RSA error.
+    if (!pkey.isRsaVariant() && !pkey.isSigVariant()) {
+        ERR_clear_error();
+        OPENSSL_PUT_ERROR(EVP, EVP_R_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE);
+        throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Signing or verification is not supported for this key type"_s);
+        return nullptr;
+    }
+
     // Validate DSA parameters
     if (!pkey.validateDsaParameters()) {
         throwTypeError(lexicalGlobalObject, scope, "Invalid DSA parameters"_s);

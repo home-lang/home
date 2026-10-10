@@ -41,7 +41,6 @@ comptime {
     @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
     // NetworkSink__memoryCost now has its real export (streams.zig NetworkSink,
     // force-referenced once the S3 write path un-stub links the real uploader).
-    @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });
     // Bun object sets differ on whether workaround-missing-symbols.cpp.o
     // exports this wrapper, so Home keeps a weak bridge to ICU.
     @export(&icuHasBinaryProperty, .{ .name = "icu_hasBinaryProperty", .linkage = .weak });

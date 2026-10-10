@@ -25,6 +25,7 @@ var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
 var cached_async_hooks_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 var cached_string_width_object: ?std.Build.LazyPath = null;
+var cached_string_decoder_object: ?std.Build.LazyPath = null;
 var cached_util_types_object: ?std.Build.LazyPath = null;
 var cached_core_builtins_object: ?std.Build.LazyPath = null;
 
@@ -238,6 +239,14 @@ pub fn stringWidthObject(b: *std.Build, object_root: []const u8) std.Build.LazyP
     return object;
 }
 
+pub fn stringDecoderObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_string_decoder_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-2.cpp", output.path(b, "HomeJSStringDecoder.cpp"));
+    cached_string_decoder_object = object;
+    return object;
+}
+
 pub fn utilTypesObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_util_types_object) |object| return object;
     const output = nativeModules(b, object_root);
@@ -293,6 +302,9 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/modules/NodeModuleModule.cpp",
         "packages/runtime/upstream/src/jsc/modules/NodeModuleModule.h",
         "packages/runtime/upstream/src/jsc/modules/NodeBufferModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeStringDecoderModule.h",
+        "packages/runtime/upstream/src/jsc/bindings/JSStringDecoder.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/JSStringDecoder.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.h",
 
@@ -421,6 +433,16 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/js/internal/fs/watch.ts",
         "packages/runtime/upstream/src/js/internal/fs/watchfile.ts",
         "packages/runtime/upstream/src/js/node/test.ts",
+        "packages/runtime/upstream/src/js/node/crypto.ts",
+        "packages/runtime/upstream/src/js/node/zlib.ts",
+        "packages/runtime/upstream/src/js/node/zlib.iter.ts",
+        "packages/runtime/upstream/src/js/internal/promisify.ts",
+        "packages/runtime/upstream/src/js/node/_stream_duplex.ts",
+        "packages/runtime/upstream/src/js/node/_stream_passthrough.ts",
+        "packages/runtime/upstream/src/js/node/_stream_readable.ts",
+        "packages/runtime/upstream/src/js/node/_stream_transform.ts",
+        "packages/runtime/upstream/src/js/node/_stream_wrap.ts",
+        "packages/runtime/upstream/src/js/node/_stream_writable.ts",
 
         "packages/runtime/upstream/src/js/internal/url.ts",
         "packages/runtime/upstream/src/js/internal/validators.ts",
@@ -435,6 +457,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings-0.cpp",
+        "unified/UnifiedSource-src_jsc_bindings-2.cpp",
         "unified/UnifiedSource-src_jsc_bindings-3.cpp",
         "unified/UnifiedSource-src_jsc_bindings-5.cpp",
         "unified/UnifiedSource-src_jsc_modules-0.cpp",
@@ -452,6 +475,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     // absolute includes used by isolated build fixtures.
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
+        .{ "UnifiedSource-src_jsc_bindings-2.cpp", "JSStringDecoder.cpp", "JSStringDecoder.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeAsyncHooks.cpp", "NodeAsyncHooks.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "Path.cpp", "Path.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeValidator.cpp", "NodeValidator.h" },

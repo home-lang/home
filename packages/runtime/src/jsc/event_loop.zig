@@ -34,17 +34,24 @@ pub const Debug = if (Environment.isDebug) struct {
     js_call_count_outside_tick_queue: usize = 0,
     drain_microtasks_count_outside_tick_queue: usize = 0,
     _prev_is_inside_tick_queue: bool = false,
+    callback_depth: usize = 0,
     last_fn_name: bun.String = bun.String.empty,
     track_last_fn_name: bool = false,
 
     pub fn enter(this: *Debug) void {
-        this._prev_is_inside_tick_queue = this.is_inside_tick_queue;
+        if (this.callback_depth == 0) {
+            this._prev_is_inside_tick_queue = this.is_inside_tick_queue;
+            this.js_call_count_outside_tick_queue = 0;
+            this.drain_microtasks_count_outside_tick_queue = 0;
+        }
+        this.callback_depth += 1;
         this.is_inside_tick_queue = true;
-        this.js_call_count_outside_tick_queue = 0;
-        this.drain_microtasks_count_outside_tick_queue = 0;
     }
 
     pub fn exit(this: *Debug) void {
+        bun.assert(this.callback_depth > 0);
+        this.callback_depth -= 1;
+        if (this.callback_depth != 0) return;
         this.is_inside_tick_queue = this._prev_is_inside_tick_queue;
         this._prev_is_inside_tick_queue = false;
         this.js_call_count_outside_tick_queue = 0;
@@ -213,6 +220,10 @@ comptime {
 
 /// Prefer `runCallbackWithResult` unless you really need to make sure that microtasks are drained.
 pub fn runCallbackWithResultAndForcefullyDrainMicrotasks(this: *EventLoop, callback: jsc.JSValue, globalObject: *jsc.JSGlobalObject, thisValue: jsc.JSValue, arguments: []const jsc.JSValue) !jsc.JSValue {
+    this.enter();
+    // This helper drains explicitly, even in a nested callback. Restore its
+    // scope on both success and exception without a second implicit drain.
+    defer this.exitMaybeDrainMicrotasks(false) catch {};
     const result = try callback.call(globalObject, thisValue, arguments);
     result.ensureStillAlive();
     try this.drainMicrotasksWithGlobal(globalObject, globalObject.bunVM().jsc_vm);

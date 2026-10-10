@@ -40,12 +40,16 @@ async function main() {
   if (moduleRoots.length !== 1) throw new Error('Native unified source must contain exactly one NodeModuleModule.cpp')
   const nativeHeadersRoot = path.dirname(path.resolve(path.dirname(moduleUnityPath), moduleRoots[0][1]))
   let bufferHeaderCount = 0
+  let stringDecoderHeaderCount = 0
   const nativeModuleImpl = externalNativeModules.replace(/^#include "([^"]+)"$/gm, (_, relative) => {
     const name = path.basename(relative)
+    if (name === 'NodeStringDecoderModule.h') { stringDecoderHeaderCount++; return '#include "NodeStringDecoderModule.h"' }
     if (name === 'NodeBufferModule.h') { bufferHeaderCount++; return '#include "NodeBufferModule.h"' }
     return `#include ${JSON.stringify(path.join(nativeHeadersRoot, name))}`
   })
   if (bufferHeaderCount !== 1) throw new Error('Native module factory header must contain exactly one NodeBufferModule.h')
+  if (stringDecoderHeaderCount !== 1) throw new Error('Native module factory header must contain exactly one NodeStringDecoderModule.h')
+  const stringDecoderModuleHeader = readFileSync(path.join(homeSource, 'jsc/modules/NodeStringDecoderModule.h'))
   const bufferModuleHeader = readFileSync(path.join(homeSource, 'jsc/modules/NodeBufferModule.h'))
 
   const registry = createInternalModuleRegistry(path.join(homeSource, 'js'))
@@ -63,7 +67,7 @@ async function main() {
 
   // This is an explicit ownership manifest, not an assertion that all of the
   // mirrored builtins have been ported. Other literal bytes stay unchanged.
-  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts', 'internal/primordials.js', 'internal/streams/add-abort-signal.ts', 'internal/streams/compose.ts', 'internal/streams/destroy.ts', 'internal/streams/duplex.ts', 'internal/streams/duplexify.ts', 'internal/streams/duplexpair.ts', 'internal/streams/end-of-stream.ts', 'internal/streams/from.ts', 'internal/streams/iter/broadcast.ts', 'internal/streams/iter/classic.ts', 'internal/streams/iter/consumers.ts', 'internal/streams/iter/duplex.ts', 'internal/streams/iter/from.ts', 'internal/streams/iter/pull.ts', 'internal/streams/iter/push.ts', 'internal/streams/iter/ringbuffer.ts', 'internal/streams/iter/share.ts', 'internal/streams/iter/transform.ts', 'internal/streams/iter/types.ts', 'internal/streams/iter/utils.ts', 'internal/streams/lazy_transform.ts', 'internal/streams/legacy.ts', 'internal/streams/native-readable.ts', 'internal/streams/operators.ts', 'internal/streams/passthrough.ts', 'internal/streams/pipeline.ts', 'internal/streams/readable.ts', 'internal/streams/state.ts', 'internal/streams/transform.ts', 'internal/streams/utils.ts', 'internal/streams/writable.ts', 'internal/webstreams_adapters.ts', 'node/stream.consumers.ts', 'node/stream.iter.ts', 'node/stream.promises.ts', 'node/stream.ts', 'node/stream.web.ts', 'node/fs.ts', 'node/fs.promises.ts', 'node/child_process.ts', 'node/cluster.ts', 'internal/fs/binding.ts', 'internal/fs/cp-sync.ts', 'internal/fs/cp.ts', 'internal/fs/glob.ts', 'internal/fs/streams.ts', 'internal/fs/watch.ts', 'internal/fs/watchfile.ts', 'node/test.ts']
+  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts', 'internal/primordials.js', 'internal/streams/add-abort-signal.ts', 'internal/streams/compose.ts', 'internal/streams/destroy.ts', 'internal/streams/duplex.ts', 'internal/streams/duplexify.ts', 'internal/streams/duplexpair.ts', 'internal/streams/end-of-stream.ts', 'internal/streams/from.ts', 'internal/streams/iter/broadcast.ts', 'internal/streams/iter/classic.ts', 'internal/streams/iter/consumers.ts', 'internal/streams/iter/duplex.ts', 'internal/streams/iter/from.ts', 'internal/streams/iter/pull.ts', 'internal/streams/iter/push.ts', 'internal/streams/iter/ringbuffer.ts', 'internal/streams/iter/share.ts', 'internal/streams/iter/transform.ts', 'internal/streams/iter/types.ts', 'internal/streams/iter/utils.ts', 'internal/streams/lazy_transform.ts', 'internal/streams/legacy.ts', 'internal/streams/native-readable.ts', 'internal/streams/operators.ts', 'internal/streams/passthrough.ts', 'internal/streams/pipeline.ts', 'internal/streams/readable.ts', 'internal/streams/state.ts', 'internal/streams/transform.ts', 'internal/streams/utils.ts', 'internal/streams/writable.ts', 'internal/webstreams_adapters.ts', 'node/stream.consumers.ts', 'node/stream.iter.ts', 'node/stream.promises.ts', 'node/stream.ts', 'node/stream.web.ts', 'node/fs.ts', 'node/fs.promises.ts', 'node/child_process.ts', 'node/cluster.ts', 'internal/fs/binding.ts', 'internal/fs/cp-sync.ts', 'internal/fs/cp.ts', 'internal/fs/glob.ts', 'internal/fs/streams.ts', 'internal/fs/watch.ts', 'internal/fs/watchfile.ts', 'node/test.ts', 'node/crypto.ts', 'node/zlib.ts', 'node/zlib.iter.ts', 'internal/promisify.ts', 'node/_stream_duplex.ts', 'node/_stream_passthrough.ts', 'node/_stream_readable.ts', 'node/_stream_transform.ts', 'node/_stream_wrap.ts', 'node/_stream_writable.ts']
   let constants = read(path.join(generated, 'InternalModuleRegistryConstants.h'))
   // Validate every owned module against the linked ABI before starting bundler
   // workers or writing output. A late module mismatch must not leave a partial
@@ -91,6 +95,7 @@ async function main() {
     name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings', name)),
   })))
   const nativeUnits = ([
+    [[['jsc/bindings/JSStringDecoder.cpp', 'JSStringDecoder.h']], 'UnifiedSource-src_jsc_bindings-2.cpp', 'HomeJSStringDecoder.cpp'],
     [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
     [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
@@ -131,6 +136,7 @@ async function main() {
   mkdirSync(output, { recursive: true })
   writeFileSync(path.join(output, 'NativeModuleImpl.h'), nativeModuleImpl)
   writeFileSync(path.join(output, 'NodeBufferModule.h'), bufferModuleHeader)
+  writeFileSync(path.join(output, 'NodeStringDecoderModule.h'), stringDecoderModuleHeader)
   for (const { module, name, input } of inputs) {
     // The cache lives under Home's type=commonjs package. Force ESM parsing so
     // Bun does not synthesize a CommonJS wrapper and an export inside the JSC
@@ -140,8 +146,7 @@ async function main() {
     const result = await Bun.build({
       entrypoints: [inputPath],
       target: 'bun',
-      minify: { syntax: true, identifiers: false, whitespace: false },
-      keepNames: true,
+      minify: { syntax: true, identifiers: false, whitespace: false, keepNames: true },
       external: builtinModules,
       define: { ...define, IS_BUN_DEVELOPMENT: 'false', __intrinsic__debug: 'false' },
     })

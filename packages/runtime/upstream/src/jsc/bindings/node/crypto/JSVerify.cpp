@@ -386,6 +386,23 @@ JSC_DEFINE_HOST_FUNCTION(jsVerifyProtoFuncVerify, (JSGlobalObject * globalObject
     // Move mdCtx out of JSVerify object to finalize it
     ncrypto::EVPMDCtxPointer mdCtx = WTF::move(thisObject->m_mdCtx);
 
+    // One-shot signature schemes verify the message, not a streaming digest.
+    if (keyPtr.isOneShotVariant()) {
+        ERR_clear_error();
+        OPENSSL_PUT_ERROR(EVP, EVP_R_COMMAND_NOT_SUPPORTED);
+        throwCryptoError(globalObject, scope, ERR_peek_error(), "Streaming verification is not supported for this key"_s);
+        return {};
+    }
+
+    // Key-agreement schemes have no signature operation. Reject them before
+    // generic digest/padding controls can report an unrelated RSA error.
+    if (!keyPtr.isRsaVariant() && !keyPtr.isSigVariant()) {
+        ERR_clear_error();
+        OPENSSL_PUT_ERROR(EVP, EVP_R_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE);
+        throwCryptoError(globalObject, scope, ERR_peek_error(), "Signing or verification is not supported for this key type"_s);
+        return {};
+    }
+
     // Validate DSA parameters
     if (!keyPtr.validateDsaParameters()) {
         throwTypeError(globalObject, scope, "Invalid DSA parameters"_s);

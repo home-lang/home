@@ -118,6 +118,13 @@ pub const CryptoHasher = union(enum) {
             };
         }
 
+        fn isXof(handle: *CryptoHasher) callconv(.c) bool {
+            return switch (handle.*) {
+                .zig => |inner| inner.algorithm == .shake128 or inner.algorithm == .shake256,
+                else => false,
+            };
+        }
+
         pub fn @"export"() void {
             @export(&CryptoHasher.Extern.getByName, .{ .name = "Bun__CryptoHasherExtern__getByName" });
             @export(&CryptoHasher.Extern.getFromOther, .{ .name = "Bun__CryptoHasherExtern__getFromOther" });
@@ -125,6 +132,7 @@ pub const CryptoHasher = union(enum) {
             @export(&CryptoHasher.Extern.update, .{ .name = "Bun__CryptoHasherExtern__update" });
             @export(&CryptoHasher.Extern.digest, .{ .name = "Bun__CryptoHasherExtern__digest" });
             @export(&CryptoHasher.Extern.getDigestSize, .{ .name = "Bun__CryptoHasherExtern__getDigestSize" });
+            @export(&CryptoHasher.Extern.isXof, .{ .name = "Bun__CryptoHasherExtern__isXof" });
         }
     };
 
