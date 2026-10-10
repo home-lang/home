@@ -1945,3 +1945,15 @@ Windows transport, cluster connection tracking, malformed/closed descriptors, as
 Both retained original 11-suite runs validate 316 registered passes, zero failures and four original skips. All 36 audited test/fixture files match the pin. The final supervised build/test batch completes 31/31 Debug steps, all 13 native controls and 45 ABI tests / 767 assertions, at 5,656 MB peak tree footprint under 8,192 MB. The [retained source and execution manifest](./bun-port-evidence/2026-10-09-ipc-adoption-state/manifest.json) includes validated restored final reports, baselines, failed admissions, cleanup inventories and fixture limitations. Source: [6863bd9c3](https://github.com/home-lang/home/commit/6863bd9c3).
 
 Pickier reports the same four errors and one warning in the pre-change and current dgram source; its diagnostics concern existing enum/unused parameters and quote style. They are not reported as passing lint. The preceding repository-wide file-count limit remains unresolved.
+
+### Owned utility modules and native ICU conversions (2026-10-09)
+
+Home now generates 30 registry modules, adding the 17 path/util/domain/punycode/diagnostics/OS/DNS and internal utility modules from the pinned source. Path, NodeValidator, NodeUtilTypesModule, MIME parameters, string width and the ANSI slice/strip/wrap group are compiled from Home. The shared ANSI headers and Unicode tables belong to Home's source graph; linked ABI headers, native dispatch and exactly-once source inclusion remain checked before generation.
+
+The selected original ICU script exposed the parked process binding. Home now implements native ICU converter discovery and UTS #46 ToASCII/ToUnicode, including default/lenient validation, buffer growth, resource cleanup and a private per-process binding cache. The Bun pin omitted the referenced JSON fixture; the original Node v18.20.8 dependency is restored with provenance and its license. The original test code and assertions stay unchanged.
+
+Verification: 61 ABI tests / 938 assertions; native objects 27/27; complete Debug 33/33; existing 13 IPC controls and native node-core/ICU checks pass. All 48 selected original suites complete with 1,451 registered passes, five successful process checks, zero failures, three original skips and three TODOs. All 57 audited original inputs match their pin; the separately restored Node fixture is not misrepresented as a Bun-pinned input. Skips and TODOs receive no logical passing credit. The supervised successful batch peaks at 5,643 MB under 8,192 MB. First-run ICU failure, shared-header failure, compile repairs and resource-stopped attempts are retained.
+
+Source: [0e4319ad2](https://github.com/home-lang/home/commit/0e4319ad2). [Source snapshots, full captures, case outcomes and SHA256 evidence](./bun-port-evidence/2026-10-09-owned-utilities-icu/manifest.json).
+
+Remaining registry/native dependency ownership, other ICU binding operations, full Bun-suite and Release/ASAN/all-platform parity remain incomplete under #66. The original diagnostics-channel TODOs and skips are not completed features.
