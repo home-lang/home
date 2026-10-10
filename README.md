@@ -115,28 +115,34 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261009T205353Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261010T051920Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 63.9 ms | 7.5 ms | 2.9 ms | 5.9 ms | 6.3 ms | **2.04× faster** |
-| 256 independent files | 198.1 ms | 22.5 ms | 21.7 ms | 16.0 ms | 13.2 ms | 1.65× slower |
-| 128-module import chain | 128.9 ms | 14.7 ms | 17.1 ms | 11.3 ms | 15.1 ms | 1.51× slower |
-| 64 modules through 8 barrel re-exports | 96.7 ms | 10.5 ms | 12.5 ms | 8.9 ms | 8.6 ms | 1.46× slower |
-| Deep conditional / mapped / template types | 130.1 ms | 21.4 ms | 21.1 ms | 14.1 ms | 13.3 ms | 1.59× slower |
-| Recursive generics | 152.8 ms | 40.0 ms | 14.5 ms | 32.5 ms | 9.4 ms | 1.54× slower |
-| Checked JavaScript with JSDoc | 203.3 ms | 23.2 ms | 27.2 ms | 22.4 ms | 13.4 ms | 2.03× slower |
-| Control-flow narrowing (256 unions) | 193.8 ms | 27.8 ms | 25.9 ms | 24.8 ms | 16.6 ms | 1.56× slower |
-| 256 type-predicate families | 235.1 ms | 40.5 ms | 32.7 ms | 34.1 ms | 23.4 ms | 1.40× slower |
-| 2,048 type-predicate families | 1,010.1 ms | 309.8 ms | 244.3 ms | 268.9 ms | 158.5 ms | 1.54× slower |
+| Startup (one small file) | 69.5 ms | 8.0 ms | 3.2 ms | 6.3 ms | 6.6 ms | **2.00× faster** |
+| 256 independent files | 220.7 ms | 23.8 ms | 23.2 ms | 17.2 ms | 14.2 ms | 1.63× slower |
+| 128-module import chain | 138.3 ms | 15.7 ms | 18.1 ms | 12.0 ms | 16.4 ms | 1.51× slower |
+| 64 modules through 8 barrel re-exports | 102.0 ms | 11.1 ms | 12.4 ms | 9.3 ms | 9.2 ms | 1.35× slower |
+| Deep conditional / mapped / template types | 149.9 ms | 22.8 ms | 22.3 ms | 15.4 ms | 14.3 ms | 1.56× slower |
+| Recursive generics | 157.3 ms | 41.6 ms | 14.9 ms | 33.2 ms | 9.5 ms | 1.57× slower |
+| Checked JavaScript with JSDoc | 202.5 ms | 23.3 ms | 27.0 ms | 22.6 ms | 13.5 ms | 2.00× slower |
+| Control-flow narrowing (256 unions) | 192.4 ms | 27.9 ms | 26.3 ms | 25.0 ms | 16.7 ms | 1.57× slower |
+| 256 type-predicate families | 237.9 ms | 40.1 ms | 32.6 ms | 34.0 ms | 23.4 ms | 1.39× slower |
+| 2,048 type-predicate families | 1,032.4 ms | 322.1 ms | 251.9 ms | 274.3 ms | 164.4 ms | 1.53× slower |
 
 In this dated matrix, Home has the lowest median on **1 / 20** admitted workloads (startup)
 and is faster than native TypeScript 7 on **12 / 20**. These are
 descriptive medians, not statistical-significance claims. The complete
 table, methodology, machine and toolchain versions are in
-[TypeScript performance](docs/docs/TS_PERFORMANCE.md). The large-predicate
+[TypeScript performance](docs/docs/TS_PERFORMANCE.md#landed-record-and-indexed-interface-matrix-2026-10-10-utc).
+All **600 rounds / 3,000 samples / 145 admissions** are retained; no timings
+were repeated or filtered. Current fastest-competitor gaps include null-safe
+access **2.02×**, checked JS **2.00×** and interfaces **1.98×** slower, tracked
+under [#864](https://github.com/home-lang/home/issues/864). This is a full
+competitor comparison, not evidence of a causal gain from the Record fix.
+The large-predicate
 scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); the expanded competitor
 matrix in [#838](https://github.com/home-lang/home/issues/838) exposes the next
@@ -503,7 +509,8 @@ intervals do not establish improvement or equivalence; competitor ranks stay unc
 
 Imported Record/indexed-interface fixes are now
 [landed](https://github.com/home-lang/home/commit/a6570c80599122f4c263527bc35a1c27d65987c3).
-Their results are **untimed admission checks**, not a refreshed performance ranking:
+Their diagnostic results below are **untimed admission checks**; the separate
+matrix above times the landed compiler:
 
 | Admission check | Result | Remaining limitation |
 |---|---|---|
@@ -517,7 +524,8 @@ the wider exact type graph exposes additional failures, so this is not a
 diagnostic-count improvement. See the
 [admission report](docs/docs/TS_PERFORMANCE.md#imported-record-and-indexed-interface-admission-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-record-indexed-admission-863.tar.gz).
-The dated timing matrix above does not measure this newer compiler.
+The timing matrix above measures the landed source separately; these
+diagnostic checks do not establish a causal speedup.
 
 The timing tables were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full

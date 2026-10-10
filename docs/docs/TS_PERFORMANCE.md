@@ -10,10 +10,10 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-The timing matrix below is the dated `20261009T205353Z` snapshot. It does not
-measure the later [Record and indexed-interface fixes](#imported-record-and-indexed-interface-admission-2026-10-10-utc).
-Their complete synthetic admission checks pass, but no updated timing rank
-is inferred from those checks.
+The latest complete timing matrix is `20261010T051920Z`, measuring the landed
+[Record and indexed-interface fixes](#imported-record-and-indexed-interface-admission-2026-10-10-utc)
+independently of their diagnostic-only admission checks. Home leads **1/20**
+workloads and beats native TS 7 on **12/20**; the broader goal remains incomplete.
 
 The later ordered namespace-import candidate is **rejected**, fully restored
 and never pushed: independent destructuring confirmation regresses despite
@@ -42,6 +42,84 @@ It is a full competitor comparison, not an exact-parent patch A/B.
 The virtual-section source index's exact-parent Home-only A/B is separate
 from the fresh competitor matrix below. Its scaling gains and unresolved
 adverse recursive-generics warning are [documented below](#virtual-section-prefix-facts-2026-10-09-utc).
+
+### Landed Record and indexed interface matrix 2026 10 10 UTC
+
+Result `20261010T051920Z` measures clean source
+[`b4985e4bd304ddf1fc9b6e14c375fc1de3878f2e`](https://github.com/home-lang/home/commit/b4985e4bd304ddf1fc9b6e14c375fc1de3878f2e),
+with compiler implementation
+[`a6570c80599122f4c263527bc35a1c27d65987c3`](https://github.com/home-lang/home/commit/a6570c80599122f4c263527bc35a1c27d65987c3).
+A fresh clean standalone build matches qualified native SHA-256
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`.
+This is a full competitor comparison, not an exact-parent patch A/B or proof
+of a causal performance change from the correctness fixes.
+
+All five unchanged byte-pinned compilers pass **145/145 protocol-4 admissions**
+on the same 20 positive workloads and nine negative-control projects, including
+the complete checked-JS error multiset. Every compiler receives the identical
+strict no-emit project, minimal ambient shim, `noLib` and `skipLibCheck` settings.
+Bun's existing exact checked-files success policy is preserved; no diagnostics
+are filtered. This synthetic frontend suite is not production-library admission.
+
+Three warmups precede 30 fresh processes per compiler/workload in equally
+rotating order: **600 original rounds / 3,000 retained samples**. Executable,
+payload, input, harness and project-context fingerprints match before and
+after measurement. Independent verification checks every order, nonzero
+negative exit, complete diagnostic multiset, sample array and archive payload.
+No compiler, row, sample or adverse observation is removed or repeated.
+
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27 arm64. Pins are TS6.0.3,
+direct native TS7.0.2, Home0.1.0, Rust tsc-rs0.1.0/TS7.1.0-dev and
+Bun1.4.3-canary.1+bd599f5af. Home uses pinned Zig2163, stripped ReleaseFast and
+`-Denable_jsc=false`. The shared 600-second/3,840-MB guard, machine lock and
+disk floors are unchanged. Matrix peak tree footprint is 391 MB, host low-water
+45%, and the command exits 0. Evidence export waited for an unrelated live
+build's lock; the completed measurement was not restarted.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 202.5 ms | 23.3 ms | 27.0 ms | 22.6 ms | 13.5 ms | 2.00× slower |
+| `class_hierarchy` | 186.6 ms | 21.4 ms | 23.5 ms | 18.0 ms | 13.6 ms | 1.72× slower |
+| `commonjs_graph` | 152.0 ms | 17.9 ms | 18.0 ms | 14.7 ms | 11.9 ms | 1.52× slower |
+| `control_flow` | 192.4 ms | 27.9 ms | 26.3 ms | 25.0 ms | 16.7 ms | 1.57× slower |
+| `deep_types` | 149.9 ms | 22.8 ms | 22.3 ms | 15.4 ms | 14.3 ms | 1.56× slower |
+| `destructuring` | 141.6 ms | 17.3 ms | 15.6 ms | 15.1 ms | 11.1 ms | 1.40× slower |
+| `generic_calls` | 185.0 ms | 23.8 ms | 23.2 ms | 19.9 ms | 15.0 ms | 1.55× slower |
+| `import_graph` | 138.3 ms | 15.7 ms | 18.1 ms | 12.0 ms | 16.4 ms | 1.51× slower |
+| `interface_composition` | 208.6 ms | 32.3 ms | 35.4 ms | 24.5 ms | 17.9 ms | 1.98× slower |
+| `many_files` | 220.7 ms | 23.8 ms | 23.2 ms | 17.2 ms | 14.2 ms | 1.63× slower |
+| `null_safe_access` | 199.0 ms | 27.4 ms | 34.1 ms | 23.6 ms | 16.9 ms | 2.02× slower |
+| `overload_resolution` | 204.8 ms | 34.0 ms | 24.5 ms | 27.4 ms | 20.6 ms | 1.19× slower |
+| `recursive_generics` | 157.3 ms | 41.6 ms | 14.9 ms | 33.2 ms | 9.5 ms | 1.57× slower |
+| `reexport_graph` | 102.0 ms | 11.1 ms | 12.4 ms | 9.3 ms | 9.2 ms | 1.35× slower |
+| `startup` | 69.5 ms | 8.0 ms | 3.2 ms | 6.3 ms | 6.6 ms | **2.00× faster** |
+| `structural_objects` | 184.5 ms | 26.7 ms | 23.0 ms | 22.6 ms | 16.5 ms | 1.40× slower |
+| `tsx_components` | 175.4 ms | 17.0 ms | 19.8 ms | 15.3 ms | 11.1 ms | 1.78× slower |
+| `type_predicates` | 237.9 ms | 40.1 ms | 32.6 ms | 34.0 ms | 23.4 ms | 1.39× slower |
+| `type_predicates_large` | 1,032.4 ms | 322.1 ms | 251.9 ms | 274.3 ms | 164.4 ms | 1.53× slower |
+| `variadic_tuples` | 254.8 ms | 45.2 ms | 32.4 ms | 34.3 ms | 19.7 ms | 1.64× slower |
+
+Home leads **1/20** (startup), beats native TS7 on **12/20**, and loses the
+other 19 fastest-competitor comparisons. Bun leads 18 rows; Rust leads imports.
+Counts use unrounded medians. These are descriptive observations, not
+statistical-significance, equivalence or causal patch claims. Generic calls
+is now faster than TS7 and CommonJS slightly slower, without a causal inference
+from the earlier matrix's opposite ordering.
+
+The largest current gaps are null-safe access **2.02×**, checked JS **2.00×**,
+interfaces **1.98×**, TSX **1.78×** and class hierarchy **1.72×** slower than
+the fastest measured competitor. [#864](https://github.com/home-lang/home/issues/864)
+tracks current-native null-safe profiling and stronger inferred-local/optional-call
+negative controls before new timing. Zod still reports 241 TS diagnostics and
+two HM9002 warnings and is unadmitted. Finite/symbolic Record domains, canonical
+C++ and Linux/Windows coverage remain incomplete; no unsupported result is
+called a win.
+
+The [matrix archive](../../bench/vs_tsgo/evidence/20261010T051920Z.tar.gz)
+retains all original arrays and admissions. All **603 payload checksums** verify.
+Archive SHA-256:
+`0f71bbe9dcc5a51089d993253c956e80ceb24e520c4de13d3eb9f4e02005255b`.
+The older matrix below remains a separately versioned historical comparison.
 
 ### Landed JSDoc ancestor-prefix matrix (2026-10-09 UTC)
 
