@@ -479,6 +479,28 @@ and [raw evidence](bench/vs_tsgo/evidence/20261010-shared-function-statement-gro
 Inconclusive intervals do not establish equivalence; the separate competitor
 ranking above is unchanged by this rejected Home-only A/B.
 
+The stateless value-name guard under [#861](https://github.com/home-lang/home/issues/861)
+is **not admitted**: interruption lost one batch's execution record and the
+fifth batch stopped at the disk floor. Retained observations include:
+
+| #861 retained measurement | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 36.102 ms | 37.224 ms | -4.705 to +1.400 ms |
+| 512 families, 30 pairs | 147.629 ms | 149.565 ms | -3.734 to +2.916 ms |
+| Interface family screen, 10 pairs | 47.791 ms | 60.971 ms | **-17.033 to -4.314 ms** |
+| Interface independent recheck, 30 pairs | 52.294 ms | 50.145 ms | -13.029 to +7.541 ms |
+| Interface separate declaration check, 30 pairs | 55.683 ms | 62.015 ms | -15.476 to +23.459 ms |
+| 8,192 families, third batch data only | 14,264.008 ms | 15,088.627 ms | -15,472.494 to +8,329.141 ms |
+| 8,192 families, fifth batch disk-stopped | No completed pairs | No completed pairs | Not available |
+
+All **706 of 712 planned pairs / 660 admissions** are retained, including
+**24 of 30 planned large pairs**. The candidate was never pushed; source and
+native are restored. See the
+[complete unadmitted report](docs/docs/TS_PERFORMANCE.md#simple-value-name-guard-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-simple-value-name-guard-incomplete-861.tar.gz).
+No timings were repeated or excluded. Incomplete execution and zero-spanning
+intervals do not establish improvement or equivalence; competitor ranks stay unchanged.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been

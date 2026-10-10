@@ -528,6 +528,240 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Simple value name guard 2026 10 10 UTC
+
+The stateless guard under [#861](https://github.com/home-lang/home/issues/861)
+is **not admitted and was never pushed**. The experiment retains **706 of
+712 planned timing pairs** and **all 660 admissions**, but it does not
+complete the frozen five-batch protocol. One batch lost its execution/guard
+record after interruption; the fifth was stopped at the disk floor and
+contains no completed timing pairs. All six candidate controls and the guard
+are removed, newer upstream work preserved, source clean and native restored
+byte-for-byte. No completed timings were repeated to obtain a pass.
+
+The official and 512-family independent confirmations have slower candidate
+medians and zero-spanning saving intervals. Interface composition has a
+wholly negative family-screen interval, but neither its independent recheck
+nor the separate declaration check confirms that loss. No retained independent
+risk/declaration interval is wholly negative. This is **not equivalence or
+acceptance**: the required large target and execution evidence remain incomplete.
+The completed fourth large batch's positive interval does not replace the
+missing fifth batch or qualify the interrupted third batch.
+
+### Source identity and implementation
+
+Full semantic gates ran on
+[`e7206761f810020aae39fc81d88e363becab0d46`](https://github.com/home-lang/home/commit/e7206761f810020aae39fc81d88e363becab0d46).
+The measured parent was
+[`6863bd9c3ffd4426681d338504c2411f3b8dee5c`](https://github.com/home-lang/home/commit/6863bd9c3ffd4426681d338504c2411f3b8dee5c).
+The tracked compiler/build/configuration/benchmark definitions matched between
+these commits, tree-record SHA-256
+`7d1b0cc9217a73fa0c22496a81f0ee5e6558657222a01dceead2133c5424ef6c`.
+Fresh clean-parent and reapplied-candidate builds matched both originally
+qualified images byte-for-byte. Original gates retain their actual source;
+they are not relabeled as executions on another commit.
+
+- Parent/restored native: `68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+- Candidate native: `0acd7ea8defe80b902f5a04b05cb3db5ac634046d0544bdc1852d0f4454d2657`.
+- Exact source/test patch: `21306acd6474df14190bb9dd92eb1b43f599f1d4c856def9d08e069b440784e5`.
+- Original protocol: `3269be55e82316b9f574b233f6a414790dc1c22404bb41d014f85c34de0d4a77`.
+- Measured-parent protocol: `c3198f2015d8daad36938d228853a5b3e4ddc6d80db840385ffbc1c56b032317`.
+
+An assertion proves only the parent-source provenance changed during
+reconciliation; all timing, admissions, retention and acceptance rules stayed
+identical. Restoration source is
+[`59e66f30863c005a5719eb33a86ddd57701d9ae7`](https://github.com/home-lang/home/commit/59e66f30863c005a5719eb33a86ddd57701d9ae7).
+Its newer runtime/build changes are preserved; its fresh standalone compiler
+still matches the measured parent bytes.
+
+The archived runtime change adds 21 lines around the unchanged complete value
+resolver. Only a provably different simple identifier name in a variable,
+function or class declaration/expression may return null before entering
+visibility and the full resolver. Matching names, patterns, imports, loops,
+absent/malformed names and all other kinds use the original resolver.
+One export layer, original statement order, visibility, live TypeIds, lowering,
+shadowing, deprecation and error behavior remain. There is no cache, root-only
+restriction, library/filename/benchmark rule, body omission or semantic cap.
+An automated comparison proves the entire shared original resolver body is
+byte-identical. These properties describe the archived unadmitted design,
+not current production code.
+
+The actual-native profile displayed resolver offsets 24/120/168/636 early and
+24/212 middle; its disassembly contains a 320-byte frame and visibility before
+simple-name matching. These observations identify work, not CPU shares or a
+causal speed estimate. A separate one-second sample of the Zig compiler during
+long test compilation shows LLVM code generation/register allocation, not
+Home runtime performance.
+
+### Correctness and resource controls
+
+Six controls cover fast/scalar types and complete diagnostics for every HIR
+node/identifier in representative projects; unrelated-name zero-allocation
+versus matching visibility OOM fallback and live types; all seven simple
+declaration kinds plus direct/nested/empty exports and malformed names;
+live name changes with unchanged node count and actual higher NodeIds inserted
+first; every forced-growth visibility-metadata allocation failure with cleanup;
+and complete variable/function/class deprecation suggestions and related
+declaration information.
+
+Full **checker 4,559 / binder 21 / Program 251 / driver 200 / CLI 76 /
+entrypoint 38** suites passed without named filters, plus the native build
+and **136** harness tests. Six untimed full-native controls compare complete
+stdout/stderr/exit status across visibility, patterns/loops, overloads, scopes,
+exports and checked JavaScript. Pinned Zod 4.5.2 retains **195 TS + 3 HM9002**
+primary diagnostics with unchanged positions, messages and multiplicity:
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+Zod remains **unadmitted**, not compatible merely because failures match.
+
+The 600-second / 3,840-MB tree-footprint guard, shared lock and
+1,024/512-MB disk admission/continuation floors are unchanged. All waits,
+resource failures and host variation remain in the evidence. Before current
+control builds, 80 old closed owned Zig test-cache files totaling
+1,001,948,584 bytes were recovered into a locally retained archive, every
+payload/hash/path/mtime/open-file check verified, then only those exact files
+unlinked. Recovery archive SHA-256:
+`71fd819f0e5aa0f15bfdd2b8baeba8a481d62c4b0004b7a0b7ec32896cb87221`.
+Source, native images, raw benchmark data, recent outputs and unrelated work
+were not removed. The manifest and cleanup record are in the raw archive.
+
+### Interruption and incomplete execution
+
+The original orchestration/guard/logging processes disappeared after the
+conversation was deliberately interrupted. The third-batch orphan was
+observed finishing its final pair, then ended; all six original raw pairs and
+66 admissions survived, but canonical summary, wrapper exit and guard
+completion did not. A separate data-only recovery rechecks every pair's
+exit code, order, count and unchanged fingerprints and applies the same frozen
+saving calculation. It runs no compiler/timer and does **not** infer a zero
+wrapper exit or fully guarded execution.
+
+The initial recovery helper rejected its fingerprint assertion because its
+extracted fingerprint function evaluated the helper's `__file__`, rather than
+the frozen runner's path. The dependent continuation stopped before executing
+any phase. Correcting that context retained exact fingerprint equality;
+the failed attempt remains. Only never-started phases were dispatched.
+
+The fifth batch passed all 66 original admissions, then the guard stopped it
+at **485 MB free**, below the unchanged 512-MB critical floor, with **exit 123**.
+It has **zero completed timing pairs**. Warmup or unexported timer progress is
+unconfirmed, and the phase was not retimed. After disk space recovered without
+another deletion or floor change, only the never-started 11 risk rechecks and
+class/interface checks ran.
+
+The original frozen verifier remains unchanged and exits one for missing
+canonical third/fifth-batch results. The supplemental data audit verifies
+706 retained pairs, 594 admissions attached to timed-data phases and the failed
+fifth batch's 66 admissions, totaling 660. It explicitly reports
+`execution_qualified: false`, `candidate_eligible_for_production: false`
+and an incomplete five-batch protocol. It is **not** a substitute execution
+pass. The planned 712 pairs/30 large pairs are not relabeled as 706/24.
+
+### All retained measurements
+
+Pairs use fresh native processes in alternating order; each started phase
+requires the original complete positive/negative controls, including all 15
+checked-JS errors at first/middle/last. Positive mean-saving intervals favor
+the candidate. Third-batch values below are recovered data only; batch five
+has no timing result. No pooled four-batch interval is substituted for the
+predeclared five-batch target.
+
+| Retained measurement | Parent median | Candidate median | Candidate faster | Paired mean saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS screen | 36.077 ms | 37.863 ms | 8/20 | -5.261 to +0.723 ms |
+| 512 family screen | 154.728 ms | 158.185 ms | 2/6 | -15.598 to +10.656 ms |
+| 8192 family screen | 11,151.313 ms | 10,735.609 ms | 4/6 | -723.334 to +1,851.352 ms |
+| Official checked JS independent confirmation | 36.102 ms | 37.224 ms | 12/30 | -4.705 to +1.400 ms |
+| 512 family independent confirmation | 147.629 ms | 149.565 ms | 10/30 | -3.734 to +2.916 ms |
+| 8192 family batch 1 | 13,205.332 ms | 10,679.446 ms | 4/6 | -2,848.505 to +9,345.077 ms |
+| 8192 family batch 2 | 10,721.569 ms | 9,743.467 ms | 4/6 | -1,174.681 to +2,832.900 ms |
+| 8192 family batch 3 data recovered execution unconfirmed | 14,264.008 ms | 15,088.627 ms | 3/6 | -15,472.494 to +8,329.141 ms |
+| 8192 family batch 4 | 11,085.269 ms | 9,518.928 ms | 6/6 | +253.933 to +4,314.435 ms |
+| 8192 family batch 5 disk stopped | No completed pairs | No completed pairs | 0/6 planned | Not available |
+
+| All family screens ten pairs each | Parent median | Candidate median | Candidate faster | Paired mean saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 36.714 ms | 36.599 ms | 5/10 | -2.340 to +5.213 ms |
+| `class_hierarchy` | 34.655 ms | 33.485 ms | 7/10 | -9.890 to +11.369 ms |
+| `commonjs_graph` | 30.239 ms | 28.085 ms | 5/10 | -11.694 to +6.285 ms |
+| `control_flow` | 37.888 ms | 43.454 ms | 2/10 | -18.363 to +1.386 ms |
+| `deep_types` | 31.766 ms | 31.556 ms | 3/10 | -17.911 to +7.405 ms |
+| `destructuring` | 20.248 ms | 19.747 ms | 6/10 | -2.125 to +8.853 ms |
+| `generic_calls` | 43.953 ms | 46.195 ms | 3/10 | -7.080 to +3.232 ms |
+| `import_graph` | 29.103 ms | 27.347 ms | 5/10 | -3.943 to +6.277 ms |
+| `interface_composition` | 47.791 ms | 60.971 ms | 1/10 | -17.033 to -4.314 ms |
+| `many_files` | 31.675 ms | 30.160 ms | 6/10 | -3.991 to +9.842 ms |
+| `null_safe_access` | 55.926 ms | 53.872 ms | 6/10 | -8.191 to +9.169 ms |
+| `overload_resolution` | 35.088 ms | 35.268 ms | 5/10 | -10.153 to +1.867 ms |
+| `recursive_generics` | 21.829 ms | 21.562 ms | 6/10 | -3.288 to +4.780 ms |
+| `reexport_graph` | 16.295 ms | 17.249 ms | 4/10 | -4.339 to +1.999 ms |
+| `startup` | 3.919 ms | 3.923 ms | 2/10 | -0.437 to +0.120 ms |
+| `structural_objects` | 33.735 ms | 33.024 ms | 4/10 | -4.218 to +4.359 ms |
+| `tsx_components` | 27.006 ms | 26.138 ms | 5/10 | -2.199 to +6.269 ms |
+| `type_predicates` | 49.344 ms | 49.236 ms | 5/10 | -16.832 to +13.905 ms |
+| `type_predicates_large` | 363.625 ms | 361.548 ms | 4/10 | -42.973 to +53.632 ms |
+| `variadic_tuples` | 46.162 ms | 48.706 ms | 6/10 | -3.597 to +3.486 ms |
+
+| Independent risk checks thirty pairs each | Parent median | Candidate median | Candidate faster | Paired mean saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 43.210 ms | 42.132 ms | 16/30 | -3.246 to +1.862 ms |
+| `commonjs_graph` | 30.045 ms | 29.216 ms | 12/30 | -2.117 to +2.567 ms |
+| `control_flow` | 43.360 ms | 46.292 ms | 14/30 | -7.450 to +18.563 ms |
+| `deep_types` | 52.372 ms | 54.734 ms | 12/30 | -5.566 to +20.171 ms |
+| `destructuring` | 25.443 ms | 24.698 ms | 16/30 | -3.190 to +3.141 ms |
+| `generic_calls` | 44.622 ms | 42.863 ms | 17/30 | -4.775 to +6.454 ms |
+| `interface_composition` | 52.294 ms | 50.145 ms | 13/30 | -13.029 to +7.541 ms |
+| `recursive_generics` | 29.591 ms | 32.065 ms | 12/30 | -23.980 to +3.673 ms |
+| `reexport_graph` | 21.523 ms | 19.147 ms | 15/30 | -3.632 to +4.041 ms |
+| `type_predicates_large` | 565.326 ms | 624.102 ms | 13/30 | -242.097 to +295.340 ms |
+| `variadic_tuples` | 107.637 ms | 98.618 ms | 19/30 | -21.083 to +44.561 ms |
+
+| Independent declaration checks thirty pairs each | Parent median | Candidate median | Candidate faster | Paired mean saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 41.582 ms | 46.604 ms | 9/30 | -7.434 to +0.985 ms |
+| `interface_composition` | 55.683 ms | 62.015 ms | 11/30 | -15.476 to +23.459 ms |
+
+Variation remains visible: the first batch includes a 23.417-second parent,
+the recovered third batch a 38.239-second candidate, and the separate interface
+check retains parent 348.693-ms and candidate 253.093-ms observations.
+The interface screen's negative interval and all slower or inconclusive points
+remain; later zero-spanning intervals do not erase the screen. No sample
+filter, alignment tuning, changed warmups, skipped checking or repeat-to-pass
+is used.
+
+### Evidence and scope
+
+The [complete retained raw archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261010-simple-value-name-guard-incomplete-861.tar.gz)
+contains **2,001** verified payload checksums. SHA-256:
+`eed995b6427dfa34c77f25f66d0b0641d75a925332ddd1629504b6008471845b`.
+It retains every original pair/admission, interrupted and disk-stop records,
+strict-verifier failure, separate recovery/data audit, original experiment,
+source/input/native proofs, all correctness gates and complete diagnostic
+fixtures, cleanup manifest, failed helper attempt, exact generated inputs and
+nine explicitly labeled untimed negative-project generator replays.
+Replays execute no compiler and are not original admissions/timings.
+The large cache-recovery capsule stays local; its verified manifest and hash
+are retained, not mistaken for benchmark data.
+
+This is unadmitted Home-only data, not an update of the separate five-compiler
+ranking: **Home 1/20 leads and 12/20 versus native TS7** remains the last
+published matrix. Linux workflow listings and permissions report active/enabled,
+but actual dispatch still returns HTTP 422 and no run exists; no settings were
+changed. Canonical C++, Linux/Windows coverage and Zod admission remain unresolved.
+The full [#416](https://github.com/home-lang/home/issues/416) goal is incomplete.
+Further work under [#861](https://github.com/home-lang/home/issues/861) must not
+revive this run, retime failures to obtain a pass or treat absent confirmed
+regressions as equivalence.
+
+The [publication context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261010-simple-value-name-incomplete-publication-context-861.tar.gz)
+retains lint commands/logs, complete claim verifier, restoration, known
+terminal/failed/unknown job outcomes, the strict verifier failure and separate
+data audit, with **16** verified payload checksums. SHA-256:
+`236748dc5fd5413e69b0d045c10b059499580ef540ea9ee27e7e6ea00ab9e864`.
+Repository-wide `bunx --bun pickier .` exits one with **11,460 errors and
+10,614 warnings** outside the changed Markdown; no broad auto-fix is applied.
+Focused Pickier on both changed files exits zero. Full tables, selected README
+rows/links, all 2,001 raw checksums, incomplete scope and restored native verify.
+
 ## Shared function statement groups 2026 10 10 UTC
 
 The candidate under [#859](https://github.com/home-lang/home/issues/859) is
