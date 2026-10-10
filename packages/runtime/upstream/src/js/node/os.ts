@@ -1,4 +1,5 @@
 // Hardcoded module "node:os"
+const { validateInt32, validateInteger } = require("internal/validators");
 var tmpdir = function () {
   var env = Bun.env;
 
@@ -102,7 +103,10 @@ function bound(binding) {
         : $bundleError("TODO: endianness");
     },
     freemem: binding.freemem,
-    getPriority: binding.getPriority,
+    getPriority(pid = 0) {
+      validateInt32(pid, "pid");
+      return binding.getPriority(pid);
+    },
     homedir: binding.homedir,
     hostname: binding.hostname,
     loadavg: binding.loadavg,
@@ -111,7 +115,15 @@ function bound(binding) {
       return process.platform;
     },
     release: binding.release,
-    setPriority: binding.setPriority,
+    setPriority(pid, priority) {
+      if (priority === undefined) {
+        priority = pid;
+        pid = 0;
+      }
+      validateInt32(pid, "pid");
+      validateInteger(priority, "priority", -20, 19);
+      return binding.setPriority(pid, priority);
+    },
     get tmpdir() {
       return tmpdir;
     },
@@ -128,7 +140,16 @@ function bound(binding) {
               : $bundleError("TODO: type");
     },
     uptime: binding.uptime,
-    userInfo: binding.userInfo,
+    userInfo(options) {
+      const encoding = options && typeof options === "object" ? options.encoding : undefined;
+      const info = binding.userInfo({});
+      if (typeof encoding === "string" && encoding.toLowerCase() === "buffer") {
+        info.username = Buffer.from(info.username);
+        info.homedir = Buffer.from(info.homedir);
+        if (info.shell !== null) info.shell = Buffer.from(info.shell);
+      }
+      return info;
+    },
     version: binding.version,
     machine: function () {
       // TODO: linux arm64 should also return "aarch64" (Node/uname compat) —

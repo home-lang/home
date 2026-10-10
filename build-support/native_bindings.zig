@@ -27,6 +27,8 @@ var cached_native_modules: ?std.Build.LazyPath = null;
 var cached_string_width_object: ?std.Build.LazyPath = null;
 var cached_string_decoder_object: ?std.Build.LazyPath = null;
 var cached_util_types_object: ?std.Build.LazyPath = null;
+var cached_process_constants_object: ?std.Build.LazyPath = null;
+var cached_process_uv_object: ?std.Build.LazyPath = null;
 var cached_buffer_object: ?std.Build.LazyPath = null;
 var cached_sqlite_statement_object: ?std.Build.LazyPath = null;
 var cached_core_builtins_object: ?std.Build.LazyPath = null;
@@ -257,6 +259,22 @@ pub fn utilTypesObject(b: *std.Build, object_root: []const u8) std.Build.LazyPat
     return object;
 }
 
+pub fn processConstantsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_process_constants_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "ProcessBindingConstants.cpp", output.path(b, "ProcessBindingConstants.cpp"));
+    cached_process_constants_object = object;
+    return object;
+}
+
+pub fn processUvObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_process_uv_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "ProcessBindingUV.cpp", output.path(b, "ProcessBindingUV.cpp"));
+    cached_process_uv_object = object;
+    return object;
+}
+
 pub fn bufferObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_buffer_object) |object| return object;
     const output = nativeModules(b, object_root);
@@ -393,6 +411,18 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/JSBufferList.cpp",
         "packages/runtime/upstream/src/jsc/bindings/JSBufferList.h",
         "packages/runtime/upstream/src/jsc/bindings/JS2Native.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingBuffer.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingBuffer.h",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.h",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.h",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingHTTPParser.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingHTTPParser.h",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingNatives.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingNatives.h",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingUV.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/ProcessBindingUV.h",
         "packages/runtime/src/jsc/internal-stream-wrap.js",
         "packages/runtime/upstream/src/codegen/builtin-parser.ts",
         "packages/runtime/upstream/src/codegen/client-js.ts",
@@ -640,6 +670,11 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "ProcessBindingTTYWrap.cpp", "ProcessBindingTTYWrap.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeVM.cpp", "NodeVM.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeFetch.cpp", "NodeFetch.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "ProcessBindingBuffer.cpp", "ProcessBindingBuffer.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "ProcessBindingFs.cpp", "ProcessBindingFs.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "ProcessBindingHTTPParser.cpp", "ProcessBindingHTTPParser.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "ProcessBindingNatives.cpp", "ProcessBindingNatives.h" },
+
         .{ "UnifiedSource-src_jsc_bindings-4.cpp", "Undici.cpp", "Undici.h" },
         .{ "UnifiedSource-src_jsc_modules-0.cpp", "NodeTTYModule.cpp", "NodeTTYModule.h" },
         .{ "UnifiedSource-src_jsc_modules-0.cpp", "ObjectModule.cpp", "ObjectModule.h" },
@@ -711,6 +746,12 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const buffer_header = std.fs.path.resolve(b.allocator, &.{ std.fs.path.dirname(module_source).?, "../bindings/JSBuffer.h" }) catch @panic("OOM");
     defer b.allocator.free(buffer_header);
     generate.addFileInput(.{ .cwd_relative = buffer_header });
+    for ([_][]const u8{ "ProcessBindingConstants.h", "ProcessBindingUV.h" }) |name| {
+        const header = std.fs.path.resolve(b.allocator, &.{ std.fs.path.dirname(module_source).?, "../bindings", name }) catch @panic("OOM");
+        defer b.allocator.free(header);
+        generate.addFileInput(.{ .cwd_relative = header });
+    }
+
     cached_native_modules = output;
     return output;
 }

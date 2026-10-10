@@ -62,6 +62,12 @@ async function main() {
   assertClassHeaderAbi(readFileSync(path.join(bufferRoot, 'JSBuffer.h')), readFileSync(bufferHeaderPath), 'JSBuffer.h', bufferHeaderPath)
   const bufferSource = read(path.join(bufferRoot, 'JSBuffer.cpp'))
 
+  const processBindingRoot = path.join(homeSource, 'jsc/bindings')
+  const standaloneProcessBindings = ['ProcessBindingConstants', 'ProcessBindingUV'].map(name => {
+    const externalHeader = path.resolve(nativeHeadersRoot, '../bindings', `${name}.h`)
+    assertClassHeaderAbi(readFileSync(path.join(processBindingRoot, `${name}.h`)), readFileSync(externalHeader), `${name}.h`, externalHeader)
+    return { name, body: read(path.join(processBindingRoot, `${name}.cpp`)) }
+  })
   const sqliteRoot = path.join(homeSource, 'jsc/bindings/sqlite')
   const sqliteHeaderPath = path.resolve(nativeHeadersRoot, '../bindings/sqlite/JSSQLStatement.h')
   assertClassHeaderAbi(readFileSync(path.join(sqliteRoot, 'JSSQLStatement.h')), readFileSync(sqliteHeaderPath), 'JSSQLStatement.h', sqliteHeaderPath)
@@ -116,7 +122,7 @@ async function main() {
     [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h'], ['jsc/bindings/webcore/EventTarget.cpp', 'EventTarget.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
     [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null], ['jsc/bindings/JSBufferEncodingType.cpp', 'JSBufferEncodingType.h'], ['jsc/bindings/JSBufferList.cpp', 'JSBufferList.h'], ['jsc/bindings/JS2Native.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
-    [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h'], ['jsc/bindings/NodeHTTP.cpp', 'NodeHTTP.h'], ['jsc/bindings/NodeTLS.cpp', 'NodeTLS.h'], ['jsc/bindings/ProcessBindingTTYWrap.cpp', 'ProcessBindingTTYWrap.h'], ['jsc/bindings/NodeVM.cpp', 'NodeVM.h'], ['jsc/bindings/NodeVMModule.cpp', 'NodeVMModule.h'], ['jsc/bindings/NodeVMScript.cpp', 'NodeVMScript.h'], ['jsc/bindings/NodeVMSourceTextModule.cpp', 'NodeVMSourceTextModule.h'], ['jsc/bindings/NodeVMSyntheticModule.cpp', 'NodeVMSyntheticModule.h'], ['jsc/bindings/NodeFetch.cpp', 'NodeFetch.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
+    [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h'], ['jsc/bindings/NodeHTTP.cpp', 'NodeHTTP.h'], ['jsc/bindings/NodeTLS.cpp', 'NodeTLS.h'], ['jsc/bindings/ProcessBindingTTYWrap.cpp', 'ProcessBindingTTYWrap.h'], ['jsc/bindings/NodeVM.cpp', 'NodeVM.h'], ['jsc/bindings/NodeVMModule.cpp', 'NodeVMModule.h'], ['jsc/bindings/NodeVMScript.cpp', 'NodeVMScript.h'], ['jsc/bindings/NodeVMSourceTextModule.cpp', 'NodeVMSourceTextModule.h'], ['jsc/bindings/NodeVMSyntheticModule.cpp', 'NodeVMSyntheticModule.h'], ['jsc/bindings/NodeFetch.cpp', 'NodeFetch.h'], ['jsc/bindings/ProcessBindingBuffer.cpp', 'ProcessBindingBuffer.h'], ['jsc/bindings/ProcessBindingFs.cpp', 'ProcessBindingFs.h'], ['jsc/bindings/ProcessBindingHTTPParser.cpp', 'ProcessBindingHTTPParser.h'], ['jsc/bindings/ProcessBindingNatives.cpp', 'ProcessBindingNatives.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h'], ['jsc/bindings/Undici.cpp', 'Undici.h'], ['jsc/bindings/Weak.cpp', null]], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
     [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h'], ['jsc/bindings/webcore/JSReadableStream.cpp', 'JSReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
     [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h'], ['jsc/bindings/webcore/ReadableStream.cpp', 'ReadableStream.h'], ['jsc/bindings/webcore/RegisteredEventListener.cpp', 'RegisteredEventListener.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
@@ -153,6 +159,10 @@ async function main() {
   mkdirSync(output, { recursive: true })
   writeFileSync(path.join(output, 'NativeModuleImpl.h'), nativeModuleImpl)
   writeFileSync(path.join(output, 'GeneratedJS2Native.h'), generatedDispatch)
+  for (const { name, body } of standaloneProcessBindings) {
+    writeFileSync(path.join(output, `${name}.cpp`), `#line 1 ${JSON.stringify(path.join(processBindingRoot, `${name}.cpp`))}\n${body}`)
+  }
+
   for (const { name, bytes } of factoryHeaders) writeFileSync(path.join(output, name), bytes)
   writeFileSync(path.join(output, 'JSBuffer.cpp'), `#line 1 ${JSON.stringify(path.join(bufferRoot, 'JSBuffer.cpp'))}\n${bufferSource}`)
   writeFileSync(path.join(output, 'JSSQLStatement.cpp'), `#line 1 ${JSON.stringify(path.join(sqliteRoot, 'JSSQLStatement.cpp'))}\n${sqliteStatement}`)

@@ -2,6 +2,7 @@
 #include "napi.h"
 
 #include "BunProcess.h"
+#include <openssl/crypto.h>
 #include "DLHandleMap.h"
 #include "WebCoreJSBuiltins.h"
 #include "v8/node.h"
@@ -3219,6 +3220,11 @@ inline JSValue processBindingUtil(Zig::GlobalObject* globalObject, JSC::VM& vm)
 
 inline JSValue processBindingConfig(Zig::GlobalObject* globalObject, JSC::VM& vm)
 {
+    static WTF::NeverDestroyed<PrivateName> cacheName(PrivateName::PrivateSymbol, "Home process config binding"_s);
+    auto key = Identifier::fromUid(vm, &cacheName.get().uid());
+    auto* process = globalObject->processObject();
+    if (auto cached = process->getDirect(vm, key)) return cached;
+
     auto config = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 9);
 #ifdef BUN_DEBUG
     config->putDirect(vm, Identifier::fromString(vm, "isDebugBuild"_s), jsBoolean(true), 0);
@@ -3226,21 +3232,28 @@ inline JSValue processBindingConfig(Zig::GlobalObject* globalObject, JSC::VM& vm
     config->putDirect(vm, Identifier::fromString(vm, "isDebugBuild"_s), jsBoolean(false), 0);
 #endif
     config->putDirect(vm, Identifier::fromString(vm, "hasOpenSSL"_s), jsBoolean(true), 0);
-    config->putDirect(vm, Identifier::fromString(vm, "fipsMode"_s), jsBoolean(true), 0);
+    config->putDirect(vm, Identifier::fromString(vm, "fipsMode"_s), jsBoolean(FIPS_mode() != 0), 0);
     config->putDirect(vm, Identifier::fromString(vm, "hasIntl"_s), jsBoolean(true), 0);
     config->putDirect(vm, Identifier::fromString(vm, "hasTracing"_s), jsBoolean(true), 0);
     config->putDirect(vm, Identifier::fromString(vm, "hasNodeOptions"_s), jsBoolean(true), 0);
     config->putDirect(vm, Identifier::fromString(vm, "hasInspector"_s), jsBoolean(true), 0);
     config->putDirect(vm, Identifier::fromString(vm, "noBrowserGlobals"_s), jsBoolean(false), 0);
-    config->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(64), 0);
+    config->putDirect(vm, Identifier::fromString(vm, "bits"_s), jsNumber(sizeof(void*) * 8), 0);
+    process->putDirect(vm, key, config, PropertyAttribute::ReadOnly | PropertyAttribute::DontDelete);
     return config;
 }
 
 JSValue createCryptoX509Object(JSGlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
+    static WTF::NeverDestroyed<PrivateName> cacheName(PrivateName::PrivateSymbol, "Home X509 process binding"_s);
+    auto key = Identifier::fromUid(vm, &cacheName.get().uid());
+    auto* process = defaultGlobalObject(globalObject)->processObject();
+    if (auto cached = process->getDirect(vm, key)) return cached;
+
     auto cryptoX509 = JSC::constructEmptyObject(globalObject, globalObject->objectPrototype(), 1);
     cryptoX509->putDirect(vm, JSC::Identifier::fromString(vm, "isX509Certificate"_s), JSC::JSFunction::create(vm, globalObject, 1, String("isX509Certificate"_s), jsIsX509Certificate, ImplementationVisibility::Public), 0);
+    process->putDirect(vm, key, cryptoX509, PropertyAttribute::ReadOnly | PropertyAttribute::DontDelete);
     return cryptoX509;
 }
 

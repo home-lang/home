@@ -900,11 +900,11 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                     else => -@as(c_int, @intFromEnum(std.posix.E.SRCH)),
                     .windows => libuv.UV_ESRCH,
                 },
-                .syscall = bun.String.static("uv_os_getpriority"),
+                .syscall = bun.String.static("uv_os_setpriority"),
             };
             return global.throwValue(err.toErrorInstanceWithInfoObject(global));
         },
-        .ACCES => {
+        .ACCES, .PERM => {
             const err = jsc.SystemError{
                 .message = bun.String.static("permission denied"),
                 .code = bun.String.static("EACCES"),
@@ -912,19 +912,7 @@ pub fn setPriority1(global: *jsc.JSGlobalObject, pid: i32, priority: i32) !void 
                     else => -@as(c_int, @intFromEnum(std.posix.E.ACCES)),
                     .windows => libuv.UV_EACCES,
                 },
-                .syscall = bun.String.static("uv_os_getpriority"),
-            };
-            return global.throwValue(err.toErrorInstanceWithInfoObject(global));
-        },
-        .PERM => {
-            const err = jsc.SystemError{
-                .message = bun.String.static("operation not permitted"),
-                .code = bun.String.static("EPERM"),
-                .errno = comptime switch (bun.Environment.os) {
-                    else => -@as(c_int, @intFromEnum(std.posix.E.SRCH)),
-                    .windows => libuv.UV_ESRCH,
-                },
-                .syscall = bun.String.static("uv_os_getpriority"),
+                .syscall = bun.String.static("uv_os_setpriority"),
             };
             return global.throwValue(err.toErrorInstanceWithInfoObject(global));
         },
@@ -1017,29 +1005,39 @@ pub fn uptime(global: *jsc.JSGlobalObject) bun.JSError!f64 {
 }
 
 pub fn userInfo(globalThis: *jsc.JSGlobalObject, options: gen.UserInfoOptions) bun.JSError!jsc.JSValue {
-    _ = options; // TODO:
-
+    _ = options; // Encoding conversion is validated/applied by node:os.
+    var passwd: libuv.uv_passwd_t = undefined;
+    const status: libuv.ReturnCode = @enumFromInt(libuv.uv_os_get_passwd(&passwd));
+    if (status.int() < 0) {
+        const error_name: [*:0]const u8 = @ptrCast(libuv.uv_err_name(status.int()));
+        const error_message: [*:0]const u8 = @ptrCast(libuv.uv_strerror(status.int()));
+        const err = jsc.SystemError{
+            .code = bun.String.init(std.mem.span(error_name)),
+            .message = bun.String.init(std.mem.span(error_message)),
+            .errno = status.int(),
+            .syscall = bun.String.static("uv_os_get_passwd"),
+        };
+        return globalThis.throwValue(err.toErrorInstanceWithInfoObject(globalThis));
+    }
+    defer libuv.uv_os_free_passwd(&passwd);
     const result = jsc.JSValue.createEmptyObject(globalThis, 5);
-
-    const home = try homedir(globalThis);
+    const username = bun.String.cloneUTF8(std.mem.sliceTo(passwd.username, 0));
+    defer username.deref();
+    const home = bun.String.cloneUTF8(std.mem.sliceTo(passwd.homedir, 0));
     defer home.deref();
-
+    result.put(globalThis, jsc.ZigString.static("username"), try username.toJS(globalThis));
     result.put(globalThis, jsc.ZigString.static("homedir"), try home.toJS(globalThis));
-
     if (comptime Environment.isWindows) {
-        result.put(globalThis, jsc.ZigString.static("username"), jsc.ZigString.init(bun.env_var.USER.get() orelse "unknown").withEncoding().toJS(globalThis));
         result.put(globalThis, jsc.ZigString.static("uid"), jsc.JSValue.jsNumber(-1));
         result.put(globalThis, jsc.ZigString.static("gid"), jsc.JSValue.jsNumber(-1));
         result.put(globalThis, jsc.ZigString.static("shell"), jsc.JSValue.jsNull());
     } else {
-        const username = bun.env_var.USER.get() orelse "unknown";
-
-        result.put(globalThis, jsc.ZigString.static("username"), jsc.ZigString.init(username).withEncoding().toJS(globalThis));
-        result.put(globalThis, jsc.ZigString.static("shell"), jsc.ZigString.init(bun.env_var.SHELL.get() orelse "unknown").withEncoding().toJS(globalThis));
-        result.put(globalThis, jsc.ZigString.static("uid"), jsc.JSValue.jsNumber(c.getuid()));
-        result.put(globalThis, jsc.ZigString.static("gid"), jsc.JSValue.jsNumber(c.getgid()));
+        const shell = bun.String.cloneUTF8(std.mem.sliceTo(passwd.shell, 0));
+        defer shell.deref();
+        result.put(globalThis, jsc.ZigString.static("shell"), try shell.toJS(globalThis));
+        result.put(globalThis, jsc.ZigString.static("uid"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(passwd.uid))));
+        result.put(globalThis, jsc.ZigString.static("gid"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(passwd.gid))));
     }
-
     return result;
 }
 
