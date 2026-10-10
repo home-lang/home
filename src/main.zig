@@ -4514,18 +4514,59 @@ fn isBunCorpusSubsetFlag(arg: []const u8) bool {
         std.mem.eql(u8, arg, "--bun-corpus-subset");
 }
 
+fn isNativeTestNameFilterFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--test-name-pattern") or std.mem.eql(u8, arg, "--grep");
+}
+
+fn collectNativeTestNameFilters(allocator: std.mem.Allocator, args: []const [:0]const u8) ![][]const u8 {
+    var flags: std.ArrayList([]const u8) = .empty;
+    errdefer flags.deinit(allocator);
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) break;
+        if (isNativeTestNameFilterFlag(arg)) {
+            if (index + 1 == args.len) return error.MissingTestNamePattern;
+            try flags.append(allocator, arg);
+            index += 1;
+            try flags.append(allocator, args[index]);
+        } else if (std.mem.startsWith(u8, arg, "--test-name-pattern=") or
+            std.mem.startsWith(u8, arg, "--grep=") or
+            (arg.len > 2 and std.mem.startsWith(u8, arg, "-t")))
+        {
+            try flags.append(allocator, arg);
+        }
+    }
+    return flags.toOwnedSlice(allocator);
+}
+
+const BunCorpusArguments = struct {
+    args: []const [:0]const u8,
+    index: usize = 0,
+    options_ended: bool = false,
+
+    fn next(this: *BunCorpusArguments) ?[]const u8 {
+        while (this.index < this.args.len) {
+            const arg = this.args[this.index];
+            this.index += 1;
+            if (!this.options_ended and std.mem.eql(u8, arg, "--")) {
+                this.options_ended = true;
+                continue;
+            }
+            if (!this.options_ended and (isBunCorpusSubsetFlag(arg) or isNativeTestNameFilterFlag(arg))) {
+                this.index += 1;
+                continue;
+            }
+            if (arg.len == 0 or (!this.options_ended and arg[0] == '-')) continue;
+            return arg;
+        }
+        return null;
+    }
+};
+
 fn argTargetsBunCorpus(args: []const [:0]const u8) ?BunCorpusTarget {
-    var skip_next = false;
-    for (args) |arg| {
-        if (skip_next) {
-            skip_next = false;
-            continue;
-        }
-        if (isBunCorpusSubsetFlag(arg)) {
-            skip_next = true;
-            continue;
-        }
-        if (arg.len == 0 or arg[0] == '-') continue;
+    var iterator = BunCorpusArguments{ .args = args };
+    while (iterator.next()) |arg| {
         if (resolveBunCorpusTarget(arg)) |target| return target;
     }
     return null;
@@ -4533,8 +4574,8 @@ fn argTargetsBunCorpus(args: []const [:0]const u8) ?BunCorpusTarget {
 
 fn bunCorpusFileTargetCount(args: []const [:0]const u8) usize {
     var count: usize = 0;
-    for (args) |arg| {
-        if (arg.len == 0 or arg[0] == '-') continue;
+    var iterator = BunCorpusArguments{ .args = args };
+    while (iterator.next()) |arg| {
         const target = resolveBunCorpusTarget(arg) orelse continue;
         switch (target) {
             .file => count += 1,
@@ -4757,8 +4798,8 @@ fn printCorpusProcessCounts(passed: usize, failed: usize, skipped: usize, empty:
     std.debug.print("comment-only files: {d}\n", .{empty});
 }
 
-fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
-    var summary = try home_test.corpus_runner.runSubsetWithOptions(g_io, allocator, corpus_path, subset, .{ .on_file = emitNativeCorpusExecution, .persist_results = true });
+fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset, test_runner_flags: []const []const u8) !void {
+    var summary = try home_test.corpus_runner.runSubsetWithOptions(g_io, allocator, corpus_path, subset, .{ .on_file = emitNativeCorpusExecution, .persist_results = true, .test_runner_flags = test_runner_flags });
 
     if (summary.blocked) {
         std.debug.print("\n{s}Bun Corpus Native Subset: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
@@ -4805,7 +4846,7 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
     summary.deinit(allocator);
 }
 
-fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8) !void {
+fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8, test_runner_flags: []const []const u8) !void {
     const counts = home_test.corpus.countPath(g_io, corpus_path) catch |err| switch (err) {
         error.FileNotFound => home_test.corpus.Counts{},
         else => return err,
@@ -4816,7 +4857,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     const sha = Io.Dir.cwd().readFileAlloc(g_io, sha_path, allocator, std.Io.Limit.limited(256)) catch "unknown";
     defer if (!std.mem.eql(u8, sha, "unknown")) allocator.free(sha);
 
-    var summary = try home_test.corpus_runner.runGateWithOptions(g_io, allocator, corpus_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true });
+    var summary = try home_test.corpus_runner.runGateWithOptions(g_io, allocator, corpus_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true, .test_runner_flags = test_runner_flags });
     defer summary.deinit(allocator);
 
     if (summary.blocked) {
@@ -4864,8 +4905,8 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     if (failed) std.process.exit(1);
 }
 
-fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8) !void {
-    var summary = try home_test.corpus_runner.runFileWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true });
+fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8, test_runner_flags: []const []const u8) !void {
+    var summary = try home_test.corpus_runner.runFileWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true, .test_runner_flags = test_runner_flags });
     defer summary.deinit(allocator);
 
     if (summary.blocked) {
@@ -4914,18 +4955,18 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
     if (failed) std.process.exit(1);
 }
 
-fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const u8, test_runner_flags: []const []const u8) !void {
     var targets: std.ArrayList(home_test.corpus_runner.FileTarget) = .empty;
     defer targets.deinit(allocator);
-    for (args) |arg| {
-        if (arg.len == 0 or arg[0] == '-') continue;
+    var iterator = BunCorpusArguments{ .args = args };
+    while (iterator.next()) |arg| {
         const target = resolveBunCorpusTarget(arg) orelse continue;
         switch (target) {
             .file => |file| try targets.append(allocator, .{ .corpus_path = file.corpus_path, .relative_path = file.relative_path }),
             else => {},
         }
     }
-    var summary = try home_test.corpus_runner.runFilesWithOptions(g_io, allocator, targets.items, .{ .on_file = emitNativeCorpusExecution, .persist_results = true });
+    var summary = try home_test.corpus_runner.runFilesWithOptions(g_io, allocator, targets.items, .{ .on_file = emitNativeCorpusExecution, .persist_results = true, .test_runner_flags = test_runner_flags });
     defer summary.deinit(allocator);
     const files = summary.files;
     const passed = summary.passed;
@@ -4971,7 +5012,7 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
     if (failed) std.process.exit(1);
 }
 
-fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8) !void {
+fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8, test_runner_flags: []const []const u8) !void {
     const directory_path = try std.fs.path.join(allocator, &.{ corpus_path, relative_path });
     defer allocator.free(directory_path);
     const counts = home_test.corpus.countPath(g_io, directory_path) catch |err| switch (err) {
@@ -4979,7 +5020,7 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
         else => return err,
     };
 
-    var summary = try home_test.corpus_runner.runDirectoryWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true });
+    var summary = try home_test.corpus_runner.runDirectoryWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution, .persist_results = true, .test_runner_flags = test_runner_flags });
     defer summary.deinit(allocator);
 
     if (summary.blocked) {
@@ -5208,27 +5249,29 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         };
         return;
     }
+    const test_runner_flags = try collectNativeTestNameFilters(allocator, args);
+    defer allocator.free(test_runner_flags);
     const bun_corpus_subset_arg = argBunCorpusSubset(args);
     switch (bun_corpus_subset_arg) {
-        .none => if (bunCorpusFileTargetCount(args) > 1) return runBunCorpusNativeFiles(allocator, args),
+        .none => if (bunCorpusFileTargetCount(args) > 1) return runBunCorpusNativeFiles(allocator, args, test_runner_flags),
         else => {},
     }
     if (argTargetsBunCorpus(args)) |target| {
         switch (target) {
             .root => |corpus_path| switch (bun_corpus_subset_arg) {
-                .none => return runBunCorpusNativeGate(allocator, corpus_path),
-                .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset),
+                .none => return runBunCorpusNativeGate(allocator, corpus_path, test_runner_flags),
+                .ok => |subset| return runBunCorpusNativeSubset(allocator, corpus_path, subset, test_runner_flags),
                 .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
                 .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
             },
             .directory => |directory| switch (bun_corpus_subset_arg) {
-                .none => return runBunCorpusNativeDirectory(allocator, directory.corpus_path, directory.relative_path),
+                .none => return runBunCorpusNativeDirectory(allocator, directory.corpus_path, directory.relative_path, test_runner_flags),
                 .ok => failBunCorpusSubsetArg("subset-requires-bun-corpus-root", directory.relative_path),
                 .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
                 .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
             },
             .file => |file| switch (bun_corpus_subset_arg) {
-                .none => return runBunCorpusNativeFile(allocator, file.corpus_path, file.relative_path),
+                .none => return runBunCorpusNativeFile(allocator, file.corpus_path, file.relative_path, test_runner_flags),
                 .ok => failBunCorpusSubsetArg("subset-requires-bun-corpus-root", file.relative_path),
                 .missing_value => |flag| failBunCorpusSubsetArg("missing-subset-value", flag),
                 .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),

@@ -47,6 +47,8 @@ pub const FileExecution = struct {
 };
 
 pub const RunOptions = struct {
+    /// Borrowed CLI name-filter arguments, forwarded to registered test runners.
+    test_runner_flags: []const []const u8 = &.{},
     /// Called after each child completes, before its capture is released.
     /// Slices are borrowed for the duration of the call. Without a callback,
     /// the summary owns each file's capture until Summary.deinit is called.
@@ -188,6 +190,7 @@ test "native corpus selection records exclusions and rejects Home-only skips" {
 }
 
 pub const Summary = struct {
+    test_runner_flags: []const []const u8 = &.{},
     files: usize = 0,
     passed: usize = 0,
     failed: usize = 0,
@@ -254,7 +257,7 @@ pub const Summary = struct {
 };
 
 fn beginSummary(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
-    var summary = Summary{ .on_file = options.on_file, .launch_services = options.services, .core_tracker = options.core_tracker, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
+    var summary = Summary{ .test_runner_flags = options.test_runner_flags, .on_file = options.on_file, .launch_services = options.services, .core_tracker = options.core_tracker, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
     if (options.persist_results or options.report_directory != null) {
         const env_path = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
         defer if (env_path) |value| allocator.free(value);
@@ -907,15 +910,18 @@ fn buildNativeCorpusArgs(
     config_path: ?[]const u8,
     absolute_fixture_path: []const u8,
     mode: NativeCorpusMode,
+    test_runner_flags: []const []const u8,
 ) ![][]const u8 {
+    const forwarded = if (mode == .test_runner) test_runner_flags else &.{};
     const offset: usize = if (config_path != null) 2 else 1;
-    const args = try allocator.alloc([]const u8, flags.len + offset + 1);
+    const args = try allocator.alloc([]const u8, flags.len + forwarded.len + offset + 1);
     errdefer allocator.free(args);
     args[0] = if (mode == .test_runner) "test" else "run";
     // Bun declares config as an optional-value flag. Like pinned CI, attach
     // its value so script dispatch cannot mistake the TOML for the entrypoint.
     if (config_path) |path| args[1] = try std.fmt.allocPrint(allocator, "--config={s}", .{path});
     @memcpy(args[offset .. offset + flags.len], flags);
+    @memcpy(args[offset + flags.len .. args.len - 1], forwarded);
     args[args.len - 1] = absolute_fixture_path;
     return args;
 }
@@ -1165,7 +1171,7 @@ fn runRelativeFile(
             flags.values.appendAssumeCapacity(try allocator.dupe(u8, "--preload"));
             flags.values.appendAssumeCapacity(try allocator.dupe(u8, path));
         };
-        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, config_path, absolute_fixture_path, mode);
+        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, config_path, absolute_fixture_path, mode, summary.test_runner_flags);
         defer allocator.free(args_tail);
         defer if (config_path != null) allocator.free(args_tail[1]);
 
@@ -1711,7 +1717,7 @@ test "native corpus execution preserves flags and explicit project configuration
     const allocator = std.testing.allocator;
     var flags = try parseNativeCorpusFlags(allocator, "// Flags: --experimental-stream-iter --no-warnings\nrun();");
     defer flags.deinit(allocator);
-    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/corpus/bunfig.node-test.toml", "/corpus/test/node.js", .script);
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/corpus/bunfig.node-test.toml", "/corpus/test/node.js", .script, &.{});
     defer allocator.free(args);
     defer allocator.free(args[1]);
     try std.testing.expectEqual(@as(usize, 5), args.len);

@@ -53,7 +53,52 @@ try {
     symlinkSync('tree/10999/nested', join(fixture, 'linked'))
     run(['./linked'], ['large-tree-native-capture'])
   }
-  console.log('native large-tree discovery, cached roots and symlink discovery passed')
+  // Corpus dispatch must preserve the native runner's name filter too.
+  const corpus = join(fixture, 'packages/runtime/test/test/js/node/filter-fixture')
+  mkdirSync(corpus, { recursive: true })
+  const filteredSource = `import { test, describe } from 'bun:test';
+    describe('outer', () => {
+      test('keep blue', () => console.log('CORPUS:blue'));
+      test('keep red', () => { console.log('CORPUS:red'); throw new Error('excluded body executed'); });
+    });`
+  const first = join(corpus, 'first.test.js')
+  const second = join(corpus, 'second.test.js')
+  writeFileSync(first, filteredSource)
+  writeFileSync(second, filteredSource)
+  writeFileSync(join(fixture, 'packages/runtime/test/test/BUN_TRACKED_FILES.txt'),
+    'js/node/filter-fixture/first.test.js\njs/node/filter-fixture/second.test.js\n')
+  const corpusEnv = { ...env }
+  for (const key of ['HOME_NATIVE_VM', 'HOME_CORPUS_FULL_VM', 'HOME_NATIVE_RUN', 'HOME_BUN_CORPUS_REPORT_DIR']) delete corpusEnv[key]
+  function runCorpus(args, count) {
+    const child = spawnSync(process.execPath, ['test', ...args], {
+      cwd: fixture, env: corpusEnv, encoding: 'utf8', timeout: 60000,
+    })
+    assert.equal(child.error, undefined)
+    assert.equal(child.signal, null)
+    assert.equal(child.status, 0, child.stderr)
+    assert.equal(child.stdout.split('CORPUS:blue').length - 1, count, child.stdout)
+    assert.doesNotMatch(child.stdout, /CORPUS:red/)
+    assert.match(child.stdout + child.stderr, new RegExp(`(?:${count} pass|tests passed: ${count}\\b)`))
+    return child
+  }
+  const pattern = '^outer keep blue$'
+  for (const flags of [
+    ['-t', pattern], ['--test-name-pattern', pattern], ['--grep', pattern],
+    [`--test-name-pattern=${pattern}`], [`--grep=${pattern}`], [`-t=${pattern}`], [`-t${pattern}`],
+  ]) {
+    for (const args of [[first, ...flags], [...flags, first]]) runCorpus(args, 1)
+  }
+  runCorpus(['-t', pattern, '--', first], 1)
+  runCorpus([first, second, '--grep', pattern], 2)
+  runCorpus([corpus, '--test-name-pattern', pattern], 2)
+  for (const flags of [['-t'], ['-t', '['], ['--grep', '^missing$']]) {
+    const child = spawnSync(process.execPath, ['test', first, ...flags], {
+      cwd: fixture, env: corpusEnv, encoding: 'utf8', timeout: 60000,
+    })
+    assert.equal(child.status, 1, child.stderr)
+    assert.doesNotMatch(child.stdout, /CORPUS:/)
+  }
+  console.log('native large-tree discovery, cached roots, symlink discovery and corpus name filters passed')
 } finally {
   rmSync(fixture, { recursive: true, force: true })
 }
