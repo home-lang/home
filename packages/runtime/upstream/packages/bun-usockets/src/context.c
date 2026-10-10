@@ -24,6 +24,9 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #endif
+extern void Home__DNS__requestTiming(void *request, uint64_t *start, uint64_t *end);
+extern void Home__HTTP__dnsResolved(unsigned char kind, void *owner, uint64_t start, uint64_t end);
+
 #define CONCURRENT_CONNECTIONS 4
 
 #if defined(BUN_DEBUG) || (defined(__has_feature) && __has_feature(address_sanitizer)) || defined(__SANITIZE_ADDRESS__)
@@ -154,11 +157,11 @@ unsigned short us_socket_group_timestamp(struct us_socket_group_t *group) {
     return group->timestamp;
 }
 
-struct us_loop_t *us_socket_group_loop(struct us_socket_group_t *group) {
+__attribute__((always_inline)) struct us_loop_t *us_socket_group_loop(struct us_socket_group_t *group) {
     return group->loop;
 }
 
-void *us_socket_group_ext(struct us_socket_group_t *group) {
+__attribute__((always_inline)) void *us_socket_group_ext(struct us_socket_group_t *group) {
     return group->ext;
 }
 
@@ -428,7 +431,7 @@ void us_listen_socket_close(struct us_listen_socket_t *ls) {
     /* We cannot immediately free a listen socket as we can be inside an accept loop */
 }
 
-void *us_listen_socket_ext(struct us_listen_socket_t *ls) {
+__attribute__((always_inline)) void *us_listen_socket_ext(struct us_listen_socket_t *ls) {
     return ls + 1;
 }
 
@@ -475,8 +478,8 @@ static inline void us_internal_init_connect_socket(struct us_socket_t *s,
 
 struct us_socket_t *us_socket_group_connect_resolved_dns(struct us_socket_group_t *group,
         unsigned char kind, struct ssl_ctx_st *ssl_ctx,
-        struct sockaddr_storage *addr, int options, int socket_ext_size) {
-    LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(addr, options);
+        struct sockaddr_storage *addr, struct sockaddr_storage *local_addr, int options, int socket_ext_size) {
+    LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(addr, local_addr, options);
     if (connect_socket_fd == LIBUS_SOCKET_ERROR) {
         return NULL;
     }
@@ -539,14 +542,22 @@ static bool try_parse_ip(const char *ip_str, int port, struct sockaddr_storage *
 }
 
 void *us_socket_group_connect(struct us_socket_group_t *group, unsigned char kind,
-        struct ssl_ctx_st *ssl_ctx, const char *host, int port, int options,
+        struct ssl_ctx_st *ssl_ctx, const char *host, int port,
+        const char *local_host, int local_port, int options,
         int socket_ext_size, int *has_dns_resolved) {
     struct us_loop_t *loop = group->loop;
+
+    /* The local address is always a literal IP (Node validates it as one). */
+    struct sockaddr_storage local_addr_storage;
+    struct sockaddr_storage *local_addr = NULL;
+    if (local_host && try_parse_ip(local_host, local_port, &local_addr_storage)) {
+        local_addr = &local_addr_storage;
+    }
 
     struct sockaddr_storage addr;
     if (try_parse_ip(host, port, &addr)) {
         *has_dns_resolved = 1;
-        return us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &addr, options, socket_ext_size);
+        return us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &addr, local_addr, options, socket_ext_size);
     }
 
     struct addrinfo_request *ai_req;
@@ -563,7 +574,7 @@ void *us_socket_group_connect(struct us_socket_group_t *group, unsigned char kin
             struct sockaddr_storage a;
             init_addr_with_port(&entries->info, port, &a);
             *has_dns_resolved = 1;
-            struct us_socket_t *s = us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &a, options, socket_ext_size);
+            struct us_socket_t *s = us_socket_group_connect_resolved_dns(group, kind, ssl_ctx, &a, local_addr, options, socket_ext_size);
             Bun__addrinfo_freeRequest(ai_req, s == NULL);
             return s;
         }
@@ -628,7 +639,8 @@ int start_connections(struct us_connecting_socket_t *c, int count) {
     for (; c->addrinfo_head != NULL && opened < count; c->addrinfo_head = c->addrinfo_head->ai_next) {
         struct sockaddr_storage addr;
         init_addr_with_port(c->addrinfo_head, c->port, &addr);
-        LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(&addr, c->options);
+        /* The deferred-DNS path does not carry a local binding. */
+        LIBUS_SOCKET_DESCRIPTOR connect_socket_fd = bsd_create_connect_socket(&addr, NULL, c->options);
         if (connect_socket_fd == LIBUS_SOCKET_ERROR) {
             continue;
         }
@@ -681,6 +693,12 @@ void us_internal_socket_after_resolve(struct us_connecting_socket_t *c) {
         return;
     }
 
+    uint64_t lookup_start = 0, lookup_end = 0;
+    Home__DNS__requestTiming(c->addrinfo_req, &lookup_start, &lookup_end);
+    if (c->socket_ext_size >= sizeof(void *)) {
+        void *owner = *(void **)us_connecting_socket_ext(c);
+        Home__HTTP__dnsResolved(c->kind, owner, lookup_start, lookup_end);
+    }
     c->addrinfo_head = &result->entries->info;
 
     int opened = start_connections(c, CONCURRENT_CONNECTIONS);

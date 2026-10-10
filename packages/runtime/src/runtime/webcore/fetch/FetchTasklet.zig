@@ -493,6 +493,9 @@ pub const FetchTasklet = struct {
         if (this.result.resource_connect_start_ns != 0) connection.putZigString(global, jsc.ZigString.static("connectionStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_connect_start_ns)));
         if (this.result.resource_connect_end_ns != 0) connection.putZigString(global, jsc.ZigString.static("connectionEndTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_connect_end_ns)));
         if (this.result.resource_tls_start_ns != 0) connection.putZigString(global, jsc.ZigString.static("secureConnectionStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_tls_start_ns)));
+        if (this.result.resource_dns_start_ns != 0) connection.putZigString(global, jsc.ZigString.static("domainLookupStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_dns_start_ns)));
+        if (this.result.resource_dns_end_ns != 0) connection.putZigString(global, jsc.ZigString.static("domainLookupEndTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_dns_end_ns)));
+        if (this.result.resource_alpn_len > 0) connection.putZigString(global, jsc.ZigString.static("ALPNNegotiatedProtocol"), bun.String.createUTF8ForJS(global, this.result.resource_alpn[0..this.result.resource_alpn_len]) catch return);
         timing.putZigString(global, jsc.ZigString.static("finalConnectionTimingInfo"), connection);
         const body = JSValue.createEmptyObject(global, 2);
         body.protect();

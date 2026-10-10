@@ -144,6 +144,7 @@ const native_skip_paths = [_][]const u8{
     "codegen/WebCoreJSBuiltins.cpp.o", // contains Home-owned core stream builtin bodies
     "src/jsc/bindings/uv-posix-stubs.c.o",
     "packages/bun-usockets/src/eventing/epoll_kqueue.c.o", // compiled from Home
+    "packages/bun-usockets/src/context.c.o", // compiled from Home
     "packages/bun-usockets/src/loop.c.o", // compiled from Home
 
     "src/jsc/bindings/napi.cpp.o",
@@ -278,6 +279,9 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         poll_object.addStepDependencies(native_binding_step);
         m.addObjectFile(poll_object);
     }
+    const context_object = native_bindings.socketContextObject(b, bun_obj_root);
+    context_object.addStepDependencies(native_binding_step);
+    m.addObjectFile(context_object);
     for (native_bindings.resourceTimingObjects(b, bun_obj_root)) |object| {
         object.addStepDependencies(native_binding_step);
         m.addObjectFile(object);

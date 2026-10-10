@@ -22,6 +22,7 @@ var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_poll_object: ?std.Build.LazyPath = null;
 var cached_socket_loop_object: ?std.Build.LazyPath = null;
+var cached_socket_context_object: ?std.Build.LazyPath = null;
 var cached_resource_timing_objects: ?[4]std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
@@ -217,6 +218,15 @@ pub fn socketLoopObject(b: *std.Build, object_root: []const u8) std.Build.LazyPa
     const source = files.addCopyFile(b.path("packages/runtime/upstream/packages/bun-usockets/src/loop.c"), "loop.c");
     const object = compileObject(b, object_root, "loop.c", source);
     cached_socket_loop_object = object;
+    return object;
+}
+
+pub fn socketContextObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_socket_context_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/upstream/packages/bun-usockets/src/context.c"), "context.c");
+    const object = compileObject(b, object_root, "packages/bun-usockets/src/context.c", source);
+    cached_socket_context_object = object;
     return object;
 }
 
@@ -861,7 +871,7 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     compile.setName(b.fmt("compile Home {s} binding", .{basename}));
     compile.setCwd(.{ .cwd_relative = command.directory });
     compile.addFileInput(.{ .cwd_relative = database_path });
-    if (std.mem.eql(u8, basename, "epoll_kqueue.c") or std.mem.eql(u8, basename, "loop.c")) {
+    if (std.mem.eql(u8, basename, "epoll_kqueue.c") or std.mem.eql(u8, basename, "loop.c") or std.mem.eql(u8, basename, "packages/bun-usockets/src/context.c")) {
         const selected_dir = std.fs.path.dirname(command.file) orelse @panic("poll source has no directory");
         const selected_root = if (std.mem.eql(u8, basename, "epoll_kqueue.c"))
             std.fs.path.dirname(selected_dir) orelse @panic("poll source has no header root")
@@ -950,9 +960,10 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     // both agree on their meaning.
     compile.addFileArg2(source, .{ .make_absolute = true });
     compile.addArg("-o");
-    const object = compile.addOutputFileArg2(b.fmt("{s}.o", .{basename}), .{ .make_absolute = true });
+    const output_basename = if (std.mem.indexOfScalar(u8, basename, '/') != null) std.fs.path.basename(basename) else basename;
+    const object = compile.addOutputFileArg2(b.fmt("{s}.o", .{output_basename}), .{ .make_absolute = true });
     compile.addArgs(&.{ "-MD", "-MF" });
-    _ = compile.addDepFileOutputArg2(b.fmt("{s}.d", .{basename}), .{ .make_absolute = true });
+    _ = compile.addDepFileOutputArg2(b.fmt("{s}.d", .{output_basename}), .{ .make_absolute = true });
     return object;
 }
 
@@ -970,7 +981,9 @@ fn nativeCompiler(b: *std.Build, build_root: []const u8, fallback: []const u8) [
 
 fn findCommand(commands: []const CompileCommand, basename: []const u8) ?CompileCommand {
     for (commands) |command| {
-        if (std.mem.eql(u8, std.fs.path.basename(command.file), basename)) return command;
+        if (std.mem.indexOfScalar(u8, basename, '/') != null) {
+            if (std.mem.endsWith(u8, command.file, basename) and command.file.len > basename.len and command.file[command.file.len - basename.len - 1] == '/') return command;
+        } else if (std.mem.eql(u8, std.fs.path.basename(command.file), basename)) return command;
     }
     return null;
 }
@@ -1017,6 +1030,16 @@ fn normalizeDefine(allocator: std.mem.Allocator, arg: []const u8) ![]u8 {
         i += 1;
     }
     return normalized.toOwnedSlice(allocator);
+}
+
+test "native binding selects a qualified vendor source without basename ambiguity" {
+    const commands = [_]CompileCommand{
+        .{ .directory = "/build", .file = "/bun/vendor/brotli/context.c", .arguments = &.{"clang"} },
+        .{ .directory = "/build", .file = "/bun/packages/bun-usockets/src/context.c", .arguments = &.{"clang"} },
+        .{ .directory = "/build", .file = "/bun/otherpackages/bun-usockets/src/context.c", .arguments = &.{"clang"} },
+    };
+    try std.testing.expectEqualStrings("/bun/packages/bun-usockets/src/context.c", findCommand(&commands, "packages/bun-usockets/src/context.c").?.file);
+    try std.testing.expect(findCommand(commands[2..], "packages/bun-usockets/src/context.c") == null);
 }
 
 test "native binding selects only the process implementation" {

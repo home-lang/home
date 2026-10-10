@@ -119,6 +119,17 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             H2.ClientSession,
         });
 
+        pub fn recordDNS(owner: *anyopaque, start: u64, end: u64) void {
+            const active = ActiveSocket.from(owner);
+            if (active.get(HTTPClient)) |client| {
+                if (client.http_proxy == null and end >= start and end >= client.resource_hop_start_ns) {
+                    client.resource_dns_start_ns = start;
+                    client.resource_dns_end_ns = end;
+                    client.resource_connect_start_ns = bun.timespec.now(.force_real_time).ns();
+                }
+            }
+        }
+
         const kind: uws.SocketKind = if (ssl) .http_client_tls else .http_client;
 
         /// `dispatch.zig` reaches `Handler` via this name. The ext stores
@@ -888,3 +899,9 @@ const SSLConfig = bun.api.server.ServerConfig.SSLConfig;
 const HTTPClient = @import("http.zig");
 const H2 = HTTPClient.H2;
 const InitError = HTTPClient.InitError;
+
+export fn Home__HTTP__dnsResolved(raw_kind: u8, owner: ?*anyopaque, start: u64, end: u64) void {
+    const pointer = owner orelse return;
+    if (raw_kind == @intFromEnum(uws.SocketKind.http_client)) NewHTTPContext(false).recordDNS(pointer, start, end);
+    if (raw_kind == @intFromEnum(uws.SocketKind.http_client_tls)) NewHTTPContext(true).recordDNS(pointer, start, end);
+}

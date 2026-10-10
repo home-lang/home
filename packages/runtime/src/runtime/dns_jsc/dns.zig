@@ -1313,6 +1313,8 @@ pub const internal = struct {
         };
 
         key: Key,
+        lookup_start_ns: u64 = 0,
+        lookup_end_ns: u64 = 0,
         result: ?Result = null,
 
         notify: std.ArrayListUnmanaged(DNSRequestOwner) = .empty,
@@ -1622,6 +1624,7 @@ pub const internal = struct {
 
         global_cache.lock.lock();
 
+        req.lookup_end_ns = bun.timespec.now(.force_real_time).ns();
         req.result = .{
             .info = results,
             .err = err,
@@ -1847,6 +1850,7 @@ pub const internal = struct {
         // no cache hit, we have to make a new request
         const req = Request.new(.{
             .key = key.toOwned(),
+            .lookup_start_ns = bun.timespec.now(.force_real_time).ns(),
             .refcount = @as(u32, @intFromBool(!preload)) + 1,
 
             // Seconds since when this request was created
@@ -1979,6 +1983,13 @@ pub const internal = struct {
         return &req.result.?;
     }
 };
+
+export fn Home__DNS__requestTiming(request: *internal.Request, start: *u64, end: *u64) void {
+    // Called only after the result notification reaches its owner loop.
+    // Both timestamps are immutable after result publication.
+    start.* = request.lookup_start_ns;
+    end.* = request.lookup_end_ns;
+}
 
 pub const InternalDNSRequest = internal.Request;
 
