@@ -48,6 +48,7 @@ enable_chrome_devtools_automatic_workspace_folders: bool = true,
 onError: jsc.JSValue = jsc.JSValue.zero,
 onRequest: jsc.JSValue = jsc.JSValue.zero,
 onNodeHTTPRequest: jsc.JSValue = jsc.JSValue.zero,
+onNodeHTTPALPN: jsc.JSValue = jsc.JSValue.zero,
 
 websocket: ?WebSocketServerContext = null,
 
@@ -271,7 +272,7 @@ pub fn applyStaticRouteH3(server: AnyServer, app: *uws.H3.App, comptime T: type,
 /// Balance the parse-time callback protections. These are owning references,
 /// matching the Strong fields in Bun's current ServerConfig implementation.
 pub fn releaseCallbackRefs(this: *ServerConfig) void {
-    inline for (.{ "onRequest", "onNodeHTTPRequest", "onError" }) |field| {
+    inline for (.{ "onRequest", "onNodeHTTPRequest", "onNodeHTTPALPN", "onError" }) |field| {
         @field(this, field).unprotect();
         @field(this, field) = .zero;
     }
@@ -904,6 +905,12 @@ pub fn fromJS(
             onErrorSnapshot.protect();
         }
         if (global.hasException()) return error.JSError;
+
+        if (try arg.getTruthy(global, "onNodeHTTPALPN")) |callback| {
+            if (!callback.isCallable()) return global.throwInvalidArguments("Expected onNodeHTTPALPN to be a function", .{});
+            args.onNodeHTTPALPN = callback.withAsyncContextIfNeeded(global);
+            args.onNodeHTTPALPN.protect();
+        }
 
         if (try arg.getTruthy(global, "onNodeHTTPRequest")) |onRequest_| {
             if (!onRequest_.isCallable()) {

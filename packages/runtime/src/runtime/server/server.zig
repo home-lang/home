@@ -3039,6 +3039,52 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
         }
 
         // TODO: make this return JSError!void, and do not deinitialize on synchronous failure, to allow errdefer in caller scope
+        extern fn us_internal_ssl_loop_state_save(ssl: *BoringSSL.SSL, state: *[5]?*anyopaque) void;
+        extern fn us_internal_ssl_loop_state_restore(state: *[5]?*anyopaque) void;
+
+        fn selectHTTPALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u8, offered: [*c]const u8, offered_len: c_uint, context: ?*anyopaque) callconv(.c) c_int {
+            const self: *ThisServer = @ptrCast(@alignCast(context orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK));
+            const connection = ssl orelse return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            if (self.globalThis.bunVM().isShuttingDown()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            const receiver = self.js_value.tryGet() orelse return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            receiver.protect();
+            defer receiver.unprotect();
+            self.pending_requests += 1;
+            defer { self.pending_requests -= 1; self.deinitIfWeCan(); }
+            const global = self.globalThis;
+            const protocols = JSValue.createBufferFromLength(global, offered_len) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            protocols.protect();
+            defer protocols.unprotect();
+            if (protocols.asArrayBuffer(global)) |buffer| @memcpy(buffer.byteSlice(), offered[0..offered_len]);
+            const hostname = if (BoringSSL.SSL_get_servername(connection, BoringSSL.TLSEXT_NAMETYPE_host_name)) |name|
+                bun.String.createUTF8ForJS(global, std.mem.span(name)) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL
+            else JSValue.js_undefined;
+            var saved_state: [5]?*anyopaque = @splat(null);
+            us_internal_ssl_loop_state_save(connection, &saved_state);
+            defer us_internal_ssl_loop_state_restore(&saved_state);
+            const result = self.config.onNodeHTTPALPN.call(global, receiver, &.{ hostname, protocols }) catch |err| {
+                _ = global.takeException(err);
+                return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            };
+            if (!result.isString()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            var selected = result.toSlice(global, bun.default_allocator) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            defer selected.deinit();
+            const bytes = selected.slice();
+            var offset: usize = 0;
+            while (offset < offered_len) {
+                const length: usize = offered[offset];
+                offset += 1;
+                if (length > offered_len - offset) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+                if (std.mem.eql(u8, bytes, offered[offset..][0..length])) {
+                    out.* = offered + offset;
+                    outlen.* = @intCast(length);
+                    return BoringSSL.SSL_TLSEXT_ERR_OK;
+                }
+                offset += length;
+            }
+            return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+
         fn selectHTTPALPN(_: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u8, offered: [*c]const u8, offered_len: c_uint, context: ?*anyopaque) callconv(.c) c_int {
             const config: *const ServerConfig.SSLConfig = @ptrCast(@alignCast(context orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK));
             const encoded = config.protos orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK;
@@ -3071,7 +3117,11 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                 };
 
                 this.app = app;
-                if (ssl_config.protos != null) {
+                if (this.config.onNodeHTTPALPN != .zero) {
+                    if (app.getNativeHandle()) |native_context| {
+                        BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPNCallback, this);
+                    }
+                } else if (ssl_config.protos != null) {
                     if (app.getNativeHandle()) |native_context| {
                         const ssl_context: *BoringSSL.SSL_CTX = @ptrCast(@alignCast(native_context));
                         BoringSSL.SSL_CTX_set_alpn_select_cb(ssl_context, selectHTTPALPN, &this.config.ssl_config.?);
@@ -3112,7 +3162,10 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                         }
 
                         if (app.getServerNameNativeHandle(server_name)) |native_context| {
-                            BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPN, &this.config.ssl_config.?);
+                            if (this.config.onNodeHTTPALPN != .zero)
+                                BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPNCallback, this)
+                            else
+                                BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPN, &this.config.ssl_config.?);
                         }
                         app.domain(server_name);
                         if (throwSSLErrorIfNecessary(globalThis)) {
@@ -3150,7 +3203,10 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                             };
 
                             if (app.getServerNameNativeHandle(sni_servername)) |native_context| {
-                                BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPN, sni_ssl_config);
+                                if (this.config.onNodeHTTPALPN != .zero)
+                                    BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPNCallback, this)
+                                else
+                                    BoringSSL.SSL_CTX_set_alpn_select_cb(@ptrCast(@alignCast(native_context)), selectHTTPALPN, sni_ssl_config);
                             }
                             app.domain(sni_servername);
 

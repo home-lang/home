@@ -255,6 +255,11 @@ function Server(options, callback): void {
     validateObject(options, "options");
     options = { ...options };
 
+    if (options.ALPNCallback != null) {
+      validateFunction(options.ALPNCallback, "options.ALPNCallback");
+      if (options.ALPNProtocols) throw $ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
+    }
+
     const cert = options.cert;
     if (cert) {
       throwOnInvalidTLSArray("options.cert", cert);
@@ -576,6 +581,17 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         },
       },
       maxRequestBodySize: Number.MAX_SAFE_INTEGER,
+
+      onNodeHTTPALPN: this[optionsSymbol].ALPNCallback ? (servername, offered) => {
+        const protocols = [];
+        for (let offset = 0; offset < offered.length;) {
+          const length = offered[offset++];
+          if (length === 0 || length > offered.length - offset) return undefined;
+          protocols.push(offered.toString("utf8", offset, offset + length));
+          offset += length;
+        }
+        return this[optionsSymbol].ALPNCallback.$call(undefined, { servername, protocols });
+      } : undefined,
 
       onNodeHTTPRequest(
         bunServer,
