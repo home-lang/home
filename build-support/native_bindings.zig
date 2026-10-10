@@ -19,6 +19,8 @@ var cached_js_message_port_object: ?std.Build.LazyPath = null;
 var cached_broadcast_channel_object: ?std.Build.LazyPath = null;
 var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
+var cached_poll_object: ?std.Build.LazyPath = null;
+var cached_socket_loop_object: ?std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
@@ -183,6 +185,27 @@ pub fn uwsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const source = b.path("packages/runtime/upstream/src/uws_sys/HomeUws.cpp");
     const object = compileObject(b, object_root, "UnifiedSource-src_uws_sys-0.cpp", source);
     cached_uws_object = object;
+    return object;
+}
+
+/// Own the POSIX polling implementation while retaining the selected native
+/// headers and compiler flags. This is the kernel-wait boundary required for
+/// event-loop idle measurements; callback execution must not count as idle.
+pub fn pollObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_poll_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/upstream/packages/bun-usockets/src/eventing/epoll_kqueue.c"), "epoll_kqueue.c");
+    const object = compileObject(b, object_root, "epoll_kqueue.c", source);
+    cached_poll_object = object;
+    return object;
+}
+
+pub fn socketLoopObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_socket_loop_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/upstream/packages/bun-usockets/src/loop.c"), "loop.c");
+    const object = compileObject(b, object_root, "loop.c", source);
+    cached_socket_loop_object = object;
     return object;
 }
 
@@ -809,10 +832,30 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     // version of those headers beside Home's mirrored source.
     const compiler = nativeCompiler(b, build_root, command.arguments[0]);
     const compile = b.addSystemCommand(&.{compiler});
+    if (std.mem.endsWith(u8, basename, ".c")) compile.addArgs(&.{ "-x", "c" });
     compile.addFileInput(.{ .cwd_relative = compiler });
     compile.setName(b.fmt("compile Home {s} binding", .{basename}));
     compile.setCwd(.{ .cwd_relative = command.directory });
     compile.addFileInput(.{ .cwd_relative = database_path });
+    if (std.mem.eql(u8, basename, "epoll_kqueue.c") or std.mem.eql(u8, basename, "loop.c")) {
+        const selected_dir = std.fs.path.dirname(command.file) orelse @panic("poll source has no directory");
+        const selected_root = if (std.mem.eql(u8, basename, "epoll_kqueue.c"))
+            std.fs.path.dirname(selected_dir) orelse @panic("poll source has no header root")
+        else
+            selected_dir;
+        compile.addArgs(&.{ "-I", selected_root });
+        for ([_][]const u8{ "internal/loop_data.h", "internal/eventing/epoll_kqueue.h" }) |header| {
+            const external_path = b.fmt("{s}/{s}", .{ selected_root, header });
+            const owned_path = b.fmt("packages/runtime/upstream/packages/bun-usockets/src/{s}", .{header});
+            const external = std.Io.Dir.cwd().readFileAlloc(io, external_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read selected poll ABI");
+            defer b.allocator.free(external);
+            const owned = std.Io.Dir.cwd().readFileAlloc(io, owned_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read Home poll ABI");
+            defer b.allocator.free(owned);
+            if (!std.mem.eql(u8, external, owned)) std.debug.panic("Home poll ABI mismatch: {s} differs from {s}", .{ owned_path, external_path });
+            compile.addFileInput(b.path(owned_path));
+            compile.addFileInput(.{ .cwd_relative = external_path });
+        }
+    }
     if (std.mem.eql(u8, basename, "napi.cpp")) {
         // The plain-context corpus adapter has a separate environment ABI.
         // Its public entry points dispatch real NapiEnv values here before

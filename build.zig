@@ -143,6 +143,9 @@ const native_vendor_roots = [_][]const u8{
 const native_skip_paths = [_][]const u8{
     "codegen/WebCoreJSBuiltins.cpp.o", // contains Home-owned core stream builtin bodies
     "src/jsc/bindings/uv-posix-stubs.c.o",
+    "packages/bun-usockets/src/eventing/epoll_kqueue.c.o", // compiled from Home
+    "packages/bun-usockets/src/loop.c.o", // compiled from Home
+
     "src/jsc/bindings/napi.cpp.o",
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
@@ -250,6 +253,8 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.jsAbortSignalObject(b, bun_obj_root),
         native_bindings.broadcastChannelObject(b, bun_obj_root),
         native_bindings.uwsObject(b, bun_obj_root),
+        native_bindings.pollObject(b, bun_obj_root),
+        native_bindings.socketLoopObject(b, bun_obj_root),
         native_bindings.cryptoObject0(b, bun_obj_root),
         native_bindings.cryptoObject1(b, bun_obj_root),
         native_bindings.serializedScriptValueObject(b, bun_obj_root),
