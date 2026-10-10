@@ -3039,6 +3039,16 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
         }
 
         // TODO: make this return JSError!void, and do not deinitialize on synchronous failure, to allow errdefer in caller scope
+        fn selectHTTPALPN(_: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u8, offered: [*c]const u8, offered_len: c_uint, context: ?*anyopaque) callconv(.c) c_int {
+            const self: *ThisServer = @ptrCast(@alignCast(context orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK));
+            const config = self.config.ssl_config orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK;
+            const encoded = config.protos orelse return BoringSSL.SSL_TLSEXT_ERR_NOACK;
+            const protocols = std.mem.span(encoded);
+            if (protocols.len == 0) return BoringSSL.SSL_TLSEXT_ERR_NOACK;
+            const result = BoringSSL.SSL_select_next_proto(@ptrCast(out), outlen, protocols.ptr, @intCast(protocols.len), offered, offered_len);
+            return if (result == BoringSSL.OPENSSL_NPN_NEGOTIATED) BoringSSL.SSL_TLSEXT_ERR_OK else BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+
         pub fn listen(this: *ThisServer) jsc.JSValue {
             httplog("listen", .{});
             var app: *App = undefined;
@@ -3062,6 +3072,12 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                 };
 
                 this.app = app;
+                if (ssl_config.protos != null) {
+                    if (app.getNativeHandle()) |native_context| {
+                        const ssl_context: *BoringSSL.SSL_CTX = @ptrCast(@alignCast(native_context));
+                        BoringSSL.SSL_CTX_set_alpn_select_cb(ssl_context, selectHTTPALPN, this);
+                    }
+                }
 
                 if (comptime has_h3) {
                     if (this.config.http3) {
