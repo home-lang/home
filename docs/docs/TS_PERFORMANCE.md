@@ -528,6 +528,213 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Shared function statement groups 2026 10 10 UTC
+
+The candidate under [#859](https://github.com/home-lang/home/issues/859) is
+**rejected and never pushed**. Independent large-predicate checking rises from
+242.178 to 243.708 ms, with only 12/30 pairs faster and a paired mean-saving
+95% interval of **[-7.550, -0.122] ms**. That confirmed regression overrides
+the supported checked-JS scaling gain. The candidate and all nine candidate
+controls are removed; source is clean and native restored byte-for-byte.
+All **622 pairs / 660 admissions** remain in the result, without retiming,
+sample exclusions, layout/alignment tuning or skipped checking.
+
+The five 8,192-family batches have pooled medians of 7,295.837 versus
+6,566.492 ms, 10.0% lower candidate elapsed time and 30/30 faster pairs.
+The pooled saving interval is [+616.393, +1,052.243] ms; the supplemental
+five-batch interval (df=4) is [+530.419, +1,138.216] ms. Both support this
+scoped target gain, not acceptance or universal leadership. Every batch is
+included, with three fresh warmups per binary per batch. Parent observations
+of 9.878 and 9.138 seconds and a candidate observation of 8.445 seconds
+remain; variation is not filtered away.
+
+### Source and native identity
+
+Full semantic gates ran on
+[`aea27323599a13051ce1bfb8a98a19f4de457d1d`](https://github.com/home-lang/home/commit/aea27323599a13051ce1bfb8a98a19f4de457d1d).
+Before timing, the source was clean-fast-forwarded to the measured and
+restored parent
+[`dad1ea95f27a724574772bb2882a34576d7282bb`](https://github.com/home-lang/home/commit/dad1ea95f27a724574772bb2882a34576d7282bb),
+preserving all newer runtime work. Tracked compiler modules, build files,
+package configuration and tracked benchmark definitions were identical between these
+commits: tree-record SHA-256
+`81474f5289781cec4d2514e3070d8816040d591d37d7359ad92ef2aeb31c9813`.
+Fresh clean-parent and reapplied-candidate builds then matched the originally
+qualified native images **byte-for-byte**. The original gates are attributed
+to their actual source, not relabeled as runs on another commit.
+
+- Parent/restored native SHA-256: `68c6ed517f9125ae1b570ff2e585c5b368745389af828258f6621fe5e6e0311c`.
+- Rejected candidate native: `cf83d04c72ebed61e39be784bfb431e5012c0d691027509bb996a6d643e768dd`.
+- Exact source/test patch: `25a2a5a7c760bff71ffd3d5d48acaef5572cff7d663c92bce326bf96bc9efd7c`.
+- Original protocol: `f1479a40089e390d41a7a9fbf204ea4eb482e648282cc2ea43e574bf424c7ff2`.
+- Current-parent protocol: `58c6eeb955f7af2110f9fd143048aabb3429401d09eb74fb6216517721c0be3b`.
+
+An assertion verifies that only the protocol's parent source changed during
+reconciliation; every timing, admission, retention and acceptance rule stayed
+identical before any measurement. The
+[exact-native profile](#exact-native-profile-and-byte-scope-audit-2026-10-09-utc)
+maps explicitly displayed collection offsets 36/56 early and 36/96 middle to
+the original scan. These offsets identify work, not per-function CPU shares
+or a speed estimate.
+
+### Archived implementation and correctness controls
+
+The rejected design completed the existing forward-overload table into
+immutable function-statement groups by physical container and interned name.
+It retained every eligible declaration in original order, including ordinary
+functions, and shared reference-counted snapshots between forward checking
+and signature collection. Consumers read current TypeIds and signature flags;
+the table stored no mutable types. Both consumers unwrap exactly **one**
+export layer. Namespace collection still stops immediately; a block walk
+stops only when output is nonempty. Forward checking remains lazy and requires
+at least two declarations and a bodyless declaration.
+
+Source reset releases table ownership. HIR growth replaces stale snapshots
+without freeing active borrowers. Partial construction frees its own
+allocations without publishing an incomplete table or removing the old one.
+Collection uses the complete original scalar path on metadata allocation
+failure; append failures remain errors. There are no new section, visibility,
+prior-position, library, filename or benchmark filters, semantic caps, body
+omissions, separate general-value indexes or cached signatures.
+
+Binder declaration lists were not reused: four characterization controls
+demonstrate stale HIR growth, foreign equal NodeIds and shared augmentation
+mutation even with the original HIR unchanged. First-declaration indexes also
+cannot represent complete ordered overload groups. These findings motivated
+the shared owned-syntax design; they do not prove the performance cause of
+its later predicate regression.
+
+Nine candidate controls cover complete signatures in all physical containers;
+live TypeId changes; actual HIR growth and retained snapshots across reset;
+original lazy overload qualification; every forced-growth construction
+allocation failure, cleanup and retry; full scalar metadata-OOM fallback and
+append errors; direct/nested/empty exports, malformed names, duplicates and
+unsorted recovery spans; namespace stopping and empty-block ascent; and failed
+stale replacement with old ownership retained across multiple roots.
+Full suites passed: **checker 4,562 / binder 21 / Program 251 / driver 200 /
+CLI 76 / entrypoint 38**, plus the native build and **136** harness tests.
+Four untimed full-process overload/scope/export/checked-JS controls match
+complete stdout, stderr and exit status, not just error counts.
+
+Pinned Zod 4.5.2 retains all **195 TS + 3 HM9002** primary diagnostics, including
+positions, messages and multiplicity, with no additions or removals.
+Normalized diagnostic SHA-256:
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+Zod remains **unadmitted**; unchanged failures are not compatibility success.
+The initial test-only nonexistent `Primitive.number` compilation error,
+its corrected `number_t` draft, all four/six/nine-control drafts and complete
+logs remain. A mechanical reverse-patch conversion first failed atomically on
+repeated function headers; the unchanged patch hash was reverified before
+ordinary context hunks applied successfully. No compiler or timing result was
+taken from that failed conversion.
+
+### Complete benchmark results
+
+Each of ten phases passed all **66** original positive/negative admissions
+on both native images, including every checked-JS first/middle/last error.
+The protocol retains the 32-pair scale screen, 60-pair official/512 confirmation,
+all 20 families at ten pairs each, five six-pair large batches, eight independent
+30-pair risk rechecks and separate 30-pair class/interface checks. CommonJS
+joined the carried risks under the predeclared >3% adverse-median rule;
+destructuring was already carried regardless of screen results.
+Pairs use fresh native processes in alternating order, with three warmups per
+binary per phase. Positive mean-saving intervals favor the candidate.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 26.470 ms | 26.382 ms | 14/20 | +0.015 to +0.449 ms |
+| 512 families, six-pair screen | 111.885 ms | 108.934 ms | 5/6 | +0.179 to +5.654 ms |
+| 8,192 families, six-pair screen | 7,021.969 ms | 6,396.838 ms | 6/6 | +334.680 to +1,034.497 ms |
+| Official checked JS, 30-pair confirmation | 26.544 ms | 26.679 ms | 13/30 | -0.255 to +0.156 ms |
+| 512 families, 30-pair confirmation | 112.479 ms | 110.040 ms | 27/30 | +0.364 to +3.614 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 7,115.587 ms | 6,492.837 ms | 6/6 | +263.794 to +1,344.126 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 8,048.152 ms | 7,260.371 ms | 6/6 | +58.477 to +1,579.863 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 7,874.791 ms | 6,610.658 ms | 6/6 | +286.623 to +2,093.830 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 7,421.304 ms | 6,618.029 ms | 6/6 | +459.597 to +1,255.543 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 6,962.085 ms | 6,494.331 ms | 6/6 | +379.542 to +621.780 ms |
+| 8,192 families, all five batches (30 pairs total) | 7,295.837 ms | 6,566.492 ms | 30/30 | +616.393 to +1,052.243 ms |
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 26.375 ms | 26.232 ms | 6/10 | -0.145 to +0.301 ms |
+| `class_hierarchy` | 22.691 ms | 22.620 ms | 5/10 | -0.482 to +0.414 ms |
+| `commonjs_graph` | 17.645 ms | 18.246 ms | 4/10 | -0.648 to +0.295 ms |
+| `control_flow` | 25.641 ms | 25.430 ms | 6/10 | -0.349 to +0.383 ms |
+| `deep_types` | 20.675 ms | 20.738 ms | 2/10 | -0.686 to +0.105 ms |
+| `destructuring` | 14.291 ms | 14.752 ms | 3/10 | -0.332 to +0.049 ms |
+| `generic_calls` | 22.330 ms | 22.011 ms | 9/10 | +0.109 to +1.055 ms |
+| `import_graph` | 16.349 ms | 16.442 ms | 5/10 | -0.439 to +0.199 ms |
+| `interface_composition` | 33.765 ms | 33.642 ms | 7/10 | -0.135 to +0.343 ms |
+| `many_files` | 20.849 ms | 21.347 ms | 4/10 | -1.080 to +0.386 ms |
+| `null_safe_access` | 32.184 ms | 32.271 ms | 5/10 | -0.480 to +0.262 ms |
+| `overload_resolution` | 23.357 ms | 23.323 ms | 6/10 | -0.172 to +0.881 ms |
+| `recursive_generics` | 14.114 ms | 14.206 ms | 3/10 | -0.392 to +0.048 ms |
+| `reexport_graph` | 11.151 ms | 10.999 ms | 5/10 | -1.321 to +0.434 ms |
+| `startup` | 2.673 ms | 2.654 ms | 5/10 | -0.206 to +0.180 ms |
+| `structural_objects` | 22.241 ms | 21.930 ms | 9/10 | +0.187 to +0.712 ms |
+| `tsx_components` | 18.516 ms | 18.470 ms | 5/10 | -0.265 to +0.339 ms |
+| `type_predicates` | 32.407 ms | 32.455 ms | 5/10 | -0.406 to +0.435 ms |
+| `type_predicates_large` | 242.022 ms | 245.449 ms | 4/10 | -8.303 to +0.986 ms |
+| `variadic_tuples` | 30.852 ms | 31.105 ms | 3/10 | -0.884 to +0.132 ms |
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 25.785 ms | 25.596 ms | 19/30 | +0.050 to +0.271 ms |
+| `commonjs_graph` | 17.377 ms | 17.318 ms | 14/30 | -0.524 to +0.166 ms |
+| `control_flow` | 24.637 ms | 24.659 ms | 15/30 | -0.391 to +0.154 ms |
+| `deep_types` | 20.646 ms | 20.609 ms | 15/30 | -0.153 to +0.121 ms |
+| `destructuring` | 14.842 ms | 14.839 ms | 14/30 | -0.261 to +0.214 ms |
+| `recursive_generics` | 14.081 ms | 14.105 ms | 17/30 | -0.055 to +0.130 ms |
+| `reexport_graph` | 11.515 ms | 11.513 ms | 15/30 | -1.271 to +1.575 ms |
+| `type_predicates_large` | 242.178 ms | 243.708 ms | 12/30 | -7.550 to -0.122 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 23.109 ms | 22.770 ms | 18/30 | -0.029 to +0.331 ms |
+| `interface_composition` | 33.648 ms | 33.655 ms | 17/30 | -0.131 to +0.317 ms |
+
+The original official confirmation is slower at its median and inconclusive;
+the later predeclared carried check does not erase that observation. CommonJS,
+destructuring, control flow, deep types, recursive generics, reexports and both
+declaration checks retain their zero-spanning intervals and adverse points
+where present. Inconclusive is not equivalence. Only the independent large
+predicate interval is wholly negative, and it is sufficient to reject.
+The separate five-compiler ranking remains **Home 1/20 leads and 12/20 versus
+native TS7**; these Home-only results do not update competitor or platform
+rankings. Canonical C++ coverage and Linux/Windows runs remain unresolved.
+
+### Evidence and restoration
+
+The [complete raw archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261010-shared-function-statement-groups-rejected-859.tar.gz)
+has **1,892** verified payload checksums. SHA-256:
+`a464393450de380317dc7f424ee3855311c73b8f731f9492b805945db28e7b1f`.
+It includes every raw pair and admission, exact positive/scaled-negative inputs,
+nine explicitly labeled untimed generator replays of deleted temporary
+negative projects, diagnostic fixtures, development failures, original
+experiment and native/input reconciliation, protocol/runners, complete gates
+and final terminal-job lifecycle. Generator replays execute no compiler and
+are not original admission or timing observations.
+
+All heavy jobs use the unchanged 600-second / 3,840-MB tree-footprint guard,
+shared machine lock and 1,024/512-MB disk admission/continuation floors.
+Original/current candidate builds peak at 3,066/3,132 MB, the final checker at
+3,454 MB, clean-current-parent at 2,977 MB and restoration at 2,958 MB.
+Shared-lock waits and host low-water observations remain in the logs.
+Clean source and restored native match the measured parent; no rejected code
+is in production. Future work under [#859](https://github.com/home-lang/home/issues/859)
+requires a materially different design, not revival of this binary or
+repeat-to-pass. The broader [#416](https://github.com/home-lang/home/issues/416)
+performance and complete-feature goal remains incomplete.
+
+The [publication context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261010-function-group-rejection-publication-context-859.tar.gz)
+retains the lint commands/logs, documentation verifier, restoration and final
+job lifecycle, with **11** verified payload checksums. SHA-256:
+`c66d7ee7f289f1185378c99963b5f172a73617d6883d62dc03e9e0be0a5dd23b`.
+Repository-wide `bunx --bun pickier .` exits one with **11,460 errors and
+10,613 warnings** outside the changed Markdown files; no broad auto-fix is
+applied. Focused Pickier on both changed files exits zero. All tables and
+selected README rows, links, native identity and raw checksums verify.
+
 ## Ordered namespace-import candidates (2026-10-09 UTC)
 
 The candidate under [#857](https://github.com/home-lang/home/issues/857) is

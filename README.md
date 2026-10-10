@@ -459,6 +459,26 @@ and [raw evidence](bench/vs_tsgo/evidence/20261009-namespace-import-candidates-r
 No repeat-to-pass or alignment tuning is used; the separate five-compiler
 ranking above is not changed by this rejected Home-only A/B.
 
+The shared function-statement candidate under [#859](https://github.com/home-lang/home/issues/859) was also **rejected**:
+its supported scaling gain did not override independent predicate regression.
+
+| #859 shared function groups | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 26.544 ms | 26.679 ms | -0.255 to +0.156 ms |
+| 512 families, 30 pairs | 112.479 ms | 110.040 ms | +0.364 to +3.614 ms |
+| 8,192 families, five six-pair batches | 7,295.837 ms | 6,566.492 ms | +616.393 to +1,052.243 ms |
+| Large predicates, independent 30 pairs | 242.178 ms | 243.708 ms | **-7.550 to -0.122 ms** |
+| Class hierarchy, 30 pairs | 23.109 ms | 22.770 ms | -0.029 to +0.331 ms |
+| Interface composition, 30 pairs | 33.648 ms | 33.655 ms | -0.131 to +0.317 ms |
+
+All **622 pairs / 660 admissions**, five batches, adverse points and original
+validation/reconciliation evidence are retained. The candidate was never
+pushed; source and native are restored byte-for-byte. See the
+[complete rejection report](docs/docs/TS_PERFORMANCE.md#shared-function-statement-groups-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-shared-function-statement-groups-rejected-859.tar.gz).
+Inconclusive intervals do not establish equivalence; the separate competitor
+ranking above is unchanged by this rejected Home-only A/B.
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
