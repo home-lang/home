@@ -283,11 +283,14 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/stripANSI.h",
         "packages/runtime/upstream/src/jsc/bindings/wrapAnsi.cpp",
         "packages/runtime/upstream/src/jsc/bindings/wrapAnsi.h",
+        "packages/runtime/upstream/src/jsc/bindings/napi_finalizer.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/napi_finalizer.h",
 
         "packages/runtime/upstream/src/jsc/bindings/ANSIHelpers.h",
         "packages/runtime/upstream/src/jsc/bindings/stringWidthTables.h",
         "packages/runtime/upstream/src/jsc/modules/NodeUtilTypesModule.cpp",
         "packages/runtime/upstream/src/jsc/modules/NodeUtilTypesModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeBufferModule.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.h",
 
@@ -367,6 +370,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     }) |input| generate.addFileInput(b.path(input));
     for ([_][]const u8{
         "codegen/InternalModuleRegistry+enum.h",
+        "codegen/NativeModuleImpl.h",
         "codegen/InternalModuleRegistryConstants.h",
         "js/internal-for-testing.js",
         "codegen/GeneratedJS2Native.h",
@@ -397,6 +401,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         .{ "UnifiedSource-src_jsc_bindings-5.cpp", "sliceAnsi.cpp", "sliceAnsi.h" },
         .{ "UnifiedSource-src_jsc_bindings-5.cpp", "stripANSI.cpp", "stripANSI.h" },
         .{ "UnifiedSource-src_jsc_bindings-5.cpp", "wrapAnsi.cpp", "wrapAnsi.h" },
+        .{ "UnifiedSource-src_jsc_bindings-5.cpp", "napi_finalizer.cpp", "napi_finalizer.h" },
 
         .{ "UnifiedSource-src_jsc_modules-0.cpp", "NodeUtilTypesModule.cpp", "NodeUtilTypesModule.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSMIMEParams.cpp", "JSMIMEParams.h" },

@@ -10,6 +10,8 @@
 #include "wtf/SIMDUTF.h"
 #include <limits>
 
+namespace Bun { JSC_DECLARE_HOST_FUNCTION(homeBufferTranscode); }
+
 namespace Zig {
 using namespace WebCore;
 using namespace JSC;
@@ -203,7 +205,7 @@ DEFINE_NATIVE_MODULE(NodeBuffer)
     put(atobI, atobV);
     put(btoaI, btoaV);
 
-    auto* transcode = InternalFunction::createFunctionThatMasqueradesAsUndefined(vm, globalObject, 1, "transcode"_s, jsFunctionNotImplemented);
+    auto* transcode = JSFunction::create(vm, globalObject, 3, "transcode"_s, Bun::homeBufferTranscode, ImplementationVisibility::Public);
 
     put(JSC::Identifier::fromString(vm, "transcode"_s), transcode);
 

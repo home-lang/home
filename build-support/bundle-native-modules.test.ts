@@ -17,7 +17,7 @@ function createNativeFixture(temporary: string) {
   mkdirSync(path.join(temporary, 'js'))
   mkdirSync(webcore)
   mkdirSync(path.join(temporary, 'unified'))
-  for (const file of ['InternalModuleRegistry+enum.h', 'GeneratedJS2Native.h', 'ErrorCode+List.h', 'InternalModuleRegistryConstants.h']) {
+  for (const file of ['InternalModuleRegistry+enum.h', 'GeneratedJS2Native.h', 'ErrorCode+List.h', 'InternalModuleRegistryConstants.h', 'NativeModuleImpl.h']) {
     writeFileSync(path.join(codegen, file), read(path.join(nativeBuild, 'codegen', file)))
   }
   writeFileSync(
@@ -32,7 +32,7 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp', 'IPC.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'JSMIMEParams.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp', 'IPC.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'JSMIMEParams.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp'].includes(basename)) {
         const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
         if (basename !== 'IPC.cpp') writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
@@ -70,6 +70,8 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       // Check complete function grammar without executing native intrinsics.
       expect(() => new Function(`return ${source.replace(/@([A-Za-z_])/g, '__intrinsic__$1')}`)).not.toThrow()
     }
+    expect(read(path.join(output, 'NativeModuleImpl.h'))).toContain('#include \"NodeBufferModule.h\"')
+    expect(readFileSync(path.join(output, 'NodeBufferModule.h'))).toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/modules/NodeBufferModule.h')))
     const internalForTesting = read(path.join(output, 'InternalForTesting.js'))
     expect(internalForTesting).toContain('class HomeJSStreamSocket extends HomeDuplex')
     expect(internalForTesting).toContain('class HomeWriteWrap extends HomeStreamRequest')
@@ -101,7 +103,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
           : basename === 'JSAbortSignalCustom.cpp' ? [basename, 'JSBroadcastChannel.cpp']
             : basename === 'JSMessagePort.cpp' ? [basename, 'JSMessageEvent.cpp', 'JSMIMEParams.cpp']
               : basename === 'Worker.cpp' ? [basename, 'WebSocket.cpp']
-                : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp'] : basename === 'NodeAsyncHooks.cpp' ? [basename, 'Path.cpp', 'NodeValidator.cpp'] : basename === 'stringWidth.cpp' ? [basename, 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp'] : [basename]
+                : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp'] : basename === 'NodeAsyncHooks.cpp' ? [basename, 'Path.cpp', 'NodeValidator.cpp'] : basename === 'stringWidth.cpp' ? [basename, 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp'] : [basename]
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => ownedNames.includes(path.basename(relative))
         ? `#include ${JSON.stringify(path.basename(relative))}`
         : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
@@ -111,7 +113,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
       for (const name of ownedNames) {
-        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc', name === 'NodeUtilTypesModule.cpp' ? 'modules' : 'bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'AsyncContextFrame.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp'].includes(name) ? '' : 'webcore', name)
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc', name === 'NodeUtilTypesModule.cpp' ? 'modules' : 'bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'AsyncContextFrame.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp'].includes(name) ? '' : 'webcore', name)
         expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
       }
     }
@@ -184,7 +186,7 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
 
 // Each owned ABI has its own deadline, so host pressure cannot exhaust one
 // aggregate timeout halfway through the independent rejection contracts.
-nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h', 'Path.h', 'NodeValidator.h', 'stringWidth.h', 'NodeUtilTypesModule.h', 'JSMIMEParams.h', 'sliceAnsi.h', 'stripANSI.h', 'wrapAnsi.h'])('rejects owned native class-header drift: %s', header => {
+nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h', 'Path.h', 'NodeValidator.h', 'stringWidth.h', 'NodeUtilTypesModule.h', 'JSMIMEParams.h', 'sliceAnsi.h', 'stripANSI.h', 'wrapAnsi.h', 'napi_finalizer.h'])('rejects owned native class-header drift: %s', header => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-header-test-'))
@@ -203,7 +205,7 @@ nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlo
   }
 }, 20000)
 
-nativeTest.each([['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]], ['IPC.cpp', units[0]], ['Path.cpp', units[9]], ['NodeValidator.cpp', units[9]], ['stringWidth.cpp', units[10]], ['NodeUtilTypesModule.cpp', units[11]], ['JSMIMEParams.cpp', units[5]], ['sliceAnsi.cpp', units[10]], ['stripANSI.cpp', units[10]], ['wrapAnsi.cpp', units[10]]])('rejects invalid native ownership: %s', (basename, unitName) => {
+nativeTest.each([['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]], ['IPC.cpp', units[0]], ['Path.cpp', units[9]], ['NodeValidator.cpp', units[9]], ['stringWidth.cpp', units[10]], ['NodeUtilTypesModule.cpp', units[11]], ['JSMIMEParams.cpp', units[5]], ['sliceAnsi.cpp', units[10]], ['stripANSI.cpp', units[10]], ['wrapAnsi.cpp', units[10]], ['napi_finalizer.cpp', units[10]]])('rejects invalid native ownership: %s', (basename, unitName) => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-ownership-test-'))

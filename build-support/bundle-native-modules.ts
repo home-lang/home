@@ -32,6 +32,20 @@ async function main() {
   }
   setNativeCallResolver((type, filename, symbol, length) => nativeFunctionId(dispatch, type, filename, symbol, length))
 
+  const externalNativeModules = read(path.join(generated, 'NativeModuleImpl.h'))
+  const moduleUnityPath = path.join(externalBuild, 'unified/UnifiedSource-src_jsc_modules-0.cpp')
+  const moduleRoots = [...read(moduleUnityPath).matchAll(/^#include "([^"]*NodeModuleModule\.cpp)"$/gm)]
+  if (moduleRoots.length !== 1) throw new Error('Native module source must contain exactly one NodeModuleModule.cpp')
+  const nativeHeadersRoot = path.dirname(path.resolve(path.dirname(moduleUnityPath), moduleRoots[0][1]))
+  let bufferHeaderCount = 0
+  const nativeModuleImpl = externalNativeModules.replace(/^#include "([^"]+)"$/gm, (_, relative) => {
+    const name = path.basename(relative)
+    if (name === 'NodeBufferModule.h') { bufferHeaderCount++; return '#include "NodeBufferModule.h"' }
+    return `#include ${JSON.stringify(path.join(nativeHeadersRoot, name))}`
+  })
+  if (bufferHeaderCount !== 1) throw new Error('Native module factory header must contain exactly one NodeBufferModule.h')
+  const bufferModuleHeader = readFileSync(path.join(homeSource, 'jsc/modules/NodeBufferModule.h'))
+
   const registry = createInternalModuleRegistry(path.join(homeSource, 'js'))
   const requireTransformer = (specifier: string, from: string) => {
     const transformed = registry.requireTransformer(specifier, from)
@@ -85,7 +99,7 @@ async function main() {
     [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h'], ['jsc/bindings/webcore/WebSocket.cpp', 'WebSocket.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
     [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h'], ['jsc/bindings/AsyncContextFrame.cpp', 'AsyncContextFrame.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
     [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h'], ['jsc/bindings/webcore/JSMessageEvent.cpp', 'JSMessageEvent.h'], ['jsc/bindings/webcore/JSMIMEParams.cpp', 'JSMIMEParams.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
-    [[['jsc/bindings/stringWidth.cpp', 'stringWidth.h'], ['jsc/bindings/sliceAnsi.cpp', 'sliceAnsi.h'], ['jsc/bindings/stripANSI.cpp', 'stripANSI.h'], ['jsc/bindings/wrapAnsi.cpp', 'wrapAnsi.h']], 'UnifiedSource-src_jsc_bindings-5.cpp', 'HomeStringWidth.cpp'],
+    [[['jsc/bindings/stringWidth.cpp', 'stringWidth.h'], ['jsc/bindings/sliceAnsi.cpp', 'sliceAnsi.h'], ['jsc/bindings/stripANSI.cpp', 'stripANSI.h'], ['jsc/bindings/wrapAnsi.cpp', 'wrapAnsi.h'], ['jsc/bindings/napi_finalizer.cpp', 'napi_finalizer.h']], 'UnifiedSource-src_jsc_bindings-5.cpp', 'HomeStringWidth.cpp'],
     [[['jsc/modules/NodeUtilTypesModule.cpp', 'NodeUtilTypesModule.h']], 'UnifiedSource-src_jsc_modules-0.cpp', 'HomeNodeUtilTypesModule.cpp'],
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {
@@ -113,6 +127,8 @@ async function main() {
     return { owned, unified, outputName }
   })
   mkdirSync(output, { recursive: true })
+  writeFileSync(path.join(output, 'NativeModuleImpl.h'), nativeModuleImpl)
+  writeFileSync(path.join(output, 'NodeBufferModule.h'), bufferModuleHeader)
   for (const { module, name, input } of inputs) {
     // The cache lives under Home's type=commonjs package. Force ESM parsing so
     // Bun does not synthesize a CommonJS wrapper and an export inside the JSC
