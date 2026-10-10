@@ -50,97 +50,97 @@
       {
         "label": "complete-native-test-discovery",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-test-discovery.test.mjs"
+          "<repo>/tests/runtime/native-test-discovery.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-stream-wrap",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-stream-wrap.test.mjs"
+          "<repo>/tests/runtime/native-stream-wrap.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-stream-cancellation",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-stream-cancellation.test.mjs"
+          "<repo>/tests/runtime/native-stream-cancellation.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-diagnostics-lifecycle",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-diagnostics-lifecycle.test.mjs"
+          "<repo>/tests/runtime/native-diagnostics-lifecycle.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-node-core-cli",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-node-core-cli.test.mjs"
+          "<repo>/tests/runtime/native-node-core-cli.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-spawn-sync-ipc",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-spawn-sync-ipc.test.mjs"
+          "<repo>/tests/runtime/native-spawn-sync-ipc.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-worker-fs-task-shutdown",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-worker-fs-task-shutdown.test.mjs"
+          "<repo>/tests/runtime/native-worker-fs-task-shutdown.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-compression-lifetime",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-compression-lifetime.test.mjs"
+          "<repo>/tests/runtime/native-compression-lifetime.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-worker-node-zlib-shutdown",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-worker-node-zlib-shutdown.test.mjs"
+          "<repo>/tests/runtime/native-worker-node-zlib-shutdown.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "complete-native-worker-crypto-job-shutdown",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "run",
-          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-worker-crypto-job-shutdown.test.mjs"
+          "<repo>/tests/runtime/native-worker-crypto-job-shutdown.test.mjs"
         ],
         "exit": 0
       },
       {
         "label": "abi-complete",
         "command": [
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "<repo>/zig-out/bin/home",
           "test",
           "build-support/bundle-native-modules.test.ts",
           "build-support/native_module_abi.test.ts",
@@ -151,8 +151,8 @@
       {
         "label": "corpus",
         "command": [
-          "/Users/chris/.local/share/pantry/global/bin/python3",
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/crypto-compression-port-2026-10-10/run-corpus.py",
+          "~/.local/share/pantry/global/bin/python3",
+          "<repo>/zig-out/crypto-compression-port-2026-10-10/run-corpus.py",
           "complete"
         ],
         "exit": 0

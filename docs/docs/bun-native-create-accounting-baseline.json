@@ -3,8 +3,8 @@
   "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
   "upstream_pin": "4982b91e3702094330f3be3883354c52b8c01323",
   "executables": {
-    "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home": "435b57f0b492e01ef40deb0254fdf79b0ea6409b45eeb7ff077714189933d743",
-    "/Users/chris/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+    "<repo>/zig-out/bin/home": "435b57f0b492e01ef40deb0254fdf79b0ea6409b45eeb7ff077714189933d743",
+    "~/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
   },
   "profile": "Ordinary original deadlines; one Home attempt then one Bun control, shared caches. Not full CI coverage.",
   "build": {
@@ -748,8 +748,8 @@
       "original_create": {
         "source_commit": "fcb346159",
         "executables": {
-          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home": "3b9412bb55f7c2750c15d6abf1761910924e32e8ebc09683583e5e4eb3838cfd",
-          "/Users/chris/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+          "<repo>/zig-out/bin/home": "3b9412bb55f7c2750c15d6abf1761910924e32e8ebc09683583e5e4eb3838cfd",
+          "~/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
         },
         "profile": "Original ordinary test deadlines, no retries, Home then Bun control, shared caches.",
         "results": [
@@ -757,7 +757,7 @@
             "label": "templates-home",
             "exit_code": 0,
             "duration_seconds": 1.687366667,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-home.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-home.log",
             "log_sha256": "bb219308f79a9be677d244a22c65078c3a0e7ca400feec7bf2f4d1991ba65dbe",
             "pass_reports": [
               "13",
@@ -772,7 +772,7 @@
             "label": "templates-bun",
             "exit_code": 0,
             "duration_seconds": 1.66443475,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-bun.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-bun.log",
             "log_sha256": "03f50bf5f8e97df52dca44c6c63f1f81ff766859113a81310a7877f2a65f372d",
             "pass_reports": [
               "13"
@@ -785,7 +785,7 @@
             "label": "rsbuild-home",
             "exit_code": 0,
             "duration_seconds": 2.337432416,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-home.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-home.log",
             "log_sha256": "c8f704413a45cb05e8d1ec6e736869dff0bce6cfa71fd386d2c6458a1cecf8a8",
             "pass_reports": [
               "0"
@@ -798,7 +798,7 @@
             "label": "rsbuild-bun",
             "exit_code": 0,
             "duration_seconds": 1.1706307919999999,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-bun.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-bun.log",
             "log_sha256": "b6b90bda474d565cec9853a499f2441d6fe8c36357359520f189984078105765",
             "pass_reports": [],
             "fail_reports": []
@@ -807,7 +807,7 @@
             "label": "jsx-home",
             "exit_code": 1,
             "duration_seconds": 26.021064208000002,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-home.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-home.log",
             "log_sha256": "4f1412df3ebeb3c7a38d383b8ac51c9b8b66e10fa5720ebe3cfc87e562bcabf4",
             "pass_reports": [
               "5",
@@ -824,7 +824,7 @@
             "label": "jsx-bun",
             "exit_code": 1,
             "duration_seconds": 25.213482542,
-            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-bun.log",
+            "log": "<repo>/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-bun.log",
             "log_sha256": "3c454757ff3b1aaf51872d61ee3f342be464935681a46c220de2392173a841c7",
             "pass_reports": [
               "5"
@@ -872,21 +872,21 @@
           "file": "native-create-entrypoints",
           "exit_code": 1,
           "duration_seconds": 1.71043475,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-create-entrypoints.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-create-entrypoints.log",
           "log_sha256": "b63ce1381c0d743cf83f0592b048f578a5c27904fe00618c34a043b195d54e6a"
         },
         {
           "file": "native-package-run",
           "exit_code": 0,
           "duration_seconds": 3.999972625,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-package-run.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-package-run.log",
           "log_sha256": "6609e0894b194a416f63c9fbc7fc859bada32debbc49ca783a2b02574cd4cac1"
         },
         {
           "file": "native-bunx",
           "exit_code": 0,
           "duration_seconds": 1.9352309170000002,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-bunx.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-bunx.log",
           "log_sha256": "531f419d751690b0adb954366c379e3256e898e6060c0ffe72093582109d7c02"
         }
       ]
@@ -973,7 +973,7 @@
           "label": "native-frozen-prerelease",
           "exit_code": 0,
           "seconds": 0.8994327500000001,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-prerelease.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-prerelease.log",
           "log_sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
           "pass_reports": [],
           "fail_reports": []
@@ -982,7 +982,7 @@
           "label": "native-create-entrypoints",
           "exit_code": 0,
           "seconds": 0.13586495799999998,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-create-entrypoints.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-create-entrypoints.log",
           "log_sha256": "0581649e4950297eb0a8b53593f20d29bdde82155d641b713c661eac2747dd92",
           "pass_reports": [],
           "fail_reports": []
@@ -991,7 +991,7 @@
           "label": "original-semver",
           "exit_code": 0,
           "seconds": 0.2646710000000001,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/original-semver.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/original-semver.log",
           "log_sha256": "7720111f27d0d969c54caa741c0cdeef6a7753112041c703d6d5774cd10d0f99",
           "pass_reports": [
             "25",
@@ -1006,7 +1006,7 @@
           "label": "native-frozen-corpus-provision",
           "exit_code": 0,
           "seconds": 6.2735907079999995,
-          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-corpus-provision.log",
+          "log": "<repo>/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-corpus-provision.log",
           "log_sha256": "0a0868c4616c3fd7a459f7238d2de0a700baf4cda3d3e789fea5f8b9be8cea2b",
           "pass_reports": [],
           "fail_reports": []
