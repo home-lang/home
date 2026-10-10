@@ -1440,8 +1440,11 @@ fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []con
 const RootInclusion = struct {
     /// TS1427 / TS1409 / TS1457 / TS1407 — chosen by provenance.
     code: u32,
-    /// For TS1407, the include pattern that matched (`{0}`).
-    spec: []const u8 = "",
+    /// For TS1407, the include patterns in source order. The first pattern
+    /// that actually matches each root supplies that root's `{0}`.
+    specs: []const []const u8 = &.{},
+    /// Directory against which include patterns are interpreted.
+    project_dir: []const u8 = "",
     /// Config file path, for TS1407's `{1}`.
     config_path: []const u8 = "",
 };
@@ -1562,6 +1565,52 @@ fn printNodeFormatExplain(
     }
 }
 
+fn rootIncludeRelativePath(root: RootInclusion, file_path: []const u8) []const u8 {
+    const project_dir = std.mem.trimEnd(u8, root.project_dir, "/\\");
+    if (project_dir.len == 0 and root.project_dir.len > 0 and
+        (root.project_dir[0] == '/' or root.project_dir[0] == '\\'))
+    {
+        return std.mem.trimStart(u8, file_path, "/\\");
+    }
+    if (project_dir.len == 0 or std.mem.eql(u8, project_dir, ".")) {
+        return if (std.mem.startsWith(u8, file_path, "./")) file_path[2..] else file_path;
+    }
+    if (!std.mem.startsWith(u8, file_path, project_dir)) return file_path;
+    if (file_path.len == project_dir.len) return "";
+    if (file_path[project_dir.len] != '/' and file_path[project_dir.len] != '\\') return file_path;
+    return file_path[project_dir.len + 1 ..];
+}
+
+fn matchingRootIncludeSpec(root: RootInclusion, file_path: []const u8) []const u8 {
+    const relative_path = rootIncludeRelativePath(root, file_path);
+    for (root.specs) |spec| {
+        if (tsconfig_mod.matchFileIncludeGlob(spec, relative_path)) return spec;
+    }
+    return if (root.specs.len > 0) root.specs[0] else "**/*";
+}
+
+fn printImportIncludeReasonLine(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    reason: ts_program.IncludeReason,
+) void {
+    const importer_path = program.files.items[reason.importer].path;
+    const message = if (reason.package_id.len != 0)
+        std.fmt.allocPrint(
+            gpa,
+            "  Imported via {s} from file '{s}' with packageId '{s}'",
+            .{ reason.specifier_text, importer_path, reason.package_id },
+        ) catch return
+    else
+        std.fmt.allocPrint(
+            gpa,
+            "  Imported via {s} from file '{s}'",
+            .{ reason.specifier_text, importer_path },
+        ) catch return;
+    defer gpa.free(message);
+    printStdout("{s}\n", .{message});
+}
+
 /// `--explainFiles`: print each program file with the reason it is part of
 /// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
 /// the provenance-derived reason; transitively-added files use their recorded
@@ -1658,7 +1707,15 @@ fn printExplainFiles(
     _ = code_cjs_package_not_found;
     for (program.files.items) |f| {
         printStdout("{s}\n", .{explainFileDisplayPath(f)});
-        if (!pathInList(roots, f.path)) {
+        const is_root = pathInList(roots, f.path);
+        if (is_root) {
+            // A file can independently be an include root and the target of
+            // an import. TypeScript reports both reasons (for example an
+            // explicitly included package entry imported by `root.ts`).
+            if (f.include_reason) |reason| {
+                if (reason.kind == .import) printImportIncludeReasonLine(gpa, program, reason);
+            }
+        } else {
             // A non-root file is here because something pulled it in —
             // an import (TS1393) or a `/// <reference path>` directive
             // (TS1400). tsgo prints one line per include reason; Home
@@ -1666,21 +1723,7 @@ fn printExplainFiles(
             if (f.include_reason) |ir| {
                 switch (ir.kind) {
                     .import => {
-                        const importer_path = program.files.items[ir.importer].path;
-                        const msg = if (ir.package_id.len != 0)
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}' with packageId '{s}'",
-                                .{ ir.specifier_text, importer_path, ir.package_id },
-                            ) catch return
-                        else
-                            std.fmt.allocPrint(
-                                gpa,
-                                "  Imported via {s} from file '{s}'",
-                                .{ ir.specifier_text, importer_path },
-                            ) catch return;
-                        defer gpa.free(msg);
-                        printStdout("{s}\n", .{msg});
+                        printImportIncludeReasonLine(gpa, program, ir);
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1865,7 +1908,8 @@ fn printExplainFiles(
         if (root.code == code_include_pattern) {
             // "Matched by include pattern '{0}' in '{1}'."
             const cfg_base = std.fs.path.basename(root.config_path);
-            const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ root.spec, cfg_base }) catch return;
+            const spec = matchingRootIncludeSpec(root, f.path);
+            const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ spec, cfg_base }) catch return;
             defer gpa.free(msg);
             printStdout("{s}\n", .{msg});
         } else {
@@ -3356,8 +3400,8 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // path the program will compile. `--listFilesOnly` exits before
     // running the pipeline; `--listFiles` continues afterward.
     if (opts.list_files or opts.list_files_only) {
-        for (input_files.items) |path| {
-            printStdout("{s}\n", .{path});
+        for (program.files.items) |file| {
+            printStdout("{s}\n", .{file.path});
         }
         if (opts.list_files_only) return;
     }
@@ -3491,7 +3535,8 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                     root_incl.code = 1457; // Matched by default **/* pattern
                 } else {
                     root_incl.code = 1407; // Matched by include pattern
-                    root_incl.spec = if (c.include.?.len > 0) c.include.?[0] else "**/*";
+                    root_incl.specs = c.include.?;
+                    root_incl.project_dir = std.fs.path.dirname(c.file_path) orelse ".";
                     root_incl.config_path = c.file_path;
                 }
             }
@@ -4083,11 +4128,12 @@ fn expandProjectGlobs(
 
             switch (entry.kind) {
                 .directory => {
-                    // Skip dotfiles and node_modules so we don't walk
-                    // into massive trees by default.
-                    if (std.mem.startsWith(u8, entry.name, ".") or
-                        std.mem.eql(u8, entry.name, "node_modules"))
-                    {
+                    // TypeScript's wildcard matcher implicitly excludes dot
+                    // directories and package folders, but a literal include
+                    // component may opt back into them. Ask the include
+                    // matcher whether any descendant can qualify instead of
+                    // unconditionally dropping `node_modules`.
+                    if (!anyFileIncludeMayMatchDirectory(include, child_rel)) {
                         gpa.free(child_rel);
                         continue;
                     }
@@ -4101,7 +4147,7 @@ fn expandProjectGlobs(
                     defer gpa.free(child_rel);
                     if (!isProjectInputExtension(child_rel, allow_js)) continue;
                     if (anyMatches(exclude, child_rel)) continue;
-                    if (!anyMatches(include, child_rel)) continue;
+                    if (!anyFileIncludeMatches(include, child_rel)) continue;
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
                     try owned.append(gpa, full);
                     try out.append(gpa, full);
@@ -4115,6 +4161,20 @@ fn expandProjectGlobs(
 fn anyMatches(patterns: []const []const u8, path: []const u8) bool {
     for (patterns) |pat| {
         if (tsconfig_mod.matchGlob(pat, path)) return true;
+    }
+    return false;
+}
+
+fn anyFileIncludeMatches(patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |pattern| {
+        if (tsconfig_mod.matchFileIncludeGlob(pattern, path)) return true;
+    }
+    return false;
+}
+
+fn anyFileIncludeMayMatchDirectory(patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |pattern| {
+        if (tsconfig_mod.fileIncludeGlobMayMatchDirectory(pattern, path)) return true;
     }
     return false;
 }
@@ -4663,6 +4723,31 @@ test "tsc_main: resolver admission distinguishes typed JS from untyped implement
         try std.testing.expectEqual(options.allow_js or options.check_js, explicit.is_declaration);
         try std.testing.expect(!unadmitted.is_declaration);
     }
+}
+
+test "tsc_main: explicit package include selects the actual root pattern" {
+    const root: RootInclusion = .{
+        .code = 1407,
+        .specs = &.{ "**/*", "node_modules/**/*" },
+        .project_dir = "/repo",
+        .config_path = "/repo/tsconfig.json",
+    };
+    try std.testing.expectEqualStrings(
+        "**/*",
+        matchingRootIncludeSpec(root, "/repo/root.ts"),
+    );
+    try std.testing.expectEqualStrings(
+        "node_modules/**/*",
+        matchingRootIncludeSpec(root, "/repo/node_modules/pkg/index.js"),
+    );
+    var root_directory = root;
+    root_directory.project_dir = "/";
+    try std.testing.expectEqualStrings(
+        "node_modules/**/*",
+        matchingRootIncludeSpec(root_directory, "/node_modules/pkg/index.js"),
+    );
+    try std.testing.expect(anyFileIncludeMayMatchDirectory(root.specs, "node_modules"));
+    try std.testing.expect(anyFileIncludeMatches(root.specs, "node_modules/pkg/index.js"));
 }
 
 test "tsc_main: resolver admission follows maxNodeModuleJsDepth" {

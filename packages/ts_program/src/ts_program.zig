@@ -8472,6 +8472,49 @@ test "Program: loadImportClosure bounds node_modules JavaScript by configured de
     try T.expect(depth_two_program.lookupPath("/proj/node_modules/dep/leaf.js") == null);
 }
 
+test "Program: explicit node_modules roots retain depth zero and admit one dependency level" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/root.ts", "import * as m1 from 'm1';\nm1.f2.a = 'wrong';\n");
+    try vfs.addFile(
+        "/proj/node_modules/m1/index.js",
+        "const m2 = require('m2');\nconst rel = require('./relative');\nexports.f2 = m2;\nexports.rel = rel.value;\n",
+    );
+    try vfs.addFile("/proj/node_modules/m1/relative.js", "exports.value = true;\n");
+    try vfs.addFile("/proj/node_modules/m2/package.json", "{\"main\":\"entry.js\"}");
+    try vfs.addFile(
+        "/proj/node_modules/m2/entry.js",
+        "const m3 = require('m3');\nmodule.exports = { a: 42, person: m3.person };\n",
+    );
+    try vfs.addFile("/proj/node_modules/m2/node_modules/m3/index.js", "exports.person = { age: 42 };\n");
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const root_id = try program.add("/proj/root.ts", "import * as m1 from 'm1';\nm1.f2.a = 'wrong';\n");
+    const m1_id = try program.add(
+        "/proj/node_modules/m1/index.js",
+        "const m2 = require('m2');\nconst rel = require('./relative');\nexports.f2 = m2;\nexports.rel = rel.value;\n",
+    );
+    const relative_id = try program.add("/proj/node_modules/m1/relative.js", "exports.value = true;\n");
+
+    try T.expectEqual(@as(usize, 1), try program.loadImportClosure(.{
+        .allow_js = true,
+        .max_node_module_js_depth = 1,
+        .no_emit = true,
+    }));
+    try T.expectEqual(@as(u32, 0), program.fileById(m1_id).node_modules_depth);
+    try T.expectEqual(@as(u32, 0), program.fileById(relative_id).node_modules_depth);
+    const m2_id = program.lookupPath("/proj/node_modules/m2/entry.js") orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(u32, 1), program.fileById(m2_id).node_modules_depth);
+    try T.expect(program.lookupPath("/proj/node_modules/m2/node_modules/m3/index.js") == null);
+    const reason = program.fileById(m1_id).include_reason orelse return error.TestUnexpectedResult;
+    try T.expectEqual(IncludeKind.import, reason.kind);
+    try T.expectEqual(root_id, reason.importer);
+    try T.expectEqualStrings("\"m1\"", reason.specifier_text);
+}
+
 test "Program: shallower node_modules route reprocesses previously elided descendants" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

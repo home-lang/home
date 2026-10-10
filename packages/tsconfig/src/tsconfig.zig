@@ -4652,6 +4652,169 @@ pub fn matchGlob(pattern: []const u8, path: []const u8) bool {
     return matchGlobAt(pattern, 0, path, 0);
 }
 
+const GlobPathSegment = struct {
+    bytes: []const u8,
+    next: usize,
+};
+
+fn isGlobPathSeparator(char: u8) bool {
+    return char == '/' or char == '\\';
+}
+
+fn nextGlobPathSegment(text: []const u8, start: usize) ?GlobPathSegment {
+    var cursor = start;
+    while (cursor < text.len) {
+        while (cursor < text.len and isGlobPathSeparator(text[cursor])) : (cursor += 1) {}
+        if (cursor >= text.len) return null;
+        const segment_start = cursor;
+        while (cursor < text.len and !isGlobPathSeparator(text[cursor])) : (cursor += 1) {}
+        const segment = text[segment_start..cursor];
+        if (std.mem.eql(u8, segment, ".")) continue;
+        return .{ .bytes = segment, .next = cursor };
+    }
+    return null;
+}
+
+fn globSegmentHasWildcard(segment: []const u8) bool {
+    return std.mem.indexOfAny(u8, segment, "*?") != null;
+}
+
+fn isImplicitFileIncludeGlob(pattern: []const u8) bool {
+    var cursor: usize = 0;
+    var last: []const u8 = "";
+    while (nextGlobPathSegment(pattern, cursor)) |segment| {
+        last = segment.bytes;
+        cursor = segment.next;
+    }
+    return last.len > 0 and std.mem.indexOfAny(u8, last, ".*?") == null;
+}
+
+fn fileIncludeWildcardExcludes(segment: []const u8) bool {
+    return segment.len == 0 or
+        segment[0] == '.' or
+        std.mem.eql(u8, segment, "node_modules") or
+        std.mem.eql(u8, segment, "bower_components") or
+        std.mem.eql(u8, segment, "jspm_packages");
+}
+
+fn implicitFileIncludeTailMatches(path: []const u8, start: usize) bool {
+    var cursor = start;
+    var matched = false;
+    while (nextGlobPathSegment(path, cursor)) |segment| {
+        if (fileIncludeWildcardExcludes(segment.bytes)) return false;
+        matched = true;
+        cursor = segment.next;
+    }
+    return matched;
+}
+
+fn matchFileIncludeGlobAt(
+    pattern: []const u8,
+    pattern_start: usize,
+    path: []const u8,
+    path_start: usize,
+    implicit_directory_glob: bool,
+) bool {
+    const pattern_segment = nextGlobPathSegment(pattern, pattern_start) orelse {
+        if (implicit_directory_glob) return implicitFileIncludeTailMatches(path, path_start);
+        return nextGlobPathSegment(path, path_start) == null;
+    };
+    const path_segment = nextGlobPathSegment(path, path_start);
+
+    if (std.mem.eql(u8, pattern_segment.bytes, "**")) {
+        if (matchFileIncludeGlobAt(
+            pattern,
+            pattern_segment.next,
+            path,
+            path_start,
+            implicit_directory_glob,
+        )) return true;
+        const current = path_segment orelse return false;
+        if (fileIncludeWildcardExcludes(current.bytes)) return false;
+        return matchFileIncludeGlobAt(
+            pattern,
+            pattern_start,
+            path,
+            current.next,
+            implicit_directory_glob,
+        );
+    }
+
+    const current = path_segment orelse return false;
+    if (globSegmentHasWildcard(pattern_segment.bytes) and fileIncludeWildcardExcludes(current.bytes)) return false;
+    if (!matchGlob(pattern_segment.bytes, current.bytes)) return false;
+    return matchFileIncludeGlobAt(
+        pattern,
+        pattern_segment.next,
+        path,
+        current.next,
+        implicit_directory_glob,
+    );
+}
+
+/// Match a tsconfig `include` entry using TypeScript's file-discovery rules.
+/// Wildcard components do not consume dot-prefixed directories or package
+/// folders (`node_modules`, `bower_components`, `jspm_packages`), while a
+/// literal component may name any of them. A final literal directory is an
+/// implicit `**/*`, matching tsc's `isImplicitGlob` expansion.
+pub fn matchFileIncludeGlob(pattern: []const u8, path: []const u8) bool {
+    return matchFileIncludeGlobAt(pattern, 0, path, 0, isImplicitFileIncludeGlob(pattern));
+}
+
+fn fileIncludeGlobMayMatchDirectoryAt(
+    pattern: []const u8,
+    pattern_start: usize,
+    directory: []const u8,
+    directory_start: usize,
+    implicit_directory_glob: bool,
+) bool {
+    const directory_segment = nextGlobPathSegment(directory, directory_start) orelse return true;
+    const pattern_segment = nextGlobPathSegment(pattern, pattern_start) orelse {
+        if (!implicit_directory_glob) return false;
+        var cursor = directory_start;
+        while (nextGlobPathSegment(directory, cursor)) |segment| {
+            if (fileIncludeWildcardExcludes(segment.bytes)) return false;
+            cursor = segment.next;
+        }
+        return true;
+    };
+
+    if (std.mem.eql(u8, pattern_segment.bytes, "**")) {
+        if (fileIncludeGlobMayMatchDirectoryAt(
+            pattern,
+            pattern_segment.next,
+            directory,
+            directory_start,
+            implicit_directory_glob,
+        )) return true;
+        if (fileIncludeWildcardExcludes(directory_segment.bytes)) return false;
+        return fileIncludeGlobMayMatchDirectoryAt(
+            pattern,
+            pattern_start,
+            directory,
+            directory_segment.next,
+            implicit_directory_glob,
+        );
+    }
+
+    if (globSegmentHasWildcard(pattern_segment.bytes) and fileIncludeWildcardExcludes(directory_segment.bytes)) return false;
+    if (!matchGlob(pattern_segment.bytes, directory_segment.bytes)) return false;
+    return fileIncludeGlobMayMatchDirectoryAt(
+        pattern,
+        pattern_segment.next,
+        directory,
+        directory_segment.next,
+        implicit_directory_glob,
+    );
+}
+
+/// Return whether an `include` entry can match any file below `directory`.
+/// This lets filesystem walkers prune ordinary unmatched paths while still
+/// entering package or dot directories that the pattern names literally.
+pub fn fileIncludeGlobMayMatchDirectory(pattern: []const u8, directory: []const u8) bool {
+    return fileIncludeGlobMayMatchDirectoryAt(pattern, 0, directory, 0, isImplicitFileIncludeGlob(pattern));
+}
+
 fn matchGlobAt(pattern: []const u8, pi_in: usize, path: []const u8, si_in: usize) bool {
     var pi = pi_in;
     var si = si_in;
@@ -4750,4 +4913,32 @@ test "matchGlob: trailing double-star matches everything" {
     try t.expect(matchGlob("dist/**", "dist/a.js"));
     try t.expect(matchGlob("dist/**", "dist/a/b.js"));
     try t.expect(!matchGlob("dist/**", "src/a.js"));
+}
+
+test "matchFileIncludeGlob: wildcard package and dot directories stay implicitly excluded" {
+    try t.expect(matchFileIncludeGlob("**/*", "src/main.ts"));
+    try t.expect(!matchFileIncludeGlob("**/*", "node_modules/pkg/index.ts"));
+    try t.expect(!matchFileIncludeGlob("**/*", ".generated/index.ts"));
+    try t.expect(!matchFileIncludeGlob("packages/**/*", "packages/a/node_modules/pkg/index.ts"));
+}
+
+test "matchFileIncludeGlob: literal package and dot directories are explicit roots" {
+    try t.expect(matchFileIncludeGlob("node_modules/**/*", "node_modules/pkg/index.ts"));
+    try t.expect(matchFileIncludeGlob("packages/*/node_modules/**/*", "packages/a/node_modules/pkg/index.ts"));
+    try t.expect(matchFileIncludeGlob(".generated/**/*", ".generated/index.ts"));
+    try t.expect(matchFileIncludeGlob("node_modules", "node_modules/pkg/index.ts"));
+    try t.expect(!matchFileIncludeGlob("node_modules/**/*", "node_modules/pkg/node_modules/inner/index.ts"));
+    try t.expect(matchFileIncludeGlob(
+        "node_modules/**/node_modules/**/*",
+        "node_modules/pkg/node_modules/inner/index.ts",
+    ));
+}
+
+test "fileIncludeGlobMayMatchDirectory follows explicit excluded-directory components" {
+    try t.expect(!fileIncludeGlobMayMatchDirectory("**/*", "node_modules"));
+    try t.expect(fileIncludeGlobMayMatchDirectory("node_modules/**/*", "node_modules"));
+    try t.expect(fileIncludeGlobMayMatchDirectory("packages/*/node_modules/**/*", "packages/a/node_modules"));
+    try t.expect(!fileIncludeGlobMayMatchDirectory("packages/**/*", "packages/a/node_modules"));
+    try t.expect(fileIncludeGlobMayMatchDirectory(".generated/**/*", ".generated"));
+    try t.expect(!fileIncludeGlobMayMatchDirectory("src", "src/node_modules"));
 }
