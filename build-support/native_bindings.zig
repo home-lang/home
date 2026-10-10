@@ -24,6 +24,8 @@ var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
 var cached_async_hooks_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
+var cached_string_width_object: ?std.Build.LazyPath = null;
+var cached_util_types_object: ?std.Build.LazyPath = null;
 var cached_core_builtins_object: ?std.Build.LazyPath = null;
 
 pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
@@ -66,6 +68,7 @@ pub fn processObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath 
     if (cached_process_object) |object| return object;
     const files = b.addWriteFiles();
     const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/BunProcess.cpp"), "BunProcess.cpp");
+    _ = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/HomeICUBinding.cpp"), "HomeICUBinding.cpp");
     const object = compileObject(b, object_root, "BunProcess.cpp", source);
     cached_process_object = object;
     return object;
@@ -227,6 +230,22 @@ pub fn asyncHooksObject(b: *std.Build, object_root: []const u8) std.Build.LazyPa
     return object;
 }
 
+pub fn stringWidthObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_string_width_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-5.cpp", output.path(b, "HomeStringWidth.cpp"));
+    cached_string_width_object = object;
+    return object;
+}
+
+pub fn utilTypesObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_util_types_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_modules-0.cpp", output.path(b, "HomeNodeUtilTypesModule.cpp"));
+    cached_util_types_object = object;
+    return object;
+}
+
 fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_native_modules) |output| return output;
     const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
@@ -252,6 +271,26 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/js_classes.ts",
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/IPC.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/Path.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/Path.h",
+        "packages/runtime/upstream/src/jsc/bindings/NodeValidator.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/NodeValidator.h",
+        "packages/runtime/upstream/src/jsc/bindings/stringWidth.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/stringWidth.h",
+        "packages/runtime/upstream/src/jsc/bindings/sliceAnsi.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/sliceAnsi.h",
+        "packages/runtime/upstream/src/jsc/bindings/stripANSI.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/stripANSI.h",
+        "packages/runtime/upstream/src/jsc/bindings/wrapAnsi.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/wrapAnsi.h",
+
+        "packages/runtime/upstream/src/jsc/bindings/ANSIHelpers.h",
+        "packages/runtime/upstream/src/jsc/bindings/stringWidthTables.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeUtilTypesModule.cpp",
+        "packages/runtime/upstream/src/jsc/modules/NodeUtilTypesModule.h",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/webcore/JSMIMEParams.h",
+
         "packages/runtime/upstream/src/jsc/bindings/EventLoopTaskNoContext.cpp",
         "packages/runtime/src/native/H2HeadersMaterializer.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.cpp",
@@ -305,6 +344,24 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/js/node/timers.promises.ts",
         "packages/runtime/upstream/src/js/internal/async_hooks.ts",
         "packages/runtime/upstream/src/js/internal/async_hooks_tick.ts",
+        "packages/runtime/upstream/src/js/node/path.ts",
+        "packages/runtime/upstream/src/js/node/path.posix.ts",
+        "packages/runtime/upstream/src/js/node/path.win32.ts",
+        "packages/runtime/upstream/src/js/node/util.ts",
+        "packages/runtime/upstream/src/js/node/domain.ts",
+        "packages/runtime/upstream/src/js/node/punycode.ts",
+        "packages/runtime/upstream/src/js/node/diagnostics_channel.ts",
+        "packages/runtime/upstream/src/js/node/os.ts",
+        "packages/runtime/upstream/src/js/node/dns.ts",
+        "packages/runtime/upstream/src/js/node/dns.promises.ts",
+        "packages/runtime/upstream/src/js/internal/shared.ts",
+        "packages/runtime/upstream/src/js/internal/errors.ts",
+        "packages/runtime/upstream/src/js/internal/validators.ts",
+        "packages/runtime/upstream/src/js/internal/util/inspect.js",
+        "packages/runtime/upstream/src/js/internal/util/colors.ts",
+        "packages/runtime/upstream/src/js/internal/util/deprecate.ts",
+        "packages/runtime/upstream/src/js/internal/util/mime.ts",
+
         "packages/runtime/upstream/src/js/internal/url.ts",
         "packages/runtime/upstream/src/js/internal/validators.ts",
     }) |input| generate.addFileInput(b.path(input));
@@ -317,6 +374,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
         "unified/UnifiedSource-src_jsc_bindings-0.cpp",
         "unified/UnifiedSource-src_jsc_bindings-3.cpp",
+        "unified/UnifiedSource-src_jsc_bindings-5.cpp",
+        "unified/UnifiedSource-src_jsc_modules-0.cpp",
         "unified/UnifiedSource-src_jsc_bindings-4.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-0.cpp",
         "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp",
@@ -332,6 +391,15 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const io = std.Io.Threaded.global_single_threaded.io();
     for ([_][3][]const u8{
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeAsyncHooks.cpp", "NodeAsyncHooks.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "Path.cpp", "Path.h" },
+        .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeValidator.cpp", "NodeValidator.h" },
+        .{ "UnifiedSource-src_jsc_bindings-5.cpp", "stringWidth.cpp", "stringWidth.h" },
+        .{ "UnifiedSource-src_jsc_bindings-5.cpp", "sliceAnsi.cpp", "sliceAnsi.h" },
+        .{ "UnifiedSource-src_jsc_bindings-5.cpp", "stripANSI.cpp", "stripANSI.h" },
+        .{ "UnifiedSource-src_jsc_bindings-5.cpp", "wrapAnsi.cpp", "wrapAnsi.h" },
+
+        .{ "UnifiedSource-src_jsc_modules-0.cpp", "NodeUtilTypesModule.cpp", "NodeUtilTypesModule.h" },
+        .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSMIMEParams.cpp", "JSMIMEParams.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-3.cpp", "JSWebSocket.cpp", "JSWebSocket.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-5.cpp", "WebSocket.cpp", "WebSocket.h" },
         .{ "UnifiedSource-src_jsc_bindings-0.cpp", "AsyncContextFrame.cpp", "AsyncContextFrame.h" },

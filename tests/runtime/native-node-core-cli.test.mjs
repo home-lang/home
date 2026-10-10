@@ -8,6 +8,22 @@ import { Readable } from 'node:stream'
 // These are native Home checks, not delegated Bun/Node compatibility results.
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 
+// Real ICU APIs, including buffer growth and stable per-process binding ownership.
+const icu = process.binding('icu')
+assert.equal(icu, process.binding('icu'))
+assert.equal(icu.hasConverter('utf-8'), true)
+assert.equal(icu.hasConverter('utf-16le'), true)
+assert.equal(icu.hasConverter('x-home-invalid-encoding'), false)
+assert.equal(icu.toASCII('bücher.example'), 'xn--bcher-kva.example')
+assert.equal(icu.toUnicode('xn--bcher-kva.example'), 'bücher.example')
+assert.equal(icu.toASCII('a'.repeat(8192)), 'a'.repeat(8192))
+assert.throws(() => icu.toASCII('\uFFFD'), { code: 'ERR_INVALID_ARG_VALUE', name: 'TypeError', message: 'Cannot convert name to ASCII' })
+assert.equal(typeof icu.toASCII('\uFFFD', true), 'string')
+Bun.gc(true)
+assert.equal(icu, process.binding('icu'))
+console.log('native ICU conversion, growth and binding ownership passed')
+
+
 // Bun pin 4982b91's howMuchToRead() retains the first byte chunk for
 // unsized reads. Do not infer this contract from a different installed Bun.
 const sourceBytes = new Uint8Array([99, 1, 2, 3, 99])

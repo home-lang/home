@@ -147,6 +147,8 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
     "unified/UnifiedSource-src_jsc_bindings-0.cpp.o", // contains Home-owned WorkerGlobalScope
+    "unified/UnifiedSource-src_jsc_bindings-5.cpp.o", // contains Home-owned terminal width
+    "unified/UnifiedSource-src_jsc_modules-0.cpp.o", // contains Home-owned util type predicates
     "unified/UnifiedSource-src_jsc_bindings-3.cpp.o", // contains Home-owned async-context host functions
     "unified/UnifiedSource-src_jsc_bindings-4.cpp.o", // contains Home-owned ScriptExecutionContext
     "unified/UnifiedSource-src_jsc_bindings_webcore-0.cpp.o", // contains Home-owned BroadcastChannel and registry
@@ -247,6 +249,8 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.cryptoObject1(b, bun_obj_root),
         native_bindings.serializedScriptValueObject(b, bun_obj_root),
         native_bindings.asyncHooksObject(b, bun_obj_root),
+        native_bindings.stringWidthObject(b, bun_obj_root),
+        native_bindings.utilTypesObject(b, bun_obj_root),
         native_bindings.coreBuiltinsObject(b, bun_obj_root),
     };
     for (owned_objects) |object| {

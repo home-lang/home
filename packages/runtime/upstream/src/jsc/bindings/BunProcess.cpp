@@ -133,6 +133,9 @@ extern "C" bool Bun__Node__ProcessNoDeprecation;
 extern "C" bool Bun__Node__ProcessThrowDeprecation;
 extern "C" int32_t bun_stdio_tty[3];
 
+// Home-owned native ICU process binding.
+#include "HomeICUBinding.cpp"
+
 namespace Bun {
 
 using namespace JSC;
@@ -3261,7 +3264,7 @@ JSC_DEFINE_HOST_FUNCTION(Process_functionBinding, (JSGlobalObject * jsGlobalObje
     if (moduleName == "fs"_s) RELEASE_AND_RETURN(throwScope, JSValue::encode(globalObject->processBindingFs()));
     if (moduleName == "fs_event_wrap"_s) PROCESS_BINDING_NOT_IMPLEMENTED("fs_event_wrap");
     if (moduleName == "http_parser"_s) return JSValue::encode(globalObject->processBindingHTTPParser());
-    if (moduleName == "icu"_s) PROCESS_BINDING_NOT_IMPLEMENTED("icu");
+    if (moduleName == "icu"_s) return JSValue::encode(createHomeICUBinding(globalObject, process));
     if (moduleName == "inspector"_s) PROCESS_BINDING_NOT_IMPLEMENTED("inspector");
     if (moduleName == "js_stream"_s) PROCESS_BINDING_NOT_IMPLEMENTED("js_stream");
     if (moduleName == "natives"_s) return JSValue::encode(process->bindingNatives());
