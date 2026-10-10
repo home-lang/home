@@ -165,6 +165,10 @@ intervals do not establish equivalence. See the
 [complete accepted report](docs/docs/TS_PERFORMANCE.md#live-body-write-proof-accepted-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-live-body-write-proof-accepted-864.tar.gz).
 This Home-only A/B does not refresh the competitor ranking above.
+The [new checked-JS native profile](docs/docs/TS_PERFORMANCE.md#current-native-checked-javascript-profile-2026-10-10-utc)
+under [#854](https://github.com/home-lang/home/issues/854) verifies one unchanged
+compiler process after 36 admissions. It identifies repeated require-binding
+root scans and local JSDoc work; no CPU-share or new speedup is claimed.
 
 The earlier live-HIR import-absence candidate under #864 was **rejected**:
 its independent null-safe target did not establish the required gain.
