@@ -13,6 +13,14 @@ fn onClose(socket: *uws.udp.Socket) callconv(.c) void {
 
     const this: *UDPSocket = bun.cast(*UDPSocket, socket.user().?);
     this.closed = true;
+    this.connect_info = null;
+    if (!this.vm.isShuttingDown()) {
+        if (this.this_value.tryGet()) |value| {
+            UDPSocket.js.addressSetCached(value, this.globalThis, .zero);
+            UDPSocket.js.remoteAddressSetCached(value, this.globalThis, .zero);
+            UDPSocket.js.portSetCached(value, this.globalThis, .zero);
+        }
+    }
     this.poll_ref.disable();
     this.this_value.downgrade();
     this.socket = null;
@@ -355,6 +363,11 @@ pub const UDPSocket = struct {
             return globalThis.throw("Failed to bind socket", .{});
         };
 
+        // FD adoption preserves the kernel's connected peer. Expose it to
+        // JS and send/sendMany without changing the underlying connection.
+        if (this.config.fd != null) {
+            if (this.socket.?.peerPort()) |port| this.connect_info = .{ .port = port };
+        }
         if (this.config.connect) |*connect| {
             const address_slice = connect.address.toUTF8(bun.default_allocator);
             defer address_slice.deinit();
@@ -1081,6 +1094,11 @@ pub const UDPSocket = struct {
             return globalObject.throw("Failed to disconnect socket", .{});
         }
         this.connect_info = null;
+        // Kernel disconnect can change the local endpoint; neither cached
+        // address may describe the socket after the transition.
+        This.js.addressSetCached(callFrame.this(), globalObject, .zero);
+        This.js.remoteAddressSetCached(callFrame.this(), globalObject, .zero);
+        This.js.portSetCached(callFrame.this(), globalObject, .zero);
 
         return .js_undefined;
     }

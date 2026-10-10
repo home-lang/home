@@ -153,6 +153,14 @@ try {
     }
   }
   console.log('native bidirectional IPC TCP and UDP descriptor regressions passed')
+  const adoptionPeer = fileURLToPath(new URL('./fixtures/fd-adoption-peer.js', import.meta.url))
+  for (const mode of ['native-udp', 'dgram-fd', 'ipc-udp', 'tcp-zero', 'tcp-getter']) {
+    const peer = Bun.spawn([node, adoptionPeer, process.execPath, mode], { stdout: 'pipe', stderr: 'pipe' })
+    const [output, errors, code] = await Promise.all([peer.stdout.text(), peer.stderr.text(), peer.exited])
+    assert.equal(code, 0, errors)
+    assert.equal(output.trim(), `Home preserves adopted descriptor state: ${mode}`)
+  }
+  console.log('native connected UDP and validated TCP descriptor adoption regressions passed')
 } finally {
   rmSync(directory, { recursive: true, force: true })
 }

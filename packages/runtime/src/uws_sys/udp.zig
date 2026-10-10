@@ -19,6 +19,11 @@ pub const Socket = opaque {
         return .fromNative(HomeUDPSocketFD(this));
     }
 
+    pub fn peerPort(this: *udp.Socket) ?u16 {
+        const port = HomeUDPSocketPeerPort(this);
+        return if (port < 0) null else @intCast(port);
+    }
+
     pub fn send(this: *udp.Socket, payloads: []const [*]const u8, lengths: []const usize, addresses: []const ?*const anyopaque) c_int {
         home_rt.assert(payloads.len == lengths.len and payloads.len == addresses.len);
         return us_udp_socket_send(this, payloads.ptr, lengths.ptr, addresses.ptr, @intCast(payloads.len));
@@ -88,6 +93,7 @@ pub const Socket = opaque {
     extern fn us_create_udp_socket(loop: ?*Loop, data_cb: *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, drain_cb: *const fn (*udp.Socket) callconv(.c) void, close_cb: *const fn (*udp.Socket) callconv(.c) void, recv_error_cb: *const fn (*udp.Socket, c_int) callconv(.c) void, host: [*c]const u8, port: c_ushort, options: c_int, err: ?*c_int, user_data: ?*anyopaque) ?*udp.Socket;
     extern fn HomeUDPSocketAdoptFD(*Loop, *const fn (*udp.Socket, *PacketBuffer, c_int) callconv(.c) void, *const fn (*udp.Socket) callconv(.c) void, *const fn (*udp.Socket) callconv(.c) void, *const fn (*udp.Socket, c_int) callconv(.c) void, bun.uws.LIBUS_SOCKET_DESCRIPTOR, *c_int, ?*anyopaque) ?*udp.Socket;
     extern fn HomeUDPSocketFD(*udp.Socket) bun.uws.LIBUS_SOCKET_DESCRIPTOR;
+    extern fn HomeUDPSocketPeerPort(*udp.Socket) c_int;
     extern fn us_udp_socket_connect(socket: *udp.Socket, hostname: [*c]const u8, port: c_uint) c_int;
     extern fn us_udp_socket_disconnect(socket: *udp.Socket) c_int;
     extern fn us_udp_socket_send(socket: *udp.Socket, [*c]const [*c]const u8, [*c]const usize, [*c]const ?*const anyopaque, c_int) c_int;

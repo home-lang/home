@@ -267,6 +267,7 @@ Socket.prototype.bind = function (port_, address_ /* , callback */) {
       state.handle.socket = socket;
       state.receiving = true;
       state.bindState = BIND_STATE_BOUND;
+      if (socket.remoteAddress) state.connectState = CONNECT_STATE_CONNECTED;
       if (state.unrefOnBind) { socket.unref(); state.unrefOnBind = false; }
       this.emit("listening");
     }, error => {

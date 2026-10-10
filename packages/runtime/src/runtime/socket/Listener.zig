@@ -651,11 +651,8 @@ pub fn connectInner(globalObject: *jsc.JSGlobalObject, prev_maybe_tcp: ?*TCPSock
     vm.eventLoop().ensureWaker();
 
     var connection: Listener.UnixOrHost = blk: {
-        if (try opts.getTruthy(globalObject, "fd")) |fd_| {
-            if (fd_.isNumber()) {
-                const fd = fd_.asFileDescriptor();
-                break :blk .{ .fd = fd };
-            }
+        if (socket_config.fd) |fd| {
+            break :blk .{ .fd = fd };
         }
         const host = bun.handleOom(hostname_or_unix.intoOwnedSlice(bun.default_allocator));
         break :blk if (port) |port_| .{
