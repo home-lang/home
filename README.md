@@ -904,7 +904,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | Area | Status | Detail |
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
-| TypeScript front end (`home tsc`) | Usable today; lowest current median on 19 / 20 admitted benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
+| TypeScript front end (`home tsc`) | Usable today; lowest median on 1 / 20 admitted workloads in the 2026-10-10 matrix; faster than native TS7 on 13 / 20 | [TypeScript performance](docs/docs/TS_PERFORMANCE.md#adopted-write-proof-benchmark-matrix-2026-10-10-utc) |
 | TypeScript conformance (byte-exact) | Previous pass counts withdrawn; honest corpus revalidation in progress | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
