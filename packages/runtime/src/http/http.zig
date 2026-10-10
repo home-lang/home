@@ -724,6 +724,11 @@ progress_node: ?*Progress.Node = null,
 flags: Flags = Flags{},
 
 state: InternalState = .{},
+/// Monotonic request milestones for fetch resource timing. Written only by
+/// the HTTP thread and copied into each callback result.
+resource_request_start_ns: u64 = 0,
+resource_response_start_ns: u64 = 0,
+
 tls_props: ?SSLConfig.SharedPtr = null,
 /// The custom SSL context used for this request (null = default context).
 /// Set by HTTPThread.connect() when using custom TLS configs.
@@ -1276,6 +1281,8 @@ pub fn start(this: *HTTPClient, body: HTTPRequestBody, body_out_str: *MutableStr
 
     assert(this.state.response_message_buffer.list.capacity == 0);
     this.state = InternalState.init(body, body_out_str);
+    this.resource_request_start_ns = 0;
+    this.resource_response_start_ns = 0;
 
     if (this.isHTTPS()) {
         this.start_(true);
@@ -1513,6 +1520,7 @@ fn spillCompressedBody(this: *HTTPClient) void {
 
 // This exists as a separate function to reduce the amount of time the request body buffer is kept around.
 noinline fn sendInitialRequestPayload(this: *HTTPClient, comptime is_first_call: bool, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) !InitialRequestPayloadResult {
+    if (this.resource_request_start_ns == 0 and !this.flags.proxy_tunneling) this.resource_request_start_ns = bun.timespec.now(.force_real_time).ns();
     try this.compressBodyForSend(true);
     defer this.spillCompressedBody();
     var request_body_buffer = this.getRequestBodySendBuffer();
@@ -1997,6 +2005,7 @@ pub fn handleOnDataHeaders(
     ctx: *NewHTTPContext(is_ssl),
     socket: NewHTTPContext(is_ssl).HTTPSocket,
 ) void {
+    if (this.resource_response_start_ns == 0 and incoming_data.len > 0) this.resource_response_start_ns = bun.timespec.now(.force_real_time).ns();
     log("handleOnDataHeader data: {s}", .{incoming_data});
     var to_read = incoming_data;
     var needs_move = true;
@@ -2608,6 +2617,10 @@ pub fn progressUpdate(this: *HTTPClient, comptime is_ssl: bool, ctx: *NewHTTPCon
 
 pub const HTTPClientResult = struct {
     body: ?*MutableString = null,
+    resource_request_start_ns: u64 = 0,
+    resource_response_start_ns: u64 = 0,
+    resource_response_end_ns: u64 = 0,
+    resource_encoded_body_size: ?usize = null,
     has_more: bool = false,
     redirected: bool = false,
     can_stream: bool = false,
@@ -2686,6 +2699,7 @@ pub const HTTPClientResult = struct {
 };
 
 pub fn toResult(this: *HTTPClient) HTTPClientResult {
+    const response_end_ns = if (this.state.isDone()) bun.timespec.now(.force_real_time).ns() else 0;
     const body_size: HTTPClientResult.BodySize = if (this.state.isChunkedEncoding())
         .{ .total_received = this.state.total_body_received }
     else if (this.state.content_length) |content_length|
@@ -2702,6 +2716,10 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
         // transfer owner ship of the metadata here
         this.state.cloned_metadata = null;
         return HTTPClientResult{
+            .resource_request_start_ns = this.resource_request_start_ns,
+            .resource_response_start_ns = this.resource_response_start_ns,
+            .resource_response_end_ns = response_end_ns,
+            .resource_encoded_body_size = this.state.total_body_received,
             .metadata = metadata,
             .body = this.state.body_out_str,
             .redirected = this.flags.redirected,
@@ -2715,6 +2733,10 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
         };
     }
     return HTTPClientResult{
+        .resource_request_start_ns = this.resource_request_start_ns,
+        .resource_response_start_ns = this.resource_response_start_ns,
+        .resource_response_end_ns = response_end_ns,
+        .resource_encoded_body_size = this.state.total_body_received,
         .body = this.state.body_out_str,
         .metadata = null,
         .redirected = this.flags.redirected,

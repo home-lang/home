@@ -31,6 +31,13 @@ pub const FetchTasklet = struct {
     /// If chunked encoded this will represent the total received size (ignoring the chunk headers)
     /// If is not chunked encoded and Content-Length is not provided this will be unknown
     body_size: http.HTTPClientResult.BodySize = .unknown,
+    resource_start_ns: u64 = 0,
+    resource_start_ms: f64 = 0,
+    resource_decoded_body_size: u64 = 0,
+    resource_reported: bool = false,
+    resource_is_fetch: bool = true,
+    resource_url_len: usize = 0,
+
 
     /// This is url + proxy memory buffer and is owned by FetchTasklet
     /// We always clone url and proxy (if informed)
@@ -455,6 +462,42 @@ pub const FetchTasklet = struct {
         }
     }
 
+    fn relativeResourceTime(this: *const FetchTasklet, timestamp: u64) f64 {
+        return this.resource_start_ms + @as(f64, @floatFromInt(timestamp -| this.resource_start_ns)) / 1_000_000.0;
+    }
+
+    fn publishResourceTiming(this: *FetchTasklet) void {
+        // Only publish measured HTTP/1 milestones. Other protocols need their
+        // own producer timestamps rather than synthetic zero/now values.
+        if (this.result.resource_response_start_ns == 0 or this.result.resource_response_end_ns == 0) return;
+        const metadata = this.metadata orelse return;
+        const encoded_size = this.result.resource_encoded_body_size orelse return;
+        this.resource_reported = true;
+        const global = this.global_this;
+        const timing = JSValue.createEmptyObject(global, 8);
+        timing.protect();
+        defer timing.unprotect();
+        timing.putZigString(global, jsc.ZigString.static("startTime"), JSValue.jsNumber(this.resource_start_ms));
+        if (!this.result.redirected) timing.putZigString(global, jsc.ZigString.static("postRedirectStartTime"), JSValue.jsNumber(this.resource_start_ms));
+        timing.putZigString(global, jsc.ZigString.static("endTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_response_end_ns)));
+        if (this.result.resource_request_start_ns != 0) timing.putZigString(global, jsc.ZigString.static("finalNetworkRequestStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_request_start_ns)));
+        timing.putZigString(global, jsc.ZigString.static("finalNetworkResponseStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_response_start_ns)));
+        timing.putZigString(global, jsc.ZigString.static("encodedBodySize"), JSValue.jsNumber(encoded_size));
+        timing.putZigString(global, jsc.ZigString.static("decodedBodySize"), JSValue.jsNumber(this.resource_decoded_body_size));
+        const body = JSValue.createEmptyObject(global, 2);
+        body.protect();
+        defer body.unprotect();
+        if (metadata.response.headers.get("content-type")) |value| body.putZigString(global, jsc.ZigString.static("contentType"), (bun.String.createUTF8ForJS(global, value) catch return));
+        if (metadata.response.headers.get("content-encoding")) |value| body.putZigString(global, jsc.ZigString.static("contentEncoding"), (bun.String.createUTF8ForJS(global, value) catch return));
+        const url = bun.String.createUTF8ForJS(global, this.url_proxy_buffer[0..this.resource_url_len]) catch return;
+        Home__Performance__recordFetch(global, timing, url, body, @intCast(metadata.response.status_code));
+        timing.ensureStillAlive();
+        body.ensureStillAlive();
+        url.ensureStillAlive();
+    }
+
+    extern fn Home__Performance__recordFetch(global: *JSGlobalObject, timing: JSValue, url: JSValue, body: JSValue, status: u16) void;
+
     pub fn onProgressUpdate(this: *FetchTasklet) bun.JSTerminated!void {
         jsc.markBinding(@src());
         log("onProgressUpdate", .{});
@@ -478,6 +521,9 @@ pub const FetchTasklet = struct {
         }
 
         const globalThis = this.global_this;
+        if (is_done and this.result.isSuccess() and this.resource_is_fetch and !this.resource_reported) {
+            this.publishResourceTiming();
+        }
         defer {
             this.mutex.unlock();
             // if we are not done we wait until the next call
@@ -1092,6 +1138,10 @@ pub const FetchTasklet = struct {
 
         fetch_tasklet.* = .{
             .mutex = .{},
+            .resource_start_ns = bun.timespec.now(.force_real_time).ns(),
+            .resource_start_ms = jsc_vm.performanceElapsed(),
+            .resource_is_fetch = !fetch_options.is_node_http_client,
+            .resource_url_len = fetch_options.url.href.len,
             .scheduled_response_buffer = .{
                 .allocator = bun.default_allocator,
                 .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
@@ -1482,6 +1532,7 @@ pub const FetchTasklet = struct {
 
         const success = result.isSuccess();
         task.response_buffer = result.body.?.*;
+        if (success) task.resource_decoded_body_size +|= task.response_buffer.list.items.len;
 
         if (task.ignore_data) {
             task.response_buffer.reset();

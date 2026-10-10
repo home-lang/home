@@ -166,6 +166,26 @@ JSC_DEFINE_HOST_FUNCTION(jsPerformancePrototypeFunction_markResourceTiming, (JSG
     return JSValue::encode(result);
 }
 
+extern "C" void Home__Performance__recordFetch(JSGlobalObject* globalObject, EncodedJSValue timing, EncodedJSValue url, EncodedJSValue body, uint16_t status)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    arguments.append(JSValue::decode(timing));
+    arguments.append(JSValue::decode(url));
+    arguments.append(JSC::jsString(vm, WTF::String("fetch"_s)));
+    arguments.append(globalObject);
+    arguments.append(JSC::jsString(vm, WTF::String(""_s)));
+    arguments.append(JSValue::decode(body));
+    arguments.append(jsNumber(status));
+    callOwnedPerformanceFunction(globalObject, "markResourceTiming"_s, arguments);
+    if (scope.exception()) {
+        auto* exception = scope.exception();
+        (void)scope.tryClearException();
+        Zig::GlobalObject::reportUncaughtExceptionAtEventLoop(globalObject, exception);
+    }
+}
+
 // -- end copied --
 
 class JSPerformancePrototype final : public JSC::JSNonFinalObject {
