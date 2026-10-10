@@ -142,6 +142,10 @@ were repeated or filtered. Current fastest-competitor gaps include null-safe
 access **2.02×**, checked JS **2.00×** and interfaces **1.98×** slower, tracked
 under [#864](https://github.com/home-lang/home/issues/864). This is a full
 competitor comparison, not evidence of a causal gain from the Record fix.
+The matrix used protocol 4. The later protocol-5 null-safe gate passes
+**150/150 untimed admissions**, checking inferred locals and optional-call
+results; those checks are not relabeled as pre-timing evidence for this matrix.
+See the [new admission contract](docs/docs/TS_PERFORMANCE.md#null-safe-inferred-result-admission-2026-10-10-utc).
 The large-predicate
 scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); the expanded competitor
@@ -515,6 +519,7 @@ matrix above times the landed compiler:
 | Admission check | Result | Remaining limitation |
 |---|---|---|
 | Existing five-compiler benchmark protocol | 145/145 checks pass | No new timing samples |
+| Later protocol-5 null-safe contract | 150/150 untimed checks pass | Existing matrix remains protocol 4 |
 | String, number, symbol and mixed Record domains | Silent positives; exact negative errors | Finite and symbolic keys remain incomplete |
 | Imported indexed literals and return types | Silent positive; three exact negative errors | General fixtures, not all TypeScript programs |
 | Complete pinned Zod 4.5.2 graph | 241 TS errors and two HM9002 warnings | Not admitted; zero timing samples |

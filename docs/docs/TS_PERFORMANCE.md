@@ -611,6 +611,62 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Null safe inferred result admission 2026 10 10 UTC
+
+The stronger null-safe contract under [#864](https://github.com/home-lang/home/issues/864)
+is [landed](https://github.com/home-lang/home/commit/5a5db509af878cc8163fe680640e8b7d9e9ab1d6).
+All **150 protocol-5 admissions** pass across the five unchanged pinned
+compilers and all 20 existing workloads. The compiler and timed corpus are
+unchanged; these are **untimed diagnostic checks**, not a speedup.
+
+The controls run inside `readNullable` at the first, middle and last families
+(0/128/255), checking actual inferred locals rather than only the explicit
+exported tuple annotations. The original project is copied for each negative
+audit; no timed source is edited or replaced.
+
+| Control per family | Required diagnostic | Features checked |
+|---|---|---|
+| Wrong label, score, formatted value and non-null fallback types | Four TS2322 | Inferred optional access, nullish fallback and optional call results |
+| Optional label and call assigned to non-optional string | Two TS2322 | Preserved undefined in optional results |
+| Optional formatter called with a number | One TS2345 | Argument checking through optional calls |
+| Optional tuple access at index 2 | One TS2493 | Exact readonly tuple bounds |
+| Missing profile member | One TS2339 | Member checking through optional access |
+
+Each compiler rejects the negative project with exactly **27 errors**:
+18 TS2322 and three each TS2339/TS2345/TS2493. All five positive projects also
+pass the unchanged success policy. Version, executable, payload and original
+input fingerprints match; no source body, compiler diagnostic or output rule
+is skipped. The complete suite now has ten negative-control projects, and
+the reporter requires all their records plus the full null-safe multiset.
+
+All **147 harness tests** pass. Regressions reject silent successes, incomplete
+diagnostics, abnormal exits, weakened contracts, missing source anchors,
+missing admission records and legacy measurement schedules. Protocol 5 keeps
+the complete JSDoc gate; protocol-4 results remain readable and retain their
+original identity. Updated reporters mark null-safe ratios without protocol-5
+inferred-local controls provisional. The matrix `20261010T051920Z` remains
+protocol 4; successful later controls are not retroactively called pre-timing
+admission. All original samples remain unchanged.
+
+Qualification ran on `1c0f38f07ec37c445b46bb894ae5f844f448ed30` plus patch
+SHA-256 `7a53f73ac4dfbdd1b9fb8b0298c4cc5e6434e32b49d6d2ec3914505ad8f0a28e`.
+The compiler is still native
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`.
+The full untimed admission command exits 0 under the unchanged shared
+600-second/3,840-MB guard, peak tree footprint 264 MB. No measurement is rerun.
+One initial unit expectation treated schema 5 as unsupported for JSDoc;
+the retained correction explicitly verifies both schemas 4 and 5 and rejects
+unknown schema 6, without weakening either contract.
+
+The [raw admission archive](../../bench/vs_tsgo/evidence/20261010-nullsafe-inferred-admission-864.tar.gz)
+retains complete process records, original and mutated projects, source patch,
+qualified harness, full test log, first unit-expectation failure and independent
+admission verification. All **24 payload checksums** verify. Archive SHA-256:
+`6084fa605da7cdc3b7dd8858934b635ff57d799e65329281d82f3b0b02958ca2`.
+General current-native profiling and performance optimization remain open.
+Zod, finite/symbolic Record domains, canonical C++ and other-platform coverage
+remain incomplete; universal leadership is not established by these controls.
+
 ## Imported Record and indexed interface admission 2026 10 10 UTC
 
 The general fixes under [#863](https://github.com/home-lang/home/issues/863)
