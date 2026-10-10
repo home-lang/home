@@ -52,8 +52,59 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
 #endif
 #endif
 
+/* Metrics are separate from the externally linked loop ABI. A loop is used
+ * on its owner thread; this list is local to that thread and freed with it. */
+struct home_loop_metrics {
+    struct us_loop_t *loop;
+    uint64_t start_ns;
+    uint64_t idle_ns;
+    struct home_loop_metrics *next;
+};
+static _Thread_local struct home_loop_metrics *home_metrics;
+static uint64_t home_monotonic_ns(void) {
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) abort();
+    return (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec;
+}
+static struct home_loop_metrics *home_metrics_find(struct us_loop_t *loop) {
+    for (struct home_loop_metrics *entry = home_metrics; entry; entry = entry->next)
+        if (entry->loop == loop) return entry;
+    return NULL;
+}
+static struct home_loop_metrics *home_metrics_start(struct us_loop_t *loop) {
+    struct home_loop_metrics *entry = home_metrics_find(loop);
+    if (entry) return entry;
+    entry = calloc(1, sizeof(*entry));
+    if (!entry) abort();
+    entry->loop = loop;
+    entry->start_ns = home_monotonic_ns();
+    entry->next = home_metrics;
+    home_metrics = entry;
+    return entry;
+}
+void Home__loop_utilization(struct us_loop_t *loop, double *idle, double *active) {
+    struct home_loop_metrics *entry = home_metrics_find(loop);
+    if (!entry) { *idle = 0; *active = 0; return; }
+    uint64_t elapsed = home_monotonic_ns() - entry->start_ns;
+    *idle = (double)entry->idle_ns / 1000000.0;
+    *active = (double)(elapsed >= entry->idle_ns ? elapsed - entry->idle_ns : 0) / 1000000.0;
+}
+static void home_metrics_free(struct us_loop_t *loop) {
+    struct home_loop_metrics **slot = &home_metrics;
+    while (*slot) {
+        if ((*slot)->loop == loop) {
+            struct home_loop_metrics *entry = *slot;
+            *slot = entry->next;
+            free(entry);
+            return;
+        }
+        slot = &(*slot)->next;
+    }
+}
+
 /* Loop */
 void us_loop_free(struct us_loop_t *loop) {
+    home_metrics_free(loop);
     us_internal_loop_data_free(loop);
     close(loop->fd);
     us_free(loop);
@@ -322,10 +373,12 @@ void us_loop_run(struct us_loop_t *loop) {
 
     /* While we have non-fallthrough polls we shouldn't fall through */
     while (loop->num_polls) {
+        struct home_loop_metrics *metrics = home_metrics_start(loop);
         loop->data.tick_depth++;
         /* Emit pre callback */
         us_internal_loop_pre(loop);
 
+        uint64_t wait_start = home_monotonic_ns();
         /* Fetch ready polls */
 #ifdef LIBUS_USE_EPOLL
         loop->num_ready_polls = bun_epoll_pwait2(loop->fd, loop->ready_polls, LIBUS_MAX_READY_POLLS, NULL);
@@ -335,6 +388,7 @@ void us_loop_run(struct us_loop_t *loop) {
         } while (IS_EINTR(loop->num_ready_polls));
 #endif
 
+        metrics->idle_ns += home_monotonic_ns() - wait_start;
         us_internal_dispatch_ready_polls(loop);
         us_internal_drain_ready_polls(loop);
 
@@ -350,6 +404,7 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
     if (loop->num_polls == 0)
         return;
 
+    struct home_loop_metrics *metrics = home_metrics_start(loop);
     loop->data.tick_depth++;
 
     struct us_internal_callback_t *timer_callback = (struct us_internal_callback_t*)loop->data.sweep_timer;
@@ -383,6 +438,7 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
     if (will_idle_inside_event_loop && loop->data.jsc_vm)
         Bun__JSC_onBeforeWait(loop->data.jsc_vm);
 
+    uint64_t wait_start = will_idle_inside_event_loop ? home_monotonic_ns() : 0;
     /* Fetch ready polls */
 #ifdef LIBUS_USE_EPOLL
     /* A zero timespec already has a fast path in ep_poll (fs/eventpoll.c):
@@ -402,6 +458,8 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout
             timeout);
     } while (IS_EINTR(loop->num_ready_polls));
 #endif
+
+    if (wait_start) metrics->idle_ns += home_monotonic_ns() - wait_start;
 
     us_internal_dispatch_ready_polls(loop);
     us_internal_drain_ready_polls(loop);

@@ -38,6 +38,13 @@ export function requiredId(values: Map<string, number>, name: string): number {
 }
 
 export function nativeFunctionId(header: string, type: string, filename: string, symbol: string, length: number | null): number {
+  if (type === 'cpp' && filename === 'JS2Native.cpp' && symbol === 'Home::createPerformanceBinding' && length === null) {
+    const counts = [...header.matchAll(/^#define JS2NATIVE_COUNT (\d+)$/gm)]
+    const cases = [...header.matchAll(/case (\d+): return /g)].map(match => Number(match[1]))
+    if (counts.length !== 1 || cases.length !== Number(counts[0][1]) || new Set(cases).size !== cases.length
+      || cases.some(id => id < 0 || id >= cases.length)) throw new Error('Home native extension requires a contiguous linked dispatcher')
+    return Number(counts[0][1])
+  }
   // Wrapped host calls must match their complete signature and source identity.
   // Bare Zig factories use a distinct encoded-value adapter shape.
   if (type !== 'cpp' && type !== 'zig') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)

@@ -121,3 +121,43 @@ const direct = new records.constructor(1n, 10n, 1)
 direct.record(5n)
 assert.equal(direct.minBigInt, 5n)
 console.log('native histogram recording validates before conversion and preserves counters')
+
+const beforeIdle = nodePerformance.eventLoopUtilization()
+await new Promise(resolve => setTimeout(resolve, 30))
+const afterIdle = nodePerformance.eventLoopUtilization()
+assert(afterIdle.idle > beforeIdle.idle)
+const idleDelta = nodePerformance.eventLoopUtilization(afterIdle, beforeIdle)
+assert(idleDelta.idle > 0)
+assert.equal(idleDelta.idle, afterIdle.idle - beforeIdle.idle)
+assert.equal(idleDelta.active, afterIdle.active - beforeIdle.active)
+const beforeBusy = nodePerformance.eventLoopUtilization()
+const busyUntil = performance.now() + 20
+while (performance.now() < busyUntil) {}
+const busyDelta = nodePerformance.eventLoopUtilization(beforeBusy)
+assert(busyDelta.active >= 15)
+assert.equal(busyDelta.idle, 0)
+assert.equal(busyDelta.utilization, 1)
+assert(Number.isNaN(nodePerformance.eventLoopUtilization(afterIdle, afterIdle).utilization))
+console.log('native measured event-loop idle/active counters and snapshot deltas passed')
+await new Promise((resolve, reject) => {
+  const worker = new Worker(`
+    const { parentPort } = require('node:worker_threads');
+    const { performance: perf } = require('node:perf_hooks');
+    setTimeout(() => {
+      const before = perf.eventLoopUtilization();
+      const until = performance.now() + 20;
+      while (performance.now() < until) {}
+      parentPort.postMessage(perf.eventLoopUtilization(before));
+    }, 10);
+  `, { eval: true })
+  let received = false
+  worker.once('error', reject)
+  worker.once('message', delta => {
+    received = true
+    try { assert(delta.active >= 15); assert.equal(delta.idle, 0); assert.equal(delta.utilization, 1) } catch (error) { reject(error) }
+  })
+  worker.once('exit', code => {
+    try { assert.equal(code, 0); assert.equal(received, true); resolve() } catch (error) { reject(error) }
+  })
+})
+console.log('native worker-local utilization counters passed')

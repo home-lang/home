@@ -12,6 +12,10 @@ pub export fn Bun__getVM() *jsc.VirtualMachine {
     return jsc.VirtualMachine.get();
 }
 
+pub export fn Home__VirtualMachine__socketLoop(vm: *jsc.VirtualMachine) *anyopaque {
+    return @ptrCast(vm.eventLoop().usocketsLoop());
+}
+
 /// Caller must check for termination exception
 pub export fn Bun__drainMicrotasks() void {
     jsc.VirtualMachine.get().eventLoop().tick();
@@ -232,6 +236,7 @@ pub fn Bun__setSyntheticAllocationLimitForTesting(globalObject: *JSGlobalObject,
 comptime {
     _ = Bun__VirtualMachine__isShuttingDown;
     _ = Bun__getVM;
+    _ = Home__VirtualMachine__socketLoop;
     _ = Bun__drainMicrotasks;
     _ = Bun__readOriginTimer;
     _ = Bun__readOriginTimerStart;

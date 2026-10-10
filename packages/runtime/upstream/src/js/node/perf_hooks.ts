@@ -1,6 +1,6 @@
 // Hardcoded module "node:perf_hooks"
 const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver } = require('internal/shared');
-const { validateInteger, validateObject } = require("internal/validators");
+const { validateInteger, validateObject } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
   min: number | bigint,
@@ -98,12 +98,13 @@ function createPerformanceNodeTiming() {
   return object;
 }
 
-function eventLoopUtilization(_utilization1, _utilization2) {
-  return {
-    idle: 0,
-    active: 0,
-    utilization: 0,
-  };
+const readLoopUtilization = $cpp("JS2Native.cpp", "Home::createPerformanceBinding");
+function eventLoopUtilization(utilization1, utilization2) {
+  const current = readLoopUtilization();
+  if (current.idle === 0 && current.active === 0) return { idle: 0, active: 0, utilization: 0 };
+  const idle = utilization2 ? utilization1.idle - utilization2.idle : current.idle - (utilization1 ? utilization1.idle : 0);
+  const active = utilization2 ? utilization1.active - utilization2.active : current.active - (utilization1 ? utilization1.active : 0);
+  return { idle, active, utilization: active / (idle + active) };
 }
 
 // PerformanceEntry is not a valid constructor, so we have to fake it.
