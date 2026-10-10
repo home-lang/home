@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
 import path from 'node:path'
+import { lowerNamedBuiltinExports } from './builtin_exports'
 import { builtinModules } from 'node:module'
 import { sliceSourceCode } from '../packages/runtime/upstream/src/codegen/builtin-parser'
 import { createAssertClientJS } from '../packages/runtime/upstream/src/codegen/client-js'
@@ -67,7 +68,7 @@ async function main() {
 
   // This is an explicit ownership manifest, not an assertion that all of the
   // mirrored builtins have been ported. Other literal bytes stay unchanged.
-  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts', 'internal/primordials.js', 'internal/streams/add-abort-signal.ts', 'internal/streams/compose.ts', 'internal/streams/destroy.ts', 'internal/streams/duplex.ts', 'internal/streams/duplexify.ts', 'internal/streams/duplexpair.ts', 'internal/streams/end-of-stream.ts', 'internal/streams/from.ts', 'internal/streams/iter/broadcast.ts', 'internal/streams/iter/classic.ts', 'internal/streams/iter/consumers.ts', 'internal/streams/iter/duplex.ts', 'internal/streams/iter/from.ts', 'internal/streams/iter/pull.ts', 'internal/streams/iter/push.ts', 'internal/streams/iter/ringbuffer.ts', 'internal/streams/iter/share.ts', 'internal/streams/iter/transform.ts', 'internal/streams/iter/types.ts', 'internal/streams/iter/utils.ts', 'internal/streams/lazy_transform.ts', 'internal/streams/legacy.ts', 'internal/streams/native-readable.ts', 'internal/streams/operators.ts', 'internal/streams/passthrough.ts', 'internal/streams/pipeline.ts', 'internal/streams/readable.ts', 'internal/streams/state.ts', 'internal/streams/transform.ts', 'internal/streams/utils.ts', 'internal/streams/writable.ts', 'internal/webstreams_adapters.ts', 'node/stream.consumers.ts', 'node/stream.iter.ts', 'node/stream.promises.ts', 'node/stream.ts', 'node/stream.web.ts', 'node/fs.ts', 'node/fs.promises.ts', 'node/child_process.ts', 'node/cluster.ts', 'internal/fs/binding.ts', 'internal/fs/cp-sync.ts', 'internal/fs/cp.ts', 'internal/fs/glob.ts', 'internal/fs/streams.ts', 'internal/fs/watch.ts', 'internal/fs/watchfile.ts', 'node/test.ts', 'node/crypto.ts', 'node/zlib.ts', 'node/zlib.iter.ts', 'internal/promisify.ts', 'node/_stream_duplex.ts', 'node/_stream_passthrough.ts', 'node/_stream_readable.ts', 'node/_stream_transform.ts', 'node/_stream_wrap.ts', 'node/_stream_writable.ts']
+  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts', 'internal/primordials.js', 'internal/streams/add-abort-signal.ts', 'internal/streams/compose.ts', 'internal/streams/destroy.ts', 'internal/streams/duplex.ts', 'internal/streams/duplexify.ts', 'internal/streams/duplexpair.ts', 'internal/streams/end-of-stream.ts', 'internal/streams/from.ts', 'internal/streams/iter/broadcast.ts', 'internal/streams/iter/classic.ts', 'internal/streams/iter/consumers.ts', 'internal/streams/iter/duplex.ts', 'internal/streams/iter/from.ts', 'internal/streams/iter/pull.ts', 'internal/streams/iter/push.ts', 'internal/streams/iter/ringbuffer.ts', 'internal/streams/iter/share.ts', 'internal/streams/iter/transform.ts', 'internal/streams/iter/types.ts', 'internal/streams/iter/utils.ts', 'internal/streams/lazy_transform.ts', 'internal/streams/legacy.ts', 'internal/streams/native-readable.ts', 'internal/streams/operators.ts', 'internal/streams/passthrough.ts', 'internal/streams/pipeline.ts', 'internal/streams/readable.ts', 'internal/streams/state.ts', 'internal/streams/transform.ts', 'internal/streams/utils.ts', 'internal/streams/writable.ts', 'internal/webstreams_adapters.ts', 'node/stream.consumers.ts', 'node/stream.iter.ts', 'node/stream.promises.ts', 'node/stream.ts', 'node/stream.web.ts', 'node/fs.ts', 'node/fs.promises.ts', 'node/child_process.ts', 'node/cluster.ts', 'internal/fs/binding.ts', 'internal/fs/cp-sync.ts', 'internal/fs/cp.ts', 'internal/fs/glob.ts', 'internal/fs/streams.ts', 'internal/fs/watch.ts', 'internal/fs/watchfile.ts', 'node/test.ts', 'node/crypto.ts', 'node/zlib.ts', 'node/zlib.iter.ts', 'internal/promisify.ts', 'node/_stream_duplex.ts', 'node/_stream_passthrough.ts', 'node/_stream_readable.ts', 'node/_stream_transform.ts', 'node/_stream_wrap.ts', 'node/_stream_writable.ts', 'node/http.ts', 'node/https.ts', 'node/_http_agent.ts', 'node/_http_client.ts', 'node/_http_common.ts', 'node/_http_incoming.ts', 'node/_http_outgoing.ts', 'node/_http_server.ts', 'node/tls.ts', 'node/_tls_common.ts', 'node/http2.ts', 'node/_http2_upgrade.ts', 'internal/http.ts', 'internal/url.ts', 'internal/net/isIP.ts', 'internal/timers.ts', 'internal/freelist.ts', 'internal/http/FakeSocket.ts', 'internal/stream.ts', 'internal/cluster/isPrimary.ts', 'internal/tls.ts', 'internal/stream.promises.ts']
   let constants = read(path.join(generated, 'InternalModuleRegistryConstants.h'))
   // Validate every owned module against the linked ABI before starting bundler
   // workers or writing output. A late module mismatch must not leave a partial
@@ -77,13 +78,13 @@ async function main() {
     requiredId(abi, name)
     const source = read(path.join(homeSource, 'js', module))
     const scanned = new Bun.Transpiler({ loader: 'ts' }).scan(source)
-    if (scanned.imports.some(item => item.kind === 'import-statement') || !scanned.exports.includes('default')) {
-      throw new Error(`Incremental builtin must use require and a default export: ${module}`)
+    if (scanned.imports.some(item => item.kind === 'import-statement') || scanned.exports.length === 0 || (scanned.exports.includes('default') && scanned.exports.length !== 1)) {
+      throw new Error(`Incremental builtin must use require and either default or named exports: ${module}`)
     }
     const processed = sliceSourceCode(`{${source}`, true, specifier => requireTransformer(specifier, module))
     const input = `var $;\n${processed.result.slice(1).trim().replaceAll('__intrinsic__exports', '$')}\n;$$EXPORT$$($).$$EXPORT_END$$;\n`
     if (/__intrinsic__inherits[A-Za-z_]/.test(input)) throw new Error(`Unknown native class identity in ${module}`)
-    return { module, name, input }
+    return { module, name, input, namedExports: scanned.exports.includes('default') ? null : scanned.exports }
   })
   // Preflight native ownership and ABI layout before creating any output.
   // A unified object can contain several owned sources; replace all of them
@@ -99,7 +100,7 @@ async function main() {
     [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
     [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
-    [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
+    [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h'], ['jsc/bindings/NodeHTTP.cpp', 'NodeHTTP.h'], ['jsc/bindings/NodeTLS.cpp', 'NodeTLS.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h']], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
     [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h'], ['jsc/bindings/webcore/JSReadableStream.cpp', 'JSReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
     [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h'], ['jsc/bindings/webcore/ReadableStream.cpp', 'ReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
@@ -137,7 +138,7 @@ async function main() {
   writeFileSync(path.join(output, 'NativeModuleImpl.h'), nativeModuleImpl)
   writeFileSync(path.join(output, 'NodeBufferModule.h'), bufferModuleHeader)
   writeFileSync(path.join(output, 'NodeStringDecoderModule.h'), stringDecoderModuleHeader)
-  for (const { module, name, input } of inputs) {
+  for (const { module, name, input, namedExports } of inputs) {
     // The cache lives under Home's type=commonjs package. Force ESM parsing so
     // Bun does not synthesize a CommonJS wrapper and an export inside the JSC
     // builtin function. A temporary directory outside this repo hid that bug.
@@ -151,7 +152,12 @@ async function main() {
       define: { ...define, IS_BUN_DEVELOPMENT: 'false', __intrinsic__debug: 'false' },
     })
     if (!result.success || result.outputs.length !== 1) throw new AggregateError(result.logs, `Cannot bundle ${module}`)
-    const bundled = await result.outputs[0].text()
+    let bundled = await result.outputs[0].text()
+    if (namedExports) {
+      const marker = bundled.match(/\$\$EXPORT\$\$\((.*)\).\$\$EXPORT_END\$\$;/g)
+      if (marker?.length !== 1) throw new Error(`Lost builtin export marker in ${module}`)
+      bundled = lowerNamedBuiltinExports(bundled.replace(marker[0], ''), namedExports) + ';$$EXPORT$$($).$$EXPORT_END$$;'
+    }
     const outputSyntax = new Bun.Transpiler({ loader: 'js' }).scan(bundled)
     if (outputSyntax.exports.length || outputSyntax.imports.length || /^\s*(?:export|import)\s/m.test(bundled)) {
       throw new Error(`Builtin output contains unresolved module syntax: ${module}`)

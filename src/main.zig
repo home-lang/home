@@ -2031,7 +2031,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
                 code = args[i + 1];
                 i += 1;
             }
-        } else if (std.mem.eql(u8, a, "--expose-gc")) {
+        } else if (std.mem.eql(u8, a, "--expose-gc") or std.mem.eql(u8, a, "--expose_gc")) {
             // Parsed again by nativeRuntimeContext and installed on the VM.
         } else if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
             // Only a leading runtime flag enables the feature. Once `-e` has

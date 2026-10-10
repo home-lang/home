@@ -504,6 +504,9 @@ pub fn autoTickActive(this: *EventLoop) void {
     }
 
     ctx.onAfterEventLoop();
+    // Native I/O can settle a write and queue nextTick work after the last
+    // referenced handle pauses. Drain that work before callers check liveness.
+    this.drainMicrotasks() catch {};
 }
 
 pub fn processGCTimer(this: *EventLoop) void {

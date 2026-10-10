@@ -80,4 +80,18 @@ describe('incremental native module ABI', () => {
     expect(() => resolve(header + '\n' + wrapper)).toThrow('factory signature mismatch')
     expect(() => resolve(header + `\ncase 102: return ${target}(global);`)).toThrow('exactly one')
   })
+  test('resolves scoped Zig factories without accepting malformed namespace symbols', () => {
+    const target = 'JS2Zig___src_runtime_api_bun_SecureContext_zig__js_getConstructor'
+    const header = `extern "C" SYSV_ABI JSC::EncodedJSValue ${target}_workaround(Zig::GlobalObject*);
+static ALWAYS_INLINE JSC::JSValue ${target}(Zig::GlobalObject* global) { return JSValue::decode(${target}_workaround(global)); }
+case 84: return ${target}(global);`
+    const resolve = (symbol: string) => nativeFunctionId(header, 'zig', 'src/runtime/api/bun/SecureContext.zig', symbol, null)
+    expect(resolve('js.getConstructor')).toBe(84)
+    for (const symbol of ['js..getConstructor', '.js.getConstructor', 'js.getConstructor.', 'js.getConstructor()', 'js.getConstructor;']) {
+      expect(() => resolve(symbol)).toThrow('Invalid native symbol')
+    }
+    expect(() => resolve('other.getConstructor')).toThrow('factory signature mismatch')
+    expect(() => nativeFunctionId('#include "NodeTLS.h"', 'cpp', 'NodeTLS.cpp', 'js.getConstructor', null)).toThrow('Invalid native symbol')
+  })
+
 })

@@ -41,7 +41,7 @@ export function nativeFunctionId(header: string, type: string, filename: string,
   // Wrapped host calls must match their complete signature and source identity.
   // Bare Zig factories use a distinct encoded-value adapter shape.
   if (type !== 'cpp' && type !== 'zig') throw new Error(`Unsupported incremental native call: ${type} ${symbol}`)
-  if (!/^[A-Za-z_][A-Za-z0-9_:.]*$/.test(symbol)) throw new Error(`Invalid native symbol: ${symbol}`)
+  if (!(type === 'zig' ? /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/ : /^[A-Za-z_][A-Za-z0-9_:]*$/).test(symbol)) throw new Error(`Invalid native symbol: ${symbol}`)
   let nativeTarget = symbol
   if (type === 'zig') {
     if (!/^src\/(?:[A-Za-z0-9_]+\/)*[A-Za-z0-9_]+\.zig$/.test(filename)) {
