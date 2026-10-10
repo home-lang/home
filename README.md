@@ -150,7 +150,24 @@ The [current-native profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-
 uses one unchanged compiler process and two fixed windows after 36 admission
 checks. Displayed PCs map to namespace-import scanning even on the import-free
 scaled input; this is an investigation lead, not a CPU-share or speedup claim.
-The later live-HIR import-absence candidate under #864 was **rejected**:
+The live-body supported-write proof is now accepted under
+[#864](https://github.com/home-lang/home/issues/864): the independent official
+null-safe workload has a **34.4% lower median**, with **30/30** faster pairs.
+
+| Accepted write-proof comparison | Parent median | Candidate median | Mean-saving 95% interval |
+|---|---:|---:|---:|
+| Null-safe independent, 30 pairs | 33.131 ms | 21.737 ms | +11.347 to +11.772 ms |
+| CommonJS independent, 30 pairs | 17.561 ms | 17.825 ms | -0.322 to +0.049 ms |
+| Class hierarchy independent, 30 pairs | 23.425 ms | 23.639 ms | -0.404 to +0.185 ms |
+
+All **530 pairs / 280 admissions** are retained with no filtering or timing
+repeats. No independent risk interval is wholly negative; zero-spanning
+intervals do not establish equivalence. See the
+[complete accepted report](docs/docs/TS_PERFORMANCE.md#live-body-write-proof-accepted-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-live-body-write-proof-accepted-864.tar.gz).
+This Home-only A/B does not refresh the competitor ranking above.
+
+The earlier live-HIR import-absence candidate under #864 was **rejected**:
 its independent null-safe target did not establish the required gain.
 
 | Phase and workload | Parent median | Candidate median | Paired mean-saving 95% interval |

@@ -611,6 +611,124 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Live body write proof accepted 2026 10 10 UTC
+
+The live supported-write absence proof under [#864](https://github.com/home-lang/home/issues/864)
+is accepted in `0b8d1f049e4db8660c9bbc77eb498bb49d7d62eb`. The independent
+official null-safe workload falls from **33.131 ms to 21.737 ms**, a **34.4%**
+lower median, with all **30/30** candidate pairs faster. Its paired mean-saving
+95% interval is **+11.347 to +11.772 ms**. All **530 original pairs** complete;
+no independent regression interval is wholly negative. Intervals spanning
+zero do not establish equivalence. This Home-only comparison does not update
+the separate five-compiler ranking.
+
+### Exact implementation and semantic qualification
+
+Measured parent source is `35e3326510572dfc93d06293cad217ca167859ce`, native
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`.
+Candidate and adopted native SHA-256:
+`ff78eeff3f36f622db610d23881be7165dce31b424481318e82360f1da5935f8`.
+The exact source/test patch SHA-256 is
+`057a45f84944099d15be507e8ad698b3f8571a752437e9950eb6beb417e05c14`.
+The unrelated runtime commit `482ea58d2` is preserved during rebase; the patch
+and rebuilt native remain byte-identical to the measured candidate.
+
+`guardReferencesAssignedIdentifier` checks the live function body for any
+assignment recognized by its existing name-specific predicate. If none
+exists, no name can make that predicate true, so the whole-HIR identifier
+scan is unnecessary. Otherwise it delegates to the original global span
+scan and name-specific query, both independently verified byte-identical.
+The existence proof follows exactly the original predicate's supported
+assignment, block, if and switch paths. It does not expand or weaken write
+recognition, cache mutable answers, add allocation, select source words or
+filenames, cap work, skip checking bodies or suppress diagnostics.
+
+Four new tests compare the original and optimized answers across 15 body
+shapes, arbitrary zero/reversed/overlapping spans, sourceless and virtual
+inputs, live body growth, in-place assignment-operator edits and unrelated
+orphan identifiers whose spans overlap the guard. The first full checker
+run passes **4,557/4,557**. Program **255**, driver **200**, CLI **76**,
+entrypoint **38** and harness **147** also pass before timing. Complete
+protocol-5 admission passes **180/180** checks for all five pinned compilers
+including the candidate plus the retained Home parent. Both Home images
+retain **241 TS errors and two HM9002 warnings** on the unchanged pinned Zod
+graph, which remains unadmitted and untimed.
+
+### Frozen paired protocol and complete results
+
+Before timing, the protocol fixed three warmups, 10 alternating pairs on all
+20 official rows, a separate 30-pair official 256-family null-safe target,
+and 30 independent pairs on ten fixed risk rows. Any other wholly negative
+screen interval would trigger exactly one independent confirmation; none
+requires an additional phase. All 12 phases retain identical before/after
+source, input, harness, compiler and tool fingerprints. There are **180
+initial admissions and 100 per-phase admissions**. All measurements,
+warnings and adverse values remain; no filtering, realignment, tuning or
+measurement repeats occurred.
+
+Intervals use paired parent-minus-candidate mean saving, fixed seed **864**,
+**20,000** resamples and the 95% percentile bootstrap. The predeclared rule
+requires a positive independent target interval and rejects any wholly
+negative independent risk interval. Medians are descriptive.
+
+| Phase and workload | Parent median | Candidate median | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Screen startup (10 pairs) | 3.287 ms | 2.897 ms | +0.148 to +0.384 ms |
+| Screen many_files (10 pairs) | 21.157 ms | 20.906 ms | -0.295 to +0.711 ms |
+| Screen deep_types (10 pairs) | 20.908 ms | 21.018 ms | -0.377 to +0.115 ms |
+| Screen import_graph (10 pairs) | 16.857 ms | 16.580 ms | -0.147 to +0.395 ms |
+| Screen reexport_graph (10 pairs) | 12.351 ms | 12.832 ms | -1.465 to +1.162 ms |
+| Screen tsx_components (10 pairs) | 18.697 ms | 18.678 ms | -0.052 to +0.409 ms |
+| Screen generic_calls (10 pairs) | 22.177 ms | 22.813 ms | -1.057 to +0.241 ms |
+| Screen control_flow (10 pairs) | 25.121 ms | 25.296 ms | -0.225 to +0.163 ms |
+| Screen type_predicates (10 pairs) | 32.677 ms | 32.719 ms | -1.161 to +2.523 ms |
+| Screen type_predicates_large (10 pairs) | 247.266 ms | 249.314 ms | -8.290 to +14.079 ms |
+| Screen null_safe_access (10 pairs) | 32.279 ms | 20.943 ms | +11.023 to +11.707 ms |
+| Screen destructuring (10 pairs) | 14.732 ms | 14.813 ms | -0.271 to +0.077 ms |
+| Screen overload_resolution (10 pairs) | 23.653 ms | 23.829 ms | -0.499 to +0.120 ms |
+| Screen class_hierarchy (10 pairs) | 23.032 ms | 22.982 ms | -0.309 to +0.385 ms |
+| Screen structural_objects (10 pairs) | 22.519 ms | 20.553 ms | +1.732 to +2.114 ms |
+| Screen interface_composition (10 pairs) | 34.286 ms | 33.752 ms | -0.219 to +0.925 ms |
+| Screen variadic_tuples (10 pairs) | 31.347 ms | 31.258 ms | -0.675 to +0.230 ms |
+| Screen checkjs_jsdoc (10 pairs) | 26.376 ms | 26.686 ms | -0.669 to +0.021 ms |
+| Screen commonjs_graph (10 pairs) | 18.376 ms | 18.302 ms | -0.458 to +0.525 ms |
+| Screen recursive_generics (10 pairs) | 14.244 ms | 14.271 ms | -0.185 to +0.403 ms |
+| Independent target null_safe_access (30 pairs) | 33.131 ms | 21.737 ms | +11.347 to +11.772 ms |
+| Independent checkjs_jsdoc (30 pairs) | 27.496 ms | 27.457 ms | -0.166 to +0.211 ms |
+| Independent class_hierarchy (30 pairs) | 23.425 ms | 23.639 ms | -0.404 to +0.185 ms |
+| Independent commonjs_graph (30 pairs) | 17.561 ms | 17.825 ms | -0.322 to +0.049 ms |
+| Independent destructuring (30 pairs) | 15.073 ms | 14.991 ms | -0.020 to +0.216 ms |
+| Independent import_graph (30 pairs) | 17.081 ms | 17.077 ms | -0.299 to +0.185 ms |
+| Independent interface_composition (30 pairs) | 34.481 ms | 34.592 ms | -0.235 to +0.157 ms |
+| Independent recursive_generics (30 pairs) | 14.818 ms | 14.707 ms | +0.035 to +0.380 ms |
+| Independent reexport_graph (30 pairs) | 11.694 ms | 11.720 ms | -0.211 to +0.280 ms |
+| Independent type_predicates_large (30 pairs) | 249.022 ms | 249.866 ms | -3.536 to +3.407 ms |
+| Independent variadic_tuples (30 pairs) | 31.672 ms | 31.695 ms | -0.347 to +0.194 ms |
+
+The independent null-safe result satisfies primary acceptance. Recursive
+generics also has a positive independent interval; startup and structural
+objects have positive screens only. Other independent intervals span zero,
+including the adverse CommonJS and class median differences. These values
+remain visible and are not treated as equivalence or rerun to pass.
+
+### Retained evidence and limits
+
+The [raw accepted experiment](../../bench/vs_tsgo/evidence/20261010-live-body-write-proof-accepted-864.tar.gz)
+retains the exact patch, all original samples and diagnostics, full gate
+logs, fixed protocol, fingerprint records and independent recomputation.
+All **1,269 payload checksums** verify. Archive SHA-256:
+`13964bd69b5f5e437938b9aeeccbf157b642019205faa5af95792656d31abe91`.
+Every timing phase exits 0 under unchanged 600-second/3,840-MB guards.
+The original image-admission wrapper's terminal output handle was lost
+during context truncation; its wrapper exit and resource accounting remain
+unknown. Complete semantic records and end-of-script verification are
+retained, and admission was not repeated to manufacture missing accounting.
+
+A separate full protocol-5 competitor matrix must refresh rankings after
+this adoption. The last dated matrix still leads 1/20 rows and beats native
+TS7 on 12/20. The universal goal remains incomplete, including Zod,
+finite/symbolic Record domains, canonical C++ and other-platform coverage.
+
 ## Live HIR import absence rejected 2026 10 10 UTC
 
 The stateless live-HIR absence guard under [#864](https://github.com/home-lang/home/issues/864)
