@@ -21,7 +21,6 @@ search_count: usize = 0,
 const log = bun.Output.scoped(.jest, .hidden);
 const Fifo = bun.LinearFifo(ScanEntry, .Dynamic);
 const ScanEntry = struct {
-    relative_dir: bun.FD,
     dir_path: []const u8,
     name: StringOrTinyString,
 };
@@ -64,7 +63,7 @@ pub fn scan(this: *Scanner, path_literal: []const u8) Error!void {
     const parts = &[_][]const u8{ this.fs.top_level_dir, path_literal };
     const path = this.fs.absBuf(parts, &this.scan_dir_buf);
 
-    var root = try this.readDirWithName(path, null);
+    var root = try this.readDirWithName(path);
 
     if (root.* == .err) {
         switch (root.err.original_err) {
@@ -84,7 +83,6 @@ pub fn scan(this: *Scanner, path_literal: []const u8) Error!void {
         if (@as(FileSystem.RealFS.EntriesOption.Tag, root.*) == .entries) {
             var iter = root.entries.data.iterator();
             const fd = root.entries.fd;
-            bun.assert(fd != bun.invalid_fd);
             while (iter.next()) |entry| {
                 this.next(entry.value_ptr.*, fd);
             }
@@ -92,48 +90,28 @@ pub fn scan(this: *Scanner, path_literal: []const u8) Error!void {
     }
 
     while (this.dirs_to_scan.readItem()) |entry| {
-        bun.assert(entry.relative_dir.isValid());
-        if (!bun.Environment.isWindows) {
-            const dir = entry.relative_dir.stdDir();
-
-            const parts2 = &[_][]const u8{ entry.dir_path, entry.name.slice() };
-            var path2 = this.fs.absBuf(parts2, &this.open_dir_buf);
-            this.open_dir_buf[path2.len] = 0;
-            const pathZ = this.open_dir_buf[path2.len - entry.name.slice().len .. path2.len :0];
-            const child_dir = bun.openDir(dir, pathZ) catch continue;
-            path2 = try this.fs.dirname_store.append([]const u8, path2);
-            FileSystem.setMaxFd(child_dir.handle);
-            _ = this.readDirWithName(path2, child_dir) catch return error.OutOfMemory;
-        } else {
-            const parts2 = &[_][]const u8{ entry.dir_path, entry.name.slice() };
-            const path2 = this.fs.absBufZ(parts2, &this.open_dir_buf);
-            const child_dir = bun.openDirNoRenamingOrDeletingWindows(bun.invalid_fd, path2) catch continue;
-            _ = this.readDirWithName(
-                try this.fs.dirname_store.append([]const u8, path2),
-                child_dir,
-            ) catch return error.OutOfMemory;
+        const parts2 = &[_][]const u8{ entry.dir_path, entry.name.slice() };
+        const path2 = try this.fs.dirname_store.append(
+            []const u8,
+            this.fs.absBuf(parts2, &this.open_dir_buf),
+        );
+        const child = this.readDirWithName(path2) catch return error.OutOfMemory;
+        // Cache hits do not invoke the iterator. Visit their stored entries too.
+        if (!this.has_iterated and child.* == .entries) {
+            var iter = child.entries.data.iterator();
+            while (iter.next()) |item| this.next(item.value_ptr.*, child.entries.fd);
         }
     }
 }
 
-fn readDirWithName(this: *Scanner, name: []const u8, handle: ?std.Io.Dir) !*FileSystem.RealFS.EntriesOption {
-    return try this.fs.fs.readDirectoryWithIterator(name, handle, 0, true, *Scanner, this);
+fn readDirWithName(this: *Scanner, name: []const u8) !*FileSystem.RealFS.EntriesOption {
+    this.has_iterated = false;
+    // Queued entries own paths, so discovery does not need to retain directory
+    // descriptors in the resolver cache after reading their entries.
+    return try this.fs.fs.readDirectoryWithIterator(name, null, 0, false, *Scanner, this);
 }
 
-/// Directory names whose entire subtree is skipped while scanning for test
-/// files. Upstream Bun only prunes `node_modules`; Home additionally vendors
-/// dependencies (and the pinned Zig toolchain) under `pantry/`, which is the
-/// project's package directory (see CLAUDE.md).
-///
-/// Pruning `pantry/` is not merely a speed optimization. The resolver keeps a
-/// directory-entry cache that holds every scanned directory's fd open (see
-/// `RealFS.needToCloseFiles`, which never closes when the soft NOFILE limit has
-/// been raised to 1<<20). `pantry/` is ~7.9k directories, so scanning it leaves
-/// >10k fds open. On macOS that silently breaks `posix_spawn`: a file action
-/// `dup2`-ing a stdio socketpair whose fd lands at or above OPEN_MAX (10240)
-/// does not connect in the child, so any spawned subprocess with a `"pipe"`
-/// stdout/stderr produces empty output (and the child sees EPIPE). Keeping the
-/// scan's fd footprint small is what keeps subprocess pipe I/O working.
+/// Package directories and hidden directories are excluded from discovery.
 pub fn isExcludedDirName(name: []const u8) bool {
     if (name.len > 0 and name[0] == '.') return true;
     return strings.eqlComptime(name, "node_modules") or
@@ -215,10 +193,10 @@ pub fn isTestFile(this: *Scanner, name: []const u8) bool {
     return this.couldBeTestFile(name, false) and this.doesPathMatchFilter(name) and !this.matchesPathIgnorePattern(name);
 }
 
-pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
+pub fn next(this: *Scanner, entry: *FileSystem.Entry, _: bun.FD) void {
     const name = entry.base_lowercase();
     this.has_iterated = true;
-    switch (entry.kind(&this.fs.fs, true)) {
+    switch (entry.kind(&this.fs.fs, false)) {
         .dir => {
             if (isExcludedDirName(name)) {
                 return;
@@ -241,7 +219,6 @@ pub fn next(this: *Scanner, entry: *FileSystem.Entry, fd: bun.FD) void {
             this.search_count += 1;
 
             this.dirs_to_scan.writeItem(.{
-                .relative_dir = fd,
                 .name = entry.base_,
                 .dir_path = entry.dir,
             }) catch unreachable;
