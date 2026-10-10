@@ -206,6 +206,7 @@ class NodeEntryObserver {
   types = new Set();
   buffer = [];
   scheduled = false;
+  generation = 0;
 
   constructor(callback, owner) {
     this.callback = callback;
@@ -229,7 +230,15 @@ class NodeEntryObserver {
     }
     this.types.clear();
     this.buffer = [];
+    this.scheduled = false;
+    this.generation++;
     kObservers.delete(this);
+  }
+
+  takeRecords() {
+    const entries = this.buffer;
+    this.buffer = [];
+    return entries;
   }
 
   bufferEntry(entry) {
@@ -239,7 +248,9 @@ class NodeEntryObserver {
     this.buffer.push(entry);
     if (!this.scheduled) {
       this.scheduled = true;
+      const generation = this.generation;
       setImmediate(() => {
+        if (generation !== this.generation) return;
         this.scheduled = false;
         const entries = this.buffer;
         if (entries.length === 0) {
@@ -288,6 +299,7 @@ export default {
   stopPerf,
   kNodeEntryTypes,
   NodeEntryObserver,
+  makeNodeEntryList,
 
   kHandle: Symbol("kHandle"),
   kAutoDestroyed: Symbol("kAutoDestroyed"),

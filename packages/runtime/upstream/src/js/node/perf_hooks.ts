@@ -1,6 +1,6 @@
 // Hardcoded module "node:perf_hooks"
-const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver } = require('internal/shared');
-const { validateInteger, validateObject } = require('internal/validators');
+const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList } = require('internal/shared');
+const { validateInteger, validateObject, validateFunction } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
   min: number | bigint,
@@ -110,81 +110,87 @@ $toClass(PerformanceResourceTiming, "PerformanceResourceTiming", PerformanceEntr
 
 const kNodeObserver = Symbol("kNodeObserver");
 const kObserverCallback = Symbol("kObserverCallback");
+const kObserverMode = Symbol("kObserverMode");
+const kObserverEntries = Symbol("kObserverEntries");
+const kObserverScheduled = Symbol("kObserverScheduled");
+const kObserverGeneration = Symbol("kObserverGeneration");
 
-/**
- * The native (WebCore) observer only understands mark/measure/resource.
- * Node-only entry types ('net', 'dns', ...) are routed to the JS-side
- * registry in internal/shared; everything else is delegated to the native
- * observer unchanged. (`NodePerformanceObserver` is the existing alias for
- * the native class destructured from globalThis above.)
- */
 class PerformanceObserverForNodeTypes extends NodePerformanceObserver {
   constructor(callback) {
-    super(callback);
+    validateFunction(callback, "callback");
+    let owner;
+    super(list => owner.#enqueueEntries(list.getEntries()));
+    owner = this;
     this[kObserverCallback] = callback;
+    this[kObserverEntries] = [];
+    this[kObserverScheduled] = false;
+    this[kObserverGeneration] = 0;
   }
 
-  /** The native list plus the Node-only types routed through the JS registry. */
   static get supportedEntryTypes() {
     return [...new Set([...(NodePerformanceObserver.supportedEntryTypes ?? []), ...kNodeEntryTypes])].sort();
   }
 
+  #enqueueEntries(entries) {
+    this[kObserverEntries].push(...entries);
+    if (this[kObserverScheduled]) return;
+    this[kObserverScheduled] = true;
+    const generation = this[kObserverGeneration];
+    setImmediate(() => {
+      if (generation !== this[kObserverGeneration]) return;
+      this[kObserverScheduled] = false;
+      const records = this.takeRecords();
+      if (records.length) this[kObserverCallback].$call(this, makeNodeEntryList(records), this);
+    });
+  }
+
   observe(options) {
-    let requested;
-    let isTypeMode = false;
-    if (options != null && typeof options === "object") {
-      const entryTypes = options.entryTypes;
-      let type;
-      if (entryTypes !== undefined && Array.isArray(entryTypes)) {
-        requested = entryTypes;
-      } else if ((type = options.type) !== undefined) {
-        requested = [type];
-        isTypeMode = true;
-      }
+    validateObject(options, "options");
+    const { entryTypes, type, buffered } = options;
+    if (entryTypes !== undefined && type !== undefined) {
+      throw $ERR_INVALID_ARG_VALUE("options.entryTypes", entryTypes, "can not be set with options.type together");
     }
-    if (requested) {
-      const nodeTypes = requested.filter(type => kNodeEntryTypes.has(type));
-      let registration = this[kNodeObserver];
-      if (nodeTypes.length > 0 && !registration) {
-        registration = this[kNodeObserver] = new NodeEntryObserver(this[kObserverCallback], this);
-      }
-      if (registration) {
-        if (isTypeMode) {
-          // observe({type}) appends to the observed set per the spec.
-          registration.observe([...registration.types, ...nodeTypes]);
-        } else {
-          // observe({entryTypes}) replaces the observed set, including
-          // dropping a previously-observed node type when the new set has
-          // none.
-          registration.observe(nodeTypes);
-        }
-      }
-      if (nodeTypes.length > 0) {
-        const webTypes = requested.filter(type => !kNodeEntryTypes.has(type));
-        if (webTypes.length === 0) {
-          // observe({entryTypes}) replaces the whole observed set: a
-          // previously-subscribed web type must stop firing when the new set
-          // is node-only. The native impl rejects an empty entryTypes array,
-          // so drop the subscription instead of re-observing with [].
-          if (!isTypeMode) {
-            try {
-              super.disconnect();
-            } catch {}
-          }
-          return;
-        }
-        // A non-empty webTypes set alongside a node type is only possible in
-        // entryTypes mode (observe({type}) requests exactly one type), so the
-        // forwarded subscription is always an entryTypes one.
-        return super.observe({ ...options, entryTypes: webTypes });
-      }
+    if (entryTypes !== undefined && !Array.isArray(entryTypes)) {
+      throw $ERR_INVALID_ARG_TYPE("options.entryTypes", "string[]", entryTypes);
     }
-    return super.observe(options);
+    if (entryTypes === undefined && type === undefined) throw $ERR_MISSING_ARGS("options.entryTypes", "options.type");
+    const mode = entryTypes === undefined ? "single" : "multiple";
+    if (this[kObserverMode] !== undefined && this[kObserverMode] !== mode) {
+      throw new DOMException("PerformanceObserver can not change observation mode", "InvalidModificationError");
+    }
+    const requested = (mode === "single" ? [type] : entryTypes).filter(entry => PerformanceObserverForNodeTypes.supportedEntryTypes.includes(entry));
+    if (mode === "multiple" && requested.length === 0) return this.disconnect();
+    const nodeTypes = requested.filter(entry => kNodeEntryTypes.has(entry));
+    const webTypes = requested.filter(entry => !kNodeEntryTypes.has(entry));
+    // Native validation happens before changing the Node registry or mode.
+    if (webTypes.length) {
+      super.observe(mode === "single" ? { type, buffered } : { entryTypes: webTypes });
+    } else if (mode === "multiple") {
+      super.disconnect();
+    }
+    this[kObserverMode] = mode;
+    if (requested.length === 0) return;
+    let registration = this[kNodeObserver];
+    if (nodeTypes.length && !registration) {
+      registration = this[kNodeObserver] = new NodeEntryObserver(list => this.#enqueueEntries(list.getEntries()), this);
+    }
+    if (registration) registration.observe(mode === "single" ? [...registration.types, ...nodeTypes] : nodeTypes);
+  }
+
+  takeRecords() {
+    const records = this[kObserverEntries];
+    this[kObserverEntries] = [];
+    records.push(...super.takeRecords(), ...(this[kNodeObserver]?.takeRecords() ?? []));
+    return records.sort((a, b) => a.startTime - b.startTime);
   }
 
   disconnect() {
     this[kNodeObserver]?.disconnect();
     this[kNodeObserver] = undefined;
+    this[kObserverEntries] = [];
+    this[kObserverScheduled] = false;
+    this[kObserverGeneration]++;
+    this[kObserverMode] = undefined;
     return super.disconnect();
   }
 }
