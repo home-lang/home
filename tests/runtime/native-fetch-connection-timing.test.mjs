@@ -49,7 +49,13 @@ assert(entry.secureConnectionStart >= entry.connectStart)
 assert(entry.connectEnd >= entry.secureConnectionStart)
 assert(entry.requestStart >= entry.connectEnd)
 assert(entry.responseStart >= entry.requestStart)
-assert.equal(entry.nextHopProtocol, undefined)
+assert.equal(entry.nextHopProtocol, 'http/1.1')
+const reusedResponse = await fetch(secureURL + 'reused', { tls: { ca } })
+assert.equal(await reusedResponse.text(), 'secure')
+await new Promise(resolve => setImmediate(resolve))
+const reusedTLS = performance.getEntriesByName(secureURL + 'reused', 'resource')[0]
+assert.equal(reusedTLS.nextHopProtocol, 'http/1.1')
+assert.equal(reusedTLS.secureConnectionStart, undefined)
 const secureClosed = once(secure, 'close'); secure.close(); await secureClosed
 const alpnServer = createTLSListener({ cert, key: readFileSync(join(fixture, 'openssl_localhost.key')), ALPNProtocols: ['http/1.1'] }, socket => {
   socket.once('data', () => socket.end('HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nalpn'))
@@ -61,5 +67,13 @@ assert.equal(await alpnResponse.text(), 'alpn')
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(performance.getEntriesByName(alpnURL, 'resource')[0].nextHopProtocol, 'http/1.1')
 const alpnClosed = once(alpnServer, 'close'); alpnServer.close(); await alpnClosed
+const preferred = createSecureServer({ cert, key: readFileSync(join(fixture, 'openssl_localhost.key')), ALPNProtocols: Buffer.from([8, ...Buffer.from('http/1.1'), 8, ...Buffer.from('http/1.0')]) }, (req, res) => res.end('selected'))
+preferred.listen(0, '127.0.0.1'); await once(preferred, 'listening')
+const preferredURL = `https://127.0.0.1:${preferred.address().port}/`
+const preferredResponse = await fetch(preferredURL, { tls: { ca } })
+assert.equal(await preferredResponse.text(), 'selected')
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(performance.getEntriesByName(preferredURL, 'resource')[0].nextHopProtocol, 'http/1.1')
+const preferredClosed = once(preferred, 'close'); preferred.close(); await preferredClosed
 performance.clearResourceTimings()
 console.log('native fresh/pooled TCP and verified TLS resource connection milestones passed')

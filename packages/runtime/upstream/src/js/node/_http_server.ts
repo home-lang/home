@@ -226,6 +226,7 @@ function emitListeningNextTick(self, hostname, port) {
 // to false and, when not requesting, force `rejectUnauthorized` to false so
 // the CA is loaded into the trust store without requiring a client cert.
 function normalizeServerTls(tls) {
+  if (tls.ALPNProtocols !== undefined) require("node:tls").convertALPNProtocols(tls.ALPNProtocols, tls);
   const requestCert = !!tls.requestCert;
   tls.requestCert = requestCert;
   tls.rejectUnauthorized = requestCert ? tls.rejectUnauthorized !== false : false;
@@ -295,6 +296,7 @@ function Server(options, callback): void {
         ca,
         passphrase,
         secureOptions,
+        ALPNProtocols: options.ALPNProtocols,
         requestCert: options.requestCert,
         rejectUnauthorized: options.rejectUnauthorized,
       });
