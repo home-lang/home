@@ -255,10 +255,7 @@ function Server(options, callback): void {
     validateObject(options, "options");
     options = { ...options };
 
-    if (options.ALPNCallback != null) {
-      validateFunction(options.ALPNCallback, "options.ALPNCallback");
-      if (options.ALPNProtocols) throw $ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
-    }
+    if (options.ALPNCallback && options.ALPNProtocols) throw $ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
 
     const cert = options.cert;
     if (cert) {
@@ -587,10 +584,16 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         for (let offset = 0; offset < offered.length;) {
           const length = offered[offset++];
           if (length === 0 || length > offered.length - offset) return undefined;
-          protocols.push(offered.toString("utf8", offset, offset + length));
+          protocols.push(offered.toString("ascii", offset, offset + length));
           offset += length;
         }
-        return this[optionsSymbol].ALPNCallback.$call(undefined, { servername, protocols });
+        const selected = this[optionsSymbol].ALPNCallback.$call(undefined, { servername, protocols });
+        if (selected === undefined) return undefined;
+        const index = protocols.indexOf(selected);
+        if (index === -1) throw $ERR_TLS_ALPN_CALLBACK_INVALID_RESULT(selected, protocols);
+        let selectedOffset = 0;
+        for (let i = 0; i < index; i++) selectedOffset += 1 + protocols[i].length;
+        return selectedOffset;
       } : undefined,
 
       onNodeHTTPRequest(

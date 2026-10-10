@@ -3066,16 +3066,18 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                 _ = global.takeException(err);
                 return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
             };
-            if (!result.isString()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
-            var selected = result.toSlice(global, bun.default_allocator) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
-            defer selected.deinit();
-            const bytes = selected.slice();
+            // The Node adapter returns a length-prefix offset, preserving the
+            // original wire bytes when ASCII decoding aliases protocol names.
+            if (!result.isInt32()) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            const selected_offset = result.to(i32);
+            if (selected_offset < 0) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
             var offset: usize = 0;
             while (offset < offered_len) {
+                const prefix = offset;
                 const length: usize = offered[offset];
                 offset += 1;
-                if (length > offered_len - offset) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
-                if (std.mem.eql(u8, bytes, offered[offset..][0..length])) {
+                if (length == 0 or length > offered_len - offset) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+                if (prefix == @as(usize, @intCast(selected_offset))) {
                     out.* = offered + offset;
                     outlen.* = @intCast(length);
                     return BoringSSL.SSL_TLSEXT_ERR_OK;

@@ -513,7 +513,7 @@ pub fn getALPNProtocol(this: *This, globalObject: *jsc.JSGlobalObject) bun.JSErr
     if (strings.eql(slice, "http/1.1")) {
         return bun.String.static("http/1.1").toJS(globalObject);
     }
-    return ZigString.fromUTF8(slice).toJS(globalObject);
+    return ZigString.init(slice).toJS(globalObject);
 }
 
 pub fn getSession(this: *This, globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!JSValue {

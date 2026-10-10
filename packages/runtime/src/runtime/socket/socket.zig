@@ -18,7 +18,7 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
 
     // A configured ALPNCallback receives the SNI name and the client's raw
     // wire-format protocol list. `false` falls through to the static list; a
-    // string selects exactly that protocol; every other result refuses the
+    // wire offset or string selects that protocol; other results refuse the
     // handshake with no_application_protocol.
     if (handlers.onALPNCallback != .zero and !handlers.vm.isShuttingDown() and in != null and inlen > 0) {
         var scope = handlers.enter();
@@ -30,6 +30,8 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
         const this_value = this.getThisValue(globalObject);
         const wire_len: usize = @intCast(inlen);
         const buffer = JSValue.createBufferFromLength(globalObject, wire_len) catch return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        buffer.protect();
+        defer buffer.unprotect();
         if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
             @memcpy(array_buffer.byteSlice(), in[0..wire_len]);
         }
@@ -49,6 +51,27 @@ fn selectALPNCallback(ssl: ?*BoringSSL.SSL, out: [*c][*c]const u8, outlen: [*c]u
         ) catch |err| globalObject.takeException(err);
         if (result.toError()) |err_value| {
             _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
+            return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+        // Node returns the selected length-prefix offset rather than encoding
+        // its ASCII protocol name back into bytes. Other socket adapters can
+        // still return a string or false to use their configured static list.
+        if (result.isInt32()) {
+            const selected_offset = result.to(i32);
+            if (selected_offset < 0) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+            var offset: usize = 0;
+            while (offset < wire_len) {
+                const prefix = offset;
+                const length: usize = in[offset];
+                offset += 1;
+                if (length == 0 or length > wire_len - offset) return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
+                if (prefix == @as(usize, @intCast(selected_offset))) {
+                    out.* = in + offset;
+                    outlen.* = @intCast(length);
+                    return BoringSSL.SSL_TLSEXT_ERR_OK;
+                }
+                offset += length;
+            }
             return BoringSSL.SSL_TLSEXT_ERR_ALERT_FATAL;
         }
         if (!result.isBoolean() or result.toBoolean()) {

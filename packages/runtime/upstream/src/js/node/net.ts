@@ -43,6 +43,7 @@ const { validateFunction, validateNumber, validateAbortSignal, validatePort, val
 const { isIPv4, isIPv6, isIP } = require("internal/net/isIP");
 
 const ArrayPrototypeIncludes = Array.prototype.includes;
+const ArrayPrototypeIndexOf = Array.prototype.indexOf;
 const ArrayPrototypeJoin = Array.prototype.join;
 const ArrayPrototypePush = Array.prototype.push;
 const MathMax = Math.max;
@@ -625,7 +626,7 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     const protocols = [];
     for (let i = 0; i + 1 <= wire.length; ) {
       const n = wire[i];
-      protocols.push(wire.toString("latin1", i + 1, i + 1 + n));
+      protocols.push(wire.toString("ascii", i + 1, i + 1 + n));
       i += 1 + n;
     }
     let result;
@@ -648,7 +649,11 @@ const ServerHandlers: SocketHandler<NetSocket> = {
       if (self) self[kALPNError] = err;
       return undefined;
     }
-    return result;
+    if (result === undefined) return undefined;
+    const index = ArrayPrototypeIndexOf.$call(protocols, result);
+    let selectedOffset = 0;
+    for (let i = 0; i < index; i++) selectedOffset += 1 + protocols[i].length;
+    return selectedOffset;
   },
   serverName(server, servername, socketHandle) {
     // Returns what the SNICallback selects for this handshake:
@@ -1503,6 +1508,7 @@ Object.defineProperty(Socket.prototype, "bytesWritten", {
   },
 });
 
+// eslint-disable-next-line pickier/no-unused-vars
 Socket.prototype[kAttach] = function (port, socket) {
   socket.data = this;
   socket[owner_symbol] = this;
@@ -3328,6 +3334,7 @@ Server.prototype.listen = function listen(port, hostname, onListen) {
 
   try {
     var tls = undefined;
+    // eslint-disable-next-line prefer-const
     var TLSSocketClass = undefined;
     const bunTLS = this[bunTlsSymbol];
     const options = this[bunSocketServerOptions];
