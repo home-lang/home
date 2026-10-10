@@ -5894,6 +5894,7 @@ pub const HomeCapturedOptions = struct {
     vendor_test: bool = false,
     vendor_serial_id: ?usize = null,
     junit_path: ?[]const u8 = null,
+    case_metadata_path: ?[]const u8 = null,
     record: ?corpus_journal.Invocation = null,
     core_tracker: ?*corpus_crash.CoreTracker = null,
     // Owned by runHomeCapturedWithOptions for one invocation.
@@ -6042,6 +6043,12 @@ fn prepareHomeCapturedInvocation(
     var environ_map = try inherited_env.clone(allocator);
     errdefer environ_map.deinit();
     try environ_map.put("HOME_NATIVE_VM", "1");
+    _ = environ_map.swapRemove("HOME_BUN_CORPUS_CASE_METADATA");
+    _ = environ_map.swapRemove("HOME_BUN_CORPUS_JUNIT");
+    if (options.case_metadata_path) |path| {
+        try environ_map.put("HOME_BUN_CORPUS_CASE_METADATA", path);
+        try environ_map.put("HOME_BUN_CORPUS_JUNIT", options.junit_path orelse return error.MissingCaseMetadataJUnit);
+    }
     if (args_tail.len > 0 and std.mem.eql(u8, args_tail[0], "test")) {
         // Native node:test fixtures must reach TestCommand.exec, not recurse
         // through the corpus adapter that launched this child.
@@ -6099,7 +6106,16 @@ fn prepareHomeCapturedInvocation(
         defer allocator.free(runtime_path);
         try corpus_launch.applyEnvironmentWithServices(allocator, &environ_map, value, storage.temp_path, runtime_path, options.services);
     }
-    const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
+    const explicit_timeout = explicit: {
+        for (args_tail) |arg| {
+            if (std.mem.eql(u8, arg, "--timeout") or std.mem.startsWith(u8, arg, "--timeout=")) break :explicit true;
+        }
+        break :explicit false;
+    };
+    const timeout_arg = if (!explicit_timeout and selected != null)
+        (if (selected.?.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null)
+    else
+        null;
     errdefer if (timeout_arg) |arg| allocator.free(arg);
     // `--reporter-outfile` takes its value as the following argument. The
     // `--reporter-outfile=<path>` spelling is rejected outright ("requires

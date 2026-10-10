@@ -155,6 +155,10 @@ pub const Journal = struct {
     }
 
     pub fn complete(self: *Journal, id: usize, term: std.process.Child.Term, timed_out: bool, stdout: []const u8, stderr: []const u8, counts: anytype, output_complete: bool, source_unchanged: bool, junit_path: ?[]const u8, expected_failure_verified: bool) !bool {
+        return self.completeWithCaseMetadata(id, term, timed_out, stdout, stderr, counts, output_complete, source_unchanged, junit_path, null, expected_failure_verified);
+    }
+
+    pub fn completeWithCaseMetadata(self: *Journal, id: usize, term: std.process.Child.Term, timed_out: bool, stdout: []const u8, stderr: []const u8, counts: anytype, output_complete: bool, source_unchanged: bool, junit_path: ?[]const u8, case_metadata_path: ?[]const u8, expected_failure_verified: bool) !bool {
         if (id != self.completed or self.started != self.completed + 1) return error.InvalidCorpusEventOrder;
         try self.writeArtifact(id, "stdout", stdout);
         try self.writeArtifact(id, "stderr", stderr);
@@ -169,6 +173,15 @@ pub const Journal = struct {
                 defer report.close(self.io);
                 try report.sync(self.io);
                 junit_sha256 = try hashFile(self.io, report);
+            }
+        }
+        var case_metadata_sha256: ?[64]u8 = null;
+        if (case_metadata_path) |path| {
+            const maybe_file = Io.Dir.cwd().openFile(self.io, path, .{}) catch null;
+            if (maybe_file) |report| {
+                defer report.close(self.io);
+                try report.sync(self.io);
+                case_metadata_sha256 = try hashFile(self.io, report);
             }
         }
         var stdout_name: [40]u8 = undefined;
@@ -189,9 +202,12 @@ pub const Journal = struct {
             .stderr_sha256 = @as([]const u8, &hashBytes(stderr)),
             .junit = if (junit_path == null) "not_requested" else if (junit_sha256 == null) "missing" else "retained",
             .junit_sha256 = if (junit_sha256) |*hash| @as([]const u8, hash) else null,
+            .case_metadata = if (case_metadata_path == null) "not_requested" else if (case_metadata_sha256 == null) "missing" else "retained",
+            .case_metadata_file = if (case_metadata_path) |path| std.fs.path.basename(path) else null,
+            .case_metadata_sha256 = if (case_metadata_sha256) |*hash| @as([]const u8, hash) else null,
         });
         self.completed += 1;
-        return junit_path == null or junit_sha256 != null;
+        return (junit_path == null or junit_sha256 != null) and (case_metadata_path == null or case_metadata_sha256 != null);
     }
 
     pub fn completeService(self: *Journal, id: usize, result: anytype, source_unchanged: bool) !void {

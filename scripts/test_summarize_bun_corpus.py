@@ -61,6 +61,81 @@ class JournalValidation(unittest.TestCase):
         self.assertEqual(result['incomplete'][0]['path'], 'control.test.js')
         self.assertEqual(result['unstarted'][0]['path'], 'unstarted.test.js')
 
+    def filtered_artifact(self):
+        self.rows[3]['counts']['filtered'] = 1
+        self.rows[4]['summary']['filtered'] = 1
+        self.artifact('junit', b'<testsuites><testsuite><testcase name="pass"/><testcase name="skip"><skipped/></testcase><testcase name="todo"><skipped message="TODO"/></testcase><testcase name="excluded"><skipped/></testcase></testsuite></testsuites>')
+        details = [dict(ordinal=i, name=name, classname=None, file=None, status=status, kind=kind) for i, (name, status, kind) in enumerate([('pass', 'pass', 'test'), ('skip', 'skip', 'test'), ('todo', 'todo', 'test'), ('excluded', 'skipped_because_label', 'filtered')])]
+        self.rows[3]['case_metadata'] = 'retained'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+
+    def test_filtered_cases_are_distinct_without_passing_credit(self):
+        self.filtered_artifact()
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['counts'], dict(passed=1, failed=0, skipped=1, todo=1, filtered=1))
+        self.assertEqual([case['status'] for case in result['cases']], ['passed', 'skipped', 'todo', 'filtered'])
+
+    def test_filtered_counter_mismatch_and_missing_counter_fail(self):
+        self.filtered_artifact()
+        self.rows[3]['counts']['filtered'] = 2
+        self.assertFalse(self.result()['successful'])
+        del self.rows[3]['counts']['filtered']
+        self.assertFalse(self.result()['successful'])
+
+    def test_unclassified_junit_skips_cannot_be_relabelled_as_filtered(self):
+        self.filtered_artifact()
+        self.rows[3]['case_metadata'] = 'not_requested'
+        self.assertFalse(self.result()['successful'])
+
+    def test_case_metadata_identity_and_missing_artifact_fail(self):
+        self.filtered_artifact()
+        details = [json.loads(line) for line in (self.root / '000000.case_metadata').read_text().splitlines()]
+        details[-1]['name'] = 'wrong case'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        self.assertFalse(self.result()['successful'])
+        self.rows[3]['case_metadata'] = 'missing'
+        self.assertFalse(self.result()['successful'])
+
+    def test_retry_history_does_not_count_as_terminal_failure_or_pass(self):
+        self.rows[3]['counts'] = dict(passed=1, failed=0, skipped=0, todo=0, retry_attempts=1)
+        self.rows[4]['summary'].update(self.rows[3]['counts'])
+        self.artifact('junit', b'<testsuites><testsuite><testcase name="retry"><failure/></testcase><testcase name="retry"/></testsuite></testsuites>')
+        details = [dict(ordinal=i, name='retry', classname=None, file=None, status=status, kind=kind) for i, (status, kind) in enumerate([('fail', 'retry'), ('pass', 'test')])]
+        self.rows[3]['case_metadata'] = 'retained'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['counts']['passed'], 1)
+        self.assertEqual(result['counts']['failed'], 0)
+        self.assertEqual(result['counts']['retry_attempts'], 1)
+        self.assertEqual([case['status'] for case in result['cases']], ['retry_failed', 'passed'])
+        details[0]['kind'] = 'test'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        self.assertFalse(self.result()['successful'])
+
+    def test_empty_case_metadata_matches_empty_junit(self):
+        self.rows[3]['counts'] = dict(passed=0, failed=0, skipped=0, todo=0, filtered=0, retry_attempts=0, observed=False)
+        self.rows[4]['summary'].update(dict(passed=0, failed=0, skipped=0, todo=0, filtered=0, retry_attempts=0))
+        self.artifact('junit', b'<testsuites/>')
+        self.rows[3]['case_metadata'] = 'retained'
+        self.artifact('case_metadata', b'')
+        self.assertTrue(self.result()['successful'])
+
+    def test_retry_metadata_cannot_relabel_a_passing_case_as_failed_attempt(self):
+        self.filtered_artifact()
+        details = [json.loads(line) for line in (self.root / '000000.case_metadata').read_text().splitlines()]
+        details[0]['kind'] = 'retry'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        self.assertFalse(self.result()['successful'])
+
+    def test_invalid_filtered_counts_fail(self):
+        self.filtered_artifact()
+        for value in [-1, True, '1']:
+            with self.subTest(value=value):
+                self.rows[3]['counts']['filtered'] = value
+                self.assertFalse(self.result()['successful'])
+
     def test_exit_signal_timeout_and_source_change_fail(self):
         for key, value in [('term', {'exited': 1}), ('term', {'signal': 'TERM'}), ('timed_out', True), ('source_unchanged', False)]:
             with self.subTest(key=key, value=value):

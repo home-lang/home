@@ -83,6 +83,80 @@ try {
   assert.equal(result.started[0].executable_sha256, hash(readFileSync(process.execPath)))
   console.log('mixed outcomes: pass=1 fail=1 skip=1 todo=1 process=1 empty=1')
 
+  const filterOutcomes = fixture('js/bun/test/filter-outcomes.test.ts', `
+    import { test } from 'bun:test';
+    test('keep pass', () => console.log('FILTER_BODY:keep'));
+    test.skip('keep skip', () => {});
+    test.todo('keep todo', () => {});
+    test('excluded case', () => { throw new Error('excluded body executed'); });
+  `)
+  const filtered = await start('filter-outcomes', [filterOutcomes, '-t', '^keep']).finish()
+  assert.equal(filtered.code, 0, filtered.stderr)
+  const filteredResult = complete(filtered.report, 1)
+  for (const key of ['passed', 'skipped', 'todo', 'filtered']) {
+    assert.equal(filteredResult.summary[key], 1, key)
+    assert.equal(filteredResult.completed[0].counts[key], 1, key)
+  }
+  assert.equal(filteredResult.summary.failed, 0)
+  const filteredXML = readFileSync(join(filtered.report, filteredResult.completed[0].junit_file), 'utf8')
+  assert.equal((filteredXML.match(/<skipped \/>/g) || []).length, 2)
+  const filteredMetadata = readFileSync(join(filtered.report, filteredResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(filteredMetadata.map(row => row.kind), ['test', 'test', 'test', 'filtered'])
+  assert.equal((filteredXML.match(/<skipped message="TODO"/g) || []).length, 1)
+  assert(filtered.stderr.includes('1 skip') && filtered.stderr.includes('1 filtered out'))
+  console.log('filtered outcomes remain distinct from pass, intentional skip and TODO')
+
+  const repeatCase = fixture('js/bun/test/repeat-options.test.ts', `
+    import { test } from 'bun:test';
+    test('repeat', () => console.log('REPEAT_BODY'));
+  `)
+  for (const flags of [['--rerun-each', '3'], ['--rerun-each=3']]) {
+    const repeated = await start('repeat-' + flags.length, [repeatCase, ...flags]).finish()
+    assert.equal(repeated.code, 0, repeated.stderr)
+    assert.equal(repeated.stdout.split('REPEAT_BODY').length - 1, 3)
+    assert.equal(complete(repeated.report, 1).summary.passed, 3)
+  }
+  const retryCase = fixture('js/bun/test/retry-options.test.ts', `
+    import { test, expect } from 'bun:test';
+    let attempt = 0;
+    test('retry', () => { console.log('RETRY_ATTEMPT:' + ++attempt); expect(attempt).toBe(2); });
+  `)
+  for (const flags of [['--retry', '1'], ['--retry=1']]) {
+    const retried = await start('retry-' + flags.length, [retryCase, ...flags]).finish()
+    assert.equal(retried.code, 0, retried.stderr)
+    assert(retried.stdout.includes('RETRY_ATTEMPT:1') && retried.stdout.includes('RETRY_ATTEMPT:2'))
+    const retryResult = complete(retried.report, 1)
+    assert.equal(retryResult.summary.passed, 1)
+    assert.equal(retryResult.summary.failed, 0)
+    const retryXML = readFileSync(join(retried.report, retryResult.completed[0].junit_file), 'utf8')
+    assert.equal((retryXML.match(/<testcase\s/g) || []).length, 2)
+    assert.equal((retryXML.match(/<failure\s/g) || []).length, 1)
+    assert.equal(retryResult.summary.retry_attempts, 1)
+    const retryMetadata = readFileSync(join(retried.report, retryResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(retryMetadata.map(row => row.kind), ['retry', 'test'])
+  }
+  const retryFailureCase = fixture('js/bun/test/retry-failure-options.test.ts', `
+    import { test, expect } from 'bun:test';
+    test('retry remains failed', () => expect(false).toBe(true));
+  `)
+  const retryFailure = await start('retry-terminal-failure', [retryFailureCase, '--retry=1']).finish()
+  assert.equal(retryFailure.code, 1)
+  const retryFailureResult = complete(retryFailure.report, 1)
+  assert.equal(retryFailureResult.summary.failed, 1)
+  const retryFailureXML = readFileSync(join(retryFailure.report, retryFailureResult.completed[0].junit_file), 'utf8')
+  assert.equal((retryFailureXML.match(/<testcase\s/g) || []).length, 2)
+  assert.equal((retryFailureXML.match(/<failure\s/g) || []).length, 2)
+  assert.equal(retryFailureResult.summary.retry_attempts, 1)
+  const timeoutCase = fixture('js/bun/test/timeout-options.test.ts', `
+    import { test } from 'bun:test';
+    test('pending promise', () => new Promise(() => {}));
+  `)
+  const timeoutOption = await start('timeout-option', [timeoutCase, '--timeout=10']).finish()
+  assert.equal(timeoutOption.code, 1, timeoutOption.stderr)
+  assert.equal(complete(timeoutOption.report, 1).summary.failed, 1)
+  assert(timeoutOption.stderr.includes('timed out'))
+  console.log('corpus retry, repeat and per-test timeout options reach the native runner')
+
   const originalJournal = hash(readFileSync(join(run.report, 'events.jsonl')))
   const sideEffect = join(directory, 'must-not-execute')
   const never = fixture('never.test.js', `require('node:fs').writeFileSync(${JSON.stringify(sideEffect)}, 'bad')`)

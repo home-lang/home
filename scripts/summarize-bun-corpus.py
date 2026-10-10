@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 
 COUNTS = ('passed', 'failed', 'skipped', 'todo')
+OUTCOMES = (*COUNTS, 'filtered', 'retry_attempts')
 
 
 def digest(path):
@@ -254,8 +255,16 @@ def summarize(directory):
                     check(type(counts.get(key)) is int and counts[key] >= 0, f'{identity}: invalid {key} count')
                 if not all(type(counts.get(key)) is int for key in COUNTS):
                     continue
+                extra_counts_valid = True
+                for key in ('filtered', 'retry_attempts'):
+                    value = counts.get(key, 0)
+                    extra_counts_valid &= check(type(value) is int and value >= 0, f'{identity}: invalid {key} count')
+                    if key in counts:
+                        totals.setdefault(key, 0)
+                if not extra_counts_valid:
+                    continue
                 if purpose in ('setup', 'vendor_setup', 'service'):
-                    check(all(counts.get(key) == 0 for key in COUNTS) and counts.get('observed') is False, 'preparation or service cannot claim test cases')
+                    check(all(counts.get(key, 0) == 0 for key in OUTCOMES) and counts.get('observed') is False, 'preparation or service cannot claim test cases')
                     check(row.get('junit') == 'not_requested' and row.get('junit_file') is None and row.get('junit_sha256') is None and row.get('expected_failure_verified') is False, 'invalid preparation or service test reporting')
                 if purpose == 'service':
                     check(readiness is not None and row.get('ready') == readiness.get('ready') and row.get('port') == readiness.get('port'), 'service completion disagrees with readiness')
@@ -268,30 +277,74 @@ def summarize(directory):
                         if path:
                             first = path.read_bytes().splitlines()[0].strip()
                             check(int(first) == row.get('port'), 'service stdout port mismatch')
+                metadata = None
+                metadata_state = row.get('case_metadata', 'not_requested')
+                if metadata_state == 'retained':
+                    path = artifact(row, 'case_metadata')
+                    if path:
+                        payload = path.read_bytes()
+                        check(not payload or payload.endswith(b'\n'), f'{identity}: incomplete case metadata')
+                        try:
+                            metadata = [json.loads(line) for line in payload.splitlines()]
+                        except (ValueError, UnicodeDecodeError) as error:
+                            errors.append(f'{identity}: invalid case metadata: {error}')
+                elif metadata_state == 'missing':
+                    check(sum(counts.get(key, 0) for key in OUTCOMES) == 0 and counts.get('observed') is False, f'{identity}: missing case metadata')
+                else:
+                    check(metadata_state == 'not_requested', f'{identity}: unknown case metadata state')
+                    check(row.get('case_metadata_file') is None and row.get('case_metadata_sha256') is None, f'{identity}: unrequested case metadata artifact')
                 if row.get('junit') == 'retained':
                     path = artifact(row, 'junit')
                     if path:
                         try:
                             xml = ET.parse(path).getroot()
                             check(xml.tag in ('testsuites', 'testsuite'), f'{identity}: unexpected XML root')
-                            observed = dict.fromkeys(COUNTS, 0)
-                            for case in xml.iter('testcase'):
+                            observed = dict.fromkeys(OUTCOMES, 0)
+                            xml_cases = list(xml.iter('testcase'))
+                            if metadata is not None:
+                                check(len(metadata) == len(xml_cases), f'{identity}: case metadata length disagrees with JUnit')
+                            for ordinal, case in enumerate(xml_cases):
                                 skipped = case.find('skipped')
                                 failed = case.find('failure') is not None or case.find('error') is not None
                                 check(not (failed and skipped is not None), f'{identity}: case has failure and skip')
                                 status = 'failed' if failed else ('todo' if skipped.get('message') == 'TODO' else 'skipped') if skipped is not None else 'passed'
-                                observed[status] += 1
+                                counter = status
+                                if metadata is not None and ordinal < len(metadata):
+                                    detail = metadata[ordinal]
+                                    check(isinstance(detail, dict), f'{identity}: invalid case metadata entry')
+                                    if not isinstance(detail, dict):
+                                        continue
+                                    check(type(detail.get('ordinal')) is int and detail['ordinal'] == ordinal, f'{identity}: case metadata ordinal mismatch')
+                                    for key in ('name', 'classname', 'file'):
+                                        check(detail.get(key) == case.get(key), f'{identity}: case metadata {key} mismatch')
+                                    native_status = detail.get('status')
+                                    native_basic = 'failed' if native_status in ('fail', 'fail_because_timeout', 'fail_because_timeout_with_done_callback', 'fail_because_hook_timeout', 'fail_because_hook_timeout_with_done_callback', 'fail_because_failing_test_passed', 'fail_because_todo_passed', 'fail_because_expected_has_assertions', 'fail_because_expected_assertion_count') else {'pass': 'passed', 'skip': 'skipped', 'skipped_because_label': 'skipped', 'todo': 'todo'}.get(native_status)
+                                    check(native_basic == status, f'{identity}: native case metadata disagrees with JUnit result')
+                                    kind = detail.get('kind')
+                                    check(kind in ('test', 'filtered', 'retry'), f'{identity}: invalid native case kind')
+                                    if kind == 'filtered':
+                                        check(native_status == 'skipped_because_label', f'{identity}: filtered case has incompatible result')
+                                        status = counter = 'filtered'
+                                    elif kind == 'retry':
+                                        check(native_basic == 'failed', f'{identity}: retry attempt was not failed')
+                                        status, counter = 'retry_failed', 'retry_attempts'
+                                    else:
+                                        check(native_status != 'skipped_because_label', f'{identity}: filtered result lacks native case kind')
+                                observed[counter] += 1
                                 cases.append({'file_id': identity, 'name': case.get('name'), 'classname': case.get('classname'), 'status': status})
-                            check(observed == {key: counts[key] for key in COUNTS}, f'{identity}: JUnit cases disagree with process counters: {observed} != {counts}')
+                            check(observed == {key: counts.get(key, 0) for key in OUTCOMES}, f'{identity}: JUnit cases disagree with process counters: {observed} != {counts}')
                         except (ET.ParseError, OSError) as error:
                             errors.append(f'{identity}: invalid JUnit: {error}')
                 elif row.get('junit') == 'missing':
-                    check(sum(counts[key] for key in COUNTS) == 0, f'{identity}: missing JUnit for registered cases')
+                    check(sum(counts.get(key, 0) for key in OUTCOMES) == 0, f'{identity}: missing JUnit for registered cases')
                 else:
                     check(row.get('junit') == 'not_requested', f'{identity}: unknown JUnit state')
                 if not row.get('expected_failure_verified'):
                     for key in COUNTS:
                         totals[key] += counts[key]
+                    for key in ('filtered', 'retry_attempts'):
+                        if key in totals:
+                            totals[key] += counts.get(key, 0)
             elif event == 'preparation_failed':
                 errors.append(f"{row.get('id')}: preparation failed: {row.get('error_name')}")
             elif event == 'finished':
@@ -302,6 +355,8 @@ def summarize(directory):
                 summary = row.get('summary', {})
                 for key in COUNTS:
                     check(summary.get(key) == totals[key], f'finished {key} does not match completed counters')
+                for key in ('filtered', 'retry_attempts'):
+                    check(summary.get(key, 0) == totals.get(key, 0), f'finished {key} does not match completed counters')
                 check(summary.get('files') == len(completed), 'finished file count mismatch')
             else:
                 errors.append(f'line {number}: unknown event {event}')

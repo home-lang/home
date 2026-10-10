@@ -90,6 +90,9 @@ pub fn writeTestStatusLine(comptime status: bun_test.Execution.Result, writer: a
 // - Add stdout/stderr to the JUnit report
 // - Add timestamp field to the JUnit report
 pub const JunitReporter = struct {
+    case_metadata_path: ?[:0]u8 = null,
+    case_metadata: std.ArrayListUnmanaged(u8) = .empty,
+    case_metadata_count: usize = 0,
     contents: std.ArrayListUnmanaged(u8) = .empty,
     total_metrics: Metrics = .{},
     testcases_metrics: Metrics = .{},
@@ -162,9 +165,19 @@ pub const JunitReporter = struct {
     };
 
     pub fn init() *JunitReporter {
-        return JunitReporter.new(
-            .{ .contents = .empty, .total_metrics = .{}, .suite_stack = .empty },
-        );
+        return JunitReporter.new(.{ .contents = .empty, .total_metrics = .{}, .suite_stack = .empty });
+    }
+
+    fn enableCaseMetadata(this: *JunitReporter, outfile: ?[]const u8) void {
+        if (outfile) |actual| {
+            if (std.c.getenv("HOME_BUN_CORPUS_JUNIT")) |expected| {
+                if (strings.eql(actual, std.mem.span(expected))) {
+                    if (std.c.getenv("HOME_BUN_CORPUS_CASE_METADATA")) |path| {
+                        this.case_metadata_path = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, std.mem.span(path)));
+                    }
+                }
+            }
+        }
     }
 
     pub const new = bun.TrivialNew(JunitReporter);
@@ -176,6 +189,8 @@ pub const JunitReporter = struct {
         this.suite_stack.deinit(bun.default_allocator);
 
         this.contents.deinit(bun.default_allocator);
+        this.case_metadata.deinit(bun.default_allocator);
+        if (this.case_metadata_path) |path| bun.default_allocator.free(path);
 
         if (this.hostname_value) |hostname| {
             if (hostname.len > 0) {
@@ -403,7 +418,23 @@ pub const JunitReporter = struct {
         assertions: u32,
         elapsed_ns: u64,
         line_number: u32,
+        retry_attempt: bool,
     ) !void {
+        if (this.case_metadata_path != null) {
+            var metadata = std.Io.Writer.Allocating.init(bun.default_allocator);
+            defer metadata.deinit();
+            try std.json.Stringify.value(.{
+                .ordinal = this.case_metadata_count,
+                .name = name,
+                .classname = class_name,
+                .file = file,
+                .status = @tagName(status),
+                .kind = if (retry_attempt) "retry" else if (status == .skipped_because_label) "filtered" else "test",
+            }, .{}, &metadata.writer);
+            try this.case_metadata.appendSlice(bun.default_allocator, metadata.written());
+            try this.case_metadata.append(bun.default_allocator, '\n');
+            this.case_metadata_count += 1;
+        }
         const elapsed_ns_f64: f64 = @floatFromInt(elapsed_ns);
         const elapsed_ms = elapsed_ns_f64 / std.time.ns_per_ms;
 
@@ -544,6 +575,19 @@ pub const JunitReporter = struct {
 
     pub fn writeToFile(this: *JunitReporter, path: string) !void {
         if (this.contents.items.len == 0) return;
+
+        if (this.case_metadata_path) |metadata_path| {
+            switch (bun.sys.File.openat(.cwd(), metadata_path, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
+                .err => |err| Output.err(error.JUnitReportFailed, "Failed to write corpus case metadata\n{f}", .{err}),
+                .result => |fd| {
+                    defer _ = fd.close();
+                    switch (bun.sys.File.writeAll(fd, this.case_metadata.items)) {
+                        .result => {},
+                        .err => |err| Output.err(error.JUnitReportFailed, "Failed to write corpus case metadata\n{f}", .{err}),
+                    }
+                },
+            }
+        }
 
         while (this.suite_stack.items.len > 0) {
             try this.endTestSuite();
@@ -889,9 +933,9 @@ pub const CommandLineReporter = struct {
                     }
 
                     for (sequence.flakyAttempts()) |attempt| {
-                        bun.handleOom(junit.writeTestCase(attempt.result, filename, display_label, concatenated_describe_scopes.items, 0, attempt.elapsed_ns, line_number));
+                        bun.handleOom(junit.writeTestCase(attempt.result, filename, display_label, concatenated_describe_scopes.items, 0, attempt.elapsed_ns, line_number, true));
                     }
-                    bun.handleOom(junit.writeTestCase(status, filename, display_label, concatenated_describe_scopes.items, assertions, elapsed_ns, line_number));
+                    bun.handleOom(junit.writeTestCase(status, filename, display_label, concatenated_describe_scopes.items, assertions, elapsed_ns, line_number, false));
                 }
             }
         }
@@ -944,6 +988,7 @@ pub const CommandLineReporter = struct {
             },
         }
 
+        if (buntest.reporter) |reporter| reporter.summary().retry_attempts +|= @intCast(sequence.flaky_attempt_count);
         const formatted_line = output_buf.written();
         if (buntest.reporter != null and buntest.reporter.?.worker_ipc_file_idx != null) {
             ParallelRunner.workerEmitTestDone(buntest.reporter.?.worker_ipc_file_idx.?, formatted_line);
@@ -1486,6 +1531,7 @@ pub const TestCommand = struct {
 
         if (ctx.test_options.reporters.junit) {
             reporter.reporters.junit = JunitReporter.init();
+            reporter.reporters.junit.?.enableCaseMetadata(ctx.test_options.reporter_outfile);
         }
         if (ctx.test_options.reporters.dots) {
             reporter.reporters.dots = true;
@@ -1962,6 +2008,15 @@ pub const TestCommand = struct {
                 } else if (summary.skipped_because_label > 0) {
                     Output.prettyError("{f}<r><d>{d:5>} filtered out<r>\n", .{ indenter, summary.skipped_because_label });
                 }
+
+                if (reporter.reporters.junit) |junit| if (junit.case_metadata_path != null) {
+                    if (summary.skip > 0 and summary.skipped_because_label > 0) {
+                        Output.prettyError("{f}<r><d>{d:5>} filtered out<r>\n", .{ indenter, summary.skipped_because_label });
+                    }
+                    if (summary.retry_attempts > 0) {
+                        Output.prettyError("{f}<r><d>{d:5>} retry attempts<r>\n", .{ indenter, summary.retry_attempts });
+                    }
+                };
 
                 if (summary.todo > 0) {
                     Output.prettyError("{f}<r><magenta>{d:5>} todo<r>\n", .{ indenter, summary.todo });

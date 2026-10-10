@@ -47,7 +47,7 @@ pub const FileExecution = struct {
 };
 
 pub const RunOptions = struct {
-    /// Borrowed CLI name-filter arguments, forwarded to registered test runners.
+    /// Borrowed per-test CLI arguments, forwarded to registered test runners.
     test_runner_flags: []const []const u8 = &.{},
     /// Called after each child completes, before its capture is released.
     /// Slices are borrowed for the duration of the call. Without a callback,
@@ -196,6 +196,8 @@ pub const Summary = struct {
     failed: usize = 0,
     todo: usize = 0,
     skipped: usize = 0,
+    filtered: usize = 0,
+    retry_attempts: usize = 0,
     unsupported: usize = 0,
     // Process outcomes are separate from registered test-case counts. A script
     // can succeed without registering tests; that never invents passing cases.
@@ -274,6 +276,8 @@ fn finishSummary(summary: *Summary) !void {
         .passed = summary.passed,
         .failed = summary.failed,
         .skipped = summary.skipped,
+        .filtered = summary.filtered,
+        .retry_attempts = summary.retry_attempts,
         .todo = summary.todo,
         .unsupported = summary.unsupported,
         .failed_files = summary.failed_files,
@@ -1049,6 +1053,8 @@ const NativeTestCounts = struct {
     passed: usize = 0,
     failed: usize = 0,
     skipped: usize = 0,
+    filtered: usize = 0,
+    retry_attempts: usize = 0,
     todo: usize = 0,
     observed: bool = false,
 };
@@ -1076,6 +1082,8 @@ fn nativeCorpusTestCounts(stdout: []const u8, stderr: []const u8) NativeTestCoun
             if (std.mem.eql(u8, label, "pass")) pending.passed = count;
             if (std.mem.eql(u8, label, "fail")) pending.failed = count;
             if (std.mem.eql(u8, label, "skip")) pending.skipped = count;
+            if (std.mem.eql(u8, label, "filtered out")) pending.filtered = count;
+            if (std.mem.eql(u8, label, "retry attempts")) pending.retry_attempts = count;
             if (std.mem.eql(u8, label, "todo")) pending.todo = count;
         }
     }
@@ -1182,11 +1190,14 @@ fn runRelativeFile(
         const id = summary.files;
         const junit_path = if (summary.journal) |*journal| (if (mode == .test_runner and !node_test) try journal.artifactPath(id, "junit.xml") else null) else null;
         defer if (junit_path) |path| allocator.free(path);
+        const case_metadata_path = if (junit_path != null) try summary.journal.?.artifactPath(id, "cases.jsonl") else null;
+        defer if (case_metadata_path) |path| allocator.free(path);
         const validation_relative = if (summary.vendor_context) |vendor| try std.fs.path.relative(allocator, vendor.corpus_project_root, null, vendor.corpus_project_root, absolute_fixture_path) else null;
         defer if (validation_relative) |path| allocator.free(path);
         var native_run = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{
             .corpus_project_root = corpus_project_root,
             .junit_path = junit_path,
+            .case_metadata_path = case_metadata_path,
             .record = if (summary.journal) |*journal| .{ .journal = journal, .id = id, .mode = @tagName(mode), .source_sha256 = source_hash } else null,
             .services = summary.launch_services,
             .corpus_file = .{ .relative_path = relative, .node_test = node_test, .test_runner = mode == .test_runner, .is_ci = summary.launch_is_ci, .asan_step = summary.launch_asan_step },
@@ -1215,12 +1226,14 @@ fn runRelativeFile(
         summary.core_files += native_run.core_files;
         summary.crash_fetch_failures += @intFromBool(native_run.crash_fetch_failed);
         const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
+        summary.filtered += counts.filtered;
+        summary.retry_attempts += counts.retry_attempts;
         const after_source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch null;
         defer if (after_source) |bytes| allocator.free(bytes);
         const source_unchanged = if (after_source) |bytes| std.mem.eql(u8, source, bytes) else false;
         const expected_failure_verified = summary.vendor_context == null and nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr);
-        const report_retained = if (summary.journal) |*journal| try journal.complete(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, native_run.output_complete, source_unchanged, junit_path, expected_failure_verified) else true;
-        const missing_case_report = !report_retained and counts.passed + counts.failed + counts.skipped + counts.todo != 0;
+        const report_retained = if (summary.journal) |*journal| try journal.completeWithCaseMetadata(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, native_run.output_complete, source_unchanged, junit_path, case_metadata_path, expected_failure_verified) else true;
+        const missing_case_report = !report_retained and counts.passed + counts.failed + counts.skipped + counts.todo + counts.filtered != 0;
         if (summary.on_file) |on_file| try on_file(execution);
 
         if (summary.vendor_context == null and isNativeExpectedFailureCorpusFile(relative)) {
@@ -1266,7 +1279,7 @@ fn runRelativeFile(
                 // Original Node TAP skips describe platform applicability, not
                 // missing Home behavior or passing feature assertions.
                 summary.skipped_files += 1;
-            } else if (counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+            } else if (counts.passed + counts.failed + counts.skipped + counts.todo + counts.filtered == 0) {
                 // Pinned CI judges original script bodies by process exit,
                 // including strict-name files with their own assertion loops.
                 // Keep this observation separate from registered test cases.

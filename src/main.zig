@@ -4518,20 +4518,28 @@ fn isNativeTestNameFilterFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--test-name-pattern") or std.mem.eql(u8, arg, "--grep");
 }
 
-fn collectNativeTestNameFilters(allocator: std.mem.Allocator, args: []const [:0]const u8) ![][]const u8 {
+fn isNativeCorpusTestValueFlag(arg: []const u8) bool {
+    return isNativeTestNameFilterFlag(arg) or std.mem.eql(u8, arg, "--retry") or
+        std.mem.eql(u8, arg, "--rerun-each") or std.mem.eql(u8, arg, "--timeout");
+}
+
+fn collectNativeCorpusTestFlags(allocator: std.mem.Allocator, args: []const [:0]const u8) ![][]const u8 {
     var flags: std.ArrayList([]const u8) = .empty;
     errdefer flags.deinit(allocator);
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) break;
-        if (isNativeTestNameFilterFlag(arg)) {
-            if (index + 1 == args.len) return error.MissingTestNamePattern;
+        if (isNativeCorpusTestValueFlag(arg)) {
+            if (index + 1 == args.len) return error.MissingNativeTestOptionValue;
             try flags.append(allocator, arg);
             index += 1;
             try flags.append(allocator, args[index]);
         } else if (std.mem.startsWith(u8, arg, "--test-name-pattern=") or
             std.mem.startsWith(u8, arg, "--grep=") or
+            std.mem.startsWith(u8, arg, "--retry=") or
+            std.mem.startsWith(u8, arg, "--rerun-each=") or
+            std.mem.startsWith(u8, arg, "--timeout=") or
             (arg.len > 2 and std.mem.startsWith(u8, arg, "-t")))
         {
             try flags.append(allocator, arg);
@@ -4553,7 +4561,7 @@ const BunCorpusArguments = struct {
                 this.options_ended = true;
                 continue;
             }
-            if (!this.options_ended and (isBunCorpusSubsetFlag(arg) or isNativeTestNameFilterFlag(arg))) {
+            if (!this.options_ended and (isBunCorpusSubsetFlag(arg) or isNativeCorpusTestValueFlag(arg))) {
                 this.index += 1;
                 continue;
             }
@@ -5249,7 +5257,7 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         };
         return;
     }
-    const test_runner_flags = try collectNativeTestNameFilters(allocator, args);
+    const test_runner_flags = try collectNativeCorpusTestFlags(allocator, args);
     defer allocator.free(test_runner_flags);
     const bun_corpus_subset_arg = argBunCorpusSubset(args);
     switch (bun_corpus_subset_arg) {
