@@ -20,6 +20,10 @@
 
 #include "config.h"
 #include "JSEventTarget.h"
+#include "HomeAbortListenerState.h"
+#include "InternalModuleRegistry.h"
+#include "ZigGlobalObject.h"
+#include <JavaScriptCore/Symbol.h>
 
 #include "ActiveDOMObject.h"
 #include "ExtendedDOMClientIsoSubspaces.h"
@@ -224,6 +228,25 @@ static inline JSC::EncodedJSValue jsEventTargetPrototypeFunction_addEventListene
     EnsureStillAliveScope argument2 = callFrame->argument(2);
     auto options = argument2.value().isUndefined() ? false : convert<IDLUnion<IDLDictionary<AddEventListenerOptions>, IDLBoolean>>(*lexicalGlobalObject, argument2.value());
     RETURN_IF_EXCEPTION(throwScope, {});
+
+    bool resistStopPropagation = false;
+    // The shared symbol is the Node internal option. Ordinary DOM listeners
+    // retain their propagation semantics and original callback identity.
+    if (listener && impl.eventTargetInterface() == AbortSignalEventTargetInterfaceType && argument2.value().isObject()) {
+        auto* homeGlobal = defaultGlobalObject(lexicalGlobalObject);
+        auto shared = homeGlobal->internalModuleRegistry()->requireId(homeGlobal, vm, Bun::InternalModuleRegistry::Field::InternalShared);
+        RETURN_IF_EXCEPTION(throwScope, {});
+        auto symbol = shared.get(lexicalGlobalObject, Identifier::fromString(vm, "kResistStopPropagation"_s));
+        RETURN_IF_EXCEPTION(throwScope, {});
+        if (symbol.isSymbol()) {
+            auto flag = asObject(argument2.value())->get(lexicalGlobalObject, asSymbol(symbol)->privateName());
+            RETURN_IF_EXCEPTION(throwScope, {});
+            resistStopPropagation = flag.toBoolean(lexicalGlobalObject);
+        }
+    }
+    auto protectedListener = listener;
+    auto listenerType = type;
+    bool capture = std::holds_alternative<bool>(options) ? std::get<bool>(options) : std::get<AddEventListenerOptions>(options).capture;
     // Emit a warning if listener is null, as it has no effect
     if (!listener) {
         String warningMessage;
@@ -245,6 +268,14 @@ static inline JSC::EncodedJSValue jsEventTargetPrototypeFunction_addEventListene
     }
     auto result = JSValue::encode(toJS<IDLUndefined>(*lexicalGlobalObject, throwScope, [&]() -> decltype(auto) { return impl.addEventListenerForBindings(WTF::move(type), WTF::move(listener), WTF::move(options)); }));
     RETURN_IF_EXCEPTION(throwScope, {});
+    if (resistStopPropagation) {
+        for (auto& registered : impl.eventListeners(listenerType)) {
+            if (!registered->wasRemoved() && registered->useCapture() == capture && registered->callback() == *protectedListener) {
+                homeSetAbortListenerResistance(*registered);
+                break;
+            }
+        }
+    }
     vm.writeBarrier(&static_cast<JSObject&>(*castedThis), argument1.value());
     return result;
 }

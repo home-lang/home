@@ -778,7 +778,7 @@ function addAbortListener(signal, listener) {
   if (signal.aborted) {
     queueMicrotask(() => listener());
   } else {
-    signal.addEventListener("abort", listener, { __proto__: null, once: true });
+    signal.addEventListener("abort", listener, { __proto__: null, once: true, [require("internal/shared").kResistStopPropagation]: true });
     removeEventListener = () => {
       signal.removeEventListener("abort", listener);
     };

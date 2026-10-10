@@ -23,12 +23,16 @@
 
 #include "config.h"
 #include "RegisteredEventListener.h"
+#include "HomeAbortListenerState.h"
 
 #include "AbortSignal.h"
 
 namespace WebCore {
 
-RegisteredEventListener::~RegisteredEventListener() = default;
+RegisteredEventListener::~RegisteredEventListener()
+{
+    homeRemoveAbortListenerResistance(*this);
+}
 
 void RegisteredEventListener::setAbortSignal(WeakPtr<AbortSignal, WeakPtrImplWithEventTargetData>&& signal, uint32_t algorithmIdentifier)
 {
@@ -39,6 +43,7 @@ void RegisteredEventListener::setAbortSignal(WeakPtr<AbortSignal, WeakPtrImplWit
 void RegisteredEventListener::markAsRemoved()
 {
     m_wasRemoved = true;
+    homeRemoveAbortListenerResistance(*this);
 
     // If this listener was registered with an AbortSignal, drop the
     // corresponding abort algorithm so the signal's m_algorithms vector

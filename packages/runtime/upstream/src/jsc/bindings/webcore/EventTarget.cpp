@@ -34,6 +34,9 @@
 #include "EventPath.h"
 
 #include "EventTarget.h"
+#include "HomeAbortListenerState.h"
+#include <wtf/HashSet.h>
+#include <wtf/Lock.h>
 
 #include "AddEventListenerOptions.h"
 #include "DOMWrapperWorld.h"
@@ -59,6 +62,27 @@
 #include "ErrorCode.h"
 
 namespace WebCore {
+
+static Lock homeAbortListenerLock;
+static NeverDestroyed<HashSet<const RegisteredEventListener*>> homeAbortListeners;
+
+void homeSetAbortListenerResistance(const RegisteredEventListener& listener)
+{
+    Locker locker { homeAbortListenerLock };
+    homeAbortListeners.get().add(&listener);
+}
+
+bool homeHasAbortListenerResistance(const RegisteredEventListener& listener)
+{
+    Locker locker { homeAbortListenerLock };
+    return homeAbortListeners.get().contains(&listener);
+}
+
+void homeRemoveAbortListenerResistance(const RegisteredEventListener& listener)
+{
+    Locker locker { homeAbortListenerLock };
+    homeAbortListeners.get().remove(&listener);
+}
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(EventTarget);
 
@@ -318,8 +342,8 @@ void EventTarget::innerInvokeEventListeners(Event& event, EventListenerVector li
 
         // If stopImmediatePropagation has been called, we just break out immediately, without
         // handling any more events on this target.
-        if (event.immediatePropagationStopped())
-            break;
+        if (event.immediatePropagationStopped() && !homeHasAbortListenerResistance(*registeredListener))
+            continue;
 
         // Make sure the JS wrapper and function stay alive until the end of this scope. Otherwise,
         // event listeners with 'once' flag may get collected as soon as they get unregistered below,
