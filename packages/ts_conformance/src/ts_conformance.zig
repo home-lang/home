@@ -2201,6 +2201,57 @@ test "conformance: virtual tsconfig selects only configured roots" {
     try T.expectEqualSlices(bool, &.{ false, true, true, false, false }, selected);
 }
 
+test "conformance: output directories are default excludes unless exclude is explicit" {
+    const default_files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source =
+            \\{
+            \\  "compilerOptions": {
+            \\    "outDir": "dist",
+            \\    "declarationDir": "types",
+            \\    "declaration": true
+            \\  }
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/a.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/dist/a.d.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/types/a.d.ts", .source = "export {};", .extra_strip = 0 },
+    };
+    const defaults = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &default_files);
+    defer defaults.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 1), defaults.root_files.len);
+    try T.expectEqualStrings("/project/a.ts", defaults.root_files[0]);
+
+    const explicit_files = [_]VirtualFile{
+        .{
+            .path = "/project/tsconfig.json",
+            .source =
+            \\{
+            \\  "compilerOptions": {
+            \\    "outDir": "dist",
+            \\    "declarationDir": "types",
+            \\    "declaration": true
+            \\  },
+            \\  "exclude": ["ignored"]
+            \\}
+            ,
+            .extra_strip = 0,
+        },
+        .{ .path = "/project/a.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/dist/a.d.ts", .source = "export {};", .extra_strip = 0 },
+        .{ .path = "/project/types/a.d.ts", .source = "export {};", .extra_strip = 0 },
+    };
+    const explicit = try resolverConfigOptionsFromVirtualTsconfig(T.allocator, &explicit_files);
+    defer explicit.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 3), explicit.root_files.len);
+    try T.expectEqualStrings("/project/a.ts", explicit.root_files[0]);
+    try T.expectEqualStrings("/project/dist/a.d.ts", explicit.root_files[1]);
+    try T.expectEqualStrings("/project/types/a.d.ts", explicit.root_files[2]);
+}
+
 test "conformance: checkJs implies allowJs for virtual project roots" {
     const files = [_]VirtualFile{
         .{
@@ -3076,12 +3127,11 @@ fn configPathExcluded(
     if (pathContainsDirectoryIgnoreCase(relative, "node_modules") or
         pathContainsDirectoryIgnoreCase(relative, "bower_components") or
         pathContainsDirectoryIgnoreCase(relative, "jspm_packages")) return true;
-    for ([_]?[]const u8{ config.compiler_options.out_dir, config.compiler_options.declaration_dir }) |maybe_dir| {
-        if (maybe_dir) |raw_dir| {
-            const excluded_dir = try resolveConfigRelativePath(gpa, config_dir, raw_dir);
-            defer gpa.free(excluded_dir);
-            if (pathHasDirPrefixIgnoreCase(canonical, excluded_dir)) return true;
-        }
+    var default_storage: [2][]const u8 = undefined;
+    for (config.effectiveExcludePatterns(&default_storage)) |raw_dir| {
+        const excluded_dir = try resolveConfigRelativePath(gpa, config_dir, raw_dir);
+        defer gpa.free(excluded_dir);
+        if (pathHasDirPrefixIgnoreCase(canonical, excluded_dir)) return true;
     }
     return false;
 }

@@ -189,7 +189,7 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
         const src = RealFs.read(arena, cfg_path) catch continue; // leaf on read error
         const cfg = tsconfig_mod.parseString(gpa, arena, src) catch continue;
         const base = std.fs.path.dirname(cfg_path) orelse ".";
-        const parent_has_inputs = projectConfigHasInputFiles(gpa, arena, cfg_path, cfg) catch false;
+        const parent_has_inputs = projectConfigHasInputFiles(gpa, cfg_path, cfg) catch false;
         const parent_buildinfo = projectBuildInfoFilePath(arena, cfg_path, cfg) catch null;
         for (cfg.references) |ref| {
             const ref_path = resolveConfigPath(arena, base, ref) catch continue;
@@ -222,7 +222,7 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     return .{ .nodes = nodes, .paths = paths.items, .diagnostics = diagnostics.items };
 }
 
-fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg_path: []const u8, cfg: tsconfig_mod.TsConfig) !bool {
+fn projectConfigHasInputFiles(gpa: std.mem.Allocator, cfg_path: []const u8, cfg: tsconfig_mod.TsConfig) !bool {
     if (cfg.files) |files| return files.len > 0;
 
     const project_dir = std.fs.path.dirname(cfg_path) orelse ".";
@@ -233,24 +233,12 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, 
         for (owned.items) |p| gpa.free(p);
         owned.deinit(gpa);
     }
-    var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer excludes.deinit(gpa);
-    if (cfg.exclude) |ex| {
-        for (ex) |e| try excludes.append(gpa, e);
-    }
-    if (cfg.compiler_options.out_dir) |d| {
-        try excludes.append(gpa, d);
-        try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
-    }
-    if (cfg.compiler_options.declaration_dir) |d| {
-        try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
-    }
-    try excludes.append(gpa, "**/node_modules/**");
+    var exclude_storage: [2][]const u8 = undefined;
     try expandProjectGlobs(
         gpa,
         project_dir,
         effectiveIncludePatterns(cfg),
-        excludes.items,
+        cfg.effectiveExcludePatterns(&exclude_storage),
         tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
         &input_files,
         &owned,
@@ -473,27 +461,12 @@ fn buildOneProject(
     if (cfg.files) |fs_list| {
         ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .errors;
     } else {
-        // Exclude the project's own output dir (so emitted .js/.d.ts aren't
-        // re-ingested as inputs on rebuild) and node_modules, in addition
-        // to any configured excludes — mirrors tsc's default excludes.
-        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer excludes.deinit(gpa);
-        if (cfg.exclude) |ex| {
-            for (ex) |e| excludes.append(gpa, e) catch return .errors;
-        }
-        if (cfg.compiler_options.out_dir) |d| {
-            excludes.append(gpa, d) catch return .errors;
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
-        }
-        if (cfg.compiler_options.declaration_dir) |d| {
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
-        }
-        excludes.append(gpa, "**/node_modules/**") catch return .errors;
+        var exclude_storage: [2][]const u8 = undefined;
         expandProjectGlobs(
             gpa,
             project_dir,
             effectiveIncludePatterns(cfg),
-            excludes.items,
+            cfg.effectiveExcludePatterns(&exclude_storage),
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
@@ -652,24 +625,12 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
     if (cfg.files) |fs_list| {
         ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .build;
     } else {
-        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer excludes.deinit(gpa);
-        if (cfg.exclude) |ex| {
-            for (ex) |e| excludes.append(gpa, e) catch return .build;
-        }
-        if (cfg.compiler_options.out_dir) |d| {
-            excludes.append(gpa, d) catch return .build;
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
-        }
-        if (cfg.compiler_options.declaration_dir) |d| {
-            excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
-        }
-        excludes.append(gpa, "**/node_modules/**") catch return .build;
+        var exclude_storage: [2][]const u8 = undefined;
         expandProjectGlobs(
             gpa,
             project_dir,
             effectiveIncludePatterns(cfg),
-            excludes.items,
+            cfg.effectiveExcludePatterns(&exclude_storage),
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
@@ -1210,24 +1171,12 @@ fn appendProjectCleanOutputs(
     if (cfg.files) |fs_list| {
         try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned);
     } else {
-        var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer excludes.deinit(gpa);
-        if (cfg.exclude) |ex| {
-            for (ex) |e| try excludes.append(gpa, e);
-        }
-        if (cfg.compiler_options.out_dir) |d| {
-            try excludes.append(gpa, d);
-            try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
-        }
-        if (cfg.compiler_options.declaration_dir) |d| {
-            try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
-        }
-        try excludes.append(gpa, "**/node_modules/**");
+        var exclude_storage: [2][]const u8 = undefined;
         try expandProjectGlobs(
             gpa,
             project_dir,
             effectiveIncludePatterns(cfg),
-            excludes.items,
+            cfg.effectiveExcludePatterns(&exclude_storage),
             tsconfig_mod.effectiveAllowJs(cfg.compiler_options),
             &input_files,
             &owned,
@@ -3191,7 +3140,8 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (loaded_cfg) |c| {
             const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
             const include_patterns = effectiveIncludePatterns(c);
-            const exclude_patterns = effectiveExcludePatterns(c);
+            var exclude_storage: [2][]const u8 = undefined;
+            const exclude_patterns = c.effectiveExcludePatterns(&exclude_storage);
             try expandProjectGlobs(
                 gpa,
                 project_dir,
@@ -3211,14 +3161,14 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                     const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
                     var exclude_display_list: std.ArrayListUnmanaged([]const u8) = .empty;
                     defer exclude_display_list.deinit(gpa);
-                    var owned_out_dir_exclude: ?[]u8 = null;
-                    defer if (owned_out_dir_exclude) |p| gpa.free(p);
+                    var owned_default_excludes: [2]?[]u8 = .{ null, null };
+                    defer for (owned_default_excludes) |owned| if (owned) |path| gpa.free(path);
                     const exclude_display_patterns = try effectiveExcludeDiagnosticPatterns(
                         gpa,
                         project_dir,
                         c,
                         &exclude_display_list,
-                        &owned_out_dir_exclude,
+                        &owned_default_excludes,
                     );
                     const msg = try noInputsFoundInConfigDiagnostic(
                         gpa,
@@ -4093,6 +4043,9 @@ fn expandProjectGlobs(
     out: *std.ArrayListUnmanaged([]const u8),
     owned: *std.ArrayListUnmanaged([]u8),
 ) !void {
+    const exclude_base = try std.fs.path.resolve(gpa, &.{project_dir});
+    defer gpa.free(exclude_base);
+
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -4137,7 +4090,7 @@ fn expandProjectGlobs(
                         gpa.free(child_rel);
                         continue;
                     }
-                    if (anyMatches(exclude, child_rel)) {
+                    if (anyMatches(exclude_base, exclude, child_rel)) {
                         gpa.free(child_rel);
                         continue;
                     }
@@ -4146,7 +4099,7 @@ fn expandProjectGlobs(
                 .file => {
                     defer gpa.free(child_rel);
                     if (!isProjectInputExtension(child_rel, allow_js)) continue;
-                    if (anyMatches(exclude, child_rel)) continue;
+                    if (anyMatches(exclude_base, exclude, child_rel)) continue;
                     if (!anyFileIncludeMatches(include, child_rel)) continue;
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
                     try owned.append(gpa, full);
@@ -4158,9 +4111,25 @@ fn expandProjectGlobs(
     }
 }
 
-fn anyMatches(patterns: []const []const u8, path: []const u8) bool {
-    for (patterns) |pat| {
-        if (tsconfig_mod.matchGlob(pat, path)) return true;
+fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []const u8) bool {
+    for (patterns) |raw_pattern| {
+        var pattern = raw_pattern;
+        while (std.mem.startsWith(u8, pattern, "./")) pattern = pattern[2..];
+        while (pattern.len > 1 and (pattern[pattern.len - 1] == '/' or pattern[pattern.len - 1] == '\\')) {
+            pattern = pattern[0 .. pattern.len - 1];
+        }
+        if (std.fs.path.isAbsolute(pattern)) {
+            var base = project_dir;
+            while (base.len > 1 and (base[base.len - 1] == '/' or base[base.len - 1] == '\\')) {
+                base = base[0 .. base.len - 1];
+            }
+            if (std.mem.eql(u8, pattern, base)) return true;
+            if (pattern.len <= base.len or
+                !std.mem.eql(u8, pattern[0..base.len], base) or
+                (pattern[base.len] != '/' and pattern[base.len] != '\\')) continue;
+            pattern = pattern[base.len + 1 ..];
+        }
+        if (tsconfig_mod.matchGlob(pattern, path)) return true;
     }
     return false;
 }
@@ -4205,27 +4174,25 @@ fn effectiveIncludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
     return cfg.include orelse &[_][]const u8{"**/*"};
 }
 
-fn effectiveExcludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
-    return cfg.exclude orelse &.{};
-}
-
 fn effectiveExcludeDiagnosticPatterns(
     gpa: std.mem.Allocator,
     project_dir: []const u8,
     cfg: tsconfig_mod.TsConfig,
     out: *std.ArrayListUnmanaged([]const u8),
-    owned_out_dir: *?[]u8,
+    owned_defaults: *[2]?[]u8,
 ) ![]const []const u8 {
     if (cfg.exclude) |exclude| return exclude;
-    const out_dir = cfg.compiler_options.out_dir orelse return &.{};
-    const display = if (std.fs.path.isAbsolute(out_dir))
-        out_dir
-    else blk: {
-        const joined = try std.fs.path.join(gpa, &.{ project_dir, out_dir });
-        owned_out_dir.* = joined;
-        break :blk joined;
-    };
-    try out.append(gpa, display);
+    var default_storage: [2][]const u8 = undefined;
+    for (cfg.effectiveExcludePatterns(&default_storage), 0..) |pattern, index| {
+        const display = if (std.fs.path.isAbsolute(pattern))
+            pattern
+        else blk: {
+            const joined = try std.fs.path.join(gpa, &.{ project_dir, pattern });
+            owned_defaults[index] = joined;
+            break :blk joined;
+        };
+        try out.append(gpa, display);
+    }
     return out.items;
 }
 
@@ -4634,20 +4601,34 @@ test "tsc_main: TS18003 no-input config diagnostic preserves empty include list"
     );
 }
 
-test "tsc_main: TS18003 diagnostic uses implicit outDir exclude display" {
+test "tsc_main: project excludes normalize config-relative directory syntax" {
+    const relative = [_][]const u8{"./OutDir"};
+    try std.testing.expect(anyMatches("/repo", &relative, "OutDir"));
+
+    const repeated = [_][]const u8{"././generated/"};
+    try std.testing.expect(anyMatches("/repo", &repeated, "generated"));
+    try std.testing.expect(!anyMatches("/repo", &repeated, "src/generated"));
+
+    const absolute = [_][]const u8{"/repo/OutDir"};
+    try std.testing.expect(anyMatches("/repo", &absolute, "OutDir"));
+    try std.testing.expect(!anyMatches("/other", &absolute, "OutDir"));
+}
+
+test "tsc_main: TS18003 diagnostic uses implicit output directory exclude display" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
-        \\{ "compilerOptions": { "outDir": "dist" } }
+        \\{ "compilerOptions": { "outDir": "dist", "declarationDir": "types" } }
     );
     var out: std.ArrayListUnmanaged([]const u8) = .empty;
     defer out.deinit(std.testing.allocator);
-    var owned: ?[]u8 = null;
-    defer if (owned) |p| std.testing.allocator.free(p);
+    var owned: [2]?[]u8 = .{ null, null };
+    defer for (owned) |path| if (path) |p| std.testing.allocator.free(p);
 
     const patterns = try effectiveExcludeDiagnosticPatterns(std.testing.allocator, "/repo", cfg, &out, &owned);
-    try std.testing.expectEqual(@as(usize, 1), patterns.len);
+    try std.testing.expectEqual(@as(usize, 2), patterns.len);
     try std.testing.expectEqualStrings("/repo/dist", patterns[0]);
+    try std.testing.expectEqualStrings("/repo/types", patterns[1]);
 }
 
 test "tsc_main: TS6504 JavaScript-file diagnostic text" {

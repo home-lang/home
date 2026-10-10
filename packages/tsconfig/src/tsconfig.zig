@@ -439,6 +439,26 @@ pub const TsConfig = struct {
     /// parent even though the typed field itself is `null`.
     compiler_option_unsets: [][]const u8 = &.{},
 
+    /// Return the config-file exclude specs used for project discovery.
+    /// An explicit `exclude` list is authoritative, including an empty list.
+    /// When the property is absent, TypeScript uses configured output
+    /// directories as the default excludes so generated files are not
+    /// re-ingested on the next build.
+    pub fn effectiveExcludePatterns(self: TsConfig, defaults: *[2][]const u8) []const []const u8 {
+        if (self.exclude) |exclude| return exclude;
+
+        var count: usize = 0;
+        if (self.compiler_options.out_dir) |out_dir| {
+            defaults[count] = out_dir;
+            count += 1;
+        }
+        if (self.compiler_options.declaration_dir) |declaration_dir| {
+            defaults[count] = declaration_dir;
+            count += 1;
+        }
+        return defaults[0..count];
+    }
+
     /// Walk the resolved config and report cross-field consistency
     /// issues that the parser accepts but `tsc` would reject during
     /// option resolution. Each individual field is already
@@ -4876,6 +4896,42 @@ test "matchGlob: literal" {
     // top-level `t = std.testing` already in scope
     try t.expect(matchGlob("src/main.ts", "src/main.ts"));
     try t.expect(!matchGlob("src/main.ts", "src/other.ts"));
+}
+
+test "tsconfig project excludes default to output directories only when exclude is absent" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const defaults = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": {
+        \\    "outDir": "dist",
+        \\    "declarationDir": "types"
+        \\  }
+        \\}
+    );
+    var default_storage: [2][]const u8 = undefined;
+    const default_patterns = defaults.effectiveExcludePatterns(&default_storage);
+    try t.expectEqual(@as(usize, 2), default_patterns.len);
+    try t.expectEqualStrings("dist", default_patterns[0]);
+    try t.expectEqualStrings("types", default_patterns[1]);
+
+    const explicit = try parseString(t.allocator, arena.allocator(),
+        \\{
+        \\  "compilerOptions": { "outDir": "dist" },
+        \\  "exclude": ["generated"]
+        \\}
+    );
+    var explicit_storage: [2][]const u8 = undefined;
+    const explicit_patterns = explicit.effectiveExcludePatterns(&explicit_storage);
+    try t.expectEqual(@as(usize, 1), explicit_patterns.len);
+    try t.expectEqualStrings("generated", explicit_patterns[0]);
+
+    const empty = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "outDir": "dist" }, "exclude": [] }
+    );
+    var empty_storage: [2][]const u8 = undefined;
+    try t.expectEqual(@as(usize, 0), empty.effectiveExcludePatterns(&empty_storage).len);
 }
 
 test "matchGlob: single star matches within segment" {
