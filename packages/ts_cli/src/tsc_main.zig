@@ -3186,7 +3186,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 std.debug.print("error parsing tsconfig {s}: {s}\n", .{ path, @errorName(err) });
                 break :blk null;
             };
-            if (loaded_cfg) |*c| c.file_path = path;
+            if (loaded_cfg) |*c| {
+                c.file_path = path;
+                ts_cli.applyConfigOverrides(c, opts);
+            }
         }
     }
 

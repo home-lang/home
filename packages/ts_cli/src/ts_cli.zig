@@ -159,6 +159,16 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
             ts_driver.applyTargetOption(compile_opts, target);
         }
     }
+    if (opts.module) |value| {
+        if (tsconfig_mod.Module.fromString(value)) |module| {
+            ts_driver.applyModuleOption(compile_opts, module);
+        }
+    }
+    if (opts.module_resolution) |value| {
+        if (tsconfig_mod.ModuleResolution.fromString(value)) |module_resolution| {
+            ts_driver.applyModuleResolutionOption(compile_opts, module_resolution);
+        }
+    }
     if (opts.jsx) |value| {
         if (tsconfig_mod.Jsx.fromString(value)) |jsx| {
             ts_driver.applyJsxOption(compile_opts, jsx);
@@ -173,6 +183,37 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
     if (opts.home_options.list_unmodeled_any) |value| {
         compile_opts.home_options.list_unmodeled_any = value;
     }
+}
+
+/// Merge command-line compiler options into the parsed config before any
+/// Program phase consumes it. This gives validation, module resolution,
+/// checking, and emit the same effective option set and CLI precedence.
+pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void {
+    const compiler_options = &config.compiler_options;
+    if (opts.strict) |value| compiler_options.strict = value;
+    if (opts.no_emit) compiler_options.no_emit = true;
+    if (opts.skip_lib_check) |value| compiler_options.skip_lib_check = value;
+    if (opts.pretty) |value| compiler_options.pretty = value;
+    if (opts.trace_resolution) compiler_options.trace_resolution = true;
+    if (opts.target) |value| {
+        if (tsconfig_mod.Target.fromString(value)) |target| compiler_options.target = target;
+    }
+    if (opts.out_dir) |value| compiler_options.out_dir = value;
+    if (opts.module) |value| {
+        if (tsconfig_mod.Module.fromString(value)) |module| compiler_options.module = module;
+    }
+    if (opts.module_resolution) |value| {
+        if (tsconfig_mod.ModuleResolution.fromString(value)) |module_resolution| compiler_options.module_resolution = module_resolution;
+    }
+    if (opts.jsx) |value| {
+        if (tsconfig_mod.Jsx.fromString(value)) |jsx| compiler_options.jsx = jsx;
+    }
+    if (opts.max_node_module_js_depth) |value| compiler_options.max_node_module_js_depth = value;
+    if (opts.declaration) |value| compiler_options.declaration = value;
+    if (opts.source_map) |value| compiler_options.source_map = value;
+    if (opts.declaration_map) |value| compiler_options.declaration_map = value;
+    if (opts.home_options.sound) |value| config.home_options.sound = value;
+    if (opts.home_options.list_unmodeled_any) |value| config.home_options.list_unmodeled_any = value;
 }
 
 pub const ParseError = error{
@@ -1576,6 +1617,42 @@ test "CLI options: target and jsx override tsconfig coherently" {
     try T.expect(compile_opts.jsx_option_present);
     try T.expect(!compile_opts.jsx_preserve_option);
     try T.expectEqual(.classic, compile_opts.emit.jsx_runtime);
+}
+
+test "CLI options: config overrides feed validation resolution checking and emit" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "strict": false, "module": "commonjs", "moduleResolution": "node", "target": "es2015", "jsx": "preserve", "maxNodeModuleJsDepth": 1 } }
+    );
+    const cli_opts: Options = .{
+        .strict = true,
+        .module = "node16",
+        .module_resolution = "node16",
+        .target = "es2022",
+        .jsx = "react",
+        .max_node_module_js_depth = 2,
+    };
+    applyConfigOverrides(&config, cli_opts);
+
+    try T.expectEqual(@as(?bool, true), config.compiler_options.strict);
+    try T.expectEqual(@as(?tsconfig_mod.Module, .node16), config.compiler_options.module);
+    try T.expectEqual(@as(?tsconfig_mod.ModuleResolution, .node16), config.compiler_options.module_resolution);
+    try T.expectEqual(@as(?tsconfig_mod.Target, .es2022), config.compiler_options.target);
+    try T.expectEqual(@as(?tsconfig_mod.Jsx, .react), config.compiler_options.jsx);
+    try T.expectEqual(@as(?f64, 2), config.compiler_options.max_node_module_js_depth);
+    const validation_diagnostics = try config.validate(T.allocator);
+    defer tsconfig_mod.freeValidationDiagnostics(T.allocator, validation_diagnostics);
+    try T.expectEqual(@as(usize, 0), validation_diagnostics.len);
+
+    var compile_opts = ts_driver.optionsFromConfig(&config);
+    applyCompileOptions(&compile_opts, cli_opts);
+    try T.expectEqualStrings("node16", compile_opts.module_kind);
+    try T.expectEqualStrings("node16", compile_opts.module_resolution);
+    try T.expectEqual(.esm, compile_opts.emit.module_kind);
+    try T.expectEqual(.es2022, compile_opts.emit.es_target);
+    try T.expectEqual(.classic, compile_opts.emit.jsx_runtime);
+    try T.expectEqual(@as(f64, 2), compile_opts.max_node_module_js_depth);
 }
 
 test "parseArgs: --pretty and --no-pretty" {

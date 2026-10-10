@@ -1830,10 +1830,10 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
         applyTargetOption(&opts, t);
     }
     if (cfg.compiler_options.module) |m| {
-        opts.emit.module_kind = switch (m) {
-            .commonjs, .amd, .umd, .system => .commonjs,
-            else => .esm,
-        };
+        applyModuleOption(&opts, m);
+    }
+    if (cfg.compiler_options.module_resolution) |module_resolution| {
+        applyModuleResolutionOption(&opts, module_resolution);
     }
     if (cfg.compiler_options.es_module_interop) |on| {
         opts.emit.es_module_interop = on;
@@ -1898,6 +1898,20 @@ pub fn applyTargetOption(opts: *CompileOptions, target: tsconfig_mod.Target) voi
         .es3, .es5 => false,
         else => true,
     };
+}
+
+/// Apply one resolved module kind to checking and JavaScript emit.
+pub fn applyModuleOption(opts: *CompileOptions, module: tsconfig_mod.Module) void {
+    opts.module_kind = @tagName(module);
+    opts.emit.module_kind = switch (module) {
+        .commonjs, .amd, .umd, .system => .commonjs,
+        else => .esm,
+    };
+}
+
+/// Apply one resolved module-resolution strategy to the checker.
+pub fn applyModuleResolutionOption(opts: *CompileOptions, module_resolution: tsconfig_mod.ModuleResolution) void {
+    opts.module_resolution = @tagName(module_resolution);
 }
 
 pub const CompileError = error{
