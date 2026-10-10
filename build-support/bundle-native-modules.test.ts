@@ -33,10 +33,10 @@ function createNativeFixture(temporary: string) {
     const unified = read(unifiedPath).replace(/^#include "([^"]+)"$/gm, (_, relative) => {
       const externalSource = path.resolve(path.dirname(unifiedPath), relative)
       const basename = path.basename(relative)
-      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp', 'IPC.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'JSMIMEParams.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp', 'NodeModuleModule.cpp', 'ReadableStream.cpp', 'JSReadableStream.cpp', 'JSStringDecoder.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'JSInspectorProfiler.cpp', 'NodeFetch.cpp', 'Undici.cpp', 'JSFFIFunction.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp', 'EventTarget.cpp', 'JSEventTarget.cpp', 'RegisteredEventListener.cpp', 'Weak.cpp'].includes(basename)) {
+      if (['MessagePort.cpp', 'MessagePortPipe.cpp', 'Worker.cpp', 'BunWorkerGlobalScope.cpp', 'JSMessagePort.cpp', 'JSWorker.cpp', 'BunAnalyzeTranspiledModule.cpp', 'JSAbortSignalCustom.cpp', 'BroadcastChannel.cpp', 'BunBroadcastChannelRegistry.cpp', 'JSBroadcastChannel.cpp', 'MessageEvent.cpp', 'JSMessageEvent.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'WebSocket.cpp', 'JSWebSocket.cpp', 'AsyncContextFrame.cpp', 'IPC.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'JSMIMEParams.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp', 'NodeModuleModule.cpp', 'ReadableStream.cpp', 'JSReadableStream.cpp', 'JSStringDecoder.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'JSInspectorProfiler.cpp', 'NodeFetch.cpp', 'Undici.cpp', 'JSFFIFunction.cpp', 'JSBufferEncodingType.cpp', 'JSBufferList.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp', 'EventTarget.cpp', 'JSEventTarget.cpp', 'RegisteredEventListener.cpp', 'Weak.cpp', 'JS2Native.cpp', 'NodeTTYModule.cpp', 'ObjectModule.cpp', 'JSBufferEncodingType.cpp', 'JSBufferList.cpp'].includes(basename)) {
         const header = basename === 'JSAbortSignalCustom.cpp' ? 'AbortSignal.h' : basename.replace(/\.cpp$/, '.h')
         writeFileSync(path.join(webcore, basename), readFileSync(externalSource))
-        if (!['IPC.cpp', 'Weak.cpp'].includes(basename)) writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
+        if (!['IPC.cpp', 'Weak.cpp', 'JS2Native.cpp'].includes(basename)) writeFileSync(path.join(webcore, header), readFileSync(path.join(path.dirname(externalSource), header)))
         return `#include ${JSON.stringify(path.join(webcore, basename))}`
       }
       return `#include ${JSON.stringify(externalSource)}`
@@ -50,6 +50,7 @@ function createNativeFixture(temporary: string) {
   const sqliteHeaders = path.join(temporary, 'bindings/sqlite')
   mkdirSync(sqliteHeaders, { recursive: true })
   writeFileSync(path.join(sqliteHeaders, 'JSSQLStatement.h'), readFileSync(path.resolve(modulesRoot, '../bindings/sqlite/JSSQLStatement.h')))
+  writeFileSync(path.join(temporary, 'bindings/JSBuffer.h'), readFileSync(path.resolve(modulesRoot, '../bindings/JSBuffer.h')))
   return { codegen, webcore }
 }
 
@@ -86,6 +87,15 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     for (const header of ['lazy_sqlite3.h', 'sqlite3_error_codes.h']) {
       expect(readFileSync(path.join(output, header))).toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/bindings/sqlite', header)))
     }
+    const bufferSource = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/JSBuffer.cpp')
+    expect(read(path.join(output, 'JSBuffer.cpp'))).toBe(`#line 1 ${JSON.stringify(bufferSource)}\n${read(bufferSource)}`)
+    expect(read(path.join(output, 'GeneratedJS2Native.h'))).toBe(read(path.join(nativeBuild, 'codegen/GeneratedJS2Native.h')))
+    const nativeIncludes = [...read(path.join(output, 'NativeModuleImpl.h')).matchAll(/^#include "([^"\n]+)"$/gm)].map(match => match[1])
+    expect(nativeIncludes).toHaveLength(12)
+    for (const header of nativeIncludes) {
+      expect(path.basename(header)).toBe(header)
+      expect(readFileSync(path.join(output, header))).toEqual(readFileSync(path.join(root, 'packages/runtime/upstream/src/jsc/modules', header)))
+    }
     const internalForTesting = read(path.join(output, 'InternalForTesting.js'))
     expect(internalForTesting).toContain('class HomeJSStreamSocket extends HomeDuplex')
     expect(internalForTesting).toContain('class HomeWriteWrap extends HomeStreamRequest')
@@ -101,6 +111,10 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')
+    for (const name of ['JSBufferEncodingType.cpp', 'JSBufferList.cpp', 'JS2Native.cpp']) {
+      expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp'))).toContain(`#include "${name}"`)
+    }
+
     const ipc = path.join(root, 'packages/runtime/upstream/src/jsc/bindings/IPC.cpp')
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp'))).toContain('#include \"IPC.cpp\"')
     expect(read(path.join(output, 'IPC.cpp'))).toBe(`#line 1 ${JSON.stringify(ipc)}\n${read(ipc)}`)
@@ -117,7 +131,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
           : basename === 'JSAbortSignalCustom.cpp' ? [basename, 'JSBroadcastChannel.cpp']
             : basename === 'JSMessagePort.cpp' ? [basename, 'JSMessageEvent.cpp', 'JSMIMEParams.cpp', 'JSEventTarget.cpp']
               : basename === 'Worker.cpp' ? [basename, 'WebSocket.cpp']
-                : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp', 'EventTarget.cpp'] : basename === 'NodeAsyncHooks.cpp' ? [basename, 'Path.cpp', 'NodeValidator.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'NodeFetch.cpp'] : basename === 'stringWidth.cpp' ? [basename, 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp'] : basename === 'NodeUtilTypesModule.cpp' ? [basename, 'NodeModuleModule.cpp'] : basename === 'MessagePortPipe.cpp' ? [basename, 'ReadableStream.cpp', 'RegisteredEventListener.cpp'] : basename === 'ScriptExecutionContext.cpp' ? [basename, 'Undici.cpp', 'Weak.cpp'] : basename === 'JSStringDecoder.cpp' ? [basename, 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'JSInspectorProfiler.cpp', 'JSFFIFunction.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp'] : [basename]
+                : basename === 'BroadcastChannel.cpp' ? [basename, 'BunBroadcastChannelRegistry.cpp', 'EventTarget.cpp'] : basename === 'NodeAsyncHooks.cpp' ? [basename, 'Path.cpp', 'NodeValidator.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'NodeFetch.cpp'] : basename === 'stringWidth.cpp' ? [basename, 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp'] : basename === 'NodeUtilTypesModule.cpp' ? [basename, 'NodeModuleModule.cpp', 'NodeTTYModule.cpp', 'ObjectModule.cpp'] : basename === 'MessagePortPipe.cpp' ? [basename, 'ReadableStream.cpp', 'RegisteredEventListener.cpp'] : basename === 'ScriptExecutionContext.cpp' ? [basename, 'Undici.cpp', 'Weak.cpp'] : basename === 'JSStringDecoder.cpp' ? [basename, 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'JSInspectorProfiler.cpp', 'JSFFIFunction.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp'] : [basename]
       const expectedUnit = externalUnit.replace(/^#include "([^"]+)"$/gm, (_, relative) => ownedNames.includes(path.basename(relative))
         ? `#include ${JSON.stringify(path.basename(relative))}`
         : `#include ${JSON.stringify(path.resolve(nativeBuild, 'unified', relative))}`)
@@ -127,7 +141,7 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
       const externalIncludes = [...externalUnit.matchAll(/^#include "([^"]+)"$/gm)]
       expect(includes.filter(include => path.isAbsolute(include))).toHaveLength(externalIncludes.length - ownedNames.length)
       for (const name of ownedNames) {
-        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc', ['NodeUtilTypesModule.cpp', 'NodeModuleModule.cpp'].includes(name) ? 'modules' : 'bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'AsyncContextFrame.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp', 'NodeModuleModule.cpp', 'JSStringDecoder.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'JSInspectorProfiler.cpp', 'NodeFetch.cpp', 'Undici.cpp', 'JSFFIFunction.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp', 'Weak.cpp'].includes(name) ? '' : 'webcore', name)
+        const homeSource = path.join(root, 'packages/runtime/upstream/src/jsc', ['NodeUtilTypesModule.cpp', 'NodeModuleModule.cpp', 'NodeTTYModule.cpp', 'ObjectModule.cpp'].includes(name) ? 'modules' : 'bindings', ['BunWorkerGlobalScope.cpp', 'BunAnalyzeTranspiledModule.cpp', 'ScriptExecutionContext.cpp', 'NodeAsyncHooks.cpp', 'AsyncContextFrame.cpp', 'Path.cpp', 'NodeValidator.cpp', 'stringWidth.cpp', 'NodeUtilTypesModule.cpp', 'sliceAnsi.cpp', 'stripANSI.cpp', 'wrapAnsi.cpp', 'napi_finalizer.cpp', 'NodeModuleModule.cpp', 'JSStringDecoder.cpp', 'NodeHTTP.cpp', 'NodeTLS.cpp', 'JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramPrototype.cpp', 'ProcessBindingTTYWrap.cpp', 'NodeVM.cpp', 'NodeVMModule.cpp', 'NodeVMScript.cpp', 'NodeVMSourceTextModule.cpp', 'NodeVMSyntheticModule.cpp', 'JSInspectorProfiler.cpp', 'NodeFetch.cpp', 'Undici.cpp', 'JSFFIFunction.cpp', 'JSBufferEncodingType.cpp', 'JSBufferList.cpp', 'JSX509Certificate.cpp', 'JSX509CertificateConstructor.cpp', 'JSX509CertificatePrototype.cpp', 'Weak.cpp', 'NodeTTYModule.cpp', 'ObjectModule.cpp'].includes(name) ? '' : 'webcore', name)
         expect(read(path.join(output, name))).toBe(`#line 1 ${JSON.stringify(homeSource)}\n${read(homeSource)}`)
       }
     }
@@ -224,7 +238,7 @@ nativeTest('rejects error and native-wrapper ABI drift before producing linkable
   }
 }, 45000)
 
-nativeTest.each(['NodeBufferModule.h', 'NodeStringDecoderModule.h'])('rejects invalid native factory include: %s', basename => {
+nativeTest.each(['BunTestModule.h', 'BunJSCModule.h', 'BunAppModule.h', 'NodeBufferModule.h', 'NodeConstantsModule.h', 'NodeStringDecoderModule.h', 'NodeUtilTypesModule.h', 'UTF8ValidateModule.h', 'AbortControllerModuleModule.h', 'NodeModuleModule.h', 'NodeProcessModule.h', 'BunObjectModule.h'])('rejects invalid native factory include: %s', basename => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-factory-ownership-test-'))
@@ -249,7 +263,7 @@ nativeTest.each(['NodeBufferModule.h', 'NodeStringDecoderModule.h'])('rejects in
 
 // Each owned ABI has its own deadline, so host pressure cannot exhaust one
 // aggregate timeout halfway through the independent rejection contracts.
-nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h', 'Path.h', 'NodeValidator.h', 'stringWidth.h', 'NodeUtilTypesModule.h', 'JSMIMEParams.h', 'sliceAnsi.h', 'stripANSI.h', 'wrapAnsi.h', 'napi_finalizer.h', 'NodeModuleModule.h', 'ReadableStream.h', 'JSReadableStream.h', 'JSStringDecoder.h', 'NodeHTTP.h', 'NodeTLS.h', 'JSNodePerformanceHooksHistogram.h', 'JSNodePerformanceHooksHistogramConstructor.h', 'JSNodePerformanceHooksHistogramPrototype.h', 'ProcessBindingTTYWrap.h', 'NodeVM.h', 'NodeVMModule.h', 'NodeVMScript.h', 'NodeVMSourceTextModule.h', 'NodeVMSyntheticModule.h', 'JSInspectorProfiler.h', 'NodeFetch.h', 'Undici.h', 'EventTarget.h', 'JSEventTarget.h', 'RegisteredEventListener.h', 'JSFFIFunction.h', 'JSX509Certificate.h', 'JSX509CertificateConstructor.h', 'JSX509CertificatePrototype.h'])('rejects owned native class-header drift: %s', header => {
+nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlobalScope.h', 'JSMessagePort.h', 'JSWorker.h', 'BunAnalyzeTranspiledModule.h', 'AbortSignal.h', 'BroadcastChannel.h', 'BunBroadcastChannelRegistry.h', 'JSBroadcastChannel.h', 'MessageEvent.h', 'JSMessageEvent.h', 'ScriptExecutionContext.h', 'NodeAsyncHooks.h', 'WebSocket.h', 'JSWebSocket.h', 'AsyncContextFrame.h', 'Path.h', 'NodeValidator.h', 'stringWidth.h', 'NodeUtilTypesModule.h', 'JSMIMEParams.h', 'sliceAnsi.h', 'stripANSI.h', 'wrapAnsi.h', 'napi_finalizer.h', 'NodeModuleModule.h', 'ReadableStream.h', 'JSReadableStream.h', 'JSStringDecoder.h', 'NodeHTTP.h', 'NodeTLS.h', 'JSNodePerformanceHooksHistogram.h', 'JSNodePerformanceHooksHistogramConstructor.h', 'JSNodePerformanceHooksHistogramPrototype.h', 'ProcessBindingTTYWrap.h', 'NodeVM.h', 'NodeVMModule.h', 'NodeVMScript.h', 'NodeVMSourceTextModule.h', 'NodeVMSyntheticModule.h', 'JSInspectorProfiler.h', 'NodeFetch.h', 'Undici.h', 'EventTarget.h', 'JSEventTarget.h', 'RegisteredEventListener.h', 'JSFFIFunction.h', 'JSX509Certificate.h', 'JSX509CertificateConstructor.h', 'JSX509CertificatePrototype.h', 'NodeTTYModule.h', 'ObjectModule.h', 'JSBufferEncodingType.h', 'JSBufferList.h'])('rejects owned native class-header drift: %s', header => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-header-test-'))
@@ -268,7 +282,7 @@ nativeTest.each(['MessagePort.h', 'MessagePortPipe.h', 'Worker.h', 'BunWorkerGlo
   }
 }, 20000)
 
-nativeTest.each([['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]], ['IPC.cpp', units[0]], ['Path.cpp', units[9]], ['NodeValidator.cpp', units[9]], ['stringWidth.cpp', units[10]], ['NodeUtilTypesModule.cpp', units[11]], ['JSMIMEParams.cpp', units[5]], ['sliceAnsi.cpp', units[10]], ['stripANSI.cpp', units[10]], ['wrapAnsi.cpp', units[10]], ['napi_finalizer.cpp', units[10]], ['NodeModuleModule.cpp', units[11]], ['ReadableStream.cpp', units[2]], ['JSReadableStream.cpp', units[1]], ['JSStringDecoder.cpp', units[12]], ['NodeHTTP.cpp', units[9]], ['NodeTLS.cpp', units[9]], ['JSNodePerformanceHooksHistogram.cpp', units[12]], ['JSNodePerformanceHooksHistogramConstructor.cpp', units[12]], ['JSNodePerformanceHooksHistogramPrototype.cpp', units[12]], ['ProcessBindingTTYWrap.cpp', units[9]], ['NodeVM.cpp', units[9]], ['NodeVMModule.cpp', units[9]], ['NodeVMScript.cpp', units[9]], ['NodeVMSourceTextModule.cpp', units[9]], ['NodeVMSyntheticModule.cpp', units[9]], ['JSInspectorProfiler.cpp', units[12]], ['NodeFetch.cpp', units[9]], ['Undici.cpp', units[8]], ['EventTarget.cpp', units[7]], ['JSEventTarget.cpp', units[5]], ['RegisteredEventListener.cpp', units[2]], ['JSFFIFunction.cpp', units[12]], ['JSX509Certificate.cpp', units[12]], ['JSX509CertificateConstructor.cpp', units[12]], ['JSX509CertificatePrototype.cpp', units[12]], ['Weak.cpp', units[8]]])('rejects invalid native ownership: %s', (basename, unitName) => {
+nativeTest.each([['MessagePortPipe.cpp', units[2]], ['Worker.cpp', units[3]], ['JSWorker.cpp', units[1]], ['BunAnalyzeTranspiledModule.cpp', units[4]], ['JSAbortSignalCustom.cpp', units[6]], ['BroadcastChannel.cpp', units[7]], ['BunBroadcastChannelRegistry.cpp', units[7]], ['JSBroadcastChannel.cpp', units[6]], ['MessageEvent.cpp', units[1]], ['JSMessageEvent.cpp', units[5]], ['ScriptExecutionContext.cpp', units[8]], ['NodeAsyncHooks.cpp', units[9]], ['WebSocket.cpp', units[3]], ['JSWebSocket.cpp', units[1]], ['AsyncContextFrame.cpp', units[4]], ['IPC.cpp', units[0]], ['Path.cpp', units[9]], ['NodeValidator.cpp', units[9]], ['stringWidth.cpp', units[10]], ['NodeUtilTypesModule.cpp', units[11]], ['JSMIMEParams.cpp', units[5]], ['sliceAnsi.cpp', units[10]], ['stripANSI.cpp', units[10]], ['wrapAnsi.cpp', units[10]], ['napi_finalizer.cpp', units[10]], ['NodeModuleModule.cpp', units[11]], ['ReadableStream.cpp', units[2]], ['JSReadableStream.cpp', units[1]], ['JSStringDecoder.cpp', units[12]], ['NodeHTTP.cpp', units[9]], ['NodeTLS.cpp', units[9]], ['JSNodePerformanceHooksHistogram.cpp', units[12]], ['JSNodePerformanceHooksHistogramConstructor.cpp', units[12]], ['JSNodePerformanceHooksHistogramPrototype.cpp', units[12]], ['ProcessBindingTTYWrap.cpp', units[9]], ['NodeVM.cpp', units[9]], ['NodeVMModule.cpp', units[9]], ['NodeVMScript.cpp', units[9]], ['NodeVMSourceTextModule.cpp', units[9]], ['NodeVMSyntheticModule.cpp', units[9]], ['JSInspectorProfiler.cpp', units[12]], ['NodeFetch.cpp', units[9]], ['Undici.cpp', units[8]], ['EventTarget.cpp', units[7]], ['JSEventTarget.cpp', units[5]], ['RegisteredEventListener.cpp', units[2]], ['JSFFIFunction.cpp', units[12]], ['JSX509Certificate.cpp', units[12]], ['JSX509CertificateConstructor.cpp', units[12]], ['JSX509CertificatePrototype.cpp', units[12]], ['Weak.cpp', units[8]], ['NodeTTYModule.cpp', units[11]], ['ObjectModule.cpp', units[11]], ['JSBufferEncodingType.cpp', units[0]], ['JSBufferList.cpp', units[0]], ['JS2Native.cpp', units[0]]])('rejects invalid native ownership: %s', (basename, unitName) => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const temporary = mkdtempSync(path.join(cache, 'home-port-ownership-test-'))
@@ -323,6 +337,43 @@ nativeTest('rejects an unowned linked registry module before artifacts are produ
     const result = generate(temporary, output)
     expect(result.exitCode).toBe(1)
     expect(result.stderr.toString()).toContain('Registry ownership mismatch: missing InternalFuture')
+    expect(existsSync(output)).toBe(false)
+  } finally {
+    rmSync(temporary, { recursive: true })
+  }
+}, 20000)
+
+nativeTest('rejects standalone Buffer class ABI drift before output', () => {
+  const cache = path.join(root, '.zig-cache/tmp')
+  mkdirSync(cache, { recursive: true })
+  const temporary = mkdtempSync(path.join(cache, 'home-buffer-abi-test-'))
+  try {
+    createNativeFixture(temporary)
+    const header = path.join(temporary, 'bindings/JSBuffer.h')
+    writeFileSync(header, read(header) + '\n// ABI drift\n')
+    const output = path.join(temporary, 'output')
+    const result = generate(temporary, output)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr.toString()).toContain('Native class ABI mismatch: JSBuffer.h')
+    expect(existsSync(output)).toBe(false)
+  } finally {
+    rmSync(temporary, { recursive: true })
+  }
+}, 20000)
+
+
+nativeTest('rejects an unowned native factory header before artifacts', () => {
+  const cache = path.join(root, '.zig-cache/tmp')
+  mkdirSync(cache, { recursive: true })
+  const temporary = mkdtempSync(path.join(cache, 'home-native-factory-coverage-'))
+  try {
+    const { codegen } = createNativeFixture(temporary)
+    const source = path.join(codegen, 'NativeModuleImpl.h')
+    writeFileSync(source, read(source) + '\n#include "FutureNativeModule.h"\n')
+    const output = path.join(temporary, 'output')
+    const result = generate(temporary, output)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr.toString()).toContain('Unowned native factory header: FutureNativeModule.h')
     expect(existsSync(output)).toBe(false)
   } finally {
     rmSync(temporary, { recursive: true })

@@ -40,18 +40,27 @@ async function main() {
   const moduleRoots = [...read(moduleUnityPath).matchAll(/^#include "([^"]*NodeModuleModule\.cpp)"$/gm)]
   if (moduleRoots.length !== 1) throw new Error('Native unified source must contain exactly one NodeModuleModule.cpp')
   const nativeHeadersRoot = path.dirname(path.resolve(path.dirname(moduleUnityPath), moduleRoots[0][1]))
-  let bufferHeaderCount = 0
-  let stringDecoderHeaderCount = 0
-  const nativeModuleImpl = externalNativeModules.replace(/^#include "([^"]+)"$/gm, (_, relative) => {
+  const factoryHeaderNames = ['BunTestModule.h', 'BunJSCModule.h', 'BunAppModule.h', 'NodeBufferModule.h', 'NodeConstantsModule.h', 'NodeStringDecoderModule.h', 'NodeUtilTypesModule.h', 'UTF8ValidateModule.h', 'AbortControllerModuleModule.h', 'NodeModuleModule.h', 'NodeProcessModule.h', 'BunObjectModule.h']
+  const factoryHeaderCounts = new Map(factoryHeaderNames.map(name => [name, 0]))
+  const nativeModuleImpl = externalNativeModules.replace(/^#include "([^\"]+)"$/gm, (_, relative) => {
     const name = path.basename(relative)
-    if (name === 'NodeStringDecoderModule.h') { stringDecoderHeaderCount++; return '#include "NodeStringDecoderModule.h"' }
-    if (name === 'NodeBufferModule.h') { bufferHeaderCount++; return '#include "NodeBufferModule.h"' }
-    return `#include ${JSON.stringify(path.join(nativeHeadersRoot, name))}`
+    if (!factoryHeaderCounts.has(name)) throw new Error(`Unowned native factory header: ${name}`)
+    factoryHeaderCounts.set(name, factoryHeaderCounts.get(name)! + 1)
+    return `#include ${JSON.stringify(name)}`
   })
-  if (bufferHeaderCount !== 1) throw new Error('Native module factory header must contain exactly one NodeBufferModule.h')
-  if (stringDecoderHeaderCount !== 1) throw new Error('Native module factory header must contain exactly one NodeStringDecoderModule.h')
-  const stringDecoderModuleHeader = readFileSync(path.join(homeSource, 'jsc/modules/NodeStringDecoderModule.h'))
-  const bufferModuleHeader = readFileSync(path.join(homeSource, 'jsc/modules/NodeBufferModule.h'))
+  for (const [name, count] of factoryHeaderCounts) {
+    if (count !== 1) throw new Error(`Native module factory header must contain exactly one ${name}`)
+  }
+  const factoryHeaders = factoryHeaderNames.map(name => ({ name, bytes: readFileSync(path.join(homeSource, 'jsc/modules', name)) }))
+  const generatedDispatch = dispatch.replace(/^#include "([^"\n]+)"$/gm, (_, relative) => {
+    const name = path.basename(relative)
+    return `#include ${JSON.stringify(factoryHeaderCounts.has(name) ? name : relative.includes("/") ? path.resolve(generated, relative) : relative)}`
+  })
+
+  const bufferRoot = path.join(homeSource, 'jsc/bindings')
+  const bufferHeaderPath = path.resolve(nativeHeadersRoot, '../bindings/JSBuffer.h')
+  assertClassHeaderAbi(readFileSync(path.join(bufferRoot, 'JSBuffer.h')), readFileSync(bufferHeaderPath), 'JSBuffer.h', bufferHeaderPath)
+  const bufferSource = read(path.join(bufferRoot, 'JSBuffer.cpp'))
 
   const sqliteRoot = path.join(homeSource, 'jsc/bindings/sqlite')
   const sqliteHeaderPath = path.resolve(nativeHeadersRoot, '../bindings/sqlite/JSSQLStatement.h')
@@ -106,7 +115,7 @@ async function main() {
     [[['jsc/bindings/JSStringDecoder.cpp', 'JSStringDecoder.h'], ['jsc/bindings/JSNodePerformanceHooksHistogram.cpp', 'JSNodePerformanceHooksHistogram.h'], ['jsc/bindings/JSNodePerformanceHooksHistogramConstructor.cpp', 'JSNodePerformanceHooksHistogramConstructor.h'], ['jsc/bindings/JSNodePerformanceHooksHistogramPrototype.cpp', 'JSNodePerformanceHooksHistogramPrototype.h'], ['jsc/bindings/JSInspectorProfiler.cpp', 'JSInspectorProfiler.h'], ['jsc/bindings/JSFFIFunction.cpp', 'JSFFIFunction.h'], ['jsc/bindings/JSX509Certificate.cpp', 'JSX509Certificate.h'], ['jsc/bindings/JSX509CertificateConstructor.cpp', 'JSX509CertificateConstructor.h'], ['jsc/bindings/JSX509CertificatePrototype.cpp', 'JSX509CertificatePrototype.h']], 'UnifiedSource-src_jsc_bindings-2.cpp', 'HomeJSStringDecoder.cpp'],
     [[['jsc/bindings/webcore/BroadcastChannel.cpp', 'BroadcastChannel.h'], ['jsc/bindings/webcore/BunBroadcastChannelRegistry.cpp', 'BunBroadcastChannelRegistry.h'], ['jsc/bindings/webcore/EventTarget.cpp', 'EventTarget.h']], 'UnifiedSource-src_jsc_bindings_webcore-0.cpp', 'HomeBroadcastChannel.cpp'],
     [[['jsc/bindings/webcore/JSAbortSignalCustom.cpp', 'AbortSignal.h'], ['jsc/bindings/webcore/JSBroadcastChannel.cpp', 'JSBroadcastChannel.h']], 'UnifiedSource-src_jsc_bindings_webcore-1.cpp', 'HomeJSAbortSignalCustom.cpp'],
-    [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
+    [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null], ['jsc/bindings/JSBufferEncodingType.cpp', 'JSBufferEncodingType.h'], ['jsc/bindings/JSBufferList.cpp', 'JSBufferList.h'], ['jsc/bindings/JS2Native.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
     [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h'], ['jsc/bindings/NodeHTTP.cpp', 'NodeHTTP.h'], ['jsc/bindings/NodeTLS.cpp', 'NodeTLS.h'], ['jsc/bindings/ProcessBindingTTYWrap.cpp', 'ProcessBindingTTYWrap.h'], ['jsc/bindings/NodeVM.cpp', 'NodeVM.h'], ['jsc/bindings/NodeVMModule.cpp', 'NodeVMModule.h'], ['jsc/bindings/NodeVMScript.cpp', 'NodeVMScript.h'], ['jsc/bindings/NodeVMSourceTextModule.cpp', 'NodeVMSourceTextModule.h'], ['jsc/bindings/NodeVMSyntheticModule.cpp', 'NodeVMSyntheticModule.h'], ['jsc/bindings/NodeFetch.cpp', 'NodeFetch.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h'], ['jsc/bindings/Undici.cpp', 'Undici.h'], ['jsc/bindings/Weak.cpp', null]], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
     [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h'], ['jsc/bindings/webcore/JSReadableStream.cpp', 'JSReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
@@ -115,7 +124,7 @@ async function main() {
     [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h'], ['jsc/bindings/AsyncContextFrame.cpp', 'AsyncContextFrame.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
     [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h'], ['jsc/bindings/webcore/JSMessageEvent.cpp', 'JSMessageEvent.h'], ['jsc/bindings/webcore/JSMIMEParams.cpp', 'JSMIMEParams.h'], ['jsc/bindings/webcore/JSEventTarget.cpp', 'JSEventTarget.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
     [[['jsc/bindings/stringWidth.cpp', 'stringWidth.h'], ['jsc/bindings/sliceAnsi.cpp', 'sliceAnsi.h'], ['jsc/bindings/stripANSI.cpp', 'stripANSI.h'], ['jsc/bindings/wrapAnsi.cpp', 'wrapAnsi.h'], ['jsc/bindings/napi_finalizer.cpp', 'napi_finalizer.h']], 'UnifiedSource-src_jsc_bindings-5.cpp', 'HomeStringWidth.cpp'],
-    [[['jsc/modules/NodeUtilTypesModule.cpp', 'NodeUtilTypesModule.h'], ['jsc/modules/NodeModuleModule.cpp', 'NodeModuleModule.h']], 'UnifiedSource-src_jsc_modules-0.cpp', 'HomeNodeUtilTypesModule.cpp'],
+    [[['jsc/modules/NodeUtilTypesModule.cpp', 'NodeUtilTypesModule.h'], ['jsc/modules/NodeModuleModule.cpp', 'NodeModuleModule.h'], ['jsc/modules/NodeTTYModule.cpp', 'NodeTTYModule.h'], ['jsc/modules/ObjectModule.cpp', 'ObjectModule.h']], 'UnifiedSource-src_jsc_modules-0.cpp', 'HomeNodeUtilTypesModule.cpp'],
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {
       const source = path.join(homeSource, relativeSource)
@@ -143,8 +152,9 @@ async function main() {
   })
   mkdirSync(output, { recursive: true })
   writeFileSync(path.join(output, 'NativeModuleImpl.h'), nativeModuleImpl)
-  writeFileSync(path.join(output, 'NodeBufferModule.h'), bufferModuleHeader)
-  writeFileSync(path.join(output, 'NodeStringDecoderModule.h'), stringDecoderModuleHeader)
+  writeFileSync(path.join(output, 'GeneratedJS2Native.h'), generatedDispatch)
+  for (const { name, bytes } of factoryHeaders) writeFileSync(path.join(output, name), bytes)
+  writeFileSync(path.join(output, 'JSBuffer.cpp'), `#line 1 ${JSON.stringify(path.join(bufferRoot, 'JSBuffer.cpp'))}\n${bufferSource}`)
   writeFileSync(path.join(output, 'JSSQLStatement.cpp'), `#line 1 ${JSON.stringify(path.join(sqliteRoot, 'JSSQLStatement.cpp'))}\n${sqliteStatement}`)
   for (const { name, bytes } of sqlitePrivateHeaders) writeFileSync(path.join(output, name), bytes)
   for (const { module, name, input, namedExports } of inputs) {

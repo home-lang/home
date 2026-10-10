@@ -27,6 +27,7 @@ var cached_native_modules: ?std.Build.LazyPath = null;
 var cached_string_width_object: ?std.Build.LazyPath = null;
 var cached_string_decoder_object: ?std.Build.LazyPath = null;
 var cached_util_types_object: ?std.Build.LazyPath = null;
+var cached_buffer_object: ?std.Build.LazyPath = null;
 var cached_sqlite_statement_object: ?std.Build.LazyPath = null;
 var cached_core_builtins_object: ?std.Build.LazyPath = null;
 
@@ -256,6 +257,14 @@ pub fn utilTypesObject(b: *std.Build, object_root: []const u8) std.Build.LazyPat
     return object;
 }
 
+pub fn bufferObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_buffer_object) |object| return object;
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "JSBuffer.cpp", output.path(b, "JSBuffer.cpp"));
+    cached_buffer_object = object;
+    return object;
+}
+
 pub fn sqliteStatementObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_sqlite_statement_object) |object| return object;
     const output = nativeModules(b, object_root);
@@ -361,6 +370,29 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/JSX509CertificatePrototype.cpp",
         "packages/runtime/upstream/src/jsc/bindings/JSX509CertificatePrototype.h",
         "packages/runtime/upstream/src/jsc/bindings/Weak.cpp",
+        "packages/runtime/upstream/src/jsc/modules/BunTestModule.h",
+        "packages/runtime/upstream/src/jsc/modules/BunJSCModule.h",
+        "packages/runtime/upstream/src/jsc/modules/BunAppModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeBufferModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeConstantsModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeStringDecoderModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeUtilTypesModule.h",
+        "packages/runtime/upstream/src/jsc/modules/UTF8ValidateModule.h",
+        "packages/runtime/upstream/src/jsc/modules/AbortControllerModuleModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeModuleModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeProcessModule.h",
+        "packages/runtime/upstream/src/jsc/modules/BunObjectModule.h",
+        "packages/runtime/upstream/src/jsc/modules/NodeTTYModule.cpp",
+        "packages/runtime/upstream/src/jsc/modules/NodeTTYModule.h",
+        "packages/runtime/upstream/src/jsc/modules/ObjectModule.cpp",
+        "packages/runtime/upstream/src/jsc/modules/ObjectModule.h",
+        "packages/runtime/upstream/src/jsc/bindings/JSBuffer.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/JSBuffer.h",
+        "packages/runtime/upstream/src/jsc/bindings/JSBufferEncodingType.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/JSBufferEncodingType.h",
+        "packages/runtime/upstream/src/jsc/bindings/JSBufferList.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/JSBufferList.h",
+        "packages/runtime/upstream/src/jsc/bindings/JS2Native.cpp",
         "packages/runtime/src/jsc/internal-stream-wrap.js",
         "packages/runtime/upstream/src/codegen/builtin-parser.ts",
         "packages/runtime/upstream/src/codegen/client-js.ts",
@@ -609,6 +641,11 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeVM.cpp", "NodeVM.h" },
         .{ "UnifiedSource-src_jsc_bindings-3.cpp", "NodeFetch.cpp", "NodeFetch.h" },
         .{ "UnifiedSource-src_jsc_bindings-4.cpp", "Undici.cpp", "Undici.h" },
+        .{ "UnifiedSource-src_jsc_modules-0.cpp", "NodeTTYModule.cpp", "NodeTTYModule.h" },
+        .{ "UnifiedSource-src_jsc_modules-0.cpp", "ObjectModule.cpp", "ObjectModule.h" },
+        .{ "UnifiedSource-src_jsc_bindings-1.cpp", "JSBufferEncodingType.cpp", "JSBufferEncodingType.h" },
+        .{ "UnifiedSource-src_jsc_bindings-1.cpp", "JSBufferList.cpp", "JSBufferList.h" },
+
         .{ "UnifiedSource-src_jsc_bindings_webcore-0.cpp", "EventTarget.cpp", "EventTarget.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-2.cpp", "JSEventTarget.cpp", "JSEventTarget.h" },
         .{ "UnifiedSource-src_jsc_bindings_webcore-4.cpp", "RegisteredEventListener.cpp", "RegisteredEventListener.h" },
@@ -671,6 +708,9 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const sqlite_header = std.fs.path.resolve(b.allocator, &.{ std.fs.path.dirname(module_source).?, "../bindings/sqlite/JSSQLStatement.h" }) catch @panic("OOM");
     defer b.allocator.free(sqlite_header);
     generate.addFileInput(.{ .cwd_relative = sqlite_header });
+    const buffer_header = std.fs.path.resolve(b.allocator, &.{ std.fs.path.dirname(module_source).?, "../bindings/JSBuffer.h" }) catch @panic("OOM");
+    defer b.allocator.free(buffer_header);
+    generate.addFileInput(.{ .cwd_relative = buffer_header });
     cached_native_modules = output;
     return output;
 }
