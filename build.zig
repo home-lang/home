@@ -253,7 +253,6 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.jsAbortSignalObject(b, bun_obj_root),
         native_bindings.broadcastChannelObject(b, bun_obj_root),
         native_bindings.uwsObject(b, bun_obj_root),
-        native_bindings.pollObject(b, bun_obj_root),
         native_bindings.socketLoopObject(b, bun_obj_root),
         native_bindings.cryptoObject0(b, bun_obj_root),
         native_bindings.cryptoObject1(b, bun_obj_root),
@@ -268,6 +267,11 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.processConstantsObject(b, bun_obj_root),
         native_bindings.processUvObject(b, bun_obj_root),
     };
+    if (target.result.os.tag != .windows) {
+        const poll_object = native_bindings.pollObject(b, bun_obj_root);
+        poll_object.addStepDependencies(native_binding_step);
+        m.addObjectFile(poll_object);
+    }
     for (owned_objects) |object| {
         object.addStepDependencies(native_binding_step);
         m.addObjectFile(object);
