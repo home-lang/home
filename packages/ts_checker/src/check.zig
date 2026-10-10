@@ -136477,6 +136477,51 @@ pub const Checker = struct {
     fn guardReferencesAssignedIdentifier(self: *Checker, guard: NodeId) bool {
         const fn_node = self.enclosingFunctionLike(guard) orelse return false;
         const body = hir_mod.fnDeclOf(self.hir, fn_node).body;
+        // If the existing name-specific predicate cannot recognize any write
+        // in this live body, no identifier/span candidate can make it true.
+        // Read the body on every query; do not cache mutable assignment answers.
+        if (!self.nodeHasSupportedIdentifierAssignment(body)) return false;
+        return self.guardReferencesAssignedIdentifierSlow(guard);
+    }
+
+    fn nodeHasSupportedIdentifierAssignment(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op == null and self.hir.kindOf(assignment.target) == .identifier) break :blk true;
+                break :blk self.nodeHasSupportedIdentifierAssignment(assignment.value) or
+                    self.nodeHasSupportedIdentifierAssignment(assignment.target);
+            },
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |statement|
+                    if (self.nodeHasSupportedIdentifierAssignment(statement)) break :blk true;
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                break :blk self.nodeHasSupportedIdentifierAssignment(conditional.then_branch) or
+                    self.nodeHasSupportedIdentifierAssignment(conditional.else_branch);
+            },
+            .switch_stmt => blk: {
+                for (hir_mod.switchCases(self.hir, node)) |case_node| {
+                    for (hir_mod.switchCaseStmts(self.hir, case_node)) |statement|
+                        if (self.nodeHasSupportedIdentifierAssignment(statement)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_case => blk: {
+                for (hir_mod.switchCaseStmts(self.hir, node)) |statement|
+                    if (self.nodeHasSupportedIdentifierAssignment(statement)) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn guardReferencesAssignedIdentifierSlow(self: *Checker, guard: NodeId) bool {
+        const fn_node = self.enclosingFunctionLike(guard) orelse return false;
+        const body = hir_mod.fnDeclOf(self.hir, fn_node).body;
         if (body == hir_mod.none_node_id) return false;
         const guard_span = self.hir.spanOf(guard);
         var candidate: NodeId = 0;
@@ -214806,6 +214851,109 @@ test "checker: exact diagnostic reconciliation marker gate covers every trigger"
 
     s.checker.setSource("const value = predicate(input);");
     try T.expect(!s.checker.sourceMayNeedCompilerCorpusExactDiagnosticReconciliations());
+}
+
+test "checker: live supported assignment proof matches every name-specific body query" {
+    for ([_][]const u8{
+        "const guard = x > 0; return x;",
+        "const guard = x > 0; x = 1;",
+        "const guard = x > 0; if (x) { y = 2; } else { x = 3; }",
+        "const guard = x > 0; switch (x) { case 0: y = 1; break; default: x = 2; }",
+        "const guard = x > 0; { { y = 1; } }",
+        "const guard = x > 0; x += 1;",
+        "const guard = x > 0; x += (y = 1);",
+        "const guard = x > 0; obj.value = 1;",
+        "const guard = x > 0; obj[y = 1] = 2;",
+        "const guard = x > 0; const saved = (x = 1);",
+        "const guard = x > 0; while (x) { x = 1; break; }",
+        "const guard = x > 0; for (;;) { x = 1; break; }",
+        "const guard = x > 0; function nested() { x = 1; }",
+        "const guard = x > 0; return (x = 1);",
+        "const guard = x > 0; if (x = 1) {}",
+    }) |body_source| {
+        const source = try std.fmt.allocPrint(T.allocator, "function owner(x: number, y: number, obj: any) {{ {s} }}", .{body_source});
+        defer T.allocator.free(source);
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        const function = hir_mod.blockStmts(&s.hir, s.root)[0];
+        const body = hir_mod.fnDeclOf(&s.hir, function).body;
+        var recognized = false;
+        var node: NodeId = 0;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) != .identifier) continue;
+            if (s.checker.nodeAssignsIdentifier(body, hir_mod.identifierOf(&s.hir, node).name)) recognized = true;
+        }
+        try T.expectEqual(recognized, s.checker.nodeHasSupportedIdentifierAssignment(body));
+        const guard = hir_mod.varDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, body)[0]).init;
+        try T.expectEqual(s.checker.guardReferencesAssignedIdentifierSlow(guard), s.checker.guardReferencesAssignedIdentifier(guard));
+    }
+}
+
+test "checker: supported assignment proof preserves arbitrary guard span containment" {
+    for ([_][]const u8{
+        "function owner(x: number, y: number) { const guard = x > 0; return x; }",
+        "function owner(x: number, y: number) { const guard = x > 0; y = 1; }",
+        "// @filename: first.ts\nfunction owner(x: number, y: number) { const guard = x > 0; y = 1; }\n// @filename: second.ts\nconst other = 1;",
+    }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        const function = hir_mod.blockStmts(&s.hir, s.root)[0];
+        const body = hir_mod.fnDeclOf(&s.hir, function).body;
+        const guard = hir_mod.varDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, body)[0]).init;
+        for ([_]bool{ false, true }) |sourceless| {
+            if (sourceless) s.checker.source = null;
+            for (0..16) |start| {
+                for (0..16) |end| {
+                    s.hir.spans.items[guard] = .{ .start = @intCast(start), .end = @intCast(end) };
+                    var node: NodeId = 0;
+                    while (node < s.hir.nodeCount()) : (node += 1) {
+                        if (s.hir.kindOf(node) == .identifier)
+                            s.hir.spans.items[node] = .{ .start = node % 13, .end = (node * 3) % 17 };
+                    }
+                    try T.expectEqual(s.checker.guardReferencesAssignedIdentifierSlow(guard), s.checker.guardReferencesAssignedIdentifier(guard));
+                }
+            }
+        }
+    }
+}
+
+test "checker: live supported assignment proof observes body growth and in-place operator edits" {
+    const s = try newSetup("function owner(x: number) { const guard = x > 0; }");
+    defer destroySetup(s);
+    const function = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, function).body;
+    const original = try T.allocator.dupe(NodeId, hir_mod.blockStmts(&s.hir, body));
+    defer T.allocator.free(original);
+    const guard = hir_mod.varDeclOf(&s.hir, original[0]).init;
+    try T.expect(!s.checker.guardReferencesAssignedIdentifier(guard));
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const target = try builder.addIdentifier(.{ .start = 0, .end = 0 }, try s.sint.intern("x"));
+    const assignment = try builder.addAssignment(.{ .start = 0, .end = 0 }, target, target, null);
+    const start: u32 = @intCast(s.hir.child_pool.items.len);
+    try s.hir.child_pool.appendSlice(T.allocator, original);
+    try s.hir.child_pool.append(T.allocator, assignment);
+    s.hir.block_payloads.items[s.hir.payloads.items[body]] = .{ .stmts_start = start, .stmts_len = @intCast(original.len + 1) };
+    s.hir.setParent(assignment, body);
+    try T.expect(s.checker.guardReferencesAssignedIdentifier(guard));
+    try T.expectEqual(s.checker.guardReferencesAssignedIdentifierSlow(guard), s.checker.guardReferencesAssignedIdentifier(guard));
+    s.hir.assignment_payloads.items[s.hir.payloads.items[assignment]].op = .add;
+    try T.expect(!s.checker.guardReferencesAssignedIdentifier(guard));
+    try T.expectEqual(s.checker.guardReferencesAssignedIdentifierSlow(guard), s.checker.guardReferencesAssignedIdentifier(guard));
+}
+
+test "checker: supported assignment proof retains unrelated HIR identifiers overlapping the guard" {
+    const s = try newSetup("function owner(x: number, y: number) { const guard = x > 0; y = 1; }");
+    defer destroySetup(s);
+    const function = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const body = hir_mod.fnDeclOf(&s.hir, function).body;
+    const guard = hir_mod.varDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, body)[0]).init;
+    try T.expect(!s.checker.guardReferencesAssignedIdentifier(guard));
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    _ = try builder.addIdentifier(s.hir.spanOf(guard), try s.sint.intern("y"));
+    try T.expect(s.checker.guardReferencesAssignedIdentifierSlow(guard));
+    try T.expect(s.checker.guardReferencesAssignedIdentifier(guard));
 }
 
 test "checker: exact import-equals fact rejects ordinary import assignment false positives" {
