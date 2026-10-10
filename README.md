@@ -183,6 +183,19 @@ Source and native are restored; the ranking above is unchanged. See the
 [complete rejection report](docs/docs/TS_PERFORMANCE.md#jsdoc-single-line-scan-rejected-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
+The finite-key Record candidate under [#863](https://github.com/home-lang/home/issues/863)
+is held back without timings: new collection-bearing factory controls expose
+lost callback types. The published benchmark ranking above is unchanged.
+
+| Untimed finite Record qualification | Result |
+|---|---|
+| Existing diagnostic / compiler-image controls | 72/72 and 180/180 pass |
+| New collection / contextual controls | 38/42 and 40/42 pass; missing negative diagnostics block adoption |
+| Unchanged Zod graph | 241 TS errors plus two HM9002; unadmitted |
+
+See the [complete qualification report](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
+and [all retained raw controls](bench/vs_tsgo/evidence/20261010-finite-record-qualification-held-863.tar.gz).
+
 The earlier live-HIR import-absence candidate under #864 was **rejected**:
 its independent null-safe target did not establish the required gain.
 

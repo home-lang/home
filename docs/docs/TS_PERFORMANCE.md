@@ -614,6 +614,54 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Finite Record qualification held 2026 10 10 UTC
+
+The finite-key Record candidate under [#863](https://github.com/home-lang/home/issues/863)
+is **uncommitted and untimed**. It preserves literal string and numeric keys,
+closed aliases, readonly members, generic factory result context, logical
+assignment flow, iterable element types and nullable object-union members.
+Its initial controls pass, but additional collection-bearing factory controls
+expose silently accepted type errors. Passing a positive without retaining its
+negative contract is not admission.
+
+| Original candidate qualification | Result |
+|---|---|
+| Checker / Program / driver / CLI / entrypoint | 4,564 / 257 / 200 / 76 / 38 tests pass |
+| Benchmark harness | 147 tests pass |
+| Existing pinned TS6 / native TS7 / Home diagnostic controls | 72/72 pass |
+| Protocol 5 admission across five pins plus parent Home | 180/180 pass |
+| Collection isolation controls | 38/42 pass; Home silently accepts four negatives |
+| Context and polymorphic-this controls | 40/42 pass; Home misses all or part of two negative contracts |
+| Unchanged full Zod graph | 241 TS errors and two HM9002 in both Home images; diagnostic sets differ |
+| Timings and adoption | None |
+
+Both reference compilers satisfy every new control. Collection-only and
+interface-based collections fail the same Home negative contract; Record-only,
+unused collection declarations and direct iteration preserve TS2322 plus
+TS2339. Removing polymorphic `this` from the collection method or explicitly
+typing the callback preserves those diagnostics. Supplying both factory type
+arguments does not. These are untimed reductions identifying a contextual
+type-propagation defect, not alternative implementations or library changes.
+The callback-field control retains only two of four expected Home errors.
+
+On the unchanged pinned Zod graph, Home adds five TS2339 and removes five
+TS2774 relative to the retained parent; equal totals do not establish equal
+semantics or an improvement. Zod remains unadmitted and untimed.
+
+Original source parent: `0b133c8c0db5024962211a6140fd819cf5b098c9`;
+patch SHA-256: `89d2d47b147e44cc38b62d65e94526b28f6b4cc227c907f9884926d5ed9fac96`;
+candidate native: `04d9c9188e521a339f6a6798c1d88b3d73af72ad6daa679aa753c6dbce16475c`;
+parent native: `ff78eeff3f36f622db610d23881be7165dce31b424481318e82360f1da5935f8`.
+The [raw evidence](../../bench/vs_tsgo/evidence/20261010-finite-record-qualification-held-863.tar.gz)
+retains the exact candidate patch, all new reduction outputs and 47 verified
+records from twelve preceding revisions, including failed tests, silent
+acceptance and the earlier crash. All **252 payload checksums** verify;
+archive SHA-256: `41116963b243d3c2631b14663d266560b3b724866acd55d27aa49d5bacef826f`.
+Concurrent #846 source changes were preserved during synchronization; these
+gates describe the frozen original candidate, not the merged tree. Any eventual
+adoption requires fresh qualification. The published competitor ranking remains
+1/20 leads and 13/20 faster than native TS7.
+
 ## JSDoc single line scan rejected 2026 10 10 UTC
 
 The stateless single-pass JSDoc line scan under [#854](https://github.com/home-lang/home/issues/854)
