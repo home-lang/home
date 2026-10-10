@@ -478,7 +478,10 @@ pub const FetchTasklet = struct {
         timing.protect();
         defer timing.unprotect();
         timing.putZigString(global, jsc.ZigString.static("startTime"), JSValue.jsNumber(this.resource_start_ms));
-        if (!this.result.redirected) timing.putZigString(global, jsc.ZigString.static("postRedirectStartTime"), JSValue.jsNumber(this.resource_start_ms));
+        if (this.result.resource_hop_start_ns != 0) timing.putZigString(global, jsc.ZigString.static("postRedirectStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_hop_start_ns)));
+        if (this.result.resource_first_interim_ns != 0) timing.putZigString(global, jsc.ZigString.static("firstInterimNetworkResponseStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_first_interim_ns)));
+        if (this.result.resource_redirect_start_ns != 0) timing.putZigString(global, jsc.ZigString.static("redirectStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_redirect_start_ns)));
+        if (this.result.resource_redirect_end_ns != 0) timing.putZigString(global, jsc.ZigString.static("redirectEndTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_redirect_end_ns)));
         timing.putZigString(global, jsc.ZigString.static("endTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_response_end_ns)));
         if (this.result.resource_request_start_ns != 0) timing.putZigString(global, jsc.ZigString.static("finalNetworkRequestStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_request_start_ns)));
         timing.putZigString(global, jsc.ZigString.static("finalNetworkResponseStartTime"), JSValue.jsNumber(this.relativeResourceTime(this.result.resource_response_start_ns)));

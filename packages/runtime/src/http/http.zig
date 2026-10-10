@@ -728,6 +728,10 @@ state: InternalState = .{},
 /// the HTTP thread and copied into each callback result.
 resource_request_start_ns: u64 = 0,
 resource_response_start_ns: u64 = 0,
+resource_first_interim_ns: u64 = 0,
+resource_redirect_start_ns: u64 = 0,
+resource_redirect_end_ns: u64 = 0,
+resource_hop_start_ns: u64 = 0,
 
 tls_props: ?SSLConfig.SharedPtr = null,
 /// The custom SSL context used for this request (null = default context).
@@ -1283,6 +1287,8 @@ pub fn start(this: *HTTPClient, body: HTTPRequestBody, body_out_str: *MutableStr
     this.state = InternalState.init(body, body_out_str);
     this.resource_request_start_ns = 0;
     this.resource_response_start_ns = 0;
+    this.resource_first_interim_ns = 0;
+    this.resource_hop_start_ns = bun.timespec.now(.force_real_time).ns();
 
     if (this.isHTTPS()) {
         this.start_(true);
@@ -2005,7 +2011,8 @@ pub fn handleOnDataHeaders(
     ctx: *NewHTTPContext(is_ssl),
     socket: NewHTTPContext(is_ssl).HTTPSocket,
 ) void {
-    if (this.resource_response_start_ns == 0 and incoming_data.len > 0) this.resource_response_start_ns = bun.timespec.now(.force_real_time).ns();
+    const received_at_ns = bun.timespec.now(.force_real_time).ns();
+    if (this.resource_response_start_ns == 0 and incoming_data.len > 0) this.resource_response_start_ns = received_at_ns;
     log("handleOnDataHeader data: {s}", .{incoming_data});
     var to_read = incoming_data;
     var needs_move = true;
@@ -2069,6 +2076,8 @@ pub fn handleOnDataHeaders(
 
         // handle the case where we have a 100 Continue
         if (response.status_code >= 100 and response.status_code < 200) {
+            if (this.resource_first_interim_ns == 0) this.resource_first_interim_ns = this.resource_response_start_ns;
+            this.resource_response_start_ns = 0;
             log("information headers", .{});
 
             this.state.pending_response = null;
@@ -2088,6 +2097,8 @@ pub fn handleOnDataHeaders(
                 // we only received 1XX responses, we wanna wait for the next status code
                 return;
             }
+            // Any following header bytes arrived in this same callback.
+            this.resource_response_start_ns = received_at_ns;
             // the buffer could still contain more 1XX responses or other status codes, so we continue parsing
             continue;
         }
@@ -2620,6 +2631,10 @@ pub const HTTPClientResult = struct {
     resource_request_start_ns: u64 = 0,
     resource_response_start_ns: u64 = 0,
     resource_response_end_ns: u64 = 0,
+    resource_first_interim_ns: u64 = 0,
+    resource_redirect_start_ns: u64 = 0,
+    resource_redirect_end_ns: u64 = 0,
+    resource_hop_start_ns: u64 = 0,
     resource_encoded_body_size: ?usize = null,
     has_more: bool = false,
     redirected: bool = false,
@@ -2719,6 +2734,10 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
             .resource_request_start_ns = this.resource_request_start_ns,
             .resource_response_start_ns = this.resource_response_start_ns,
             .resource_response_end_ns = response_end_ns,
+            .resource_first_interim_ns = this.resource_first_interim_ns,
+            .resource_redirect_start_ns = this.resource_redirect_start_ns,
+            .resource_redirect_end_ns = this.resource_redirect_end_ns,
+            .resource_hop_start_ns = this.resource_hop_start_ns,
             .resource_encoded_body_size = this.state.total_body_received,
             .metadata = metadata,
             .body = this.state.body_out_str,
@@ -2736,6 +2755,10 @@ pub fn toResult(this: *HTTPClient) HTTPClientResult {
         .resource_request_start_ns = this.resource_request_start_ns,
         .resource_response_start_ns = this.resource_response_start_ns,
         .resource_response_end_ns = response_end_ns,
+        .resource_first_interim_ns = this.resource_first_interim_ns,
+        .resource_redirect_start_ns = this.resource_redirect_start_ns,
+        .resource_redirect_end_ns = this.resource_redirect_end_ns,
+        .resource_hop_start_ns = this.resource_hop_start_ns,
         .resource_encoded_body_size = this.state.total_body_received,
         .body = this.state.body_out_str,
         .metadata = null,
@@ -3449,6 +3472,8 @@ pub fn handleResponseMetadata(
                             }
                         }
                     }
+                    if (this.resource_redirect_start_ns == 0) this.resource_redirect_start_ns = this.resource_hop_start_ns;
+                    this.resource_redirect_end_ns = bun.timespec.now(.force_real_time).ns();
                     this.state.flags.is_redirect_pending = true;
                     if (this.method.hasRequestBody()) {
                         this.state.flags.resend_request_body_on_redirect = true;

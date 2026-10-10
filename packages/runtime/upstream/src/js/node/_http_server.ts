@@ -254,7 +254,7 @@ function Server(options, callback): void {
     validateObject(options, "options");
     options = { ...options };
 
-    let cert = options.cert;
+    const cert = options.cert;
     if (cert) {
       throwOnInvalidTLSArray("options.cert", cert);
       this[isTlsSymbol] = true;
@@ -266,13 +266,13 @@ function Server(options, callback): void {
       this[isTlsSymbol] = true;
     }
 
-    let ca = options.ca;
+    const ca = options.ca;
     if (ca) {
       throwOnInvalidTLSArray("options.ca", ca);
       this[isTlsSymbol] = true;
     }
 
-    let passphrase = options.passphrase;
+    const passphrase = options.passphrase;
     if (passphrase && typeof passphrase !== "string") {
       throw $ERR_INVALID_ARG_TYPE("options.passphrase", "string", passphrase);
     }
@@ -282,7 +282,7 @@ function Server(options, callback): void {
       throw $ERR_INVALID_ARG_TYPE("options.servername", "string", serverName);
     }
 
-    let secureOptions = options.secureOptions || 0;
+    const secureOptions = options.secureOptions || 0;
     if (secureOptions && typeof secureOptions !== "number") {
       throw $ERR_INVALID_ARG_TYPE("options.secureOptions", "number", secureOptions);
     }
@@ -389,6 +389,7 @@ Server.prototype.close = function (optionalCallback?) {
   server.stop();
 };
 
+// eslint-disable-next-line pickier/no-unused-vars
 Server.prototype[EventEmitter.captureRejectionSymbol] = function (err, event, ...args) {
   switch (event) {
     case "request": {
@@ -812,6 +813,7 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
         }
 
         socket.cork();
+        process.nextTick(() => socket.uncork());
 
         if (handle.finished || didFinish) {
           handle = undefined;
@@ -1349,7 +1351,7 @@ const NodeHTTPServerSocket = class Socket extends Duplex {
 
 function _writeHead(statusCode, reason, obj, response) {
   const originalStatusCode = statusCode;
-  let hasContentLength = response.hasHeader("content-length");
+  const hasContentLength = response.hasHeader("content-length");
   statusCode |= 0;
   if (statusCode < 100 || statusCode > 999) {
     throw $ERR_HTTP_INVALID_STATUS_CODE(format("%s", originalStatusCode));
