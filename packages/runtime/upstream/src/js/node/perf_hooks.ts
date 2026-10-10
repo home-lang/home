@@ -1,5 +1,5 @@
 // Hardcoded module "node:perf_hooks"
-const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList } = require('internal/shared');
+const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList } = require('internal/shared');
 const { validateInteger, validateObject, validateFunction } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
@@ -14,7 +14,6 @@ var {
   PerformanceMark,
   PerformanceMeasure,
   PerformanceObserver: NodePerformanceObserver,
-  PerformanceObserverEntryList,
 } = globalThis;
 
 const constants = {

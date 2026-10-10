@@ -263,21 +263,50 @@ class NodeEntryObserver {
   }
 }
 
+const kEntryListToken = Symbol("PerformanceObserverEntryList");
+const entryListBuffers = new WeakMap();
+
+function entryListBuffer(receiver) {
+  const buffer = entryListBuffers.get(receiver);
+  if (buffer === undefined) {
+    throw $ERR_INVALID_THIS("PerformanceObserverEntryList");
+  }
+  return buffer;
+}
+
+class PerformanceObserverEntryList {
+  constructor(token = undefined, entries = []) {
+    if (token !== kEntryListToken) throw $ERR_ILLEGAL_CONSTRUCTOR();
+    entryListBuffers.set(this, entries.slice().sort((a, b) => a.startTime - b.startTime));
+  }
+
+  getEntries() {
+    return entryListBuffer(this).slice();
+  }
+
+  getEntriesByType(type) {
+    const buffer = entryListBuffer(this);
+    if (arguments.length === 0) throw $ERR_MISSING_ARGS("type");
+    type = `${type}`;
+    return buffer.filter(entry => entry.entryType === type);
+  }
+
+  getEntriesByName(name, type = undefined) {
+    const buffer = entryListBuffer(this);
+    if (arguments.length === 0) throw $ERR_MISSING_ARGS("name");
+    name = `${name}`;
+    return buffer.filter(entry => entry.name === name && (type == null || entry.entryType === type));
+  }
+}
+for (const method of ["getEntries", "getEntriesByType", "getEntriesByName"]) {
+  Object.defineProperty(PerformanceObserverEntryList.prototype, method, { enumerable: true });
+}
+Object.defineProperty(PerformanceObserverEntryList.prototype, Symbol.toStringTag, {
+  value: "PerformanceObserverEntryList", configurable: true,
+});
+
 function makeNodeEntryList(entries) {
-  // Node's PerformanceObserverEntryList hands entries out in chronological
-  // (startTime) order and getEntriesByName takes an optional type filter.
-  const sorted = entries.slice().sort((a, b) => a.startTime - b.startTime);
-  return {
-    getEntries() {
-      return sorted.slice();
-    },
-    getEntriesByType(type) {
-      return sorted.filter(entry => entry.entryType === type);
-    },
-    getEntriesByName(name, type) {
-      return sorted.filter(entry => entry.name === name && (type === undefined || entry.entryType === type));
-    },
-  };
+  return new PerformanceObserverEntryList(kEntryListToken, entries);
 }
 
 //
@@ -300,6 +329,7 @@ export default {
   kNodeEntryTypes,
   NodeEntryObserver,
   makeNodeEntryList,
+  PerformanceObserverEntryList,
 
   kHandle: Symbol("kHandle"),
   kAutoDestroyed: Symbol("kAutoDestroyed"),

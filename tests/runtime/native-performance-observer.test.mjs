@@ -1,13 +1,34 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { connect, createServer } from 'node:net'
-import { PerformanceObserver, performance } from 'node:perf_hooks'
+import { PerformanceObserver, PerformanceObserverEntryList, performance } from 'node:perf_hooks'
 
+assert.equal(PerformanceObserverEntryList.length, 0)
+assert.equal(PerformanceObserverEntryList.prototype.getEntries.length, 0)
+assert.equal(PerformanceObserverEntryList.prototype.getEntriesByType.length, 1)
+assert.equal(PerformanceObserverEntryList.prototype.getEntriesByName.length, 1)
+assert.throws(() => new PerformanceObserverEntryList(), { code: 'ERR_ILLEGAL_CONSTRUCTOR' })
+for (const method of ['getEntries', 'getEntriesByName', 'getEntriesByType']) {
+  assert.throws(() => PerformanceObserverEntryList.prototype[method].call({}), { code: 'ERR_INVALID_THIS' })
+}
 assert.throws(() => new PerformanceObserver(null), { code: 'ERR_INVALID_ARG_TYPE' })
 const delivered = []
 const observer = new PerformanceObserver(function (list, owner) {
   assert.equal(this, observer)
   assert.equal(owner, observer)
+  assert(list instanceof PerformanceObserverEntryList)
+  assert.equal(Object.prototype.toString.call(list), '[object PerformanceObserverEntryList]')
+  assert.throws(() => list.getEntriesByType(), { code: 'ERR_MISSING_ARGS' })
+  assert.throws(() => list.getEntriesByName(), { code: 'ERR_MISSING_ARGS' })
+  const all = list.getEntries()
+  const copy = list.getEntries()
+  copy.length = 0
+  assert.equal(list.getEntries().length, all.length)
+  for (const entry of all) {
+    assert(list.getEntriesByType({ toString: () => entry.entryType }).includes(entry))
+    assert(list.getEntriesByName({ toString: () => entry.name }, null).includes(entry))
+    assert(list.getEntriesByName(entry.name, entry.entryType).includes(entry))
+  }
   delivered.push(...list.getEntries())
 })
 observer.observe({ entryTypes: ['net', 'mark'] })
@@ -48,6 +69,7 @@ let finishDelivery
 const delivery = new Promise(resolve => { finishDelivery = resolve })
 const mergedObserver = new PerformanceObserver(list => {
   batches++
+  assert(list instanceof PerformanceObserverEntryList)
   const entries = list.getEntries()
   assert(entries.some(entry => entry.entryType === 'net'))
   assert(entries.some(entry => entry.name === 'merged-mark'))
