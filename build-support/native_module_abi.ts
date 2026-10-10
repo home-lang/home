@@ -6,6 +6,15 @@ export function assertClassHeaderAbi(home: Uint8Array, external: Uint8Array, nam
   }
 }
 
+export function assertNativeClassIds(source: string, classes: readonly (readonly string[])[]): void {
+  const functions = [...source.matchAll(/JSC_DEFINE_HOST_FUNCTION\(Zig::jsFunctionInherits, \(JSC::JSGlobalObject \* globalObject, JSC::CallFrame\* callFrame\)\)\s*\{([\s\S]*?)\n\}/g)]
+  const cases = classes.map(([name], id) => `case ${id}: return JSValue::encode(jsBoolean(dynamicDowncast<WebCore::JS${name}>(cell) != nullptr));`).join(' ')
+  const expected = `auto id = callFrame->argument(0).toInt32(globalObject); auto value = callFrame->argument(1); if (!value.isCell()) return JSValue::encode(jsBoolean(false)); auto cell = value.asCell(); switch (id) { ${cases} } return JSValue::encode(jsBoolean(false));`
+  if (functions.length !== 1 || functions[0][1].replace(/\s+/g, ' ').trim() !== expected) {
+    throw new Error('Linked native class identity ABI mismatch')
+  }
+}
+
 export function enumValues(header: string): Map<string, number> {
   const result = new Map<string, number>()
   for (const match of header.matchAll(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*(\d+),?\s*$/gm)) {

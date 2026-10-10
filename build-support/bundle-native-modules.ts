@@ -8,7 +8,8 @@ import { declareASCIILiteral, checkAscii } from '../packages/runtime/upstream/sr
 import { createInternalModuleRegistry } from '../packages/runtime/upstream/src/codegen/internal-module-registry-scanner'
 import { define } from '../packages/runtime/upstream/src/codegen/replacements'
 import NodeErrors from '../packages/runtime/upstream/src/jsc/bindings/ErrorCode'
-import { assertClassHeaderAbi, enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
+import nativeClasses from '../packages/runtime/upstream/src/jsc/bindings/js_classes'
+import { assertClassHeaderAbi, assertNativeClassIds, enumValues, moduleEnum, nativeFunctionId, replaceModuleLiteral, requiredId } from './native_module_abi'
 
 async function main() {
   const [externalBuildArg, outputArg] = process.argv.slice(2)
@@ -20,6 +21,7 @@ async function main() {
   const read = (file: string) => readFileSync(file, 'utf8')
   const abi = enumValues(read(path.join(generated, 'InternalModuleRegistry+enum.h')))
   const dispatch = read(path.join(generated, 'GeneratedJS2Native.h'))
+  assertNativeClassIds(read(path.join(generated, 'ZigGeneratedClasses.cpp')), nativeClasses)
   const errors = enumValues(read(path.join(generated, 'ErrorCode+List.h')))
   let errorIndex = 0
   for (const [code, , , ...constructors] of NodeErrors) {
@@ -35,7 +37,7 @@ async function main() {
   const externalNativeModules = read(path.join(generated, 'NativeModuleImpl.h'))
   const moduleUnityPath = path.join(externalBuild, 'unified/UnifiedSource-src_jsc_modules-0.cpp')
   const moduleRoots = [...read(moduleUnityPath).matchAll(/^#include "([^"]*NodeModuleModule\.cpp)"$/gm)]
-  if (moduleRoots.length !== 1) throw new Error('Native module source must contain exactly one NodeModuleModule.cpp')
+  if (moduleRoots.length !== 1) throw new Error('Native unified source must contain exactly one NodeModuleModule.cpp')
   const nativeHeadersRoot = path.dirname(path.resolve(path.dirname(moduleUnityPath), moduleRoots[0][1]))
   let bufferHeaderCount = 0
   const nativeModuleImpl = externalNativeModules.replace(/^#include "([^"]+)"$/gm, (_, relative) => {
@@ -61,7 +63,7 @@ async function main() {
 
   // This is an explicit ownership manifest, not an assertion that all of the
   // mirrored builtins have been ported. Other literal bytes stay unchanged.
-  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts']
+  const ownedModules = ['node/url.ts', 'node/worker_threads.ts', 'node/querystring.ts', 'node/assert.ts', 'node/assert.strict.ts', 'node/events.ts', 'node/async_hooks.ts', 'node/dgram.ts', 'node/net.ts', 'node/timers.ts', 'node/timers.promises.ts', 'internal/async_hooks.ts', 'internal/async_hooks_tick.ts', 'node/path.ts', 'node/path.posix.ts', 'node/path.win32.ts', 'node/util.ts', 'node/domain.ts', 'node/punycode.ts', 'node/diagnostics_channel.ts', 'node/os.ts', 'node/dns.ts', 'node/dns.promises.ts', 'internal/shared.ts', 'internal/errors.ts', 'internal/validators.ts', 'internal/util/inspect.js', 'internal/util/colors.ts', 'internal/util/deprecate.ts', 'internal/util/mime.ts', 'internal/primordials.js', 'internal/streams/add-abort-signal.ts', 'internal/streams/compose.ts', 'internal/streams/destroy.ts', 'internal/streams/duplex.ts', 'internal/streams/duplexify.ts', 'internal/streams/duplexpair.ts', 'internal/streams/end-of-stream.ts', 'internal/streams/from.ts', 'internal/streams/iter/broadcast.ts', 'internal/streams/iter/classic.ts', 'internal/streams/iter/consumers.ts', 'internal/streams/iter/duplex.ts', 'internal/streams/iter/from.ts', 'internal/streams/iter/pull.ts', 'internal/streams/iter/push.ts', 'internal/streams/iter/ringbuffer.ts', 'internal/streams/iter/share.ts', 'internal/streams/iter/transform.ts', 'internal/streams/iter/types.ts', 'internal/streams/iter/utils.ts', 'internal/streams/lazy_transform.ts', 'internal/streams/legacy.ts', 'internal/streams/native-readable.ts', 'internal/streams/operators.ts', 'internal/streams/passthrough.ts', 'internal/streams/pipeline.ts', 'internal/streams/readable.ts', 'internal/streams/state.ts', 'internal/streams/transform.ts', 'internal/streams/utils.ts', 'internal/streams/writable.ts', 'internal/webstreams_adapters.ts', 'node/stream.consumers.ts', 'node/stream.iter.ts', 'node/stream.promises.ts', 'node/stream.ts', 'node/stream.web.ts']
   let constants = read(path.join(generated, 'InternalModuleRegistryConstants.h'))
   // Validate every owned module against the linked ABI before starting bundler
   // workers or writing output. A late module mismatch must not leave a partial
@@ -76,7 +78,7 @@ async function main() {
     }
     const processed = sliceSourceCode(`{${source}`, true, specifier => requireTransformer(specifier, module))
     const input = `var $;\n${processed.result.slice(1).trim().replaceAll('__intrinsic__exports', '$')}\n;$$EXPORT$$($).$$EXPORT_END$$;\n`
-    if (input.includes('__intrinsic__inherits')) throw new Error(`Unvalidated class ABI in ${module}`)
+    if (/__intrinsic__inherits[A-Za-z_]/.test(input)) throw new Error(`Unknown native class identity in ${module}`)
     return { module, name, input }
   })
   // Preflight native ownership and ABI layout before creating any output.
@@ -94,13 +96,13 @@ async function main() {
     [[['jsc/bindings/ErrorCode.cpp', null], ['jsc/bindings/InternalModuleRegistry.cpp', null], ['jsc/bindings/EventLoopTaskNoContext.cpp', null], ['jsc/bindings/IPC.cpp', null], ['../../src/native/H2HeadersMaterializer.cpp', null]], 'UnifiedSource-src_jsc_bindings-1.cpp', 'HomeInternalModuleRegistry.cpp'],
     [[['jsc/bindings/NodeAsyncHooks.cpp', 'NodeAsyncHooks.h'], ['jsc/bindings/Path.cpp', 'Path.h'], ['jsc/bindings/NodeValidator.cpp', 'NodeValidator.h']], 'UnifiedSource-src_jsc_bindings-3.cpp', 'HomeNodeAsyncHooks.cpp'],
     [[['jsc/bindings/ScriptExecutionContext.cpp', 'ScriptExecutionContext.h']], 'UnifiedSource-src_jsc_bindings-4.cpp', 'HomeScriptExecutionContext.cpp'],
-    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
-    [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
+    [[['jsc/bindings/webcore/MessagePort.cpp', 'MessagePort.h'], ['jsc/bindings/webcore/JSWorker.cpp', 'JSWorker.h'], ['jsc/bindings/webcore/MessageEvent.cpp', 'MessageEvent.h'], ['jsc/bindings/webcore/JSWebSocket.cpp', 'JSWebSocket.h'], ['jsc/bindings/webcore/JSReadableStream.cpp', 'JSReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-3.cpp', 'HomeMessagePort.cpp'],
+    [[['jsc/bindings/webcore/MessagePortPipe.cpp', 'MessagePortPipe.h'], ['jsc/bindings/webcore/ReadableStream.cpp', 'ReadableStream.h']], 'UnifiedSource-src_jsc_bindings_webcore-4.cpp', 'HomeMessagePortPipe.cpp'],
     [[['jsc/bindings/webcore/Worker.cpp', 'Worker.h'], ['jsc/bindings/webcore/WebSocket.cpp', 'WebSocket.h']], 'UnifiedSource-src_jsc_bindings_webcore-5.cpp', 'HomeWorker.cpp'],
     [[['jsc/bindings/BunWorkerGlobalScope.cpp', 'BunWorkerGlobalScope.h'], ['jsc/bindings/BunAnalyzeTranspiledModule.cpp', 'BunAnalyzeTranspiledModule.h'], ['jsc/bindings/AsyncContextFrame.cpp', 'AsyncContextFrame.h']], 'UnifiedSource-src_jsc_bindings-0.cpp', 'HomeBunWorkerGlobalScope.cpp'],
     [[['jsc/bindings/webcore/JSMessagePort.cpp', 'JSMessagePort.h'], ['jsc/bindings/webcore/JSMessageEvent.cpp', 'JSMessageEvent.h'], ['jsc/bindings/webcore/JSMIMEParams.cpp', 'JSMIMEParams.h']], 'UnifiedSource-src_jsc_bindings_webcore-2.cpp', 'HomeJSMessagePort.cpp'],
     [[['jsc/bindings/stringWidth.cpp', 'stringWidth.h'], ['jsc/bindings/sliceAnsi.cpp', 'sliceAnsi.h'], ['jsc/bindings/stripANSI.cpp', 'stripANSI.h'], ['jsc/bindings/wrapAnsi.cpp', 'wrapAnsi.h'], ['jsc/bindings/napi_finalizer.cpp', 'napi_finalizer.h']], 'UnifiedSource-src_jsc_bindings-5.cpp', 'HomeStringWidth.cpp'],
-    [[['jsc/modules/NodeUtilTypesModule.cpp', 'NodeUtilTypesModule.h']], 'UnifiedSource-src_jsc_modules-0.cpp', 'HomeNodeUtilTypesModule.cpp'],
+    [[['jsc/modules/NodeUtilTypesModule.cpp', 'NodeUtilTypesModule.h'], ['jsc/modules/NodeModuleModule.cpp', 'NodeModuleModule.h']], 'UnifiedSource-src_jsc_modules-0.cpp', 'HomeNodeUtilTypesModule.cpp'],
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {
       const source = path.join(homeSource, relativeSource)
