@@ -128,7 +128,9 @@ JSValue AsyncContextFrame::call(JSGlobalObject* global, JSValue functionObject, 
     auditEverything(global, functionObject, thisValue, args);
 #endif
 
-    if (!global->isAsyncContextTrackingEnabled()) [[likely]] {
+    // A captured wrapper can outlive the tracking flag that produced it.
+    // It must be unwrapped before looking up callable data.
+    if (!global->isAsyncContextTrackingEnabled() && !dynamicDowncast<AsyncContextFrame>(functionObject)) [[likely]] {
         return JSC::profiledCall(global, ProfilingReason::API, functionObject, JSC::getCallData(functionObject), thisValue, args);
     }
 
@@ -140,7 +142,9 @@ JSValue AsyncContextFrame::call(JSGlobalObject* global, JSValue functionObject, 
     auditEverything(global, functionObject, thisValue, args);
 #endif
 
-    if (!global->isAsyncContextTrackingEnabled()) [[likely]] {
+    // A captured wrapper can outlive the tracking flag that produced it.
+    // It must be unwrapped before looking up callable data.
+    if (!global->isAsyncContextTrackingEnabled() && !dynamicDowncast<AsyncContextFrame>(functionObject)) [[likely]] {
         return JSC::profiledCall(global, ProfilingReason::API, functionObject, JSC::getCallData(functionObject), thisValue, args, returnedException);
     }
 

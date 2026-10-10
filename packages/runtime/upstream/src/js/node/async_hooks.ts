@@ -137,7 +137,11 @@ class AsyncLocalStorage {
     validateFunction(callback, "callback");
     if (this.#disabled) return callback(...args);
     const previous = get();
+    const outside = previous ? previous.slice() : [];
+    const index = outside.indexOf(this);
+    if (index >= 0) outside.splice(index, 2);
     this.#disabled = true;
+    set(outside.length ? outside : undefined);
     try {
       return callback(...args);
     } finally {
