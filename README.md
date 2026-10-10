@@ -146,6 +146,10 @@ The matrix used protocol 4. The later protocol-5 null-safe gate passes
 **150/150 untimed admissions**, checking inferred locals and optional-call
 results; those checks are not relabeled as pre-timing evidence for this matrix.
 See the [new admission contract](docs/docs/TS_PERFORMANCE.md#null-safe-inferred-result-admission-2026-10-10-utc).
+The [current-native profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-profile-2026-10-10-utc)
+uses one unchanged compiler process and two fixed windows after 36 admission
+checks. Displayed PCs map to namespace-import scanning even on the import-free
+scaled input; this is an investigation lead, not a CPU-share or speedup claim.
 The large-predicate
 scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); the expanded competitor

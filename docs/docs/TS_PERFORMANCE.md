@@ -611,6 +611,83 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Exact native null safe profile 2026 10 10 UTC
+
+The current-native profile under [#864](https://github.com/home-lang/home/issues/864)
+shows displayed PCs in the namespace-import helper's root-statement scan while
+checking local signatures on an import-free null-safe workload. This is a
+general resolution path to investigate, **not a measured optimization gain**.
+The earlier rejected ordered namespace-index design under #857 is not revived
+or tuned on the strength of this observation.
+
+### Actual image and input admission
+
+Source is `666a8ada5217013e8337c322c1f2f3e38f2284d4`, compiler implementation
+`a6570c80599122f4c263527bc35a1c27d65987c3`. Only the unmodified standalone native
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`
+is sampled. No diagnostic executable is built, relinked, sampled or timed.
+Original object SHA-256:
+`266add3b449c17bb470dc801a52ed15d50f5df2671e37085e6a052ab2c08b0b0`.
+
+The existing generator creates 32,768 families, 128 times the benchmark's
+256-family structure, without changing types, bodies, strict settings or
+compiler mode. Fixed inferred-local negatives at 0/16,384/32,767 require the
+same 27 errors. TS6.0.3, native TS7.0.2 and Home pass all **six complete scale
+admissions**; all **30 protocol-5 native preflight checks** also pass. Source,
+image and positive/negative input inventories remain unchanged. This is an
+untimed diagnostic scale, not a new ranked benchmark row.
+
+### Fixed windows and displayed addresses
+
+One native process finishes silently with exit 0. Two one-second exploratory
+windows run at fixed offsets 0.1 and 60 seconds, actually starting at 0.105
+and 60.004 seconds. The original two-second middle-window estimate was revised
+**before any sampling** after observing the positive admission still live at
+119 seconds; the old plan and rationale are retained. No window or process is
+repeated to obtain a desired result. There are zero benchmark timing samples.
+
+The early/middle samples contain **817/830 main-thread observations** and
+explicit displayed PCs resolve to **181 symbols**. The stripped call graph
+collapses under `main`; inclusive group counts and ellipses remain unassigned.
+Neither those counts nor the displayed offset sets establish per-function
+CPU percentages, whole-run CPU shares or causal performance gains.
+
+| Current native symbol | Preferred address | Early displayed offsets | Middle displayed offsets |
+|---|---|---|---|
+| `moduleNamespaceTypeForLocalImport` | `0x1002eda08` | 188 | 188, 200 |
+| `checkFnSignatureOnly` | `0x10051ab44` | 19,852, 22,872 | 19,852, 20,788, 32,528 |
+| `aliasedGuardReferencesAreStable` | `0x1003320c0` | 152, 180, 456, 488 | 152, 180, 456, 488 |
+
+The actual native disassembly places namespace offsets 188/200 in the loop
+that decrements the remaining root-statement count and reads statement kinds.
+The scaled project has no import declarations. A future absence/binding proof
+must preserve resolution order, dynamic lowering, malformed/recovery sources,
+source ownership, virtual sections and later HIR changes; a source-word guess
+or previously rejected cache is not sufficient qualification.
+
+### Address proof and retained evidence
+
+The original cached link image matches the sampled image byte-for-byte.
+Object text **9,675,952 bytes** maps into native text **9,677,200 bytes** with
+zero differences outside **159,379 declared relocations**, covering **633,792
+whole relocation-sized bytes**. These masks do **not** prove opcode or bit
+equivalence inside relocated words. All **5,890 original symbol ranges** are
+verified; the extra **1,248 native-tail bytes** remain unmapped. ASLR resolution
+uses the actual sample load address, not old-image addresses. Independent
+verification retains every raw line, displayed PC, ellipsis and collapsed count.
+
+The unchanged 600-second/3,840-MB guard and shared lock remain. Scale admission
+peaks at 2,377 MB and the single native profile at 687 MB; both exit 0. Earlier
+queue waits leave unrelated builds intact. No guard is raised or diagnostic
+check skipped. The [raw profile archive](../../bench/vs_tsgo/evidence/20261010-exact-native-nullsafe-profile-864.tar.gz)
+retains exact text sections, relocation/symbol tables, input projects, every
+admission, raw samples, procedure revision, original source/disassembly and
+independent verifiers. All **46 payload checksums** verify. Archive SHA-256:
+`9dcf699825b34f6f7b5a69d0d20030326566ced5e017f2b3cdf133f0afee7bdb`.
+The separate competitor matrix remains 1/20 leads and 12/20 versus native TS7.
+Zod, finite/symbolic Record domains, canonical C++ and other-platform coverage
+remain incomplete; this profile does not establish universal leadership.
+
 ## Null safe inferred result admission 2026 10 10 UTC
 
 The stronger null-safe contract under [#864](https://github.com/home-lang/home/issues/864)
