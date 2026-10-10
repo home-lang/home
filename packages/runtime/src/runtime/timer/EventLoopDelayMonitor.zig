@@ -40,7 +40,7 @@ pub const Registry = struct {
         var index: usize = 0;
         while (index < this.monitors.items.len) {
             const monitor = this.monitors.items[index];
-            if (monitor.histogram.get() == null) {
+            if (!monitor.histogram.hasValue()) {
                 monitor.destroy(vm);
             } else {
                 index += 1;
@@ -68,16 +68,21 @@ fn destroy(this: *EventLoopDelayMonitor, vm: *VirtualMachine) void {
     bun.default_allocator.destroy(this);
 }
 
+noinline fn recordSample(this: *EventLoopDelayMonitor, elapsed: u64) bool {
+    const histogram = this.histogram.get() orelse return false;
+    if (elapsed > 0) JSNodePerformanceHooksHistogram_recordDelay(histogram, @intCast(@min(elapsed, std.math.maxInt(i64))));
+    return true;
+}
+
 pub fn onFire(this: *EventLoopDelayMonitor, vm: *VirtualMachine, now: *const bun.timespec) void {
-    // Timer.next already removed this node before invoking it.
+    // Keep the weak cell off the persistent timer/event-loop stack frame.
     this.event_loop_timer.in_heap = .none;
-    const histogram = this.histogram.get() orelse {
-        this.destroy(vm);
-        return;
-    };
     const now_ns = now.ns();
     const elapsed = now_ns -| this.last_fire_ns;
-    if (elapsed > 0) JSNodePerformanceHooksHistogram_recordDelay(histogram, @intCast(@min(elapsed, std.math.maxInt(i64))));
+    if (!this.recordSample(elapsed)) {
+        this.destroy(vm);
+        return;
+    }
     this.last_fire_ns = now_ns;
     this.event_loop_timer.next = now.addMs(@intCast(this.resolution_ms));
     vm.timer.insert(&this.event_loop_timer);

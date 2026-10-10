@@ -888,6 +888,8 @@ pub fn enterUWSLoop(this: *VirtualMachine) void {
     loop.run();
 }
 
+extern fn Home__GlobalObject__initializePerformanceBindings(global: *JSGlobalObject) void;
+
 pub fn performanceElapsed(this: *const VirtualMachine) f64 {
     return @as(f64, @floatFromInt(this.origin_timer.read())) / 1_000_000.0;
 }
@@ -1400,6 +1402,7 @@ pub fn initWithModuleGraph(
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    Home__GlobalObject__initializePerformanceBindings(vm.global);
     vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
@@ -1531,6 +1534,7 @@ pub fn init(opts: Options) !*VirtualMachine {
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    Home__GlobalObject__initializePerformanceBindings(vm.global);
     vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
@@ -1700,6 +1704,7 @@ pub fn initWorker(
     uws.Loop.get().internal_loop_data.jsc_vm = vm.jsc_vm;
     vm.transpiler.setAllocator(allocator);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    Home__GlobalObject__initializePerformanceBindings(vm.global);
     vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
@@ -1795,6 +1800,7 @@ pub fn initBake(opts: Options) anyerror!*VirtualMachine {
 
     vm.configureDebugger(opts.debugger);
     vm.body_value_hive_allocator = Body.Value.HiveAllocator.init(bun.typedAllocator(jsc.WebCore.Body.Value));
+    Home__GlobalObject__initializePerformanceBindings(vm.global);
     vm.performance_bootstrap_complete = vm.performanceElapsed();
 
     return vm;
@@ -2806,6 +2812,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     // and would otherwise keep the first file's dead global across the whole run.
     this.macro_event_loop.global = new_global;
     this.has_loaded_constructors = true;
+    Home__GlobalObject__initializePerformanceBindings(new_global);
     if (this.ipc) |ipc| if (ipc == .initialized) {
         ipc.initialized.globalThis = new_global;
     };

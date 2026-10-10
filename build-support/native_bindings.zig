@@ -11,6 +11,7 @@ var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_script_execution_context_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
 var cached_global_gc_object: ?std.Build.LazyPath = null;
+var cached_global_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
 var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_worker_object: ?std.Build.LazyPath = null;
@@ -21,7 +22,7 @@ var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_poll_object: ?std.Build.LazyPath = null;
 var cached_socket_loop_object: ?std.Build.LazyPath = null;
-var cached_resource_timing_objects: ?[3]std.Build.LazyPath = null;
+var cached_resource_timing_objects: ?[4]std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
@@ -97,6 +98,15 @@ pub fn globalGcObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
     const source = files.addCopyFile(b.path("packages/runtime/src/native/global_gc.cpp"), "global_gc.cpp");
     const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
     cached_global_gc_object = object;
+    return object;
+}
+
+pub fn globalObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_global_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/ZigGlobalObject.cpp"), "ZigGlobalObject.cpp");
+    const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
+    cached_global_object = object;
     return object;
 }
 
@@ -210,10 +220,10 @@ pub fn socketLoopObject(b: *std.Build, object_root: []const u8) std.Build.LazyPa
     return object;
 }
 
-pub fn resourceTimingObjects(b: *std.Build, object_root: []const u8) [3]std.Build.LazyPath {
+pub fn resourceTimingObjects(b: *std.Build, object_root: []const u8) [4]std.Build.LazyPath {
     if (cached_resource_timing_objects) |objects| return objects;
-    var objects: [3]std.Build.LazyPath = undefined;
-    for ([_][]const u8{ "ResourceTiming", "PerformanceResourceTiming", "NetworkLoadMetrics" }, 0..) |name, index| {
+    var objects: [4]std.Build.LazyPath = undefined;
+    for ([_][]const u8{ "ResourceTiming", "PerformanceResourceTiming", "NetworkLoadMetrics", "JSPerformance" }, 0..) |name, index| {
         const files = b.addWriteFiles();
         const basename = b.fmt("{s}.cpp", .{name});
         const source = files.addCopyFile(b.path(b.fmt("packages/runtime/upstream/src/jsc/bindings/webcore/{s}", .{basename})), basename);
@@ -870,10 +880,10 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
             compile.addFileInput(.{ .cwd_relative = external_path });
         }
     }
-    if (std.mem.eql(u8, basename, "ResourceTiming.cpp") or std.mem.eql(u8, basename, "PerformanceResourceTiming.cpp") or std.mem.eql(u8, basename, "NetworkLoadMetrics.cpp")) {
+    if (std.mem.eql(u8, basename, "ResourceTiming.cpp") or std.mem.eql(u8, basename, "PerformanceResourceTiming.cpp") or std.mem.eql(u8, basename, "NetworkLoadMetrics.cpp") or std.mem.eql(u8, basename, "JSPerformance.cpp")) {
         const selected_root = std.fs.path.dirname(command.file) orelse @panic("resource timing source has no header root");
         compile.addArgs(&.{ "-I", selected_root });
-        for ([_][]const u8{ "ResourceTiming.h", "ResourceLoadTiming.h", "PerformanceResourceTiming.h", "PerformanceEntry.h", "NetworkLoadMetrics.h" }) |header| {
+        for ([_][]const u8{ "ResourceTiming.h", "ResourceLoadTiming.h", "PerformanceResourceTiming.h", "PerformanceEntry.h", "NetworkLoadMetrics.h", "JSPerformance.h" }) |header| {
             const external_path = b.fmt("{s}/{s}", .{ selected_root, header });
             const owned_path = b.fmt("packages/runtime/upstream/src/jsc/bindings/webcore/{s}", .{header});
             const external = std.Io.Dir.cwd().readFileAlloc(io, external_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read selected resource ABI");
@@ -884,6 +894,18 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
             compile.addFileInput(b.path(owned_path));
             compile.addFileInput(.{ .cwd_relative = external_path });
         }
+    }
+    if (std.mem.eql(u8, basename, "ZigGlobalObject.cpp")) {
+        const selected_root = std.fs.path.dirname(command.file) orelse @panic("global source has no header root");
+        const external_path = b.fmt("{s}/ZigGlobalObject.h", .{selected_root});
+        const owned_path = "packages/runtime/upstream/src/jsc/bindings/ZigGlobalObject.h";
+        const external = std.Io.Dir.cwd().readFileAlloc(io, external_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read selected global ABI");
+        defer b.allocator.free(external);
+        const owned = std.Io.Dir.cwd().readFileAlloc(io, owned_path, b.allocator, .limited(1024 * 1024)) catch @panic("cannot read Home global ABI");
+        defer b.allocator.free(owned);
+        if (!std.mem.eql(u8, external, owned)) std.debug.panic("Home global object ABI mismatch: {s} differs from {s}", .{ owned_path, external_path });
+        compile.addFileInput(b.path(owned_path));
+        compile.addFileInput(.{ .cwd_relative = external_path });
     }
     if (std.mem.eql(u8, basename, "napi.cpp")) {
         // The plain-context corpus adapter has a separate environment ABI.

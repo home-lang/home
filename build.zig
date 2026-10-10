@@ -168,6 +168,8 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/ProcessBindingUV.cpp.o", // compiled from Home
     "src/jsc/bindings/JSBuffer.cpp.o", // compiled from Home
     "src/jsc/bindings/sqlite/JSSQLStatement.cpp.o", // compiled from Home
+    "src/jsc/bindings/ZigGlobalObject.cpp.o", // full global implementation compiled from Home
+    "src/jsc/bindings/webcore/JSPerformance.cpp.o", // compiled from Home
     "src/jsc/bindings/webcore/ResourceTiming.cpp.o", // compiled from Home
     "src/jsc/bindings/webcore/PerformanceResourceTiming.cpp.o", // compiled from Home
     "src/jsc/bindings/webcore/NetworkLoadMetrics.cpp.o", // compiled from Home
@@ -248,6 +250,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.scriptExecutionContextObject(b, bun_obj_root),
         native_bindings.napiObject(b, bun_obj_root),
         native_bindings.globalGcObject(b, bun_obj_root),
+        native_bindings.globalObject(b, bun_obj_root),
         native_bindings.messagePortObject(b, bun_obj_root),
         native_bindings.messagePortPipeObject(b, bun_obj_root),
         native_bindings.workerObject(b, bun_obj_root),

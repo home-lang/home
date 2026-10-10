@@ -5,6 +5,7 @@
 #include <JavaScriptCore/JSFunction.h>
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/ObjectConstructor.h>
+#include "JSPerformanceObserver.h"
 
 #include "ZigGlobalObject.h"
 
@@ -48,7 +49,10 @@ JSC_DEFINE_HOST_FUNCTION(readLoopUtilization, (JSC::JSGlobalObject * globalObjec
 }
 static JSC::JSValue createPerformanceBinding(Zig::GlobalObject* globalObject)
 {
-    return JSC::JSFunction::create(globalObject->vm(), globalObject, 0, "readLoopUtilization"_s, readLoopUtilization, JSC::ImplementationVisibility::Public);
+    auto& vm = globalObject->vm();
+    auto* reader = JSC::JSFunction::create(vm, globalObject, 0, "readLoopUtilization"_s, readLoopUtilization, JSC::ImplementationVisibility::Public);
+    reader->putDirect(vm, JSC::Identifier::fromString(vm, "NativePerformanceObserver"_s), WebCore::JSPerformanceObserver::getConstructor(vm, globalObject), JSC::PropertyAttribute::ReadOnly | JSC::PropertyAttribute::DontEnum);
+    return reader;
 }
 }
 

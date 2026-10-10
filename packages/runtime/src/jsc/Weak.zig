@@ -43,6 +43,7 @@ const WeakImpl = opaque {
     extern fn Bun__WeakRef__new(*jsc.JSGlobalObject, jsc.JSValue, refType: WeakRefType, ctx: ?*anyopaque) *WeakImpl;
     extern fn Bun__WeakRef__get(this: *WeakImpl) jsc.JSValue;
     extern fn Bun__WeakRef__clear(this: *WeakImpl) void;
+    extern fn Bun__WeakRef__hasValue(this: *WeakImpl) bool;
 };
 
 pub fn Weak(comptime T: type) type {
@@ -74,6 +75,11 @@ pub fn Weak(comptime T: type) type {
             }
 
             return .{ .globalThis = globalThis };
+        }
+
+        pub fn hasValue(this: *const WeakType) bool {
+            const ref = this.ref orelse return false;
+            return WeakImpl.Bun__WeakRef__hasValue(ref);
         }
 
         pub fn get(this: *const WeakType) ?jsc.JSValue {

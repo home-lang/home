@@ -398,7 +398,13 @@ function getResourceTimings(name, type) {
   if (type !== undefined && type !== "resource") return [];
   return resourceBuffer.filter(entry => name === undefined || entry.name === name).sort((a, b) => a.startTime - b.startTime);
 }
-function clearResourceTimings() { resourceBuffer = []; }
+function clearResourceTimings(name) {
+  if (name !== undefined && typeof name !== "string") throw $ERR_INVALID_ARG_TYPE("name", "string", name);
+  resourceBuffer = name === undefined ? [] : resourceBuffer.filter(entry => entry.name !== name);
+}
+function mergeResourceTimings(entries, name, type) {
+  return [...entries, ...getResourceTimings(name, type)].sort((a, b) => a.startTime - b.startTime);
+}
 function setResourceTimingBufferSize(size) { resourceBufferSize = size; }
 
 //
@@ -425,6 +431,7 @@ export default {
   PerformanceResourceTiming,
   markResourceTiming,
   getResourceTimings,
+  mergeResourceTimings,
   clearResourceTimings,
   setResourceTimingBufferSize,
 

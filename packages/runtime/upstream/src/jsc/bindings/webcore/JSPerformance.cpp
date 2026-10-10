@@ -20,6 +20,8 @@
 
 #include "config.h"
 #include "JSPerformance.h"
+#include "InternalModuleRegistry.h"
+#include <JavaScriptCore/CallData.h>
 
 #include "ActiveDOMObject.h"
 #include "EventNames.h"
@@ -139,10 +141,29 @@ JSC_DEFINE_JIT_OPERATION(functionPerformanceNowWithoutTypeCheck, JSC::EncodedJSV
     return { functionPerformanceNowBody(vm) };
 }
 
+static JSValue callOwnedPerformanceFunction(JSGlobalObject* globalObject, ASCIILiteral name, MarkedArgumentBuffer& arguments)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
+    auto module = global->internalModuleRegistry()->requireId(global, vm, Bun::InternalModuleRegistry::InternalShared);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto function = module.get(global, Identifier::fromString(vm, name));
+    RETURN_IF_EXCEPTION(scope, {});
+    auto result = JSC::call(global, function, jsUndefined(), arguments, "Owned performance function must be callable"_s);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
+}
+
 JSC_DEFINE_HOST_FUNCTION(jsPerformancePrototypeFunction_markResourceTiming, (JSGlobalObject * globalObject, JSC::CallFrame* callFrame))
 {
-    // TODO:
-    return JSValue::encode(jsUndefined());
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    for (unsigned index = 0; index < std::min<unsigned>(callFrame->argumentCount(), 8u); index++) arguments.append(callFrame->argument(index));
+    auto result = callOwnedPerformanceFunction(globalObject, "markResourceTiming"_s, arguments);
+    RETURN_IF_EXCEPTION(scope, {});
+    return JSValue::encode(result);
 }
 
 // -- end copied --
@@ -278,7 +299,7 @@ void JSPerformance::finishCreation(VM& vm)
         globalObject(),
         0,
         String("now"_s),
-        functionPerformanceNow, ImplementationVisibility::Public, NoIntrinsic, functionPerformanceNow,
+        functionPerformanceNow, ImplementationVisibility::Public, NoIntrinsic, callHostFunctionAsConstructor,
         &DOMJITSignatureForPerformanceNow);
     this->putDirect(vm, JSC::Identifier::fromString(vm, "now"_s), now, 0);
 
@@ -432,7 +453,11 @@ static inline JSC::EncodedJSValue jsPerformancePrototypeFunction_getEntriesBody(
     UNUSED_PARAM(throwScope);
     UNUSED_PARAM(callFrame);
     auto& impl = castedThis->wrapped();
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntries())));
+    auto entries = toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntries());
+    RETURN_IF_EXCEPTION(throwScope, {});
+    MarkedArgumentBuffer arguments;
+    arguments.append(entries);
+    RELEASE_AND_RETURN(throwScope, JSValue::encode(callOwnedPerformanceFunction(castedThis->globalObject(), "mergeResourceTimings"_s, arguments)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsPerformancePrototypeFunction_getEntries, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
@@ -452,7 +477,13 @@ static inline JSC::EncodedJSValue jsPerformancePrototypeFunction_getEntriesByTyp
     EnsureStillAliveScope argument0 = callFrame->uncheckedArgument(0);
     auto type = convert<IDLDOMString>(*lexicalGlobalObject, argument0.value());
     RETURN_IF_EXCEPTION(throwScope, {});
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntriesByType(WTF::move(type)))));
+    auto entries = toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntriesByType(type));
+    RETURN_IF_EXCEPTION(throwScope, {});
+    MarkedArgumentBuffer arguments;
+    arguments.append(entries);
+    arguments.append(jsUndefined());
+    arguments.append(jsString(vm, type));
+    RELEASE_AND_RETURN(throwScope, JSValue::encode(callOwnedPerformanceFunction(castedThis->globalObject(), "mergeResourceTimings"_s, arguments)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsPerformancePrototypeFunction_getEntriesByType, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
@@ -475,7 +506,13 @@ static inline JSC::EncodedJSValue jsPerformancePrototypeFunction_getEntriesByNam
     EnsureStillAliveScope argument1 = callFrame->argument(1);
     auto type = argument1.value().isUndefined() ? String() : convert<IDLDOMString>(*lexicalGlobalObject, argument1.value());
     RETURN_IF_EXCEPTION(throwScope, {});
-    RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntriesByName(WTF::move(name), WTF::move(type)))));
+    auto entries = toJS<IDLSequence<IDLInterface<PerformanceEntry>>>(*lexicalGlobalObject, *castedThis->globalObject(), throwScope, impl.getEntriesByName(name, type));
+    RETURN_IF_EXCEPTION(throwScope, {});
+    MarkedArgumentBuffer arguments;
+    arguments.append(entries);
+    arguments.append(jsString(vm, name));
+    arguments.append(type.isNull() ? jsUndefined() : jsString(vm, type));
+    RELEASE_AND_RETURN(throwScope, JSValue::encode(callOwnedPerformanceFunction(castedThis->globalObject(), "mergeResourceTimings"_s, arguments)));
 }
 
 JSC_DEFINE_HOST_FUNCTION(jsPerformancePrototypeFunction_getEntriesByName, (JSGlobalObject * lexicalGlobalObject, CallFrame* callFrame))
@@ -490,6 +527,10 @@ static inline JSC::EncodedJSValue jsPerformancePrototypeFunction_clearResourceTi
     UNUSED_PARAM(throwScope);
     UNUSED_PARAM(callFrame);
     auto& impl = castedThis->wrapped();
+    MarkedArgumentBuffer arguments;
+    arguments.append(callFrame->argument(0));
+    callOwnedPerformanceFunction(castedThis->globalObject(), "clearResourceTimings"_s, arguments);
+    RETURN_IF_EXCEPTION(throwScope, {});
     RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLUndefined>(*lexicalGlobalObject, throwScope, [&]() -> decltype(auto) { return impl.clearResourceTimings(); })));
 }
 
@@ -509,6 +550,10 @@ static inline JSC::EncodedJSValue jsPerformancePrototypeFunction_setResourceTimi
         return throwVMError(lexicalGlobalObject, throwScope, createNotEnoughArgumentsError(lexicalGlobalObject));
     EnsureStillAliveScope argument0 = callFrame->uncheckedArgument(0);
     auto maxSize = convert<IDLUnsignedLong>(*lexicalGlobalObject, argument0.value());
+    RETURN_IF_EXCEPTION(throwScope, {});
+    MarkedArgumentBuffer arguments;
+    arguments.append(jsNumber(maxSize));
+    callOwnedPerformanceFunction(castedThis->globalObject(), "setResourceTimingBufferSize"_s, arguments);
     RETURN_IF_EXCEPTION(throwScope, {});
     RELEASE_AND_RETURN(throwScope, JSValue::encode(toJS<IDLUndefined>(*lexicalGlobalObject, throwScope, [&]() -> decltype(auto) { return impl.setResourceTimingBufferSize(WTF::move(maxSize)); })));
 }

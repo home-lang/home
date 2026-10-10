@@ -118,3 +118,8 @@ extern "C" JSC::EncodedJSValue Bun__WeakRef__get(Bun::WeakRef* weakRef)
     }
     return JSC::encodedJSValue();
 }
+
+extern "C" bool Bun__WeakRef__hasValue(Bun::WeakRef* weakRef)
+{
+    return static_cast<bool>(weakRef->m_cell);
+}

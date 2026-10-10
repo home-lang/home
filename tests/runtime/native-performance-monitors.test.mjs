@@ -51,8 +51,8 @@ for (const resolution of [1, Number.MAX_SAFE_INTEGER]) {
   const result = spawnSync(process.execPath, ['run', join(import.meta.dir, 'native-performance-monitors-gc.fixture.mjs'), String(resolution)], {
     env: { ...process.env, BUN_DEBUG_QUIET_LOGS: '1' }, encoding: 'utf8', timeout: 10000,
   })
+  assert.equal(result.status, 0, JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.message, stdout: result.stdout, stderr: result.stderr }))
   assert.match(result.stdout, /all enabled monitors collected/)
-  assert.equal(result.status, 0, result.stderr)
 }
 const unreferenced = spawnSync(process.execPath, ['-e', `
   const { monitorEventLoopDelay } = require('node:perf_hooks');

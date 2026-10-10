@@ -1,5 +1,5 @@
 // Hardcoded module "node:perf_hooks"
-const { kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList, PerformanceResourceTiming, markResourceTiming, getResourceTimings, clearResourceTimings, setResourceTimingBufferSize } = require('internal/shared');
+const { kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList, PerformanceResourceTiming, markResourceTiming, getResourceTimings, setResourceTimingBufferSize } = require('internal/shared');
 const { validateInteger, validateObject, validateFunction } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
@@ -8,12 +8,14 @@ const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp"
   figures: number,
 ) => import("node:perf_hooks").RecordableHistogram;
 
+const readLoopUtilization = $cpp("JS2Native.cpp", "Home::createPerformanceBinding");
+const NodePerformanceObserver = readLoopUtilization.NativePerformanceObserver;
+
 var {
   Performance,
   PerformanceEntry,
   PerformanceMark,
   PerformanceMeasure,
-  PerformanceObserver: NodePerformanceObserver,
 } = globalThis;
 
 const constants = {
@@ -86,7 +88,6 @@ class PerformanceNodeTiming extends PerformanceEntry {
   }
 }
 
-const readLoopUtilization = $cpp("JS2Native.cpp", "Home::createPerformanceBinding");
 function createPerformanceNodeTiming() {
   return Object.create(PerformanceNodeTiming.prototype);
 }
@@ -212,20 +213,11 @@ export default {
       return performance.clearMeasures(...arguments);
     },
     getEntries(_) {
-      return [...performance.getEntries(...arguments), ...getResourceTimings()].sort((a, b) => a.startTime - b.startTime);
+      return performance.getEntries(...arguments);
     },
-    getEntriesByName(_) {
-      const name = `${arguments[0]}`;
-      const type = arguments.length > 1 && arguments[1] !== undefined ? `${arguments[1]}` : undefined;
-      return [...performance.getEntriesByName(...arguments), ...getResourceTimings(name, type)].sort((a, b) => a.startTime - b.startTime);
-    },
-    getEntriesByType(_) {
-      return [...performance.getEntriesByType(...arguments), ...getResourceTimings(undefined, `${arguments[0]}`)].sort((a, b) => a.startTime - b.startTime);
-    },
-    setResourceTimingBufferSize(_) {
-      setResourceTimingBufferSize(arguments[0]);
-      return performance.setResourceTimingBufferSize(...arguments);
-    },
+    getEntriesByName(_) { return performance.getEntriesByName(...arguments); },
+    getEntriesByType(_) { return performance.getEntriesByType(...arguments); },
+    setResourceTimingBufferSize(_) { setResourceTimingBufferSize(arguments[0]); },
     timeOrigin: performance.timeOrigin,
     toJSON(_) {
       return performance.toJSON(...arguments);
@@ -239,7 +231,7 @@ export default {
     nodeTiming: createPerformanceNodeTiming(),
     now: () => performance.now(),
     eventLoopUtilization: eventLoopUtilization,
-    clearResourceTimings: function () { clearResourceTimings(); return performance.clearResourceTimings(...arguments); },
+    clearResourceTimings: function () { return performance.clearResourceTimings(...arguments); },
   },
   // performance: {
   //   clearMarks: [Function: clearMarks],
