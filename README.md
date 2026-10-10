@@ -169,6 +169,19 @@ The [new checked-JS native profile](docs/docs/TS_PERFORMANCE.md#current-native-c
 under [#854](https://github.com/home-lang/home/issues/854) verifies one unchanged
 compiler process after 36 admissions. It identifies repeated require-binding
 root scans and local JSDoc work; no CPU-share or new speedup is claimed.
+The subsequent stateless JSDoc single-line-scan candidate was **rejected**:
+its small checked-JS gain came with a confirmed startup loss.
+
+| Rejected single-line-scan comparison | Parent median | Candidate median | Mean-saving 95% interval |
+|---|---:|---:|---:|
+| Checked JS independent, 30 pairs | 28.102 ms | 27.817 ms | +0.039 to +0.479 ms |
+| Startup independent, 30 pairs | 2.928 ms | 2.942 ms | -0.157 to -0.003 ms |
+| Overloads independent, 30 pairs | 25.271 ms | 25.575 ms | -0.482 to +0.457 ms |
+
+All **590 pairs / 284 admissions** remain with no filtering or timing repeats.
+Source and native are restored; the ranking above is unchanged. See the
+[complete rejection report](docs/docs/TS_PERFORMANCE.md#jsdoc-single-line-scan-rejected-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
 The earlier live-HIR import-absence candidate under #864 was **rejected**:
 its independent null-safe target did not establish the required gain.

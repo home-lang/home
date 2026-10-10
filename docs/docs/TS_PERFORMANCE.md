@@ -611,6 +611,118 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## JSDoc single line scan rejected 2026 10 10 UTC
+
+The stateless single-pass JSDoc line scan under [#854](https://github.com/home-lang/home/issues/854)
+is **rejected and was never committed**. The independent official checked-JS
+target improves slightly, but the independent startup confirmation has a
+wholly negative mean-saving interval and fails the frozen risk rule. All
+**590 original pairs / 284 admissions** are retained. The candidate and its
+two tests are removed; clean-parent compilation restores the native
+byte-for-byte. The accepted production matrix remains unchanged.
+
+### Exact candidate and semantic qualification
+
+Parent source is `91c8756acac8c050bb68162a979ee97819784270`, native
+`ff78eeff3f36f622db610d23881be7165dce31b424481318e82360f1da5935f8`.
+Candidate native is
+`0429057e7b3c19084b4f1b26298aa604c2b2d2bce8e8658f5317b2e20ef83540`;
+source/test patch SHA-256:
+`0bac1b9c2b3f827256a7176a0dc908fe0919f6b77f611233bfc46837c81741f7`.
+The current-native profile below identified local JSDoc attachment work.
+The candidate combines a backward line-boundary pass and forward substring
+search into one backward pass, retaining the leftmost `//` exactly. Independent
+source verification confirms all other production attachment, export,
+comment-body and source-fact rules are unchanged. It adds no cache,
+allocation, filename/name/source-word shortcut, work cap, body skip or
+diagnostic suppression. It is not a require-presence or root-binding cache.
+
+Two tests compare against an independent copy of the original algorithm at
+every cursor over **7,776** five-byte trivia sequences, plus malformed,
+multiple-comment, export, CRLF, whitespace and virtual-marker cases. The
+first full checker run passes **4,559/4,559**. Program **255**, driver **200**,
+CLI **76**, entrypoint **38** and harness **147** pass before timing.
+Complete protocol-5 image admission passes **180/180** checks across the five
+unchanged pins including the candidate plus the retained Home parent.
+Both Home images retain **241 TS errors / two HM9002 warnings** on the
+unchanged pinned Zod project; Zod remains unadmitted and untimed.
+
+### Frozen protocol and all results
+
+Before any timing, the protocol fixed three warmups, 10 alternating pairs
+on all 20 official workloads, a separate 30-pair checked-JS target, ten
+fixed independent 30-pair risk rows and one independent confirmation for
+any other wholly negative screen. Startup and overload resolution trigger
+the two additional confirmations. All **14 phases / 590 pairs** complete
+with identical before/after provenance. There are **180 initial admissions**
+and **104 per-phase admissions**, all passing with full wrapper accounting.
+No samples, warnings or adverse values are discarded or repeated.
+
+Intervals are paired parent-minus-candidate mean-saving 95% percentile
+bootstrap intervals, fixed seed **854** and **20,000 resamples**. The rule
+requires positive independent primary saving and rejects any wholly
+negative independent risk interval. Medians are descriptive.
+
+| Phase and workload | Parent median | Candidate median | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Screen startup (10 pairs) | 2.953 ms | 3.094 ms | -0.499 to -0.080 ms |
+| Screen many_files (10 pairs) | 21.759 ms | 22.034 ms | -0.440 to +0.215 ms |
+| Screen deep_types (10 pairs) | 21.788 ms | 21.556 ms | +0.002 to +0.450 ms |
+| Screen import_graph (10 pairs) | 17.224 ms | 17.113 ms | -0.228 to +0.289 ms |
+| Screen reexport_graph (10 pairs) | 13.344 ms | 13.124 ms | -2.240 to +1.089 ms |
+| Screen tsx_components (10 pairs) | 19.634 ms | 19.529 ms | -0.112 to +0.490 ms |
+| Screen generic_calls (10 pairs) | 23.794 ms | 23.740 ms | -0.313 to +0.787 ms |
+| Screen control_flow (10 pairs) | 26.279 ms | 26.274 ms | -0.189 to +0.302 ms |
+| Screen type_predicates (10 pairs) | 33.727 ms | 33.782 ms | -0.333 to +0.571 ms |
+| Screen type_predicates_large (10 pairs) | 253.967 ms | 252.205 ms | -15.064 to +4.917 ms |
+| Screen null_safe_access (10 pairs) | 21.491 ms | 21.683 ms | -0.535 to -0.106 ms |
+| Screen destructuring (10 pairs) | 15.283 ms | 15.051 ms | +0.014 to +0.304 ms |
+| Screen overload_resolution (10 pairs) | 24.519 ms | 24.714 ms | -0.535 to -0.020 ms |
+| Screen class_hierarchy (10 pairs) | 23.658 ms | 23.468 ms | -0.296 to +0.405 ms |
+| Screen structural_objects (10 pairs) | 21.215 ms | 20.992 ms | -0.380 to +0.466 ms |
+| Screen interface_composition (10 pairs) | 34.559 ms | 34.958 ms | -3.853 to -0.169 ms |
+| Screen variadic_tuples (10 pairs) | 32.633 ms | 32.773 ms | -0.136 to +0.449 ms |
+| Screen checkjs_jsdoc (10 pairs) | 28.113 ms | 27.606 ms | +0.139 to +1.259 ms |
+| Screen commonjs_graph (10 pairs) | 18.378 ms | 18.643 ms | -0.649 to +0.157 ms |
+| Screen recursive_generics (10 pairs) | 14.941 ms | 14.811 ms | -0.203 to +0.246 ms |
+| Independent target checkjs_jsdoc (30 pairs) | 28.102 ms | 27.817 ms | +0.039 to +0.479 ms |
+| Independent class_hierarchy (30 pairs) | 24.064 ms | 24.267 ms | -0.106 to +0.896 ms |
+| Independent commonjs_graph (30 pairs) | 18.452 ms | 18.470 ms | -0.274 to +0.157 ms |
+| Independent destructuring (30 pairs) | 15.303 ms | 15.320 ms | -0.115 to +0.105 ms |
+| Independent import_graph (30 pairs) | 17.607 ms | 17.581 ms | -3.191 to +0.089 ms |
+| Independent interface_composition (30 pairs) | 35.276 ms | 35.417 ms | -0.172 to +0.410 ms |
+| Independent null_safe_access (30 pairs) | 22.205 ms | 21.929 ms | -0.235 to +0.331 ms |
+| Independent overload_resolution (30 pairs) | 25.271 ms | 25.575 ms | -0.482 to +0.457 ms |
+| Independent recursive_generics (30 pairs) | 15.112 ms | 15.033 ms | -0.126 to +0.224 ms |
+| Independent reexport_graph (30 pairs) | 12.129 ms | 11.769 ms | -0.298 to +0.478 ms |
+| Independent startup (30 pairs) | 2.928 ms | 2.942 ms | -0.157 to -0.003 ms |
+| Independent type_predicates_large (30 pairs) | 255.451 ms | 255.024 ms | -1.428 to +5.953 ms |
+| Independent variadic_tuples (30 pairs) | 33.473 ms | 33.284 ms | -0.190 to +0.726 ms |
+
+Checked-JS has 25/30 faster pairs and a positive **+0.039432 to +0.478554 ms**
+independent saving interval. Startup has only 11/30 faster pairs and a
+**-0.156801 to -0.003057 ms** independent interval, so the candidate fails
+acceptance. Other risk intervals span zero, which does not prove equivalence.
+The adverse null-safe and interface screens remain visible even though their
+independent intervals span zero. Long observations, including the import
+graph's 44.881250 ms candidate maximum, are retained rather than filtered.
+No alignment or implementation tuning follows this rejection.
+
+### Restoration and raw evidence
+
+The exact patch and test oracle remain in the
+[complete rejection archive](../../bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz),
+alongside every original pair, admission, full suite log, protocol,
+independent recomputation and restoration evidence. All **1,342 payload
+checksums** verify. Archive SHA-256:
+`b8d5ea3fc173e1ccab6147a8435ef90442829662cb814e6178fe46ac81abb2ee`.
+The candidate is removed through a scoped inverse patch, not a reset;
+clean-parent ReleaseFast build exits 0 and matches the parent native hash.
+All timing phases exit 0 under unchanged 600-second/3,840-MB guards.
+Restoration peak is 3,097 MB. The five-compiler ranking remains **1/20 leads,
+13/20 faster than native TS7**; Zod, finite/symbolic Record, canonical C++
+and other-platform coverage remain incomplete.
+
 ## Current native checked JavaScript profile 2026 10 10 UTC
 
 The current checked-JS profile under [#854](https://github.com/home-lang/home/issues/854)
