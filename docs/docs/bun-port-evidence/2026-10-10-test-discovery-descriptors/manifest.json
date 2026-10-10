@@ -1,0 +1,426 @@
+{
+  "schema": 1,
+  "source_commit": "f5173883a8206eae80900d8ae14dea0f4518e9d6",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "verification": {
+    "debug_build_steps": 33,
+    "native_regression_groups": 7,
+    "abi_tests": 70,
+    "abi_assertions": 1158,
+    "directory_stress_count": 11000,
+    "original_files": 3,
+    "counts": {
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "process_checks_passed": 0,
+      "skipped_files": 0
+    },
+    "build_peak_tree_mb": 5684,
+    "build_limit_mb": 8192,
+    "test_limit_mb": 3840,
+    "test_peak_tree_mb": 545
+  },
+  "test_batch": {
+    "executable_sha256": "9c806b4730a85e492ce552d6cf8476b8a1c72ba7438cb99655cd3d3d3a1ef506",
+    "records": [
+      {
+        "label": "native-test-discovery",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-test-discovery.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-stream-wrap",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-stream-wrap.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-stream-cancellation",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-stream-cancellation.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-diagnostics-lifecycle",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-diagnostics-lifecycle.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-node-core-cli",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-node-core-cli.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-spawn-sync-ipc",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-spawn-sync-ipc.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "native-worker-fs-task-shutdown",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "run",
+          "/Users/chris/Code/Home/lang-bun-port/tests/runtime/native-worker-fs-task-shutdown.test.mjs"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "home-relative-abi",
+        "command": [
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home",
+          "test",
+          "build-support/bundle-native-modules.test.ts",
+          "build-support/native_module_abi.test.ts",
+          "build-support/core_builtin_abi.test.ts"
+        ],
+        "exit": 0
+      },
+      {
+        "label": "corpus",
+        "command": [
+          "/Users/chris/.local/share/pantry/global/bin/python3",
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/host-spawn-audit-2026-10-10/run-corpus.py",
+          "final"
+        ],
+        "exit": 0
+      }
+    ]
+  },
+  "original_source_audit": [
+    {
+      "file": "cli/test/path-ignore-patterns.test.ts",
+      "sha256": "e5d99491e8bd7075774356692840bb561694de2593b42ba9bb7a868ca77d0955"
+    },
+    {
+      "file": "cli/test/pass-with-no-tests.test.ts",
+      "sha256": "c81d02b8d615cb57ee46a32514571571eff43c6c2cdd487393e336775683bef6"
+    },
+    {
+      "file": "cli/test/test-filter-lifecycle-snapshot.test.ts",
+      "sha256": "1acaaad05111b9db8c083b00d8b55c62f5c3694bc35feb0ba6f41645ff19d91c"
+    }
+  ],
+  "scope": "Discovery retains queued paths instead of directory descriptors. Cached directory traversal resets per read and preserves deduplication. Existing path filters, excludes, deadlines and ABI assertions are unchanged.",
+  "limitations": [
+    "The saved parent fails the 11,000-directory regression with EBADF; the failed relative-path ABI run is retained. An absolute-path parent ABI control passes all 70 tests but avoids the broad scan and is diagnostic evidence only.",
+    "Installed Bun and the selected Bun artifact are external tools, not rebuilt by this Home change. Their broad-scanner behavior is not claimed fixed.",
+    "Full Bun-suite parity, registry/native dependency ownership, original pending outcomes and Release/ASAN/all-platform verification remain unfinished."
+  ],
+  "files": [
+    {
+      "path": "raw/build-scanner.log.gz",
+      "sha256": "3f6e84f990d9e83477dfcdb23ec4760c7e17f6a8caa88f1802fb9daa39de7e80",
+      "bytes": 3196
+    },
+    {
+      "path": "raw/cleanup.json.gz",
+      "sha256": "ba14b6af32821b6f1101aed37a18e095b9de2b56a37de64bb0b0c9a5f8a85671",
+      "bytes": 1475
+    },
+    {
+      "path": "raw/corpus.log.gz",
+      "sha256": "3a3d0e36398bd873fe7c5d86886a2ed4c7afad4c4a38f35e101c5dc4c354a0a3",
+      "bytes": 134
+    },
+    {
+      "path": "raw/current-reproduction.log.gz",
+      "sha256": "4ae45cf41816e711177fc44449069e9f10880147a1cc35fa34639f855e35089a",
+      "bytes": 750
+    },
+    {
+      "path": "raw/executables.json.gz",
+      "sha256": "f50b8d98b45215fb0d02db04fc314912acf2162328ee0e18c982dc81ababe65b",
+      "bytes": 400
+    },
+    {
+      "path": "raw/fd-pressure.test.ts.gz",
+      "sha256": "57d6bea76beb705906924c6faa2eea3eae43cd8ee42c91f56a28bd5684dfbcb1",
+      "bytes": 969
+    },
+    {
+      "path": "raw/file-output-actions.lldb.gz",
+      "sha256": "6edd5c6a365f86ebb218f316e5e4203fe66707d7d80358626c673bee9adc1214",
+      "bytes": 477
+    },
+    {
+      "path": "raw/file-output-actions.log.gz",
+      "sha256": "007daaee24fa49e3c8797c96ffde716380df58e161e2cbef8feab6e22f1bf08f",
+      "bytes": 3352
+    },
+    {
+      "path": "raw/final/corpus-1/000000.junit.xml.gz",
+      "sha256": "8b1e263e35b963a3bbd2157456510c14e10e1aaa3b79dabcdd027f5d428f5b6b",
+      "bytes": 2364
+    },
+    {
+      "path": "raw/final/corpus-1/000000.stderr.gz",
+      "sha256": "6d5e80cf631745b8dc6a711cc4a7364529353d92d7db1108bc800e10a69bfcf4",
+      "bytes": 1405
+    },
+    {
+      "path": "raw/final/corpus-1/000000.stdout.gz",
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2",
+      "bytes": 47
+    },
+    {
+      "path": "raw/final/corpus-1/events.jsonl.gz",
+      "sha256": "b1f23e9f4b1bd504282b8605e6b0e23d4cd64b7ef8215db25e3cc717b35bc446",
+      "bytes": 4118
+    },
+    {
+      "path": "raw/final/corpus-1.log.gz",
+      "sha256": "c380e2ac5764ee6c13f7fcf78c48f8abec61d16f1757f1177e98263009ec3b8f",
+      "bytes": 2257
+    },
+    {
+      "path": "raw/final/corpus-2/000000.junit.xml.gz",
+      "sha256": "09ae22329ee375af8e7423754d513ae7e8a69d4dcc10ec5879ca0f06e461dd3f",
+      "bytes": 1299
+    },
+    {
+      "path": "raw/final/corpus-2/000000.stderr.gz",
+      "sha256": "9d0c71e5351e569f821f68bae9b6111634548fb8b12aaf47bcd90889a989f03f",
+      "bytes": 796
+    },
+    {
+      "path": "raw/final/corpus-2/000000.stdout.gz",
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2",
+      "bytes": 47
+    },
+    {
+      "path": "raw/final/corpus-2/events.jsonl.gz",
+      "sha256": "431f25ae65a1ecd9e1a79cbd752ef690f99a1c3e3826aa8bdde0388453f3b6a2",
+      "bytes": 4112
+    },
+    {
+      "path": "raw/final/corpus-2.log.gz",
+      "sha256": "cd50fa45e4113b5048872d1cc2269cc36331792e6d81350c69f15c32891db6f9",
+      "bytes": 1642
+    },
+    {
+      "path": "raw/final/corpus-3/000000.junit.xml.gz",
+      "sha256": "dac974f9b0c133e724db13f469dff13876bc58ee8961739f781ed7c6fe452e79",
+      "bytes": 530
+    },
+    {
+      "path": "raw/final/corpus-3/000000.stderr.gz",
+      "sha256": "1b7bebba05c60cb20b1b0b9c81b881e7c901d62430ad243e4bcfab8012abb069",
+      "bytes": 267
+    },
+    {
+      "path": "raw/final/corpus-3/000000.stdout.gz",
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2",
+      "bytes": 47
+    },
+    {
+      "path": "raw/final/corpus-3/events.jsonl.gz",
+      "sha256": "c5143856eb1ce9169875d89148c4187ed5ab8038c527d657299cd17e8a3e8aa5",
+      "bytes": 4136
+    },
+    {
+      "path": "raw/final/corpus-3.log.gz",
+      "sha256": "078e85b4d200527bdc1649a4261af4c56a4dbebe7743feaa1d05150e79b78d1c",
+      "bytes": 1137
+    },
+    {
+      "path": "raw/final/summary.json.gz",
+      "sha256": "86e952acb424b189e7ce96031cdc0b41a59d515e6774794a008720f27f3e7b43",
+      "bytes": 1199
+    },
+    {
+      "path": "raw/final/validate-1.json.gz",
+      "sha256": "74768341195cae5360f72c52e965152747d6242d4fa008ba284859e62d045134",
+      "bytes": 2420
+    },
+    {
+      "path": "raw/final/validate-2.json.gz",
+      "sha256": "1b3ec0a93c35ab704a0d34418937753380429e7e81e7b4923c4e4d7b26103481",
+      "bytes": 1749
+    },
+    {
+      "path": "raw/final/validate-3.json.gz",
+      "sha256": "d4acda0d2f13e619a9a6183b699a3f61ea01cb7e311336ffc285b11d3d37d2a5",
+      "bytes": 1057
+    },
+    {
+      "path": "raw/home-abi.log.gz",
+      "sha256": "a88fa8c532afbf8159b8380076b0f556095d7e5de0c6e4b7d881ecd4541fe34f",
+      "bytes": 45689
+    },
+    {
+      "path": "raw/home-absolute-abi.log.gz",
+      "sha256": "ec445edcc6edcc270d2513ae439b6614fb9bfcfa60c6a6ff615ed43320bd86a8",
+      "bytes": 6165
+    },
+    {
+      "path": "raw/home-file-output.log.gz",
+      "sha256": "8a42a2a2c08d9f4f7665661d749aeeb53999504aabf547157734587a916a9faa",
+      "bytes": 741
+    },
+    {
+      "path": "raw/home-relative-abi.log.gz",
+      "sha256": "efba849b9850e10fefade6bb9e08371843a3e54da0dfd7eb25120194f33009c0",
+      "bytes": 5898
+    },
+    {
+      "path": "raw/native-diagnostics-lifecycle.log.gz",
+      "sha256": "2c2b35ca21b40d6c3b5c28add732ecc07c6b417c70cb68950a799eec2a7cfb26",
+      "bytes": 77
+    },
+    {
+      "path": "raw/native-node-core-cli.log.gz",
+      "sha256": "4da93fd2bd9215ae77164f17b2490d62cf9bf6cf3307ebf5ae06c26b80cbec76",
+      "bytes": 303
+    },
+    {
+      "path": "raw/native-spawn-sync-ipc.log.gz",
+      "sha256": "f61821bb8af449b84627918cfc10d84576fe6f7d246e34c805bb82ecbdc12d91",
+      "bytes": 830
+    },
+    {
+      "path": "raw/native-stream-cancellation.log.gz",
+      "sha256": "7acd594125c76717bd45e316f6f4b67ae3229e608ec5f787556e58013cca1b2d",
+      "bytes": 59
+    },
+    {
+      "path": "raw/native-stream-wrap.log.gz",
+      "sha256": "def22708c1c6cf2cc040bb91c7954d487768664f764c9bf8dc116af857049e19",
+      "bytes": 56
+    },
+    {
+      "path": "raw/native-test-discovery.log.gz",
+      "sha256": "34aabfa2c3efdcfbbe91ffcd0d6a3c390e520df9da589e26ee95094aa7aad831",
+      "bytes": 71
+    },
+    {
+      "path": "raw/native-worker-fs-task-shutdown.log.gz",
+      "sha256": "293b2517fc399cbf654f3d5dde0b640c7e213339793331b2a66d29647d158e4e",
+      "bytes": 38
+    },
+    {
+      "path": "raw/options-log.test.ts.gz",
+      "sha256": "44ef29caea3b967e9802d2bc5c7d47eef719e89bb7596acc10a2bd6756b01cca",
+      "bytes": 843
+    },
+    {
+      "path": "raw/options.log.gz",
+      "sha256": "3406705ba6e43f7c0d500dbe253bc87890e361f9a2b8cf8cbd3f5bafb2c88d5b",
+      "bytes": 1749
+    },
+    {
+      "path": "raw/options.test.ts.gz",
+      "sha256": "6a8d027434f71d96515bf11f34fc1bf321d84772ab6771ff22d73df94500d0a1",
+      "bytes": 812
+    },
+    {
+      "path": "raw/pickier.log.gz",
+      "sha256": "9d28594ca8082656d4d4ba05f5c4cf0738e8146fdb9d342cafb03b07f8d733c4",
+      "bytes": 77
+    },
+    {
+      "path": "raw/publish-evidence.py.gz",
+      "sha256": "9fe14ba0d4390f463e1b1b95d814c731bcf822709aea178c6180e3ed601434ab",
+      "bytes": 3889
+    },
+    {
+      "path": "raw/run-corpus.py.gz",
+      "sha256": "4699b26244334e2a157284cf931ffd2cc4d0b3668b515cf6d37822b21c034aaa",
+      "bytes": 1874
+    },
+    {
+      "path": "raw/scanner-baseline-executed.log.gz",
+      "sha256": "3742ca210586f22e722baa10e60efb6c64b902349b09d45f677c5ecbb7d8e210",
+      "bytes": 1403
+    },
+    {
+      "path": "raw/scanner-baseline.log.gz",
+      "sha256": "2061cf13adfd29e09b8dfab7396ebe4867f2d3c620e3eadaf88e2ca34426b616",
+      "bytes": 180
+    },
+    {
+      "path": "raw/scanner-saved-baseline.log.gz",
+      "sha256": "10bb8e4ebbc350a2a646c3e6e434ef99924998b24c3165c0a23cd113ec9dc9f0",
+      "bytes": 255
+    },
+    {
+      "path": "raw/selection.json.gz",
+      "sha256": "a6afa011f1f788b39f1dfaf596c4722f148fdc4711034ae8c7d7ece537af759a",
+      "bytes": 132
+    },
+    {
+      "path": "raw/stdio-fd.test.ts.gz",
+      "sha256": "7f081aef60173c375f722623d4032903a36d10bf68456c3e35d3eca389de204b",
+      "bytes": 643
+    },
+    {
+      "path": "raw/target-file.stderr.gz",
+      "sha256": "122b6f8c0514caa7821b194216639736a37799472db88e20ccc4279f5eb7b576",
+      "bytes": 160
+    },
+    {
+      "path": "raw/target-file.stdout.gz",
+      "sha256": "23b2ac0e2290f3883cdc2168f2fe5ad300c7a59c03177e9cb9a20126182eef3a",
+      "bytes": 344
+    },
+    {
+      "path": "raw/test-batch.log.gz",
+      "sha256": "267f3a8b76da24027979d57417f832f59fd5a806c3e2a0c056f76b318519c85f",
+      "bytes": 495
+    },
+    {
+      "path": "raw/test-batch.py.gz",
+      "sha256": "50cf0ff16a2107c3f8369e3d1492b562fb906b189f7315d124d1811627a59eac",
+      "bytes": 1310
+    },
+    {
+      "path": "raw/test-summary.json.gz",
+      "sha256": "5ae05d727ea47a34c00fe787decff1469d02057142fdc9b520e750e1742a3dcf",
+      "bytes": 2618
+    },
+    {
+      "path": "raw/tested-source.json.gz",
+      "sha256": "bff580a783241003591db034bd60514c6c884bdb0ab3b2a9486e5d6eeedbf143",
+      "bytes": 244
+    },
+    {
+      "path": "raw/zig-fmt.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "source/packages/runtime/src/runtime/cli/test/Scanner.zig.gz",
+      "sha256": "dca1ec96e36fbe3512ed929bbea2b0a418a713e5c78a5ab0c0cbbffcb76f177b",
+      "bytes": 10810
+    },
+    {
+      "path": "source/tests/runtime/native-test-discovery.test.mjs.gz",
+      "sha256": "1c324060c9268e034c17acc906b413e85e80aaf82c6c41d8baa065e49309a3cd",
+      "bytes": 2642
+    }
+  ]
+}
