@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
-import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks'
+import { createHistogram, monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks'
 
 async function waitFor(condition) {
   const deadline = Date.now() + 2000
@@ -74,3 +74,31 @@ await new Promise((resolve, reject) => {
 assert.equal(typeof nodePerformance.clearResourceTimings, 'function')
 nodePerformance.clearResourceTimings()
 console.log('native independent delay monitors, weak lifetime, retained samples and large resolution passed')
+
+// Bounds are validated before entering HDR, and BigInts retain all 64 bits.
+for (const options of [null, false, 1, 'options', []]) {
+  assert.throws(() => createHistogram(options), { code: 'ERR_INVALID_ARG_TYPE' })
+}
+for (const name of ['lowest', 'highest', 'figures']) {
+  for (const value of [NaN, Infinity, 1.5, 0, -1]) {
+    assert.throws(() => createHistogram({ [name]: value }), { code: 'ERR_OUT_OF_RANGE' })
+  }
+}
+for (const name of ['lowest', 'highest']) {
+  assert.throws(() => createHistogram({ [name]: Number.MAX_SAFE_INTEGER + 1 }), { code: 'ERR_OUT_OF_RANGE' })
+  assert.throws(() => createHistogram({ [name]: 9223372036854775808n }), { code: 'ERR_OUT_OF_RANGE' })
+}
+assert.throws(() => createHistogram({ lowest: 4503599627370497n, highest: 9007199254740993n }), { code: 'ERR_OUT_OF_RANGE' })
+const precise = createHistogram({ lowest: 1n, highest: 9223372036854775807n, figures: 1 })
+precise.record(1n)
+precise.record(9007199254740993n)
+assert.equal(precise.countBigInt, 2n)
+assert.equal(precise.maxBigInt, 9007199254740993n)
+assert.equal(precise.exceedsBigInt, 0n)
+const smallBigInts = createHistogram({ lowest: 1n, highest: 10n, figures: 1 })
+smallBigInts.record(5n)
+assert.equal(smallBigInts.minBigInt, 5n)
+console.log('native histogram integer validation and exact BigInt transport passed')
+let optionReads = 0
+createHistogram({ get lowest() { optionReads++; return 1n }, get highest() { optionReads++; return 10n }, get figures() { optionReads++; return 1 } })
+assert.equal(optionReads, 3)

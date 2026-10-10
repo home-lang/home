@@ -1,9 +1,10 @@
 // Hardcoded module "node:perf_hooks"
-const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver } = require("internal/shared");
+const { throwNotImplemented, kNodeEntryTypes, NodeEntryObserver } = require('internal/shared');
+const { validateInteger, validateObject } = require("internal/validators");
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
-  min: number,
-  max: number,
+  min: number | bigint,
+  max: number | bigint,
   figures: number,
 ) => import("node:perf_hooks").RecordableHistogram;
 
@@ -16,7 +17,7 @@ var {
   PerformanceObserverEntryList,
 } = globalThis;
 
-var constants = {
+const constants = {
   NODE_PERFORMANCE_ENTRY_TYPE_DNS: 4,
   NODE_PERFORMANCE_ENTRY_TYPE_GC: 0,
   NODE_PERFORMANCE_ENTRY_TYPE_HTTP: 1,
@@ -268,53 +269,26 @@ export default {
     highest?: number | bigint;
     figures?: number;
   }): import("node:perf_hooks").RecordableHistogram {
-    const opts = options || {};
+    const opts = options === undefined ? {} : options;
+    validateObject(opts, "options");
 
-    let lowest = 1;
-    let highest = Number.MAX_SAFE_INTEGER;
-    let figures = 3;
+    const { lowest = 1, highest = Number.MAX_SAFE_INTEGER, figures = 3 } = opts;
 
-    const lowestOpt = opts.lowest;
-    if (lowestOpt !== undefined) {
-      if (typeof lowestOpt === "bigint") {
-        lowest = Number(lowestOpt);
-      } else if (typeof lowestOpt === "number") {
-        lowest = lowestOpt;
+    for (const [name, value] of [["options.lowest", lowest], ["options.highest", highest]] as const) {
+      if (typeof value === "bigint") {
+        if (value < 1n || value > 9223372036854775807n) {
+          throw $ERR_OUT_OF_RANGE(name, ">= 1n && <= 9223372036854775807n", value);
+        }
       } else {
-        throw $ERR_INVALID_ARG_TYPE("options.lowest", ["number", "bigint"], lowestOpt);
+        validateInteger(value, name, 1, Number.MAX_SAFE_INTEGER);
       }
     }
 
-    const highestOpt = opts.highest;
-    if (highestOpt !== undefined) {
-      if (typeof highestOpt === "bigint") {
-        highest = Number(highestOpt);
-      } else if (typeof highestOpt === "number") {
-        highest = highestOpt;
-      } else {
-        throw $ERR_INVALID_ARG_TYPE("options.highest", ["number", "bigint"], highestOpt);
-      }
+    const minimumHighest = 2n * BigInt(lowest);
+    if (BigInt(highest) < minimumHighest) {
+      throw $ERR_OUT_OF_RANGE("options.highest", `>= 2 * options.lowest (${minimumHighest}n)`, highest);
     }
-
-    const figuresOpt = opts.figures;
-    if (figuresOpt !== undefined) {
-      if (typeof figuresOpt !== "number") {
-        throw $ERR_INVALID_ARG_TYPE("options.figures", "number", figuresOpt);
-      }
-      if (figuresOpt < 1 || figuresOpt > 5) {
-        throw $ERR_OUT_OF_RANGE("options.figures", ">= 1 && <= 5", figuresOpt);
-      }
-      figures = figuresOpt;
-    }
-
-    // Node.js validation - highest must be >= 2 * lowest
-    if (lowest < 1) {
-      throw $ERR_OUT_OF_RANGE("options.lowest", ">= 1 && <= 9007199254740991", lowest);
-    }
-
-    if (highest < 2 * lowest) {
-      throw $ERR_OUT_OF_RANGE("options.highest", `>= ${2 * lowest} && <= 9007199254740991`, highest);
-    }
+    validateInteger(figures, "options.figures", 1, 5);
 
     return cppCreateHistogram(lowest, highest, figures);
   },

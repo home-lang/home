@@ -8,6 +8,7 @@
 #include "wtf/text/ASCIILiteral.h"
 #include <wtf/MathExtras.h>
 #include <JavaScriptCore/JSCInlines.h>
+#include <JavaScriptCore/JSBigIntInlines.h>
 #include <JavaScriptCore/JSGlobalObject.h>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/JSMap.h>
@@ -69,8 +70,7 @@ JSC_DEFINE_HOST_FUNCTION(jsNodePerformanceHooksHistogramProtoFuncRecord, (JSGlob
     if (arg.isNumber()) {
         value = truncateDoubleToInt64(arg.asNumber());
     } else if (arg.isBigInt()) {
-        auto* bigInt = uncheckedDowncast<JSBigInt>(arg);
-        value = JSBigInt::toBigInt64(bigInt);
+        value = JSBigInt::toBigInt64(arg);
     } else {
         Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "value"_s, "number or BigInt"_s, arg);
         return {};
@@ -391,8 +391,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_createHistogram, (JSGlobalObject * globalObj
         if (lowestArg.isNumber()) {
             lowest = truncateDoubleToInt64(lowestArg.asNumber());
         } else if (lowestArg.isBigInt()) {
-            auto* bigInt = uncheckedDowncast<JSBigInt>(lowestArg);
-            lowest = JSBigInt::toBigInt64(bigInt);
+            lowest = JSBigInt::toBigInt64(lowestArg);
         }
     }
 
@@ -401,8 +400,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_createHistogram, (JSGlobalObject * globalObj
         if (highestArg.isNumber()) {
             highest = truncateDoubleToInt64(highestArg.asNumber());
         } else if (highestArg.isBigInt()) {
-            auto* bigInt = uncheckedDowncast<JSBigInt>(highestArg);
-            highest = JSBigInt::toBigInt64(bigInt);
+            highest = JSBigInt::toBigInt64(highestArg);
         }
     }
 
