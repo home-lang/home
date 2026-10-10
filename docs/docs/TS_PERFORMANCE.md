@@ -10,10 +10,13 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-The latest complete timing matrix is `20261010T051920Z`, measuring the landed
-[Record and indexed-interface fixes](#imported-record-and-indexed-interface-admission-2026-10-10-utc)
-independently of their diagnostic-only admission checks. Home leads **1/20**
-workloads and beats native TS 7 on **12/20**; the broader goal remains incomplete.
+The latest complete timing matrix is `20261010T081352Z`, measuring the landed
+[live-body write proof](#adopted-write-proof-benchmark-matrix-2026-10-10-utc)
+under protocol 5. Home leads **1/20** workloads and beats native TS 7 on
+**13/20**; the broader goal remains incomplete. Its complete 20-workload table,
+150 admissions and 3,000 timing samples are retained in that report.
+The `20261010T051920Z` table below is the earlier protocol-4 historical snapshot,
+not the latest ranking.
 
 The later ordered namespace-import candidate is **rejected**, fully restored
 and never pushed: independent destructuring confirmation regresses despite
