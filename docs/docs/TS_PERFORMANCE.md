@@ -611,6 +611,125 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Live HIR import absence rejected 2026 10 10 UTC
+
+The stateless live-HIR absence guard under [#864](https://github.com/home-lang/home/issues/864)
+is **rejected and was never pushed**. The independent null-safe target's
+paired saving interval spans zero, failing the frozen positive-target
+acceptance rule. All **530 original pairs**, **180 initial image admissions**
+and **100 per-phase admissions** are retained. No independent risk interval
+is wholly negative, but that does not establish equivalence or a target gain.
+The candidate and its four tests are removed; source is clean and a fresh
+parent build restores the native byte-for-byte.
+
+### Exact implementation and qualification
+
+Parent source is `cb6b427f30b7e346961b8758edfd3b6708087360`; parent/restored native:
+`d58ddc54a147b3ad8b177a98a6b5cda04fd4df77595c5ccf44da690de5d57b32`.
+Candidate native:
+`e3e0be622f647eed2453500eb6d9216516021f796966a6f9ece5d93af8508040`.
+Exact source/test patch SHA-256:
+`a5ce10d174e5e08bc259c2be027502d2c01b0d422eee5162727f5df248d20b1e`.
+
+The wrapper returned null only when the current HIR import-payload pool was
+empty. Every valid import node owns such a payload; later imports invalidate
+that absence proof naturally. Every nonempty pool delegated to the original
+resolver body, independently verified byte-identical. No source-word,
+filename/library predicate, cache, name index, stored resolved type, allocation,
+changed search order, body skip, diagnostic suppression or work cap was added.
+This was not the rejected ordered namespace-index design under #857.
+
+Before timing, checker **4,557**, Program **255**, driver **200**, CLI **76**,
+entrypoint **38** and harness **147** tests pass. Four new tests cover empty,
+comment/string, sourceless, virtual namespace/import-equals, unrelated-root
+and later-HIR cases. The first checker run passed 4,555 and failed two new
+raw-TypeId-equality expectations after dynamic namespace lowering. The retained
+correction compares complete structural identity and concrete exported member
+types instead of requiring a resolved-TypeId cache; the production resolver
+body did not change. All **180 protocol-5 checks** for the five pinned compilers
+including the candidate plus the retained Home parent pass. Both Home images
+retain the same **241 TS errors / two HM9002 warnings** on the unchanged pinned
+Zod graph, which remains unadmitted and untimed.
+
+### Frozen paired protocol and complete results
+
+The protocol was fixed before candidate timing: three warmups, 10 alternating
+pairs on all 20 official workloads, a separate 30-pair null-safe target, and
+30 independent pairs on ten fixed regression workloads. Any other wholly
+negative screen interval would trigger exactly one independent 30-pair
+confirmation; none required an additional phase. The re-export screen warning
+was already covered by the fixed risk list. All **12 phases** complete with
+unchanged before/after executable, payload, corpus, harness and source provenance.
+
+Intervals are paired parent-minus-candidate **mean-saving** 95% percentile
+bootstrap intervals, fixed seed **864** and **20,000 resamples**. Medians are
+descriptive. The frozen rule requires a positive independent target interval
+and rejects any wholly negative independent risk interval. No row, sample or
+adverse value is filtered; no phase is repeated, realigned or tuned to pass.
+
+| Phase and workload | Parent median | Candidate median | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Screen startup (10 pairs) | 2.860 ms | 2.883 ms | -0.142 to +0.053 ms |
+| Screen many_files (10 pairs) | 21.026 ms | 20.700 ms | -0.289 to +0.477 ms |
+| Screen deep_types (10 pairs) | 21.335 ms | 21.561 ms | -0.436 to +0.553 ms |
+| Screen import_graph (10 pairs) | 16.524 ms | 16.419 ms | -0.195 to +0.604 ms |
+| Screen reexport_graph (10 pairs) | 11.612 ms | 12.304 ms | -0.973 to -0.058 ms |
+| Screen tsx_components (10 pairs) | 18.897 ms | 19.185 ms | -0.461 to +0.062 ms |
+| Screen generic_calls (10 pairs) | 22.380 ms | 22.382 ms | -0.296 to +0.361 ms |
+| Screen control_flow (10 pairs) | 25.316 ms | 25.009 ms | -0.050 to +0.366 ms |
+| Screen type_predicates (10 pairs) | 32.236 ms | 32.073 ms | -0.100 to +0.618 ms |
+| Screen type_predicates_large (10 pairs) | 248.142 ms | 243.827 ms | -2.875 to +4.681 ms |
+| Screen null_safe_access (10 pairs) | 32.464 ms | 32.544 ms | -0.062 to +0.399 ms |
+| Screen destructuring (10 pairs) | 14.644 ms | 14.671 ms | -0.119 to +0.177 ms |
+| Screen overload_resolution (10 pairs) | 24.649 ms | 24.087 ms | -0.158 to +0.632 ms |
+| Screen class_hierarchy (10 pairs) | 23.127 ms | 22.975 ms | -0.150 to +0.304 ms |
+| Screen structural_objects (10 pairs) | 22.430 ms | 22.199 ms | -0.123 to +0.262 ms |
+| Screen interface_composition (10 pairs) | 33.643 ms | 33.597 ms | -0.139 to +0.577 ms |
+| Screen variadic_tuples (10 pairs) | 30.978 ms | 30.702 ms | +0.025 to +0.551 ms |
+| Screen checkjs_jsdoc (10 pairs) | 27.092 ms | 27.067 ms | -0.530 to +0.843 ms |
+| Screen commonjs_graph (10 pairs) | 17.557 ms | 17.407 ms | -0.323 to +0.336 ms |
+| Screen recursive_generics (10 pairs) | 14.430 ms | 14.192 ms | -0.061 to +0.412 ms |
+| Independent null-safe target (30 pairs) | 34.038 ms | 33.841 ms | -0.106 to +2.981 ms |
+| Independent checkjs_jsdoc (30 pairs) | 28.408 ms | 28.265 ms | -0.100 to +0.548 ms |
+| Independent class_hierarchy (30 pairs) | 24.009 ms | 23.962 ms | -0.138 to +0.365 ms |
+| Independent commonjs_graph (30 pairs) | 18.512 ms | 18.708 ms | -0.510 to +0.272 ms |
+| Independent destructuring (30 pairs) | 15.484 ms | 15.683 ms | -0.255 to +0.048 ms |
+| Independent import_graph (30 pairs) | 18.331 ms | 18.531 ms | -0.964 to +0.173 ms |
+| Independent interface_composition (30 pairs) | 35.836 ms | 35.382 ms | +0.087 to +0.959 ms |
+| Independent recursive_generics (30 pairs) | 15.197 ms | 15.225 ms | -0.322 to +0.047 ms |
+| Independent reexport_graph (30 pairs) | 12.191 ms | 12.248 ms | -0.296 to +0.595 ms |
+| Independent type_predicates_large (30 pairs) | 250.842 ms | 251.674 ms | -3.342 to +2.047 ms |
+| Independent variadic_tuples (30 pairs) | 33.225 ms | 33.319 ms | -0.291 to +0.563 ms |
+
+The target has 17/30 faster candidate pairs but a saving interval of
+**-0.106 to +2.981 ms**. Its parent maximum **60.264167 ms** remains in the data,
+not used as a reason to discard or rerun. The re-export screen has a negative
+interval; its independent confirmation spans zero. Interface composition's
+positive independent interval does not replace the failed primary acceptance.
+All other independent risk intervals span zero, which is not equivalence.
+The separate five-compiler matrix still leads 1/20 rows and beats native TS7
+on 12/20; these Home-only observations do not refresh that ranking.
+
+### Restoration and retained evidence
+
+The guard and four controls were removed through a scoped recoverable patch
+reversal, preserving the exact patch in evidence. Fresh clean-parent
+ReleaseFast compilation exits 0 and matches the parent hash. Shared
+600-second/3,840-MB limits, lock and disk floors are unchanged. A supplemental
+completed-data verifier first reached restoration before the confirmed-live
+build had produced its metadata; that orchestration failure is retained.
+Only the same verifier was rerun after completion, never any measurement.
+
+The [raw rejection archive](../../bench/vs_tsgo/evidence/20261010-live-hir-import-absence-rejected-864.tar.gz)
+retains every original pair and admission, full gate logs, source patches,
+first test failure, fixed protocol, independent raw/statistical/decision
+verifiers and restoration proof. All **1,269 payload checksums** verify.
+Archive SHA-256:
+`66e1e2d44ee47056cdee463d6b5eb900dadbf10aa1dfa4464c7d081a1b27bda9`.
+This exact candidate is not adopted or tuned after rejection. The broader
+goal remains incomplete, including Zod, finite/symbolic Record domains,
+canonical C++ and other-platform coverage.
+
 ## Exact native null safe profile 2026 10 10 UTC
 
 The current-native profile under [#864](https://github.com/home-lang/home/issues/864)

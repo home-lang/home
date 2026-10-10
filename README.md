@@ -150,6 +150,26 @@ The [current-native profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-
 uses one unchanged compiler process and two fixed windows after 36 admission
 checks. Displayed PCs map to namespace-import scanning even on the import-free
 scaled input; this is an investigation lead, not a CPU-share or speedup claim.
+The later live-HIR import-absence candidate under #864 was **rejected**:
+its independent null-safe target did not establish the required gain.
+
+| Phase and workload | Parent median | Candidate median | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Null-safe screen, 10 pairs | 32.464 ms | 32.544 ms | -0.062 to +0.399 ms |
+| Null-safe independent, 30 pairs | 34.038 ms | 33.841 ms | -0.106 to +2.981 ms |
+| Re-export screen, 10 pairs | 11.612 ms | 12.304 ms | -0.973 to -0.058 ms |
+| reexport graph independent, 30 pairs | 12.191 ms | 12.248 ms | -0.296 to +0.595 ms |
+| destructuring independent, 30 pairs | 15.484 ms | 15.683 ms | -0.255 to +0.048 ms |
+| interface composition independent, 30 pairs | 35.836 ms | 35.382 ms | +0.087 to +0.959 ms |
+
+All **530 pairs / 280 admissions** remain, including the adverse screen and
+the 60.264 ms parent target observation. Candidate source and binary are
+restored; no timings were repeated or filtered. See the
+[complete rejection report](docs/docs/TS_PERFORMANCE.md#live-hir-import-absence-rejected-2026-10-10-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261010-live-hir-import-absence-rejected-864.tar.gz).
+Zero-spanning intervals do not establish equivalence; this Home-only A/B
+does not change the separate competitor ranking.
+
 The large-predicate
 scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); the expanded competitor
