@@ -611,6 +611,64 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Adopted write proof benchmark matrix 2026 10 10 UTC
+
+The complete protocol-5 matrix `20261010T081352Z` measures the accepted
+write-proof compiler `0b8d1f049` at clean source `274175d6d`. Home has the
+lowest median on **1/20** workloads and beats native TS7 on **13/20**.
+Null-safe access is now **22.219 ms**, below native TS7's **27.316 ms** and
+Rust's **23.648 ms**, but still **1.29× slower** than Bun's **17.242 ms**.
+The largest remaining fastest-competitor gaps are checked JS **1.94×**,
+interfaces **1.88×** and TSX **1.77×**. These dated descriptive medians are
+not significance claims or a substitute for the separate causal A/B below.
+
+The unchanged five pins are TypeScript 6.0.3, native TypeScript 7.0.2,
+Home 0.1.0, Rust tsc-rs 0.1.0 reporting TypeScript 7.1.0-dev, and Bun
+1.4.3-canary.1+bd599f5af. All run identical strict, no-emit projects on
+Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Complete
+protocol-5 admission passes **150 checks before timing**, including the
+inferred-result null-safe negative controls. Three warmups precede 30
+fresh-process rounds per workload, with five-compiler order rotated equally.
+All **600 rounds / 3,000 samples** complete once with unchanged provenance;
+none are filtered, realigned or repeated. The guard exits 0 with peak tree
+footprint **398 MB** and host low-water **49%**.
+
+| Workload | tsc 6.0.3 | Native TS7 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| startup | 67.8 ms | 7.8 ms | 3.1 ms | 6.4 ms | 6.6 ms | 2.06× faster |
+| many_files | 207.4 ms | 23.3 ms | 22.4 ms | 16.7 ms | 13.5 ms | 1.66× slower |
+| deep_types | 142.3 ms | 22.8 ms | 22.4 ms | 15.3 ms | 14.3 ms | 1.56× slower |
+| import_graph | 136.6 ms | 15.6 ms | 18.3 ms | 12.0 ms | 16.0 ms | 1.53× slower |
+| reexport_graph | 102.2 ms | 11.0 ms | 12.5 ms | 9.3 ms | 8.9 ms | 1.41× slower |
+| tsx_components | 171.0 ms | 16.6 ms | 19.6 ms | 15.1 ms | 11.1 ms | 1.77× slower |
+| generic_calls | 192.9 ms | 24.3 ms | 24.3 ms | 20.6 ms | 15.6 ms | 1.55× slower |
+| control_flow | 199.4 ms | 28.9 ms | 27.1 ms | 26.0 ms | 17.2 ms | 1.57× slower |
+| type_predicates | 247.4 ms | 42.2 ms | 34.3 ms | 35.9 ms | 24.8 ms | 1.38× slower |
+| type_predicates_large | 1,045.1 ms | 325.4 ms | 255.9 ms | 277.7 ms | 166.4 ms | 1.54× slower |
+| null_safe_access | 196.9 ms | 27.3 ms | 22.2 ms | 23.6 ms | 17.2 ms | 1.29× slower |
+| destructuring | 141.8 ms | 17.1 ms | 15.6 ms | 15.1 ms | 11.5 ms | 1.36× slower |
+| overload_resolution | 211.9 ms | 34.8 ms | 25.2 ms | 28.2 ms | 21.7 ms | 1.16× slower |
+| class_hierarchy | 192.5 ms | 22.1 ms | 24.3 ms | 18.9 ms | 14.6 ms | 1.67× slower |
+| structural_objects | 193.4 ms | 28.0 ms | 22.0 ms | 23.6 ms | 18.0 ms | 1.23× slower |
+| interface_composition | 207.4 ms | 33.1 ms | 35.5 ms | 24.8 ms | 18.9 ms | 1.88× slower |
+| variadic_tuples | 250.3 ms | 45.6 ms | 32.1 ms | 34.4 ms | 20.0 ms | 1.61× slower |
+| checkjs_jsdoc | 206.6 ms | 23.6 ms | 27.7 ms | 23.3 ms | 14.3 ms | 1.94× slower |
+| commonjs_graph | 153.7 ms | 18.5 ms | 18.5 ms | 15.3 ms | 12.7 ms | 1.46× slower |
+| recursive_generics | 165.5 ms | 42.5 ms | 15.7 ms | 34.9 ms | 10.7 ms | 1.47× slower |
+
+Rounded generic-call and CommonJS medians look tied; unrounded values place
+Home just ahead of native TS7 for generic calls and just behind it for
+CommonJS. The [complete raw matrix](../../bench/vs_tsgo/evidence/20261010T081352Z.tar.gz)
+retains all samples, admission output, machine/tool metadata and fingerprints.
+All **603 payload checksums** verify; archive SHA-256:
+`cd1453ab18b37f56c00ef0e7567c314d86e12b879af2423ff247291a45c7f799`.
+The measured compiler native is
+`ff78eeff3f36f622db610d23881be7165dce31b424481318e82360f1da5935f8`.
+[#416](https://github.com/home-lang/home/issues/416) and
+[#864](https://github.com/home-lang/home/issues/864) remain open for the
+remaining gaps; Zod, finite/symbolic Record, C++ and other-platform coverage
+remain incomplete. Earlier matrices remain historical evidence below.
+
 ## Live body write proof accepted 2026 10 10 UTC
 
 The live supported-write absence proof under [#864](https://github.com/home-lang/home/issues/864)
@@ -724,9 +782,9 @@ during context truncation; its wrapper exit and resource accounting remain
 unknown. Complete semantic records and end-of-script verification are
 retained, and admission was not repeated to manufacture missing accounting.
 
-A separate full protocol-5 competitor matrix must refresh rankings after
-this adoption. The last dated matrix still leads 1/20 rows and beats native
-TS7 on 12/20. The universal goal remains incomplete, including Zod,
+A separate full protocol-5 competitor matrix now refreshes rankings above:
+Home leads 1/20 rows and beats native TS7 on 13/20. Those rankings come from
+the full matrix, not this A/B. The universal goal remains incomplete, including Zod,
 finite/symbolic Record domains, canonical C++ and other-platform coverage.
 
 ## Live HIR import absence rejected 2026 10 10 UTC

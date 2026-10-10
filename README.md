@@ -115,36 +115,35 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261010T051920Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261010T081352Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 69.5 ms | 8.0 ms | 3.2 ms | 6.3 ms | 6.6 ms | **2.00× faster** |
-| 256 independent files | 220.7 ms | 23.8 ms | 23.2 ms | 17.2 ms | 14.2 ms | 1.63× slower |
-| 128-module import chain | 138.3 ms | 15.7 ms | 18.1 ms | 12.0 ms | 16.4 ms | 1.51× slower |
-| 64 modules through 8 barrel re-exports | 102.0 ms | 11.1 ms | 12.4 ms | 9.3 ms | 9.2 ms | 1.35× slower |
-| Deep conditional / mapped / template types | 149.9 ms | 22.8 ms | 22.3 ms | 15.4 ms | 14.3 ms | 1.56× slower |
-| Recursive generics | 157.3 ms | 41.6 ms | 14.9 ms | 33.2 ms | 9.5 ms | 1.57× slower |
-| Checked JavaScript with JSDoc | 202.5 ms | 23.3 ms | 27.0 ms | 22.6 ms | 13.5 ms | 2.00× slower |
-| Control-flow narrowing (256 unions) | 192.4 ms | 27.9 ms | 26.3 ms | 25.0 ms | 16.7 ms | 1.57× slower |
-| 256 type-predicate families | 237.9 ms | 40.1 ms | 32.6 ms | 34.0 ms | 23.4 ms | 1.39× slower |
-| 2,048 type-predicate families | 1,032.4 ms | 322.1 ms | 251.9 ms | 274.3 ms | 164.4 ms | 1.53× slower |
+| Startup (one small file) | 67.8 ms | 7.8 ms | 3.1 ms | 6.4 ms | 6.6 ms | **2.06× faster** |
+| 256 independent files | 207.4 ms | 23.3 ms | 22.4 ms | 16.7 ms | 13.5 ms | 1.66× slower |
+| 128-module import chain | 136.6 ms | 15.6 ms | 18.3 ms | 12.0 ms | 16.0 ms | 1.53× slower |
+| 64 modules through 8 barrel re-exports | 102.2 ms | 11.0 ms | 12.5 ms | 9.3 ms | 8.9 ms | 1.41× slower |
+| Deep conditional / mapped / template types | 142.3 ms | 22.8 ms | 22.4 ms | 15.3 ms | 14.3 ms | 1.56× slower |
+| Recursive generics | 165.5 ms | 42.5 ms | 15.7 ms | 34.9 ms | 10.7 ms | 1.47× slower |
+| Checked JavaScript with JSDoc | 206.6 ms | 23.6 ms | 27.7 ms | 23.3 ms | 14.3 ms | 1.94× slower |
+| Control-flow narrowing (256 unions) | 199.4 ms | 28.9 ms | 27.1 ms | 26.0 ms | 17.2 ms | 1.57× slower |
+| Null-safe access (256 families) | 196.9 ms | 27.3 ms | 22.2 ms | 23.6 ms | 17.2 ms | 1.29× slower |
+| 2,048 type-predicate families | 1,045.1 ms | 325.4 ms | 255.9 ms | 277.7 ms | 166.4 ms | 1.54× slower |
 
 In this dated matrix, Home has the lowest median on **1 / 20** admitted workloads (startup)
-and is faster than native TypeScript 7 on **12 / 20**. These are
+and is faster than native TypeScript 7 on **13 / 20**. These are
 descriptive medians, not statistical-significance claims. The complete
 table, methodology, machine and toolchain versions are in
-[TypeScript performance](docs/docs/TS_PERFORMANCE.md#landed-record-and-indexed-interface-matrix-2026-10-10-utc).
-All **600 rounds / 3,000 samples / 145 admissions** are retained; no timings
+[TypeScript performance](docs/docs/TS_PERFORMANCE.md#adopted-write-proof-benchmark-matrix-2026-10-10-utc).
+All **600 rounds / 3,000 samples / 150 admissions** are retained; no timings
 were repeated or filtered. Current fastest-competitor gaps include null-safe
-access **2.02×**, checked JS **2.00×** and interfaces **1.98×** slower, tracked
+access **1.29×**, checked JS **1.94×** and interfaces **1.88×** slower, tracked
 under [#864](https://github.com/home-lang/home/issues/864). This is a full
-competitor comparison, not evidence of a causal gain from the Record fix.
-The matrix used protocol 4. The later protocol-5 null-safe gate passes
-**150/150 untimed admissions**, checking inferred locals and optional-call
-results; those checks are not relabeled as pre-timing evidence for this matrix.
+competitor comparison, not a causal patch A/B.
+The matrix uses protocol 5 with **150/150 pre-timing admissions**, checking
+inferred locals and optional-call results.
 See the [new admission contract](docs/docs/TS_PERFORMANCE.md#null-safe-inferred-result-admission-2026-10-10-utc).
 The [current-native profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-profile-2026-10-10-utc)
 uses one unchanged compiler process and two fixed windows after 36 admission
