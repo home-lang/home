@@ -20,52 +20,30 @@ const cppDisableEventLoopDelay = $newCppFunction(
   1,
 ) as (histogram: import("node:perf_hooks").RecordableHistogram) => void;
 
-// IntervalHistogram wrapper class for event loop delay monitoring
-
-let eventLoopDelayHistogram: import("node:perf_hooks").RecordableHistogram | undefined;
-let enabled = false;
-let resolution = 10;
-
-function enable() {
-  if (enabled) {
-    return false;
-  }
-
-  enabled = true;
-  cppEnableEventLoopDelay(eventLoopDelayHistogram!, resolution);
-  return true;
-}
-
-function disable() {
-  if (!enabled) {
-    return false;
-  }
-
-  enabled = false;
-  cppDisableEventLoopDelay(eventLoopDelayHistogram!);
-  return true;
-}
-
+// Each public histogram owns its own enable/disable state and resolution.
 function monitorEventLoopDelay(options?: { resolution?: number }) {
-  if (options !== undefined) {
-    validateObject(options, "options");
+  if (options !== undefined) validateObject(options, "options");
+  const resolutionOption = options?.resolution;
+  if (resolutionOption !== undefined) validateInteger(resolutionOption, "options.resolution", 1);
+  const resolution = resolutionOption === undefined ? 10 : resolutionOption;
+  const histogram = cppMonitorEventLoopDelay(resolution);
+  let enabled = false;
+  function enable() {
+    if (enabled) return false;
+    cppEnableEventLoopDelay(histogram, resolution);
+    enabled = true;
+    return true;
   }
-
-  resolution = 10;
-  let resolutionOption = options?.resolution;
-  if (typeof resolutionOption !== "undefined") {
-    validateInteger(resolutionOption, "options.resolution", 1);
-    resolution = resolutionOption;
+  function disable() {
+    if (!enabled) return false;
+    cppDisableEventLoopDelay(histogram);
+    enabled = false;
+    return true;
   }
-
-  if (!eventLoopDelayHistogram) {
-    eventLoopDelayHistogram = cppMonitorEventLoopDelay(resolution);
-    $putByValDirect(eventLoopDelayHistogram, "enable", enable);
-    $putByValDirect(eventLoopDelayHistogram, "disable", disable);
-    $putByValDirect(eventLoopDelayHistogram, Symbol.dispose, disable);
-  }
-
-  return eventLoopDelayHistogram;
+  $putByValDirect(histogram, "enable", enable);
+  $putByValDirect(histogram, "disable", disable);
+  $putByValDirect(histogram, Symbol.dispose, disable);
+  return histogram;
 }
 
 export default monitorEventLoopDelay;

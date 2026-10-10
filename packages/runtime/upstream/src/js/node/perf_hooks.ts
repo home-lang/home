@@ -234,7 +234,7 @@ export default {
     nodeTiming: createPerformanceNodeTiming(),
     now: () => performance.now(),
     eventLoopUtilization: eventLoopUtilization,
-    clearResourceTimings: function () {},
+    clearResourceTimings: function () { return performance.clearResourceTimings(...arguments); },
   },
   // performance: {
   //   clearMarks: [Function: clearMarks],

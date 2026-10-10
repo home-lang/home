@@ -982,6 +982,7 @@ pub fn onExit(this: *VirtualMachine) void {
 
     this.exit_handler.dispatchOnExit();
     this.is_shutting_down = true;
+    this.timer.event_loop_delay.shutdown(this);
     // Native worker snapshot handles belong to this VM. Clear them here on
     // their owning thread, before Node-API cleanup hooks and JSC destruction.
     // Workers and late notifications carry only request IDs, so they cannot
@@ -1148,6 +1149,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         this.native_work_pool_jobs.closeAndWait();
         this.native_pollable_work_pool_jobs.cancelRemaining();
         @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
+        this.timer.event_loop_delay.shutdown(this);
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);
         this.eventLoop().cancelQueuedTasksForShutdown();
         // Embedded per-VM socket groups must drain while JSC is still alive
@@ -2746,6 +2748,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
     // A long timeout would otherwise retain the outgoing global until its
     // deadline. Close the watchFile scheduler first while its timer is live.
     @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
+    this.timer.event_loop_delay.shutdown(this);
     this.timer.cancelAllTimeoutObjects(this);
 
     this.overridden_main.deinit();

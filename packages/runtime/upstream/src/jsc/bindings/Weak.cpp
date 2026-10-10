@@ -56,6 +56,8 @@ static JSC::WeakHandleOwner* getWeakRefOwner()
 static JSC::WeakHandleOwner* getWeakRefOwner(WeakRefType type)
 {
     switch (type) {
+    case WeakRefType::None:
+        return nullptr; // Passive weak handle: collection requires no callback.
     case WeakRefType::FetchResponse: {
         return getWeakRefOwner<WeakRefType::FetchResponse>();
     }

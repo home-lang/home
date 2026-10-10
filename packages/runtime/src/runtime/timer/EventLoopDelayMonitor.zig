@@ -1,83 +1,99 @@
 const EventLoopDelayMonitor = @This();
 
-/// We currently only globally share the same instance, which is kept alive by
-/// the existence of the src/js/internal/perf_hooks/monitorEventLoopDelay.ts
-/// function's scope.
-///
-/// I don't think having a single event loop delay monitor histogram instance
-/// /will cause any issues? Let's find out.
-js_histogram: jsc.JSValue = jsc.JSValue.zero,
-
-event_loop_timer: jsc.API.Timer.EventLoopTimer = .{
-    .next = .epoch,
-    .tag = .EventLoopDelayMonitor,
-},
-resolution_ms: i32 = 10,
+histogram: jsc.Weak(EventLoopDelayMonitor) = .{},
+event_loop_timer: jsc.API.Timer.EventLoopTimer = .{ .next = .epoch, .tag = .EventLoopDelayMonitor },
+resolution_ms: i64 = 10,
 last_fire_ns: u64 = 0,
-enabled: bool = false,
 
-pub fn enable(this: *EventLoopDelayMonitor, vm: *VirtualMachine, histogram: jsc.JSValue, resolution_ms: i32) void {
-    if (this.enabled) return;
-    this.js_histogram = histogram;
-    this.resolution_ms = resolution_ms;
+pub const Registry = struct {
+    monitors: std.ArrayListUnmanaged(*EventLoopDelayMonitor) = .empty,
 
-    this.enabled = true;
-
-    // Schedule timer
-    const now = bun.timespec.now(.force_real_time);
-    this.event_loop_timer.next = now.addMs(@intCast(resolution_ms));
-    vm.timer.insert(&this.event_loop_timer);
-}
-
-pub fn disable(this: *EventLoopDelayMonitor, vm: *VirtualMachine) void {
-    if (!this.enabled) return;
-
-    this.enabled = false;
-    this.js_histogram = jsc.JSValue.zero;
-    this.last_fire_ns = 0;
-    vm.timer.remove(&this.event_loop_timer);
-}
-
-pub fn isEnabled(this: *const EventLoopDelayMonitor) bool {
-    return this.enabled and this.js_histogram != jsc.JSValue.zero;
-}
-
-pub fn onFire(this: *EventLoopDelayMonitor, vm: *VirtualMachine, now: *const bun.timespec) void {
-    if (!this.enabled or this.js_histogram == jsc.JSValue.zero) {
-        return;
+    pub fn enable(this: *Registry, vm: *VirtualMachine, value: jsc.JSValue, resolution_ms: i64) void {
+        this.sweepCollected(vm);
+        for (this.monitors.items) |monitor| {
+            if (monitor.histogram.get()) |existing| {
+                if (existing == value) return;
+            }
+        }
+        const monitor = bun.handleOom(bun.default_allocator.create(EventLoopDelayMonitor));
+        monitor.* = .{ .resolution_ms = resolution_ms };
+        monitor.histogram = jsc.Weak(EventLoopDelayMonitor).create(value, vm.global, .None, monitor);
+        const now = bun.timespec.now(.force_real_time);
+        monitor.last_fire_ns = now.ns();
+        monitor.event_loop_timer.next = now.addMs(@intCast(resolution_ms));
+        bun.handleOom(this.monitors.append(bun.default_allocator, monitor));
+        vm.timer.insert(&monitor.event_loop_timer);
     }
 
-    const now_ns = now.ns();
-    if (this.last_fire_ns > 0) {
-        const expected_ns = @as(u64, @intCast(this.resolution_ms)) *| 1_000_000;
-        const actual_ns = now_ns - this.last_fire_ns;
-
-        if (actual_ns > expected_ns) {
-            const delay_ns = @as(i64, @intCast(actual_ns -| expected_ns));
-            JSNodePerformanceHooksHistogram_recordDelay(this.js_histogram, delay_ns);
+    pub fn disable(this: *Registry, vm: *VirtualMachine, value: jsc.JSValue) void {
+        for (this.monitors.items) |monitor| {
+            if (monitor.histogram.get()) |existing| {
+                if (existing == value) {
+                    monitor.destroy(vm);
+                    return;
+                }
+            }
         }
     }
 
-    this.last_fire_ns = now_ns;
+    pub fn sweepCollected(this: *Registry, vm: *VirtualMachine) void {
+        var index: usize = 0;
+        while (index < this.monitors.items.len) {
+            const monitor = this.monitors.items[index];
+            if (monitor.histogram.get() == null) {
+                monitor.destroy(vm);
+            } else {
+                index += 1;
+            }
+        }
+    }
 
-    // Reschedule
+    pub fn shutdown(this: *Registry, vm: *VirtualMachine) void {
+        while (this.monitors.items.len > 0) this.monitors.items[this.monitors.items.len - 1].destroy(vm);
+        this.monitors.deinit(bun.default_allocator);
+        this.monitors = .empty;
+    }
+};
+
+fn destroy(this: *EventLoopDelayMonitor, vm: *VirtualMachine) void {
+    if (this.event_loop_timer.in_heap != .none) vm.timer.remove(&this.event_loop_timer);
+    const registry = &vm.timer.event_loop_delay;
+    for (registry.monitors.items, 0..) |monitor, index| {
+        if (monitor == this) {
+            _ = registry.monitors.swapRemove(index);
+            break;
+        }
+    }
+    this.histogram.deinit();
+    bun.default_allocator.destroy(this);
+}
+
+pub fn onFire(this: *EventLoopDelayMonitor, vm: *VirtualMachine, now: *const bun.timespec) void {
+    // Timer.next already removed this node before invoking it.
+    this.event_loop_timer.in_heap = .none;
+    const histogram = this.histogram.get() orelse {
+        this.destroy(vm);
+        return;
+    };
+    const now_ns = now.ns();
+    const elapsed = now_ns -| this.last_fire_ns;
+    if (elapsed > 0) JSNodePerformanceHooksHistogram_recordDelay(histogram, @intCast(@min(elapsed, std.math.maxInt(i64))));
+    this.last_fire_ns = now_ns;
     this.event_loop_timer.next = now.addMs(@intCast(this.resolution_ms));
     vm.timer.insert(&this.event_loop_timer);
 }
 
-// Record delay to histogram
 extern fn JSNodePerformanceHooksHistogram_recordDelay(histogram: jsc.JSValue, delay_ns: i64) void;
 
-// Export functions for C++
-export fn Timer_enableEventLoopDelayMonitoring(vm: *VirtualMachine, histogram: jsc.JSValue, resolution_ms: i32) void {
+export fn Timer_enableEventLoopDelayMonitoring(vm: *VirtualMachine, histogram: jsc.JSValue, resolution_ms: i64) void {
     vm.timer.event_loop_delay.enable(vm, histogram, resolution_ms);
 }
 
-export fn Timer_disableEventLoopDelayMonitoring(vm: *VirtualMachine) void {
-    vm.timer.event_loop_delay.disable(vm);
+export fn Timer_disableEventLoopDelayMonitoring(vm: *VirtualMachine, histogram: jsc.JSValue) void {
+    vm.timer.event_loop_delay.disable(vm, histogram);
 }
 
 const bun = @import("bun");
-
+const std = @import("std");
 const jsc = bun.jsc;
 const VirtualMachine = jsc.VirtualMachine;

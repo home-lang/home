@@ -138,6 +138,7 @@ pub fn drainMicrotasksWithGlobal(this: *EventLoop, globalObject: *jsc.JSGlobalOb
 
     jsc.markBinding(@src());
     jsc_vm.releaseWeakRefs();
+    this.virtual_machine.timer.event_loop_delay.sweepCollected(this.virtual_machine);
 
     switch (JSC__JSGlobalObject__drainMicrotasks(globalObject)) {
         .success => {},

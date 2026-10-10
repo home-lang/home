@@ -360,6 +360,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/JSX509CertificateConstructor.h",
         "packages/runtime/upstream/src/jsc/bindings/JSX509CertificatePrototype.cpp",
         "packages/runtime/upstream/src/jsc/bindings/JSX509CertificatePrototype.h",
+        "packages/runtime/upstream/src/jsc/bindings/Weak.cpp",
         "packages/runtime/src/jsc/internal-stream-wrap.js",
         "packages/runtime/upstream/src/codegen/builtin-parser.ts",
         "packages/runtime/upstream/src/codegen/client-js.ts",

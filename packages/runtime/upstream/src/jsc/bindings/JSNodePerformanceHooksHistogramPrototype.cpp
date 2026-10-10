@@ -424,8 +424,8 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_createHistogram, (JSGlobalObject * globalObj
 }
 
 // Extern declarations for the native timer implementation
-extern "C" void Timer_enableEventLoopDelayMonitoring(void* vm, JSC::EncodedJSValue histogram, int32_t resolution);
-extern "C" void Timer_disableEventLoopDelayMonitoring(void* vm);
+extern "C" void Timer_enableEventLoopDelayMonitoring(void* vm, JSC::EncodedJSValue histogram, int64_t resolution);
+extern "C" void Timer_disableEventLoopDelayMonitoring(void* vm, JSC::EncodedJSValue histogram);
 
 // Create histogram for event loop delay monitoring
 JSC_DEFINE_HOST_FUNCTION(jsFunction_monitorEventLoopDelay, (JSGlobalObject * globalObject, CallFrame* callFrame))
@@ -433,9 +433,9 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_monitorEventLoopDelay, (JSGlobalObject * glo
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    int32_t resolution = 10; // default 10ms
+    int64_t resolution = 10; // default 10ms
     if (callFrame->argumentCount() > 0) {
-        resolution = callFrame->argument(0).toInt32(globalObject);
+        resolution = static_cast<int64_t>(callFrame->argument(0).toNumber(globalObject));
         RETURN_IF_EXCEPTION(scope, {});
 
         if (resolution < 1) {
@@ -480,11 +480,8 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_enableEventLoopDelay, (JSGlobalObject * glob
         return JSValue::encode(jsUndefined());
     }
 
-    int32_t resolution = callFrame->argument(1).toInt32(globalObject);
+    int64_t resolution = static_cast<int64_t>(callFrame->argument(1).toNumber(globalObject));
     RETURN_IF_EXCEPTION(scope, {});
-
-    // Reset histogram data on enable
-    histogram->reset();
 
     // Enable the event loop delay monitor in the native timer implementation
     Timer_enableEventLoopDelayMonitoring(bunVM(globalObject), JSValue::encode(histogram), resolution);
@@ -512,7 +509,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunction_disableEventLoopDelay, (JSGlobalObject * glo
     }
 
     // Call into native code to disable monitoring
-    Timer_disableEventLoopDelayMonitoring(bunVM(globalObject));
+    Timer_disableEventLoopDelayMonitoring(bunVM(globalObject), JSValue::encode(histogram));
 
     return JSValue::encode(jsUndefined());
 }
