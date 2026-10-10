@@ -19,30 +19,35 @@ const PromisePrototypeThen = (promise, onFulfilled, onRejected) => promise.then(
 // TODO: https://github.com/nodejs/node/blob/fb47afc335ef78a8cef7eac52b8ee7f045300696/src/node_util.h#L13
 class WeakReference<T extends WeakKey> extends WeakRef<T> {
   #refs = 0;
+  #strong: T | undefined;
 
   get() {
-    return this.deref();
+    return this.#strong ?? this.deref();
   }
 
   incRef() {
-    return ++this.#refs;
+    if (this.#refs++ === 0) this.#strong = this.deref();
+    return this.#refs;
   }
 
   decRef() {
-    return --this.#refs;
+    if (this.#refs > 0 && --this.#refs === 0) this.#strong = undefined;
+    return this.#refs;
   }
 }
 
 // Can't delete when weakref count reaches 0 as it could increment again.
 // Only GC can be used as a valid time to clean up the channels map.
 class WeakRefMap extends SafeMap {
-  #finalizers = new SafeFinalizationRegistry(key => {
-    this.delete(key);
+  #finalizers = new SafeFinalizationRegistry(({ key, reference }) => {
+    // A collected predecessor must not remove a newer channel with this name.
+    if (Map.prototype.get.$call(this, key) === reference) this.delete(key);
   });
 
   set(key, value) {
-    this.#finalizers.register(value, key);
-    return super.set(key, new WeakReference(value));
+    const reference = new WeakReference(value);
+    this.#finalizers.register(value, { key, reference });
+    return super.set(key, reference);
   }
 
   get(key) {
@@ -83,7 +88,7 @@ function wrapStoreRun(store, data, next, transform = defaultTransform) {
     try {
       context = transform(data);
     } catch (err) {
-      process.nextTick(() => reportError(err));
+      process.nextTick(() => { throw err; });
       return next();
     }
 
@@ -144,7 +149,7 @@ class ActiveChannel {
         const onMessage = this._subscribers[i];
         onMessage(data, this.name);
       } catch (err) {
-        process.nextTick(() => reportError(err));
+        process.nextTick(() => { throw err; });
       }
     }
   }
