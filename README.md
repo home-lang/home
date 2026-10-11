@@ -183,21 +183,20 @@ Source and native are restored; the ranking above is unchanged. See the
 [complete rejection report](docs/docs/TS_PERFORMANCE.md#jsdoc-single-line-scan-rejected-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
-The declaration-owned alias candidate under [#879](https://github.com/home-lang/home/issues/879)
-restores forward-alias and recursive-member diagnostic contracts, including the
-five false Zod template-loop errors that held [#863](https://github.com/home-lang/home/issues/863).
-It remains uncommitted and untimed pending full source, real CLI admission and
-exact-parent performance qualification. The benchmark ranking above is unchanged.
+Declaration/context identity recovery under [#879](https://github.com/home-lang/home/issues/879)
+landed in `4b4060e05` after complete source gates, strict real-CLI admission and
+the frozen exact-parent regression-risk protocol. The prior competitor ranking
+above is not a measurement of this new source; its fresh five-pin matrix remains next.
 
-| Untimed owned alias qualification | Result |
+| Landed owned alias qualification | Result |
 |---|---|
-| Unfiltered Program suite | 265/265 pass, including genuine unknown and nullable recursion |
-| Project-only diagnostic controls | 40/40 exact contracts; not quiet CLI admission |
-| Unchanged Zod graph | 233 TS + two HM9002; eight TS2339 removed, none added versus prior candidate; unadmitted |
-| Full checker, remaining modules and performance | Still required; source adoption held |
+| Checker / Program / driver / CLI / entrypoint / harness | 4,568 / 265 / 201 / 78 / 46 / 147 tests pass |
+| Extended / six-image protocol-5 admission | 294/294 and 180/180 pass; unchanged inputs/provenance |
+| Exact-parent risk qualification | 590 pairs retained; no wholly negative independent interval; inconclusive is not equivalence |
+| Full unchanged Zod | 233 TS + two HM9002; unadmitted and untimed |
 
-See the [current qualification report](docs/docs/TS_PERFORMANCE.md#declaration-owned-alias-qualification-held)
-and [complete raw evidence](bench/vs_tsgo/evidence/20261011-owned-alias-qualification-held-879.tar.gz).
+See the [complete qualification and timing report](docs/docs/TS_PERFORMANCE.md#declaration-identity-recovery-landed)
+and [complete raw evidence](bench/vs_tsgo/evidence/20261011-owned-alias-qualified-landed-879.tar.gz).
 The [forward-alias diagnosis](docs/docs/TS_PERFORMANCE.md#forward-alias-order-reproduces-lost-element-types)
 and [earlier main integration](docs/docs/TS_PERFORMANCE.md#main-integration-held-for-zod-diagnostics-2026-10-11)
 remain separate historical snapshots.

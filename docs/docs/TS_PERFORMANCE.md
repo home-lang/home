@@ -614,6 +614,150 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Declaration identity recovery landed
+
+The [#879](https://github.com/home-lang/home/issues/879) correctness feature landed
+in [4b4060e05](https://github.com/home-lang/home/commit/4b4060e053874895573a8413b83099b0d14b4032),
+with [#863](https://github.com/home-lang/home/issues/863) and
+[#548](https://github.com/home-lang/home/issues/548) linked. All full source gates,
+strict actual-CLI controls and the predeclared exact-parent risk protocol pass.
+This is not a universal benchmark win: the previous five-pin ranking describes
+older source, a fresh matrix is still required, and full Zod remains unadmitted.
+
+The fix preserves declaration-owned non-generic alias identity through forward
+lookup and contextual checks. It resolves completed surfaces for typeof,
+discriminant and signature-display queries, keeps in-flight interface edges
+symbolic until their actual declarations finish, and retains exported-alias
+cycle diagnostics. Matching cached check state is invalidated during rechecks;
+incomplete results are not published as completed caches. Genuine `unknown`
+remains unknown instead of ambient unresolved-name recovery `any`. No library,
+filename or benchmark predicate, new cutoff, weakened negative or skipped body
+implements the change.
+
+### Full semantic and admission gates
+
+| Exact landed source qualification | Result |
+|---|---|
+| Complete checker / Program | 4,568/4,568 and 265/265 pass |
+| Complete driver / CLI / entrypoint | 201/201, 78/78 and 46/46 pass |
+| Harness | 147/147 pass |
+| Extended TS6 / native TS7 / actual Home CLI | 294/294 records pass across 98 unchanged projects |
+| Protocol 5 across five pins and retained parent Home | 180/180 pass; before/after provenance identical |
+| Full unchanged Zod 4.5.2 | 233 TS errors plus two HM9002; unadmitted and untimed |
+
+The additional projected-union negative requires two TS2322 and two TS2339;
+its positive is silent in both references and Home. All source gates are
+unfiltered, and no expectation was relaxed. Full production Zod adds no
+diagnostics: 13 disappear versus the retained baseline and eight TS2339 versus
+the previous candidate. Remaining errors and every changed location remain raw
+evidence; smaller totals do not establish full library support.
+
+### Frozen exact parent performance protocol
+
+The complete screen uses all 20 official workloads, three warmups per image and
+10 alternating parent/candidate pairs per workload. Before its first sample,
+the protocol fixes 12 independent risk workloads at 30 pairs each. Each wholly
+negative screen outside that list receives exactly one additional independent
+30-pair confirmation. Structural objects triggered that rule. All **590 pairs**,
+**104 phase admissions** and warmup outputs remain; no samples were discarded,
+no measurements repeated and no alignment tuning performed.
+
+Paired mean saving is parent minus candidate. Intervals are percentile paired
+bootstrap intervals using seed 879 and 20,000 resamples. Medians are descriptive;
+a median difference is not the paired-mean conclusion. The correctness-feature
+adoption rule requires complete semantics and no wholly negative independent
+risk interval, not a primary optimization gain. Zero-spanning intervals establish
+neither saving nor equivalence. Results vary substantially between phases under
+host load, so they do not provide a single portable latency or a competitor rank.
+
+| Screen workload | Parent median ms | Candidate median ms | Paired mean-saving 95% interval ms | Screen finding |
+|---|---:|---:|---|---|
+| startup | 3.452 | 3.652 | [-0.458, 0.188] | inconclusive |
+| many_files | 35.981 | 36.490 | [-3.333, 1.894] | inconclusive |
+| deep_types | 29.518 | 27.435 | [0.496, 4.626] | saving |
+| import_graph | 22.721 | 22.281 | [-0.523, 1.636] | inconclusive |
+| reexport_graph | 14.691 | 14.666 | [-0.883, 0.975] | inconclusive |
+| tsx_components | 22.162 | 22.325 | [-0.348, 0.309] | inconclusive |
+| generic_calls | 27.071 | 26.625 | [-0.319, 2.452] | inconclusive |
+| control_flow | 29.783 | 30.000 | [-2.491, 0.259] | inconclusive |
+| type_predicates | 39.535 | 41.498 | [-3.170, 0.220] | inconclusive |
+| type_predicates_large | 321.947 | 353.116 | [-59.338, -11.184] | loss |
+| null_safe_access | 26.931 | 26.690 | [-1.531, 2.062] | inconclusive |
+| destructuring | 20.477 | 20.384 | [-1.268, 3.226] | inconclusive |
+| overload_resolution | 37.891 | 31.171 | [-0.836, 6.437] | inconclusive |
+| class_hierarchy | 31.643 | 31.470 | [-1.006, 3.179] | inconclusive |
+| structural_objects | 26.832 | 27.605 | [-0.861, -0.042] | loss |
+| interface_composition | 44.747 | 44.185 | [0.068, 2.048] | saving |
+| variadic_tuples | 43.268 | 43.600 | [-3.407, -0.735] | loss |
+| checkjs_jsdoc | 52.366 | 54.176 | [-2.556, 17.418] | inconclusive |
+| commonjs_graph | 44.038 | 46.438 | [-30.229, -3.331] | loss |
+| recursive_generics | 23.297 | 20.427 | [1.114, 5.120] | saving |
+
+Four adverse screens remain visible: large predicates, variadic tuples,
+CommonJS and structural objects. The first three were already in the fixed risk
+list; structural objects received the additional confirmation. No screen loss
+was suppressed and no favorable screen became an independent speed claim.
+
+| Independent workload | Parent median ms | Candidate median ms | Paired mean-saving 95% interval ms | Independent finding |
+|---|---:|---:|---|---|
+| startup | 6.719 | 7.033 | [-1.442, 0.320] | inconclusive |
+| checkjs_jsdoc | 55.517 | 57.349 | [-4.772, 1.766] | inconclusive |
+| null_safe_access | 35.043 | 35.794 | [-3.158, 4.786] | inconclusive |
+| interface_composition | 106.081 | 99.159 | [6.170, 30.957] | saving |
+| class_hierarchy | 42.836 | 42.434 | [-4.607, 3.243] | inconclusive |
+| recursive_generics | 29.845 | 30.007 | [-2.153, 0.869] | inconclusive |
+| type_predicates_large | 636.115 | 630.928 | [-47.548, 33.221] | inconclusive |
+| variadic_tuples | 74.677 | 74.045 | [-8.321, 6.201] | inconclusive |
+| import_graph | 36.638 | 37.225 | [-1.046, 7.353] | inconclusive |
+| reexport_graph | 18.441 | 19.720 | [0.100, 5.991] | saving |
+| commonjs_graph | 51.772 | 52.980 | [-6.665, 2.330] | inconclusive |
+| destructuring | 45.186 | 46.493 | [-3.623, 10.060] | inconclusive |
+| structural_objects | 74.288 | 78.092 | [-13.220, 1.665] | inconclusive |
+
+All 13 independent phases completed and independently verified order, exits,
+admissions, provenance and raw pair counts. None has a wholly negative interval.
+Interface composition and reexports have positive paired-mean intervals; the
+others span zero. Reexports' candidate median is higher despite its positive
+paired-mean interval, illustrating why these are different summaries. Adoption
+satisfies this frozen risk rule, not a claim of no slowdown or universal speed.
+
+### Source provenance and retained failures
+
+Source parent: `a31df53df4b03a43369a7dddd61ce1ea1856e71a`;
+qualified patch and committed parent-to-source diff SHA-256:
+`d3d99aa127a89f9ec9d62caf470a792feb745357902fa6e8be6567baa2283532`.
+Baseline build source `65a0332fe01d0b60a7a3387c9ebbc0aebaa789b2` differs from that
+parent only in README/docs/evidence; compiler/build sources are identical and
+no git-revision embedding was found in the relevant build/compiler code.
+The explicit equivalence record is retained rather than relabeling the baseline.
+
+Parent native SHA-256:
+`180b0d83becb3a0fa3843c625f213f971578498f6af3fa50fd6d8109cdba21c3`;
+landed candidate native SHA-256:
+`bb4c00dd2fdfba719098150082b696b4f9ba8ab65a7a47640b197540420cf771`.
+Both use the same pinned Zig 2163, ReleaseFast/stripped/native build flags.
+The committed source diff exactly matches the frozen tested patch. The new
+image was frozen separately and installed only after landing, with the earlier
+qualified image retained.
+
+Earlier three-failure and one-failure full-checker revisions, a compile error,
+invalid reference ambient and disk refusals remain separate evidence. The final
+correction preserves the exact in-flight interface declaration instead of
+capturing an incomplete shape. Namespace-cycle and recursive-display contracts
+also remain unchanged. Task-only disposable cache cleanup preserves source,
+raw evidence and retained images; shared caches and unrelated jobs were untouched.
+
+The [complete landed qualification evidence](../../bench/vs_tsgo/evidence/20261011-owned-alias-qualified-landed-879.tar.gz)
+contains every terminal source gate, both native images/provenance, all extended
+and protocol admissions, original library output/deltas, all 590 raw pairs,
+warmups, frozen runners/statistics/protocol, failed revisions and scoped cleanup
+summaries. The earlier held report below remains historical. The full fresh
+five-compiler matrix and unavailable-platform checks remain part of the open
+performance goal.
+
+All **947 payload checksums** verify. Archive SHA-256:
+`1852d6d51008a90bce47b0abf5142469a60d2968654bc3cea7131544107531d3`.
+
 ## Declaration owned alias qualification held
 
 The [#879](https://github.com/home-lang/home/issues/879) candidate restores the
