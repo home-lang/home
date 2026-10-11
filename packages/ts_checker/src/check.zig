@@ -5881,6 +5881,11 @@ pub const Checker = struct {
     /// in consumer name lookup or structural identity.
     program_definition_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     program_type_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    /// Imported `Record` alias annotations admitted by the Program schema.
+    /// Keying the source type-reference node keeps their diagnostic spelling
+    /// use-site-specific; structurally identical aliases must not share global
+    /// type metadata or affect assignability.
+    program_record_alias_annotations: std.AutoHashMapUnmanaged(NodeId, *const ProgramClassSchema.Declaration) = .empty,
     program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct {
         name: hir_mod.StringId,
         origin: hir_mod.StringId,
@@ -6584,6 +6589,7 @@ pub const Checker = struct {
         self.program_schema_tuple_types.deinit(self.gpa);
         self.program_definition_names.deinit(self.gpa);
         self.program_type_display_names.deinit(self.gpa);
+        self.program_record_alias_annotations.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
         self.program_class_declarations.deinit(self.gpa);
         self.program_contextual_class_receivers.deinit(self.gpa);
@@ -112199,10 +112205,15 @@ pub const Checker = struct {
         const args = try self.gpa.alloc(TypeId, nodes.len);
         defer self.gpa.free(args);
         for (nodes, args) |node, *arg| arg.* = try self.lowererLowerWithTypeParams(node);
-        return self.instantiateProgramDeclaration(declaration, args, nodes) catch |err| switch (err) {
+        const result = self.instantiateProgramDeclaration(declaration, args, nodes) catch |err| switch (err) {
             error.UnsupportedProgramType => return null,
             error.OutOfMemory => return error.OutOfMemory,
         };
+        if (declaration.body) |body| switch (body.*) {
+            .record => try self.program_record_alias_annotations.put(self.gpa, anchor, declaration),
+            else => {},
+        };
+        return result;
     }
 
     fn instantiateProgramDeclaration(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
@@ -129398,6 +129409,24 @@ pub const Checker = struct {
     fn visibleAnnotatedIdentifierTypeText(self: *Checker, node: NodeId) ?[]const u8 {
         const type_node = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
         return self.nodeSourceTextOrEmpty(type_node);
+    }
+
+    fn programRecordAliasAnnotationText(self: *Checker, node: NodeId) CheckError!?[]const u8 {
+        const type_node = self.visibleAnnotatedIdentifierTypeNode(node) orelse return null;
+        const declaration = self.program_record_alias_annotations.get(type_node) orelse return null;
+        const args = hir_mod.typeRefArgs(self.hir, type_node);
+        if (args.len == 0) return declaration.name;
+
+        var display: std.ArrayListUnmanaged(u8) = .empty;
+        const arena = self.diag_arena.allocator();
+        try display.appendSlice(arena, declaration.name);
+        try display.append(arena, '<');
+        for (args, 0..) |arg, index| {
+            if (index != 0) try display.appendSlice(arena, ", ");
+            try display.appendSlice(arena, try self.normalizedTypeAnnotationText(self.nodeSourceTextOrEmpty(arg)));
+        }
+        try display.append(arena, '>');
+        return display.items;
     }
 
     fn topLevelAnnotatedVarTypeNodeBefore(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
@@ -158359,6 +158388,10 @@ pub const Checker = struct {
                 return;
             }
             if (try self.instanceofUnionNarrowDisplayForMember(node, member.object)) |target_text| {
+                try self.reportPropertyDoesNotExistOnTypeText(node, name, target_text);
+                return;
+            }
+            if (try self.programRecordAliasAnnotationText(member.object)) |target_text| {
                 try self.reportPropertyDoesNotExistOnTypeText(node, name, target_text);
                 return;
             }

@@ -219,7 +219,9 @@ pub const Schema = struct {
         defer visited.deinit(gpa);
         var active_parameters: std.AutoHashMapUnmanaged(*const Parameter, void) = .empty;
         defer active_parameters.deinit(gpa);
-        return recordKeySupported(key, gpa, &visited, &active_parameters);
+        var bindings: std.AutoHashMapUnmanaged(*const Parameter, *const Expression) = .empty;
+        defer bindings.deinit(gpa);
+        return recordKeySupported(key, gpa, &visited, &active_parameters, &bindings);
     }
 
     fn recordKeySupported(
@@ -227,6 +229,7 @@ pub const Schema = struct {
         gpa: std.mem.Allocator,
         visited: *std.AutoHashMapUnmanaged(*const Expression, void),
         active_parameters: *std.AutoHashMapUnmanaged(*const Parameter, void),
+        bindings: *std.AutoHashMapUnmanaged(*const Parameter, *const Expression),
     ) !bool {
         const entry = try visited.getOrPut(gpa, key);
         if (entry.found_existing) return false;
@@ -239,26 +242,34 @@ pub const Schema = struct {
                 primitive == types.Primitive.never,
             .string, .number => true,
             .union_type => |members| blk: {
-                for (members) |member| if (!try recordKeySupported(member, gpa, visited, active_parameters)) break :blk false;
+                for (members) |member| if (!try recordKeySupported(member, gpa, visited, active_parameters, bindings)) break :blk false;
                 break :blk true;
             },
             .parameter => |parameter| blk: {
-                const constraint = parameter.constraint orelse break :blk false;
                 const parameter_entry = try active_parameters.getOrPut(gpa, parameter);
                 if (parameter_entry.found_existing) break :blk false;
                 defer _ = active_parameters.remove(parameter);
-                break :blk try recordKeySupported(constraint, gpa, visited, active_parameters);
+                const value = bindings.get(parameter) orelse parameter.constraint orelse break :blk false;
+                break :blk try recordKeySupported(value, gpa, visited, active_parameters, bindings);
             },
             .reference => |reference| blk: {
                 if (reference.projection_only or reference.contextual_projection or
                     reference.declaration.contextual_only or reference.declaration.is_class or reference.declaration.is_function)
                     break :blk false;
-                // A closed alias has no substitution-dependent key domain.
-                // Parameterized aliases are admitted through their constrained
-                // key parameter and preserved as mapped types by the checker.
-                if (reference.declaration.parameters.len != 0 or reference.arguments.len != 0) break :blk false;
+                if (reference.arguments.len > reference.declaration.parameters.len) break :blk false;
                 const body = reference.declaration.body orelse break :blk false;
-                break :blk try recordKeySupported(body, gpa, visited, active_parameters);
+                var nested: std.AutoHashMapUnmanaged(*const Parameter, *const Expression) = .empty;
+                defer nested.deinit(gpa);
+                var binding_iterator = bindings.iterator();
+                while (binding_iterator.next()) |binding| try nested.put(gpa, binding.key_ptr.*, binding.value_ptr.*);
+                for (reference.declaration.parameters, 0..) |*parameter, index| {
+                    const value = if (index < reference.arguments.len)
+                        reference.arguments[index]
+                    else
+                        parameter.default orelse break :blk false;
+                    try nested.put(gpa, parameter, value);
+                }
+                break :blk try recordKeySupported(body, gpa, visited, active_parameters, &nested);
             },
             else => false,
         };

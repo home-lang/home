@@ -14256,20 +14256,29 @@ test "Program: imported generic Record aliases specialize finite keys and readon
     var p = Program.init(T.allocator, &resolver);
     defer p.deinit();
     const owner =
+        \\import type * as keys from "./keys.js";
+        \\export type DefaultMap<K extends PropertyKey = "left" | "right", V = number> = Record<K, V>;
         \\export type GenericMap<K extends PropertyKey, V> = Record<K, V>;
         \\export type FrozenMap<K extends PropertyKey, V> = Readonly<Record<K, V>>;
+        \\export type ExtendedMap<K extends PropertyKey, V> = Record<keys.ExtendedKeys<K>, V>;
     ;
+    const keys = "export type ExtendedKeys<K extends PropertyKey> = K | \"fixed\";";
     const barrel = "export * from \"./owner.js\";";
     const consumer =
-        \\import type { FrozenMap, GenericMap } from "./barrel.js";
+        \\import type { DefaultMap, ExtendedMap, FrozenMap, GenericMap } from "./barrel.js";
         \\import type * as api from "./barrel.js";
         \\declare const named: GenericMap<"alpha" | "beta", number>;
         \\declare const qualified: api.GenericMap<1 | 2, boolean>;
         \\declare const frozen: FrozenMap<"left" | "right", string>;
+        \\declare const extended: api.ExtendedMap<"dynamic", number>;
+        \\declare const defaults: DefaultMap;
         \\const alpha: number = named.alpha;
         \\const one: boolean = qualified[1];
         \\const left: string = frozen.left;
-        \\void alpha; void one; void left;
+        \\const fixed: number = extended.fixed;
+        \\const dynamic: number = extended.dynamic;
+        \\const defaultLeft: number = defaults.left;
+        \\void alpha; void one; void left; void fixed; void dynamic; void defaultLeft;
     ;
     const invalid = consumer ++
         \\const badNamed: string = named.beta;
@@ -14277,12 +14286,17 @@ test "Program: imported generic Record aliases specialize finite keys and readon
         \\named.missing;
         \\qualified[3];
         \\frozen.right = "changed";
-        \\void badNamed; void badQualified;
+        \\const badExtended: string = extended.dynamic;
+        \\extended.missing;
+        \\defaults.missing;
+        \\void badNamed; void badQualified; void badExtended;
     ;
+    try vfs.addFile("/proj/keys.ts", keys);
     try vfs.addFile("/proj/owner.ts", owner);
     try vfs.addFile("/proj/barrel.ts", barrel);
     try vfs.addFile("/proj/consumer.ts", consumer);
     try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/keys.ts", keys);
     _ = try p.add("/proj/owner.ts", owner);
     _ = try p.add("/proj/barrel.ts", barrel);
     const positive_id = try p.add("/proj/consumer.ts", consumer);
@@ -14295,6 +14309,9 @@ test "Program: imported generic Record aliases specialize finite keys and readon
     try T.expectEqual(@as(usize, 0), p.fileById(positive_id).compilation.?.diagnostics.items.len);
     var counts = [_]usize{ 0, 0, 0, 0 };
     var qualified_message = false;
+    var generic_message = false;
+    var default_message = false;
+    var extended_message = false;
     for (p.fileById(negative_id).compilation.?.diagnostics.items) |diagnostic| switch (diagnostic.code) {
         2322 => {
             counts[0] += 1;
@@ -14304,13 +14321,33 @@ test "Program: imported generic Record aliases specialize finite keys and readon
                 "Type 'boolean' is not assignable to type 'string'.",
             );
         },
-        2339 => counts[1] += 1,
+        2339 => {
+            counts[1] += 1;
+            generic_message = generic_message or std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Property 'missing' does not exist on type 'GenericMap<\"alpha\" | \"beta\", number>'.",
+            );
+            default_message = default_message or std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Property 'missing' does not exist on type 'DefaultMap'.",
+            );
+            extended_message = extended_message or std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Property 'missing' does not exist on type 'ExtendedMap<\"dynamic\", number>'.",
+            );
+        },
         7053 => counts[2] += 1,
         2540 => counts[3] += 1,
         else => return error.TestUnexpectedResult,
     };
-    try T.expectEqualSlices(usize, &.{ 2, 1, 1, 1 }, &counts);
+    try T.expectEqualSlices(usize, &.{ 3, 3, 1, 1 }, &counts);
     try T.expect(qualified_message);
+    try T.expect(generic_message);
+    try T.expect(default_message);
+    try T.expect(extended_message);
 }
 
 test "Program: imported indexed interface retains literal context and return identity" {

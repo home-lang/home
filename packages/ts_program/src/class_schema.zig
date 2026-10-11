@@ -1667,6 +1667,26 @@ test "class schema: qualified generic Record aliases retain constrained key para
     try T.expect(try result.isSupported(T.allocator));
 }
 
+test "class schema: Record keys retain nested generic alias substitutions" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/keys.ts", .text = "export type ExtendedKeys<K extends PropertyKey> = K | \"fixed\";" },
+        .{ .path = "/maps.ts", .text =
+        \\import type * as keys from "./keys";
+        \\export type ExtendedMap<K extends PropertyKey, V> = Record<keys.ExtendedKeys<K>, V>;
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(1, "ExtendedMap");
+    defer result.deinit(T.allocator);
+    const declaration = result.declaration;
+    const record = declaration.body.?.record;
+    const key_reference = record.key.reference;
+    try T.expectEqualStrings("ExtendedKeys", key_reference.declaration.name);
+    try T.expect(key_reference.arguments[0].parameter == &declaration.parameters[0]);
+    try T.expect(record.value.parameter == &declaration.parameters[1]);
+    try T.expect(try result.isSupported(T.allocator));
+}
+
 test "class schema: built-in Error heritage retains its checker-owned shape" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export interface TypedError<T> extends Error { value: T; }
