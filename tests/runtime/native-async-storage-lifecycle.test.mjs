@@ -3,6 +3,7 @@ import * as fsPromises from 'node:fs/promises'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, triggerAsyncId, executionAsyncResource } from 'node:async_hooks'
 import { EventEmitter, EventEmitterAsyncResource, captureRejectionSymbol } from 'node:events'
 
@@ -440,3 +441,71 @@ try {
   rmSync(callbackDirectory, { recursive: true, force: true })
 }
 console.log('native filesystem callback resource scope, results and cleanup passed')
+
+const compoundDirectory = mkdtempSync(join(tmpdir(), 'home-fs-compound-hooks-'))
+mkdirSync(join(compoundDirectory, 'child'))
+writeFileSync(join(compoundDirectory, 'child', 'entry.txt'), 'x')
+const compoundContext = new AsyncLocalStorage()
+const compoundOrigin = compoundContext.run('compound-creation', () => new AsyncResource('home-compound-origin', { requireManualDestroy: true }))
+const compoundOwners = new Map()
+const compoundRows = []
+const compoundHook = createHook({
+  init(id, type, trigger, owner) { if (type === 'FSREQCALLBACK') { compoundOwners.set(id, owner); compoundRows.push(['init', id, trigger]) } },
+  before(id) { if (compoundOwners.has(id)) compoundRows.push(['before', id]) },
+  after(id) { if (compoundOwners.has(id)) compoundRows.push(['after', id]) },
+  destroy(id) { if (compoundOwners.has(id)) compoundRows.push(['destroy', id]) },
+})
+function invokeCompound(operation) {
+  return new Promise((resolve, reject) => compoundOrigin.runInAsyncScope(() => operation((error, value) => {
+    assert.equal(compoundContext.getStore(), 'compound-creation')
+    assert(compoundOwners.has(executionAsyncId()))
+    assert.equal(executionAsyncResource(), compoundOwners.get(executionAsyncId()))
+    if (error) reject(error)
+    else resolve(value)
+  })))
+}
+try {
+  compoundHook.enable()
+  await assert.rejects(invokeCompound(done => callbackFs.rm(join(compoundDirectory, 'child'), done)), { code: 'ERR_FS_EISDIR' })
+  const opened = await invokeCompound(done => callbackFs.opendir(join(compoundDirectory, 'child'), done))
+  assert.equal(opened.path, join(compoundDirectory, 'child'))
+  const entry = await new Promise((resolve, reject) => opened.read((error, value) => error ? reject(error) : resolve(value)))
+  assert.equal(entry.name, 'entry.txt')
+  await new Promise((resolve, reject) => opened.close(error => error ? reject(error) : resolve()))
+  await invokeCompound(done => callbackFs.rm(join(compoundDirectory, 'child'), { recursive: true }, done))
+  await new Promise(resolve => setImmediate(resolve))
+  compoundHook.disable()
+  assert(compoundOwners.size >= 3)
+  for (const id of compoundOwners.keys()) {
+    assert.equal(compoundRows.filter(row => row[0] === 'before' && row[1] === id).length, 1)
+    assert.equal(compoundRows.filter(row => row[0] === 'after' && row[1] === id).length, 1)
+    assert.equal(compoundRows.filter(row => row[0] === 'destroy' && row[1] === id).length, 1)
+  }
+} finally {
+  compoundHook.disable()
+  compoundOrigin.emitDestroy()
+  compoundContext.disable()
+  rmSync(compoundDirectory, { recursive: true, force: true })
+}
+console.log('native compound rm/opendir callback validation and lifecycle passed')
+
+for (const operation of ['close']) {
+  const result = spawnSync(process.execPath, ['-e', `
+    const fs=require('node:fs');const os=require('node:os');const path=require('node:path');
+    const dirPath=fs.mkdtempSync(path.join(os.tmpdir(),'home-dir-callback-error-'));
+    fs.writeFileSync(path.join(dirPath,'entry'),'x');
+    const marker=new Error('directory callback marker');
+    let rejection=false;process.once('unhandledRejection',()=>{rejection=true;process.exitCode=1});
+    process.once('uncaughtException',error=>{
+      if(error!==marker||rejection)process.exitCode=1;
+      else console.log('directory callback uncaught marker');
+      fs.rmSync(dirPath,{recursive:true,force:true});
+    });
+    fs.opendir(dirPath,(error,dir)=>{if(error)throw error;dir.${operation}(()=>{throw marker})});
+  `], { encoding: 'utf8', timeout: 60000, env: { ...process.env, BUN_DEBUG_QUIET_LOGS: '1' } })
+  assert.equal(result.error, undefined)
+  assert.equal(result.signal, null)
+  assert.equal(result.stdout.trim(), 'directory callback uncaught marker', result.stderr)
+  assert.equal(result.status, 0, result.stderr)
+}
+console.log('native Dir close callback throws use uncaught exception delivery passed')

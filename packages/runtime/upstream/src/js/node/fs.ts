@@ -80,8 +80,19 @@ var access = function access(path, mode, callback) {
     }
 
     ensureCallback(callback);
-    // route through promises.rm for the JS-side ERR_FS_EISDIR validation
-    promises.rm(path, options).then(nullcallback(callback), callback);
+    if (!options?.recursive) {
+      fs.lstat(path, undefined, (error, stats) => {
+        if (!error && stats.isDirectory()) {
+          callback(require("internal/fs/cp-sync").fsEisdirError({
+            code: "EISDIR", message: "is a directory", path, syscall: "rm", errno: $processBindingConstants.os.errno.EISDIR,
+          }));
+          return;
+        }
+        fs.rm(path, options, error => callback(error));
+      });
+      return;
+    }
+    fs.rm(path, options, error => callback(error));
   },
   rmdir = function rmdir(path, options, callback) {
     if ($isCallable(options)) {
@@ -573,13 +584,11 @@ var access = function access(path, mode, callback) {
     // the eager path check runs on an async stat so the JS thread isn't
     // blocked and the callback never fires synchronously.
     const result = new Dir(1, path, options, kAlreadyValidated);
-    // Invoke the callback from process.nextTick so an exception thrown by it
-    // surfaces as an uncaught exception instead of rejecting this internal
-    // promise chain (same convention as glob() below).
-    fs.stat(path).then(
-      onOpendirStatFulfilled.bind(null, callback, path, result),
-      onOpendirStatRejected.bind(null, callback, path),
-    );
+    fs.stat(path, undefined, (error, stats) => {
+      if (error) callback(typeof error?.errno === "number" ? opendirStatError(error, path) : error);
+      else if (!stats.isDirectory()) callback(opendirNotDirError(path));
+      else callback(null, result);
+    });
   };
 
 const { defineCustomPromisifyArgs } = require("internal/promisify");
@@ -963,19 +972,10 @@ function _toUnixTimestamp(time: any, name = "time") {
   throw $ERR_INVALID_ARG_TYPE(name, "number or Date", time);
 }
 
-function onOpendirStatFulfilled(callback, path, result, stats) {
-  if (!stats.isDirectory()) {
-    process.nextTick(callback, opendirNotDirError(path));
-    return;
-  }
-  process.nextTick(callback, null, result);
-}
-function onOpendirStatRejected(callback, path, err) {
-  process.nextTick(callback, typeof err?.errno === "number" ? opendirStatError(err, path) : err);
-}
 function callOnceWithNull(callback) {
   callback(null);
 }
+function queueDirCloseCallback(callback, error) { process.nextTick(callback, error); }
 function callOnceWithNullThen(callback, value) {
   callback(null, value);
 }
@@ -1141,7 +1141,7 @@ class Dir {
   close(cb?: (err?: Error) => void) {
     if (!$isUndefinedOrNull(cb)) {
       validateFunction(cb, "callback");
-      this.close().then(callOnceWithNull.bind(null, cb), cb);
+      this.close().then(() => queueDirCloseCallback(cb, null), error => queueDirCloseCallback(cb, error));
       return;
     }
     return this.#enqueue(this.#closeOp.bind(this));
