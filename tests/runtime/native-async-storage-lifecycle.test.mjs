@@ -556,3 +556,49 @@ try {
 assert.deepEqual(events,['before','after'])
 console.log('native async bind receiver, arity, captured context, resource identity and exception restoration passed')
 }
+
+// Snapshot resources and storage callback receivers follow native scopes.
+{
+const storage = new AsyncLocalStorage()
+const outer = new AsyncResource('home-snapshot-outer')
+const inits=[]
+const hook=createHook({init(id,type,trigger,owner){if(type==='bound-anonymous-fn')inits.push({id,type,trigger,owner})}}).enable()
+let snapshot
+try { outer.runInAsyncScope(()=>storage.run('captured',()=>{snapshot=AsyncLocalStorage.snapshot()})) } finally {hook.disable()}
+assert.equal(snapshot.length,1)
+assert.equal(inits.length,1)
+assert.equal(inits[0].trigger,outer.asyncId())
+assert(inits[0].owner instanceof AsyncResource)
+const caller = new AsyncResource('home-snapshot-caller')
+const events=[]
+const scopeHook=createHook({before(id){if(id===inits[0].id)events.push('before')},after(id){if(id===inits[0].id)events.push('after')}}).enable()
+const marker=new Error('ordinary snapshot callback error')
+try {
+ caller.runInAsyncScope(()=>storage.run('caller',()=>{
+  const value=snapshot((a,b)=>({a,b,id:executionAsyncId(),trigger:triggerAsyncId(),owner:executionAsyncResource(),store:storage.getStore()}),1,2)
+  assert.deepEqual(value,{a:1,b:2,id:inits[0].id,trigger:outer.asyncId(),owner:inits[0].owner,store:'captured'})
+  assert.equal(executionAsyncId(),caller.asyncId())
+  assert.equal(storage.getStore(),'caller')
+  assert.throws(()=>snapshot(()=>{throw marker}),error=>error===marker)
+  assert.equal(executionAsyncId(),caller.asyncId())
+  assert.equal(storage.getStore(),'caller')
+ }))
+} finally {scopeHook.disable();storage.disable();outer.emitDestroy();caller.emitDestroy();inits[0].owner.emitDestroy()}
+assert.deepEqual(events,['before','after','before','after'])
+console.log('snapshot captures a real resource, trigger, arguments and storage, with hook scope and exception restoration')
+}
+
+// Snapshot resources and storage callback receivers follow native scopes.
+{
+const first=new AsyncLocalStorage(), second=new AsyncLocalStorage()
+function callback(a,b){return {receiver:this,args:[a,b],first:first.getStore(),second:second.getStore()}}
+first.run('outer',()=>second.run('other',()=>{
+ assert.deepEqual(first.run('inner',callback,1,2),{receiver:null,args:[1,2],first:'inner',second:'other'})
+ assert.deepEqual(first.exit(callback,3,4),{receiver:null,args:[3,4],first:undefined,second:'other'})
+ assert.equal(first.getStore(),'outer')
+ assert.equal(second.getStore(),'other')
+}))
+first.disable()
+assert.deepEqual(first.exit(callback,5,6),{receiver:null,args:[5,6],first:undefined,second:undefined})
+console.log('storage run/exit callbacks use null receivers, forward arguments and restore independent stores')
+}

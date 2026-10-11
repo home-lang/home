@@ -97,16 +97,7 @@ class AsyncLocalStorage {
   }
 
   static snapshot() {
-    var context = get();
-    return (fn, ...args) => {
-      var prev = get();
-      set(context);
-      try {
-        return fn(...args);
-      } finally {
-        set(prev);
-      }
-    };
+    return AsyncLocalStorage.bind((fn, ...args) => fn(...args));
   }
 
   enterWith(store) {
@@ -136,7 +127,7 @@ class AsyncLocalStorage {
 
   exit(callback, ...args) {
     validateFunction(callback, "callback");
-    if (this.#disabled) return callback(...args);
+    if (this.#disabled) return callback.$apply(null, args);
     const previous = get();
     const outside = previous ? previous.slice() : [];
     const index = outside.indexOf(this);
@@ -144,7 +135,7 @@ class AsyncLocalStorage {
     this.#disabled = true;
     set(outside.length ? outside : undefined);
     try {
-      return callback(...args);
+      return callback.$apply(null, args);
     } finally {
       this.#disabled = false;
       set(previous);
@@ -164,7 +155,7 @@ class AsyncLocalStorage {
     }
     set(context);
     try {
-      return callback(...args);
+      return callback.$apply(null, args);
     } finally {
       // The callback may replace or remove the active context. Restore the
       // actual outer snapshot rather than indexing the callback's final array.
@@ -279,7 +270,7 @@ class AsyncResource {
     validateFunction(fn, "fn");
     const bridge = require("internal/async_hooks_tick");
     const previousExecution = bridge.enterAsyncScope(this.#asyncId, this.#triggerAsyncId, this);
-    var prev = get();
+    const prev = get();
     set(this.#snapshot);
     try {
       bridge.emitBefore(this.#asyncId);
