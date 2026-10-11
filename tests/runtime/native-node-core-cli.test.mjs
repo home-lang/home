@@ -681,3 +681,24 @@ try {
   process.noDeprecation = priorNoDeprecation
 }
 console.log('native deprecate constructor prototype, subclass, receiver and arity passed')
+
+// Alternating path dialects must not reuse an unnormalized glob pattern.
+{
+ const path = await import("node:path")
+for(const module of [path.posix,path.win32]){
+ assert.equal(module.matchesGlob.name,'matchesGlob')
+ assert.equal(module.matchesGlob.length,2)
+}
+for(const [name,pattern] of [['foo\\bar','foo\\bar'],['src\\file.js','src\\*.js'],['src\\a\\file.ts','src\\**\\*.ts']]){
+ path.posix.matchesGlob(name,pattern)
+ assert.equal(path.win32.matchesGlob(name,pattern),true)
+ assert.equal(path.win32.matchesGlob(name,pattern),true)
+}
+for(const module of [path.posix,path.win32]){
+ assert.equal(module.matchesGlob('src/a.ts','src/*.ts'),true)
+ assert.equal(module.matchesGlob('src/a.js','src/*.ts'),false)
+ for(const pattern of [null,undefined,123,{},Symbol('pattern')])assert.throws(()=>module.matchesGlob('src/a.ts',pattern),{code:'ERR_INVALID_ARG_TYPE'})
+ assert.equal(module.matchesGlob('src/a.ts','src/*.ts'),true)
+}
+console.log('glob cache preserves Windows pattern normalization after POSIX calls, validation, function names and arity')
+}

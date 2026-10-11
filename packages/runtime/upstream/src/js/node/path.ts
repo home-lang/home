@@ -49,33 +49,27 @@ type Glob = import("bun").Glob;
 // loop with the same pattern
 let prevGlob: Glob | undefined;
 let prevPattern: string | undefined;
-function matchesGlob(isWindows, path, pattern) {
-  let glob: Glob;
-
+function matchesGlobInternal(isWindows, path, pattern) {
   validateString(path, "path");
-  if (isWindows) path = path.replaceAll("\\", "/");
-
-  if (prevGlob) {
-    $assert(prevPattern !== undefined);
-    if (prevPattern === pattern) {
-      glob = prevGlob;
-    } else {
-      validateString(pattern, "pattern");
-      if (isWindows) pattern = pattern.replaceAll("\\", "/");
-      glob = prevGlob = new Bun.Glob(pattern);
-      prevPattern = pattern;
-    }
-  } else {
-    validateString(pattern, "pattern");
-    if (isWindows) pattern = pattern.replaceAll("\\", "/");
-    glob = prevGlob = new Bun.Glob(pattern);
+  validateString(pattern, "pattern");
+  if (isWindows) {
+    path = path.replaceAll("\\", "/");
+    pattern = pattern.replaceAll("\\", "/");
+  }
+  // The cache key is the exact normalized pattern used by the matcher.
+  // A POSIX call may have cached the same raw spelling with other semantics.
+  if (!prevGlob || prevPattern !== pattern) {
+    prevGlob = new Bun.Glob(pattern);
     prevPattern = pattern;
   }
-
-  return glob.match(path);
+  return prevGlob.match(path);
 }
 
-posix.matchesGlob = matchesGlob.bind(null, false);
-win32.matchesGlob = matchesGlob.bind(null, true);
+posix.matchesGlob = function matchesGlob(path, pattern) {
+  return matchesGlobInternal(false, path, pattern);
+};
+win32.matchesGlob = function matchesGlob(path, pattern) {
+  return matchesGlobInternal(true, path, pattern);
+};
 
 export default (process.platform === "win32" ? win32 : posix) as any as typeof import("node:path");
