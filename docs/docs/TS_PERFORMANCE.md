@@ -614,6 +614,78 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Contextual flow proof lifetime qualification 2026 10 11
+
+The current [#863](https://github.com/home-lang/home/issues/863) candidate restores
+the missing-member contract in collection-bearing generic factory callbacks.
+All source gates and extended diagnostic controls pass, but the compiler source
+is **uncommitted and untimed**: Zod diagnostic differences and exact-parent
+performance qualification remain unresolved. The published competitor ranking
+is unchanged at **1/20** lowest medians and **13/20** faster than native TS7.
+
+### Exact proof lifetime and diagnostic contract
+
+A provisional contextual pass can resolve a member through flow and record a
+node-specific proof. A later pass clears that node's cached type and checks it
+against a different concrete receiver. Previously, the proof survived and
+suppressed a genuine TS2339. Both the indexed subtree walk and its slow fallback
+now invalidate the matching proof alongside the cached type. The direct
+regression verifies that the inside proof disappears, an outside proof and type
+remain intact, and the missing member can be diagnosed again.
+
+The accumulated candidate also retains exact finite Record keys, closed aliases,
+readonly members, owned result inference, logical assignment flow, iterable
+elements and concrete nested indexed receivers. Generic constraints remain
+deferred; a standalone receiver-dependent callable is not assigned a guessed
+receiver. No library/filename predicate, new work cutoff, diagnostic suppression,
+or added `any` fallback implements the proof fix.
+
+The general factory negative must report **one TS2322 and one TS2339**, with
+silent success for the matching positive. An intermediate test used two
+identical `expected 1` assertions, so its failure text did not identify which
+counter failed. Ordered counts later proved **[1, 0]**: TS2322 was emitted;
+TS2339 was missing. The reporting traces and this correction are retained rather
+than attributing the missing-member failure to assignability or emission.
+The final candidate reports **[1, 1]** without weakening either expectation.
+
+| Frozen candidate qualification | Result |
+|---|---|
+| Checker / Program | 4,566/4,566 and 260/260 tests pass |
+| Driver / CLI / entrypoint | 200/200, 76/76 and 41/41 tests pass |
+| Benchmark harness | 147/147 tests pass |
+| Extended TS6 / native TS7 / Home controls | 168/168 pass; positive/negative inventories unchanged |
+| Protocol 5 across five pins plus historical parent Home | 180/180 admissions pass; executable provenance unchanged |
+| Matching factory positive / negative | Silent success / exact TS2322 plus TS2339 |
+| Full unchanged Zod graph | 241 TS errors and two HM9002; unadmitted and untimed |
+| Performance and source adoption | None |
+
+Entrypoint now has 41 tests because the frozen parent includes concurrent #846
+changes; the older 38-test gates remain historical, not relabeled current tests.
+
+### Remaining qualification and retained evidence
+
+The identical pinned Zod 4.5.2 graph still has five added TS2339 and five removed
+TS2774 versus the historical retained Home parent. Equal totals do not establish
+equivalent semantics or improvement. The general collection controls all pass,
+but those controls are not complete Zod admission. A clean build of the current
+source parent is required before any performance A/B: the older retained binary
+predates concurrent #846 changes and cannot support causal timing attribution.
+No timing samples have been collected for this candidate.
+
+Frozen source parent: `0bba25bb18930b1739d5740e83feec3c9c5ea15c`;
+patch SHA-256: `7c8c5b08a593cc465d9dd257aa974962b3c844b7592c11f1da418072380ba557`;
+native SHA-256: `c02b90507ca840b1ed2016467c527d804bdb5937af219d74dcdf97304d59ba17`.
+The historical diagnostic parent remains
+`ff78eeff3f36f622db610d23881be7165dce31b424481318e82360f1da5935f8`.
+The [complete raw qualification](../../bench/vs_tsgo/evidence/20261011-context-flow-proof-qualified-863.tar.gz)
+retains the exact patches, all source gates, 168 extended controls, 180 image
+admissions, full Zod output and preceding failed/compile-refused/timed-out
+revisions, including the assertion-ambiguity correction. All **328 payload
+checksums** verify. Archive SHA-256:
+`397f2b72b9b351bfad1a86a6749a976e7f927d2da13a8d583f11f82655454334`.
+The earlier [held qualification](#finite-record-qualification-held-2026-10-10-utc)
+remains a separate historical snapshot.
+
 ## Finite Record qualification held 2026 10 10 UTC
 
 The finite-key Record candidate under [#863](https://github.com/home-lang/home/issues/863)

@@ -184,17 +184,21 @@ Source and native are restored; the ranking above is unchanged. See the
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
 The finite-key Record candidate under [#863](https://github.com/home-lang/home/issues/863)
-is held back without timings: new collection-bearing factory controls expose
-lost callback types. The published benchmark ranking above is unchanged.
+now preserves the collection-bearing factory's complete negative contract by
+invalidating stale flow-member proofs during contextual rechecks. It remains
+uncommitted and untimed pending Zod and performance qualification; the published
+benchmark ranking above is unchanged.
 
 | Untimed finite Record qualification | Result |
 |---|---|
-| Existing diagnostic / compiler-image controls | 72/72 and 180/180 pass |
-| New collection / contextual controls | 38/42 and 40/42 pass; missing negative diagnostics block adoption |
+| Checker / Program / driver / CLI / entrypoint | 4,566 / 260 / 200 / 76 / 41 tests pass |
+| Extended diagnostic / compiler-image controls | 168/168 and 180/180 pass; exact TS2322 and TS2339 retained |
 | Unchanged Zod graph | 241 TS errors plus two HM9002; unadmitted |
 
-See the [complete qualification report](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
-and [all retained raw controls](bench/vs_tsgo/evidence/20261010-finite-record-qualification-held-863.tar.gz).
+See the [current qualification report](docs/docs/TS_PERFORMANCE.md#contextual-flow-proof-lifetime-qualification-2026-10-11)
+and [complete raw evidence](bench/vs_tsgo/evidence/20261011-context-flow-proof-qualified-863.tar.gz).
+The [earlier failed controls](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
+remain documented separately.
 
 The earlier live-HIR import-absence candidate under #864 was **rejected**:
 its independent null-safe target did not establish the required gain.
