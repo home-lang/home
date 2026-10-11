@@ -16395,6 +16395,73 @@ test "Program: imported dependent defaults survive nested polymorphic this membe
     }
 }
 
+test "Program: declaration owned aliases retain forward unknown and productive cycle contracts" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const source =
+        \\const validScalar: Later = "ready";
+        \\const invalidScalar: Later = 123;
+        \\type Later = string;
+        \\interface Definition { parts: Part[] }
+        \\type Part = LiteralPart | { state: { label: string } };
+        \\type LiteralPart = string | null;
+        \\declare const definition: Definition;
+        \\for (const part of definition.parts) {
+        \\  if (typeof part === "object" && part !== null) {
+        \\    const validPart: string = part.state.label;
+        \\    const invalidPart: number = part.state.label;
+        \\    part.missing;
+        \\    void validPart; void invalidPart;
+        \\  }
+        \\}
+        \\type Opaque = unknown;
+        \\declare const opaque: Opaque;
+        \\const invalidUnknown: string = opaque;
+        \\type First = { peer: Second; value: string };
+        \\type Second = { peer: First };
+        \\declare const cyclic: First;
+        \\const validCycle: string = cyclic.peer.peer.value;
+        \\const invalidCycle: number = cyclic.peer.peer.value;
+        \\type Item = { next: Item | null; label: string };
+        \\declare const item: Item;
+        \\if (typeof item.next === "object" && item.next !== null) {
+        \\  const validRecursive: string = item.next.label;
+        \\  const invalidRecursive: number = item.next.label;
+        \\  item.next.missing;
+        \\  void validRecursive; void invalidRecursive;
+        \\}
+        \\void validScalar; void validCycle;
+    ;
+    const id = try program.add("/proj/main.ts", source);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+    });
+    const compilation = program.fileById(id).compilation.?;
+    try T.expectEqual(@as(usize, 7), compilation.diagnostics.items.len);
+    for ([_]struct { marker: []const u8, code: u32 }{
+        .{ .marker = "invalidScalar", .code = 2322 },
+        .{ .marker = "invalidPart", .code = 2322 },
+        .{ .marker = "part.missing", .code = 2339 },
+        .{ .marker = "invalidUnknown", .code = 2322 },
+        .{ .marker = "invalidCycle", .code = 2322 },
+        .{ .marker = "invalidRecursive", .code = 2322 },
+        .{ .marker = "item.next.missing", .code = 2339 },
+    }) |expected| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, source, expected.marker).?);
+        var matches: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == expected.code and diagnostic.pos >= start and
+                diagnostic.pos <= start + expected.marker.len + 32) matches += 1;
+        }
+        try T.expectEqual(@as(usize, 1), matches);
+    }
+}
+
 const JsCheckCase = struct {
     path: []const u8,
     source: []const u8,
@@ -16450,4 +16517,171 @@ test "compileAll: JavaScript files follow tsc's checkJs rules" {
     try expectJsCheckCase(.{ .path = "/p.js", .source = checked, .check_js_disabled = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
     // TypeScript files are always checked.
     try expectJsCheckCase(.{ .path = "/p.ts", .source = body, .check_js_disabled = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
+}
+
+test "Program: contextual generic factory callbacks retain dependent defaults and return parameter identity" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner =
+        \\export type Keys = "first" | "second";
+        \\export declare const ranges: Record<Keys, [number, number]>;
+        \\export interface Trait { internals: { def: any } }
+        \\export interface Build<T extends Trait, D = T["internals"]["def"]> { new (def: D): T; }
+        \\export declare function build<T extends Trait, D = T["internals"]["def"]>(initializer: (instance: T, def: D) => void): Build<T, D>;
+        \\export interface Model { internals: { def: { key: Keys } } }
+        \\export interface Pair<A, B> { first: A; second: B; }
+        \\export declare function reversed<X, Y>(callback: (x: X, y: Y) => void): Pair<Y, X>;
+    ;
+    const consumer =
+        \\import { build, ranges, reversed } from "./owner.js";
+        \\import type { Build, Model, Pair } from "./owner.js";
+        \\const result: Build<Model> = build((instance, def) => {
+        \\  def.key = def.key || "first";
+        \\  const value: number = ranges[def.key][0];
+        \\  const valid: "first" | "second" = def.key;
+        \\  void instance; void value; void valid;
+        \\});
+        \\const pair: Pair<number, string> = reversed((x, y) => {
+        \\  const text: string = x;
+        \\  const count: number = y;
+        \\  void text; void count;
+        \\});
+        \\void result; void pair;
+    ;
+    const invalid =
+        \\import { build, ranges, reversed } from "./owner.js";
+        \\import type { Build, Model, Pair } from "./owner.js";
+        \\const result: Build<Model> = build((instance, def) => {
+        \\  def.key = def.key || "first";
+        \\  const wrong: string = ranges[def.key][0];
+        \\  def.missing;
+        \\  void instance; void wrong;
+        \\});
+        \\const pair: Pair<number, string> = reversed((x, y) => {
+        \\  const wrongX: number = x;
+        \\  const wrongY: string = y;
+        \\  void wrongX; void wrongY;
+        \\});
+        \\void result; void pair;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const positive = try p.add("/proj/consumer.ts", consumer);
+    const negative = try p.add("/proj/invalid.ts", invalid);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(positive).compilation.?.diagnostics.items.len);
+    var assignments: usize = 0;
+    var missing: usize = 0;
+    for (p.fileById(negative).compilation.?.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+        2322 => assignments += 1,
+        2339 => missing += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqual(@as(usize, 3), assignments);
+    try T.expectEqual(@as(usize, 1), missing);
+}
+
+test "Program: collection polymorphic this does not erase dependent factory callback context" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const ambient =
+        \\interface Object {}
+        \\interface Function {}
+        \\interface CallableFunction extends Function {}
+        \\interface NewableFunction extends Function {}
+        \\interface IArguments { readonly length: number; [index: number]: unknown; }
+        \\interface String {}
+        \\interface Number {}
+        \\interface Boolean {}
+        \\interface RegExp {}
+        \\interface Array<T> { readonly length: number; [index: number]: T; }
+        \\interface ReadonlyArray<T> { readonly length: number; readonly [index: number]: T; }
+    ;
+    const owner =
+        \\type Trait={state:{def:any;[key:string]:any}};
+        \\export interface Creator<T extends Trait,D=T["state"]["def"]>{new(def:D):T;init(instance:T,def:D):asserts instance is T;}
+        \\export declare function create<T extends Trait,D=T["state"]["def"]>(name:string,initializer:(instance:T,def:D)=>void):Creator<T,D>;
+    ;
+    const positive =
+        \\import * as factory from "./factory.js";
+        \\declare class Collection<T>{add(value:T):this;has(value:T):boolean;}
+        \\type Record<K extends keyof any,T>={[P in K]:T};
+        \\type Exclude<T,U>=T extends U?never:T;
+        \\type Literal=string|number|bigint|boolean|null|undefined;
+        \\type LiteralPart=Exclude<Literal,symbol>;
+        \\interface BaseDef{kind:string;}
+        \\interface BaseState<O=unknown,I=unknown>{def:BaseDef;output:O;input:I;traits:Collection<string>;bag:Record<string,unknown>;}
+        \\interface Base<O=unknown,I=unknown,S extends BaseState<O,I>=BaseState<O,I>>{state:S;}
+        \\interface NestedState extends BaseState<LiteralPart,LiteralPart>{label:string;}
+        \\interface Nested extends Base{state:NestedState;}
+        \\type Part=LiteralPart|Nested;
+        \\interface ModelDef extends BaseDef{kind:"model";parts:Part[];}
+        \\interface ModelState<T extends string=string>extends BaseState<T,T>{def:ModelDef;}
+        \\interface Model<T extends string=string>extends Base{state:ModelState<T>;}
+        \\const result:factory.Creator<Model>=factory.create("model",(instance,def)=>{
+        \\ for(const part of def.parts)if(typeof part==="object"&&part!==null){const text:string=part.state.label;void text;}
+        \\ void instance;
+        \\});void result;
+    ;
+    const consumer =
+        \\import * as factory from "./factory.js";
+        \\declare class Collection<T>{add(value:T):this;has(value:T):boolean;}
+        \\type Record<K extends keyof any,T>={[P in K]:T};
+        \\type Exclude<T,U>=T extends U?never:T;
+        \\type Literal=string|number|bigint|boolean|null|undefined;
+        \\type LiteralPart=Exclude<Literal,symbol>;
+        \\interface BaseDef{kind:string;}
+        \\interface BaseState<O=unknown,I=unknown>{def:BaseDef;output:O;input:I;traits:Collection<string>;bag:Record<string,unknown>;}
+        \\interface Base<O=unknown,I=unknown,S extends BaseState<O,I>=BaseState<O,I>>{state:S;}
+        \\interface NestedState extends BaseState<LiteralPart,LiteralPart>{label:string;}
+        \\interface Nested extends Base{state:NestedState;}
+        \\type Part=LiteralPart|Nested;
+        \\interface ModelDef extends BaseDef{kind:"model";parts:Part[];}
+        \\interface ModelState<T extends string=string>extends BaseState<T,T>{def:ModelDef;}
+        \\interface Model<T extends string=string>extends Base{state:ModelState<T>;}
+        \\const result:factory.Creator<Model>=factory.create("model",(instance,def)=>{
+        \\ for(const part of def.parts)if(typeof part==="object"&&part!==null){const text:number=part.state.label;part.missing;void text;}
+        \\ void instance;
+        \\});void result;
+    ;
+    try vfs.addFile("/proj/lib.d.ts", ambient);
+    try vfs.addFile("/proj/factory.ts", owner);
+    try vfs.addFile("/proj/positive.ts", positive);
+    try vfs.addFile("/proj/main.ts", consumer);
+    _ = try p.add("/proj/lib.d.ts", ambient);
+    _ = try p.add("/proj/factory.ts", owner);
+    const positive_id = try p.add("/proj/positive.ts", positive);
+    const id = try p.add("/proj/main.ts", consumer);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(positive_id).compilation.?.diagnostics.items.len);
+    const compilation = p.fileById(id).compilation.?;
+    var assignments: usize = 0;
+    var missing: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+        2322 => assignments += 1,
+        2339 => missing += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqualSlices(usize, &.{ 1, 1 }, &.{ assignments, missing });
 }
