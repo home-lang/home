@@ -1909,6 +1909,22 @@ pub fn parseString(
     return cfg;
 }
 
+test "tsconfig: trivia-only sources are valid empty configs" {
+    for ([_][]const u8{ "", " \t\r\n", "// Comment", "/* Comment */" }) |source| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const cfg = try parseString(t.allocator, arena.allocator(), source);
+        try t.expect(cfg.files == null);
+        try t.expect(cfg.include == null);
+        try t.expect(cfg.exclude == null);
+        try t.expect(!cfg.root_not_object);
+        try t.expectEqual(@as(usize, 0), cfg.json_parse_diagnostics.len);
+        const diagnostics = try cfg.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diagnostics);
+        try t.expectEqual(@as(usize, 0), diagnostics.len);
+    }
+}
+
 fn collectRootInvalidJsonValueDiagnostics(
     arena: std.mem.Allocator,
     root: jsonc.Value.Object,

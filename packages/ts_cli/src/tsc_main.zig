@@ -2116,6 +2116,7 @@ pub const LspProject = struct {
     config_arena: std.heap.ArenaAllocator,
     /// Backs `config`'s strings, which alias it.
     config_source: []const u8,
+    config_source_owned: bool,
     config: ?tsconfig_mod.TsConfig,
     fs: ResolverRealFs,
     resolver: ts_resolver.Resolver,
@@ -2131,13 +2132,15 @@ pub const LspProject = struct {
         self.gpa = gpa;
         self.config_arena = std.heap.ArenaAllocator.init(gpa);
         self.config_source = &.{};
+        self.config_source_owned = false;
         self.config = null;
         if (config_path) |path| {
-            self.config_source = RealFs.read(gpa, path) catch &.{};
-            if (self.config_source.len > 0) {
+            if (RealFs.read(gpa, path)) |source| {
+                self.config_source = source;
+                self.config_source_owned = true;
                 self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch null;
                 if (self.config) |*c| c.file_path = path;
-            }
+            } else |_| {}
         }
         self.fs = ResolverRealFs.init(gpa);
         const resolver_config: ts_resolver.Config = if (self.config) |c|
@@ -2162,7 +2165,7 @@ pub const LspProject = struct {
         self.program.deinit();
         self.resolver.deinit();
         self.fs.deinit();
-        if (self.config_source.len > 0) gpa.free(self.config_source);
+        if (self.config_source_owned) gpa.free(self.config_source);
         self.config_arena.deinit();
         gpa.destroy(self);
     }
@@ -3175,13 +3178,16 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // `loaded_cfg`'s borrowed slices — keep it for the rest of
     // main rather than freeing inside this block.
     var cfg_src: []const u8 = &.{};
-    defer if (cfg_src.len > 0) gpa.free(cfg_src);
+    var cfg_src_owned = false;
+    defer if (cfg_src_owned) gpa.free(cfg_src);
     if (cfg_path_buf) |path| {
-        cfg_src = RealFs.read(gpa, path) catch |err| blk: {
+        const read_source: ?[]const u8 = RealFs.read(gpa, path) catch |err| blk: {
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
-            break :blk &.{};
+            break :blk null;
         };
-        if (cfg_src.len > 0) {
+        if (read_source) |source| {
+            cfg_src = source;
+            cfg_src_owned = true;
             loaded_cfg = tsconfig_mod.parseString(gpa, cfg_arena.allocator(), cfg_src) catch |err| blk: {
                 std.debug.print("error parsing tsconfig {s}: {s}\n", .{ path, @errorName(err) });
                 break :blk null;
@@ -5369,6 +5375,26 @@ test "LspProject: publishes diagnostics on open and change, answers hover, frees
     );
     defer std.testing.allocator.free(changed);
     try std.testing.expect(std.mem.indexOf(u8, changed, "\"diagnostics\":[]") != null);
+}
+
+test "LspProject: loads an empty tsconfig as the default config" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        config_file.close(io);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", std.testing.allocator);
+    defer std.testing.allocator.free(config_path);
+
+    const project = try LspProject.create(std.testing.allocator, config_path);
+    defer project.destroy();
+    try std.testing.expect(project.config_source_owned);
+    try std.testing.expectEqual(@as(usize, 0), project.config_source.len);
+    try std.testing.expect(project.config != null);
+    try std.testing.expectEqualStrings(config_path, project.config.?.file_path);
 }
 
 test "LspProject: publishes Home diagnostics with HM wire codes" {

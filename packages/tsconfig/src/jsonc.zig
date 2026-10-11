@@ -136,6 +136,7 @@ const Parser = struct {
     pos: u32,
     line: u32,
     line_start: u32,
+    unterminated_block_comment: bool = false,
     diags: *std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.mem.Allocator,
     gpa_for_diags: std.mem.Allocator,
@@ -193,12 +194,18 @@ const Parser = struct {
                     } else if (self.peekAt(1) == '*') {
                         // Block comment.
                         self.pos += 2;
+                        var terminated = false;
                         while (self.pos + 1 < self.source.len) {
                             if (self.source[self.pos] == '*' and self.source[self.pos + 1] == '/') {
                                 self.pos += 2;
+                                terminated = true;
                                 break;
                             }
                             _ = self.advance();
+                        }
+                        if (!terminated) {
+                            self.unterminated_block_comment = true;
+                            return;
                         }
                     } else return;
                 },
@@ -585,6 +592,22 @@ pub fn parse(
     };
 
     p.skipWhitespace();
+    // TypeScript's JSON source parser represents an empty, whitespace-only,
+    // or comment-only config as an empty object with no parse diagnostics.
+    // `tsconfig.json` project discovery relies on that distinction: the file
+    // exists and contributes default include/exclude semantics even though it
+    // has no JSON expression.
+    if (p.pos == source.len and !p.unterminated_block_comment) {
+        return .{
+            .value = .{ .object = .{
+                .keys = &.{},
+                .values = &.{},
+                .key_locations = &.{},
+                .value_locations = &.{},
+            } },
+            .diagnostics = try diags.toOwnedSlice(gpa),
+        };
+    }
     const v = try p.parseValue();
     p.skipWhitespace();
     if (p.pos != source.len) {
@@ -615,6 +638,23 @@ test "jsonc: empty object" {
     defer arena.deinit();
     const v = try parseString("{}", arena.allocator());
     try t.expectEqual(@as(usize, 0), v.asObject().?.keys.len);
+}
+
+test "jsonc: trivia-only documents are empty objects" {
+    for ([_][]const u8{ "", " \t\r\n", "// Comment", "/* Comment */" }) |source| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const result = try parse(t.allocator, arena.allocator(), source);
+        defer t.allocator.free(result.diagnostics);
+        try t.expectEqual(@as(usize, 0), result.diagnostics.len);
+        try t.expectEqual(@as(usize, 0), result.value.asObject().?.keys.len);
+    }
+}
+
+test "jsonc: unterminated block comment is not an empty document" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    try t.expectError(error.UnexpectedEof, parse(t.allocator, arena.allocator(), "/*"));
 }
 
 test "jsonc: simple object with strings and numbers" {
