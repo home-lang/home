@@ -208,6 +208,11 @@ class LineageTests(unittest.TestCase):
         self.manifest = self.directory / "lineage" / "manifest.json"
         self.write_manifest()
         self.metadata["provenance"].update(status="verified", after=self.provenance)
+        original_plan = checkpoint.plan_checkpoint(original, json.loads(original_metadata), self.provenance)
+        self.metadata["resumption"] = {"schema": 1, "measurement_pause": True,
+                                       "source_metadata_sha256": self.lineage["original_metadata_sha256"],
+                                       "original_recorded_samples": original_plan["recorded_successful_samples"],
+                                       "partial_round": original_plan["partial_round"]}
 
     def add_source(self, relative, index, order):
         self.sources.append({"path": relative, "sha256": hashlib.sha256((self.directory / relative).read_bytes()).hexdigest(),
@@ -220,6 +225,18 @@ class LineageTests(unittest.TestCase):
         before = {str(path): path.read_bytes() for path in self.directory.rglob("*") if path.is_file()}
         checkpoint.validate_lineage(self.directory, self.metadata)
         self.assertEqual(before, {str(path): path.read_bytes() for path in self.directory.rglob("*") if path.is_file()})
+
+    def test_pause_and_original_checkpoint_descriptor_cannot_be_hidden_or_changed(self):
+        for key, value in [("measurement_pause", False), ("source_metadata_sha256", "0" * 64),
+                           ("original_recorded_samples", 0), ("partial_round", None)]:
+            metadata = copy.deepcopy(self.metadata)
+            metadata["resumption"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "descriptor"):
+                checkpoint.validate_lineage(self.directory, metadata)
+        metadata = copy.deepcopy(self.metadata)
+        metadata.pop("resumption")
+        with self.assertRaisesRegex(ValueError, "descriptor"):
+            checkpoint.validate_lineage(self.directory, metadata)
 
     def test_overlap_cannot_repeat_recorded_compiler_sample(self):
         self.sources.append(copy.deepcopy(self.sources[0]))

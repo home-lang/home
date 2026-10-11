@@ -160,6 +160,13 @@ def validate_lineage(directory: Path, metadata: dict) -> None:
     original_metadata = json.loads(original_raw)
     current_provenance = metadata.get("provenance", {}).get("before")
     original_plan = plan_checkpoint(original, original_metadata, current_provenance)
+    descriptor = metadata.get("resumption")
+    if (not isinstance(descriptor, dict) or descriptor.get("schema") != 1
+            or descriptor.get("measurement_pause") is not True
+            or descriptor.get("source_metadata_sha256") != lineage["original_metadata_sha256"]
+            or descriptor.get("original_recorded_samples") != original_plan["recorded_successful_samples"]
+            or descriptor.get("partial_round") != original_plan["partial_round"]):
+        raise ValueError("matrix continuation pause or checkpoint descriptor is missing or changed")
     if (metadata.get("workloads") != original_metadata.get("workloads")
             or metadata.get("compilers") != original_metadata.get("compilers")
             or metadata.get("runs") != original_metadata.get("runs")

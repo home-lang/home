@@ -179,3 +179,15 @@ class ContinuationPublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "cannot contain symlinks"):
             run.cmd_evidence(self.output, archive_path)
         self.assertFalse(archive_path.exists())
+
+    def test_removed_resume_marker_cannot_bypass_report_or_archive_validation(self):
+        path = self.output / "metadata.json"
+        metadata = json.loads(path.read_bytes())
+        metadata.pop("resumption")
+        path.write_text(json.dumps(metadata))
+        with mock.patch.object(compare.sys, "argv", ["compare.py", str(self.output)]):
+            self.assertEqual(1, compare.main())
+        archive_path = self.directory / "evidence.tar.gz"
+        with self.assertRaisesRegex(SystemExit, "descriptor"):
+            run.cmd_evidence(self.output, archive_path)
+        self.assertFalse(archive_path.exists())

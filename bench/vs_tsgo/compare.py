@@ -231,7 +231,7 @@ def main() -> int:
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         validate_interleaved_rounds(directory, metadata)
-        if "resumption" in metadata:
+        if "resumption" in metadata or (directory / "lineage").exists():
             import checkpoint
             checkpoint.validate_lineage(directory, metadata)
     except (ValueError, OSError) as error:

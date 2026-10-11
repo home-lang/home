@@ -1601,7 +1601,7 @@ def publication_aliases(metadata: dict, admission: dict | None) -> dict[str, str
 
 def evidence_members(source: Path, metadata: dict) -> dict[str, bytes]:
     prefix = f"ts-frontend-benchmark-{source.name}"
-    if "resumption" in metadata:
+    if "resumption" in metadata or (source / "lineage").exists():
         # Lineage hashes refer to original bytes, including metadata paths.
         # Normalizing those bytes would break independently verifiable custody.
         import checkpoint
