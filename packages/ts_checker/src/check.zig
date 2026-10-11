@@ -116805,6 +116805,16 @@ pub const Checker = struct {
                     }
                     const repeated_direct_candidates_are_accepted = !used_explicit_type_args and
                         self.repeatedDirectInferenceArgumentsAreAccepted(callee_t, args, arg_types.items);
+                    if (used_explicit_type_args and
+                        !explicit_type_arg_resolution_failed and
+                        self.genericSignatureHasDependentIndexedDefault(callee_t))
+                    {
+                        try self.recheckExplicitContextualCallArguments(
+                            args,
+                            arg_types.items,
+                            effective_callee_t,
+                        );
+                    }
                     if (!explicit_type_arg_resolution_failed and !repeated_direct_candidates_are_accepted) {
                         const strict_bind_diag_start = self.diagnostics.items.len;
                         try self.checkArgsAgainstSignature(node, args, arg_types.items, effective_callee_t);
@@ -132856,7 +132866,7 @@ pub const Checker = struct {
             if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
                 const default = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)].default;
                 if (default != types.Primitive.none) {
-                    try subs.put(self.gpa, param, try self.substituteType(default, subs));
+                    try subs.put(self.gpa, param, try self.instantiateGenericSignatureDefault(default, subs));
                     continue;
                 }
             }
@@ -132867,8 +132877,98 @@ pub const Checker = struct {
             if (default_node == hir_mod.none_node_id) continue;
             var default_t = self.hir.typeOf(default_node);
             if (default_t == types.Primitive.none) default_t = try self.lowererLowerWithTypeParams(default_node);
-            default_t = self.substituteType(default_t, subs) catch default_t;
+            default_t = try self.instantiateGenericSignatureDefault(default_t, subs);
             try subs.put(self.gpa, param, default_t);
+        }
+    }
+
+    fn instantiateGenericSignatureDefault(
+        self: *Checker,
+        default_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        const substituted = self.substituteType(default_t, subs) catch default_t;
+        const resolved = (try self.resolveExactIndexedAccessForGenericDefault(substituted, 0)) orelse return substituted;
+        var no_substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer no_substitutions.deinit(self.gpa);
+        return if (self.firstUnboundFreeTypeParameter(resolved, &no_substitutions) == null)
+            resolved
+        else
+            substituted;
+    }
+
+    fn genericSignatureHasDependentIndexedDefault(self: *Checker, sig: TypeId) bool {
+        const params = self.generic_signature_params.get(sig) orelse return false;
+        for (params) |param| {
+            if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
+                const payload_index = self.interner.pool.payloadOf(param);
+                if (payload_index < self.interner.pool.type_parameter_payloads.items.len) {
+                    const default_t = self.interner.pool.type_parameter_payloads.items[payload_index].default;
+                    if (default_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(default_t).is_indexed_access)
+                    {
+                        return true;
+                    }
+                }
+            }
+            const declaration = self.type_parameter_decl_nodes.get(param) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param)) orelse continue;
+            if (self.hir.kindOf(declaration) != .type_parameter) continue;
+            const default_node = hir_mod.typeParameterOf(self.hir, declaration).default;
+            if (default_node == hir_mod.none_node_id) continue;
+            const default_t = self.hir.typeOf(default_node);
+            if (default_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(default_t).is_indexed_access) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Recheck only callbacks whose explicit type arguments have produced a
+    /// complete contextual signature. The provisional expression pass can run
+    /// before imported signatures and dependent defaults are instantiated;
+    /// once the call target is concrete, that provisional body no longer owns
+    /// its diagnostics.
+    fn recheckExplicitContextualCallArguments(
+        self: *Checker,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+        sig: TypeId,
+    ) CheckError!void {
+        const param_ts = self.interner.signatureParams(sig);
+        const n = @min(args.len, @min(arg_types.len, param_ts.len));
+        var no_substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer no_substitutions.deinit(self.gpa);
+        for (0..n) |i| {
+            if (!self.functionExpressionHasContextSensitiveParameters(args[i])) continue;
+            const contextual_t = param_ts[i];
+            if (!self.interner.isSignature(contextual_t)) continue;
+            if (self.firstUnboundFreeTypeParameter(contextual_t, &no_substitutions) != null) continue;
+            const source_t = self.hir.typeOf(args[i]);
+            if (!self.interner.isSignature(source_t)) continue;
+            const source_params = self.interner.signatureParams(source_t);
+            const target_params = self.interner.signatureParams(contextual_t);
+            if (source_params.len != target_params.len) continue;
+            var has_provisional_parameter = false;
+            for (source_params, target_params) |source_param, target_param| {
+                const source_is_provisional = source_param == types.Primitive.none or
+                    self.typeIsAnyLike(source_param) or
+                    self.firstUnboundFreeTypeParameter(source_param, &no_substitutions) != null;
+                const target_is_concrete = target_param != types.Primitive.none and
+                    !self.typeIsAnyLike(target_param) and
+                    self.firstUnboundFreeTypeParameter(target_param, &no_substitutions) == null;
+                if (source_is_provisional and target_is_concrete) {
+                    has_provisional_parameter = true;
+                    break;
+                }
+            }
+            if (!has_provisional_parameter) continue;
+            try self.checkFunctionWithContextualSignatureMode(
+                args[i],
+                contextual_t,
+                true,
+                null,
+            );
         }
     }
 
@@ -156182,7 +156282,7 @@ pub const Checker = struct {
             if (payload_index >= self.interner.pool.type_parameter_payloads.items.len) continue;
             const default_t = self.interner.pool.type_parameter_payloads.items[payload_index].default;
             if (default_t == types.Primitive.none) continue;
-            const instantiated_default = self.substituteType(default_t, &subs) catch default_t;
+            const instantiated_default = try self.instantiateGenericSignatureDefault(default_t, &subs);
             try subs.put(self.gpa, parameter, instantiated_default);
         }
 
@@ -177935,6 +178035,31 @@ pub const Checker = struct {
         else
             (try self.directNamedMemberValueType(object_t, key)) orelse return null;
         if (self.containsThisTypeParameter(member_t)) return null;
+        return self.resolveGenericType(member_t) catch member_t;
+    }
+
+    /// Resolve a string-literal indexed path after earlier generic parameters
+    /// have been substituted into a dependent default. Unlike argument
+    /// relation recovery, an intermediate object may contain polymorphic
+    /// `this`; only an unresolved non-`this` parameter in the final member
+    /// prevents the default from becoming concrete.
+    fn resolveExactIndexedAccessForGenericDefault(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
+        if (depth > 8 or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_indexed_access or flags.is_union or flags.is_intersection) return null;
+        const payload_index = self.interner.pool.payloadOf(t);
+        if (payload_index >= self.interner.pool.indexed_access_payloads.items.len) return null;
+        const indexed = self.interner.pool.indexed_access_payloads.items[payload_index];
+        const key = self.stringLiteralValueFromType(indexed.index) orelse return null;
+        var object_t = (try self.resolveExactIndexedAccessForGenericDefault(indexed.object, depth + 1)) orelse indexed.object;
+        object_t = self.resolveGenericType(object_t) catch object_t;
+        if (object_t >= self.interner.pool.typeCount()) return null;
+        const object_flags = self.interner.pool.flagsOf(object_t);
+        if (object_flags.is_type_parameter or object_flags.is_union or object_flags.is_intersection) return null;
+        if (try self.programContextualOriginMemberType(object_t, key)) |member_t| {
+            return self.resolveGenericType(member_t) catch member_t;
+        }
+        const member_t = (try self.directNamedMemberValueType(object_t, key)) orelse return null;
         return self.resolveGenericType(member_t) catch member_t;
     }
 

@@ -8213,6 +8213,44 @@ const NamespaceImportTestResolver = struct {
     }
 };
 
+const SourceExportResolver = struct {
+    resolver: *ts_resolver.Resolver,
+    arena: std.heap.ArenaAllocator,
+
+    const vtable = ts_driver.ExternalResolver.VTable{
+        .resolve = resolve,
+        .moduleExport = moduleExport,
+        .moduleExportNames = moduleExportNames,
+    };
+
+    fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        const result = self.resolver.resolve(specifier, containing_file) catch return null;
+        return .{ .path = result.path, .is_declaration = result.is_declaration };
+    }
+
+    fn moduleExport(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        const result = self.resolver.resolve(specifier, containing_file) catch return null;
+        const facts = moduleExportFactsFromResolvedModule(self.arena.allocator(), self.resolver, result.path, name);
+        return .{
+            .module_name = "fixture",
+            .exported_type = facts.exported_type,
+            .exported_value = facts.exported_value,
+            .runtime_value = facts.exported_value,
+            .generic_function = facts.generic_function,
+            .call_only_function = facts.call_only_function,
+            .module_is_external = facts.module_is_external,
+        };
+    }
+
+    fn moduleExportNames(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?[]const []const u8 {
+        const self: *@This() = @ptrCast(@alignCast(ptr));
+        const result = self.resolver.resolve(specifier, containing_file) catch return null;
+        return moduleExportNamesFromResolvedModule(self.arena.allocator(), self.resolver, result.path) catch null;
+    }
+};
+
 test "module export assignment private type query follows object signatures" {
     const source =
         \\interface Private {}
@@ -16092,44 +16130,6 @@ test "Program: contextual visitor preserves imported finite keys and member chai
 }
 
 test "Program: contextual imported constructor callback retains indexed getter errors" {
-    const SourceExportResolver = struct {
-        resolver: *ts_resolver.Resolver,
-        arena: std.heap.ArenaAllocator,
-
-        const vtable = ts_driver.ExternalResolver.VTable{
-            .resolve = resolve,
-            .moduleExport = moduleExport,
-            .moduleExportNames = moduleExportNames,
-        };
-
-        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
-            const self: *@This() = @ptrCast(@alignCast(ptr));
-            const result = self.resolver.resolve(specifier, containing_file) catch return null;
-            return .{ .path = result.path, .is_declaration = result.is_declaration };
-        }
-
-        fn moduleExport(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
-            const self: *@This() = @ptrCast(@alignCast(ptr));
-            const result = self.resolver.resolve(specifier, containing_file) catch return null;
-            const facts = moduleExportFactsFromResolvedModule(self.arena.allocator(), self.resolver, result.path, name);
-            return .{
-                .module_name = "fixture",
-                .exported_type = facts.exported_type,
-                .exported_value = facts.exported_value,
-                .runtime_value = facts.exported_value,
-                .generic_function = facts.generic_function,
-                .call_only_function = facts.call_only_function,
-                .module_is_external = facts.module_is_external,
-            };
-        }
-
-        fn moduleExportNames(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?[]const []const u8 {
-            const self: *@This() = @ptrCast(@alignCast(ptr));
-            const result = self.resolver.resolve(specifier, containing_file) catch return null;
-            return moduleExportNamesFromResolvedModule(self.arena.allocator(), self.resolver, result.path) catch null;
-        }
-    };
-
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -16190,6 +16190,105 @@ test "Program: contextual imported constructor callback retains indexed getter e
     try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, app, "123").?)), compilation.diagnostics.items[0].pos);
+}
+
+test "Program: imported dependent defaults survive nested polymorphic this members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var source_exports = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer source_exports.arena.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const factory =
+        \\export interface Trait { state: { def: any; [key: string]: any } }
+        \\export interface Creator<T extends Trait, D = T["state"]["def"]> {
+        \\  new (def: D): T;
+        \\}
+        \\export declare function create<T extends Trait, D = T["state"]["def"]>(
+        \\  name: string, initializer: (instance: T, def: D) => void
+        \\): Creator<T, D>;
+    ;
+    const app =
+        \\import * as factory from "./factory.js";
+        \\class Collection<T> {
+        \\  add(value: T): this { void value; return this; }
+        \\  has(value: T): boolean { return value !== undefined; }
+        \\}
+        \\interface ModelDef { kind: "model" }
+        \\interface Model extends factory.Trait {
+        \\  state: { def: ModelDef; output: string; traits: Collection<string> };
+        \\}
+        \\export const inferredGood: factory.Creator<Model> = factory.create("inferredGood", (instance, def) => {
+        \\  const kind: "model" = def.kind;
+        \\  const output: string = instance.state.output;
+        \\  void kind; void output;
+        \\});
+        \\export const oneGood = factory.create<Model>("oneGood", (instance, def) => {
+        \\  const kind: "model" = def.kind;
+        \\  const output: string = instance.state.output;
+        \\  void kind; void output;
+        \\});
+        \\export const twoGood = factory.create<Model, ModelDef>("twoGood", (instance, def) => {
+        \\  const kind: "model" = def.kind;
+        \\  const output: string = instance.state.output;
+        \\  void kind; void output;
+        \\});
+        \\export const inferredBad: factory.Creator<Model> = factory.create("inferredBad", (instance, def) => {
+        \\  const wrongDefInferred: "other" = def.kind;
+        \\  def.inferredMissing;
+        \\  const wrongOutputInferred: number = instance.state.output;
+        \\  instance.state.inferredMissing;
+        \\});
+        \\export const oneBad = factory.create<Model>("oneBad", (instance, def) => {
+        \\  const wrongDefOne: "other" = def.kind;
+        \\  def.oneMissing;
+        \\  const wrongOutputOne: number = instance.state.output;
+        \\  instance.state.oneMissing;
+        \\});
+        \\export const twoBad = factory.create<Model, ModelDef>("twoBad", (instance, def) => {
+        \\  const wrongDefTwo: "other" = def.kind;
+        \\  def.twoMissing;
+        \\  const wrongOutputTwo: number = instance.state.output;
+        \\  instance.state.twoMissing;
+        \\});
+    ;
+    try vfs.addFile("/proj/factory.ts", factory);
+    try vfs.addFile("/proj/app.ts", app);
+    _ = try program.add("/proj/factory.ts", factory);
+    const app_id = try program.add("/proj/app.ts", app);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 12), compilation.diagnostics.items.len);
+    for ([_]struct { marker: []const u8, code: u32 }{
+        .{ .marker = "wrongDefInferred", .code = 2322 },
+        .{ .marker = "inferredMissing", .code = 2339 },
+        .{ .marker = "wrongOutputInferred", .code = 2322 },
+        .{ .marker = "state.inferredMissing", .code = 2339 },
+        .{ .marker = "wrongDefOne", .code = 2322 },
+        .{ .marker = "oneMissing", .code = 2339 },
+        .{ .marker = "wrongOutputOne", .code = 2322 },
+        .{ .marker = "state.oneMissing", .code = 2339 },
+        .{ .marker = "wrongDefTwo", .code = 2322 },
+        .{ .marker = "twoMissing", .code = 2339 },
+        .{ .marker = "wrongOutputTwo", .code = 2322 },
+        .{ .marker = "state.twoMissing", .code = 2339 },
+    }) |expected| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, app, expected.marker).?);
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != expected.code) continue;
+            if (diagnostic.pos >= start and diagnostic.pos <= start + expected.marker.len + 32) found = true;
+        }
+        try T.expect(found);
+    }
 }
 
 const JsCheckCase = struct {

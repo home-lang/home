@@ -6431,6 +6431,71 @@ test "driver: explicit type-args on a generic call parse + compile" {
     try T.expect(std.mem.indexOf(u8, c.js, "id(42)") != null);
 }
 
+test "driver: explicit generic callbacks use concrete dependent defaults" {
+    const source =
+        \\interface Trait { state: { def: any; [key: string]: any } }
+        \\interface Creator<T extends Trait, D = T["state"]["def"]> { new (def: D): T }
+        \\declare function create<T extends Trait, D = T["state"]["def"]>(
+        \\  name: string, initializer: (instance: T, def: D) => void
+        \\): Creator<T, D>;
+        \\class Collection<T> {
+        \\  add(value: T): this { void value; return this; }
+        \\  has(value: T): boolean { return value !== undefined; }
+        \\}
+        \\interface ModelDef { kind: "model" }
+        \\interface Model extends Trait {
+        \\  state: { def: ModelDef; output: string; traits: Collection<string> };
+        \\}
+        \\const oneGood = create<Model>("oneGood", (instance, def) => {
+        \\  const kind: "model" = def.kind;
+        \\  const output: string = instance.state.output;
+        \\  void kind; void output;
+        \\});
+        \\const twoGood = create<Model, ModelDef>("twoGood", (instance, def) => {
+        \\  const kind: "model" = def.kind;
+        \\  const output: string = instance.state.output;
+        \\  void kind; void output;
+        \\});
+        \\const oneBad = create<Model>("oneBad", (instance, def) => {
+        \\  const wrongDefOne: "other" = def.kind;
+        \\  def.oneMissing;
+        \\  const wrongOutputOne: number = instance.state.output;
+        \\  instance.state.oneMissing;
+        \\});
+        \\const twoBad = create<Model, ModelDef>("twoBad", (instance, def) => {
+        \\  const wrongDefTwo: "other" = def.kind;
+        \\  def.twoMissing;
+        \\  const wrongOutputTwo: number = instance.state.output;
+        \\  instance.state.twoMissing;
+        \\});
+    ;
+    var c = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    try T.expectEqual(@as(usize, 8), c.diagnostics.items.len);
+    for ([_]struct { marker: []const u8, code: u32 }{
+        .{ .marker = "wrongDefOne", .code = 2322 },
+        .{ .marker = "def.oneMissing", .code = 2339 },
+        .{ .marker = "wrongOutputOne", .code = 2322 },
+        .{ .marker = "state.oneMissing", .code = 2339 },
+        .{ .marker = "wrongDefTwo", .code = 2322 },
+        .{ .marker = "def.twoMissing", .code = 2339 },
+        .{ .marker = "wrongOutputTwo", .code = 2322 },
+        .{ .marker = "state.twoMissing", .code = 2339 },
+    }) |expected| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, source, expected.marker).?);
+        var found = false;
+        for (c.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != expected.code) continue;
+            if (diagnostic.pos >= start and diagnostic.pos <= start + expected.marker.len + 24) found = true;
+        }
+        try T.expect(found);
+    }
+}
+
 test "driver: comparison still parses as binop (no false-positive type args)" {
     var c = try compileSource(T.allocator,
         \\let a = 1;
