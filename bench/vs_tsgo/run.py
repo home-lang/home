@@ -1601,6 +1601,35 @@ def publication_aliases(metadata: dict, admission: dict | None) -> dict[str, str
 
 def evidence_members(source: Path, metadata: dict) -> dict[str, bytes]:
     prefix = f"ts-frontend-benchmark-{source.name}"
+    if "resumption" in metadata:
+        # Lineage hashes refer to original bytes, including metadata paths.
+        # Normalizing those bytes would break independently verifiable custody.
+        import checkpoint
+        checkpoint.validate_lineage(source, metadata)
+        paths = [source / "metadata.json", source / "admission.jsonl"]
+        paths += sorted(source.glob("*-round-*.json"))
+        paths += sorted((source / "lineage").rglob("*"))
+        members = {}
+        for path in paths:
+            if path.is_symlink():
+                raise ValueError("continuation evidence cannot contain symlinks")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ValueError("continuation evidence must contain real files")
+            members[f"{prefix}/{path.relative_to(source).as_posix()}"] = path.read_bytes()
+        members[f"{prefix}/README.txt"] = (
+            "This is a paused, resumed matrix, not an uninterrupted measurement.\n"
+            "Top-level rounds may assemble immutable original and supplementary samples.\n"
+            "Original checkpoint, raw Hyperfine segments, phase records and warmups are retained under lineage/.\n"
+            "Every evidence file is byte-for-byte; metadata retains local paths to preserve lineage hashes.\n"
+            "Both complete protocol and immutable no-repeat lineage were verified before packaging.\n"
+        ).encode()
+        members[f"{prefix}/SHA256SUMS"] = "".join(
+            f"{hashlib.sha256(content).hexdigest()}  {name.removeprefix(prefix + '/')}\n"
+            for name, content in sorted(members.items())
+        ).encode()
+        return members
     members = {
         f"{prefix}/{path.name}": path.read_bytes()
         for path in sorted(source.glob("*-round-*.json"))
@@ -1654,10 +1683,11 @@ def cmd_evidence(directory: Path | None, output: Path | None) -> Path:
     try:
         metadata = json.loads((source / "metadata.json").read_text(encoding="utf-8"))
         compare.validate_interleaved_rounds(source, metadata)
+        members = evidence_members(source, metadata)
     except (json.JSONDecodeError, OSError, ValueError) as error:
         raise SystemExit(f"cannot package benchmark evidence from {source}: {error}") from error
     destination = output or EVIDENCE / f"{source.name}.tar.gz"
-    write_evidence_archive(destination, evidence_members(source, metadata))
+    write_evidence_archive(destination, members)
     print(f"Evidence: {destination}")
     return destination
 

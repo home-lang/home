@@ -231,6 +231,9 @@ def main() -> int:
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
         validate_interleaved_rounds(directory, metadata)
+        if "resumption" in metadata:
+            import checkpoint
+            checkpoint.validate_lineage(directory, metadata)
     except (ValueError, OSError) as error:
         print(f"cannot report {directory}: {error}", file=sys.stderr)
         return 1
@@ -284,6 +287,9 @@ def main() -> int:
         if tools := tools_notice(metadata):
             print(tools)
         print(provenance_notice(metadata))
+        if "resumption" in metadata:
+            print("Continuation: interrupted checkpoint plus only unrecorded slots; retained raw lineage verified.")
+            print("The measurement pause and split round prevent treating this as an uninterrupted or cross-host performance result.")
         print()
     columns = [f"{'Home' if name == 'home' else name} median" for name in names]
     print("| Workload | " + " | ".join(columns) + " | Home vs fastest competitor |")

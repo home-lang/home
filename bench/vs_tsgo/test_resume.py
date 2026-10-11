@@ -2,13 +2,18 @@
 import copy
 import hashlib
 import json
+import io
 import shutil
 from pathlib import Path
 import tempfile
 import unittest
+import tarfile
+from unittest import mock
 from types import SimpleNamespace
 
 import resume
+import run
+import compare
 import test_checkpoint
 
 
@@ -123,3 +128,54 @@ class ResumeTests(unittest.TestCase):
         (source / "metadata.json").symlink_to(self.original / "metadata.json")
         with self.assertRaisesRegex(ValueError, "real owned"):
             resume.initialize(source, self.directory / "not-created", self.provenance, self.host)
+
+
+class ContinuationPublicationTests(unittest.TestCase):
+    write_round = ResumeTests.write_round
+    timer = ResumeTests.timer
+    execute = ResumeTests.execute
+
+    def setUp(self):
+        ResumeTests.setUp(self)
+        self.execute()
+        resume.finalize(self.output, self.provenance, self.host)
+
+    def test_archive_retains_all_lineage_bytes_and_checksums(self):
+        archive_path = self.directory / "evidence.tar.gz"
+        run.cmd_evidence(self.output, archive_path)
+        first = archive_path.read_bytes()
+        run.cmd_evidence(self.output, archive_path)
+        self.assertEqual(first, archive_path.read_bytes())
+        prefix = "ts-frontend-benchmark-continued/"
+        with tarfile.open(archive_path) as archive:
+            for path in self.output.rglob("*"):
+                if path.is_file():
+                    self.assertEqual(path.read_bytes(), archive.extractfile(prefix + path.relative_to(self.output).as_posix()).read())
+            for line in archive.extractfile(prefix + "SHA256SUMS").read().decode().splitlines():
+                expected, relative = line.split("  ", 1)
+                self.assertEqual(expected, hashlib.sha256(archive.extractfile(prefix + relative).read()).hexdigest())
+
+    def test_reporting_rejects_missing_lineage_even_with_complete_rounds(self):
+        (self.output / "lineage" / "manifest.json").unlink()
+        with mock.patch.object(compare.sys, "argv", ["compare.py", str(self.output)]):
+            self.assertEqual(1, compare.main())
+
+    def test_archive_rejects_changed_raw_lineage_without_writing_output(self):
+        (self.output / "lineage" / "segments" / "example-round-001.json").write_text("{}")
+        archive_path = self.directory / "evidence.tar.gz"
+        with self.assertRaisesRegex(SystemExit, "checksum changed"):
+            run.cmd_evidence(self.output, archive_path)
+        self.assertFalse(archive_path.exists())
+
+    def test_reporting_discloses_measurement_pause(self):
+        output = io.StringIO()
+        with mock.patch.object(compare.sys, "argv", ["compare.py", str(self.output)]), mock.patch.object(compare.sys, "stdout", output):
+            self.assertEqual(0, compare.main())
+        self.assertIn("measurement pause and split round", output.getvalue())
+
+    def test_archive_rejects_symlinked_unmanifested_lineage(self):
+        (self.output / "lineage" / "unmanifested.json").symlink_to(self.original / "metadata.json")
+        archive_path = self.directory / "evidence.tar.gz"
+        with self.assertRaisesRegex(SystemExit, "cannot contain symlinks"):
+            run.cmd_evidence(self.output, archive_path)
+        self.assertFalse(archive_path.exists())
