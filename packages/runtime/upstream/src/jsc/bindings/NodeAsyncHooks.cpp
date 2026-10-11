@@ -56,7 +56,7 @@ extern "C" EncodedJSValue Home__FSRequest__event(JSGlobalObject* globalObject, E
     arguments.append(JSValue::decode(value));
     if (operation == 2 || operation == 5 || operation == 6 || operation == 7) arguments.append(JSValue::decode(previous));
     if (operation == 5 || operation == 6) arguments.append(jsBoolean(operation == 6));
-    auto name = operation == 0 ? "createFSRequest"_s : operation == 1 ? "enterFSRequest"_s : operation == 2 ? "leaveFSRequest"_s : operation == 3 ? "destroyFSRequest"_s : operation == 4 ? "createFSCallback"_s : operation == 7 ? "queueFSCallback"_s : "deliverFSCallback"_s;
+    auto name = operation == 0 ? "createFSRequest"_s : operation == 1 ? "enterFSRequest"_s : operation == 2 ? "leaveFSRequest"_s : operation == 3 ? "destroyFSRequest"_s : operation == 4 ? "createFSCallback"_s : operation == 8 ? "createDirectoryCloseCallback"_s : operation == 7 ? "queueFSCallback"_s : "deliverFSCallback"_s;
     auto result = callFSRequestFunction(globalObject, name, arguments);
     if (scope.exception()) {
         auto* exception = scope.exception();

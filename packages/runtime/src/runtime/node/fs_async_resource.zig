@@ -20,6 +20,12 @@ pub fn initCallback(global: *jsc.JSGlobalObject, callback: jsc.JSValue) Self {
     return .{ .resource = if (value.isUndefined()) .empty else .create(value, global), .callback_mode = true };
 }
 
+pub fn initDirectoryCloseCallback(global: *jsc.JSGlobalObject, callback: jsc.JSValue) Self {
+    if (global.bunVM().scriptExecutionStatus() != .running) return .{ .callback_mode = true };
+    const value = Home__FSRequest__event(global, callback, .js_undefined, 8);
+    return .{ .resource = if (value.isUndefined()) .empty else .create(value, global), .callback_mode = true };
+}
+
 pub fn queueEarlyError(global: *jsc.JSGlobalObject, callback: jsc.JSValue, error_value: jsc.JSValue) jsc.JSValue {
     _ = Home__FSRequest__event(global, callback, error_value, 7);
     return .js_undefined;

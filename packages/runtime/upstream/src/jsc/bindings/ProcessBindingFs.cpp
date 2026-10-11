@@ -18,6 +18,7 @@ extern "C" EncodedJSValue Home__Directory__close(JSGlobalObject*, CallFrame*, bo
 extern "C" void Home__Directory__release(void*);
 extern "C" size_t Home__Directory__memoryCost(void*);
 extern "C" bool Home__Directory__isOpen(void*);
+extern "C" bool Home__Directory__hasBuffered(void*);
 
 // The generic destructible space owns this type without changing pinned
 // BunClientData or GlobalObject layouts. No raw native pointer reaches JS.
@@ -128,6 +129,12 @@ HOME_DIRECTORY_FUNCTION(homeReadDirectorySync, read, false)
 HOME_DIRECTORY_FUNCTION(homeReadDirectory, read, true)
 HOME_DIRECTORY_FUNCTION(homeCloseDirectorySync, close, false)
 HOME_DIRECTORY_FUNCTION(homeCloseDirectory, close, true)
+JSC_DEFINE_HOST_FUNCTION(homeDirectoryHasBufferedEntries, (JSGlobalObject* global, CallFrame* frame))
+{
+    void* state = Home__Directory__state(global, JSValue::encode(frame->argument(0)));
+    if (!state) return {};
+    return JSValue::encode(jsBoolean(Home__Directory__hasBuffered(state)));
+}
 #undef HOME_DIRECTORY_FUNCTION
 JSC_DEFINE_HOST_FUNCTION(homeAdoptDirectorySync, (JSGlobalObject* global, CallFrame* frame)) { return Home__Directory__adopt(global, frame); }
 
@@ -335,6 +342,7 @@ void ProcessBindingFs::finishCreation(JSC::VM& vm)
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
     auto* global = globalObject();
+    putDirect(vm, Identifier::fromString(vm, "homeDirectoryHasBufferedEntries"_s), JSFunction::create(vm, global, 1, "homeDirectoryHasBufferedEntries"_s, homeDirectoryHasBufferedEntries, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeAdoptDirectorySync"_s), JSFunction::create(vm, global, 3, "homeAdoptDirectorySync"_s, homeAdoptDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeOpenDirectorySync"_s), JSFunction::create(vm, global, 2, "homeOpenDirectorySync"_s, homeOpenDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeOpenDirectory"_s), JSFunction::create(vm, global, 2, "homeOpenDirectory"_s, homeOpenDirectory, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));

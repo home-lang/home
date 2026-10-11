@@ -77,8 +77,17 @@ function createFSCallback(callback) {
   emitInit(state.id, "FSREQCALLBACK", state.trigger, resource);
   return resource;
 }
+function createDirectoryCloseCallback(callback) {
+  const resource = createFSCallback(callback);
+  fsRequestStates.get(resource).directoryClose = true;
+  return resource;
+}
 function deliverFSCallback(resource, result, failed) {
-  resource.oncomplete.$call(undefined, failed ? result : null, failed ? undefined : result);
+  if (fsRequestStates.get(resource).directoryClose) {
+    resource.oncomplete.$call(resource, failed ? result : null);
+  } else {
+    resource.oncomplete.$call(undefined, failed ? result : null, failed ? undefined : result);
+  }
 }
 function queueFSCallback(callback, error) { process.nextTick(callback, error); }
 function enterFSRequest(resource) {
@@ -102,7 +111,7 @@ function destroyFSRequest(resource) {
 export default {
   tickInitHooks, beforeHooks, afterHooks, destroyHooks,
   createTimer, destroyTimer, refreshTimer, enterTimer, leaveTimer,
-  createFSRequest, createFSCallback, deliverFSCallback, queueFSCallback, enterFSRequest, leaveFSRequest, destroyFSRequest,
+  createFSRequest, createFSCallback, createDirectoryCloseCallback, deliverFSCallback, queueFSCallback, enterFSRequest, leaveFSRequest, destroyFSRequest,
   emitInit, emitBefore, emitAfter, emitDestroy,
   newAsyncId() { return ++nextAsyncId; },
   executionAsyncId() { return execution.asyncId; },

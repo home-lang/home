@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { Worker } from 'node:worker_threads'
+import { createHook, executionAsyncId, executionAsyncResource } from 'node:async_hooks'
 
 {
 const base=fs.mkdtempSync(join(tmpdir(),'home-directory-identity-'))
@@ -89,5 +90,67 @@ try {
  assert.equal(ownedDescriptors().length,1)
  await worker.terminate();assert.equal(ownedDescriptors().length,0,'worker teardown retires owned descriptors')
  console.log('native directories stream entries, preserve encodings and recursion, serialize operations, and close on explicit close, iteration exit, GC and worker shutdown')
+} finally {fs.rmSync(base,{recursive:true,force:true})}
+}
+
+// Native request completion and buffered callbacks preserve their API scopes.
+{
+const base=fs.mkdtempSync(join(tmpdir(),'home-directory-callbacks-'))
+for(const name of ['a','b','c','d'])fs.writeFileSync(join(base,name),name)
+const tick=()=>new Promise(resolve=>setImmediate(resolve))
+try {
+ const invalid=fs.opendirSync(base)
+ assert.throws(()=>invalid.read(null),{code:'ERR_INVALID_ARG_TYPE'})
+ assert.throws(()=>invalid.close(null),{code:'ERR_INVALID_ARG_TYPE'})
+ invalid.closeSync()
+ assert.throws(()=>invalid.read(()=>assert.fail('closed read callback must not run')),{code:'ERR_DIR_CLOSED'})
+ assert.throws(()=>invalid.read(undefined),{code:'ERR_DIR_CLOSED'})
+ await assert.rejects(invalid.read(),{code:'ERR_DIR_CLOSED'})
+ await new Promise(resolve=>{let sync=true;const returned=invalid.close(function(error){assert.equal(sync,false);assert.equal(this,undefined);assert.equal(arguments.length,1);assert.equal(error.code,'ERR_DIR_CLOSED');resolve()});assert.equal(returned,undefined);sync=false})
+ const dir=fs.opendirSync(base,{bufferSize:32})
+ const requests=[]
+ const hook=createHook({init(id,type,trigger,owner){if(type.startsWith('FSREQ'))requests.push({id,type,owner})}}).enable()
+ let first
+ try {
+  await new Promise((resolve,reject)=>{let sync=true;const returned=dir.read(function(error,entry){try{assert.equal(sync,false);assert.equal(this,undefined);assert.equal(arguments.length,2);assert.equal(error,null);first=entry;assert.equal(requests.length,1);assert.equal(requests[0].type,'FSREQCALLBACK');assert.equal(executionAsyncId(),requests[0].id);assert.equal(executionAsyncResource(),requests[0].owner);resolve()}catch(error){reject(error)}});assert.equal(returned,undefined);sync=false})
+  await tick()
+  const count=requests.length
+  await new Promise((resolve,reject)=>{let sync=true;let immediate;const returned=dir.read(function(error,entry){try{assert.equal(sync,false);assert.equal(this,undefined);assert.equal(error,null);assert.notEqual(entry.name,first.name);assert.notEqual(entry.name,immediate.name);assert.equal(requests.length,count);resolve()}catch(error){reject(error)}});assert.equal(returned,undefined);immediate=dir.readSync();sync=false})
+ } finally {hook.disable();await dir.close()}
+ const closing=fs.opendirSync(base)
+ const closed=new Promise((resolve,reject)=>{const returned=closing.close(function(error){try{assert.equal(this,executionAsyncResource());assert.equal(this.constructor.name,'FSReqCallback');assert.equal(arguments.length,1);assert.equal(error,null);resolve()}catch(error){reject(error)}});assert.equal(returned,undefined)})
+ assert.throws(()=>closing.readSync(),{code:'ERR_DIR_CLOSED'})
+ await closed
+ const errors=fs.opendirSync(base,{bufferSize:1});const marker=new Error('ordinary callback exception');const calls=[];let finish
+ const done=new Promise(resolve=>{finish=resolve})
+ errors.read(function(error,entry){calls.push([error,entry]);if(calls.length===1)throw marker;assert.equal(arguments.length,1);assert.equal(error,marker);assert.equal(entry,undefined);errors.close(()=>finish())})
+ await done
+ assert.equal(calls.length,2);assert.equal(calls[0][0],null);assert(calls[0][1] instanceof fs.Dirent)
+ console.log('directory callback validation, receivers, argument counts, resource scope, buffered scheduling, close state and exception routing passed')
+} finally {fs.rmSync(base,{recursive:true,force:true})}
+}
+
+// Callback exceptions preserve uncaught delivery on buffered and close paths.
+{
+const base=fs.mkdtempSync(join(tmpdir(),'home-directory-callback-errors-'))
+for(const name of ['a','b','c'])fs.writeFileSync(join(base,name),name)
+try {
+ for(const operation of ['cached-read','close']){
+  const dir=fs.opendirSync(base,{bufferSize:32})
+  if(operation==='cached-read')assert(dir.readSync())
+  const marker=new Error(operation+' callback marker')
+  const events=[];let calls=0;let finish
+  const done=new Promise(resolve=>{finish=resolve})
+  function uncaught(error){assert.equal(error,marker);events.push('uncaught');if(operation==='cached-read')dir.closeSync();finish()}
+  function rejection(error){events.push('rejection');if(operation==='cached-read')dir.closeSync();finish()}
+  process.once('uncaughtException',uncaught);process.once('unhandledRejection',rejection)
+  const cb=function(){calls++;throw marker}
+  if(operation==='cached-read')dir.read(cb);else dir.close(cb)
+  await done
+  process.removeListener('uncaughtException',uncaught);process.removeListener('unhandledRejection',rejection)
+  assert.deepEqual(events,['uncaught']);assert.equal(calls,1)
+  assert.throws(()=>dir.readSync(),{code:'ERR_DIR_CLOSED'})
+ }
+ console.log('cached read and native close callback exceptions reach uncaughtException exactly once')
 } finally {fs.rmSync(base,{recursive:true,force:true})}
 }

@@ -28,7 +28,7 @@ pub const Flavor = enum { sync, async };
 pub const Async = struct {
     pub const openDir = NewAsyncFSTask(Return.OpenDir, Arguments.OpenDir, NodeFS.openDir);
     pub const readDir = NewAsyncFSTask(Return.ReadDir, Arguments.ReadDir, NodeFS.readDir);
-    pub const closeDir = NewAsyncFSTask(void, Arguments.ReadDir, NodeFS.closeDir);
+    pub const closeDir = NewAsyncFSTask(void, Arguments.CloseDir, NodeFS.closeDir);
     pub const access = NewAsyncFSTask(Return.Access, Arguments.Access, NodeFS.access);
     pub const appendFile = NewAsyncFSTask(Return.AppendFile, Arguments.AppendFile, NodeFS.appendFile);
     pub const chmod = NewAsyncFSTask(Return.Chmod, Arguments.Chmod, NodeFS.chmod);
@@ -411,7 +411,7 @@ pub const Async = struct {
                 }
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
-                task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else FSAsyncResource.initCallback(globalObject, callback);
+                task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else if (comptime @hasDecl(ArgumentType, "directory_close_callback")) FSAsyncResource.initDirectoryCloseCallback(globalObject, callback) else FSAsyncResource.initCallback(globalObject, callback);
                 task.tracker.didSchedule(globalObject);
                 if (comptime shutdown_safe_result) {
                     if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -3169,6 +3169,7 @@ pub const Arguments = struct {
     };
 
     pub const ReadDir = DirectoryHandle.HandleArgument;
+    pub const CloseDir = DirectoryHandle.CloseArgument;
 
     pub const OpenDir = struct {
         pub const owns_result_error = true;
@@ -4675,8 +4676,8 @@ pub const NodeFS = struct {
         return args.state.read();
     }
 
-    pub fn closeDir(_: *NodeFS, args: Arguments.ReadDir, _: Flavor) Maybe(void) {
-        return args.state.close();
+    pub fn closeDir(_: *NodeFS, args: Arguments.CloseDir, _: Flavor) Maybe(void) {
+        return args.handle.state.close();
     }
 
     fn readInner(_: *NodeFS, args: Arguments.Read) Maybe(Return.Read) {

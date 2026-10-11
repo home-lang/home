@@ -57,6 +57,12 @@ pub const State = struct {
         return result;
     }
 
+    pub fn hasBuffered(this: *State) bool {
+        this.lock.lock();
+        defer this.lock.unlock();
+        return !this.closed and this.pending_index < this.pending.items.len;
+    }
+
     pub fn read(this: *State) Maybe(ReadResult) {
         this.lock.lock();
         defer this.lock.unlock();
@@ -254,6 +260,26 @@ pub const HandleArgument = struct {
         root.deinit();
     }
 };
+
+pub const CloseArgument = struct {
+    pub const owns_result_error = true;
+    pub const directory_close_callback = true;
+    handle: HandleArgument,
+    pub fn fromJS(global: *jsc.JSGlobalObject, arguments: *jsc.CallFrame.ArgumentsSlice) bun.JSError!CloseArgument {
+        return .{ .handle = try HandleArgument.fromJS(global, arguments) };
+    }
+    pub fn toThreadSafe(_: *CloseArgument) void {}
+    pub fn didDispatch(this: *CloseArgument, global: *jsc.JSGlobalObject) void {
+        this.handle.didDispatch(global);
+    }
+    pub fn deinit(this: CloseArgument) void {
+        this.handle.deinit();
+    }
+};
+
+pub export fn Home__Directory__hasBuffered(state: *State) bool {
+    return state.hasBuffered();
+}
 
 pub export fn Home__Directory__isOpen(state: *State) bool {
     state.lock.lock();

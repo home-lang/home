@@ -971,10 +971,6 @@ function _toUnixTimestamp(time: any, name = "time") {
 function callOnceWithNull(callback) {
   callback(null);
 }
-function queueDirCloseCallback(callback, error) { process.nextTick(callback, error); }
-function callOnceWithNullThen(callback, value) {
-  callback(null, value);
-}
 
 let directoryBinding;
 function directoryNative() {
@@ -1036,10 +1032,9 @@ class Dir {
     this.#path = path;
   }
 
-  // Number of in-flight async operations; sync ops are forbidden while > 0,
-  // and async ops queue behind #pendingOp like node's operation queue.
-  #pendingCount = 0;
-  #pendingOp: Promise<any> | null = null;
+  // Native operations queue until their completion has dispatched. Buffered
+  // reads need no filesystem request and schedule callbacks through nextTick.
+  #operationQueue: (() => void)[] | null = null;
 
   #dirConcurrentError() {
     return $ERR_DIR_CONCURRENT_OPERATION(
@@ -1047,72 +1042,78 @@ class Dir {
     );
   }
 
-  #enqueue(run) {
-    const prev = this.#pendingOp;
-    let p;
-    if (prev) {
-      p = prev.then(run, run);
-    } else {
-      try {
-        const r = run();
-        p = $isPromise(r) ? r : Promise.$resolve(r);
-      } catch (e) {
-        p = Promise.$reject(e);
-      }
-    }
-    this.#pendingCount++;
-    this.#pendingOp = p;
-    const done = this.#opDone.bind(this);
-    p.then(done, done);
-    return p;
-  }
-
   readSync() {
     if (this.#handle === null) throw $ERR_DIR_CLOSED();
-    if (this.#pendingCount > 0) throw this.#dirConcurrentError();
+    if (this.#operationQueue !== null) throw this.#dirConcurrentError();
     return directoryNative().homeReadDirectorySync(this.#handle);
   }
 
   read(cb?: (err: Error | null, entry: DirentType) => void): any {
-    if (!$isUndefinedOrNull(cb)) {
-      validateFunction(cb, "callback");
-      // node's callback overload returns undefined (like close(cb) above)
-      this.read().then(callOnceWithNullThen.bind(null, cb), cb);
+    return arguments.length === 0 ? this.#readPromise() : this.#readImpl(true, cb);
+  }
+
+  #readPromise() {
+    return new Promise((resolve, reject) => {
+      this.#readImpl(false, (error, entry) => error ? reject(error) : resolve(entry));
+    });
+  }
+
+  #readImpl(maybeSync, callback) {
+    if (this.#handle === null) throw $ERR_DIR_CLOSED();
+    if (callback === undefined) return this.#readPromise();
+    validateFunction(callback, "callback");
+    if (this.#operationQueue !== null) {
+      this.#operationQueue.push(() => this.#readImpl(maybeSync, callback));
       return;
     }
-
-    return this.#enqueue(this.#readOp.bind(this));
-  }
-
-  #opDone() {
-    if (--this.#pendingCount === 0) this.#pendingOp = null;
-  }
-
-  #readOp() {
-    if (this.#handle === null) throw $ERR_DIR_CLOSED();
-    return directoryNative().homeReadDirectory(this.#handle);
-  }
-
-  #closeOp() {
-    const handle = this.#handle;
-    if (handle === null) throw $ERR_DIR_CLOSED();
-    return directoryNative().homeCloseDirectory(handle).then(() => { this.#handle = null; });
+    if (directoryNative().homeDirectoryHasBufferedEntries(this.#handle)) {
+      try {
+        const entry = directoryNative().homeReadDirectorySync(this.#handle);
+        if (maybeSync) process.nextTick(callback, null, entry);
+        else callback(null, entry);
+        return;
+      } catch (error) {
+        return callback(error);
+      }
+    }
+    directoryNative().homeReadDirectory(this.#handle, (error, entry) => {
+      process.nextTick(() => {
+        const queue = this.#operationQueue;
+        this.#operationQueue = null;
+        for (const operation of queue) operation();
+      });
+      if (error || entry === null) return callback(error, entry);
+      try { callback(null, entry); }
+      catch (error) { callback(error); }
+    });
+    this.#operationQueue = [];
   }
 
   close(cb?: (err?: Error) => void) {
-    if (!$isUndefinedOrNull(cb)) {
-      validateFunction(cb, "callback");
-      this.close().then(() => queueDirCloseCallback(cb, null), error => queueDirCloseCallback(cb, error));
+    if (cb === undefined) {
+      if (this.#handle === null) return Promise.$reject($ERR_DIR_CLOSED());
+      return new Promise((resolve, reject) => {
+        this.close(error => error ? reject(error) : resolve());
+      });
+    }
+    validateFunction(cb, "callback");
+    if (this.#handle === null) {
+      process.nextTick(cb, $ERR_DIR_CLOSED());
       return;
     }
-    return this.#enqueue(this.#closeOp.bind(this));
+    if (this.#operationQueue !== null) {
+      this.#operationQueue.push(() => this.close(cb));
+      return;
+    }
+    const handle = this.#handle;
+    this.#handle = null;
+    directoryNative().homeCloseDirectory(handle, cb);
   }
 
   closeSync() {
-    const handle = this.#handle;
-    if (handle === null) throw $ERR_DIR_CLOSED();
-    if (this.#pendingCount > 0) throw this.#dirConcurrentError();
-    directoryNative().homeCloseDirectorySync(handle);
+    if (this.#handle === null) throw $ERR_DIR_CLOSED();
+    if (this.#operationQueue !== null) throw this.#dirConcurrentError();
+    directoryNative().homeCloseDirectorySync(this.#handle);
     this.#handle = null;
   }
 
