@@ -18,9 +18,9 @@ pub const Kind = enum(u8) {
     ready, // (empty)
     file_start, // u32 file_idx
     test_done, // u32 file_idx, str formatted_line (ANSI included; printed verbatim)
-    file_done, // 9 × u32: file_idx, pass, fail, skip, todo, expectations, skipped_label, files, unhandled
+    file_done, // 10 × u32: file_idx, pass, fail, skip, todo, expectations, skipped_label, files, unhandled, retry_attempts
     repeat_bufs, // 3 × str: failures, skips, todos (verbatim repeat-buffer bytes)
-    junit_file, // str path
+    junit_file, // str XML path, str case metadata path (empty when disabled)
     coverage_file, // str path
     // coordinator → worker
     run, // u32 file_idx, str path
@@ -44,7 +44,7 @@ pub fn begin(self: *Frame, kind: Kind) void {
     self.buf.clearRetainingCapacity();
     // reserve header; payload_len patched in send()
     home_rt.handleOom(self.buf.appendNTimes(home_rt.default_allocator, 0, 4));
-    home_rt.handleOom(self.buf.append(home_rt.default_allocator, @intFromEnum(kind)));
+    home_rt.handleOom(self.buf.append(home_rt.default_allocator, @backingInt(kind)));
 }
 pub fn u32_(self: *Frame, v: u32) void {
     var le: [4]u8 = undefined;
@@ -111,7 +111,7 @@ test "Frame.begin + finish encodes empty payload with kind byte" {
     // 4-byte len header + 1 kind byte. payload_len should be 0.
     try std.testing.expectEqual(@as(usize, 5), bytes.len);
     try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[0..4], .little));
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.ready)), bytes[4]);
+    try std.testing.expectEqual(@as(u8, @backingInt(Kind.ready)), bytes[4]);
 }
 
 test "Frame round-trip: u32 + str via Reader" {
@@ -125,7 +125,7 @@ test "Frame round-trip: u32 + str via Reader" {
     // bytes[0..4] = payload_len LE; bytes[4] = kind; bytes[5..] = payload.
     const payload_len = std.mem.readInt(u32, bytes[0..4], .little);
     try std.testing.expectEqual(@as(u32, 4 + 4 + 5), payload_len);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.run)), bytes[4]);
+    try std.testing.expectEqual(@as(u8, @backingInt(Kind.run)), bytes[4]);
 
     var r = Reader{ .p = bytes[5..] };
     try std.testing.expectEqual(@as(u32, 42), r.u32_());
@@ -139,8 +139,8 @@ test "Frame.Reader returns sentinels on truncation" {
 }
 
 test "Kind discriminant values are stable" {
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Kind.ready));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(Kind.file_start));
-    try std.testing.expectEqual(@as(u8, 7), @intFromEnum(Kind.run));
-    try std.testing.expectEqual(@as(u8, 8), @intFromEnum(Kind.shutdown));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(Kind.ready));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(Kind.file_start));
+    try std.testing.expectEqual(@as(u8, 7), @backingInt(Kind.run));
+    try std.testing.expectEqual(@as(u8, 8), @backingInt(Kind.shutdown));
 }

@@ -6131,8 +6131,8 @@ fn prepareHomeCapturedInvocation(
     argv[0] = executable;
     if (extra != 0) {
         if (args_tail.len < 2 or !std.mem.eql(u8, args_tail[0], "test")) return error.MissingCorpusFileArgument;
-        @memcpy(argv[1..args_tail.len], args_tail[0 .. args_tail.len - 1]);
-        var index = args_tail.len;
+        argv[1] = args_tail[0];
+        var index: usize = 2;
         if (timeout_arg) |arg| {
             argv[index] = arg;
             argv[index + 1] = "--reporter=dots";
@@ -6144,7 +6144,7 @@ fn prepareHomeCapturedInvocation(
             argv[index + 2] = arg;
             index += 3;
         }
-        argv[index] = args_tail[args_tail.len - 1];
+        @memcpy(argv[index..], args_tail[1..]);
     } else @memcpy(argv[1..], args_tail);
 
     return .{

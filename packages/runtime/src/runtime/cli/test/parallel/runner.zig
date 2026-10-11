@@ -42,6 +42,8 @@ pub fn runAsCoordinator(
     defer arena.deinit();
 
     var worker_tmpdir: ?[:0]const u8 = null;
+    var case_metadata_path: ?[:0]u8 = null;
+    defer if (case_metadata_path) |path| home_rt.default_allocator.free(path);
     // Workers' stderr is a pipe; have them format with ANSI when we will be
     // rendering to a color terminal so streamed lines match serial output.
     if (Output.enable_ansi_colors_stderr) {
@@ -63,6 +65,10 @@ pub fn runAsCoordinator(
         // document and overwrite the merged one in writeJUnitReportIfNeeded.
         if (reporter.reporters.junit) |jr| {
             home_rt.handleOom(vm.transpiler.env.map.put("BUN_TEST_WORKER_JUNIT", "1"));
+            if (jr.case_metadata_path) |path| {
+                case_metadata_path = try home_rt.dupeZ(home_rt.default_allocator, u8, path);
+                home_rt.handleOom(vm.transpiler.env.map.put("HOME_BUN_WORKER_CASE_METADATA", "1"));
+            }
             jr.deinit();
             reporter.reporters.junit = null;
         }
@@ -117,6 +123,11 @@ pub fn runAsCoordinator(
         .windows_job = if (Environment.isWindows) Coordinator.createWindowsKillOnCloseJob() else {},
     };
 
+    defer {
+        for (coord.case_fragments.items) |path| home_rt.default_allocator.free(path);
+        coord.case_fragments.deinit(home_rt.default_allocator);
+    }
+
     Coordinator.AbortHandler.install(vm);
     defer Coordinator.AbortHandler.uninstall();
 
@@ -137,6 +148,7 @@ pub fn runAsCoordinator(
     if (ctx.test_options.reporters.junit) {
         if (ctx.test_options.reporter_outfile) |outfile| {
             aggregate.mergeJUnitFragments(&coord, outfile, reporter.summary());
+            if (case_metadata_path) |path| try aggregate.mergeCaseFragments(&coord, path, reporter.summary());
         }
     }
     if (coverage_opts.enabled) {
@@ -315,6 +327,13 @@ pub fn runAsWorker(
         reporter.reporters.junit = test_command.JunitReporter.init();
     }
 
+    if (vm.transpiler.env.get("HOME_BUN_WORKER_CASE_METADATA") != null) {
+        if (worker_tmp) |dir| if (reporter.reporters.junit) |junit| {
+            const pid = if (Environment.isWindows) @as(u32, std.os.windows.GetCurrentProcessId()) else std.c.getpid();
+            junit.case_metadata_path = try std.fmt.allocPrintSentinel(home_rt.default_allocator, "{s}/cases{d}.jsonl", .{ dir, pid }, 0);
+        };
+    }
+
     const WorkerLoop = struct {
         reporter: *CommandLineReporter,
         vm: *jsc.VirtualMachine,
@@ -366,6 +385,7 @@ pub fn runAsWorker(
                     after.skipped_because_label - before.skipped_because_label,
                     after.files - before.files,
                     self.reporter.jest.unhandled_errors_between_tests - before_unhandled,
+                    after.retry_attempts - before.retry_attempts,
                 }) |v| worker_frame.u32_(v);
                 self.cmds.send(worker_frame.finish());
             }
@@ -406,14 +426,18 @@ fn workerFlushAggregates(reporter: *CommandLineReporter, vm: *jsc.VirtualMachine
         else
             @intCast(std.c.getpid());
         if (reporter.reporters.junit) |junit| {
-            const path = home_rt.handleOom(std.fmt.allocPrintSentinel(home_rt.default_allocator, "{s}/w{d}.xml", .{ dir, id }, 0));
-            if (junit.current_file.len > 0) junit.endTestSuite() catch {};
-            if (junit.writeToFile(path)) |_| {
-                worker_frame.begin(.junit_file);
-                worker_frame.str(path);
-                cmds.send(worker_frame.finish());
-            } else |e| {
-                Output.err(e, "failed to write JUnit fragment to {s}", .{path});
+            if (junit.contents.items.len > 0) {
+                const path = home_rt.handleOom(std.fmt.allocPrintSentinel(home_rt.default_allocator, "{s}/w{d}.xml", .{ dir, id }, 0));
+                if (junit.current_file.len > 0) junit.endTestSuite() catch {};
+                junit.terminal_counts = reporter.jest.summary;
+                if (junit.writeToFile(path)) |_| {
+                    worker_frame.begin(.junit_file);
+                    worker_frame.str(path);
+                    worker_frame.str(junit.case_metadata_path orelse "");
+                    cmds.send(worker_frame.finish());
+                } else |e| {
+                    Output.err(e, "failed to write JUnit fragment to {s}", .{path});
+                }
             }
         }
         if (ctx.test_options.coverage.enabled) {

@@ -10,6 +10,67 @@
 //! their own fragments to a shared temp dir; the coordinator stitches them
 //! into a single document/report after `drive()` completes.
 
+pub fn mergeCaseFragments(coord: *Coordinator, outfile: [:0]const u8, summary: *const TestRunner.Summary) !void {
+    if (coord.case_fragments.items.len != coord.junit_fragments.items.len) return error.MissingWorkerCaseMetadata;
+    var contents = std.Io.Writer.Allocating.init(home_rt.default_allocator);
+    defer contents.deinit();
+    var ordinal: usize = 0;
+    for (coord.case_fragments.items) |path| {
+        if (path.len == 0) return error.MissingWorkerCaseMetadata;
+        const path_z = try home_rt.dupeZ(home_rt.default_allocator, u8, path);
+        defer home_rt.default_allocator.free(path_z);
+        const data = switch (home_rt.sys.File.readFrom(home_rt.FD.cwd(), path_z, home_rt.default_allocator)) {
+            .result => |bytes| bytes,
+            .err => return error.MissingWorkerCaseMetadata,
+        };
+        defer home_rt.default_allocator.free(data);
+        if (data.len > 0 and data[data.len - 1] != '\n') return error.IncompleteWorkerCaseMetadata;
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        var terminal = false;
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const parsed = try std.json.parseFromSlice(std.json.Value, home_rt.default_allocator, line, .{});
+            defer parsed.deinit();
+            if (terminal or parsed.value != .object) return error.InvalidWorkerCaseMetadata;
+            if (parsed.value.object.get("event")) |event| {
+                if (event != .string or !std.mem.eql(u8, event.string, "terminal")) return error.InvalidWorkerCaseMetadata;
+                terminal = true;
+                continue;
+            }
+            var value = parsed.value;
+            const position = value.object.getPtr("ordinal") orelse return error.InvalidWorkerCaseMetadata;
+            if (position.* != .integer) return error.InvalidWorkerCaseMetadata;
+            position.* = .{ .integer = @intCast(ordinal) };
+            try std.json.Stringify.value(value, .{}, &contents.writer);
+            try contents.writer.writeByte('\n');
+            ordinal += 1;
+        }
+        if (!terminal) return error.IncompleteWorkerCaseMetadata;
+    }
+    // Crashed worker fragments cannot prove the cases that never reached IPC.
+    if (coord.crashed_files.items.len > 0) return error.IncompleteWorkerCaseMetadata;
+    try std.json.Stringify.value(.{ .event = "terminal", .counts = .{
+        .passed = summary.pass,
+        .failed = summary.fail,
+        .skipped = summary.skip,
+        .todo = summary.todo,
+        .filtered = summary.skipped_because_label,
+        .retry_attempts = summary.retry_attempts,
+        .runner_files = summary.files,
+        .observed = true,
+    } }, .{}, &contents.writer);
+    try contents.writer.writeByte('\n');
+    const fd = switch (home_rt.sys.File.openat(.cwd(), outfile, home_rt.O.WRONLY | home_rt.O.CREAT | home_rt.O.TRUNC, 0o664)) {
+        .result => |file| file,
+        .err => return error.WorkerCaseMetadataWriteFailed,
+    };
+    defer _ = fd.close();
+    switch (home_rt.sys.File.writeAll(fd, contents.written())) {
+        .result => {},
+        .err => return error.WorkerCaseMetadataWriteFailed,
+    }
+}
+
 fn attrValue(head: []const u8, comptime name: []const u8) u32 {
     const needle = " " ++ name ++ "=\"";
     const start = (home_rt.strings.indexOf(head, needle) orelse return 0) + needle.len;

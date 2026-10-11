@@ -80,6 +80,40 @@ try {
   assert(readFileSync(join(coverageDir, 'lcov.info'), 'utf8').includes('helper.js'))
   journal(coverage)
 
+  for (const [index, file] of files.entries()) writeFileSync(file, `import {test,expect} from 'bun:test';
+    expect(globalThis.__homeIsolatedState).toBeUndefined();globalThis.__homeIsolatedState=${index};
+    test('isolated ${index}',()=>expect(globalThis.__homeIsolatedState).toBe(${index}));`)
+  const isolated = invoke('isolate', [...files, '--isolate'])
+  assert.equal(isolated.status, 0, isolated.stderr)
+  journal(isolated)
+  const parallel = invoke('parallel', [...files, '--parallel=2'])
+  assert.equal(parallel.status, 0, parallel.stderr)
+  const parallelRows = journal(parallel)
+  assert.equal(parallelRows.find(row => row.event === 'completed').counts.passed, 3)
+
+  for (const [index, file] of files.entries()) writeFileSync(file, `import {test,expect} from 'bun:test';
+    let attempt=0;test('keep retry ${index}',()=>expect(++attempt).toBe(2));
+    test.skip('keep skip ${index}',()=>{});test.todo('keep todo ${index}');
+    test('excluded ${index}',()=>{throw new Error('excluded body executed');});`)
+  const parallelMixed = invoke('parallel-mixed', [...files, '--parallel=2', '--retry=1', '-t', '^keep'])
+  assert.equal(parallelMixed.status, 0, parallelMixed.stderr)
+  const mixedCounts = journal(parallelMixed).find(row => row.event === 'completed').counts
+  for (const key of ['passed', 'skipped', 'todo', 'filtered', 'retry_attempts']) assert.equal(mixedCounts[key], 3, key)
+  assert.equal(mixedCounts.failed, 0)
+
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';import {sum} from './helper.js';test('parallel helper',()=>expect(sum(2,3)).toBe(5));`)
+  const parallelCoverageDir = join(temp, 'parallel-coverage')
+  const parallelCoverage = invoke('parallel-coverage', [...files, '--parallel=2', '--coverage', '--coverage-reporter=lcov', `--coverage-dir=${parallelCoverageDir}`])
+  assert.equal(parallelCoverage.status, 0, parallelCoverage.stderr)
+  assert(readFileSync(join(parallelCoverageDir, 'lcov.info'), 'utf8').includes('helper.js'))
+  journal(parallelCoverage)
+
+  writeFileSync(files[0], '// ordinary empty test module\n')
+  for (const file of files.slice(1)) writeFileSync(file, `import {test} from 'bun:test';test('ordinary parallel case',()=>{});`)
+  const emptyParallel = invoke('parallel-empty-file', [...files, '--parallel=2'])
+  assert.equal(emptyParallel.status, 0, emptyParallel.stderr)
+  assert.equal(journal(emptyParallel).find(row => row.event === 'completed').counts.passed, 2)
+
   for (const [index, file] of files.entries()) writeFileSync(file, `import {test} from 'bun:test'; test('order ${index}',()=>console.log('ORDER:${index}'));`)
   const args = [...files, '--randomize', '--seed=27']
   const direct = invoke('direct-order', args, true)
@@ -88,7 +122,7 @@ try {
   const order = text => [...text.matchAll(/ORDER:(\d)/g)].map(match => match[1])
   assert.deepEqual(order(seeded.stdout), order(direct.stdout))
   journal(seeded)
-  console.log('native corpus suite shard, global bail, concurrency, coverage, seeded order and single-invocation evidence passed')
+  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, seeded order and single-invocation evidence passed')
 } finally {
   if (process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR) {
     mkdirSync(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR)

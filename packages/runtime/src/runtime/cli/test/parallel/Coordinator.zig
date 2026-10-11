@@ -28,6 +28,7 @@ pub const Coordinator = struct {
     worker_tmpdir: ?[:0]const u8,
     junit_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
     coverage_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
+    case_fragments: std.ArrayListUnmanaged([]const u8) = .empty,
     /// File index whose `path:` header was most recently written. Result lines
     /// from concurrent workers interleave; whenever the source file changes the
     /// header is re-emitted so every line has visible context. null at start.
@@ -230,9 +231,9 @@ pub const Coordinator = struct {
                 Output.flush();
             },
             .file_done => {
-                var nums: [9]u32 = undefined;
+                var nums: [10]u32 = undefined;
                 for (&nums) |*n| n.* = rd.u32_();
-                const idx, const pass, const fail, const skip, const todo, const expectations, const skipped_label, const files, const unhandled = nums;
+                const idx, const pass, const fail, const skip, const todo, const expectations, const skipped_label, const files, const unhandled, const retries = nums;
 
                 this.flushCaptured(w);
 
@@ -250,6 +251,7 @@ pub const Coordinator = struct {
                 summary.expectations += expectations;
                 summary.skipped_because_label += skipped_label;
                 summary.files += files;
+                summary.retry_attempts += retries;
                 this.reporter.jest.unhandled_errors_between_tests += unhandled;
 
                 w.inflight = null;
@@ -275,6 +277,9 @@ pub const Coordinator = struct {
                 if (path.len == 0) return;
                 const list = if (kind == .junit_file) &this.junit_fragments else &this.coverage_fragments;
                 home_rt.handleOom(list.append(home_rt.default_allocator, home_rt.handleOom(home_rt.default_allocator.dupe(u8, path))));
+                if (kind == .junit_file) {
+                    home_rt.handleOom(this.case_fragments.append(home_rt.default_allocator, home_rt.handleOom(home_rt.default_allocator.dupe(u8, rd.str()))));
+                }
             },
             .run, .shutdown => {},
         }
