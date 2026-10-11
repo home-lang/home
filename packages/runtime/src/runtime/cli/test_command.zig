@@ -29,8 +29,9 @@ pub fn escapeXml(str: string, writer: anytype) !void {
                 last = i + 1;
             },
             0...0x1f => {
-                // Escape all control characters
+                if (i > last) try writer.writeAll(str[last..i]);
                 try writer.print("&#{d};", .{c});
+                last = i + 1;
             },
             else => {},
         }

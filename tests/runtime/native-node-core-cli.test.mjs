@@ -652,3 +652,32 @@ const rejectedSource = { [Symbol.asyncIterator]() { return { next() { return Pro
 await assert.rejects(new Response(rejectedSource).text(), error => error === iteratorError)
 console.log('native fulfilled, pending and rejected iterator promise controls passed')
 console.log('native node core CLI regressions passed')
+
+const { deprecate } = await import('node:util')
+const priorNoDeprecation = process.noDeprecation
+process.noDeprecation = true
+try {
+  function LegacyConstructor(first, second) { this.total = first + second }
+  LegacyConstructor.prototype.read = function () { return this.total }
+  const DeprecatedConstructor = deprecate(LegacyConstructor, 'constructor control', 'HOME_CONSTRUCTOR_CONTROL')
+  assert.equal(DeprecatedConstructor.length, LegacyConstructor.length)
+  assert.equal(DeprecatedConstructor.prototype, LegacyConstructor.prototype)
+  assert.equal(Object.getPrototypeOf(DeprecatedConstructor), LegacyConstructor)
+  const wrappedInstance = new DeprecatedConstructor(2, 3)
+  assert(wrappedInstance instanceof LegacyConstructor)
+  assert(wrappedInstance instanceof DeprecatedConstructor)
+  assert.equal(wrappedInstance.read(), 5)
+  assert(new LegacyConstructor(4, 5) instanceof DeprecatedConstructor)
+  class ChildConstructor extends DeprecatedConstructor {}
+  const child = new ChildConstructor(6, 7)
+  assert(child instanceof ChildConstructor)
+  assert(child instanceof LegacyConstructor)
+  assert.equal(child.read(), 13)
+  function legacyMethod(value) { return this.base + value }
+  const wrappedMethod = deprecate(legacyMethod, 'method control', 'HOME_METHOD_CONTROL')
+  assert.equal(wrappedMethod.call({ base: 8 }, 9), 17)
+  assert.deepEqual(Object.getOwnPropertyDescriptor(wrappedMethod, 'length'), Object.getOwnPropertyDescriptor(legacyMethod, 'length'))
+} finally {
+  process.noDeprecation = priorNoDeprecation
+}
+console.log('native deprecate constructor prototype, subclass, receiver and arity passed')

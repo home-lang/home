@@ -35,8 +35,12 @@ function deprecate(fn, msg, code) {
     return fn.$apply(this, args);
   }
 
+  $toClass(deprecated, "deprecated");
+
   // The wrapper will keep the same prototype as fn to maintain prototype chain
   Object.setPrototypeOf(deprecated, fn);
+  if (fn.prototype) deprecated.prototype = fn.prototype;
+  Object.defineProperty(deprecated, "length", Object.getOwnPropertyDescriptor(fn, "length"));
   return deprecated;
 }
 

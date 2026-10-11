@@ -68,6 +68,18 @@ try {
     test('failing case', () => expect(1).toBe(2));
     test.skip('skipped case', () => { throw new Error('must not execute'); });
     test.todo('todo case');`)
+  const whitespaceNames = ['line\nbreak', 'tab\tname', 'carriage\rreturn', 'prefix & <quotes> "\n\tend']
+  const whitespaceFixture = fixture('whitespace-names.test.js', `import {test,expect} from 'bun:test';for(const name of ${JSON.stringify(whitespaceNames)})test(name,()=>expect(true).toBe(true));`)
+  const whitespaceRun = await start('whitespace-names', [whitespaceFixture]).finish()
+  assert.equal(whitespaceRun.code, 0, whitespaceRun.stderr)
+  const whitespaceResult = complete(whitespaceRun.report, 1)
+  const whitespaceCompleted = whitespaceResult.completed[0]
+  const whitespaceXML = readFileSync(join(whitespaceRun.report, whitespaceCompleted.junit_file), 'utf8')
+  const whitespaceMetadata = readFileSync(join(whitespaceRun.report, whitespaceCompleted.case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(row => row.event !== 'terminal')
+  assert.deepEqual(whitespaceMetadata.map(row => row.name), whitespaceNames)
+  const encodeXML = name => name.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;').replaceAll('\n', '&#10;').replaceAll('\r', '&#13;').replaceAll('\t', '&#9;')
+  for (const name of whitespaceNames) assert(whitespaceXML.includes(`name="${encodeXML(name)}"`), name)
+  console.log('whitespace case names retain exact JUnit and metadata identities')
   const manual = fixture('manual.test.js', "require('node:assert').strictEqual(4, 2 + 2); console.log('manual body executed')")
   const empty = fixture('empty.test.js', '// intentionally empty\n')
   const run = await start('mixed', [mixed, manual, empty]).finish()
