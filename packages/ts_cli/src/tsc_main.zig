@@ -3557,6 +3557,44 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     }
 
+    // Output-path diagnostics are program diagnostics, not an emit side
+    // effect. TypeScript computes them before `--listFilesOnly` prints the
+    // admitted program and returns, even though that mode never writes a
+    // file. Resolve the paths here so both list-only and ordinary compiles
+    // share one verification pass.
+    const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
+        if (loaded_cfg) |c| if (c.compiler_options.out_dir) |d| break :blk d;
+        break :blk null;
+    };
+    const emit_dts: bool = blk: {
+        if (opts.declaration) |d| break :blk d;
+        if (loaded_cfg) |c| if (c.compiler_options.declaration) |d| break :blk d;
+        break :blk false;
+    };
+    const declaration_dir: ?[]const u8 = blk: {
+        if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
+        break :blk out_dir;
+    };
+    var blocked_outputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (blocked_outputs.items) |path| gpa.free(path);
+        blocked_outputs.deinit(gpa);
+    }
+    const output_collision_count = try reportOutputCollisions(
+        gpa,
+        &program,
+        out_dir,
+        declaration_dir,
+        emit_dts,
+        compile_opts.no_emit,
+        loaded_cfg != null,
+        &blocked_outputs,
+    );
+    if (output_collision_count > 0) {
+        any_errors_streaming = true;
+        stream_error_count += output_collision_count;
+    }
+
     // tsc lists files after reporting diagnostics and after deciding whether
     // emit is skipped. `--listFilesOnly` never reaches the emit loop.
     if (opts.list_files or opts.list_files_only) {
@@ -3621,19 +3659,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         printExplainFiles(gpa, resolver_fs.fs(), &program, input_files.items, root_incl, explain_module);
     }
 
-    // Resolve outDir from CLI or tsconfig. CLI wins.
-    const out_dir: ?[]const u8 = opts.out_dir orelse blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.out_dir) |d| break :blk d;
-        break :blk null;
-    };
-
-    // Resolve `declaration` from CLI or tsconfig. CLI wins.
-    const emit_dts: bool = blk: {
-        if (opts.declaration) |d| break :blk d;
-        if (loaded_cfg) |c| if (c.compiler_options.declaration) |d| break :blk d;
-        break :blk false;
-    };
-
     // Resolve `sourceMap` from CLI or tsconfig. CLI wins.
     const emit_source_map: bool = blk: {
         if (opts.source_map) |s| break :blk s;
@@ -3649,51 +3674,11 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         break :blk false;
     };
 
-    // Declaration output dir: tsconfig `declarationDir` if set,
-    // otherwise alongside the .js (which itself respects outDir).
-    const declaration_dir: ?[]const u8 = blk: {
-        if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
-        break :blk out_dir;
-    };
-
     // Diagnostics already printed above by the streaming callback;
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
-    var any_errors = any_errors_streaming;
+    const any_errors = any_errors_streaming;
     var outputs_generated = false;
-
-    // TS5055/5056: before emitting, verify no output file would overwrite
-    // an input file or be written twice (tsc's `verifyEmitFilePath`). Such
-    // outputs are blocked from emit and reported.
-    var blocked_outputs: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer {
-        for (blocked_outputs.items) |b| gpa.free(b);
-        blocked_outputs.deinit(gpa);
-    }
-    if (!compile_opts.no_emit) {
-        var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer inputs.deinit(gpa);
-        var outputs: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer {
-            for (outputs.items) |o| gpa.free(o);
-            outputs.deinit(gpa);
-        }
-        for (program.files.items) |f| {
-            try inputs.append(gpa, f.path);
-            if (f.compilation == null) continue;
-            try outputs.append(gpa, try computeOutPath(gpa, f.path, out_dir, ".js"));
-            if (emit_dts) try outputs.append(gpa, try computeOutPath(gpa, f.path, declaration_dir, ".d.ts"));
-        }
-        const cols = try ts_cli.detectOutputCollisions(gpa, inputs.items, outputs.items, loaded_cfg != null);
-        defer gpa.free(cols);
-        for (cols) |col| {
-            const msg = try ts_cli.formatOutputCollision(gpa, col);
-            defer gpa.free(msg);
-            printStdout("{s}\n", .{msg});
-            try blocked_outputs.append(gpa, try gpa.dupe(u8, col.output_path));
-        }
-        if (cols.len > 0) any_errors = true;
-    }
 
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
@@ -4535,6 +4520,47 @@ fn appendJsonStringArray(
         try out.append(gpa, '"');
     }
     try out.append(gpa, ']');
+}
+
+/// Verify every prospective JavaScript/declaration output before list-only
+/// reporting or emit. The returned count contributes to the global error
+/// summary; `blocked_outputs` owns copies used to suppress only the colliding
+/// writes when ordinary emit continues.
+fn reportOutputCollisions(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    out_dir: ?[]const u8,
+    declaration_dir: ?[]const u8,
+    emit_dts: bool,
+    no_emit: bool,
+    has_config: bool,
+    blocked_outputs: *std.ArrayListUnmanaged([]const u8),
+) !usize {
+    if (no_emit) return 0;
+
+    var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer inputs.deinit(gpa);
+    var outputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (outputs.items) |path| gpa.free(path);
+        outputs.deinit(gpa);
+    }
+    for (program.files.items) |file| {
+        try inputs.append(gpa, file.path);
+        if (file.compilation == null) continue;
+        try outputs.append(gpa, try computeOutPath(gpa, file.path, out_dir, ".js"));
+        if (emit_dts) try outputs.append(gpa, try computeOutPath(gpa, file.path, declaration_dir, ".d.ts"));
+    }
+
+    const collisions = try ts_cli.detectOutputCollisions(gpa, inputs.items, outputs.items, has_config);
+    defer gpa.free(collisions);
+    for (collisions) |collision| {
+        const message = try ts_cli.formatOutputCollision(gpa, collision);
+        defer gpa.free(message);
+        printStdout("{s}\n", .{message});
+        try blocked_outputs.append(gpa, try gpa.dupe(u8, collision.output_path));
+    }
+    return collisions.len;
 }
 
 /// Compute the output path for a source file with the given extension

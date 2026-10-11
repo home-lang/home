@@ -1635,6 +1635,19 @@ pub fn build(b: *std.Build) void {
         clean.expectStdErrEqual("");
         clean.expectExitCode(0);
         tsc_streams_step.dependOn(&clean.step);
+
+        const collision = b.addRunArtifact(home_tsc_exe);
+        collision.setCwd(streams_dir);
+        collision.clearEnvironment();
+        collision.addArgs(&.{ "--listFilesOnly", "--project", "collision/tsconfig.json" });
+        collision.expectStdOutEqual(
+            \\error TS5055: Cannot write file 'collision/a.js' because it would overwrite input file.
+            \\collision/a.js
+            \\
+        );
+        collision.expectStdErrEqual("");
+        collision.expectExitCode(1);
+        tsc_streams_step.dependOn(&collision.step);
     }
     dependOnTest(test_step, tsc_streams_step, test_filter, "tsc_streams");
 
