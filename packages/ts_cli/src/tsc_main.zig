@@ -4196,6 +4196,17 @@ fn expandProjectGlobs(
     const exclude_base = try std.fs.path.resolve(gpa, &.{project_dir});
     defer gpa.free(exclude_base);
 
+    // TypeScript retains wildcard matches in an extension-priority map rather
+    // than appending every supported file. Keep this list separate from
+    // `owned`: rejected and displaced allocations still remain owned by the
+    // caller, while only the selected paths are appended to `out` below.
+    var wildcard_files: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer wildcard_files.deinit(gpa);
+    const case_sensitive_file_names = switch (builtin.os.tag) {
+        .windows, .macos => false,
+        else => true,
+    };
+
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -4253,12 +4264,32 @@ fn expandProjectGlobs(
                     if (!anyFileIncludeMatches(include, child_rel)) continue;
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
                     try owned.append(gpa, full);
-                    try out.append(gpa, full);
+                    var keep_candidate = true;
+                    var selected_index: usize = 0;
+                    while (selected_index < wildcard_files.items.len) {
+                        switch (tsconfig_mod.projectInputPriorityRelation(
+                            wildcard_files.items[selected_index],
+                            full,
+                            allow_js,
+                            case_sensitive_file_names,
+                        )) {
+                            .same_path, .existing_preferred => {
+                                keep_candidate = false;
+                                break;
+                            },
+                            .candidate_preferred => {
+                                _ = wildcard_files.orderedRemove(selected_index);
+                            },
+                            .unrelated, .coexist => selected_index += 1,
+                        }
+                    }
+                    if (keep_candidate) try wildcard_files.append(gpa, full);
                 },
                 else => gpa.free(child_rel),
             }
         }
     }
+    try out.appendSlice(gpa, wildcard_files.items);
 }
 
 fn anyMatches(project_dir: []const u8, patterns: []const []const u8, path: []const u8) bool {
@@ -5089,6 +5120,52 @@ test "tsc_main: project discovery uses effective allowJs" {
     try std.testing.expect(isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(implicit)));
     const disabled: tsconfig_mod.CompilerOptions = .{ .allow_js = false, .check_js = true };
     try std.testing.expect(!isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(disabled)));
+}
+
+test "tsc_main: wildcard discovery honors TypeScript extension priority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    for ([_][]const u8{
+        "a.d.ts", "a.js",  "a.ts",
+        "b.d.ts", "b.js",  "c.d.mts",
+        "c.mjs",  "c.mts",
+    }) |name| {
+        var file = try tmp.dir.createFile(io, name, .{ .truncate = true });
+        file.close(io);
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var selected: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer selected.deinit(std.testing.allocator);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |path| std.testing.allocator.free(path);
+        owned.deinit(std.testing.allocator);
+    }
+    try expandProjectGlobs(
+        std.testing.allocator,
+        root,
+        &[_][]const u8{"**/*"},
+        &.{},
+        true,
+        &selected,
+        &owned,
+    );
+
+    try std.testing.expectEqual(@as(usize, 4), selected.items.len);
+    for ([_][]const u8{ "a.ts", "b.d.ts", "b.js", "c.mts" }) |name| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ root, name });
+        defer std.testing.allocator.free(path);
+        try std.testing.expect(pathInList(selected.items, path));
+    }
+    for ([_][]const u8{ "a.d.ts", "a.js", "c.d.mts", "c.mjs" }) |name| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ root, name });
+        defer std.testing.allocator.free(path);
+        try std.testing.expect(!pathInList(selected.items, path));
+    }
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {

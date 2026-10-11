@@ -303,6 +303,93 @@ pub fn effectiveAllowJs(options: CompilerOptions) bool {
     return options.allow_js orelse (options.check_js orelse false);
 }
 
+/// Relative precedence between two project inputs discovered through an
+/// `include` pattern. TypeScript groups source extensions by module kind and
+/// retains only the highest-priority wildcard match for a shared stem. The
+/// `coexist` result preserves its legacy exception for `.d.ts` plus `.js` or
+/// `.jsx`, which are both admitted even though they share a stem.
+pub const ProjectInputPriorityRelation = enum {
+    unrelated,
+    same_path,
+    coexist,
+    existing_preferred,
+    candidate_preferred,
+};
+
+const ProjectInputExtensionPriority = struct {
+    stem: []const u8,
+    group: u2,
+    rank: u3,
+    declaration: bool,
+    javascript: bool,
+};
+
+fn projectInputExtensionPriority(path: []const u8, allow_js: bool) ?ProjectInputExtensionPriority {
+    const Candidate = struct {
+        suffix: []const u8,
+        group: u2,
+        rank: u3,
+        declaration: bool = false,
+        javascript: bool = false,
+    };
+    const candidates = [_]Candidate{
+        .{ .suffix = ".d.ts", .group = 0, .rank = 2, .declaration = true },
+        .{ .suffix = ".d.cts", .group = 1, .rank = 1, .declaration = true },
+        .{ .suffix = ".d.mts", .group = 2, .rank = 1, .declaration = true },
+        .{ .suffix = ".tsx", .group = 0, .rank = 1 },
+        .{ .suffix = ".cts", .group = 1, .rank = 0 },
+        .{ .suffix = ".mts", .group = 2, .rank = 0 },
+        .{ .suffix = ".ts", .group = 0, .rank = 0 },
+        .{ .suffix = ".jsx", .group = 0, .rank = 4, .javascript = true },
+        .{ .suffix = ".cjs", .group = 1, .rank = 2, .javascript = true },
+        .{ .suffix = ".mjs", .group = 2, .rank = 2, .javascript = true },
+        .{ .suffix = ".js", .group = 0, .rank = 3, .javascript = true },
+    };
+    for (candidates) |candidate| {
+        if (candidate.javascript and !allow_js) continue;
+        if (!std.mem.endsWith(u8, path, candidate.suffix)) continue;
+        return .{
+            .stem = path[0 .. path.len - candidate.suffix.len],
+            .group = candidate.group,
+            .rank = candidate.rank,
+            .declaration = candidate.declaration,
+            .javascript = candidate.javascript,
+        };
+    }
+    return null;
+}
+
+fn projectInputPathEql(a: []const u8, b: []const u8, case_sensitive: bool) bool {
+    return if (case_sensitive) std.mem.eql(u8, a, b) else std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// Compare one already-selected project input with a newly discovered
+/// candidate. This is the shared form of TypeScript's
+/// `hasFileWithHigherPriorityExtension` and
+/// `removeWildcardFilesWithLowerPriorityExtension` pair; callers retain
+/// ownership and insertion-order policy.
+pub fn projectInputPriorityRelation(
+    existing_path: []const u8,
+    candidate_path: []const u8,
+    allow_js: bool,
+    case_sensitive: bool,
+) ProjectInputPriorityRelation {
+    if (projectInputPathEql(existing_path, candidate_path, case_sensitive)) return .same_path;
+
+    const existing = projectInputExtensionPriority(existing_path, allow_js) orelse return .unrelated;
+    const candidate = projectInputExtensionPriority(candidate_path, allow_js) orelse return .unrelated;
+    if (existing.group != candidate.group or
+        !projectInputPathEql(existing.stem, candidate.stem, case_sensitive)) return .unrelated;
+
+    const declaration_js_pair = existing.group == 0 and
+        ((existing.declaration and candidate.javascript) or
+            (candidate.declaration and existing.javascript));
+    if (declaration_js_pair) return .coexist;
+    if (existing.rank < candidate.rank) return .existing_preferred;
+    if (candidate.rank < existing.rank) return .candidate_preferred;
+    return .unrelated;
+}
+
 /// Home-specific checker controls live outside `compilerOptions` so the
 /// TypeScript-compatible option surface remains untouched when they are not
 /// requested. Every field is optional to preserve inheritance semantics:
@@ -3548,6 +3635,41 @@ test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
     try t.expectEqual(@as(usize, 1), isolated_diags.len);
     try t.expectEqual(@as(u32, 5053), isolated_diags[0].code);
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", isolated_diags[0].message);
+}
+
+test "tsconfig: project input extension priority matches TypeScript wildcard discovery" {
+    try t.expectEqual(
+        ProjectInputPriorityRelation.existing_preferred,
+        projectInputPriorityRelation("/project/a.ts", "/project/a.js", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.candidate_preferred,
+        projectInputPriorityRelation("/project/a.js", "/project/a.ts", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.coexist,
+        projectInputPriorityRelation("/project/a.d.ts", "/project/a.js", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.existing_preferred,
+        projectInputPriorityRelation("/project/a.cts", "/project/a.cjs", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.candidate_preferred,
+        projectInputPriorityRelation("/project/a.mjs", "/project/a.mts", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.unrelated,
+        projectInputPriorityRelation("/project/a.ts", "/project/b.js", true, true),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.existing_preferred,
+        projectInputPriorityRelation("/project/A.ts", "/project/a.js", true, false),
+    );
+    try t.expectEqual(
+        ProjectInputPriorityRelation.unrelated,
+        projectInputPriorityRelation("/project/A.ts", "/project/a.js", true, true),
+    );
 }
 
 test "tsconfig.validate: verbatimModuleSyntax rejects legacy wrapper modules" {

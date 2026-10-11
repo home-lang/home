@@ -3005,49 +3005,6 @@ fn appendUniqueOwnedPath(
     };
 }
 
-const RootExtensionPriority = struct {
-    stem: []const u8,
-    group: u2,
-    rank: u3,
-    declaration: bool,
-    javascript: bool,
-};
-
-fn rootExtensionPriority(path: []const u8, allow_js: bool) ?RootExtensionPriority {
-    const Candidate = struct {
-        suffix: []const u8,
-        group: u2,
-        rank: u3,
-        declaration: bool = false,
-        javascript: bool = false,
-    };
-    const candidates = [_]Candidate{
-        .{ .suffix = ".d.ts", .group = 0, .rank = 2, .declaration = true },
-        .{ .suffix = ".d.cts", .group = 1, .rank = 1, .declaration = true },
-        .{ .suffix = ".d.mts", .group = 2, .rank = 1, .declaration = true },
-        .{ .suffix = ".tsx", .group = 0, .rank = 1 },
-        .{ .suffix = ".cts", .group = 1, .rank = 0 },
-        .{ .suffix = ".mts", .group = 2, .rank = 0 },
-        .{ .suffix = ".ts", .group = 0, .rank = 0 },
-        .{ .suffix = ".jsx", .group = 0, .rank = 4, .javascript = true },
-        .{ .suffix = ".cjs", .group = 1, .rank = 2, .javascript = true },
-        .{ .suffix = ".mjs", .group = 2, .rank = 2, .javascript = true },
-        .{ .suffix = ".js", .group = 0, .rank = 3, .javascript = true },
-    };
-    for (candidates) |candidate| {
-        if (candidate.javascript and !allow_js) continue;
-        if (!std.mem.endsWith(u8, path, candidate.suffix)) continue;
-        return .{
-            .stem = path[0 .. path.len - candidate.suffix.len],
-            .group = candidate.group,
-            .rank = candidate.rank,
-            .declaration = candidate.declaration,
-            .javascript = candidate.javascript,
-        };
-    }
-    return null;
-}
-
 fn appendDiscoveredRootPath(
     gpa: std.mem.Allocator,
     roots: *std.ArrayListUnmanaged([]const u8),
@@ -3055,43 +3012,26 @@ fn appendDiscoveredRootPath(
     owned_path: []u8,
     allow_js: bool,
 ) !void {
-    const candidate = rootExtensionPriority(owned_path, allow_js) orelse {
-        try appendUniqueOwnedPath(gpa, roots, owned_path);
-        return;
-    };
     var index: usize = 0;
     while (index < roots.items.len) {
         const existing = roots.items[index];
-        if (std.ascii.eqlIgnoreCase(existing, owned_path)) {
-            gpa.free(owned_path);
-            return;
+        switch (tsconfig_mod.projectInputPriorityRelation(existing, owned_path, allow_js, false)) {
+            .same_path, .existing_preferred => {
+                gpa.free(owned_path);
+                return;
+            },
+            .candidate_preferred => {
+                // Literal `files` roots are additive and cannot be displaced
+                // by a wildcard match, even when the latter has a higher
+                // extension priority.
+                if (index < literal_root_count) {
+                    index += 1;
+                } else {
+                    gpa.free(roots.orderedRemove(index));
+                }
+            },
+            .unrelated, .coexist => index += 1,
         }
-        const priority = rootExtensionPriority(existing, allow_js) orelse {
-            index += 1;
-            continue;
-        };
-        if (priority.group != candidate.group or
-            !std.ascii.eqlIgnoreCase(priority.stem, candidate.stem))
-        {
-            index += 1;
-            continue;
-        }
-        const declaration_js_pair = priority.group == 0 and
-            ((priority.declaration and candidate.javascript) or
-                (candidate.declaration and priority.javascript));
-        if (declaration_js_pair) {
-            index += 1;
-            continue;
-        }
-        if (priority.rank < candidate.rank) {
-            gpa.free(owned_path);
-            return;
-        }
-        if (priority.rank > candidate.rank and index >= literal_root_count) {
-            gpa.free(roots.orderedRemove(index));
-            continue;
-        }
-        index += 1;
     }
     try roots.append(gpa, owned_path);
 }
