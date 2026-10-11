@@ -114,3 +114,52 @@ for (const mode of ['default', 'byob']) {
   reader.releaseLock()
 }
 console.log('native direct/default/BYOB cancellation regressions passed')
+
+// FileHandle byte streams retain native I/O ownership and honor autoClose.
+{
+ const fs = await import("node:fs")
+ const { tmpdir } = await import("node:os")
+ const { join } = await import("node:path")
+const dir=fs.mkdtempSync(join(tmpdir(),'home-filehandle-webstream-'))
+const file=join(dir,'data.txt'), payload=Buffer.from('ordinary byte stream data')
+fs.writeFileSync(file,payload)
+try {
+ for(const mode of ['default','byob']){
+  const handle=await fs.promises.open(file,'r')
+  const stream=handle.readableWebStream({autoClose:true})
+  const reader=mode==='byob'?stream.getReader({mode:'byob'}):stream.getReader()
+  const chunks=[]
+  for(;;){const result=mode==='byob'?await reader.read(new Uint8Array(7)):await reader.read();if(result.done)break;assert(result.value instanceof Uint8Array);chunks.push(Buffer.from(result.value))}
+  assert.deepEqual(Buffer.concat(chunks),payload)
+  assert.equal(handle.fd,-1)
+  await reader.closed;reader.releaseLock();await handle.close()
+ }
+ const empty=join(dir,'empty.txt');fs.writeFileSync(empty,'')
+ const emptyHandle=await fs.promises.open(empty,'r')
+ const emptyReader=emptyHandle.readableWebStream({autoClose:true}).getReader({mode:'byob'})
+ const eof=await emptyReader.read(new Uint8Array(4));assert.equal(eof.done,true);assert.equal(eof.value.byteLength,0);emptyReader.releaseLock();assert.equal(emptyHandle.fd,-1)
+ const retained=await fs.promises.open(file,'r')
+ const reader=retained.readableWebStream().getReader()
+ await reader.cancel('finished');reader.releaseLock()
+ assert.ok(retained.fd>=0);await retained.close()
+ const cancelled=await fs.promises.open(file,'r')
+ const cancelReader=cancelled.readableWebStream({autoClose:true}).getReader()
+ await cancelReader.cancel('ordinary cancellation');cancelReader.releaseLock()
+ assert.equal(cancelled.fd,-1)
+ const once=await fs.promises.open(file,'r')
+ const first=once.readableWebStream();assert.throws(()=>once.readableWebStream(),{code:'ERR_INVALID_STATE'})
+ await first.cancel();await once.close()
+ const warnings=[]
+ const onWarning=warning=>{if(warning.name==='ExperimentalWarning')warnings.push(warning.message)}
+ process.on('warning',onWarning)
+ const legacy=await fs.promises.open(file,'r')
+ const legacyReader=legacy.readableWebStream({type:'default',autoClose:true}).getReader({mode:'byob'})
+ assert((await legacyReader.read(new Uint8Array(5))).value instanceof Uint8Array)
+ await legacyReader.cancel();legacyReader.releaseLock();await new Promise(resolve=>setImmediate(resolve));process.removeListener('warning',onWarning)
+ assert.equal(warnings.length,1);assert.equal(legacy.fd,-1)
+ const invalid=await fs.promises.open(file,'r')
+ assert.throws(()=>invalid.readableWebStream({autoClose:'yes'}),{code:'ERR_INVALID_ARG_TYPE'})
+ await invalid.close()
+ console.log('FileHandle byte/BYOB streams, autoClose on EOF and cancellation, retained ownership and option/lock validation passed')
+} finally {fs.rmSync(dir,{recursive:true,force:true})}
+}

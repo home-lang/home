@@ -685,11 +685,64 @@ function asyncWrap(fn: any, name: string) {
       return this.close();
     }
 
-    readableWebStream(_options = kEmptyObject) {
-      const fd = this[kFd];
-      throwEBADFIfNecessary("readableWebStream", fd);
-
-      return Bun.file(fd).stream();
+    readableWebStream(options = kEmptyObject) {
+      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
+      if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
+      validateObject(options, "options");
+      const { type = "bytes", autoClose = false } = options;
+      validateBoolean(autoClose, "options.autoClose");
+      if (type !== "bytes") {
+        process.emitWarning('A non-"bytes" options.type has no effect. A byte-oriented stream is always created.', "ExperimentalWarning");
+      }
+      const handle = this;
+      let controller;
+      let finished = false;
+      const onHandleClose = () => {
+        if (finished) return;
+        controller.close();
+        const request = controller.byobRequest;
+        if (request) request.respond(0);
+        release();
+      };
+      function release() {
+        if (finished) return false;
+        finished = true;
+        handle.removeListener("close", onHandleClose);
+        handle[kUnref]();
+        return true;
+      }
+      async function finish() {
+        if (!release()) return;
+        if (autoClose) await (handle[kClosePromise] ?? handle.close());
+      }
+      const stream = new ReadableStream({
+        type: "bytes",
+        autoAllocateChunkSize: 16384,
+        start(value) { controller = value; },
+        async pull(value) {
+          if (finished) return;
+          const request = value.byobRequest;
+          const view = request.view;
+          try {
+            const { bytesRead } = await handle.read(view, 0, view.byteLength);
+            if (finished) return;
+            if (bytesRead === 0) {
+              value.close();
+              await finish();
+            }
+            request.respond(bytesRead);
+          } catch (error) {
+            value.error(error);
+            await finish();
+          }
+        },
+        cancel() { return finish(); },
+      });
+      this[kLocked] = true;
+      this[kRef]();
+      this.once("close", onHandleClose);
+      return stream;
     }
 
     createReadStream(options = kEmptyObject) {
