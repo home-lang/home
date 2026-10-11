@@ -1644,6 +1644,29 @@ test "class schema: Record admission preserves finite keys and rejects unsupport
     try T.expect(!try unsupported.isSupported(T.allocator));
 }
 
+test "class schema: qualified generic Record aliases retain constrained key parameters" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/maps.ts", .text = "export type GenericMap<K extends PropertyKey, V> = Record<K, V>;" },
+        .{ .path = "/owner.ts", .text =
+        \\import type * as maps from "./maps";
+        \\export type QualifiedMap<K extends PropertyKey, V> = maps.GenericMap<K, V>;
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(1, "QualifiedMap");
+    defer result.deinit(T.allocator);
+    const qualified = result.declaration;
+    const reference = qualified.body.?.reference;
+    try T.expect(!reference.projection_only);
+    try T.expectEqualStrings("GenericMap", reference.declaration.name);
+    try T.expect(reference.arguments[0].parameter == &qualified.parameters[0]);
+    try T.expect(reference.arguments[1].parameter == &qualified.parameters[1]);
+    const record = reference.declaration.body.?.record;
+    try T.expect(record.key.parameter == &reference.declaration.parameters[0]);
+    try T.expect(record.value.parameter == &reference.declaration.parameters[1]);
+    try T.expect(try result.isSupported(T.allocator));
+}
+
 test "class schema: built-in Error heritage retains its checker-owned shape" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export interface TypedError<T> extends Error { value: T; }

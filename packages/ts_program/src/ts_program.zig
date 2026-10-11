@@ -14294,14 +14294,23 @@ test "Program: imported generic Record aliases specialize finite keys and readon
     });
     try T.expectEqual(@as(usize, 0), p.fileById(positive_id).compilation.?.diagnostics.items.len);
     var counts = [_]usize{ 0, 0, 0, 0 };
+    var qualified_message = false;
     for (p.fileById(negative_id).compilation.?.diagnostics.items) |diagnostic| switch (diagnostic.code) {
-        2322 => counts[0] += 1,
+        2322 => {
+            counts[0] += 1;
+            qualified_message = qualified_message or std.mem.eql(
+                u8,
+                diagnostic.message,
+                "Type 'boolean' is not assignable to type 'string'.",
+            );
+        },
         2339 => counts[1] += 1,
         7053 => counts[2] += 1,
         2540 => counts[3] += 1,
         else => return error.TestUnexpectedResult,
     };
     try T.expectEqualSlices(usize, &.{ 2, 1, 1, 1 }, &counts);
+    try T.expect(qualified_message);
 }
 
 test "Program: imported indexed interface retains literal context and return identity" {

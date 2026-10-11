@@ -188050,7 +188050,8 @@ pub const Checker = struct {
         else
             try self.checkExpression(e.index);
         if (object_t == types.Primitive.none or index_t == types.Primitive.none) return null;
-        if (try self.resolveObjectIndexedAccessType(object_t, index_t)) |resolved_t| {
+        const resolved_index_t = (try self.expressionNarrowLiteralType(e.index)) orelse index_t;
+        if (try self.resolveObjectIndexedAccessType(object_t, resolved_index_t)) |resolved_t| {
             if (try self.allocAssignmentDiagnosticTypeName(resolved_t)) |resolved_name| return resolved_name;
         }
         const object_name = (try self.elementAccessOperandAnnotationName(e.object)) orelse
