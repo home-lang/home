@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, existsSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, existsSync, realpathSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, basename } from 'node:path'
+import { join, basename, relative } from 'node:path'
 
 const temp = mkdtempSync(join(tmpdir(), 'home-native-suite-'))
 const root = join(temp, 'packages/runtime/test/test')
@@ -195,11 +195,49 @@ try {
   assert.equal(cwdConfig.status, 0, cwdConfig.stderr)
   assert.equal(journal(cwdConfig).find(row => row.event === 'completed').counts.passed, 3)
 
-  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, caller config/cwd, seeded order and single-invocation evidence passed')
+  const relativeFiles = files.map(file => relative(cwdFolder, file))
+  const relativeArgs = [...relativeFiles, '--cwd=./explicit-cwd', '--config=./cwd-config.toml']
+  const relativeDirect = invoke('direct-cwd-relative-targets', relativeArgs, true)
+  assert.equal(relativeDirect.status, 0, relativeDirect.stderr)
+  const relativeCwd = invoke('cwd-relative-targets', relativeArgs)
+  assert.equal(relativeCwd.status, 0, relativeCwd.stderr)
+  assert.equal(journal(relativeCwd).find(row => row.event === 'completed').counts.passed, 3)
+  const cwdLink = join(temp, 'cwd-link')
+  symlinkSync(cwdFolder, cwdLink, 'dir')
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';test('symlink cwd config',()=>{expect(process.cwd()).toBe(${JSON.stringify(join(realpathSync(temp), 'cwd-link'))});expect(globalThis.__homeContextFlag).toBe('cwd');});`)
+  const symlinkArgs = [...relativeFiles, '--cwd=./cwd-link', '--config=./cwd-config.toml']
+  const symlinkDirect = invoke('direct-cwd-symlink', symlinkArgs, true)
+  assert.equal(symlinkDirect.status, 0, symlinkDirect.stderr)
+  const symlinkCwd = invoke('cwd-symlink', symlinkArgs)
+  assert.equal(symlinkCwd.status, 0, symlinkCwd.stderr)
+  assert.equal(journal(symlinkCwd).find(row => row.event === 'completed').counts.passed, 3)
+  const aliases = [files[0], './' + relative(temp, files[1]), relative(temp, files[2])]
+  const aliasArgs = [...aliases, '--config=./caller-config.toml']
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';test('canonical source alias',()=>expect(globalThis.__homeContextFlag).toBe('caller'));`)
+  const aliasDirect = invoke('direct-root-aliases', aliasArgs, true)
+  const aliasSuite = invoke('root-aliases', aliasArgs)
+  assert.equal(aliasDirect.status, 0, aliasDirect.stderr)
+  assert.equal(aliasSuite.status, aliasDirect.status, aliasSuite.stderr)
+  const aliasRows = journal(aliasSuite)
+  assert.equal(aliasRows.find(row => row.event === 'completed').counts.passed, 3)
+  assert.equal(aliasRows.find(row => row.event === 'suite_plan').inputs.length, 3)
+  const overlappingArgs = [folder, files[0], '--config=./caller-config.toml']
+  const overlappingDirect = invoke('direct-overlap', overlappingArgs, true)
+  const overlappingSuite = invoke('overlap', overlappingArgs)
+  assert.equal(overlappingDirect.status, 0, overlappingDirect.stderr)
+  assert.equal(overlappingSuite.status, overlappingDirect.status, overlappingSuite.stderr)
+  const overlapRows = journal(overlappingSuite)
+  assert.equal(overlapRows.find(row => row.event === 'completed').counts.passed, 3)
+  assert.equal(overlapRows.find(row => row.event === 'suite_plan').inputs.length, 3)
+
+  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, caller config/cwd, canonical root aliases, overlapping targets, seeded order and single-invocation evidence passed')
 } finally {
   if (process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR) {
     mkdirSync(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR)
-    for (const report of reports) cpSync(report, join(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR, basename(report)), { recursive: true })
+    for (const report of reports) {
+      if (existsSync(report)) cpSync(report, join(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR, basename(report)), { recursive: true })
+      else writeFileSync(join(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR, basename(report) + '.missing.json'), JSON.stringify({ report, missing: true }) + '\n')
+    }
   }
   rmSync(temp, { recursive: true, force: true })
 }

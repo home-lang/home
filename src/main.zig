@@ -4587,9 +4587,17 @@ fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
 
 fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     if (comptime !build_options.enable_jsc) return error.JscDisabled;
+    const context = try nativeCorpusContext(args);
+    const caller_cwd = try Io.Dir.cwd().realPathFileAlloc(g_io, ".", allocator);
+    defer allocator.free(caller_cwd);
+    const requested_base = if (context.cwd) |path| try std.fs.path.resolve(allocator, &.{ caller_cwd, path }) else try allocator.dupe(u8, caller_cwd);
+    defer allocator.free(requested_base);
+    const source_base = try Io.Dir.cwd().realPathFileAlloc(g_io, requested_base, allocator);
+    defer allocator.free(source_base);
     var iterator = NativeCorpusArgIterator{ .args = args };
     var parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){ .params = &home_rt.cli.Arguments.test_params, .iter = &iterator };
-    var root: ?[]const u8 = null;
+    var root: ?[:0]u8 = null;
+    defer if (root) |path| allocator.free(path);
     var sources: std.ArrayList([]const u8) = .empty;
     defer {
         for (sources.items) |source| allocator.free(source);
@@ -4604,15 +4612,19 @@ fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const
             .file => |file| .{ file.corpus_path, @as(?[]const u8, file.relative_path) },
             .directory => |dir| .{ dir.corpus_path, @as(?[]const u8, dir.relative_path) },
         };
+        const resolved_root = try std.fs.path.resolve(allocator, &.{ source_base, corpus_path });
+        defer allocator.free(resolved_root);
+        const canonical_root = try Io.Dir.cwd().realPathFileAlloc(g_io, resolved_root, allocator);
         if (root) |prior| {
-            if (!std.mem.eql(u8, prior, corpus_path)) return error.MixedNativeCorpusSuiteRoots;
-        } else root = corpus_path;
+            defer allocator.free(canonical_root);
+            if (!std.mem.eql(u8, prior, canonical_root)) return error.MixedNativeCorpusSuiteRoots;
+        } else root = canonical_root;
         if (target == .file) {
-            try sources.append(allocator, try std.fs.path.join(allocator, &.{ corpus_path, relative.? }));
+            try sources.append(allocator, try std.fs.path.join(allocator, &.{ root.?, relative.? }));
         } else {
-            const files = if (relative) |dir| try home_test.corpus.collectTrackedDirectoryTestFiles(g_io, allocator, corpus_path, dir) else try home_test.corpus.collectTrackedTestFiles(g_io, allocator, corpus_path);
+            const files = if (relative) |dir| try home_test.corpus.collectTrackedDirectoryTestFiles(g_io, allocator, root.?, dir) else try home_test.corpus.collectTrackedTestFiles(g_io, allocator, root.?);
             defer home_test.corpus.freeTestFiles(allocator, files);
-            for (files) |file| try sources.append(allocator, try std.fs.path.join(allocator, &.{ corpus_path, relative orelse "", file }));
+            for (files) |file| try sources.append(allocator, try std.fs.path.join(allocator, &.{ root.?, relative orelse "", file }));
         }
     }
     var argv: std.ArrayList([]const u8) = .empty;
@@ -4620,11 +4632,6 @@ fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const
     try argv.append(allocator, "test");
     // Preserve option spelling/order. Native parsing owns their semantics.
     for (args) |arg| try argv.append(allocator, arg);
-    const context = try nativeCorpusContext(args);
-    const caller_cwd = try Io.Dir.cwd().realPathFileAlloc(g_io, ".", allocator);
-    defer allocator.free(caller_cwd);
-    const source_base = if (context.cwd) |path| try std.fs.path.resolve(allocator, &.{ caller_cwd, path }) else try allocator.dupe(u8, caller_cwd);
-    defer allocator.free(source_base);
     var result = try home_test.corpus_runner.runNativeSuite(g_io, allocator, root orelse return error.MissingCorpusSuiteRoot, sources.items, argv.items, .{
         .execution_cwd = if (context.explicit) caller_cwd else null,
         .case_source_base = if (context.explicit) source_base else null,
