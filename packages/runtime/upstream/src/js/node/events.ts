@@ -135,10 +135,17 @@ function emitError(emitter, args) {
 }
 
 function addCatch(emitter, promise, type, args) {
-  promise.then(undefined, function (err) {
-    // The callback is called with nextTick to avoid a follow-up rejection from this promise.
-    process.nextTick(emitUnhandledRejectionOrErr, emitter, err, type, args);
-  });
+  if (!emitter[kCapture]) return;
+  try {
+    const then = promise.then;
+    if (typeof then === "function") {
+      then.$call(promise, undefined, function (err) {
+        process.nextTick(emitUnhandledRejectionOrErr, emitter, err, type, args);
+      });
+    }
+  } catch (err) {
+    emitter.emit("error", err);
+  }
 }
 
 function emitUnhandledRejectionOrErr(emitter, err, type, args) {
@@ -148,11 +155,12 @@ function emitUnhandledRejectionOrErr(emitter, err, type, args) {
     // If the error handler throws, it is not catchable and it will end up in 'uncaughtException'.
     // We restore the previous value of kCapture in case the uncaughtException is present
     // and the exception is handled.
+    const previous = emitter[kCapture];
     try {
       emitter[kCapture] = false;
       emitter.emit("error", err);
     } finally {
-      emitter[kCapture] = true;
+      emitter[kCapture] = previous;
     }
   }
 }
@@ -229,7 +237,7 @@ const emitWithRejectionCapture = function emit(type, ...args) {
         result = handler.$apply(this, args);
         break;
     }
-    if (result !== undefined && $isPromise(result)) {
+    if (result != null) {
       addCatch(this, result, type, args);
     }
   }
@@ -806,7 +814,7 @@ class EventEmitterAsyncResource extends EventEmitter {
   }
 
   emit(...args) {
-    this.asyncResource.runInAsyncScope(() => super.emit(...args));
+    return this.asyncResource.runInAsyncScope(() => super.emit(...args));
   }
 
   emitDestroy() {
