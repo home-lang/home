@@ -848,6 +848,104 @@ pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const 
     return summary;
 }
 
+pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, files: []const []const u8, args: []const []const u8) !jsc_bootstrap.HomeCapturedResult {
+    if (!build_options.enable_jsc) return error.JscDisabled;
+    const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+    const root = try std.fs.path.resolve(allocator, &.{ cwd, corpus_path });
+    defer allocator.free(root);
+    const project = std.fs.path.dirname(root) orelse return error.InvalidCorpusRoot;
+    const Input = struct { path: []u8, sha256: []u8 };
+    var inputs: std.ArrayList(Input) = .empty;
+    defer {
+        for (inputs.items) |input| {
+            allocator.free(input.path);
+            allocator.free(input.sha256);
+        }
+        inputs.deinit(allocator);
+    }
+    var digest = std.crypto.hash.sha2.Sha256.init(.{});
+    for (files) |file| {
+        const absolute = try Io.Dir.cwd().realPathFileAlloc(io, file, allocator);
+        var duplicate = false;
+        for (inputs.items) |input| if (std.mem.eql(u8, input.path, absolute)) {
+            duplicate = true;
+            break;
+        };
+        if (duplicate) {
+            allocator.free(absolute);
+            continue;
+        }
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, absolute, allocator, .limited(1024 * 1024));
+        defer allocator.free(bytes);
+        const hash = corpus_journal.hashBytes(bytes);
+        try inputs.append(allocator, .{ .path = absolute, .sha256 = try allocator.dupe(u8, &hash) });
+        digest.update(absolute);
+        digest.update(&.{0});
+        digest.update(&hash);
+        digest.update("\n");
+    }
+    if (inputs.items.len == 0) return error.EmptyCorpusSuiteInventory;
+    var raw_hash: [32]u8 = undefined;
+    digest.final(&raw_hash);
+    const source_hash = std.fmt.bytesToHex(raw_hash, .lower);
+    const requested = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
+    defer if (requested) |value| allocator.free(value);
+    var journal = try corpus_journal.Journal.createForPurpose(allocator, io, requested, root, .suite);
+    defer journal.deinit();
+    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0 });
+    try journal.select("@suite");
+    const junit = try journal.artifactPath(0, "junit.xml");
+    defer allocator.free(junit);
+    const metadata = try journal.artifactPath(0, "cases.jsonl");
+    defer allocator.free(metadata);
+    std.debug.print("[home-bun-suite] results: {s}\n", .{journal.directory});
+    var result = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, "home-corpus-suite", args, .{
+        .corpus_project_root = project,
+        .junit_path = junit,
+        .case_metadata_path = metadata,
+        .record = .{ .journal = &journal, .id = 0, .mode = "test_suite", .source_sha256 = source_hash },
+    });
+    errdefer result.deinit(allocator);
+    var source_unchanged = true;
+    for (inputs.items) |input| {
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, input.path, allocator, .limited(1024 * 1024));
+        defer allocator.free(bytes);
+        if (!std.mem.eql(u8, input.sha256, &corpus_journal.hashBytes(bytes))) source_unchanged = false;
+    }
+    var counts = nativeCorpusTestCounts(result.stdout, result.stderr);
+    const metadata_bytes = Io.Dir.cwd().readFileAlloc(io, metadata, allocator, .limited(16 * 1024 * 1024)) catch null;
+    defer if (metadata_bytes) |bytes| allocator.free(bytes);
+    if (metadata_bytes) |bytes| {
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            if (parsed.value.object.get("event")) |event| if (event == .string and std.mem.eql(u8, event.string, "terminal")) {
+                const NativeTerminal = struct { event: []const u8, counts: NativeTestCounts };
+                const terminal = try std.json.parseFromSlice(NativeTerminal, allocator, line, .{ .ignore_unknown_fields = true });
+                defer terminal.deinit();
+                counts = terminal.value.counts;
+            };
+        }
+    }
+    _ = try journal.completeWithCaseMetadata(0, result.term, result.timed_out, result.stdout, result.stderr, counts, result.output_complete, source_unchanged, junit, metadata, false);
+    try journal.finish(.{
+        .files = 1,
+        .source_files = inputs.items.len,
+        .passed = counts.passed,
+        .failed = counts.failed,
+        .skipped = counts.skipped,
+        .todo = counts.todo,
+        .filtered = counts.filtered,
+        .retry_attempts = counts.retry_attempts,
+        .failed_files = @as(usize, if (!result.term.success() or result.timed_out or !source_unchanged or !result.output_complete or counts.failed > 0) 1 else 0),
+        .unsupported = @as(usize, 0),
+    });
+    return result;
+}
+
 const OwnedFlags = struct {
     values: std.ArrayList([]const u8) = .empty,
 

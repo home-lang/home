@@ -93,6 +93,7 @@ pub const JunitReporter = struct {
     case_metadata_path: ?[:0]u8 = null,
     case_metadata: std.ArrayListUnmanaged(u8) = .empty,
     case_metadata_count: usize = 0,
+    terminal_counts: ?TestRunner.Summary = null,
     contents: std.ArrayListUnmanaged(u8) = .empty,
     total_metrics: Metrics = .{},
     testcases_metrics: Metrics = .{},
@@ -576,6 +577,24 @@ pub const JunitReporter = struct {
     pub fn writeToFile(this: *JunitReporter, path: string) !void {
         if (this.contents.items.len == 0) return;
 
+        if (this.case_metadata_path != null) {
+            if (this.terminal_counts) |counts| {
+                var terminal = std.Io.Writer.Allocating.init(bun.default_allocator);
+                defer terminal.deinit();
+                try std.json.Stringify.value(.{ .event = "terminal", .counts = .{
+                    .passed = counts.pass,
+                    .failed = counts.fail,
+                    .skipped = counts.skip,
+                    .todo = counts.todo,
+                    .filtered = counts.skipped_because_label,
+                    .retry_attempts = counts.retry_attempts,
+                    .runner_files = counts.files,
+                    .observed = true,
+                } }, .{}, &terminal.writer);
+                try this.case_metadata.appendSlice(bun.default_allocator, terminal.written());
+                try this.case_metadata.append(bun.default_allocator, '\n');
+            }
+        }
         if (this.case_metadata_path) |metadata_path| {
             switch (bun.sys.File.openat(.cwd(), metadata_path, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o664)) {
                 .err => |err| Output.err(error.JUnitReportFailed, "Failed to write corpus case metadata\n{f}", .{err}),
@@ -1060,6 +1079,7 @@ pub const CommandLineReporter = struct {
                 if (junit.current_file.len > 0) {
                     junit.endTestSuite() catch {};
                 }
+                junit.terminal_counts = this.jest.summary;
                 junit.writeToFile(outfile) catch {};
             }
         }

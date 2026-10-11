@@ -2574,8 +2574,20 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
             normalized[0] = "--config";
             normalized[1] = config_path;
         }
+        const corpus_positions = try allocator.alloc(bool, args.len);
+        defer allocator.free(corpus_positions);
+        @memset(corpus_positions, false);
+        var corpus_arg_iterator = NativeCorpusArgIterator{ .args = args };
+        var corpus_arg_parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){ .params = &home_rt.cli.Arguments.test_params, .iter = &corpus_arg_iterator };
+        while (try corpus_arg_parser.next()) |parsed| {
+            if (parsed.param.names.long != null or parsed.param.names.short != null) continue;
+            const value = parsed.value orelse continue;
+            for (args, 0..) |candidate, position| if (candidate.ptr == value.ptr) {
+                corpus_positions[position] = true;
+            };
+        }
         for (args, 0..) |arg, index| {
-            const rewritten = if (resolveBunCorpusTarget(arg)) |arg_target|
+            const rewritten = if (if (corpus_positions[index]) resolveBunCorpusTarget(arg) else null) |arg_target|
                 try bunCorpusTestArgument(allocator, arg_target)
             else {
                 normalized[index + config_arg_count] = arg;
@@ -4518,6 +4530,81 @@ fn isNativeTestNameFilterFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--test-name-pattern") or std.mem.eql(u8, arg, "--grep");
 }
 
+const NativeCorpusArgIterator = struct {
+    args: []const [:0]const u8,
+    index: usize = 0,
+    pub fn next(this: *NativeCorpusArgIterator) ?[]const u8 {
+        if (this.index == this.args.len) return null;
+        defer this.index += 1;
+        return this.args[this.index];
+    }
+};
+
+fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
+    if (comptime !build_options.enable_jsc) return false;
+    var iterator = NativeCorpusArgIterator{ .args = args };
+    var parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){
+        .params = &home_rt.cli.Arguments.test_params,
+        .iter = &iterator,
+    };
+    var suite = false;
+    var corpus_target = false;
+    while (try parser.next()) |arg| {
+        if (arg.param.names.long) |name| {
+            for ([_][]const u8{ "shard", "bail", "concurrent", "max-concurrency", "randomize", "seed", "coverage", "coverage-reporter", "coverage-dir", "path-ignore-patterns" }) |flag| {
+                if (std.mem.eql(u8, name, flag)) suite = true;
+            }
+        } else if (arg.param.names.short == null) {
+            if (arg.value) |value| if (resolveBunCorpusTarget(value) != null) {
+                corpus_target = true;
+            };
+        }
+    }
+    return suite and corpus_target;
+}
+
+fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    if (comptime !build_options.enable_jsc) return error.JscDisabled;
+    var iterator = NativeCorpusArgIterator{ .args = args };
+    var parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){ .params = &home_rt.cli.Arguments.test_params, .iter = &iterator };
+    var root: ?[]const u8 = null;
+    var sources: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (sources.items) |source| allocator.free(source);
+        sources.deinit(allocator);
+    }
+    while (try parser.next()) |arg| {
+        if (arg.param.names.long != null or arg.param.names.short != null) continue;
+        const value = arg.value orelse continue;
+        const target = resolveBunCorpusTarget(value) orelse return error.MixedNativeCorpusSuiteTargets;
+        const corpus_path, const relative = switch (target) {
+            .root => |path| .{ path, @as(?[]const u8, null) },
+            .file => |file| .{ file.corpus_path, @as(?[]const u8, file.relative_path) },
+            .directory => |dir| .{ dir.corpus_path, @as(?[]const u8, dir.relative_path) },
+        };
+        if (root) |prior| {
+            if (!std.mem.eql(u8, prior, corpus_path)) return error.MixedNativeCorpusSuiteRoots;
+        } else root = corpus_path;
+        if (target == .file) {
+            try sources.append(allocator, try std.fs.path.join(allocator, &.{ corpus_path, relative.? }));
+        } else {
+            const files = if (relative) |dir| try home_test.corpus.collectTrackedDirectoryTestFiles(g_io, allocator, corpus_path, dir) else try home_test.corpus.collectTrackedTestFiles(g_io, allocator, corpus_path);
+            defer home_test.corpus.freeTestFiles(allocator, files);
+            for (files) |file| try sources.append(allocator, try std.fs.path.join(allocator, &.{ corpus_path, relative orelse "", file }));
+        }
+    }
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, "test");
+    // Preserve option spelling/order. Native parsing owns their semantics.
+    for (args) |arg| try argv.append(allocator, arg);
+    var result = try home_test.corpus_runner.runNativeSuite(g_io, allocator, root orelse return error.MissingCorpusSuiteRoot, sources.items, argv.items);
+    defer result.deinit(allocator);
+    if (result.stdout.len > 0) try Io.File.stdout().writeStreamingAll(g_io, result.stdout);
+    if (result.stderr.len > 0) try Io.File.stderr().writeStreamingAll(g_io, result.stderr);
+    if (result.timed_out or !result.term.success() or !result.output_complete) std.process.exit(1);
+}
+
 fn isNativeCorpusTestValueFlag(arg: []const u8) bool {
     return isNativeTestNameFilterFlag(arg) or std.mem.eql(u8, arg, "--retry") or
         std.mem.eql(u8, arg, "--rerun-each") or std.mem.eql(u8, arg, "--timeout");
@@ -5257,6 +5344,7 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         };
         return;
     }
+    if (try nativeCorpusSuiteRequested(args)) return runBunCorpusNativeSuite(allocator, args);
     const test_runner_flags = try collectNativeCorpusTestFlags(allocator, args);
     defer allocator.free(test_runner_flags);
     const bun_corpus_subset_arg = argBunCorpusSubset(args);

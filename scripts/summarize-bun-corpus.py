@@ -37,6 +37,7 @@ def summarize(directory):
     readiness = None
     vendor_setup = None
     checkout = None
+    suite = None
 
     def check(condition, message):
         if not condition:
@@ -69,8 +70,23 @@ def summarize(directory):
                 check(number == 1 and run is None and row.get('schema') in (1, 2), 'invalid run header')
                 run = row
                 purpose = row.get('purpose', 'corpus')
-                check(purpose in ('corpus', 'setup', 'service', 'vendor_setup'), 'unknown run purpose')
+                check(purpose in ('corpus', 'suite', 'setup', 'service', 'vendor_setup'), 'unknown run purpose')
                 check(purpose == 'corpus' or row.get('schema') == 2, 'setup requires complete-capture schema')
+            elif event == 'suite_plan':
+                check(purpose == 'suite' and suite is None and not selected and not started, 'invalid suite plan order')
+                suite = row
+                check(row.get('contract') == 'home-native-suite-v1' and row.get('case_credit') == 0, 'invalid native suite contract')
+                inputs = row.get('inputs', [])
+                check(isinstance(inputs, list) and bool(inputs), 'missing suite source inventory')
+                suite_digest = hashlib.sha256()
+                identities = set()
+                for entry in inputs:
+                    path, source_hash = entry.get('path'), entry.get('sha256')
+                    check(isinstance(path, str) and Path(path).is_absolute() and path not in identities, 'invalid or duplicate suite source path')
+                    check(isinstance(source_hash, str) and len(source_hash) == 64 and all(c in '0123456789abcdef' for c in source_hash), 'invalid suite source hash')
+                    identities.add(path)
+                    suite_digest.update(path.encode() + b'\0' + source_hash.encode() + b'\n')
+                check(suite_digest.hexdigest() == row.get('source_sha256'), 'suite source inventory digest mismatch')
             elif event == 'service_plan':
                 check(purpose == 'service' and run is not None and service is None and not selected and not started, 'invalid service plan order')
                 service = row
@@ -202,6 +218,9 @@ def summarize(directory):
                 for key in ('source_sha256', 'executable_sha256'):
                     value = row.get(key)
                     check(isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f'{identity}: missing {key}')
+                if purpose == 'suite':
+                    check(suite is not None and row.get('mode') == 'test_suite' and identity == 0, 'invalid suite launch')
+                    check(suite is not None and row.get('source_sha256') == suite.get('source_sha256'), 'suite invocation source hash mismatch')
                 if purpose == 'setup':
                     check(setup is not None, 'missing setup plan before launch')
                     check(row.get('mode') == 'setup_install' and row.get('timeout_ms') == 180000, 'invalid setup launch mode or deadline')
@@ -286,6 +305,14 @@ def summarize(directory):
                         check(not payload or payload.endswith(b'\n'), f'{identity}: incomplete case metadata')
                         try:
                             metadata = [json.loads(line) for line in payload.splitlines()]
+                            terminals = [value for value in metadata if isinstance(value, dict) and value.get('event') == 'terminal']
+                            check(len(terminals) <= 1 and (not terminals or metadata[-1] is terminals[0]), f'{identity}: invalid native terminal metadata order')
+                            if terminals:
+                                native_counts = terminals[0].get('counts', {})
+                                check(all(native_counts.get(key, 0) == counts.get(key, 0) for key in OUTCOMES), f'{identity}: native terminal counters disagree with journal')
+                            if purpose == 'suite':
+                                check(len(terminals) == 1, f'{identity}: suite lacks native terminal counters')
+                            metadata = [value for value in metadata if not isinstance(value, dict) or value.get('event') != 'terminal']
                         except (ValueError, UnicodeDecodeError) as error:
                             errors.append(f'{identity}: invalid case metadata: {error}')
                 elif metadata_state == 'missing':
@@ -309,6 +336,10 @@ def summarize(directory):
                                 check(not (failed and skipped is not None), f'{identity}: case has failure and skip')
                                 status = 'failed' if failed else ('todo' if skipped.get('message') == 'TODO' else 'skipped') if skipped is not None else 'passed'
                                 counter = status
+                                if purpose == 'suite' and suite is not None:
+                                    source = case.get('file')
+                                    absolute = str((Path(run['corpus_root']).parent / source).resolve()) if isinstance(source, str) else None
+                                    check(absolute in {entry['path'] for entry in suite['inputs']}, f'{identity}: case source is outside suite inventory')
                                 if metadata is not None and ordinal < len(metadata):
                                     detail = metadata[ordinal]
                                     check(isinstance(detail, dict), f'{identity}: invalid case metadata entry')
@@ -420,11 +451,16 @@ def summarize(directory):
                 identities = {(row['argv'][0], row['executable_sha256']) for row in started.values() if isinstance(row.get('argv'), list) and row['argv'] and isinstance(row['argv'][0], str) and isinstance(row.get('executable_sha256'), str) and (row.get('mode') in ('vendor_install', 'vendor_build')) == (category == 'home')}
                 check(len(identities) <= 1, 'vendor preparation executable identity changed: ' + category)
         check(summary.get('failed_files') == len(failures), 'preparation or service failed-file count mismatch')
+    if purpose == 'suite':
+        check(suite is not None, 'missing native suite plan')
+        check([row.get('path') for row in selected.values()] == ['@suite'], 'suite selection must represent one invocation')
+        check(summary.get('source_files') == len(suite.get('inputs', [])) if suite else False, 'suite source-file count mismatch')
+        check(summary.get('failed_files') == len(failures), 'suite failed invocation count mismatch')
     successful = not errors and not failures and summary.get('failed_files') == 0 and summary.get('unsupported') == 0
     return {'directory': str(directory), 'successful': successful, 'selected': len(selected), 'started': len(started), 'completed': len(completed),
             'unstarted': [row for identity, row in selected.items() if identity not in started],
             'incomplete': [selected[identity] for identity in started if identity in selected and identity not in completed],
-            'purpose': purpose, 'setup_plan': setup, 'service_plan': service, 'service_readiness': readiness, 'vendor_preparation_plan': vendor_setup, 'vendor_checkout': checkout, 'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
+            'purpose': purpose, 'suite_plan': suite, 'setup_plan': setup, 'service_plan': service, 'service_readiness': readiness, 'vendor_preparation_plan': vendor_setup, 'vendor_checkout': checkout, 'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
 
 
 def main():

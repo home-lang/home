@@ -100,7 +100,7 @@ try {
   assert.equal(filteredResult.summary.failed, 0)
   const filteredXML = readFileSync(join(filtered.report, filteredResult.completed[0].junit_file), 'utf8')
   assert.equal((filteredXML.match(/<skipped \/>/g) || []).length, 2)
-  const filteredMetadata = readFileSync(join(filtered.report, filteredResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  const filteredMetadata = readFileSync(join(filtered.report, filteredResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(row => row.event !== 'terminal')
   assert.deepEqual(filteredMetadata.map(row => row.kind), ['test', 'test', 'test', 'filtered'])
   assert.equal((filteredXML.match(/<skipped message="TODO"/g) || []).length, 1)
   assert(filtered.stderr.includes('1 skip') && filtered.stderr.includes('1 filtered out'))
@@ -132,7 +132,7 @@ try {
     assert.equal((retryXML.match(/<testcase\s/g) || []).length, 2)
     assert.equal((retryXML.match(/<failure\s/g) || []).length, 1)
     assert.equal(retryResult.summary.retry_attempts, 1)
-    const retryMetadata = readFileSync(join(retried.report, retryResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    const retryMetadata = readFileSync(join(retried.report, retryResult.completed[0].case_metadata_file), 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(row => row.event !== 'terminal')
     assert.deepEqual(retryMetadata.map(row => row.kind), ['retry', 'test'])
   }
   const retryFailureCase = fixture('js/bun/test/retry-failure-options.test.ts', `

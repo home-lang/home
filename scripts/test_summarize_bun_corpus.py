@@ -136,6 +136,42 @@ class JournalValidation(unittest.TestCase):
                 self.rows[3]['counts']['filtered'] = value
                 self.assertFalse(self.result()['successful'])
 
+    def suite_fixture(self):
+        inputs = [dict(path='/control/a.test.js', sha256='a' * 64)]
+        source_hash = hashlib.sha256(b'/control/a.test.js\0' + b'a' * 64 + b'\n').hexdigest()
+        self.rows[0].update(purpose='suite', schema=2, corpus_root='/control/test')
+        self.rows[1]['path'] = '@suite'
+        self.rows[2].update(mode='test_suite', source_sha256=source_hash)
+        self.rows[3].update(output_complete=True)
+        self.rows[3]['counts'] = dict(passed=1, failed=0, skipped=0, todo=0, filtered=0, retry_attempts=0, observed=True)
+        self.rows[4]['summary'].update(self.rows[3]['counts'], source_files=1)
+        self.artifact('junit', b'<testsuites><testsuite><testcase name="pass" file="a.test.js"/></testsuite></testsuites>')
+        details = [dict(ordinal=0, name='pass', classname=None, file='a.test.js', status='pass', kind='test'), dict(event='terminal', counts=self.rows[3]['counts'])]
+        self.rows[3]['case_metadata'] = 'retained'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        self.rows.insert(1, dict(event='suite_plan', contract='home-native-suite-v1', inputs=inputs, source_sha256=source_hash, case_credit=0))
+
+    def test_suite_inventory_and_single_invocation_are_verified(self):
+        self.suite_fixture()
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['counts']['passed'], 1)
+        self.assertEqual(result['selected'], 1)
+        self.assertEqual(result['summary']['source_files'], 1)
+
+    def test_suite_rejects_source_digest_and_case_source_mismatch(self):
+        self.suite_fixture()
+        self.rows[1]['source_sha256'] = 'b' * 64
+        self.assertFalse(self.result()['successful'])
+
+    def test_suite_requires_terminal_counters(self):
+        self.suite_fixture()
+        path = self.root / '000000.case_metadata'
+        payload = path.read_bytes().splitlines()[0] + b'\n'
+        path.write_bytes(payload)
+        self.rows[4]['case_metadata_sha256'] = hashlib.sha256(payload).hexdigest()
+        self.assertFalse(self.result()['successful'])
+
     def test_exit_signal_timeout_and_source_change_fail(self):
         for key, value in [('term', {'exited': 1}), ('term', {'signal': 'TERM'}), ('timed_out', True), ('source_unchanged', False)]:
             with self.subTest(key=key, value=value):
