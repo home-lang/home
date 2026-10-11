@@ -616,8 +616,8 @@ Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
 ## Main integration held for Zod diagnostics 2026 10 11
 
-The [#863](https://github.com/home-lang/home/issues/863) contextual factory
-candidate passes the complete source suites and controlled positive/negative
+The frozen [#863](https://github.com/home-lang/home/issues/863) contextual factory
+candidate passes the original source suites and controlled positive/negative
 admissions on the current main parent, but remains **uncommitted and untimed**.
 Five new false TS2339 errors in the unchanged Zod project block adoption.
 Diagnostic totals alone are not improvement: the published ranking remains
@@ -647,7 +647,8 @@ The candidate adds five TS2339 at `core/schemas.ts` 4585:19, 4590:29,
 4590:67, 4590:94 and 4592:77. The original template-literal factory checks
 `typeof part === "object" && part !== null` before reading `part._zod`.
 The reference compilers accept this unchanged graph; Home reports the narrowed
-receiver as `object`. The cause of the lost schema shape remains unresolved.
+receiver as `object`. The [forward-alias reduction below](#forward-alias-order-reproduces-lost-element-types)
+reproduces a lost element type before the guard; the repair remains unqualified.
 The candidate also removes three TS7053 and two HM9002 in `core/checks.ts`,
 and five TS2774 in `classic/from-json-schema.ts`. Those changes retain complete
 outputs and still require semantic classification before timing.
@@ -673,6 +674,66 @@ the limit was not raised and the failed build was not repeated. Its instrumented
 patch and exact guard outcome remain retained. Logging was removed after
 termination, and both the qualified source patch and installed native were
 restored to their original checksums.
+
+### Forward alias order reproduces lost element types
+
+The [#879](https://github.com/home-lang/home/issues/879) reduction reproduces the
+failure by placing the part alias after the model definition that uses it.
+Both references still accept the positive and reject the negative with exactly
+TS2322 plus TS2339. Home instead reports false TS2339 in the positive and loses
+TS2322 in the negative. Moving only the schema interface does not fail; moving
+the part alias, both declarations or an alias used by the part alias does.
+Declaration reordering is a diagnostic counterexperiment, not a source fix.
+
+| New paired control family | TS6 and native TS7 | Candidate Home | Parent Home |
+|---|---|---|---|
+| Repeated reads, nested throws, conditional reads, later contextual callback | 16/16 pass | 8/8 pass | 4/8; all negatives silently accepted |
+| Local type/value names, self-named factory, base initializer | 16/16 pass | 8/8 pass | 4/8; all negatives silently accepted |
+| Four forward-declaration orders | 16/16 pass | 2/8 pass; six failures retained | 4/8; all negatives silently accepted |
+
+A separate diagnostic executable reaches the production project loader,
+resolver adapter, checker and diagnostic renderer through a project-only
+entry point. The entire unchanged Zod graph has **106 roots and 106 admitted
+files**, and all **243 diagnostic locations and codes** match the qualified
+production native. Library inventories before and after match. At the original
+`schemas.ts` 4583 guard, `part` is already `Primitive.unknown` in all six logged
+passes. The new nullable-object filter is therefore not stripping a known
+schema union at that point. All eight diagnostic reduction runs also match
+their complete candidate diagnostic sets.
+
+Source inspection finds a primitive `unknown` placeholder for nonrecursive
+aliases in `preRegisterTypeAlias`, and type-name lookup can return it before
+forward declaration recovery. Capturing that placeholder in an earlier
+interface element shape is consistent with the declaration-order failures.
+Repair must preserve declaration ownership, transparent aliases, lexical scopes
+and cyclic contracts; no added `any`, diagnostic suppression, new cutoff or
+source/library reordering is an acceptable substitute.
+
+The diagnostic build completed under the unchanged 600-second/3840-MB guard
+with a reported 2,944-MB peak tree footprint. Its native SHA-256 is
+`c67038e1876bc21ad260b8229639ab5337d219693432d104f741d47c2054fe4b`.
+This image is diagnostic-only, not a benchmark compiler or adopted source.
+Logging was removed after termination; the qualified source patch and installed
+native checksums were restored. The earlier full-build timeout, lock-wait failure
+and reference-discovery failure remain retained; the latter two started no
+compiler controls. The completed controls use the existing pinned references,
+without dependency changes or discarded compiler failures.
+
+A new direct checker regression retains exact TS2322 and TS2339 expectations
+for forward part and alias-to-alias declarations. Its unfiltered checker build
+reached the existing 600-second bound before assertions ran; it is unqualified,
+not a passing or failing assertion result. The frozen 4,567-test gate above
+remains a measurement of its original patch, not this added regression.
+
+The [full diagnostic evidence](../../bench/vs_tsgo/evidence/20261011-forward-alias-diagnostic-879.tar.gz)
+retains all 96 four-image observations, eight matching diagnostic reductions,
+the complete original-project trace and diagnostic image, exact sources,
+restoration checks, the new regression source and its full timed-out build log,
+and failed attempts. No timing samples were collected and
+the published competitor ranking is unchanged.
+
+All **158 payload checksums** verify. Archive SHA-256:
+`1d6f945d47b1cb4e5128516c99dd3f4124c71d13735068b773935367a62c01fa`.
 
 ### Exact parent and retained evidence
 

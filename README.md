@@ -184,19 +184,23 @@ Source and native are restored; the ranking above is unchanged. See the
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
 The contextual factory candidate under [#863](https://github.com/home-lang/home/issues/863)
-preserves the complete negative contract and integrates with main's current
-finite Record implementation. It remains uncommitted and untimed: five new
-false Zod property errors still block adoption. The benchmark ranking above is
-unchanged.
+preserves the original collection-bearing factory contract and integrates with
+main's current finite Record implementation. It remains uncommitted and untimed: five new
+false Zod property errors still block adoption. Forward-alias controls now
+reproduce the lost element type under [#879](https://github.com/home-lang/home/issues/879).
+The benchmark ranking above is unchanged.
 
-| Untimed main integration qualification | Result |
+| Frozen untimed main integration qualification | Result |
 |---|---|
 | Checker / Program / driver / CLI / entrypoint | 4,567 / 264 / 201 / 78 / 46 tests pass |
 | Extended diagnostic / compiler-image controls | 168/168 and 180/180 pass; exact TS2322 and TS2339 retained |
 | Unchanged Zod graph | Parent 244 TS + four HM9002; candidate 241 TS + two HM9002; unadmitted |
+| New forward-alias controls | TS6/native TS7 16/16; candidate 2/8; fix held |
 
 See the [current qualification report](docs/docs/TS_PERFORMANCE.md#main-integration-held-for-zod-diagnostics-2026-10-11)
 and [complete raw evidence](bench/vs_tsgo/evidence/20261011-main-flow-proof-qualification-held-863.tar.gz).
+The [forward-alias diagnosis](docs/docs/TS_PERFORMANCE.md#forward-alias-order-reproduces-lost-element-types)
+retains the complete failing controls and original-project trace.
 The [earlier failed controls](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
 remain documented separately.
 
