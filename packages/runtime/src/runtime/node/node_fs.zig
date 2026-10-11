@@ -1,3 +1,5 @@
+const FSAsyncResource = @import("./fs_async_resource.zig");
+
 // This file contains the underlying implementation for sync & async functions
 // for interacting with the filesystem from JavaScript.
 // The top-level functions assume the arguments are already validated
@@ -130,6 +132,7 @@ pub const Async = struct {
 
         return struct {
             promise: jsc.JSPromise.Strong,
+            async_resource: FSAsyncResource = .{},
             args: ArgumentType,
             globalObject: *jsc.JSGlobalObject,
             req: uv.fs_t = std.mem.zeroes(uv.fs_t),
@@ -151,6 +154,7 @@ pub const Async = struct {
                 });
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
+                task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
 
                 task.tracker.didSchedule(globalObject);
 
@@ -291,6 +295,8 @@ pub const Async = struct {
                 defer this.deinit();
 
                 const globalObject = this.globalObject;
+                var previous = this.async_resource.enter(globalObject);
+                defer this.async_resource.leave(globalObject, &previous);
                 const success = @as(bun.sys.Maybe(ReturnType).Tag, this.result) == .result;
                 var promise_value = this.promise.value();
                 var promise = this.promise.get();
@@ -327,6 +333,7 @@ pub const Async = struct {
                 } else {
                     this.args.deinit();
                 }
+                this.async_resource.deinit(this.globalObject);
                 this.promise.deinit();
                 bun.destroy(this);
             }
@@ -353,6 +360,7 @@ pub const Async = struct {
             pub const Task = @This();
 
             promise: jsc.JSPromise.Strong,
+            async_resource: FSAsyncResource = .{},
             args: ArgumentType,
             globalObject: *jsc.JSGlobalObject,
             task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
@@ -389,6 +397,7 @@ pub const Async = struct {
                 }
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
+                task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
                 task.tracker.didSchedule(globalObject);
                 if (comptime shutdown_safe_result) {
                     if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -425,6 +434,8 @@ pub const Async = struct {
             pub fn runFromJSThread(this: *Task) bun.JSTerminated!void {
                 defer this.deinit();
                 const globalObject = this.globalObject;
+                var previous = this.async_resource.enter(globalObject);
+                defer this.async_resource.leave(globalObject, &previous);
 
                 const tracker = this.tracker;
                 tracker.willDispatch(globalObject);
@@ -496,6 +507,7 @@ pub const Async = struct {
                 } else {
                     this.args.deinit();
                 }
+                this.async_resource.deinit(this.globalObject);
                 this.promise.deinit();
                 bun.destroy(this);
             }
@@ -511,6 +523,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
     const ShellTaskT = if (is_shell) *ShellTask else u0;
     return struct {
         promise: jsc.JSPromise.Strong = .{},
+        async_resource: FSAsyncResource = .{},
         args: Arguments.Cp,
         evtloop: jsc.EventLoopHandle,
         task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
@@ -658,6 +671,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             if (comptime !is_shell) task.ref.ref(vm);
             task.args.src.toThreadSafe();
             task.args.dest.toThreadSafe();
+            if (comptime !is_shell) task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
             task.tracker.didSchedule(globalObject);
 
             if (comptime is_shell) {
@@ -763,6 +777,9 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             const globalObject = this.evtloop.globalObject() orelse {
                 @panic("No global object, this indicates a bug in Bun. Please file a GitHub issue.");
             };
+            defer this.deinit();
+            var previous = this.async_resource.enter(globalObject);
+            defer this.async_resource.leave(globalObject, &previous);
             const success = @as(bun.sys.Maybe(Return.Cp).Tag, this.result) == .result;
             var promise_value = this.promise.value();
             var promise = this.promise.get();
@@ -778,7 +795,6 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             tracker.willDispatch(globalObject);
             defer tracker.didDispatch(globalObject);
 
-            this.deinit();
             switch (success) {
                 false => {
                     try promise.reject(globalObject, result);
@@ -805,6 +821,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             } else {
                 this.args.deinitAndUnprotect();
             }
+            if (comptime !is_shell) this.async_resource.deinit(this.evtloop.globalObject().?);
             this.promise.deinit();
             this.arena.deinit();
             bun.destroy(this);
@@ -1051,6 +1068,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
 
 pub const AsyncReaddirRecursiveTask = struct {
     promise: jsc.JSPromise.Strong,
+    async_resource: FSAsyncResource = .{},
     args: Arguments.Readdir,
     globalObject: *jsc.JSGlobalObject,
     task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
@@ -1176,6 +1194,7 @@ pub const AsyncReaddirRecursiveTask = struct {
         task.any_task = jsc.AnyTask.NewWithShutdown(AsyncReaddirRecursiveTask, &runFromJSThread, &cancelForShutdown).init(task);
         task.ref.ref(vm);
         task.args.toThreadSafe();
+        task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
         task.tracker.didSchedule(globalObject);
 
         if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -1347,7 +1366,10 @@ pub const AsyncReaddirRecursiveTask = struct {
     }
 
     pub fn runFromJSThread(this: *AsyncReaddirRecursiveTask) bun.JSTerminated!void {
+        defer this.deinit();
         const globalObject = this.globalObject;
+        var previous = this.async_resource.enter(globalObject);
+        defer this.async_resource.leave(globalObject, &previous);
         const success = this.pending_err == null;
         var promise_value = this.promise.value();
         var promise = this.promise.get();
@@ -1365,7 +1387,6 @@ pub const AsyncReaddirRecursiveTask = struct {
         tracker.willDispatch(globalObject);
         defer tracker.didDispatch(globalObject);
 
-        this.deinit();
         switch (success) {
             false => {
                 try promise.reject(globalObject, result);
@@ -1391,6 +1412,7 @@ pub const AsyncReaddirRecursiveTask = struct {
         this.args.deinitAndUnprotect();
         bun.default_allocator.free(this.root_path.slice());
         this.clearResultList();
+        this.async_resource.deinit(this.globalObject);
         this.promise.deinit();
         bun.destroy(this);
     }

@@ -58,9 +58,36 @@ function leaveTimer(timer, previous) {
   execution = previous;
 }
 
+const fsRequestStates = new WeakMap();
+class FSReqPromise {}
+function createFSRequest(promise) {
+  const resource = new FSReqPromise();
+  resource.promise = promise;
+  const state = { id: ++nextAsyncId, trigger: execution.asyncId, destroyed: false };
+  fsRequestStates.set(resource, state);
+  emitInit(state.id, "FSREQPROMISE", state.trigger, resource);
+  return resource;
+}
+function enterFSRequest(resource) {
+  const state = fsRequestStates.get(resource);
+  const previous = execution;
+  execution = { asyncId: state.id, triggerAsyncId: state.trigger, resource };
+  emitBefore(state.id);
+  return previous;
+}
+function leaveFSRequest(resource, previous) {
+  emitAfter(fsRequestStates.get(resource).id);
+  execution = previous;
+}
+function destroyFSRequest(resource) {
+  const state = fsRequestStates.get(resource);
+  if (!state.destroyed) { state.destroyed = true; emitDestroy(state.id); }
+}
+
 export default {
   tickInitHooks, beforeHooks, afterHooks, destroyHooks,
   createTimer, destroyTimer, refreshTimer, enterTimer, leaveTimer,
+  createFSRequest, enterFSRequest, leaveFSRequest, destroyFSRequest,
   emitInit, emitBefore, emitAfter, emitDestroy,
   newAsyncId() { return ++nextAsyncId; },
   executionAsyncId() { return execution.asyncId; },

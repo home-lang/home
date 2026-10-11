@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict'
+import * as fsPromises from 'node:fs/promises'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, triggerAsyncId, executionAsyncResource } from 'node:async_hooks'
 import { EventEmitter, EventEmitterAsyncResource, captureRejectionSymbol } from 'node:events'
 
@@ -307,3 +311,70 @@ for (const id of [firstTimeoutId, refreshTimeoutId, intervalId, timerIds.get(imm
 assert.equal(timerRows.filter(row => row[0] === 'before' && row[1] === timerIds.get(canceledTimer)).length, 0)
 timerOrigin.emitDestroy()
 console.log('native timeout, immediate, interval, cancel and refresh hooks passed')
+
+const fsDirectory = mkdtempSync(join(tmpdir(), 'home-fs-hooks-'))
+mkdirSync(join(fsDirectory, 'tree'))
+writeFileSync(join(fsDirectory, 'tree', 'source.txt'), 'native request data')
+const fsRows = []
+const fsOwners = new Map()
+const fsContext = new AsyncLocalStorage()
+const fsOrigin = fsContext.run('fs-creation', () => new AsyncResource('home-fs-origin', { requireManualDestroy: true }))
+const fsHook = createHook({
+  init(id, type, trigger, owner) {
+    if (type === 'FSREQPROMISE' || type === 'FSREQCALLBACK') {
+      if (type === 'FSREQPROMISE') {
+        assert.equal(owner.constructor.name, 'FSReqPromise')
+        assert(owner.promise instanceof Promise)
+      }
+      fsOwners.set(id, owner)
+      fsRows.push(['init', id, trigger])
+    }
+  },
+  before(id) {
+    if (fsOwners.has(id)) {
+      assert.equal(executionAsyncId(), id)
+      assert.equal(executionAsyncResource(), fsOwners.get(id))
+      fsRows.push(['before', id])
+    }
+  },
+  after(id) {
+    if (fsOwners.has(id)) { assert.equal(executionAsyncId(), id); fsRows.push(['after', id]) }
+  },
+  destroy(id) { if (fsOwners.has(id)) fsRows.push(['destroy', id]) },
+})
+try {
+  fsHook.enable()
+  const operations = [
+    () => fsPromises.stat(join(fsDirectory, 'tree', 'source.txt')),
+    () => fsPromises.readFile(join(fsDirectory, 'tree', 'source.txt'), 'utf8'),
+    () => fsPromises.writeFile(join(fsDirectory, 'write.txt'), 'written'),
+    () => fsPromises.copyFile(join(fsDirectory, 'write.txt'), join(fsDirectory, 'copy.txt')),
+    () => fsPromises.readdir(join(fsDirectory, 'tree'), { recursive: true }),
+    () => fsPromises.cp(join(fsDirectory, 'tree'), join(fsDirectory, 'tree-copy'), { recursive: true }),
+    () => fsPromises.stat(join(fsDirectory, 'ordinary-missing.txt')).then(() => assert.fail('missing stat resolved'), error => assert.equal(error.code, 'ENOENT')),
+  ]
+  for (const operation of operations) {
+    const prior = fsRows.length
+    await fsContext.run('fs-creation', () => fsOrigin.runInAsyncScope(() => operation().then(value => {
+      assert.equal(fsContext.getStore(), 'fs-creation')
+      return value
+    })))
+    const created = fsRows.slice(prior).filter(row => row[0] === 'init')
+    assert(created.length > 0)
+    assert.equal(created[0][2], fsOrigin.asyncId())
+    assert.equal(fsContext.getStore(), undefined)
+  }
+  await new Promise(resolve => setImmediate(resolve))
+  fsHook.disable()
+  for (const id of fsOwners.keys()) {
+    assert.equal(fsRows.filter(row => row[0] === 'before' && row[1] === id).length, 1)
+    assert.equal(fsRows.filter(row => row[0] === 'after' && row[1] === id).length, 1)
+    assert.equal(fsRows.filter(row => row[0] === 'destroy' && row[1] === id).length, 1)
+  }
+} finally {
+  fsHook.disable()
+  fsOrigin.emitDestroy()
+  fsContext.disable()
+  rmSync(fsDirectory, { recursive: true, force: true })
+}
+console.log('native filesystem request init, completion, failure and teardown hooks passed')

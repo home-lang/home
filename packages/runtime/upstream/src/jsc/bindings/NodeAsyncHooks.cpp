@@ -5,6 +5,9 @@
 #include "JavaScriptCore/ArrayConstructor.h"
 
 #include "ZigGlobalObject.h"
+#include "root.h"
+#include "InternalModuleRegistry.h"
+#include <JavaScriptCore/ArgList.h>
 
 namespace Bun {
 
@@ -29,6 +32,38 @@ JSC_DEFINE_HOST_FUNCTION(jsSetAsyncHooksEnabled, (JSC::JSGlobalObject * globalOb
     ASSERT(callFrame->argumentCount() == 1);
     globalObject->setAsyncContextTrackingEnabled(callFrame->uncheckedArgument(0).toBoolean(globalObject));
     return JSC::JSValue::encode(JSC::jsUndefined());
+}
+
+static JSValue callFSRequestFunction(JSGlobalObject* globalObject, ASCIILiteral name, MarkedArgumentBuffer& arguments)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject);
+    auto module = global->internalModuleRegistry()->requireId(global, vm, InternalModuleRegistry::InternalAsyncHooksTick);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto function = module.get(global, Identifier::fromString(vm, name));
+    RETURN_IF_EXCEPTION(scope, {});
+    auto result = JSC::call(global, function, jsUndefined(), arguments, "Filesystem lifecycle function must be callable"_s);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
+}
+
+extern "C" EncodedJSValue Home__FSRequest__event(JSGlobalObject* globalObject, EncodedJSValue value, EncodedJSValue previous, uint8_t operation)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+    MarkedArgumentBuffer arguments;
+    arguments.append(JSValue::decode(value));
+    if (operation == 2) arguments.append(JSValue::decode(previous));
+    auto name = operation == 0 ? "createFSRequest"_s : operation == 1 ? "enterFSRequest"_s : operation == 2 ? "leaveFSRequest"_s : "destroyFSRequest"_s;
+    auto result = callFSRequestFunction(globalObject, name, arguments);
+    if (scope.exception()) {
+        auto* exception = scope.exception();
+        (void)scope.tryClearException();
+        Bun__reportUnhandledError(globalObject, JSValue::encode(exception));
+        return JSValue::encode(jsUndefined());
+    }
+    return JSValue::encode(result);
 }
 
 }
