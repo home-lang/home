@@ -155,7 +155,7 @@ function getLazy<T>(initializer: () => T) {
 // For entry types the native (WebCore) PerformanceObserver does not implement
 // ('net', 'dns', ...). Mirrors lib/internal/perf/observe.js: producers check
 // hasObserver() before doing any work, startPerf() stashes a context on the
-// producing object, and stopPerf() builds a plain entry and dispatches it to
+// producing object, and stopPerf() builds a branded entry and dispatches it to
 // the registered observers on a fresh tick.
 // https://github.com/nodejs/node/blob/v25.2.1/lib/internal/perf/observe.js
 
@@ -174,6 +174,34 @@ function startPerf(target, key, context) {
   target[key] = context;
 }
 
+const nodeEntryStates = new WeakMap();
+function nodeEntryState(receiver) {
+  const state = nodeEntryStates.get(receiver);
+  if (!state) throw $ERR_INVALID_THIS("PerformanceEntry");
+  return state;
+}
+class PerformanceNodeEntry extends globalThis.PerformanceEntry {
+  constructor() { throw $ERR_ILLEGAL_CONSTRUCTOR(); }
+  get name() { return nodeEntryState(this).name; }
+  get entryType() { return nodeEntryState(this).type; }
+  get startTime() { return nodeEntryState(this).startTime; }
+  get duration() { return nodeEntryState(this).duration; }
+  get detail() { return nodeEntryState(this).detail; }
+  toJSON() {
+    const state = nodeEntryState(this);
+    return { name: state.name, entryType: state.type, startTime: state.startTime, duration: state.duration, detail: state.detail };
+  }
+}
+for (const key of ["name", "entryType", "startTime", "duration", "toJSON"]) {
+  Object.defineProperty(PerformanceNodeEntry.prototype, key, { enumerable: true });
+}
+Object.defineProperty(PerformanceNodeEntry.prototype, Symbol.toStringTag, { value: "Object", configurable: true });
+function createPerformanceNodeEntry(name, type, startTime, duration, detail) {
+  const entry = Object.create(PerformanceNodeEntry.prototype);
+  nodeEntryStates.set(entry, { name, type, startTime, duration, detail });
+  return entry;
+}
+
 function stopPerf(target, key, context) {
   const ctx = target[key];
   if (!ctx) {
@@ -181,16 +209,9 @@ function stopPerf(target, key, context) {
   }
   target[key] = undefined;
   const startTime = ctx.startTime;
-  const entry = {
-    name: ctx.name,
-    entryType: ctx.type,
-    startTime,
-    duration: performance.now() - startTime,
-    // Node.js merges the detail recorded at startPerf() with the detail
-    // passed to stopPerf() (e.g. http entries carry both req and res).
-    detail:
-      ctx.detail !== undefined || context?.detail !== undefined ? { ...ctx.detail, ...context?.detail } : undefined,
-  };
+  // Preserve start and completion details (HTTP entries carry req and res).
+  const detail = ctx.detail !== undefined || context?.detail !== undefined ? { ...ctx.detail, ...context?.detail } : undefined;
+  const entry = createPerformanceNodeEntry(ctx.name, ctx.type, startTime, performance.now() - startTime, detail);
   for (const observer of kObservers) {
     observer.bufferEntry(entry);
   }

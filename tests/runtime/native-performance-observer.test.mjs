@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { connect, createServer } from 'node:net'
-import { PerformanceObserver, PerformanceObserverEntryList, performance } from 'node:perf_hooks'
+import { createServer as createHttpServer, get } from 'node:http'
+import { PerformanceEntry, PerformanceObserver, PerformanceObserverEntryList, performance } from 'node:perf_hooks'
 
 assert.equal(PerformanceObserverEntryList.length, 0)
 assert.equal(PerformanceObserverEntryList.prototype.getEntries.length, 0)
@@ -50,6 +51,26 @@ performance.mark('after-connect')
 const records = observer.takeRecords()
 assert(records.some(entry => entry.entryType === 'net' && entry.name === 'connect'))
 assert(records.some(entry => entry.entryType === 'mark' && entry.name === 'after-connect'))
+const netEntry = records.find(entry => entry.entryType === 'net')
+assert(netEntry instanceof PerformanceEntry)
+assert.equal(netEntry.constructor.name, 'PerformanceNodeEntry')
+assert.equal(Object.prototype.toString.call(netEntry), '[object Object]')
+assert.equal(Object.hasOwn(netEntry, 'name'), false)
+assert.equal(Object.hasOwn(netEntry, 'entryType'), false)
+assert.throws(() => { netEntry.name = 'changed' }, TypeError)
+assert.throws(() => { netEntry.duration = -1 }, TypeError)
+const netJSON = netEntry.toJSON()
+assert.deepEqual(netJSON, { name: netEntry.name, entryType: 'net', startTime: netEntry.startTime, duration: netEntry.duration, detail: netEntry.detail })
+assert.notEqual(netEntry.toJSON(), netJSON)
+assert.equal(netEntry.toJSON().detail, netEntry.detail)
+const nodeEntryPrototype = Object.getPrototypeOf(netEntry)
+for (const key of ['name', 'entryType', 'startTime', 'duration', 'detail']) {
+  let owner = nodeEntryPrototype
+  while (!Object.hasOwn(owner, key)) owner = Object.getPrototypeOf(owner)
+  assert.throws(() => Object.getOwnPropertyDescriptor(owner, key).get.call({}), { code: 'ERR_INVALID_THIS' })
+}
+assert.throws(() => nodeEntryPrototype.toJSON.call({}), { code: 'ERR_INVALID_THIS' })
+
 assert(records.every((entry, index) => index === 0 || records[index - 1].startTime <= entry.startTime))
 assert.deepEqual(observer.takeRecords(), [])
 await closed
@@ -128,5 +149,36 @@ assert.deepEqual(resourceObserver.takeRecords(), [resourceOne, resourceTwo])
 resourceObserver.disconnect()
 performance.clearResourceTimings()
 performance.clearMarks()
+
+const httpEntries = []
+let httpResolve
+const httpReady = new Promise(resolve => { httpResolve = resolve })
+const httpObserver = new PerformanceObserver(list => {
+  httpEntries.push(...list.getEntries())
+  if (httpEntries.some(entry => entry.name === 'HttpClient') && httpEntries.some(entry => entry.name === 'HttpRequest')) httpResolve()
+})
+httpObserver.observe({ type: 'http' })
+const httpServer = createHttpServer((request, response) => response.end('entry-body'))
+httpServer.listen(0, '127.0.0.1')
+await once(httpServer, 'listening')
+await new Promise((resolve, reject) => {
+  get({ host: '127.0.0.1', port: httpServer.address().port }, response => {
+    response.resume()
+    response.on('end', resolve)
+  }).on('error', reject)
+})
+await httpReady
+for (const entry of httpEntries) {
+  assert(entry instanceof PerformanceEntry)
+  assert.equal(entry.constructor.name, 'PerformanceNodeEntry')
+  assert.equal(entry.toJSON().detail, entry.detail)
+  assert.equal(entry.detail.req.method, 'GET')
+  assert.equal(entry.detail.res.statusCode, 200)
+  assert.equal(typeof entry.detail.req.headers, 'object')
+  assert.equal(typeof entry.detail.res.headers, 'object')
+  assert(entry.duration >= 0)
+}
+httpObserver.disconnect()
+await new Promise((resolve, reject) => httpServer.close(error => error ? reject(error) : resolve()))
 
 console.log('native observer mixed queue draining, atomic validation, mode reset and callback receiver passed')
