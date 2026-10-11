@@ -10,6 +10,7 @@ const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp"
 
 const readLoopUtilization = $cpp("JS2Native.cpp", "Home::createPerformanceBinding");
 const NodePerformanceObserver = readLoopUtilization.NativePerformanceObserver;
+const supportedEntryTypes = Object.freeze([...new Set([...(NodePerformanceObserver.supportedEntryTypes ?? []), ...kNodeEntryTypes])].sort());
 
 var {
   Performance,
@@ -120,7 +121,7 @@ class PerformanceObserverForNodeTypes extends NodePerformanceObserver {
   }
 
   static get supportedEntryTypes() {
-    return [...new Set([...(NodePerformanceObserver.supportedEntryTypes ?? []), ...kNodeEntryTypes])].sort();
+    return supportedEntryTypes;
   }
 
   #enqueueEntries(entries) {
@@ -158,7 +159,10 @@ class PerformanceObserverForNodeTypes extends NodePerformanceObserver {
     if (webTypes.length) {
       super.observe(mode === "single" ? { type, buffered } : { entryTypes: webTypes });
     } else if (mode === "multiple") {
+      // Replacing the subscription must not discard entries already queued.
+      const pending = super.takeRecords();
       super.disconnect();
+      if (pending.length) this.#enqueueEntries(pending);
     }
     this[kObserverMode] = mode;
     if (requested.length === 0) return;
