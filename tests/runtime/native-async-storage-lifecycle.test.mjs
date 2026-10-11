@@ -107,3 +107,70 @@ assert.equal(emitterStore.getStore(), undefined)
 scopedEmitter.emitDestroy()
 emitterStore.disable()
 console.log('native event thenable capture and async resource emit results passed')
+
+assert.throws(() => new EventEmitterAsyncResource(), { code: 'ERR_INVALID_ARG_TYPE' })
+assert.throws(() => new EventEmitterAsyncResource({}), { code: 'ERR_INVALID_ARG_TYPE' })
+const namedEmitter = new EventEmitterAsyncResource('home-string-resource')
+assert(namedEmitter.asyncResource instanceof AsyncResource)
+assert.equal(namedEmitter.asyncResource.eventEmitter, namedEmitter)
+assert.equal(namedEmitter.asyncId, namedEmitter.asyncResource.asyncId())
+assert.equal(namedEmitter.triggerAsyncId, namedEmitter.asyncResource.triggerAsyncId())
+assert.equal(Object.hasOwn(namedEmitter, 'asyncResource'), false)
+assert.equal(Object.hasOwn(namedEmitter, 'triggerAsyncId'), false)
+assert.throws(() => { namedEmitter.asyncResource = {} }, TypeError)
+assert.throws(() => { namedEmitter.asyncId = 1 }, TypeError)
+assert.throws(() => { namedEmitter.triggerAsyncId = 1 }, TypeError)
+class ResourceChild extends EventEmitterAsyncResource {}
+const resourceChild = new ResourceChild()
+assert(resourceChild.asyncResource instanceof AsyncResource)
+assert.equal(resourceChild.asyncResource.eventEmitter, resourceChild)
+const capturedStore = new AsyncLocalStorage()
+const capturedEmitter = capturedStore.run('resource-context', () => new EventEmitterAsyncResource({ name: 'home-capture-resource', captureRejections: true }))
+assert.equal(Object.hasOwn(capturedEmitter, 'emit'), false)
+const capturedFailure = new Error('resource rejection')
+let resolveCapture
+const captureReady = new Promise(resolve => { resolveCapture = resolve })
+capturedEmitter.on('ordinary', function (value) {
+  assert.equal(this, capturedEmitter)
+  assert.equal(capturedStore.getStore(), 'resource-context')
+  assert.equal(value, 11)
+  return Promise.reject(capturedFailure)
+})
+capturedEmitter.on('error', function (error) {
+  assert.equal(this, capturedEmitter)
+  assert.equal(error, capturedFailure)
+  assert.equal(capturedStore.getStore(), 'resource-context')
+  resolveCapture()
+})
+assert.equal(capturedStore.run('caller-context', () => capturedEmitter.emit('ordinary', 11)), true)
+await captureReady
+assert.equal(capturedStore.getStore(), undefined)
+let resolveDefaultCapture
+const defaultCaptureReady = new Promise(resolve => { resolveDefaultCapture = resolve })
+const priorCaptureDefault = EventEmitter.captureRejections
+EventEmitter.captureRejections = true
+let defaultCaptureEmitter
+try {
+  defaultCaptureEmitter = capturedStore.run('default-capture-context', () => new EventEmitterAsyncResource({ name: 'home-default-capture' }))
+} finally {
+  EventEmitter.captureRejections = priorCaptureDefault
+}
+assert.equal(Object.hasOwn(defaultCaptureEmitter, 'emit'), false)
+defaultCaptureEmitter.on('ordinary', () => {
+  assert.equal(capturedStore.getStore(), 'default-capture-context')
+  return Promise.reject(capturedFailure)
+})
+defaultCaptureEmitter.on('error', error => {
+  assert.equal(error, capturedFailure)
+  assert.equal(capturedStore.getStore(), 'default-capture-context')
+  resolveDefaultCapture()
+})
+assert.equal(defaultCaptureEmitter.emit('ordinary'), true)
+await defaultCaptureReady
+assert.equal(capturedStore.getStore(), undefined)
+defaultCaptureEmitter.emitDestroy()
+capturedEmitter.emitDestroy()
+namedEmitter.emitDestroy()
+resourceChild.emitDestroy()
+capturedStore.disable()
+console.log('native event resource constructor, association and capture context passed')

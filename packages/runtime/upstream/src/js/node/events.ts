@@ -30,6 +30,7 @@ const {
   validateNumber,
   validateBoolean,
   validateFunction,
+  validateString,
 } = require("internal/validators");
 
 const types = require("node:util/types");
@@ -799,27 +800,45 @@ function addAbortListener(signal, listener) {
   };
 }
 
+let EventEmitterReferencingAsyncResource;
 class EventEmitterAsyncResource extends EventEmitter {
-  triggerAsyncId;
-  asyncResource;
+  #asyncResource;
 
-  constructor(options) {
-    if (!AsyncResource) {
-      AsyncResource = require("node:async_hooks").AsyncResource;
+  constructor(options = undefined) {
+    if (!AsyncResource) AsyncResource = require("node:async_hooks").AsyncResource;
+    if (!EventEmitterReferencingAsyncResource) {
+      EventEmitterReferencingAsyncResource = class EventEmitterReferencingAsyncResource extends AsyncResource {
+        #eventEmitter;
+        constructor(emitter, name, options) {
+          super(name, options);
+          this.#eventEmitter = emitter;
+        }
+        get eventEmitter() { return this.#eventEmitter; }
+      };
     }
-    var { captureRejections = false, triggerAsyncId, name = new.target.name, requireManualDestroy } = options || {};
-    super({ captureRejections });
-    this.triggerAsyncId = triggerAsyncId ?? 0;
-    this.asyncResource = new AsyncResource(name, { triggerAsyncId, requireManualDestroy });
+    let name;
+    if (typeof options === "string") {
+      name = options;
+      options = undefined;
+    } else {
+      if (new.target === EventEmitterAsyncResource) validateString(options?.name, "options.name");
+      name = options?.name || new.target.name;
+    }
+    super(options);
+    // The resource override must own emission even when rejection capture is enabled.
+    if (Object.hasOwn(this, "emit")) delete this.emit;
+    this.#asyncResource = new EventEmitterReferencingAsyncResource(this, name, options);
   }
 
-  emit(...args) {
-    return this.asyncResource.runInAsyncScope(() => super.emit(...args));
+  emit(event, ...args) {
+    const emit = this[kCapture] ? emitWithRejectionCapture : emitWithoutRejectionCapture;
+    return this.#asyncResource.runInAsyncScope(emit, this, event, ...args);
   }
 
-  emitDestroy() {
-    this.asyncResource.emitDestroy();
-  }
+  emitDestroy() { this.#asyncResource.emitDestroy(); }
+  get asyncId() { return this.#asyncResource.asyncId(); }
+  get triggerAsyncId() { return this.#asyncResource.triggerAsyncId(); }
+  get asyncResource() { return this.#asyncResource; }
 }
 
 Object.defineProperties(EventEmitter, {
