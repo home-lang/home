@@ -845,6 +845,7 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     const build_root = std.fs.path.dirname(object_root) orelse
         std.debug.panic("invalid HOME_BUN_OBJ_ROOT: {s}", .{object_root});
     const database_path = b.fmt("{s}/compile_commands.json", .{build_root});
+    b.dependOnFileContents(.{ .cwd_relative = database_path });
     const database = std.Io.Dir.cwd().readFileAlloc(io, database_path, b.allocator, .limited(16 * 1024 * 1024)) catch |err|
         std.debug.panic("Home-owned {s} requires {s}: {s}", .{ basename, database_path, @errorName(err) });
     defer b.allocator.free(database);

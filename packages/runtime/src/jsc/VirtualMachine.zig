@@ -1166,6 +1166,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         this.native_pollable_work_pool_jobs.closeAdmission();
         this.native_work_pool_jobs.closeAndWait();
         this.native_pollable_work_pool_jobs.cancelRemaining();
+        @import("../runtime/node/directory_handle.zig").shutdown(this.global);
         @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
         this.timer.event_loop_delay.shutdown(this);
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);

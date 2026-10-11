@@ -1,10 +1,135 @@
 
 #include "ProcessBindingFs.h"
 #include <JavaScriptCore/ObjectConstructor.h>
+#include <JavaScriptCore/JSDestructibleObject.h>
+#include <JavaScriptCore/CompleteSubspace.h>
 #include "ZigGlobalObject.h"
+#include "BunProcess.h"
+#include "ScriptExecutionContext.h"
+#include <optional>
 
 namespace Bun {
 using namespace JSC;
+
+extern "C" EncodedJSValue Home__Directory__open(JSGlobalObject*, CallFrame*, bool);
+extern "C" EncodedJSValue Home__Directory__adopt(JSGlobalObject*, CallFrame*);
+extern "C" EncodedJSValue Home__Directory__read(JSGlobalObject*, CallFrame*, bool);
+extern "C" EncodedJSValue Home__Directory__close(JSGlobalObject*, CallFrame*, bool);
+extern "C" void Home__Directory__release(void*);
+extern "C" size_t Home__Directory__memoryCost(void*);
+extern "C" bool Home__Directory__isOpen(void*);
+
+// The generic destructible space owns this type without changing pinned
+// BunClientData or GlobalObject layouts. No raw native pointer reaches JS.
+class HomeDirectoryHandle final : public JSDestructibleObject {
+public:
+    using Base = JSDestructibleObject;
+    static constexpr unsigned StructureFlags = Base::StructureFlags;
+    DECLARE_INFO;
+    DECLARE_VISIT_CHILDREN;
+    static size_t estimatedSize(JSCell* cell, VM& vm)
+    {
+        auto* object = static_cast<HomeDirectoryHandle*>(cell);
+        return Base::estimatedSize(cell, vm) + Home__Directory__memoryCost(object->m_state);
+    }
+    void report(VM& vm)
+    {
+        size_t current = Home__Directory__memoryCost(m_state);
+        if (current > m_reportedMemory) vm.heap.reportExtraMemoryAllocated(this, current - m_reportedMemory);
+        m_reportedMemory = std::max(m_reportedMemory, current);
+    }
+    template<typename CellType, SubspaceAccess>
+    static CompleteSubspace* subspaceFor(VM& vm) { return &vm.destructibleObjectSpace(); }
+    static HomeDirectoryHandle* create(JSGlobalObject* global, void* state)
+    {
+        auto& vm = global->vm();
+        auto* structure = Structure::create(vm, global, jsNull(), TypeInfo(ObjectType, StructureFlags), info());
+        auto* object = new (NotNull, allocateCell<HomeDirectoryHandle>(vm)) HomeDirectoryHandle(vm, structure, state);
+        object->finishCreation(vm);
+        object->report(vm);
+        return object;
+    }
+    static void destroy(JSCell* cell) { static_cast<HomeDirectoryHandle*>(cell)->~HomeDirectoryHandle(); }
+    ~HomeDirectoryHandle()
+    {
+        bool abandoned = Home__Directory__isOpen(m_state);
+        Home__Directory__release(m_state);
+        if (abandoned && m_context) {
+            // The collector performs only native cleanup. Identifier-based
+            // admission delivers the warning later on the live owning thread.
+            WebCore::ScriptExecutionContext::postTaskTo(*m_context, [](WebCore::ScriptExecutionContext& context) {
+                auto* global = uncheckedDowncast<Zig::GlobalObject>(context.jsGlobalObject());
+                auto& vm = global->vm();
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+                auto* process = global->processObject();
+                auto emitWarning = process->get(global, Identifier::fromString(vm, "emitWarning"_s));
+                if (!scope.exception()) {
+                    MarkedArgumentBuffer arguments;
+                    arguments.append(jsString(vm, WTF::String("Closing directory handle on garbage collection"_s)));
+                    JSC::call(global, emitWarning, process, arguments, "process.emitWarning must be callable"_s);
+                }
+                if (scope.exception()) {
+                    auto* exception = scope.exception();
+                    (void)scope.tryClearException();
+                    Bun__reportUnhandledError(global, JSValue::encode(exception));
+                }
+            });
+        }
+    }
+    void* state() const { return m_state; }
+private:
+    HomeDirectoryHandle(VM& vm, Structure* structure, void* state) : Base(vm, structure), m_state(state)
+    {
+        auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject());
+        if (auto* context = global->scriptExecutionContext()) m_context = context->identifier();
+    }
+    void* m_state;
+    size_t m_reportedMemory { 0 };
+    std::optional<WebCore::ScriptExecutionContextIdentifier> m_context;
+};
+const ClassInfo HomeDirectoryHandle::s_info = { "HomeDirectoryHandle"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(HomeDirectoryHandle) };
+
+template<typename Visitor>
+void HomeDirectoryHandle::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+{
+    auto* object = static_cast<HomeDirectoryHandle*>(cell);
+    Base::visitChildren(object, visitor);
+    visitor.reportExtraMemoryVisited(Home__Directory__memoryCost(object->state()));
+}
+DEFINE_VISIT_CHILDREN(HomeDirectoryHandle);
+extern "C" void Home__Directory__report(JSGlobalObject* global, EncodedJSValue encoded)
+{
+    auto* object = JSValue::decode(encoded).getObject();
+    RELEASE_ASSERT(object && object->inherits(HomeDirectoryHandle::info()));
+    static_cast<HomeDirectoryHandle*>(object)->report(global->vm());
+}
+
+extern "C" EncodedJSValue Home__Directory__wrap(JSGlobalObject* global, void* state)
+{
+    return JSValue::encode(HomeDirectoryHandle::create(global, state));
+}
+extern "C" void* Home__Directory__state(JSGlobalObject* global, EncodedJSValue encoded)
+{
+    auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* object = JSValue::decode(encoded).getObject();
+    if (!object || !object->inherits(HomeDirectoryHandle::info())) {
+        throwTypeError(global, scope, "Expected an owned directory handle"_s);
+        return nullptr;
+    }
+    return static_cast<HomeDirectoryHandle*>(object)->state();
+}
+
+#define HOME_DIRECTORY_FUNCTION(name, operation, asynchronous) \
+    JSC_DEFINE_HOST_FUNCTION(name, (JSGlobalObject* global, CallFrame* frame)) { return Home__Directory__##operation(global, frame, asynchronous); }
+HOME_DIRECTORY_FUNCTION(homeOpenDirectorySync, open, false)
+HOME_DIRECTORY_FUNCTION(homeOpenDirectory, open, true)
+HOME_DIRECTORY_FUNCTION(homeReadDirectorySync, read, false)
+HOME_DIRECTORY_FUNCTION(homeReadDirectory, read, true)
+HOME_DIRECTORY_FUNCTION(homeCloseDirectorySync, close, false)
+HOME_DIRECTORY_FUNCTION(homeCloseDirectory, close, true)
+#undef HOME_DIRECTORY_FUNCTION
+JSC_DEFINE_HOST_FUNCTION(homeAdoptDirectorySync, (JSGlobalObject* global, CallFrame* frame)) { return Home__Directory__adopt(global, frame); }
 
 static WTF::String makeNotImplementedError(const ASCIILiteral name)
 {
@@ -209,6 +334,14 @@ void ProcessBindingFs::finishCreation(JSC::VM& vm)
     auto scope = DECLARE_THROW_SCOPE(vm);
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
+    auto* global = globalObject();
+    putDirect(vm, Identifier::fromString(vm, "homeAdoptDirectorySync"_s), JSFunction::create(vm, global, 3, "homeAdoptDirectorySync"_s, homeAdoptDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeOpenDirectorySync"_s), JSFunction::create(vm, global, 2, "homeOpenDirectorySync"_s, homeOpenDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeOpenDirectory"_s), JSFunction::create(vm, global, 2, "homeOpenDirectory"_s, homeOpenDirectory, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeReadDirectorySync"_s), JSFunction::create(vm, global, 1, "homeReadDirectorySync"_s, homeReadDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeReadDirectory"_s), JSFunction::create(vm, global, 1, "homeReadDirectory"_s, homeReadDirectory, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeCloseDirectorySync"_s), JSFunction::create(vm, global, 1, "homeCloseDirectorySync"_s, homeCloseDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeCloseDirectory"_s), JSFunction::create(vm, global, 1, "homeCloseDirectory"_s, homeCloseDirectory, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
 }
 
 } // namespace Bun

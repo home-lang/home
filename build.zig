@@ -210,6 +210,11 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     const bun_obj_root = expandTilde(b, b.graph.environ_map.get("HOME_BUN_OBJ_ROOT") orelse bun_obj_root_default);
     const bun_webkit_lib = expandTilde(b, b.graph.environ_map.get("HOME_BUN_WEBKIT_LIB") orelse defaultWebkitLib(b, target));
     const bun_webkit_root = std.fs.path.dirname(bun_webkit_lib) orelse bun_webkit_lib;
+    // Native selection observes SDK presence and a recursive object listing.
+    // The pinned maker leaves metadata/directory configuration dependencies
+    // unimplemented. Declare these untracked observations with the build API
+    // so restored or removed artifacts cannot leave a stale native graph.
+    b.graph.poisonCache();
 
     m.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{bun_webkit_root}) });
 

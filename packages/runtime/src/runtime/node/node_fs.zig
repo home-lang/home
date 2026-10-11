@@ -1,3 +1,4 @@
+const DirectoryHandle = @import("./directory_handle.zig");
 const FSAsyncResource = @import("./fs_async_resource.zig");
 
 // This file contains the underlying implementation for sync & async functions
@@ -25,6 +26,9 @@ else
 pub const Flavor = enum { sync, async };
 
 pub const Async = struct {
+    pub const openDir = NewAsyncFSTask(Return.OpenDir, Arguments.OpenDir, NodeFS.openDir);
+    pub const readDir = NewAsyncFSTask(Return.ReadDir, Arguments.ReadDir, NodeFS.readDir);
+    pub const closeDir = NewAsyncFSTask(void, Arguments.ReadDir, NodeFS.closeDir);
     pub const access = NewAsyncFSTask(Return.Access, Arguments.Access, NodeFS.access);
     pub const appendFile = NewAsyncFSTask(Return.AppendFile, Arguments.AppendFile, NodeFS.appendFile);
     pub const chmod = NewAsyncFSTask(Return.Chmod, Arguments.Chmod, NodeFS.chmod);
@@ -359,7 +363,9 @@ pub const Async = struct {
             ReturnType == jsc.ZigString or
             ReturnType == StringOrBuffer or
             ReturnType == FD or
-            ReturnType == Return.Readdir;
+            ReturnType == Return.Readdir or
+            ReturnType == Return.OpenDir or
+            ReturnType == Return.ReadDir;
         return struct {
             pub const Task = @This();
 
@@ -425,7 +431,8 @@ pub const Async = struct {
                 this.has_result = true;
 
                 if (this.result == .err) {
-                    this.result.err = this.result.err.clone(bun.default_allocator);
+                    if (comptime !@hasDecl(ArgumentType, "owns_result_error"))
+                        this.result.err = this.result.err.clone(bun.default_allocator);
                     std.mem.doNotOptimizeAway(&node_fs);
                 }
 
@@ -442,6 +449,7 @@ pub const Async = struct {
             pub fn runFromJSThread(this: *Task) bun.JSTerminated!void {
                 defer this.deinit();
                 const globalObject = this.globalObject;
+                if (comptime @hasDecl(ArgumentType, "didDispatch")) this.args.didDispatch(globalObject);
                 var previous = this.async_resource.enter(globalObject);
                 defer this.async_resource.leave(globalObject, &previous);
 
@@ -499,6 +507,10 @@ pub const Async = struct {
                     this.result.result.deinitForShutdownResult();
                 } else if (comptime ReturnType == FD) {
                     this.result.result.close();
+                } else if (comptime ReturnType == Return.OpenDir) {
+                    this.result.result.deinitForShutdown();
+                } else if (comptime ReturnType == Return.ReadDir) {
+                    this.result.result.deinitForShutdown();
                 } else if (comptime ReturnType == Return.Readdir) {
                     this.result.result.deinitForShutdown();
                 }
@@ -3144,13 +3156,42 @@ pub const Arguments = struct {
 
     pub const AppendFile = WriteFile;
 
+    pub const AdoptDir = struct {
+        fd: bun.FD,
+        options: OpenDir,
+        pub fn deinit(this: AdoptDir) void {
+            this.options.deinit();
+        }
+        pub fn fromJS(global: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!AdoptDir {
+            const fd = try Close.fromJS(global, arguments);
+            return .{ .fd = fd.fd, .options = try OpenDir.fromJS(global, arguments) };
+        }
+    };
+
+    pub const ReadDir = DirectoryHandle.HandleArgument;
+
     pub const OpenDir = struct {
+        pub const owns_result_error = true;
         path: PathLike,
         encoding: Encoding = Encoding.utf8,
 
         /// Number of directory entries that are buffered internally when reading from the directory. Higher values lead to better performance but higher memory usage. Default: 32
-        buffer_size: c_int = 32,
+        buffer_size: u32 = 32,
+        recursive: bool = false,
+        async_path: ?[:0]u8 = null,
 
+        pub fn toThreadSafe(self: *OpenDir) void {
+            self.path.toThreadSafe();
+            var buffer: bun.PathBuffer = undefined;
+            const path = self.path.sliceZ(&buffer);
+            const copy = bun.handleOom(bun.default_allocator.allocSentinel(u8, path.len, 0));
+            @memcpy(copy, path);
+            self.async_path = copy;
+        }
+        pub fn deinitAndUnprotect(self: OpenDir) void {
+            self.path.deinitAndUnprotect();
+            if (self.async_path) |path| bun.default_allocator.free(path);
+        }
         pub fn deinit(self: OpenDir) void {
             self.path.deinit();
         }
@@ -3161,23 +3202,24 @@ pub const Arguments = struct {
             };
             errdefer path.deinit();
 
-            var encoding = Encoding.buffer;
-            var buffer_size: c_int = 32;
+            var encoding = Encoding.utf8;
+            var buffer_size: u32 = 32;
+            var recursive = false;
 
             if (arguments.next()) |arg| {
                 arguments.eat();
                 if (arg.isString()) {
                     encoding = Encoding.assert(arg, ctx, encoding) catch encoding;
                 } else if (arg.isObject()) {
-                    if (getEncoding(arg, ctx)) |encoding_| {
-                        encoding = encoding_;
-                    }
+                    recursive = (try arg.getBooleanStrict(ctx, "recursive")) orelse false;
+                    encoding = try getEncoding(arg, ctx, encoding);
 
                     if (try arg.get(ctx, "bufferSize")) |buffer_size_| {
-                        buffer_size = buffer_size_.toInt32();
-                        if (buffer_size < 0) {
-                            return ctx.throwInvalidArguments("bufferSize must be > 0", .{});
-                        }
+                        if (!buffer_size_.isNumber()) return ctx.throwInvalidArgumentTypeValue("options.bufferSize", "number", buffer_size_);
+                        const requested_size = buffer_size_.asNumber();
+                        if (!std.math.isFinite(requested_size) or requested_size < 1 or requested_size > std.math.maxInt(u32) or @trunc(requested_size) != requested_size)
+                            return ctx.throwInvalidArguments("bufferSize must be an integer between 1 and 4294967295", .{});
+                        buffer_size = @intFromFloat(requested_size);
                     }
                 }
             }
@@ -3186,6 +3228,7 @@ pub const Arguments = struct {
                 .path = path,
                 .encoding = encoding,
                 .buffer_size = buffer_size,
+                .recursive = recursive,
             };
         }
     };
@@ -3469,6 +3512,8 @@ const Null = struct {
 };
 
 const Return = struct {
+    pub const OpenDir = DirectoryHandle.OpenResult;
+    pub const ReadDir = DirectoryHandle.ReadResult;
     pub const Access = Null;
     pub const AppendFile = void;
     pub const Close = void;
@@ -4604,8 +4649,34 @@ pub const NodeFS = struct {
         return Maybe(Return.StatFS).initResult(Return.StatFS.init(&statfs_, args.big_int));
     }
 
-    pub fn openDir(_: *NodeFS, _: Arguments.OpenDir, _: Flavor) Maybe(Return.OpenDir) {
-        return Maybe(Return.OpenDir).todo();
+    pub fn openDir(_: *NodeFS, args: Arguments.OpenDir, _: Flavor) Maybe(Return.OpenDir) {
+        var buffer: bun.PathBuffer = undefined;
+        const path = args.async_path orelse args.path.sliceZ(&buffer);
+        return switch (DirectoryHandle.State.open(path, args.encoding, args.recursive, args.buffer_size, args.path == .buffer)) {
+            .result => |state| .{ .result = .{ .state = state } },
+            .err => |err| .{ .err = err.withPath(path).clone(bun.default_allocator) },
+        };
+    }
+
+    pub fn adoptDir(_: *NodeFS, args: Arguments.AdoptDir, _: Flavor) Maybe(Return.OpenDir) {
+        const metadata = switch (bun.sys.fstat(args.fd)) {
+            .err => |err| return .{ .err = err },
+            .result => |metadata| metadata,
+        };
+        if (bun.sys.kindFromMode(@intCast(metadata.mode)) != .directory)
+            return .{ .err = .{ .errno = @backingInt(bun.sys.E.NOTDIR), .syscall = .open } };
+        return switch (DirectoryHandle.State.fromFD(args.fd, args.options.path.slice(), args.options.encoding, args.options.recursive, args.options.buffer_size, args.options.path == .buffer)) {
+            .result => |state| .{ .result = .{ .state = state } },
+            .err => |err| .{ .err = err },
+        };
+    }
+
+    pub fn readDir(_: *NodeFS, args: Arguments.ReadDir, _: Flavor) Maybe(Return.ReadDir) {
+        return args.state.read();
+    }
+
+    pub fn closeDir(_: *NodeFS, args: Arguments.ReadDir, _: Flavor) Maybe(void) {
+        return args.state.close();
     }
 
     fn readInner(_: *NodeFS, args: Arguments.Read) Maybe(Return.Read) {

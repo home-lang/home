@@ -28,6 +28,13 @@ fn Bindings(comptime function_name: NodeFSFunctionEnum) type {
             }
 
             var result = function(&this.node_fs, args, .sync);
+            defer if (comptime Arguments != void and @hasDecl(Arguments, "owns_result_error")) {
+                if (result == .err) result.err.deinit();
+            };
+            if (comptime Arguments != void and @hasDecl(Arguments, "didDispatch")) {
+                var completed_args = args;
+                completed_args.didDispatch(globalObject);
+            }
             return switch (result) {
                 .err => |err| globalObject.throwValue(try err.toJS(globalObject)),
                 .result => |*res| globalObject.toJS(res),
@@ -36,6 +43,8 @@ fn Bindings(comptime function_name: NodeFSFunctionEnum) type {
 
         pub fn runAsync(this: *Binding, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
             const callback_index: ?usize = comptime switch (function_name) {
+                .readDir, .closeDir => 1,
+                .openDir => 2,
                 .close, .exists, .fsync, .fdatasync, .unlink => 1,
                 .access, .chmod, .fchmod, .fstat, .ftruncate, .lchmod, .link, .lstat, .mkdir, .mkdtemp, .readdir, .readFile, .readlink, .rm, .rmdir, .realpath, .realpathNonNative, .rename, .stat, .statfs, .truncate => 2,
                 .appendFile, .copyFile, .cp, .chown, .fchown, .futimes, .lchown, .open, .writeFile, .symlink, .utimes, .lutimes, .readv, .writev => 3,
@@ -240,6 +249,24 @@ pub fn createMemfdForTesting(globalObject: *jsc.JSGlobalObject, callFrame: *jsc.
             return globalObject.throwValue(try err.toJS(globalObject));
         },
     }
+}
+
+fn callDirectory(comptime operation: NodeFSFunctionEnum, global: *jsc.JSGlobalObject, frame: *jsc.CallFrame, asynchronous: bool) jsc.JSValue {
+    var binding: Binding = .{};
+    return (if (asynchronous) Bindings(operation).runAsync(&binding, global, frame) else Bindings(operation).runSync(&binding, global, frame)) catch .zero;
+}
+pub export fn Home__Directory__open(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame, asynchronous: bool) jsc.JSValue {
+    return callDirectory(.openDir, global, frame, asynchronous);
+}
+pub export fn Home__Directory__adopt(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame) jsc.JSValue {
+    var binding: Binding = .{};
+    return Bindings(.adoptDir).runSync(&binding, global, frame) catch .zero;
+}
+pub export fn Home__Directory__read(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame, asynchronous: bool) jsc.JSValue {
+    return callDirectory(.readDir, global, frame, asynchronous);
+}
+pub export fn Home__Directory__close(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame, asynchronous: bool) jsc.JSValue {
+    return callDirectory(.closeDir, global, frame, asynchronous);
 }
 
 const std = @import("std");
