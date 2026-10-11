@@ -183,20 +183,20 @@ Source and native are restored; the ranking above is unchanged. See the
 [complete rejection report](docs/docs/TS_PERFORMANCE.md#jsdoc-single-line-scan-rejected-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
-The finite-key Record candidate under [#863](https://github.com/home-lang/home/issues/863)
-now preserves the collection-bearing factory's complete negative contract by
-invalidating stale flow-member proofs during contextual rechecks. It remains
-uncommitted and untimed pending Zod and performance qualification; the published
-benchmark ranking above is unchanged.
+The contextual factory candidate under [#863](https://github.com/home-lang/home/issues/863)
+preserves the complete negative contract and integrates with main's current
+finite Record implementation. It remains uncommitted and untimed: five new
+false Zod property errors still block adoption. The benchmark ranking above is
+unchanged.
 
-| Untimed finite Record qualification | Result |
+| Untimed main integration qualification | Result |
 |---|---|
-| Checker / Program / driver / CLI / entrypoint | 4,566 / 260 / 200 / 76 / 41 tests pass |
+| Checker / Program / driver / CLI / entrypoint | 4,567 / 264 / 201 / 78 / 46 tests pass |
 | Extended diagnostic / compiler-image controls | 168/168 and 180/180 pass; exact TS2322 and TS2339 retained |
-| Unchanged Zod graph | 241 TS errors plus two HM9002; unadmitted |
+| Unchanged Zod graph | Parent 244 TS + four HM9002; candidate 241 TS + two HM9002; unadmitted |
 
-See the [current qualification report](docs/docs/TS_PERFORMANCE.md#contextual-flow-proof-lifetime-qualification-2026-10-11)
-and [complete raw evidence](bench/vs_tsgo/evidence/20261011-context-flow-proof-qualified-863.tar.gz).
+See the [current qualification report](docs/docs/TS_PERFORMANCE.md#main-integration-held-for-zod-diagnostics-2026-10-11)
+and [complete raw evidence](bench/vs_tsgo/evidence/20261011-main-flow-proof-qualification-held-863.tar.gz).
 The [earlier failed controls](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
 remain documented separately.
 

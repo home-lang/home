@@ -614,9 +614,88 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Main integration held for Zod diagnostics 2026 10 11
+
+The [#863](https://github.com/home-lang/home/issues/863) contextual factory
+candidate passes the complete source suites and controlled positive/negative
+admissions on the current main parent, but remains **uncommitted and untimed**.
+Five new false TS2339 errors in the unchanged Zod project block adoption.
+Diagnostic totals alone are not improvement: the published ranking remains
+**1/20** lowest medians and **13/20** faster than native TS7.
+
+This integration preserves main's concurrent finite and generic Record alias
+implementation and configuration/resolution changes. Only the checker and its
+Program regressions differ. The owned result inference, iterable elements,
+nullable object narrowing, logical assignment flow, concrete indexed receivers
+and contextual proof invalidation have no library or filename predicates, new
+cutoffs, added `any` erasure or weakened negative contracts.
+
+| Exact main integration check | Result |
+|---|---|
+| Checker / Program | 4,567/4,567 and 264/264 tests pass |
+| Driver / CLI / entrypoint | 201/201, 78/78 and 46/46 tests pass |
+| Benchmark harness | 147/147 tests pass |
+| TS6 / native TS7 / candidate controls | 168/168 pass; inputs unchanged |
+| Protocol 5 across five pins and exact-parent Home | 180/180 admissions pass; provenance unchanged |
+| Exact-parent Home diagnostic controls | 25/56 pass; 31 fail their full contracts |
+| Unchanged Zod parent / candidate | 244 TS + four HM9002 / 241 TS + two HM9002; neither admitted |
+| Timing and source adoption | None |
+
+### Full Zod delta and diagnostic counterexperiments
+
+The candidate adds five TS2339 at `core/schemas.ts` 4585:19, 4590:29,
+4590:67, 4590:94 and 4592:77. The original template-literal factory checks
+`typeof part === "object" && part !== null` before reading `part._zod`.
+The reference compilers accept this unchanged graph; Home reports the narrowed
+receiver as `object`. The cause of the lost schema shape remains unresolved.
+The candidate also removes three TS7053 and two HM9002 in `core/checks.ts`,
+and five TS2774 in `classic/from-json-schema.ts`. Those changes retain complete
+outputs and still require semantic classification before timing.
+
+Paired reductions constrain the investigation rather than replace full library
+admission. Recursive parent fields, metadata derived from polymorphic `this`,
+global collection methods and asserting initializers do not reproduce the five
+new errors; all corresponding reference and candidate contracts pass. A separate
+24/24 namespace control shows that a same-named type and value with a template
+member is insufficient to reproduce the imported-base failure.
+
+The pinned-base probes retain every imported-graph diagnostic. Derived parts
+imported relatively have no candidate consumer errors on the positive and exact
+TS2322 plus TS2339 on the negative. The same complex base imported absolutely
+adds a false TS2749, while simple namespace type/value controls pass both import
+spellings. This exposes a separate type-fact transfer failure, not permission to
+change Zod imports or discard project diagnostics. The exported-parts probe also
+silently accepts its negative, so these projects are not admitted.
+
+A generic object-guard logging build reached the unchanged 600-second bound
+with exit 124 before producing a native image. It yielded no type observations;
+the limit was not raised and the failed build was not repeated. Its instrumented
+patch and exact guard outcome remain retained. Logging was removed after
+termination, and both the qualified source patch and installed native were
+restored to their original checksums.
+
+### Exact parent and retained evidence
+
+Source parent: `65a0332fe01d0b60a7a3387c9ebbc0aebaa789b2`;
+patch SHA-256: `0e43dc49e16c4c7714bfe25ba1e33cd19840476407403e36919b624bcb9e33bd`.
+Clean parent native SHA-256:
+`180b0d83becb3a0fa3843c625f213f971578498f6af3fa50fd6d8109cdba21c3`;
+candidate native SHA-256:
+`754926fd350062fac7094768b6adb2f1a5e808b21c37a59ec151b31ac46d59af`.
+
+The [complete integration evidence](../../bench/vs_tsgo/evidence/20261011-main-flow-proof-qualification-held-863.tar.gz)
+contains both frozen natives, the exact source patch, all source gate outputs,
+168 diagnostic controls, 180 compiler-image admissions, full unchanged Zod
+outputs, the completed diagnostic counterexperiments above and the failed
+logging build. The separately queued callback-body controls are not counted.
+All **207 payload checksums** verify. Archive SHA-256:
+`70f5ca7b41d82735e130f993486932b282183938397df4c1981ae853ceeb2b45`.
+The earlier frozen qualification below remains historical and is not relabeled
+as a measurement of this newer parent.
+
 ## Contextual flow proof lifetime qualification 2026 10 11
 
-The current [#863](https://github.com/home-lang/home/issues/863) candidate restores
+The frozen [#863](https://github.com/home-lang/home/issues/863) candidate restores
 the missing-member contract in collection-bearing generic factory callbacks.
 All source gates and extended diagnostic controls pass, but the compiler source
 is **uncommitted and untimed**: Zod diagnostic differences and exact-parent
