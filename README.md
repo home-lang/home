@@ -183,24 +183,24 @@ Source and native are restored; the ranking above is unchanged. See the
 [complete rejection report](docs/docs/TS_PERFORMANCE.md#jsdoc-single-line-scan-rejected-2026-10-10-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-rejected-854.tar.gz).
 
-The contextual factory candidate under [#863](https://github.com/home-lang/home/issues/863)
-preserves the original collection-bearing factory contract and integrates with
-main's current finite Record implementation. It remains uncommitted and untimed: five new
-false Zod property errors still block adoption. Forward-alias controls now
-reproduce the lost element type under [#879](https://github.com/home-lang/home/issues/879).
-The benchmark ranking above is unchanged.
+The declaration-owned alias candidate under [#879](https://github.com/home-lang/home/issues/879)
+restores forward-alias and recursive-member diagnostic contracts, including the
+five false Zod template-loop errors that held [#863](https://github.com/home-lang/home/issues/863).
+It remains uncommitted and untimed pending full source, real CLI admission and
+exact-parent performance qualification. The benchmark ranking above is unchanged.
 
-| Frozen untimed main integration qualification | Result |
+| Untimed owned alias qualification | Result |
 |---|---|
-| Checker / Program / driver / CLI / entrypoint | 4,567 / 264 / 201 / 78 / 46 tests pass |
-| Extended diagnostic / compiler-image controls | 168/168 and 180/180 pass; exact TS2322 and TS2339 retained |
-| Unchanged Zod graph | Parent 244 TS + four HM9002; candidate 241 TS + two HM9002; unadmitted |
-| New forward-alias controls | TS6/native TS7 16/16; candidate 2/8; fix held |
+| Unfiltered Program suite | 265/265 pass, including genuine unknown and nullable recursion |
+| Project-only diagnostic controls | 40/40 exact contracts; not quiet CLI admission |
+| Unchanged Zod graph | 233 TS + two HM9002; eight TS2339 removed, none added versus prior candidate; unadmitted |
+| Full checker, remaining modules and performance | Still required; source adoption held |
 
-See the [current qualification report](docs/docs/TS_PERFORMANCE.md#main-integration-held-for-zod-diagnostics-2026-10-11)
-and [complete raw evidence](bench/vs_tsgo/evidence/20261011-main-flow-proof-qualification-held-863.tar.gz).
+See the [current qualification report](docs/docs/TS_PERFORMANCE.md#declaration-owned-alias-qualification-held)
+and [complete raw evidence](bench/vs_tsgo/evidence/20261011-owned-alias-qualification-held-879.tar.gz).
 The [forward-alias diagnosis](docs/docs/TS_PERFORMANCE.md#forward-alias-order-reproduces-lost-element-types)
-retains the complete failing controls and original-project trace.
+and [earlier main integration](docs/docs/TS_PERFORMANCE.md#main-integration-held-for-zod-diagnostics-2026-10-11)
+remain separate historical snapshots.
 The [earlier failed controls](docs/docs/TS_PERFORMANCE.md#finite-record-qualification-held-2026-10-10-utc)
 remain documented separately.
 

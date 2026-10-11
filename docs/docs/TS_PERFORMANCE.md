@@ -614,6 +614,91 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Declaration owned alias qualification held
+
+The [#879](https://github.com/home-lang/home/issues/879) candidate restores the
+forward-alias and nullable-recursive-member contracts that exposed the lost
+Zod schema shape. It passes **265 unfiltered Program tests** and all **40
+project-only diagnostic observations**, but remains **uncommitted and untimed**.
+Full checker and remaining module gates, real CLI admission and exact-parent
+performance qualification are still required. The published ranking is unchanged
+at **1/20** lowest medians and **13/20** faster than native TS7.
+
+Non-generic aliases now retain a declaration-owned zero-argument reference
+instead of permanently copying a primitive `unknown` into an earlier interface
+element. On-demand recovery uses the normal full alias checker; lexical and
+virtual-section lookup retains the actual declaration identity. Active and
+incomplete references stay deferred rather than becoming completed cache entries.
+Contextual type clearing invalidates matching check state, and failed Program
+definitions remove newly published alias entries by identity watermark.
+
+A named ambient annotation that genuinely resolves to `unknown` is no longer
+treated as an unresolved name and erased to `any`. Existing type-space facts
+distinguish those cases. Typeof guards classify the completed alias surface used
+by member lookup, retaining nullable recursive object members and their genuine
+errors. There is no library/filename predicate, added recovery `any`, new cutoff,
+weakened negative or skipped body/diagnostic implementing these changes.
+
+| Exact current revision | Result |
+|---|---|
+| Complete Program suite | 265/265 pass; no test filters |
+| Direct forward/unknown/mutual/nullable-cycle regression | Exactly seven genuine TS2322/TS2339; valid reads retained |
+| Original declaration-order, name and callback-body observations | 24/24 diagnostic contracts match |
+| Broader forward use, true unknown, lexical scopes, productive/null cycles, namespace and circular-error observations | 16/16 diagnostic contracts match |
+| Full unchanged Zod graph | 233 TS errors plus two HM9002; unadmitted |
+| Zod delta versus prior qualified candidate | No added diagnostics; eight TS2339 removed; all other code counts unchanged |
+| Full checker, remaining module/real CLI/admission gates | Still required |
+| Timing and source adoption | None |
+
+### Diagnostic scope and failed revisions
+
+The project-only image uses production project admission, resolver, checker and
+rendering, but prints a diagnostic status line. It is **not** the quiet production
+CLI and is not a benchmark compiler or an additional protocol-5 pin. All input
+inventories match before and after. Its full Zod graph remains unadmitted; lower
+error totals alone do not prove support or a performance improvement.
+
+The eight removed TS2339 include all five original template-loop errors at
+`core/schemas.ts` 4585:19, 4590:29/67/94 and 4592:77; recursive JSON-schema
+indexed `_zod` reads at `classic/schemas.ts` 2833:47 and `mini/schemas.ts` 1947:62;
+and the guarded property-name schema read at `classic/from-json-schema.ts`
+525:76. No original library source changed. The full diagnostic location/code
+multisets, including every remaining error, are retained.
+
+The first prototype matched the original 24 contracts but only 13/16 broader
+contracts: its true-unknown negative was silently accepted and its nullable
+recursive reads added HM9002 and false TS2339. Cache/ambient-recovery hardening
+then passed all 265 Program tests and matched 38/40 observations; nullable
+recursion still failed. Resolving the guard surface restored that final contract
+without weakening it. These intermediate failures remain separate raw records.
+
+An earlier prototype Program run stopped at the existing 512-MB critical disk
+floor before assertions. Cleanup removed only three task-owned generated
+`.zig-cache` directories, totaling 1,215,906,264 bytes. All **102,404 protected
+source, raw-evidence and retained-image checksums** were unchanged; unrelated
+jobs and shared caches were untouched. Guard limits were not increased.
+
+### Frozen source and retained evidence
+
+Source parent: `fcbd36d6be82776812f55bbc5c0ea1a5e88c3cd5`;
+patch SHA-256: `ddf445924c7c8235fb3e99d7a02f8af876b0446f2d79fbd74f94dc946ce91f73`.
+Diagnostic native SHA-256:
+`717098989ccdb76766e8157a10c8fc9e8ae3bb73a76277c943d024467adbe5d2`.
+The installed qualified production native remains
+`754926fd350062fac7094768b6adb2f1a5e808b21c37a59ec151b31ac46d59af`.
+
+The [complete held-qualification evidence](../../bench/vs_tsgo/evidence/20261011-owned-alias-qualification-held-879.tar.gz)
+retains exact revision patches and diagnostic images, complete terminal Program
+logs, all broader reference/parent controls and prototype observations, every
+Zod output, failed attempts and cleanup verification. The separately running
+full checker and other incomplete gates are excluded, not counted as successes.
+No timing samples have been taken for these revisions.
+
+All **94 payload checksums** verify. Archive SHA-256:
+`80f1679787584993499a5abb23e86e6ce61aef243bd8b3409584a4725c5cc8b0`.
+The publication includes the scoped cleanup verification summary; the complete
+local preservation manifest remains retained without publishing unrelated paths.
+
 ## Main integration held for Zod diagnostics 2026 10 11
 
 The frozen [#863](https://github.com/home-lang/home/issues/863) contextual factory
