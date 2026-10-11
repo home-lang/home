@@ -334,6 +334,7 @@ const fsHook = createHook({
     if (fsOwners.has(id)) {
       assert.equal(executionAsyncId(), id)
       assert.equal(executionAsyncResource(), fsOwners.get(id))
+      assert.equal(fsContext.getStore(), 'fs-creation')
       fsRows.push(['before', id])
     }
   },
@@ -378,3 +379,64 @@ try {
   rmSync(fsDirectory, { recursive: true, force: true })
 }
 console.log('native filesystem request init, completion, failure and teardown hooks passed')
+
+const callbackDirectory = mkdtempSync(join(tmpdir(), 'home-fs-callback-hooks-'))
+const callbackPath = join(callbackDirectory, 'data.txt')
+writeFileSync(callbackPath, 'callback payload')
+const callbackContext = new AsyncLocalStorage()
+const callbackOrigin = callbackContext.run('callback-creation', () => new AsyncResource('home-fs-callback-origin', { requireManualDestroy: true }))
+const callbackRecords = []
+const callbackOwners = new Map()
+const callbackHook = createHook({
+  init(id, type, trigger, owner) {
+    if (type === 'FSREQCALLBACK') {
+      callbackOwners.set(id, owner)
+      callbackRecords.push(['init', id, trigger])
+    }
+  },
+  before(id) { if (callbackOwners.has(id)) callbackRecords.push(['before', id]) },
+  after(id) { if (callbackOwners.has(id)) callbackRecords.push(['after', id]) },
+  destroy(id) { if (callbackOwners.has(id)) callbackRecords.push(['destroy', id]) },
+})
+const callbackFs = await import('node:fs')
+function invokeCallback(operation) {
+  return new Promise((resolve, reject) => callbackOrigin.runInAsyncScope(() => operation(function (error, value) {
+    assert.equal(callbackContext.getStore(), 'callback-creation')
+    const id = executionAsyncId()
+    assert(callbackOwners.has(id))
+    assert.equal(executionAsyncResource(), callbackOwners.get(id))
+    if (error) reject(error)
+    else resolve(value)
+  })))
+}
+try {
+  callbackHook.enable()
+  assert.equal(await invokeCallback(done => callbackFs.readFile(callbackPath, 'utf8', done)), 'callback payload')
+  await invokeCallback(done => callbackFs.writeFile(callbackPath, 'updated', done))
+  assert.equal((await invokeCallback(done => callbackFs.stat(callbackPath, done))).size, 7)
+  const fd = await invokeCallback(done => callbackFs.open(callbackPath, 'r', done))
+  const buffer = Buffer.alloc(7)
+  const bytesRead = await invokeCallback(done => callbackFs.read(fd, buffer, 0, 7, 0, (error, size, returned) => {
+    if (!error) assert.equal(returned, buffer)
+    done(error, size)
+  }))
+  assert.equal(bytesRead, 7)
+  assert.equal(buffer.toString(), 'updated')
+  await invokeCallback(done => callbackFs.close(fd, done))
+  await assert.rejects(invokeCallback(done => callbackFs.stat(join(callbackDirectory, 'ordinary-missing'), done)), { code: 'ENOENT' })
+  await new Promise(resolve => setImmediate(resolve))
+  callbackHook.disable()
+  assert(callbackOwners.size >= 6)
+  for (const id of callbackOwners.keys()) {
+    assert.equal(callbackRecords.filter(row => row[0] === 'before' && row[1] === id).length, 1)
+    assert.equal(callbackRecords.filter(row => row[0] === 'after' && row[1] === id).length, 1)
+    assert.equal(callbackRecords.filter(row => row[0] === 'destroy' && row[1] === id).length, 1)
+  }
+  assert.equal(callbackContext.getStore(), undefined)
+} finally {
+  callbackHook.disable()
+  callbackOrigin.emitDestroy()
+  callbackContext.disable()
+  rmSync(callbackDirectory, { recursive: true, force: true })
+}
+console.log('native filesystem callback resource scope, results and cleanup passed')

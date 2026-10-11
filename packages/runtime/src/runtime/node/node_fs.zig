@@ -145,8 +145,12 @@ pub const Async = struct {
             pub const heap_label = "Async" ++ bun.meta.typeBaseName(@typeName(ArgumentType)) ++ "UvTask";
 
             pub fn create(globalObject: *jsc.JSGlobalObject, this: *jsc.Node.fs.Binding, task_args: ArgumentType, vm: *jsc.VirtualMachine) jsc.JSValue {
+                return createWithCallback(globalObject, this, task_args, vm, .js_undefined);
+            }
+
+            pub fn createWithCallback(globalObject: *jsc.JSGlobalObject, this: *jsc.Node.fs.Binding, task_args: ArgumentType, vm: *jsc.VirtualMachine, callback: jsc.JSValue) jsc.JSValue {
                 var task = bun.new(Task, .{
-                    .promise = jsc.JSPromise.Strong.init(globalObject),
+                    .promise = if (callback.isUndefined()) jsc.JSPromise.Strong.init(globalObject) else .empty,
                     .args = task_args,
                     .result = undefined,
                     .globalObject = globalObject,
@@ -154,7 +158,7 @@ pub const Async = struct {
                 });
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
-                task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
+                task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else FSAsyncResource.initCallback(globalObject, callback);
 
                 task.tracker.didSchedule(globalObject);
 
@@ -184,7 +188,7 @@ pub const Async = struct {
                             log("uv close({}) SKIPPED", .{fd});
                             task.result = .success;
                             task.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(task));
-                            return task.promise.value();
+                            return if (callback.isUndefined()) task.promise.value() else .js_undefined;
                         }
 
                         const rc = uv.uv_fs_close(loop, &task.req, fd, &uv_callback);
@@ -238,7 +242,7 @@ pub const Async = struct {
                         if (bufs.len == 0) {
                             task.result = .success;
                             task.globalObject.bunVM().eventLoop().enqueueTask(jsc.Task.init(task));
-                            return task.promise.value();
+                            return if (callback.isUndefined()) task.promise.value() else .js_undefined;
                         }
 
                         const pos: i64 = args_.position orelse -1;
@@ -260,7 +264,7 @@ pub const Async = struct {
                     else => comptime unreachable,
                 }
 
-                return task.promise.value();
+                return if (callback.isUndefined()) task.promise.value() else .js_undefined;
             }
 
             fn uv_callback(req: *uv.fs_t) callconv(.c) void {
@@ -298,12 +302,12 @@ pub const Async = struct {
                 var previous = this.async_resource.enter(globalObject);
                 defer this.async_resource.leave(globalObject, &previous);
                 const success = @as(bun.sys.Maybe(ReturnType).Tag, this.result) == .result;
-                var promise_value = this.promise.value();
-                var promise = this.promise.get();
+                const promise_value = if (this.async_resource.callback_mode) jsc.JSValue.js_undefined else this.promise.value();
+                const promise = if (this.async_resource.callback_mode) null else this.promise.get();
                 const result = switch (this.result) {
-                    .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
+                    .err => |err| (if (promise) |target| err.toJSWithAsyncStack(globalObject, target) else err.toJS(globalObject)) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true),
                     .result => |*res| brk: {
-                        break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
+                        break :brk globalObject.toJS(res) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true);
                     },
                 };
                 promise_value.ensureStillAlive();
@@ -314,10 +318,10 @@ pub const Async = struct {
 
                 switch (success) {
                     false => {
-                        try promise.reject(globalObject, result);
+                        try this.async_resource.deliver(globalObject, &this.promise, result, true);
                     },
                     true => {
-                        try promise.resolve(globalObject, result);
+                        try this.async_resource.deliver(globalObject, &this.promise, result, false);
                     },
                 }
             }
@@ -384,20 +388,24 @@ pub const Async = struct {
                 args: ArgumentType,
                 vm: *jsc.VirtualMachine,
             ) jsc.JSValue {
+                return createWithCallback(globalObject, undefined, args, vm, .js_undefined);
+            }
+
+            pub fn createWithCallback(globalObject: *jsc.JSGlobalObject, _: *bun.api.node.fs.Binding, args: ArgumentType, vm: *jsc.VirtualMachine, callback: jsc.JSValue) jsc.JSValue {
                 var task = bun.new(Task, .{
-                    .promise = jsc.JSPromise.Strong.init(globalObject),
+                    .promise = if (callback.isUndefined()) jsc.JSPromise.Strong.init(globalObject) else .empty,
                     .args = args,
                     .result = undefined,
                     .globalObject = globalObject,
                     .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
                 });
-                const promise_value = task.promise.value();
+                const promise_value = if (callback.isUndefined()) task.promise.value() else .js_undefined;
                 if (comptime shutdown_safe_result) {
                     task.any_task = jsc.AnyTask.NewWithShutdown(Task, &runFromJSThread, &cancelForShutdown).init(task);
                 }
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
-                task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
+                task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else FSAsyncResource.initCallback(globalObject, callback);
                 task.tracker.didSchedule(globalObject);
                 if (comptime shutdown_safe_result) {
                     if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -442,12 +450,12 @@ pub const Async = struct {
                 defer tracker.didDispatch(globalObject);
 
                 const success = @as(bun.sys.Maybe(ReturnType).Tag, this.result) == .result;
-                var promise_value = this.promise.value();
-                var promise = this.promise.get();
+                const promise_value = if (this.async_resource.callback_mode) jsc.JSValue.js_undefined else this.promise.value();
+                const promise = if (this.async_resource.callback_mode) null else this.promise.get();
                 const result = switch (this.result) {
-                    .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
+                    .err => |err| (if (promise) |target| err.toJSWithAsyncStack(globalObject, target) else err.toJS(globalObject)) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true),
                     .result => |*res| brk: {
-                        break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
+                        break :brk globalObject.toJS(res) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true);
                     },
                 };
                 promise_value.ensureStillAlive();
@@ -455,17 +463,17 @@ pub const Async = struct {
                 if (have_abort_signal) check_abort: {
                     const signal = this.args.signal orelse break :check_abort;
                     if (signal.reasonIfAborted(globalObject)) |reason| {
-                        try promise.reject(globalObject, reason.toJS(globalObject));
+                        try this.async_resource.deliver(globalObject, &this.promise, reason.toJS(globalObject), true);
                         return;
                     }
                 }
 
                 switch (success) {
                     false => {
-                        try promise.reject(globalObject, result);
+                        try this.async_resource.deliver(globalObject, &this.promise, result, true);
                     },
                     true => {
-                        try promise.resolve(globalObject, result);
+                        try this.async_resource.deliver(globalObject, &this.promise, result, false);
                     },
                 }
             }
@@ -635,8 +643,13 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             vm: *jsc.VirtualMachine,
             arena: bun.ArenaAllocator,
         ) jsc.JSValue {
-            const task = createWithShellTask(globalObject, cp_args, vm, arena, 0, true);
-            const promise_value = task.promise.value();
+            return createWithCallback(globalObject, undefined, cp_args, vm, arena, .js_undefined);
+        }
+
+        pub fn createWithCallback(globalObject: *jsc.JSGlobalObject, _: *jsc.Node.fs.Binding, cp_args: Arguments.Cp, vm: *jsc.VirtualMachine, arena: bun.ArenaAllocator, callback: jsc.JSValue) jsc.JSValue {
+            const task = if (callback.isUndefined()) createWithShellTask(globalObject, cp_args, vm, arena, 0, true) else createWithShellTask(globalObject, cp_args, vm, arena, 0, false);
+            if (!callback.isUndefined()) task.async_resource = FSAsyncResource.initCallback(globalObject, callback);
+            const promise_value = if (callback.isUndefined()) task.promise.value() else .js_undefined;
             task.any_task = jsc.AnyTask.NewWithShutdown(ThisAsyncCpTask, &runFromJSThread, &cancelForShutdown).init(task);
             if (!vm.native_work_pool_jobs.tryAdd()) {
                 task.cancelForShutdown();
@@ -671,7 +684,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             if (comptime !is_shell) task.ref.ref(vm);
             task.args.src.toThreadSafe();
             task.args.dest.toThreadSafe();
-            if (comptime !is_shell) task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
+            if (comptime !is_shell and enable_promise) task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
             task.tracker.didSchedule(globalObject);
 
             if (comptime is_shell) {
@@ -781,12 +794,12 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             var previous = this.async_resource.enter(globalObject);
             defer this.async_resource.leave(globalObject, &previous);
             const success = @as(bun.sys.Maybe(Return.Cp).Tag, this.result) == .result;
-            var promise_value = this.promise.value();
-            var promise = this.promise.get();
+            const promise_value = if (this.async_resource.callback_mode) jsc.JSValue.js_undefined else this.promise.value();
+            const promise = if (this.async_resource.callback_mode) null else this.promise.get();
             const result = switch (this.result) {
-                .err => |err| err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e)),
+                .err => |err| (if (promise) |target| err.toJSWithAsyncStack(globalObject, target) else err.toJS(globalObject)) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true),
                 .result => |*res| brk: {
-                    break :brk globalObject.toJS(res) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
+                    break :brk globalObject.toJS(res) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true);
                 },
             };
             promise_value.ensureStillAlive();
@@ -797,10 +810,10 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
 
             switch (success) {
                 false => {
-                    try promise.reject(globalObject, result);
+                    try this.async_resource.deliver(globalObject, &this.promise, result, true);
                 },
                 true => {
-                    try promise.resolve(globalObject, result);
+                    try this.async_resource.deliver(globalObject, &this.promise, result, false);
                 },
             }
         }
@@ -1176,8 +1189,12 @@ pub const AsyncReaddirRecursiveTask = struct {
         args: Arguments.Readdir,
         vm: *jsc.VirtualMachine,
     ) jsc.JSValue {
+        return createWithCallback(globalObject, args, vm, .js_undefined);
+    }
+
+    pub fn createWithCallback(globalObject: *jsc.JSGlobalObject, args: Arguments.Readdir, vm: *jsc.VirtualMachine, callback: jsc.JSValue) jsc.JSValue {
         var task = AsyncReaddirRecursiveTask.new(.{
-            .promise = jsc.JSPromise.Strong.init(globalObject),
+            .promise = if (callback.isUndefined()) jsc.JSPromise.Strong.init(globalObject) else .empty,
             .args = args,
             .has_result = .{ .raw = false },
             .globalObject = globalObject,
@@ -1190,11 +1207,11 @@ pub const AsyncReaddirRecursiveTask = struct {
                 .buffers => .{ .buffers = std.array_list.Managed(Buffer).init(bun.default_allocator) },
             },
         });
-        const promise_value = task.promise.value();
+        const promise_value = if (callback.isUndefined()) task.promise.value() else .js_undefined;
         task.any_task = jsc.AnyTask.NewWithShutdown(AsyncReaddirRecursiveTask, &runFromJSThread, &cancelForShutdown).init(task);
         task.ref.ref(vm);
         task.args.toThreadSafe();
-        task.async_resource = FSAsyncResource.init(globalObject, task.promise.value());
+        task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else FSAsyncResource.initCallback(globalObject, callback);
         task.tracker.didSchedule(globalObject);
 
         if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -1371,15 +1388,15 @@ pub const AsyncReaddirRecursiveTask = struct {
         var previous = this.async_resource.enter(globalObject);
         defer this.async_resource.leave(globalObject, &previous);
         const success = this.pending_err == null;
-        var promise_value = this.promise.value();
-        var promise = this.promise.get();
-        const result = if (this.pending_err) |*err| (err.toJSWithAsyncStack(globalObject, promise) catch |e| return promise.reject(globalObject, globalObject.takeException(e))) else brk: {
+        const promise_value = if (this.async_resource.callback_mode) jsc.JSValue.js_undefined else this.promise.value();
+        const promise = if (this.async_resource.callback_mode) null else this.promise.get();
+        const result = if (this.pending_err) |*err| ((if (promise) |target| err.toJSWithAsyncStack(globalObject, target) else err.toJS(globalObject)) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true)) else brk: {
             const res = switch (this.result_list) {
                 .with_file_types => |*res| Return.Readdir{ .with_file_types = res.moveToUnmanaged().items },
                 .buffers => |*res| Return.Readdir{ .buffers = res.moveToUnmanaged().items },
                 .files => |*res| Return.Readdir{ .files = res.moveToUnmanaged().items },
             };
-            break :brk res.toJS(globalObject) catch |e| return promise.reject(globalObject, globalObject.takeException(e));
+            break :brk res.toJS(globalObject) catch |e| return this.async_resource.deliver(globalObject, &this.promise, globalObject.takeException(e), true);
         };
         promise_value.ensureStillAlive();
 
@@ -1389,10 +1406,10 @@ pub const AsyncReaddirRecursiveTask = struct {
 
         switch (success) {
             false => {
-                try promise.reject(globalObject, result);
+                try this.async_resource.deliver(globalObject, &this.promise, result, true);
             },
             true => {
-                try promise.resolve(globalObject, result);
+                try this.async_resource.deliver(globalObject, &this.promise, result, false);
             },
         }
     }

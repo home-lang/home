@@ -60,24 +60,39 @@ function leaveTimer(timer, previous) {
 
 const fsRequestStates = new WeakMap();
 class FSReqPromise {}
+class FSReqCallback {}
 function createFSRequest(promise) {
   const resource = new FSReqPromise();
   resource.promise = promise;
-  const state = { id: ++nextAsyncId, trigger: execution.asyncId, destroyed: false };
+  const state = { id: ++nextAsyncId, trigger: execution.asyncId, destroyed: false, frame: $getInternalField($asyncContext, 0) };
   fsRequestStates.set(resource, state);
   emitInit(state.id, "FSREQPROMISE", state.trigger, resource);
   return resource;
 }
+function createFSCallback(callback) {
+  const resource = new FSReqCallback();
+  resource.oncomplete = callback;
+  const state = { id: ++nextAsyncId, trigger: execution.asyncId, destroyed: false, frame: $getInternalField($asyncContext, 0) };
+  fsRequestStates.set(resource, state);
+  emitInit(state.id, "FSREQCALLBACK", state.trigger, resource);
+  return resource;
+}
+function deliverFSCallback(resource, result, failed) {
+  resource.oncomplete.$call(undefined, failed ? result : null, failed ? undefined : result);
+}
+function queueFSCallback(callback, error) { process.nextTick(callback, error); }
 function enterFSRequest(resource) {
   const state = fsRequestStates.get(resource);
-  const previous = execution;
+  const previous = { execution, frame: $getInternalField($asyncContext, 0) };
   execution = { asyncId: state.id, triggerAsyncId: state.trigger, resource };
+  $putInternalField($asyncContext, 0, state.frame);
   emitBefore(state.id);
   return previous;
 }
 function leaveFSRequest(resource, previous) {
   emitAfter(fsRequestStates.get(resource).id);
-  execution = previous;
+  execution = previous.execution;
+  $putInternalField($asyncContext, 0, previous.frame);
 }
 function destroyFSRequest(resource) {
   const state = fsRequestStates.get(resource);
@@ -87,7 +102,7 @@ function destroyFSRequest(resource) {
 export default {
   tickInitHooks, beforeHooks, afterHooks, destroyHooks,
   createTimer, destroyTimer, refreshTimer, enterTimer, leaveTimer,
-  createFSRequest, enterFSRequest, leaveFSRequest, destroyFSRequest,
+  createFSRequest, createFSCallback, deliverFSCallback, queueFSCallback, enterFSRequest, leaveFSRequest, destroyFSRequest,
   emitInit, emitBefore, emitAfter, emitDestroy,
   newAsyncId() { return ++nextAsyncId; },
   executionAsyncId() { return execution.asyncId; },

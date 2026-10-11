@@ -35,7 +35,16 @@ fn Bindings(comptime function_name: NodeFSFunctionEnum) type {
         }
 
         pub fn runAsync(this: *Binding, globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
-            var slice = ArgumentsSlice.init(globalObject.bunVM(), callframe.arguments());
+            const callback_index: ?usize = comptime switch (function_name) {
+                .close, .exists, .fsync, .fdatasync, .unlink => 1,
+                .access, .chmod, .fchmod, .fstat, .ftruncate, .lchmod, .link, .lstat, .mkdir, .mkdtemp, .readdir, .readFile, .readlink, .rm, .rmdir, .realpath, .realpathNonNative, .rename, .stat, .statfs, .truncate => 2,
+                .appendFile, .copyFile, .cp, .chown, .fchown, .futimes, .lchown, .open, .writeFile, .symlink, .utimes, .lutimes, .readv, .writev => 3,
+                .read, .write => 5,
+                else => null,
+            };
+            const values = callframe.arguments();
+            const callback = if (callback_index) |index| if (values.len > index and values[index].isCallable()) values[index] else jsc.JSValue.js_undefined else jsc.JSValue.js_undefined;
+            var slice = ArgumentsSlice.init(globalObject.bunVM(), values);
             slice.will_be_async = true;
             var deinit = false;
 
@@ -59,17 +68,18 @@ fn Bindings(comptime function_name: NodeFSFunctionEnum) type {
                 const signal = args.signal orelse break :check_early_abort;
                 if (signal.reasonIfAborted(globalObject)) |reason| {
                     deinit = true;
+                    if (!callback.isUndefined()) return @import("./fs_async_resource.zig").queueEarlyError(globalObject, callback, reason.toJS(globalObject));
                     return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalObject, reason.toJS(globalObject));
                 }
             }
 
             const Task = @field(node.fs.Async, @tagName(function_name));
             switch (comptime function_name) {
-                .cp => return Task.create(globalObject, this, args, globalObject.bunVM(), slice.arena),
-                .readdir => if (args.recursive) return node.fs.AsyncReaddirRecursiveTask.create(globalObject, args, globalObject.bunVM()),
+                .cp => return Task.createWithCallback(globalObject, this, args, globalObject.bunVM(), slice.arena, callback),
+                .readdir => if (args.recursive) return node.fs.AsyncReaddirRecursiveTask.createWithCallback(globalObject, args, globalObject.bunVM(), callback),
                 else => {},
             }
-            return Task.create(globalObject, this, args, globalObject.bunVM());
+            return Task.createWithCallback(globalObject, this, args, globalObject.bunVM(), callback);
         }
     };
 }
