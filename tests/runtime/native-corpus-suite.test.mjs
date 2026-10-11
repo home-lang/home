@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 
@@ -167,7 +167,35 @@ try {
   assert.doesNotMatch(clean.stdout, /CHANGED:/)
   assert.equal(journal(clean).find(row => row.event === 'completed').counts.passed, 0)
 
-  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, seeded order and single-invocation evidence passed')
+  const emptyPublicPath = join(temp, 'empty-changed-public.xml')
+  const emptyPublic = invoke('changed-clean-public', [...files, '--changed=HEAD', '--reporter=junit', '--reporter-outfile', emptyPublicPath])
+  assert.equal(emptyPublic.status, 0, emptyPublic.stderr)
+  assert.equal(existsSync(emptyPublicPath), false)
+  assert.equal(journal(emptyPublic).find(row => row.event === 'completed').counts.passed, 0)
+
+  const callerConfig = join(temp, 'caller-config.toml')
+  writeFileSync(join(temp, 'caller-setup.js'), 'globalThis.__homeContextFlag="caller";')
+  writeFileSync(callerConfig, '[test]\npreload=["./caller-setup.js"]\n')
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';test('caller config context',()=>{expect(process.cwd()).toBe(${JSON.stringify(realpathSync(temp))});expect(globalThis.__homeContextFlag).toBe('caller');});`)
+  for (const flag of ['--config=./caller-config.toml', '-c=./caller-config.toml']) {
+    const result = invoke('caller-config-' + flag[1], [...files, flag])
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(journal(result).find(row => row.event === 'completed').counts.passed, 3)
+  }
+  const cwdFolder = join(temp, 'explicit-cwd')
+  mkdirSync(cwdFolder)
+  writeFileSync(join(cwdFolder, 'cwd-setup.js'), 'globalThis.__homeContextFlag="cwd";')
+  writeFileSync(join(cwdFolder, 'cwd-config.toml'), '[test]\npreload=["./cwd-setup.js"]\n')
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';test('explicit cwd',()=>{expect(process.cwd()).toBe(${JSON.stringify(realpathSync(cwdFolder))});});`)
+  const cwdOnly = invoke('explicit-relative-cwd', [...files, '--cwd', './explicit-cwd'])
+  assert.equal(cwdOnly.status, 0, cwdOnly.stderr)
+  journal(cwdOnly)
+  for (const file of files) writeFileSync(file, `import {test,expect} from 'bun:test';test('cwd config',()=>{expect(process.cwd()).toBe(${JSON.stringify(realpathSync(cwdFolder))});expect(globalThis.__homeContextFlag).toBe('cwd');});`)
+  const cwdConfig = invoke('explicit-cwd-config', [...files, '--cwd=./explicit-cwd', '--config=./cwd-config.toml'])
+  assert.equal(cwdConfig.status, 0, cwdConfig.stderr)
+  assert.equal(journal(cwdConfig).find(row => row.event === 'completed').counts.passed, 3)
+
+  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, caller config/cwd, seeded order and single-invocation evidence passed')
 } finally {
   if (process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR) {
     mkdirSync(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR)

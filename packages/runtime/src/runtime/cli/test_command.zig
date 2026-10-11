@@ -1086,7 +1086,7 @@ pub const CommandLineReporter = struct {
             junit.writeToFile(primary) catch {};
             if (report_options.corpus_reportfile != null and report_options.reporters.junit) {
                 if (report_options.reporter_outfile) |public_path| {
-                    if (!strings.eql(public_path, primary)) junit.writeSerializedToFile(public_path);
+                    if (junit.contents.items.len > 0 and !strings.eql(public_path, primary)) junit.writeSerializedToFile(public_path);
                 }
             }
         }

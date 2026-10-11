@@ -159,6 +159,20 @@ class JournalValidation(unittest.TestCase):
         self.assertEqual(result['selected'], 1)
         self.assertEqual(result['summary']['source_files'], 1)
 
+    def test_suite_explicit_case_source_base_is_used(self):
+        self.suite_fixture()
+        self.rows[1]['case_source_base'] = '/control/project'
+        self.artifact('junit', b'<testsuites><testsuite><testcase name="pass" file="../a.test.js"/></testsuite></testsuites>')
+        details = [json.loads(line) for line in (self.root / '000000.case_metadata').read_text().splitlines()]
+        details[0]['file'] = '../a.test.js'
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        for kind in ('junit', 'case_metadata'):
+            self.rows[4][kind + '_sha256'] = hashlib.sha256((self.root / ('000000.' + kind)).read_bytes()).hexdigest()
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.rows[1]['case_source_base'] = 'relative-base'
+        self.assertFalse(self.result()['successful'])
+
     def test_suite_rejects_source_digest_and_case_source_mismatch(self):
         self.suite_fixture()
         self.rows[1]['source_sha256'] = 'b' * 64

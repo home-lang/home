@@ -76,6 +76,8 @@ def summarize(directory):
                 check(purpose == 'suite' and suite is None and not selected and not started, 'invalid suite plan order')
                 suite = row
                 check(row.get('contract') == 'home-native-suite-v1' and row.get('case_credit') == 0, 'invalid native suite contract')
+                base = row.get('case_source_base')
+                check(base is None or (isinstance(base, str) and Path(base).is_absolute()), 'invalid suite case source base')
                 inputs = row.get('inputs', [])
                 check(isinstance(inputs, list) and bool(inputs), 'missing suite source inventory')
                 suite_digest = hashlib.sha256()
@@ -338,7 +340,7 @@ def summarize(directory):
                                 counter = status
                                 if purpose == 'suite' and suite is not None:
                                     source = case.get('file')
-                                    absolute = str((Path(run['corpus_root']).parent / source).resolve()) if isinstance(source, str) else None
+                                    absolute = str((Path(suite.get('case_source_base', str(Path(run['corpus_root']).parent))) / source).resolve()) if isinstance(source, str) else None
                                     check(absolute in {entry['path'] for entry in suite['inputs']}, f'{identity}: case source is outside suite inventory')
                                 if metadata is not None and ordinal < len(metadata):
                                     detail = metadata[ordinal]

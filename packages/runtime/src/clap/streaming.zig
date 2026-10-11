@@ -149,10 +149,12 @@ pub fn StreamingClap(comptime Id: type, comptime ArgIterator: type) type {
                 }
 
                 const next_is_eql = if (next_index < arg.len) arg[next_index] == '=' else false;
-                if (param.takes_value == .none or param.takes_value == .one_optional) {
-                    if (next_is_eql and param.takes_value == .none)
-                        return parser.err(arg, .{ .short = short }, error.DoesntTakeValue);
+                if (param.takes_value == .none) {
+                    if (next_is_eql) return parser.err(arg, .{ .short = short }, error.DoesntTakeValue);
                     return Arg(Id){ .param = param };
+                }
+                if (param.takes_value == .one_optional) {
+                    return Arg(Id){ .param = param, .value = if (next_index < arg.len) arg[next_index + @as(usize, if (next_is_eql) 1 else 0) ..] else null };
                 }
 
                 if (arg.len <= next_index) {

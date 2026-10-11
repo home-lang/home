@@ -2548,7 +2548,7 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     }
 
-    if (argTargetsBunCorpus(args)) |target| {
+    if (!(try nativeCorpusContext(args)).explicit) if (argTargetsBunCorpus(args)) |target| {
         const corpus_path = switch (target) {
             .root => |path| path,
             .directory => |directory| directory.corpus_path,
@@ -2605,7 +2605,7 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         const mirror_root_z = try home_rt.dupeZ(allocator, u8, mirror_root);
         defer allocator.free(mirror_root_z);
         if (setenv("PWD", mirror_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
-    }
+    };
 
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
@@ -4540,6 +4540,28 @@ const NativeCorpusArgIterator = struct {
     }
 };
 
+const NativeCorpusContext = struct {
+    explicit: bool = false,
+    cwd: ?[]const u8 = null,
+};
+
+fn nativeCorpusContext(args: []const [:0]const u8) !NativeCorpusContext {
+    if (comptime !build_options.enable_jsc) return .{};
+    var iterator = NativeCorpusArgIterator{ .args = args };
+    var parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){ .params = &home_rt.cli.Arguments.test_params, .iter = &iterator };
+    var context = NativeCorpusContext{};
+    while (try parser.next()) |arg| {
+        if (arg.param.names.long) |name| {
+            if (std.mem.eql(u8, name, "cwd")) {
+                context.explicit = true;
+                context.cwd = arg.value;
+            }
+            if (std.mem.eql(u8, name, "config")) context.explicit = true;
+        }
+    }
+    return context;
+}
+
 fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
     if (comptime !build_options.enable_jsc) return false;
     var iterator = NativeCorpusArgIterator{ .args = args };
@@ -4551,7 +4573,7 @@ fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
     var corpus_target = false;
     while (try parser.next()) |arg| {
         if (arg.param.names.long) |name| {
-            for ([_][]const u8{ "shard", "bail", "concurrent", "max-concurrency", "randomize", "seed", "coverage", "coverage-reporter", "coverage-dir", "path-ignore-patterns", "isolate", "parallel", "parallel-delay", "changed", "reporter", "reporter-outfile", "dots", "only-failures", "only", "todo", "pass-with-no-tests" }) |flag| {
+            for ([_][]const u8{ "shard", "bail", "concurrent", "max-concurrency", "randomize", "seed", "coverage", "coverage-reporter", "coverage-dir", "path-ignore-patterns", "isolate", "parallel", "parallel-delay", "changed", "reporter", "reporter-outfile", "dots", "only-failures", "only", "todo", "pass-with-no-tests", "config", "cwd" }) |flag| {
                 if (std.mem.eql(u8, name, flag)) suite = true;
             }
         } else if (arg.param.names.short == null) {
@@ -4598,7 +4620,15 @@ fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const
     try argv.append(allocator, "test");
     // Preserve option spelling/order. Native parsing owns their semantics.
     for (args) |arg| try argv.append(allocator, arg);
-    var result = try home_test.corpus_runner.runNativeSuite(g_io, allocator, root orelse return error.MissingCorpusSuiteRoot, sources.items, argv.items);
+    const context = try nativeCorpusContext(args);
+    const caller_cwd = try Io.Dir.cwd().realPathFileAlloc(g_io, ".", allocator);
+    defer allocator.free(caller_cwd);
+    const source_base = if (context.cwd) |path| try std.fs.path.resolve(allocator, &.{ caller_cwd, path }) else try allocator.dupe(u8, caller_cwd);
+    defer allocator.free(source_base);
+    var result = try home_test.corpus_runner.runNativeSuite(g_io, allocator, root orelse return error.MissingCorpusSuiteRoot, sources.items, argv.items, .{
+        .execution_cwd = if (context.explicit) caller_cwd else null,
+        .case_source_base = if (context.explicit) source_base else null,
+    });
     defer result.deinit(allocator);
     if (result.stdout.len > 0) try Io.File.stdout().writeStreamingAll(g_io, result.stdout);
     if (result.stderr.len > 0) try Io.File.stderr().writeStreamingAll(g_io, result.stderr);

@@ -848,14 +848,16 @@ pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const 
     return summary;
 }
 
-pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, files: []const []const u8, args: []const []const u8) !jsc_bootstrap.HomeCapturedResult {
+pub const SuiteContext = struct { execution_cwd: ?[]const u8 = null, case_source_base: ?[]const u8 = null };
+
+pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, files: []const []const u8, args: []const []const u8, context: SuiteContext) !jsc_bootstrap.HomeCapturedResult {
     if (!build_options.enable_jsc) return error.JscDisabled;
     const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
     defer allocator.free(cwd);
     const root = try std.fs.path.resolve(allocator, &.{ cwd, corpus_path });
     defer allocator.free(root);
     const project = std.fs.path.dirname(root) orelse return error.InvalidCorpusRoot;
-    const Input = struct { path: []u8, sha256: []u8 };
+    const Input = struct { path: [:0]u8, sha256: []u8 };
     var inputs: std.ArrayList(Input) = .empty;
     defer {
         for (inputs.items) |input| {
@@ -893,7 +895,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer if (requested) |value| allocator.free(value);
     var journal = try corpus_journal.Journal.createForPurpose(allocator, io, requested, root, .suite);
     defer journal.deinit();
-    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0 });
+    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0, .case_source_base = context.case_source_base orelse project });
     try journal.select("@suite");
     const junit = try journal.artifactPath(0, "junit.xml");
     defer allocator.free(junit);
@@ -901,7 +903,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer allocator.free(metadata);
     std.debug.print("[home-bun-suite] results: {s}\n", .{journal.directory});
     var result = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, "home-corpus-suite", args, .{
-        .corpus_project_root = project,
+        .corpus_project_root = context.execution_cwd orelse project,
         .junit_path = junit,
         .case_metadata_path = metadata,
         .record = .{ .journal = &journal, .id = 0, .mode = "test_suite", .source_sha256 = source_hash },
