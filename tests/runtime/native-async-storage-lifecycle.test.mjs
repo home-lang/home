@@ -509,3 +509,50 @@ for (const operation of ['close']) {
   assert.equal(result.status, 0, result.stderr)
 }
 console.log('native Dir close callback throws use uncaught exception delivery passed')
+
+// Bound functions retain call receivers while entering the captured resource.
+{
+const storage = new AsyncLocalStorage()
+const receiver = { receiver: true }
+const fixed = { fixed: true }
+const resource = storage.run('captured', () => new AsyncResource('home-bind-control'))
+function callback(a, b) { return { receiver: this, values: [a,b], store: storage.getStore(), id: executionAsyncId(), resource: executionAsyncResource() } }
+for (const bound of [resource.bind(callback), storage.run('captured', () => AsyncResource.bind(callback)), storage.run('captured', () => AsyncLocalStorage.bind(callback))]) {
+  assert.equal(bound.length, 2)
+  const result = storage.run('caller', () => bound.call(receiver, 1, 2))
+  assert.equal(result.receiver, receiver)
+  assert.deepEqual(result.values, [1,2])
+  assert.equal(result.store, 'captured')
+  assert.equal(storage.getStore(), undefined)
+  assert.equal(bound.call(null).receiver, null)
+  assert.equal(bound().receiver, undefined)
+}
+assert.equal(resource.bind(callback, undefined).call(receiver).receiver, receiver)
+assert.equal(AsyncResource.bind(callback, 'home-bind-undefined', undefined).call(receiver).receiver, receiver)
+for (const thisArg of [fixed, null, false, 0, 'receiver']) {
+  assert.equal(resource.bind(callback, thisArg).call(receiver).receiver, thisArg)
+  assert.equal(AsyncResource.bind(callback, 'home-bind-explicit', thisArg).call(receiver).receiver, thisArg)
+}
+let storageBoundResource
+const initHook = createHook({ init(id, type, trigger, owner) { if (type === 'callback') storageBoundResource = owner } }).enable()
+let storageBound
+try { storageBound = storage.run('captured', () => AsyncLocalStorage.bind(callback)) } finally { initHook.disable() }
+assert(storageBoundResource instanceof AsyncResource)
+assert.equal(storageBound().resource, storageBoundResource)
+assert.equal(storageBound().id, storageBoundResource.asyncId())
+storageBoundResource.emitDestroy()
+const bound = resource.bind(callback)
+assert.equal(bound().id, resource.asyncId())
+assert.equal(bound().resource, resource)
+const events=[]
+const hook=createHook({before(id){if(id===resource.asyncId())events.push('before')},after(id){if(id===resource.asyncId())events.push('after')}}).enable()
+const marker = new Error('ordinary callback failure')
+try {
+  storage.run('caller', () => {
+    assert.throws(() => resource.bind(function(){ assert.equal(this,receiver);assert.equal(storage.getStore(),'captured');throw marker }).call(receiver), error=>error===marker)
+    assert.equal(storage.getStore(),'caller')
+  })
+} finally { hook.disable();resource.emitDestroy();storage.disable() }
+assert.deepEqual(events,['before','after'])
+console.log('native async bind receiver, arity, captured context, resource identity and exception restoration passed')
+}

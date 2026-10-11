@@ -92,7 +92,8 @@ class AsyncLocalStorage {
 
   static bind(fn, ...args: any) {
     validateFunction(fn);
-    return this.snapshot().bind(null, fn, ...args);
+    const bound = AsyncResource.bind(fn);
+    return args.length ? bound.bind(undefined, ...args) : bound;
   }
 
   static snapshot() {
@@ -292,7 +293,13 @@ class AsyncResource {
 
   bind(fn, thisArg) {
     validateFunction(fn, "fn");
-    return this.runInAsyncScope.bind(this, fn, thisArg ?? this);
+    const resource = this;
+    const useCallReceiver = thisArg === undefined;
+    function bound(...args) {
+      return resource.runInAsyncScope(fn, useCallReceiver ? this : thisArg, ...args);
+    }
+    Object.defineProperty(bound, "length", { value: fn.length, configurable: true });
+    return bound;
   }
 
   static bind(fn, type, thisArg) {
@@ -301,7 +308,7 @@ class AsyncResource {
   }
 }
 
-// Promise, timer and native IO lifecycle hooks are not connected yet.
+// General Promise lifecycle hooks and several native IO producers remain incomplete.
 
 function createWarning(message, isCreateHook?: boolean) {
   let warned = false;
