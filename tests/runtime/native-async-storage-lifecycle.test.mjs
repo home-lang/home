@@ -226,3 +226,84 @@ assert.equal(resourceEvents.filter(row => row[0] === 'before' && row[1] === tick
 assert.equal(resourceEvents.filter(row => row[0] === 'after' && row[1] === tickId).length, 1)
 assert.equal(resourceEvents.filter(row => row[0] === 'destroy' && row[1] === tickId).length, 1)
 console.log('native real resource IDs, scopes, hooks and nextTick lifecycle passed')
+
+const timerRows = []
+const timerIds = new Map()
+const timerHook = createHook({
+  init(id, type, trigger, owner) {
+    if (type === 'Timeout' || type === 'Immediate') {
+      timerIds.set(owner, id)
+      timerRows.push(['init', id, type, trigger, owner])
+    }
+  },
+  before(id) { timerRows.push(['before', id]) },
+  after(id) { timerRows.push(['after', id]) },
+  destroy(id) { timerRows.push(['destroy', id]) },
+})
+const timerOrigin = new AsyncResource('home-timer-origin', { requireManualDestroy: true })
+timerHook.enable()
+let timeoutTimer
+let immediateTimer
+let intervalTimer
+let canceledTimer
+let intervalCalls = 0
+let intervalId
+let firstTimeoutId
+let refreshTimeoutId
+let finishTimeout
+let finishImmediate
+let finishInterval
+const timeoutReady = new Promise(resolve => { finishTimeout = resolve })
+const immediateReady = new Promise(resolve => { finishImmediate = resolve })
+const intervalReady = new Promise(resolve => { finishInterval = resolve })
+timerOrigin.runInAsyncScope(() => {
+  timeoutTimer = setTimeout(function (value) {
+    assert.equal(this, timeoutTimer)
+    assert.equal(value, 3)
+    assert.equal(executionAsyncResource(), timeoutTimer)
+    assert.equal(triggerAsyncId(), timerOrigin.asyncId())
+    firstTimeoutId = executionAsyncId()
+    assert.equal(firstTimeoutId, timerIds.get(timeoutTimer))
+    finishTimeout()
+  }, 1, 3)
+  immediateTimer = setImmediate(function () {
+    assert.equal(this, immediateTimer)
+    assert.equal(executionAsyncResource(), immediateTimer)
+    assert.equal(executionAsyncId(), timerIds.get(immediateTimer))
+    assert.equal(triggerAsyncId(), timerOrigin.asyncId())
+    finishImmediate()
+  })
+  intervalTimer = setInterval(function () {
+    assert.equal(executionAsyncResource(), intervalTimer)
+    assert.equal(triggerAsyncId(), timerOrigin.asyncId())
+    intervalId ??= executionAsyncId()
+    assert.equal(executionAsyncId(), intervalId)
+    if (++intervalCalls === 2) { clearInterval(intervalTimer); finishInterval() }
+  }, 1)
+  canceledTimer = setTimeout(() => assert.fail('canceled timer ran'), 60000)
+  clearTimeout(canceledTimer)
+})
+await Promise.all([timeoutReady, immediateReady, intervalReady])
+let finishRefresh
+const refreshReady = new Promise(resolve => { finishRefresh = resolve })
+// Keep the same callback signature while testing native refresh after completion.
+timeoutTimer._onTimeout = function () {
+  refreshTimeoutId = executionAsyncId()
+  assert.equal(executionAsyncResource(), timeoutTimer)
+  assert.equal(refreshTimeoutId, timerIds.get(timeoutTimer))
+  finishRefresh()
+}
+timerOrigin.runInAsyncScope(() => timeoutTimer.refresh())
+await refreshReady
+await new Promise(resolve => setImmediate(resolve))
+timerHook.disable()
+assert.notEqual(refreshTimeoutId, firstTimeoutId)
+assert.equal(timerRows.filter(row => row[0] === 'before' && row[1] === intervalId).length, 2)
+assert.equal(timerRows.filter(row => row[0] === 'after' && row[1] === intervalId).length, 2)
+for (const id of [firstTimeoutId, refreshTimeoutId, intervalId, timerIds.get(immediateTimer), timerIds.get(canceledTimer)]) {
+  assert(Number.isInteger(id) && id > 0)
+  assert.equal(timerRows.filter(row => row[0] === 'destroy' && row[1] === id).length, 1)
+}
+assert.equal(timerRows.filter(row => row[0] === 'before' && row[1] === timerIds.get(canceledTimer)).length, 0)
+timerOrigin.emitDestroy()
+console.log('native timeout, immediate, interval, cancel and refresh hooks passed')

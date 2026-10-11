@@ -71,6 +71,12 @@ fn deref(this: *TimerObjectInternals) void {
     }
 }
 
+extern "c" fn Home__AsyncTimer__lifecycle(globalObject: *jsc.JSGlobalObject, timer: JSValue, operation: u8) void;
+
+fn asyncTimerLifecycle(globalObject: *jsc.JSGlobalObject, timer: JSValue, operation: u8) void {
+    if (globalObject.bunVM().scriptExecutionStatus() == .running) Home__AsyncTimer__lifecycle(globalObject, timer, operation);
+}
+
 extern "c" fn Bun__JSTimeout__call(globalObject: *jsc.JSGlobalObject, timer: JSValue, callback: JSValue, arguments: JSValue) bool;
 
 /// returns true if an exception was thrown
@@ -82,6 +88,7 @@ pub fn runImmediateTask(this: *TimerObjectInternals, vm: *VirtualMachine) bool {
         // loop alive other than setImmediates
         (!this.flags.is_keeping_event_loop_alive and !vm.isEventLoopAliveExcludingImmediates()))
     {
+        if (this.this_value.tryGet()) |timer| asyncTimerLifecycle(vm.global, timer, 2);
         this.setEnableKeepingEventLoopAlive(vm, false);
         this.this_value.downgrade();
         this.deref();
@@ -100,7 +107,7 @@ pub fn runImmediateTask(this: *TimerObjectInternals, vm: *VirtualMachine) bool {
     this.this_value.downgrade();
     this.eventLoopTimer().state = .FIRED;
     this.setEnableKeepingEventLoopAlive(vm, false);
-    timer.ensureStillAlive();
+    defer timer.ensureStillAlive();
 
     vm.eventLoop().enter();
     const callback = ImmediateObject.js.callbackGetCached(timer).?;
@@ -116,6 +123,7 @@ pub fn runImmediateTask(this: *TimerObjectInternals, vm: *VirtualMachine) bool {
         }
         break :brk this.run(globalThis, timer, callback, arguments, this.asyncID(), vm);
     };
+    asyncTimerLifecycle(globalThis, timer, 2);
     // --- after this point, the timer is no longer guaranteed to be alive ---
 
     vm.eventLoop().exitMaybeDrainMicrotasks(!exception_thrown) catch return true;
@@ -160,6 +168,7 @@ pub fn fire(this: *TimerObjectInternals, _: *const timespec, vm: *jsc.VirtualMac
     };
 
     if (has_been_cleared or !callback.toBoolean()) {
+        asyncTimerLifecycle(globalThis, this_object, 2);
         if (vm.isInspectorEnabled()) {
             Debugger.didCancelAsyncCall(globalThis, .DOMTimer, ID.asyncID(async_id));
         }
@@ -261,6 +270,7 @@ pub fn fire(this: *TimerObjectInternals, _: *const timespec, vm: *jsc.VirtualMac
         };
 
         if (is_timer_done) {
+            asyncTimerLifecycle(globalThis, this_object, 2);
             this.setEnableKeepingEventLoopAlive(vm, false);
             // The timer will not be re-entered into the event loop at this point.
             this.deref();
@@ -338,6 +348,7 @@ pub fn init(
     }
 
     this.this_value.setStrong(timer, global);
+    asyncTimerLifecycle(global, timer, if (kind == .setImmediate) 1 else 0);
 }
 
 pub fn doRef(this: *TimerObjectInternals, _: *jsc.JSGlobalObject, this_value: JSValue) JSValue {
@@ -400,6 +411,7 @@ pub fn releaseHeapPin(this: *TimerObjectInternals, vm: *VirtualMachine) void {
 }
 
 pub fn cancel(this: *TimerObjectInternals, vm: *VirtualMachine) void {
+    if (this.this_value.tryGet()) |timer| asyncTimerLifecycle(vm.global, timer, 2);
     this.setEnableKeepingEventLoopAlive(vm, false);
     this.flags.has_cleared_timer = true;
 
@@ -458,6 +470,7 @@ pub fn reschedule(this: *TimerObjectInternals, timer: JSValue, vm: *VirtualMachi
     if (this.flags.has_js_ref) {
         this.setEnableKeepingEventLoopAlive(vm, true);
     }
+    asyncTimerLifecycle(globalThis, timer, 3);
 }
 
 fn setEnableKeepingEventLoopAlive(this: *TimerObjectInternals, vm: *VirtualMachine, enable: bool) void {

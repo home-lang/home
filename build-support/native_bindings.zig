@@ -528,6 +528,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/EventLoopTaskNoContext.cpp",
         "packages/runtime/src/native/H2HeadersMaterializer.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/NodeTimerObject.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeAsyncHooks.h",
         "packages/runtime/upstream/src/jsc/bindings/webcore/WebSocket.cpp",
         "packages/runtime/upstream/src/jsc/bindings/webcore/WebSocket.h",
