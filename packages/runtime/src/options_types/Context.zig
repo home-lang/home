@@ -171,6 +171,7 @@ pub const TestOptions = struct {
         junit: bool = false,
     } = .{},
     reporter_outfile: ?[]const u8 = null,
+    corpus_reportfile: ?[]const u8 = null,
 
     pub inline fn testFilterRegex(self: *const TestOptions) ?*bun.jsc.RegularExpression {
         return @ptrCast(@alignCast(self.test_filter_regex));

@@ -50,7 +50,7 @@ pub fn runAsCoordinator(
         home_rt.handleOom(vm.transpiler.env.map.put("FORCE_COLOR", "1"));
     }
     defer if (worker_tmpdir) |d| home_rt.FD.cwd().deleteTree(d) catch {};
-    if (ctx.test_options.reporters.junit or coverage_opts.enabled) {
+    if (ctx.test_options.reporters.junit or ctx.test_options.corpus_reportfile != null or coverage_opts.enabled) {
         const dir = try std.fmt.allocPrintSentinel(arena.allocator(), "{s}/bun-test-worker-{d}", .{
             home_rt.fs.FileSystem.RealFS.getDefaultTempDir(),
             if (home_rt.Environment.isWindows) std.os.windows.GetCurrentProcessId() else std.c.getpid(),
@@ -145,10 +145,13 @@ pub fn runAsCoordinator(
     vm.eventLoop().ensureWaker();
     vm.runWithAPILock(Coordinator, &coord, Coordinator.drive);
 
+    if (ctx.test_options.corpus_reportfile) |outfile| {
+        aggregate.mergeJUnitFragments(&coord, outfile, reporter.summary());
+        if (case_metadata_path) |path| try aggregate.mergeCaseFragments(&coord, path, reporter.summary());
+    }
     if (ctx.test_options.reporters.junit) {
         if (ctx.test_options.reporter_outfile) |outfile| {
             aggregate.mergeJUnitFragments(&coord, outfile, reporter.summary());
-            if (case_metadata_path) |path| try aggregate.mergeCaseFragments(&coord, path, reporter.summary());
         }
     }
     if (coverage_opts.enabled) {

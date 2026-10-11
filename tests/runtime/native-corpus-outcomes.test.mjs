@@ -78,7 +78,7 @@ try {
   assert.equal((xml.match(/<testcase\s/g) || []).length, 4)
   for (const text of ['passing case', 'failing case', 'skipped case', 'todo case', '<failure', '<skipped', 'TODO']) assert(xml.includes(text), text)
   assert.equal(result.started[0].timeout_ms, 180000)
-  assert(result.started[0].argv.includes('--reporter=junit'))
+  assert(result.started[0].argv.includes('--home-corpus-report'))
   assert.equal(result.started[0].environment.BUN_GARBAGE_COLLECTOR_LEVEL, '1')
   assert.equal(result.started[0].executable_sha256, hash(readFileSync(process.execPath)))
   console.log('mixed outcomes: pass=1 fail=1 skip=1 todo=1 process=1 empty=1')
@@ -173,7 +173,7 @@ try {
   assert.equal(failedResult.summary.failed_files, 1)
   assert.equal(failedResult.summary.passed + failedResult.summary.failed, 0)
   assert.equal(failedResult.completed[0].junit, 'not_requested')
-  assert(!failedResult.started[0].argv.includes('--reporter=junit'))
+  assert(!failedResult.started[0].argv.includes('--home-corpus-report'))
   console.log('script assertion failure retained without invented cases')
 
   const invalidNegative = fixture('js/bun/test/test-fixture-diff-indexed-properties.js', "import { test, expect } from 'bun:test'; test('invalid negative contract', () => expect(1).toBe(2))")

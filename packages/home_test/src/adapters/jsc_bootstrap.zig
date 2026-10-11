@@ -6125,7 +6125,7 @@ fn prepareHomeCapturedInvocation(
     // for. Carry the bare path and pass the flag as its own argument.
     const reporter_arg = if (options.junit_path) |path| try allocator.dupe(u8, path) else null;
     errdefer if (reporter_arg) |arg| allocator.free(arg);
-    const extra: usize = @as(usize, if (timeout_arg != null) 2 else 0) + @as(usize, if (reporter_arg != null) 3 else 0);
+    const extra: usize = @as(usize, if (timeout_arg != null) 2 else 0) + @as(usize, if (reporter_arg != null) 2 else 0);
     const argv = try allocator.alloc([]const u8, args_tail.len + 1 + extra);
     errdefer allocator.free(argv);
     argv[0] = executable;
@@ -6139,10 +6139,9 @@ fn prepareHomeCapturedInvocation(
             index += 2;
         }
         if (reporter_arg) |arg| {
-            argv[index] = "--reporter=junit";
-            argv[index + 1] = "--reporter-outfile";
-            argv[index + 2] = arg;
-            index += 3;
+            argv[index] = "--home-corpus-report";
+            argv[index + 1] = arg;
+            index += 2;
         }
         @memcpy(argv[index..], args_tail[1..]);
     } else @memcpy(argv[1..], args_tail);

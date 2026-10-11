@@ -575,8 +575,6 @@ pub const JunitReporter = struct {
     }
 
     pub fn writeToFile(this: *JunitReporter, path: string) !void {
-        if (this.contents.items.len == 0) return;
-
         if (this.case_metadata_path != null) {
             if (this.terminal_counts) |counts| {
                 var terminal = std.Io.Writer.Allocating.init(bun.default_allocator);
@@ -608,6 +606,8 @@ pub const JunitReporter = struct {
             }
         }
 
+        if (this.contents.items.len == 0) return;
+
         while (this.suite_stack.items.len > 0) {
             try this.endTestSuite();
         }
@@ -632,6 +632,10 @@ pub const JunitReporter = struct {
             bun.handleOom(this.contents.appendSlice(bun.default_allocator, "</testsuites>\n"));
         }
 
+        this.writeSerializedToFile(path);
+    }
+
+    fn writeSerializedToFile(this: *JunitReporter, path: string) void {
         var junit_path_buf: bun.PathBuffer = undefined;
 
         @memcpy(junit_path_buf[0..path.len], path);
@@ -1075,12 +1079,15 @@ pub const CommandLineReporter = struct {
     /// (e.g. bail) so that the report is not lost.
     pub fn writeJUnitReportIfNeeded(this: *CommandLineReporter) void {
         if (this.reporters.junit) |junit| {
-            if (this.jest.test_options.reporter_outfile) |outfile| {
-                if (junit.current_file.len > 0) {
-                    junit.endTestSuite() catch {};
+            const report_options = this.jest.test_options;
+            const primary = report_options.corpus_reportfile orelse report_options.reporter_outfile orelse return;
+            if (junit.current_file.len > 0) junit.endTestSuite() catch {};
+            junit.terminal_counts = this.jest.summary;
+            junit.writeToFile(primary) catch {};
+            if (report_options.corpus_reportfile != null and report_options.reporters.junit) {
+                if (report_options.reporter_outfile) |public_path| {
+                    if (!strings.eql(public_path, primary)) junit.writeSerializedToFile(public_path);
                 }
-                junit.terminal_counts = this.jest.summary;
-                junit.writeToFile(outfile) catch {};
             }
         }
     }
@@ -1549,9 +1556,9 @@ pub const TestCommand = struct {
         jest.Jest.runner = &reporter.jest;
         reporter.jest.test_options = &ctx.test_options;
 
-        if (ctx.test_options.reporters.junit) {
+        if (ctx.test_options.reporters.junit or ctx.test_options.corpus_reportfile != null) {
             reporter.reporters.junit = JunitReporter.init();
-            reporter.reporters.junit.?.enableCaseMetadata(ctx.test_options.reporter_outfile);
+            reporter.reporters.junit.?.enableCaseMetadata(ctx.test_options.corpus_reportfile);
         }
         if (ctx.test_options.reporters.dots) {
             reporter.reporters.dots = true;

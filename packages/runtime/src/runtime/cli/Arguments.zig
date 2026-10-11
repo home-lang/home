@@ -246,6 +246,7 @@ pub const test_only_params = [_]ParamType{
     clap.parseParam("--coverage-dir <STR>             Directory for coverage files. Defaults to 'coverage'.") catch unreachable,
     clap.parseParam("--bail <NUMBER>?                 Exit the test suite after <NUMBER> failures. If you do not specify a number, it defaults to 1.") catch unreachable,
     clap.parseParam("-t, --test-name-pattern/--grep <STR>    Run only tests with a name that matches the given regex.") catch unreachable,
+    clap.parseParam("--home-corpus-report <STR>        (internal) Capture native corpus case evidence") catch unreachable,
     clap.parseParam("--reporter <STR>                 Test output reporter format. Available: 'junit' (requires --reporter-outfile), 'dots'. Default: console output.") catch unreachable,
     clap.parseParam("--reporter-outfile <STR>         Output file path for the reporter format (required with --reporter).") catch unreachable,
     clap.parseParam("--dots                           Enable dots reporter. Shorthand for --reporter=dots.") catch unreachable,
@@ -537,6 +538,8 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
                 }
             }
         }
+
+        if (args.option("--home-corpus-report")) |path| ctx.test_options.corpus_reportfile = path;
 
         if (args.option("--reporter-outfile")) |reporter_outfile| {
             ctx.test_options.reporter_outfile = reporter_outfile;

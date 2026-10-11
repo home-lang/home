@@ -122,7 +122,52 @@ try {
   const order = text => [...text.matchAll(/ORDER:(\d)/g)].map(match => match[1])
   assert.deepEqual(order(seeded.stdout), order(direct.stdout))
   journal(seeded)
-  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, seeded order and single-invocation evidence passed')
+  const publicReport = join(temp, 'public-report.xml')
+  const publicJUnit = invoke('public-junit', [...files, '--reporter=junit', '--reporter-outfile', publicReport])
+  assert.equal(publicJUnit.status, 0, publicJUnit.stderr)
+  assert.equal((readFileSync(publicReport, 'utf8').match(/<testcase\s/g) || []).length, 3)
+  journal(publicJUnit)
+  const dots = invoke('public-dots', [...files, '--reporter=dots'])
+  assert.equal(dots.status, 0, dots.stderr)
+  journal(dots)
+  const parallelPublicReport = join(temp, 'parallel-public.xml')
+  const parallelPublic = invoke('parallel-public-junit', [...files, '--parallel=2', '--reporter=junit', '--reporter-outfile', parallelPublicReport])
+  assert.equal(parallelPublic.status, 0, parallelPublic.stderr)
+  assert.equal((readFileSync(parallelPublicReport, 'utf8').match(/<testcase\s/g) || []).length, 3)
+  journal(parallelPublic)
+
+  function git(args) {
+    const result = spawnSync('/usr/bin/git', args, { cwd: temp, encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  git(['init', '-q'])
+  git(['config', 'user.name', 'Home Suite Fixture'])
+  git(['config', 'user.email', 'fixture@home.invalid'])
+  for (const [index, file] of files.entries()) {
+    const dependency = join(folder, `dependency${index}.js`)
+    writeFileSync(dependency, `export const value=${index};`)
+    writeFileSync(file, `import {test,expect} from 'bun:test';import {value} from './dependency${index}.js';test('changed ${index}',()=>{console.log('CHANGED:${index}');expect(value).toBeGreaterThanOrEqual(0);});`)
+  }
+  git(['add', 'packages'])
+  git(['commit', '-qm', 'fixture: record dependency graph'])
+  writeFileSync(join(folder, 'dependency1.js'), 'export const value=11;')
+  const changedArgs = [...files, '--changed=HEAD']
+  const changedDirect = invoke('direct-changed', changedArgs, true)
+  const changed = invoke('changed', changedArgs)
+  assert.equal(changed.status, changedDirect.status, changed.stderr)
+  const changedBodies = text => [...text.matchAll(/CHANGED:(\d)/g)].map(match => match[1])
+  assert.deepEqual(changedBodies(changed.stdout), ['1'])
+  assert.deepEqual(changedBodies(changed.stdout), changedBodies(changedDirect.stdout))
+  assert.equal(journal(changed).find(row => row.event === 'completed').counts.passed, 1)
+  git(['add', 'packages'])
+  git(['commit', '-qm', 'fixture: update dependency'])
+  const clean = invoke('changed-clean', [...files, '--changed=HEAD'])
+  assert.equal(clean.status, 0, clean.stderr)
+  assert.doesNotMatch(clean.stdout, /CHANGED:/)
+  assert.equal(journal(clean).find(row => row.event === 'completed').counts.passed, 0)
+
+  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, seeded order and single-invocation evidence passed')
 } finally {
   if (process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR) {
     mkdirSync(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR)

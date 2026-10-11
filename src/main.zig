@@ -4551,7 +4551,7 @@ fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
     var corpus_target = false;
     while (try parser.next()) |arg| {
         if (arg.param.names.long) |name| {
-            for ([_][]const u8{ "shard", "bail", "concurrent", "max-concurrency", "randomize", "seed", "coverage", "coverage-reporter", "coverage-dir", "path-ignore-patterns", "isolate", "parallel", "parallel-delay" }) |flag| {
+            for ([_][]const u8{ "shard", "bail", "concurrent", "max-concurrency", "randomize", "seed", "coverage", "coverage-reporter", "coverage-dir", "path-ignore-patterns", "isolate", "parallel", "parallel-delay", "changed", "reporter", "reporter-outfile", "dots", "only-failures", "only", "todo", "pass-with-no-tests" }) |flag| {
                 if (std.mem.eql(u8, name, flag)) suite = true;
             }
         } else if (arg.param.names.short == null) {
