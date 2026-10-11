@@ -45,6 +45,17 @@ included byte-for-byte. The publisher normalizes only repository-local paths
 in harness metadata to `$REPO`, includes SHA-256 checksums, and refuses a run
 whose round set or before/after executable provenance is incomplete or changed.
 
+Interrupted matrices remain unranked. `resume.py` can continue only unrecorded
+slots after the original checkpoint, admission, provenance and host pass
+validation. Use the unchanged machine guard for each workload; an attempted
+phase cannot be repeated. Finalization and reporting require both full protocol
+coverage and immutable no-repeat lineage. Resumed evidence archives retain
+originals, supplements, warmups and phase records byte-for-byte, including local
+metadata paths covered by lineage hashes. Reports disclose the pause and split
+round rather than presenting an uninterrupted measurement. See the
+[checkpoint report](../../docs/docs/TS_PERFORMANCE.md#interrupted-landed-source-matrix)
+for the incomplete landed-source result and all retained raw evidence.
+
 Run harness regression tests with
 `python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'`.
 

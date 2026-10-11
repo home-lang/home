@@ -186,7 +186,8 @@ and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-reject
 Declaration/context identity recovery under [#879](https://github.com/home-lang/home/issues/879)
 landed in `4b4060e05` after complete source gates, strict real-CLI admission and
 the frozen exact-parent regression-risk protocol. The prior competitor ranking
-above is not a measurement of this new source; its fresh five-pin matrix remains next.
+above is not a measurement of this new source. Its fresh five-pin matrix stopped
+at the disk guard and remains unranked; continuation must preserve recorded samples.
 
 | Landed owned alias qualification | Result |
 |---|---|
@@ -194,6 +195,7 @@ above is not a measurement of this new source; its fresh five-pin matrix remains
 | Extended / six-image protocol-5 admission | 294/294 and 180/180 pass; unchanged inputs/provenance |
 | Exact-parent risk qualification | 590 pairs retained; no wholly negative independent interval; inconclusive is not equivalence |
 | Full unchanged Zod | 233 TS + two HM9002; unadmitted and untimed |
+| New-source five-pin matrix | Interrupted: 621/3,000 samples retained; no complete ranking ([checkpoint report](docs/docs/TS_PERFORMANCE.md#interrupted-landed-source-matrix)) |
 
 See the [complete qualification and timing report](docs/docs/TS_PERFORMANCE.md#declaration-identity-recovery-landed)
 and [complete raw evidence](bench/vs_tsgo/evidence/20261011-owned-alias-qualified-landed-879.tar.gz).

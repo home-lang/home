@@ -614,6 +614,58 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Interrupted landed source matrix
+
+The fresh five-pin matrix for landed declaration-identity source `4b4060e05`
+is **incomplete and unranked**. The unchanged disk guard terminated measurement
+at 510 MB available, below its 512 MB critical floor. All original evidence
+remains; the earlier complete matrix cannot be relabeled as this newer source.
+Recovery is tracked in [#880](https://github.com/home-lang/home/issues/880),
+under [#416](https://github.com/home-lang/home/issues/416).
+
+| Original checkpoint coverage | Retained result |
+|---|---|
+| Full five-pin protocol 5 preflight | 150/150 admissions before timing |
+| Complete original rounds | 124, each with five successful fresh-process samples |
+| Partial original round | Reexports round 004, successful Bun sample only |
+| Total successful recorded samples | 621/3,000; 2,379 slots remain unrecorded |
+| Ranking | None; selective rows or compiler subsets are not a complete matrix |
+
+Checkpoint `20261011T224925Z` includes all 125 raw round files, original
+metadata and admission. Its metadata still says `measuring` because the guard
+terminated the process; the retained external terminal record is authoritative.
+A later initialization attempt was refused before starting at 446 MB available,
+below the unchanged 1,024 MB admission floor. That refusal measured nothing.
+
+The continuation implementation preserves the original checkpoint verbatim,
+rejects changed compiler, tool, harness, corpus or host provenance, and executes
+only unrecorded slots in the original rotating order. Recorded samples are
+never repeated. An attempted failed or incomplete phase cannot be retried as
+a fresh success. Untouched workloads retain the original three-warmup policy;
+the already sampled reexports workload does not repeat its warmups. Each
+remaining workload uses the same 600-second, 3,840-MB guard and machine lock;
+disk floors are unchanged. Source, raw evidence, retained compiler binaries,
+shared caches and unrelated jobs are preserved during task-cache cleanup.
+
+Finalization requires all 600 rounds and 3,000 successful samples, original
+admission and unchanged provenance, plus a disjoint checksum-verified mapping
+from every assembled sample to its immutable original or supplemental raw
+record. Ordinary reports also verify that mapping. Resumed archives include
+originals, raw supplements, phase records and warmups byte-for-byte, retaining
+local paths where normalization would break lineage hashes. Reports disclose
+the pause and split round; even a complete continuation would not become an
+uninterrupted, causal or cross-host performance claim.
+
+The implementation in
+[`88b3fefaa`](https://github.com/home-lang/home/commit/88b3fefaa595a1411d6d14e1c250ee07a17e023d)
+passes **191/191 harness tests**, including corrupted lineage, duplicate samples,
+changed provenance, exact archive bytes/checksums and pause disclosure.
+The [complete interrupted checkpoint evidence](../../bench/vs_tsgo/evidence/20261011-interrupted-checkpoint-880.tar.gz)
+contains 135 checksummed payloads: every original file, both guard terminals,
+the implementation snapshot and the controller. Archive SHA-256:
+`4dfadb5918eb6ad855d30918f8f59ff932e9bb3e46cf953fb134515924c067ca`.
+No new-source speed comparison is inferred from this interrupted run.
+
 ## Declaration identity recovery landed
 
 The [#879](https://github.com/home-lang/home/issues/879) correctness feature landed
