@@ -87198,6 +87198,51 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Collect canonical property names from a finite string/number literal
+    /// domain. Program-owned `Record<K, V>` uses the mapped representation
+    /// while `K` is generic, so specialization must retain both literal kinds.
+    fn collectPropertyLiteralKeys(
+        self: *Checker,
+        t: TypeId,
+        out: *std.ArrayListUnmanaged(hir_mod.StringId),
+    ) CheckError!bool {
+        if (t == types.Primitive.never) return true;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            const count = self.interner.unionMembers(t).len;
+            for (0..count) |index| {
+                if (!try self.collectPropertyLiteralKeys(self.interner.unionMembers(t)[index], out)) return false;
+            }
+            return true;
+        }
+        if (flags.is_intersection) {
+            const count = self.interner.intersectionMembers(t).len;
+            if (count == 0) return false;
+            var common: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer common.deinit(self.gpa);
+            if (!try self.collectPropertyLiteralKeys(self.interner.intersectionMembers(t)[0], &common)) return false;
+            for (1..count) |index| {
+                var next: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                defer next.deinit(self.gpa);
+                if (!try self.collectPropertyLiteralKeys(self.interner.intersectionMembers(t)[index], &next)) return false;
+                var write_index: usize = 0;
+                for (common.items) |candidate| {
+                    if (!std.mem.containsAtLeast(hir_mod.StringId, next.items, 1, &.{candidate})) continue;
+                    common.items[write_index] = candidate;
+                    write_index += 1;
+                }
+                common.shrinkRetainingCapacity(write_index);
+            }
+            for (common.items) |name| try self.appendUniqueKeyofName(out, name);
+            return true;
+        }
+        if (!flags.is_literal or (!flags.is_string and !flags.is_number)) return false;
+        const name = (try self.propertyNameFromLiteralType(t)) orelse return false;
+        try self.appendUniqueKeyofName(out, name);
+        return true;
+    }
+
     /// True iff `target` is shaped like a lowered tuple type ÃÂ¢ÃÂÃÂ an
     /// object with at least a `length` member plus a numeric "0"
     /// positional member (variadic tuples have only a leading "0"
@@ -111139,9 +111184,9 @@ pub const Checker = struct {
                 break :blk try self.interner.internObjectType(values);
             },
             .record => |record| blk: {
-                const key_t = try self.resolveGenericType(try self.programDeferredLowerExpression(record.key, context, active, depth + 1));
+                const key_t = try self.programDeferredLowerExpression(record.key, context, active, depth + 1);
                 const value_t = try self.programDeferredLowerExpression(record.value, context, active, depth + 1);
-                break :blk try self.lowerProgramRecord(key_t, value_t, record.readonly);
+                break :blk try self.lowerProgramRecordExpression(key_t, value_t, record.readonly);
             },
             .reference => |reference| blk: {
                 if (active.contains(reference.declaration)) return error.UnsupportedProgramType;
@@ -112731,6 +112776,18 @@ pub const Checker = struct {
         return result;
     }
 
+    fn lowerProgramRecordExpression(self: *Checker, raw_key_t: TypeId, value_t: TypeId, readonly: bool) ProgramTypeError!TypeId {
+        if (self.containsFreeTypeParameter(raw_key_t)) {
+            return self.interner.internMapped(
+                raw_key_t,
+                value_t,
+                if (readonly) .add else .none,
+                .none,
+            ) catch return error.OutOfMemory;
+        }
+        return self.lowerProgramRecord(try self.resolveGenericType(raw_key_t), value_t, readonly);
+    }
+
     fn lowerProgramRecord(self: *Checker, key_t: TypeId, value_t: TypeId, readonly: bool) ProgramTypeError!TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
@@ -112830,9 +112887,9 @@ pub const Checker = struct {
             },
             .record => |record| {
                 if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
-                const key_t = try self.resolveGenericType(try self.lowerProgramExpression(record.key, declaration, args));
+                const key_t = try self.lowerProgramExpression(record.key, declaration, args);
                 const value_t = try self.lowerProgramExpression(record.value, declaration, args);
-                return self.lowerProgramRecord(key_t, value_t, record.readonly);
+                return self.lowerProgramRecordExpression(key_t, value_t, record.readonly);
             },
             .utility => |utility| switch (utility.kind) {
                 .extract => {
@@ -166568,7 +166625,7 @@ pub const Checker = struct {
         else
             template_source_obj;
         const source_is_array_like = self.isActualTupleType(source_obj) or self.objectTypeIsArrayLikeContainer(source_obj);
-        var can_materialize = self.collectStringLiteralKeys(constraint, &keys);
+        var can_materialize = try self.collectPropertyLiteralKeys(constraint, &keys);
         if (source_obj != types.Primitive.none) {
             can_materialize = try self.collectKeyofObjectKeys(source_obj, &keys) or can_materialize;
         }
@@ -198854,6 +198911,11 @@ pub const Checker = struct {
         if (constraint == types.Primitive.number_t) return self.isNumericPropertyName(key_name);
         if (constraint == types.Primitive.symbol_t) return self.isSymbolNamedMember(key_name);
         if (self.isSymbolNamedMember(key_name)) return try self.checkerAssignableTo(types.Primitive.symbol_t, constraint);
+        if (self.isNumericPropertyName(key_name)) {
+            const value = std.fmt.parseFloat(f64, self.string_interner.get(key_name)) catch return false;
+            const numeric_key = self.interner.internNumberLiteral(value) catch return error.OutOfMemory;
+            if (try self.checkerAssignableTo(numeric_key, constraint)) return true;
+        }
         const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
         if (try self.templateLiteralSourceAssignableToTarget(key_lit, constraint)) return true;
         return try self.checkerAssignableTo(key_lit, constraint);
@@ -208557,6 +208619,48 @@ test "checker: Record key admission follows shared closed aliases and rejects cy
     alias.body = &literal;
     alias.contextual_only = true;
     try T.expect(!try ProgramClassSchema.Schema.recordIndexKeySupported(&reference, T.allocator));
+}
+
+test "checker: source-owned generic Record aliases specialize constrained finite keys" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string_t: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    const number_t: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    const boolean_t: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.boolean_t };
+    const symbol_t: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.symbol_t };
+    const property_key: ProgramClassSchema.Expression = .{ .union_type = &.{ &string_t, &number_t, &symbol_t } };
+    var parameters = [_]ProgramClassSchema.Parameter{.{ .name = "K", .constraint = &property_key }};
+    const key: ProgramClassSchema.Expression = .{ .parameter = &parameters[0] };
+    const record: ProgramClassSchema.Expression = .{ .record = .{ .key = &key, .value = &number_t, .readonly = true } };
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/owner.ts",
+        .position = 0,
+        .name = "ReadonlyMap",
+        .parameters = &parameters,
+        .body = &record,
+    };
+    try T.expect(try ProgramClassSchema.Schema.declarationSupported(&declaration, T.allocator));
+
+    const alpha = try s.ti.internStringLiteral(try s.sint.intern("alpha"));
+    const beta = try s.ti.internStringLiteral(try s.sint.intern("beta"));
+    const keys = try s.ti.internUnion(&.{ alpha, beta });
+    const result = try s.checker.instantiateProgramDeclaration(&declaration, &.{keys}, &.{});
+    for ([_][]const u8{ "alpha", "beta" }) |name| {
+        const member = s.ti.objectMemberInfo(result, try s.sint.intern(name)).?;
+        try T.expectEqual(types.Primitive.number_t, member.type);
+        try T.expect(member.is_readonly);
+        try T.expect(!member.is_optional);
+    }
+    try T.expect(s.ti.objectMemberInfo(result, try s.sint.intern("other")) == null);
+
+    var cycle_parameters = [_]ProgramClassSchema.Parameter{.{ .name = "K" }};
+    const cycle_key: ProgramClassSchema.Expression = .{ .parameter = &cycle_parameters[0] };
+    cycle_parameters[0].constraint = &cycle_key;
+    try T.expect(!try ProgramClassSchema.Schema.recordIndexKeySupported(&cycle_key, T.allocator));
+
+    var invalid_parameters = [_]ProgramClassSchema.Parameter{.{ .name = "K", .constraint = &boolean_t }};
+    const invalid_key: ProgramClassSchema.Expression = .{ .parameter = &invalid_parameters[0] };
+    try T.expect(!try ProgramClassSchema.Schema.recordIndexKeySupported(&invalid_key, T.allocator));
 }
 
 test "checker: source-owned rest tuple signatures retain their call boundary" {

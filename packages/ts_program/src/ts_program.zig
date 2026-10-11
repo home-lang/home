@@ -14246,6 +14246,64 @@ test "Program: imported finite Record keys retain missing keys value types and r
     try T.expectEqualSlices(usize, &.{ 2, 1, 1 }, &counts);
 }
 
+test "Program: imported generic Record aliases specialize finite keys and readonly members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var source_exports = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer source_exports.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner =
+        \\export type GenericMap<K extends PropertyKey, V> = Record<K, V>;
+        \\export type FrozenMap<K extends PropertyKey, V> = Readonly<Record<K, V>>;
+    ;
+    const barrel = "export * from \"./owner.js\";";
+    const consumer =
+        \\import type { FrozenMap, GenericMap } from "./barrel.js";
+        \\import type * as api from "./barrel.js";
+        \\declare const named: GenericMap<"alpha" | "beta", number>;
+        \\declare const qualified: api.GenericMap<1 | 2, boolean>;
+        \\declare const frozen: FrozenMap<"left" | "right", string>;
+        \\const alpha: number = named.alpha;
+        \\const one: boolean = qualified[1];
+        \\const left: string = frozen.left;
+        \\void alpha; void one; void left;
+    ;
+    const invalid = consumer ++
+        \\const badNamed: string = named.beta;
+        \\const badQualified: string = qualified[2];
+        \\named.missing;
+        \\qualified[3];
+        \\frozen.right = "changed";
+        \\void badNamed; void badQualified;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    _ = try p.add("/proj/barrel.ts", barrel);
+    const positive_id = try p.add("/proj/consumer.ts", consumer);
+    const negative_id = try p.add("/proj/invalid.ts", invalid);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(positive_id).compilation.?.diagnostics.items.len);
+    var counts = [_]usize{ 0, 0, 0, 0 };
+    for (p.fileById(negative_id).compilation.?.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+        2322 => counts[0] += 1,
+        2339 => counts[1] += 1,
+        7053 => counts[2] += 1,
+        2540 => counts[3] += 1,
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqualSlices(usize, &.{ 2, 1, 1, 1 }, &counts);
+}
+
 test "Program: imported indexed interface retains literal context and return identity" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

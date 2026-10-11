@@ -217,10 +217,17 @@ pub const Schema = struct {
     pub fn recordIndexKeySupported(key: *const Expression, gpa: std.mem.Allocator) !bool {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
-        return recordKeySupported(key, gpa, &visited);
+        var active_parameters: std.AutoHashMapUnmanaged(*const Parameter, void) = .empty;
+        defer active_parameters.deinit(gpa);
+        return recordKeySupported(key, gpa, &visited, &active_parameters);
     }
 
-    fn recordKeySupported(key: *const Expression, gpa: std.mem.Allocator, visited: *std.AutoHashMapUnmanaged(*const Expression, void)) !bool {
+    fn recordKeySupported(
+        key: *const Expression,
+        gpa: std.mem.Allocator,
+        visited: *std.AutoHashMapUnmanaged(*const Expression, void),
+        active_parameters: *std.AutoHashMapUnmanaged(*const Parameter, void),
+    ) !bool {
         const entry = try visited.getOrPut(gpa, key);
         if (entry.found_existing) return false;
         defer _ = visited.remove(key);
@@ -232,18 +239,26 @@ pub const Schema = struct {
                 primitive == types.Primitive.never,
             .string, .number => true,
             .union_type => |members| blk: {
-                for (members) |member| if (!try recordKeySupported(member, gpa, visited)) break :blk false;
+                for (members) |member| if (!try recordKeySupported(member, gpa, visited, active_parameters)) break :blk false;
                 break :blk true;
+            },
+            .parameter => |parameter| blk: {
+                const constraint = parameter.constraint orelse break :blk false;
+                const parameter_entry = try active_parameters.getOrPut(gpa, parameter);
+                if (parameter_entry.found_existing) break :blk false;
+                defer _ = active_parameters.remove(parameter);
+                break :blk try recordKeySupported(constraint, gpa, visited, active_parameters);
             },
             .reference => |reference| blk: {
                 if (reference.projection_only or reference.contextual_projection or
                     reference.declaration.contextual_only or reference.declaration.is_class or reference.declaration.is_function)
                     break :blk false;
                 // A closed alias has no substitution-dependent key domain.
-                // Generic key parameters require exact mapped admission.
+                // Parameterized aliases are admitted through their constrained
+                // key parameter and preserved as mapped types by the checker.
                 if (reference.declaration.parameters.len != 0 or reference.arguments.len != 0) break :blk false;
                 const body = reference.declaration.body orelse break :blk false;
-                break :blk try recordKeySupported(body, gpa, visited);
+                break :blk try recordKeySupported(body, gpa, visited, active_parameters);
             },
             else => false,
         };
