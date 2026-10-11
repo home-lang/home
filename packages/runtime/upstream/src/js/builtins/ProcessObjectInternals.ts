@@ -300,7 +300,7 @@ export function initializeNextTickQueue(
   reportUncaughtExceptionFn,
 ) {
   var queue;
-  var tickInitHooks;
+  var asyncHooksTick;
   var process;
   var nextTickQueue = nextTickQueue;
   var drainMicrotasks = drainMicrotasksFn;
@@ -312,7 +312,7 @@ export function initializeNextTickQueue(
   setup = () => {
     const { FixedQueue } = require("internal/fixed_queue");
     queue = new FixedQueue();
-    tickInitHooks = require("internal/async_hooks_tick").tickInitHooks;
+    asyncHooksTick = require("internal/async_hooks_tick");
 
     function processTicksAndRejections() {
       var tock;
@@ -323,7 +323,9 @@ export function initializeNextTickQueue(
           var frame = tock.frame;
           var restore = $getInternalField($asyncContext, 0);
           $putInternalField($asyncContext, 0, frame);
+          const previousExecution = asyncHooksTick.enterAsyncScope(tock.asyncId, tock.triggerAsyncId, tock);
           try {
+            asyncHooksTick.emitBefore(tock.asyncId);
             if (args === undefined) {
               callback();
             } else {
@@ -348,7 +350,10 @@ export function initializeNextTickQueue(
           } catch (e) {
             reportUncaughtException(e);
           } finally {
+            asyncHooksTick.emitAfter(tock.asyncId);
+            asyncHooksTick.leaveAsyncScope(previousExecution);
             $putInternalField($asyncContext, 0, restore);
+            asyncHooksTick.emitDestroy(tock.asyncId);
           }
         }
 
@@ -376,29 +381,11 @@ export function initializeNextTickQueue(
       // a waste of memory and Array.prototype.slice shows up in profiling.
       args: $argumentCount() > 1 ? args : undefined,
       frame: $getInternalField($asyncContext, 0),
+      asyncId: asyncHooksTick.newAsyncId(),
+      triggerAsyncId: asyncHooksTick.executionAsyncId(),
     };
-    if (tickInitHooks.length !== 0) {
-      // node fires one TickObject init per process.nextTick() call, at
-      // construction time (before the callback runs).
-      const asyncHooksTick = require("internal/async_hooks_tick");
-      const asyncId = asyncHooksTick.newAsyncId();
-      // Snapshot: enable()/disable() from inside a hook must not affect the
-      // in-flight dispatch (node stages such mutations in tmp_array until
-      // the emit completes).
-      const hooks = tickInitHooks.slice();
-      for (let i = 0; i < hooks.length; i++) {
-        try {
-          hooks[i](asyncId, "TickObject", 0, tock);
-        } catch (err) {
-          // node: a throwing init hook is fatal (fatalError: print + exit 1),
-          // never surfaced to the process.nextTick() caller. console is a
-          // user-mutable global, so shield the print; exit regardless.
-          try {
-            console.error(typeof err?.stack === "string" ? err.stack : err);
-          } catch {}
-          process.exit(1);
-        }
-      }
+    if (asyncHooksTick.tickInitHooks.length !== 0) {
+      asyncHooksTick.emitInit(tock.asyncId, "TickObject", tock.triggerAsyncId, tock);
     }
     queue.push(tock);
     $putInternalField(nextTickQueue, 0, 1);
@@ -421,7 +408,7 @@ export function windowsEnv(
   // it throws "Cannot convert a Symbol value to a string"
 
   (internalEnv as any)[Bun.inspect.custom] = () => {
-    let o = {};
+    const o = {};
     for (let k of envMapList) {
       o[k] = internalEnv[k.toUpperCase()];
     }

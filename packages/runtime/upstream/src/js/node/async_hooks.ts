@@ -220,29 +220,39 @@ if (IS_BUN_DEVELOPMENT) {
   };
 }
 
+let resourceDestroyRegistry;
 class AsyncResource {
   type;
   #snapshot;
+  #asyncId;
+  #triggerAsyncId;
+  #destroyState;
 
   constructor(type, opts?) {
     validateString(type, "type");
 
-    let triggerAsyncId = opts;
-    if (opts != null) {
-      if (typeof opts !== "number") {
-        triggerAsyncId = opts.triggerAsyncId === undefined ? 1 : opts.triggerAsyncId;
-      }
-      if (!Number.isSafeInteger(triggerAsyncId) || triggerAsyncId < -1) {
-        throw $ERR_INVALID_ASYNC_ID("triggerAsyncId", triggerAsyncId);
-      }
-    }
-    if (hasEnabledCreateHook && type.length === 0) {
-      throw $ERR_ASYNC_TYPE(type);
-    }
+    const bridge = require("internal/async_hooks_tick");
+    const requestedTrigger = typeof opts === "number" ? opts : opts?.triggerAsyncId;
+    const trigger = requestedTrigger === undefined ? bridge.executionAsyncId() : requestedTrigger;
+    if (!Number.isSafeInteger(trigger) || trigger < -1) throw $ERR_INVALID_ASYNC_ID("triggerAsyncId", trigger);
+    if (require("internal/async_hooks").enabledHooksExist() && type.length === 0) throw $ERR_ASYNC_TYPE(type);
 
     setAsyncHooksEnabled(true);
     this.type = type;
     this.#snapshot = get();
+    this.#asyncId = bridge.newAsyncId();
+    this.#triggerAsyncId = trigger;
+    this.#destroyState = { id: this.#asyncId, destroyed: false };
+    if (!opts?.requireManualDestroy) {
+      resourceDestroyRegistry ??= new FinalizationRegistry(state => {
+        if (!state.destroyed) {
+          state.destroyed = true;
+          require("internal/async_hooks_tick").emitDestroy(state.id);
+        }
+      });
+      resourceDestroyRegistry.register(this, this.#destroyState, this);
+    }
+    bridge.emitInit(this.#asyncId, type, trigger, this);
   }
 
   emitBefore() {
@@ -253,25 +263,30 @@ class AsyncResource {
     return true;
   }
 
-  asyncId() {
-    return 0;
-  }
-
-  triggerAsyncId() {
-    return 0;
-  }
-
+  asyncId() { return this.#asyncId; }
+  triggerAsyncId() { return this.#triggerAsyncId; }
   emitDestroy() {
-    //
+    if (!this.#destroyState.destroyed) {
+      this.#destroyState.destroyed = true;
+      resourceDestroyRegistry?.unregister(this);
+    }
+    require("internal/async_hooks_tick").emitDestroy(this.#asyncId);
+    return this;
   }
 
   runInAsyncScope(fn, thisArg, ...args) {
+    validateFunction(fn, "fn");
+    const bridge = require("internal/async_hooks_tick");
+    const previousExecution = bridge.enterAsyncScope(this.#asyncId, this.#triggerAsyncId, this);
     var prev = get();
     set(this.#snapshot);
     try {
+      bridge.emitBefore(this.#asyncId);
       return fn.$apply(thisArg, args);
     } finally {
+      bridge.emitAfter(this.#asyncId);
       set(prev);
+      bridge.leaveAsyncScope(previousExecution);
     }
   }
 
@@ -286,11 +301,11 @@ class AsyncResource {
   }
 }
 
-// The rest of async_hooks is not implemented and is stubbed with no-ops and warnings.
+// Promise, timer and native IO lifecycle hooks are not connected yet.
 
 function createWarning(message, isCreateHook?: boolean) {
   let warned = false;
-  var wrapped = function (arg1?) {
+  const wrapped = function (arg1?) {
     if (warned || (!Bun.env.BUN_FEATURE_FLAG_VERBOSE_WARNINGS && (warned = true))) return;
 
     const known_supported_modules = [
@@ -327,11 +342,10 @@ function isEmptyFunction(f: Function) {
 }
 
 const createHookNotImpl = createWarning(
-  "async_hooks.createHook is not implemented in Bun. Hooks can still be created but will never be called.",
+  "async_hooks promiseResolve and non-resource/non-TickObject lifecycle delivery remain incomplete.",
   true,
 );
 
-let hasEnabledCreateHook = false;
 const kHookEnabled = Symbol("kHookEnabled");
 function createHook(hook) {
   validateObject(hook, "hook");
@@ -343,38 +357,28 @@ function createHook(hook) {
   if (promiseResolve !== undefined && typeof promiseResolve !== "function")
     throw $ERR_ASYNC_CALLBACK("hook.promiseResolve");
 
-  let enabledInit;
+  const bridge = require("internal/async_hooks_tick");
+  const registrations = [
+    [bridge.tickInitHooks, init], [bridge.beforeHooks, before],
+    [bridge.afterHooks, after], [bridge.destroyHooks, destroy],
+  ].filter(([, callback]) => callback !== undefined).map(([hooks, callback]) => [hooks, (...args) => callback(...args)]);
   return {
     enable() {
-      if (init !== undefined && enabledInit === undefined) {
-        // init is delivered for TickObject resources (process.nextTick);
-        // other resource types are still unimplemented.
-        // Per-instance wrapper: two hooks registered with the same init
-        // function must stay independently removable (removal is by
-        // identity, and removing the other instance's entry would reorder
-        // its callback relative to unrelated hooks).
-        enabledInit = (asyncId, type, triggerAsyncId, resource) => init(asyncId, type, triggerAsyncId, resource);
-        require("internal/async_hooks_tick").tickInitHooks.push(enabledInit);
-      }
-      if (before !== undefined || after !== undefined || destroy !== undefined || promiseResolve !== undefined) {
-        createHookNotImpl(hook);
-      }
-      hasEnabledCreateHook = true;
       if (!this[kHookEnabled]) {
         this[kHookEnabled] = true;
+        for (const [hooks, callback] of registrations) hooks.push(callback);
         require("internal/async_hooks").markHookEnabled();
+        if (promiseResolve !== undefined) createHookNotImpl(hook);
       }
       return this;
     },
     disable() {
-      if (enabledInit !== undefined) {
-        const hooks = require("internal/async_hooks_tick").tickInitHooks;
-        const idx = hooks.indexOf(enabledInit);
-        if (idx !== -1) hooks.splice(idx, 1);
-        enabledInit = undefined;
-      }
       if (this[kHookEnabled]) {
         this[kHookEnabled] = false;
+        for (const [hooks, callback] of registrations) {
+          const index = hooks.indexOf(callback);
+          if (index !== -1) hooks.splice(index, 1);
+        }
         require("internal/async_hooks").markHookDisabled();
       }
       return this;
@@ -382,25 +386,9 @@ function createHook(hook) {
   };
 }
 
-const executionAsyncIdNotImpl = createWarning(
-  "async_hooks.executionAsyncId/triggerAsyncId are not implemented in Bun. It will return 0 every time.",
-);
-function executionAsyncId() {
-  executionAsyncIdNotImpl();
-  return 0;
-}
-
-function triggerAsyncId() {
-  return 0;
-}
-
-const executionAsyncResourceWarning = createWarning(
-  "async_hooks.executionAsyncResource is not implemented in Bun. It returns a reference to process.stdin every time.",
-);
-function executionAsyncResource() {
-  executionAsyncResourceWarning();
-  return process.stdin;
-}
+function executionAsyncId() { return require("internal/async_hooks_tick").executionAsyncId(); }
+function triggerAsyncId() { return require("internal/async_hooks_tick").triggerAsyncId(); }
+function executionAsyncResource() { return require("internal/async_hooks_tick").executionAsyncResource(); }
 
 const asyncWrapProviders = {
   NONE: 0,

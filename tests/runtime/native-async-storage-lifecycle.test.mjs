@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks'
+import { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, triggerAsyncId, executionAsyncResource } from 'node:async_hooks'
 import { EventEmitter, EventEmitterAsyncResource, captureRejectionSymbol } from 'node:events'
 
 const first = new AsyncLocalStorage()
@@ -174,3 +174,55 @@ namedEmitter.emitDestroy()
 resourceChild.emitDestroy()
 capturedStore.disable()
 console.log('native event resource constructor, association and capture context passed')
+
+const resourceEvents = []
+const observedIds = new Set()
+const hook = createHook({
+  init(id, type, trigger, owner) {
+    if (type === 'home-real-resource' || type === 'TickObject') {
+      observedIds.add(id)
+      resourceEvents.push(['init', id, type, trigger, owner])
+    }
+  },
+  before(id) { if (observedIds.has(id)) resourceEvents.push(['before', id, executionAsyncId()]) },
+  after(id) { if (observedIds.has(id)) resourceEvents.push(['after', id, executionAsyncId()]) },
+  destroy(id) { if (observedIds.has(id)) resourceEvents.push(['destroy', id]) },
+})
+const outerId = executionAsyncId()
+const outerResource = executionAsyncResource()
+hook.enable()
+const realResource = new AsyncResource('home-real-resource', { triggerAsyncId: outerId, requireManualDestroy: true })
+assert(realResource.asyncId() > 0)
+assert.notEqual(realResource.asyncId(), outerId)
+assert.equal(realResource.triggerAsyncId(), outerId)
+const scopeMarker = new Error('resource scope marker')
+assert.throws(() => realResource.runInAsyncScope(() => {
+  assert.equal(executionAsyncId(), realResource.asyncId())
+  assert.equal(triggerAsyncId(), outerId)
+  assert.equal(executionAsyncResource(), realResource)
+  throw scopeMarker
+}), error => error === scopeMarker)
+assert.equal(executionAsyncId(), outerId)
+assert.equal(executionAsyncResource(), outerResource)
+let tickId
+await new Promise(resolve => realResource.runInAsyncScope(() => process.nextTick(() => {
+  tickId = executionAsyncId()
+  assert(tickId > 0)
+  assert.notEqual(tickId, realResource.asyncId())
+  assert.equal(triggerAsyncId(), realResource.asyncId())
+  assert.equal(typeof executionAsyncResource().callback, 'function')
+  resolve()
+})))
+realResource.emitDestroy()
+realResource.emitDestroy()
+await new Promise(resolve => setImmediate(resolve))
+hook.disable()
+const id = realResource.asyncId()
+assert(resourceEvents.some(row => row[0] === 'init' && row[1] === id && row[4] === realResource))
+assert.equal(resourceEvents.filter(row => row[0] === 'before' && row[1] === id).length, 2)
+assert.equal(resourceEvents.filter(row => row[0] === 'after' && row[1] === id).length, 2)
+assert.equal(resourceEvents.filter(row => row[0] === 'destroy' && row[1] === id).length, 2)
+assert.equal(resourceEvents.filter(row => row[0] === 'before' && row[1] === tickId).length, 1)
+assert.equal(resourceEvents.filter(row => row[0] === 'after' && row[1] === tickId).length, 1)
+assert.equal(resourceEvents.filter(row => row[0] === 'destroy' && row[1] === tickId).length, 1)
+console.log('native real resource IDs, scopes, hooks and nextTick lifecycle passed')

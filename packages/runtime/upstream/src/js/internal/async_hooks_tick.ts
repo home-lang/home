@@ -1,20 +1,37 @@
-// Bridge between node:async_hooks createHook() and the process.nextTick
-// queue (builtins/ProcessObjectInternals.ts). Enabled `init` hooks are pushed
-// into `tickInitHooks` so the nextTick hot path pays only an array-length
-// check when no hook is enabled.
-//
-// The array identity must stay stable (push/splice only, never reassign):
-// the nextTick closure captures it once at setup.
-//
-// Currently only TickObject `init` events are delivered (enough for
-// console.log/stream.write tick-coalescing tests); promise, timer and native
-// resource events are still unimplemented.
+// Shared IDs and execution scopes for explicit AsyncResource and TickObject
+// transitions. Promise/timer/native IO integration remains incomplete.
 const tickInitHooks = [];
+const beforeHooks = [];
+const afterHooks = [];
+const destroyHooks = [];
 let nextAsyncId = 1;
+let execution = { asyncId: 1, triggerAsyncId: 0, resource: Object.create(null) };
+
+function dispatch(hooks, ...args) {
+  for (const hook of hooks.slice()) {
+    try { hook(...args); }
+    catch (error) {
+      try { console.error(typeof error?.stack === "string" ? error.stack : error); } catch {}
+      process.exit(1);
+    }
+  }
+}
+function emitInit(id, type, trigger, resource) { dispatch(tickInitHooks, id, type, trigger, resource); }
+function emitBefore(id) { dispatch(beforeHooks, id); }
+function emitAfter(id) { dispatch(afterHooks, id); }
+function emitDestroy(id) { queueMicrotask(() => dispatch(destroyHooks, id)); }
 
 export default {
-  tickInitHooks,
-  newAsyncId() {
-    return ++nextAsyncId;
+  tickInitHooks, beforeHooks, afterHooks, destroyHooks,
+  emitInit, emitBefore, emitAfter, emitDestroy,
+  newAsyncId() { return ++nextAsyncId; },
+  executionAsyncId() { return execution.asyncId; },
+  triggerAsyncId() { return execution.triggerAsyncId; },
+  executionAsyncResource() { return execution.resource; },
+  enterAsyncScope(asyncId, triggerAsyncId, resource) {
+    const previous = execution;
+    execution = { asyncId, triggerAsyncId, resource };
+    return previous;
   },
+  leaveAsyncScope(previous) { execution = previous; },
 };
