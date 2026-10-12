@@ -162,6 +162,23 @@ scans and local JSDoc work. It does not establish a speedup or whole-run CPU sha
 | Unchanged 8,192-family positive/negative and native protocol controls | 6/6 and 30/30 pass |
 | Fixed-window native profile | One process, two windows, 275 mapped symbol groups; zero benchmark timing samples |
 
+The coherent root-receiver lookup candidate under [#881](https://github.com/home-lang/home/issues/881)
+is **unqualified and restored**. Its official checked-JS independent interval
+spans zero; scaling gains cannot replace that frozen primary-target requirement.
+
+| Unqualified exact-parent comparison | Parent median | Candidate median | Mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS independent, 30 pairs | 31.620 ms | 31.343 ms | -0.142 to +4.473 ms |
+| Startup screen, 10 pairs | 3.007 ms | 3.407 ms | -0.567 to -0.274 ms |
+| Startup independent, 30 pairs | 3.416 ms | 3.161 ms | +0.088 to +0.379 ms |
+| 512-family JS independent, 30 pairs | 132.317 ms | 128.076 ms | +3.438 to +6.688 ms |
+| 8,192-family JS independent | — | — | Incomplete: guard124; 27 complete pairs plus empty raw retained |
+
+All **877 complete pairs / 264 warmups** remain, with no measurement repeats.
+No compiler code was adopted. See the [complete qualification report](docs/docs/TS_PERFORMANCE.md#coherent-root-receiver-facts-unqualified-2026-10-12-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261012-root-receiver-unqualified-881.tar.gz).
+The complete competitor ranking above is unchanged.
+
 The live-body supported-write proof is now accepted under
 [#864](https://github.com/home-lang/home/issues/864): the independent official
 null-safe workload has a **34.4% lower median**, with **30/30** faster pairs.

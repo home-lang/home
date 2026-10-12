@@ -1352,6 +1352,138 @@ Restoration peak is 3,097 MB. The five-compiler ranking remains **1/20 leads,
 13/20 faster than native TS7**; Zod, finite/symbolic Record, canonical C++
 and other-platform coverage remain incomplete.
 
+## Coherent root receiver facts unqualified 2026 10 12 UTC
+
+The [#881](https://github.com/home-lang/home/issues/881) candidate is **unqualified
+and restored**, never adopted or pushed as compiler code. Official checked-JS
+independent qualification does not establish the required gain: its paired
+mean-saving 95% interval spans zero. The final 8,192-family confirmation also
+stopped at the unchanged 600-second guard. Its remaining observations are not
+repeated or turned into a completed confirmation. Scaling gains do not override
+the frozen primary-target rule. The accepted competitor ranking is unchanged.
+
+The candidate reused the existing ordered local-value declaration index's
+require buckets for receiver classification. It collected all actual root HIR
+matches, retained duplicate names, forward declarations and virtual sections,
+and validated HIR/source ownership, node count and statement identity before
+reuse. The scalar original remained the OOM oracle. It did not introduce a
+library, filename or benchmark predicate, new semantic cap, any erasure, skipped
+body/diagnostic, layout knob or weaker rejection expectation.
+
+Exact parent is `e00470f05c5918404ffdb6b2bac8933c38a15cd7`; candidate diff SHA-256
+is `c460399751bef7e153343968938485130d9b883328d826c604f0f2a15c33d9c0`.
+Parent native is `b251b7273cd1e659946d073fa905ec5c8c690686c26c63a6fb1b3bf13f9d71bb`;
+candidate native is `7d7d4ed209932b2a1637047fb852f8890555bfc978c5ac8f421b88a1637f2e96`.
+Both use the same Zig2163 ReleaseFast/stripped/no-JSC flags, with separate
+prefixes. Installed and earlier retained binaries remain unchanged.
+
+### Complete correctness and admission gates
+
+| Gate | Result |
+|---|---|
+| Full checker / Program / driver | 4,573/4,573, 265/265, 201/201 pass |
+| Full CLI / entrypoint | 80/80 and 47/47 pass |
+| Unchanged extended actual-CLI controls | 294/294 pass across 98 projects |
+| Full six-image protocol 5 | 180/180 pass with unchanged provenance |
+| Existing 512/8,192-family TS6/TS7/parent/candidate controls | 16/16 pass; unchanged 15-error negatives |
+| Full unchanged Zod | Parent/candidate both 235 identities; zero added or removed; unadmitted and untimed |
+
+The first revision passes all existing 4,568 checker tests but fails one new
+fixture: shortened attached source invalidated its literal span. That revision,
+test binary and full replay log remain evidence. The fixture now preserves
+spans, source identity is checked for borrowed specifiers, and HIR growth adds
+a real require binding. No old expectation is relaxed. The initial combined
+source-gate batch's 600-second Program compile timeout is retained separately;
+unfinished complete suites then ran under individual unchanged guards, without
+repeating the successful checker or filtering tests.
+
+### Frozen exact parent measurements
+
+Before any timing, the protocol fixes all 20 official workloads and both
+existing JS scales: 10-pair screens and 30-pair independent phases, each after
+three warmups per image. All 22 screens and 21 independent phases complete:
+**850 independently verified pairs**. The last phase retains **27 more complete
+pairs and one empty interrupted Hyperfine file**, giving **877 complete pairs
+retained out of 880 planned**. All 264 warmup outputs remain. The last phase has
+only its started record, not finalized admission/provenance metadata, and is
+not a verified independent confirmation.
+
+Intervals use parent-minus-candidate paired mean saving, percentile paired
+bootstrap with 20,000 resamples and seed881. Medians are descriptive. Zero-spanning
+intervals are inconclusive, not equivalence or proof of no slowdown. Adoption
+requires all gates, strictly positive official checked-JS independent saving,
+and no wholly negative independent interval anywhere in the fixed selection.
+No guard limit was raised, sample discarded, measurement repeated or alignment
+tuned. The startup screen loss is retained even though its independent phase
+has a positive interval; the independent result does not erase the screen.
+
+### Complete screen
+
+| Workload | Parent median ms | Candidate median ms | Paired mean-saving 95% interval ms | Finding |
+|---|---:|---:|---|---|
+| startup | 3.007 | 3.407 | [-0.567, -0.274] | loss |
+| many_files | 31.071 | 30.019 | [-0.161, 1.440] | inconclusive |
+| deep_types | 25.310 | 24.245 | [-0.120, 3.142] | inconclusive |
+| import_graph | 23.437 | 22.557 | [-1.282, 15.152] | inconclusive |
+| reexport_graph | 22.306 | 25.664 | [-5.978, 8.484] | inconclusive |
+| tsx_components | 27.371 | 27.066 | [-1.932, 1.805] | inconclusive |
+| generic_calls | 32.472 | 30.711 | [-2.634, 3.757] | inconclusive |
+| control_flow | 35.203 | 32.888 | [-0.278, 15.625] | inconclusive |
+| type_predicates | 41.025 | 38.959 | [1.045, 3.076] | saving |
+| type_predicates_large | 294.656 | 305.133 | [-16.805, 0.670] | inconclusive |
+| null_safe_access | 29.043 | 30.077 | [-2.799, 1.766] | inconclusive |
+| destructuring | 28.685 | 27.492 | [-4.811, 4.263] | inconclusive |
+| overload_resolution | 37.225 | 36.446 | [-3.975, 5.801] | inconclusive |
+| class_hierarchy | 40.485 | 38.118 | [-3.503, 10.901] | inconclusive |
+| structural_objects | 25.825 | 25.859 | [-0.978, 0.710] | inconclusive |
+| interface_composition | 50.990 | 49.754 | [-7.756, 5.467] | inconclusive |
+| variadic_tuples | 49.008 | 46.799 | [-8.088, 3.610] | inconclusive |
+| checkjs_jsdoc | 30.128 | 29.664 | [-0.584, 1.399] | inconclusive |
+| commonjs_graph | 22.971 | 22.379 | [-0.134, 4.480] | inconclusive |
+| recursive_generics | 16.204 | 16.432 | [-0.505, 0.291] | inconclusive |
+| jsdoc_512 | 146.678 | 136.302 | [-8.128, 16.450] | inconclusive |
+| jsdoc_8192 | 11858.403 | 7721.347 | [1972.416, 4089.378] | saving |
+
+### Independent confirmation
+
+| Workload | Parent median ms | Candidate median ms | Paired mean-saving 95% interval ms | Finding |
+|---|---:|---:|---|---|
+| startup | 3.416 | 3.161 | [0.088, 0.379] | saving |
+| many_files | 31.256 | 31.561 | [-9.129, 1.769] | inconclusive |
+| deep_types | 24.320 | 24.280 | [-0.589, 0.492] | inconclusive |
+| import_graph | 21.505 | 22.157 | [-0.639, 0.732] | inconclusive |
+| reexport_graph | 13.932 | 13.859 | [-0.258, 0.726] | inconclusive |
+| tsx_components | 32.965 | 31.477 | [-0.672, 6.069] | inconclusive |
+| generic_calls | 27.579 | 27.762 | [-0.871, 1.645] | inconclusive |
+| control_flow | 30.566 | 30.541 | [-0.519, 0.716] | inconclusive |
+| type_predicates | 38.268 | 38.564 | [-0.621, 0.520] | inconclusive |
+| type_predicates_large | 315.260 | 315.711 | [-17.506, 13.499] | inconclusive |
+| null_safe_access | 24.761 | 24.871 | [-0.811, 0.385] | inconclusive |
+| destructuring | 16.869 | 16.771 | [-0.090, 0.489] | inconclusive |
+| overload_resolution | 29.408 | 30.130 | [-4.846, 0.725] | inconclusive |
+| class_hierarchy | 29.328 | 28.832 | [-1.203, 2.739] | inconclusive |
+| structural_objects | 24.875 | 24.805 | [-0.485, 0.551] | inconclusive |
+| interface_composition | 39.838 | 40.025 | [-1.415, 4.720] | inconclusive |
+| variadic_tuples | 37.786 | 38.102 | [-2.271, 0.168] | inconclusive |
+| checkjs_jsdoc | 31.620 | 31.343 | [-0.142, 4.473] | inconclusive |
+| commonjs_graph | 23.623 | 23.691 | [-0.975, 0.383] | inconclusive |
+| recursive_generics | 20.372 | 19.601 | [-1.517, 1.184] | inconclusive |
+| jsdoc_512 | 132.317 | 128.076 | [3.438, 6.688] | saving |
+| jsdoc_8192 | — | — | — | Incomplete; guard124, 27 pairs plus empty raw retained |
+
+The 512-family independent scale improves, and the large-scale screen shows
+saving, but neither establishes the missing official-target confirmation.
+The candidate source was restored with an exact task-only reverse patch after
+the terminal guard result. Both images, failed revisions and all raw data remain.
+
+The [complete unqualified evidence](../../bench/vs_tsgo/evidence/20261012-root-receiver-unqualified-881.tar.gz)
+contains **1,447 byte-verified payloads**, including all pairs and the empty
+interrupted file, all warmups, gate/admission logs, both images, source revisions,
+fixed protocols, independent verifiers/statistics and guard terminals. SHA-256:
+`14da13c1ed8030df3f30620dc83d16b40c7ff078db7043536e80fc4c17a6363a`.
+This is a rejected performance qualification, not another timed competitor row,
+full Zod support or universal benchmark leadership.
+
 ## Owned native checked JavaScript profile 2026 10 12 UTC
 
 The exact compiler measured by the [complete resumed matrix](#landed-declaration-identity-matrix-resumed)
