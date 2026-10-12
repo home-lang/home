@@ -383,6 +383,9 @@ pub const Program = struct {
     /// Parallel checking publishes completed owners concurrently. The
     /// registry's append-only identity tables require exclusive mutation.
     owners_mutex: OwnerMutex = .{},
+    /// `skipLibCheck` of the last compile: program-level semantic checks
+    /// then leave declaration files alone, as tsc's checker does.
+    skip_lib_check: bool = false,
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
@@ -1261,6 +1264,12 @@ pub const Program = struct {
             per_file.known_type_reference_names = known_type_references.items;
         }
         per_file.shared_strings = &self.strings.?;
+        // The program resolves `compilerOptions.types` once, from the type
+        // roots, and reports a missing one globally
+        // (`appendMissingCompilerTypeReferenceDiagnostics`). The driver's
+        // per-source probe only knows the source's own directory, so it
+        // would report hoisted @types as missing in every file.
+        per_file.compiler_type_reference_names = &.{};
         per_file.is_tsx = f.is_tsx;
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
@@ -1373,6 +1382,7 @@ pub const Program = struct {
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
         }
 
+        self.skip_lib_check = options.skip_lib_check;
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
@@ -3431,6 +3441,7 @@ pub const Program = struct {
             try self.compileFilesParallelWithTypedGlobals(shared_options, workers, &globals);
         }
 
+        self.skip_lib_check = options.skip_lib_check;
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
@@ -4572,6 +4583,8 @@ pub const Program = struct {
     };
 
     fn appendMergedAmbientModuleExportDiagnostics(self: *Program) ProgramError!void {
+        // Only declaration files contribute, and skipLibCheck skips them.
+        if (self.skip_lib_check) return;
         var bindings: std.ArrayListUnmanaged(ProgramAmbientExportBinding) = .empty;
         defer bindings.deinit(self.gpa);
         for (self.files.items, 0..) |f, file_index| {
@@ -4691,6 +4704,8 @@ pub const Program = struct {
     }
 
     fn appendProgramGlobalDeclareVarDiagnostics(self: *Program) ProgramError!void {
+        // Only declaration files are checked here, and skipLibCheck skips them.
+        if (self.skip_lib_check) return;
         var seen: std.StringHashMapUnmanaged(ProgramDeclareVar) = .empty;
         defer {
             var it = seen.iterator();
@@ -4777,12 +4792,30 @@ pub const Program = struct {
             }
         }
 
+        // Group by (interface, member) first: the DOM library alone declares
+        // tens of thousands of global interface members, and comparing every
+        // pair took longer than checking the program.
+        var groups: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(usize)) = .empty;
+        var key_arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer key_arena.deinit();
+        defer {
+            var values = groups.valueIterator();
+            while (values.next()) |list| list.deinit(self.gpa);
+            groups.deinit(self.gpa);
+        }
         for (members.items, 0..) |member, i| {
-            for (members.items[0..i]) |previous| {
+            const key = try std.fmt.allocPrint(key_arena.allocator(), "{s}\x00{s}", .{ member.interface_name, member.member_name });
+            const entry = try groups.getOrPut(self.gpa, key);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(self.gpa, i);
+        }
+        for (members.items, 0..) |member, i| {
+            const key = try std.fmt.allocPrint(key_arena.allocator(), "{s}\x00{s}", .{ member.interface_name, member.member_name });
+            for (groups.get(key).?.items) |previous_index| {
+                if (previous_index >= i) break;
+                const previous = members.items[previous_index];
                 if (member.file_index == previous.file_index or
-                    member.is_method == previous.is_method or
-                    !std.mem.eql(u8, member.interface_name, previous.interface_name) or
-                    !std.mem.eql(u8, member.member_name, previous.member_name)) continue;
+                    member.is_method == previous.is_method) continue;
                 try self.appendProgramGlobalInterfaceMemberDiagnostic(previous, member);
                 try self.appendProgramGlobalInterfaceMemberDiagnostic(member, previous);
             }
@@ -4797,6 +4830,7 @@ pub const Program = struct {
         const file = self.files.items[member.file_index];
         const other_file = self.files.items[other.file_index];
         const compilation = file.compilation orelse return;
+        if (self.skip_lib_check and file.is_declaration) return;
         if (diagnosticExistsAt(compilation, 2300, member.pos)) return;
 
         const related = try self.gpa.alloc(ts_driver.RelatedInfo, 1);
