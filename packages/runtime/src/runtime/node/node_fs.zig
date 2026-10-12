@@ -1,4 +1,5 @@
 const DirectoryHandle = @import("./directory_handle.zig");
+const FileHandle = @import("./file_handle.zig");
 const FSAsyncResource = @import("./fs_async_resource.zig");
 
 // This file contains the underlying implementation for sync & async functions
@@ -26,6 +27,8 @@ else
 pub const Flavor = enum { sync, async };
 
 pub const Async = struct {
+    pub const openFileHandle = NewAsyncFSTask(FileHandle.OpenResult, Arguments.Open, NodeFS.openFileHandle);
+    pub const closeFileHandle = NewAsyncFSTask(void, FileHandle.CloseArgument, NodeFS.closeFileHandle);
     pub const openDir = NewAsyncFSTask(Return.OpenDir, Arguments.OpenDir, NodeFS.openDir);
     pub const readDir = NewAsyncFSTask(Return.ReadDir, Arguments.ReadDir, NodeFS.readDir);
     pub const closeDir = NewAsyncFSTask(void, Arguments.CloseDir, NodeFS.closeDir);
@@ -364,6 +367,7 @@ pub const Async = struct {
             ReturnType == StringOrBuffer or
             ReturnType == FD or
             ReturnType == Return.Readdir or
+            ReturnType == FileHandle.OpenResult or
             ReturnType == Return.OpenDir or
             ReturnType == Return.ReadDir;
         return struct {
@@ -411,7 +415,7 @@ pub const Async = struct {
                 }
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
-                task.async_resource = if (callback.isUndefined()) FSAsyncResource.init(globalObject, task.promise.value()) else if (comptime @hasDecl(ArgumentType, "directory_close_callback")) FSAsyncResource.initDirectoryCloseCallback(globalObject, callback) else FSAsyncResource.initCallback(globalObject, callback);
+                task.async_resource = if (callback.isUndefined()) (if (comptime @hasDecl(ArgumentType, "file_handle_close")) FSAsyncResource.initFileHandleClose(globalObject, task.promise.value()) else FSAsyncResource.init(globalObject, task.promise.value())) else if (comptime @hasDecl(ArgumentType, "directory_close_callback")) FSAsyncResource.initDirectoryCloseCallback(globalObject, callback) else FSAsyncResource.initCallback(globalObject, callback);
                 task.tracker.didSchedule(globalObject);
                 if (comptime shutdown_safe_result) {
                     if (!vm.native_work_pool_jobs.tryAdd()) {
@@ -507,6 +511,8 @@ pub const Async = struct {
                     this.result.result.deinitForShutdownResult();
                 } else if (comptime ReturnType == FD) {
                     this.result.result.close();
+                } else if (comptime ReturnType == FileHandle.OpenResult) {
+                    this.result.result.deinitForShutdown();
                 } else if (comptime ReturnType == Return.OpenDir) {
                     this.result.result.deinitForShutdown();
                 } else if (comptime ReturnType == Return.ReadDir) {
@@ -4608,6 +4614,17 @@ pub const NodeFS = struct {
                 .path = prefix_buf[0 .. len + 6],
             },
         };
+    }
+
+    pub fn openFileHandle(this: *NodeFS, args: Arguments.Open, flavor: Flavor) Maybe(FileHandle.OpenResult) {
+        return switch (this.open(args, flavor)) {
+            .err => |err| .{ .err = err },
+            .result => |fd| .{ .result = .{ .fd = fd } },
+        };
+    }
+
+    pub fn closeFileHandle(_: *NodeFS, args: FileHandle.CloseArgument, _: Flavor) Maybe(void) {
+        return args.state.close();
     }
 
     pub fn open(this: *NodeFS, args: Arguments.Open, _: Flavor) Maybe(Return.Open) {

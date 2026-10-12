@@ -215,3 +215,56 @@ try {
   }
   finally { fs.rmSync(directory, { recursive: true, force: true }) }
 }
+
+// Native FileHandle ownership and close requests expose their real resource IDs.
+{
+  const { createHook, AsyncResource } = await import('node:async_hooks')
+  const fs = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const directory = fs.mkdtempSync(join(tmpdir(), 'home-filehandle-native-'))
+  const path = join(directory, 'file')
+  fs.writeFileSync(path, 'abc')
+  const handles = new Map()
+  const closes = new Map()
+  const before = new Set()
+  const after = new Set()
+  const destroyed = new Set()
+  const hook = createHook({
+    init(id, type, trigger, resource) {
+      if (type === 'FILEHANDLE') handles.set(id, { trigger, resource })
+      if (type === 'FILEHANDLECLOSEREQ') closes.set(id, resource)
+    },
+    before(id) { if (closes.has(id)) before.add(id) },
+    after(id) { if (closes.has(id)) after.add(id) },
+    destroy(id) { if (closes.has(id)) destroyed.add(id) },
+  }).enable()
+  try {
+    const outer = new AsyncResource('open-owner')
+    const handle = await outer.runInAsyncScope(() => fs.promises.open(path, 'r'))
+    const id = handle.getAsyncId()
+    assert.ok(Number.isSafeInteger(id) && id > 0)
+    assert.equal(handles.get(id).trigger, 0)
+    assert.notEqual(handles.get(id).resource, handle)
+    assert.equal(handles.get(id).resource.fd, handle.fd)
+    await handle.read(Buffer.alloc(1))
+    assert.equal(handle.getAsyncId(), id)
+    await handle.close()
+    assert.equal(handle.getAsyncId(), id)
+    assert.ok(handles.get(id).resource.fd < 0)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(closes.size, 1)
+    const closeId = [...closes.keys()][0]
+    assert(before.has(closeId))
+    assert(after.has(closeId))
+    assert(destroyed.has(closeId))
+    const second = await fs.promises.open(path, 'r')
+    assert.notEqual(second.getAsyncId(), id)
+    await second.close()
+    outer.emitDestroy()
+  }
+  finally {
+    hook.disable()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+}

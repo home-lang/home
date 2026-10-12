@@ -14,6 +14,12 @@ pub fn init(global: *jsc.JSGlobalObject, promise: jsc.JSValue) Self {
     return .{ .resource = .create(value, global) };
 }
 
+pub fn initFileHandleClose(global: *jsc.JSGlobalObject, promise: jsc.JSValue) Self {
+    if (global.bunVM().scriptExecutionStatus() != .running) return .{};
+    const value = Home__FSRequest__event(global, promise, .js_undefined, 9);
+    return .{ .resource = if (value.isUndefined()) .empty else .create(value, global) };
+}
+
 pub fn initCallback(global: *jsc.JSGlobalObject, callback: jsc.JSValue) Self {
     if (global.bunVM().scriptExecutionStatus() != .running) return .{ .callback_mode = true };
     const value = Home__FSRequest__event(global, callback, .js_undefined, 4);

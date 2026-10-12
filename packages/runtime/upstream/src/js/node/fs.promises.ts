@@ -12,6 +12,11 @@ var SymbolAsyncDispose = Symbol.asyncDispose;
 var ObjectFreeze = Object.freeze;
 
 const kFd = Symbol("kFd");
+const kNativeHandle = Symbol("kNativeHandle");
+let fileHandleBinding;
+function nativeFileHandles() {
+  return fileHandleBinding ??= process.binding("fs");
+}
 const kRefs = Symbol("kRefs");
 const kClosePromise = Symbol("kClosePromise");
 const kCloseResolve = Symbol("kCloseResolve");
@@ -258,7 +263,7 @@ const exports = {
   },
   statfs: asyncWrap(fs.statfs, "statfs"),
   open: async (path, flags = "r", mode = 0o666) => {
-    return new private_symbols.FileHandle(await fs.open(path, flags, mode), flags);
+    return new private_symbols.FileHandle(await nativeFileHandles().homeOpenFileHandle(path, flags, mode), flags);
   },
   read: asyncWrap(fs.read, "read"),
   write: asyncWrap(fs.write, "write"),
@@ -379,14 +384,16 @@ function asyncWrap(fn: any, name: string) {
   class FileHandle extends EventEmitter {
     constructor(fd, flag) {
       super();
-      this[kFd] = fd ?? -1;
+      const owned = fd !== null && typeof fd === "object";
+      this[kFd] = owned ? fd.fd : fd ?? -1;
+      this[kNativeHandle] = owned ? fd : this[kFd] === -1 ? undefined : nativeFileHandles().homeAdoptFileHandle(this[kFd]);
       this[kRefs] = 1;
       this[kClosePromise] = null;
       this[kFlag] = flag;
     }
 
     getAsyncId() {
-      throw new Error("BUN TODO FileHandle.getAsyncId");
+      return nativeFileHandles().homeFileHandleAsyncId(this[kNativeHandle]);
     }
 
     get fd() {
@@ -663,7 +670,7 @@ function asyncWrap(fn: any, name: string) {
 
       if (--this[kRefs] === 0) {
         this[kFd] = -1;
-        this[kClosePromise] = PromisePrototypeFinally.$call(close(fd), () => {
+        this[kClosePromise] = PromisePrototypeFinally.$call(nativeFileHandles().homeCloseFileHandle(this[kNativeHandle]), () => {
           this[kClosePromise] = undefined;
         });
       } else {
@@ -1398,9 +1405,8 @@ function asyncWrap(fn: any, name: string) {
       if (this[kClosePromise]) {
         throw $ERR_INVALID_STATE("The FileHandle is closing");
       }
-      const fd = this[kFd];
       this[kFd] = -1;
-      (nodeFsForIter ??= require("node:fs")).closeSync(fd);
+      nativeFileHandles().homeCloseFileHandleSync(this[kNativeHandle]);
       this.emit("close");
     }
 
@@ -1411,6 +1417,7 @@ function asyncWrap(fn: any, name: string) {
 
       const fd = this[kFd];
       const flag = this[kFlag];
+      nativeFileHandles().homeDetachFileHandle(this[kNativeHandle]);
       this[kFd] = -1;
       return {
         data: { fd, flag },
@@ -1423,6 +1430,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     [kDeserialize]({ fd, flag }) {
+      this[kNativeHandle] = nativeFileHandles().homeAdoptFileHandle(fd);
       this[kFd] = fd;
       this[kFlag] = flag;
     }
@@ -1439,7 +1447,7 @@ function asyncWrap(fn: any, name: string) {
         // in flight).
         const fd = this[kFd];
         this[kFd] = -1;
-        (fd !== -1 ? close(fd) : Promise.$resolve()).$then(this[kCloseResolve], this[kCloseReject]);
+        (fd !== -1 ? nativeFileHandles().homeCloseFileHandle(this[kNativeHandle]) : Promise.$resolve()).$then(this[kCloseResolve], this[kCloseReject]);
       }
     }
   }

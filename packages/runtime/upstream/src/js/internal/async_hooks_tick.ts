@@ -61,6 +61,7 @@ function leaveTimer(timer, previous) {
 const fsRequestStates = new WeakMap();
 class FSReqPromise {}
 class FSReqCallback {}
+class FileHandleCloseReq {}
 function createFSRequest(promise) {
   const resource = new FSReqPromise();
   resource.promise = promise;
@@ -68,6 +69,21 @@ function createFSRequest(promise) {
   fsRequestStates.set(resource, state);
   emitInit(state.id, "FSREQPROMISE", state.trigger, resource);
   return resource;
+}
+function createFileHandleCloseRequest(promise) {
+  const resource = new FileHandleCloseReq();
+  resource.promise = promise;
+  const state = { id: ++nextAsyncId, trigger: execution.asyncId, destroyed: false, frame: $getInternalField($asyncContext, 0) };
+  fsRequestStates.set(resource, state);
+  emitInit(state.id, "FILEHANDLECLOSEREQ", state.trigger, resource);
+  return resource;
+}
+const fileHandleRegistry = new FinalizationRegistry(id => emitDestroy(id));
+function createFileHandle(resource) {
+  const id = ++nextAsyncId;
+  fileHandleRegistry.register(resource, id);
+  emitInit(id, "FILEHANDLE", 0, resource);
+  return id;
 }
 function createFSCallback(callback) {
   const resource = new FSReqCallback();
@@ -111,7 +127,7 @@ function destroyFSRequest(resource) {
 export default {
   tickInitHooks, beforeHooks, afterHooks, destroyHooks,
   createTimer, destroyTimer, refreshTimer, enterTimer, leaveTimer,
-  createFSRequest, createFSCallback, createDirectoryCloseCallback, deliverFSCallback, queueFSCallback, enterFSRequest, leaveFSRequest, destroyFSRequest,
+  createFileHandle, createFileHandleCloseRequest, createFSRequest, createFSCallback, createDirectoryCloseCallback, deliverFSCallback, queueFSCallback, enterFSRequest, leaveFSRequest, destroyFSRequest,
   emitInit, emitBefore, emitAfter, emitDestroy,
   newAsyncId() { return ++nextAsyncId; },
   executionAsyncId() { return execution.asyncId; },

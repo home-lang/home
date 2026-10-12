@@ -269,6 +269,18 @@ pub export fn Home__Directory__close(global: *jsc.JSGlobalObject, frame: *jsc.Ca
     return callDirectory(.closeDir, global, frame, asynchronous);
 }
 
+pub export fn Home__FileHandle__open(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame) jsc.JSValue {
+    return callDirectory(.openFileHandle, global, frame, true);
+}
+pub export fn Home__FileHandle__adopt(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame) jsc.JSValue {
+    const fd = (bun.FD.fromJSValidated(frame.argument(0), global) catch return .zero) orelse
+        return global.throwInvalidArguments("FileHandle fd is required", .{}) catch .zero;
+    return @import("./file_handle.zig").State.create(global, fd);
+}
+pub export fn Home__FileHandle__close(global: *jsc.JSGlobalObject, frame: *jsc.CallFrame, asynchronous: bool) jsc.JSValue {
+    return callDirectory(.closeFileHandle, global, frame, asynchronous);
+}
+
 const std = @import("std");
 
 const bun = @import("bun");

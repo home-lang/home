@@ -3,6 +3,7 @@
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/CompleteSubspace.h>
+#include <JavaScriptCore/CustomGetterSetter.h>
 #include "ZigGlobalObject.h"
 #include "BunProcess.h"
 #include "ScriptExecutionContext.h"
@@ -119,6 +120,117 @@ extern "C" void* Home__Directory__state(JSGlobalObject* global, EncodedJSValue e
         return nullptr;
     }
     return static_cast<HomeDirectoryHandle*>(object)->state();
+}
+
+extern "C" EncodedJSValue Home__FileHandle__open(JSGlobalObject*, CallFrame*);
+extern "C" EncodedJSValue Home__FileHandle__adopt(JSGlobalObject*, CallFrame*);
+extern "C" EncodedJSValue Home__FileHandle__close(JSGlobalObject*, CallFrame*, bool);
+extern "C" void Home__FileHandle__release(void*);
+extern "C" size_t Home__FileHandle__memoryCost();
+extern "C" bool Home__FileHandle__isOpen(void*);
+extern "C" void Home__FileHandle__detach(void*);
+extern "C" EncodedJSValue Home__FileHandle__fd(void*);
+extern "C" EncodedJSValue Home__FSRequest__event(JSGlobalObject*, EncodedJSValue, EncodedJSValue, uint8_t);
+JSC_DECLARE_CUSTOM_GETTER(homeFileHandleFd);
+class HomeFileHandle final : public JSDestructibleObject {
+public:
+    using Base = JSDestructibleObject;
+    static size_t estimatedSize(JSCell* cell, VM& vm) { return Base::estimatedSize(cell, vm) + Home__FileHandle__memoryCost(); }
+    static constexpr unsigned StructureFlags = Base::StructureFlags;
+    DECLARE_INFO;
+    template<typename CellType, SubspaceAccess>
+    static CompleteSubspace* subspaceFor(VM& vm) { return &vm.destructibleObjectSpace(); }
+    static HomeFileHandle* create(JSGlobalObject* global, void* state)
+    {
+        auto& vm = global->vm();
+        auto* structure = Structure::create(vm, global, jsNull(), TypeInfo(ObjectType, StructureFlags), info());
+        auto* object = new (NotNull, allocateCell<HomeFileHandle>(vm)) HomeFileHandle(vm, structure, state);
+        object->finishCreation(vm);
+        vm.heap.reportExtraMemoryAllocated(object, Home__FileHandle__memoryCost());
+        object->putDirectCustomAccessor(vm, Identifier::fromString(vm, "fd"_s), CustomGetterSetter::create(vm, homeFileHandleFd, nullptr), static_cast<unsigned>(PropertyAttribute::CustomAccessor));
+        MarkedArgumentBuffer root;
+        root.append(object);
+        auto id = JSValue::decode(Home__FSRequest__event(global, JSValue::encode(object), JSValue::encode(jsUndefined()), 10));
+        object->m_asyncId = id.isNumber() ? id.asNumber() : 0;
+        return object;
+    }
+    static void destroy(JSCell* cell) { static_cast<HomeFileHandle*>(cell)->~HomeFileHandle(); }
+    ~HomeFileHandle()
+    {
+        const bool abandoned = Home__FileHandle__isOpen(m_state);
+        Home__FileHandle__release(m_state);
+        if (abandoned && m_context) {
+            WebCore::ScriptExecutionContext::postTaskTo(*m_context, [](WebCore::ScriptExecutionContext& context) {
+                auto* global = uncheckedDowncast<Zig::GlobalObject>(context.jsGlobalObject());
+                auto& vm = global->vm();
+                auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
+                auto* process = global->processObject();
+                auto emitWarning = process->get(global, Identifier::fromString(vm, "emitWarning"_s));
+                if (!scope.exception()) {
+                    MarkedArgumentBuffer arguments;
+                    arguments.append(jsString(vm, WTF::String("Closing FileHandle on garbage collection"_s)));
+                    JSC::call(global, emitWarning, process, arguments, "process.emitWarning must be callable"_s);
+                }
+                if (scope.exception()) {
+                    auto* exception = scope.exception();
+                    (void)scope.tryClearException();
+                    Bun__reportUnhandledError(global, JSValue::encode(exception));
+                }
+            });
+        }
+    }
+    void* state() const { return m_state; }
+    double asyncId() const { return m_asyncId; }
+private:
+    HomeFileHandle(VM& vm, Structure* structure, void* state) : Base(vm, structure), m_state(state)
+    {
+        auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject());
+        if (auto* context = global->scriptExecutionContext()) m_context = context->identifier();
+    }
+    void* m_state;
+    double m_asyncId { 0 };
+    std::optional<WebCore::ScriptExecutionContextIdentifier> m_context;
+};
+const ClassInfo HomeFileHandle::s_info = { "FileHandle"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(HomeFileHandle) };
+extern "C" EncodedJSValue Home__FileHandle__wrap(JSGlobalObject* global, void* state)
+{
+    return JSValue::encode(HomeFileHandle::create(global, state));
+}
+static HomeFileHandle* ownedFileHandle(JSGlobalObject* global, JSValue value)
+{
+    auto scope = DECLARE_THROW_SCOPE(global->vm());
+    auto* object = value.getObject();
+    if (!object || !object->inherits(HomeFileHandle::info())) {
+        throwTypeError(global, scope, "Expected an owned FileHandle"_s);
+        return nullptr;
+    }
+    return static_cast<HomeFileHandle*>(object);
+}
+JSC_DEFINE_CUSTOM_GETTER(homeFileHandleFd, (JSGlobalObject* global, EncodedJSValue value, PropertyName))
+{
+    auto* object = ownedFileHandle(global, JSValue::decode(value));
+    return object ? Home__FileHandle__fd(object->state()) : EncodedJSValue {};
+}
+extern "C" void* Home__FileHandle__state(JSGlobalObject* global, EncodedJSValue value)
+{
+    auto* object = ownedFileHandle(global, JSValue::decode(value));
+    return object ? object->state() : nullptr;
+}
+JSC_DEFINE_HOST_FUNCTION(homeOpenFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__open(global, frame); }
+JSC_DEFINE_HOST_FUNCTION(homeAdoptFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__adopt(global, frame); }
+JSC_DEFINE_HOST_FUNCTION(homeCloseFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__close(global, frame, true); }
+JSC_DEFINE_HOST_FUNCTION(homeCloseFileHandleSync, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__close(global, frame, false); }
+JSC_DEFINE_HOST_FUNCTION(homeDetachFileHandle, (JSGlobalObject* global, CallFrame* frame))
+{
+    auto* object = ownedFileHandle(global, frame->argument(0));
+    if (!object) return {};
+    Home__FileHandle__detach(object->state());
+    return JSValue::encode(jsUndefined());
+}
+JSC_DEFINE_HOST_FUNCTION(homeFileHandleAsyncId, (JSGlobalObject* global, CallFrame* frame))
+{
+    auto* object = ownedFileHandle(global, frame->argument(0));
+    return object ? JSValue::encode(jsNumber(object->asyncId())) : EncodedJSValue {};
 }
 
 #define HOME_DIRECTORY_FUNCTION(name, operation, asynchronous) \
@@ -342,6 +454,12 @@ void ProcessBindingFs::finishCreation(JSC::VM& vm)
     Base::finishCreation(vm);
     ASSERT(inherits(info()));
     auto* global = globalObject();
+    putDirect(vm, Identifier::fromString(vm, "homeOpenFileHandle"_s), JSFunction::create(vm, global, 3, "homeOpenFileHandle"_s, homeOpenFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeDetachFileHandle"_s), JSFunction::create(vm, global, 1, "homeDetachFileHandle"_s, homeDetachFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeAdoptFileHandle"_s), JSFunction::create(vm, global, 1, "homeAdoptFileHandle"_s, homeAdoptFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeCloseFileHandle"_s), JSFunction::create(vm, global, 1, "homeCloseFileHandle"_s, homeCloseFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeCloseFileHandleSync"_s), JSFunction::create(vm, global, 1, "homeCloseFileHandleSync"_s, homeCloseFileHandleSync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeFileHandleAsyncId"_s), JSFunction::create(vm, global, 1, "homeFileHandleAsyncId"_s, homeFileHandleAsyncId, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeDirectoryHasBufferedEntries"_s), JSFunction::create(vm, global, 1, "homeDirectoryHasBufferedEntries"_s, homeDirectoryHasBufferedEntries, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeAdoptDirectorySync"_s), JSFunction::create(vm, global, 3, "homeAdoptDirectorySync"_s, homeAdoptDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeOpenDirectorySync"_s), JSFunction::create(vm, global, 2, "homeOpenDirectorySync"_s, homeOpenDirectorySync, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
