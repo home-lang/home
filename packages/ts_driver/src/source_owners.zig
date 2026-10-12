@@ -87,6 +87,10 @@ pub const Registry = struct {
     /// Guards `owners`, `nodes` and `node_ids`. The type transfer itself runs
     /// outside it: one file's import no longer stalls every other worker.
     mutex: SpinMutex = .{},
+    /// Per owner (parallel to `owners`), node -> declaration handle, 0 until
+    /// interned. Published under `mutex`, read lock-free by importers: a
+    /// handle never changes once set (cancellation clears unpublished ones).
+    handles: std.ArrayListUnmanaged([]std.atomic.Value(hir.NodeId)) = .empty,
 
     fn lockShared(self: *const Registry) *SpinMutex {
         const mutex = @constCast(&self.mutex);
@@ -99,6 +103,8 @@ pub const Registry = struct {
     }
 
     pub fn deinit(self: *Registry) void {
+        for (self.handles.items) |table| self.allocator.free(table);
+        self.handles.deinit(self.allocator);
         self.node_ids.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.owners.deinit(self.allocator);
@@ -111,7 +117,12 @@ pub const Registry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.owners.items.len == std.math.maxInt(u32)) return error.TypeIdOverflow;
+        const table = try self.allocator.alloc(std.atomic.Value(hir.NodeId), view.hir.nodeCount());
+        errdefer self.allocator.free(table);
+        @memset(table, std.atomic.Value(hir.NodeId).init(0));
+        try self.handles.ensureUnusedCapacity(self.allocator, 1);
         try self.owners.append(self.allocator, view);
+        self.handles.appendAssumeCapacity(table);
         return @fromBackingInt(@intCast(self.owners.items.len));
     }
 
@@ -119,6 +130,13 @@ pub const Registry = struct {
         const mutex = self.lockShared();
         defer mutex.unlock();
         return self.sourceLocked(id);
+    }
+
+    fn sourceAndHandles(self: *Registry, id: OwnerId) Error!struct { Source, []std.atomic.Value(hir.NodeId) } {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const view = try self.sourceLocked(id);
+        return .{ view, self.handles.items[@backingInt(id) - 1] };
     }
 
     fn sourceLocked(self: *const Registry, id: OwnerId) Error!Source {
@@ -159,7 +177,11 @@ pub const Registry = struct {
         const location = view.hir.spanOf(node);
         if (location.start > location.end or location.end > view.text.len) return error.InvalidDeclaration;
         const key: NodeKey = .{ .owner = owner, .node = node };
-        if (self.node_ids.get(key)) |id| return id;
+        const table = self.handles.items[@backingInt(owner) - 1];
+        if (self.node_ids.get(key)) |id| {
+            table[node].store(id, .release);
+            return id;
+        }
         if (self.nodes.items.len == declaration_handle_index_mask) return error.TypeIdOverflow;
         try self.nodes.ensureUnusedCapacity(self.allocator, 1);
         try self.node_ids.ensureUnusedCapacity(self.allocator, 1);
@@ -168,6 +190,7 @@ pub const Registry = struct {
         self.nodes.appendAssumeCapacity(key);
         const id: hir.NodeId = declaration_handle_tag | @as(hir.NodeId, @intCast(self.nodes.items.len));
         self.node_ids.putAssumeCapacityNoClobber(key, id);
+        table[node].store(id, .release);
         return id;
     }
 
@@ -179,8 +202,10 @@ pub const Registry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         for (added) |index| {
-            const removed = self.node_ids.remove(self.nodes.items[index]);
+            const key = self.nodes.items[index];
+            const removed = self.node_ids.remove(key);
             std.debug.assert(removed);
+            self.handles.items[@backingInt(key.owner) - 1][key.node].store(0, .release);
             self.nodes.items[index] = .{ .owner = .none, .node = 0 };
         }
         while (self.nodes.items.len > 0 and self.nodes.items[self.nodes.items.len - 1].owner == .none) {
@@ -198,11 +223,11 @@ pub const Registry = struct {
         target_strings: *strings.Interner,
         owner: OwnerId,
     ) Error!Imported {
-        const view = try self.source(owner);
+        const view, const handles = try self.sourceAndHandles(owner);
         var added: std.ArrayListUnmanaged(u32) = .empty;
         defer added.deinit(self.allocator);
         errdefer self.cancelDeclarations(added.items);
-        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added };
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added, .handles = handles };
         const imported = try checker.checked_transfer.append(target, view.types, view.checked, .{
             .context = &context,
             .string = Context.string,
@@ -222,10 +247,10 @@ pub const Registry = struct {
         owner: OwnerId,
         id: checker.TypeId,
     ) Error!?checker.TypeId {
-        const view = try self.source(owner);
+        const view, const handles = try self.sourceAndHandles(owner);
         var added: std.ArrayListUnmanaged(u32) = .empty;
         defer added.deinit(self.allocator);
-        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added };
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added, .handles = handles };
         return checker.type_transfer.project(target, view.types, .{
             .context = &context,
             .string = Context.string,
@@ -242,6 +267,8 @@ const Context = struct {
     to: *strings.Interner,
     /// Declarations this import created, withdrawn if it fails.
     added: *std.ArrayListUnmanaged(u32),
+    /// The owner's published handles (`Registry.handles`), read lock-free.
+    handles: []std.atomic.Value(hir.NodeId),
 
     fn string(context: *anyopaque, id: hir.StringId) checker.type_transfer.Error!hir.StringId {
         const self: *Context = @ptrCast(@alignCast(context));
@@ -254,6 +281,13 @@ const Context = struct {
 
     fn node(context: *anyopaque, id: hir.NodeId) checker.type_transfer.Error!hir.NodeId {
         const self: *Context = @ptrCast(@alignCast(context));
+        if (!isDeclarationHandle(id) and id != 0 and id < self.handles.len) {
+            const published = self.handles[id].load(.acquire);
+            if (published != 0) return published;
+        }
+        // Handles come from this registry; checking them costs a lock per
+        // transferred declaration, so only safety builds re-validate.
+        if (isDeclarationHandle(id) and !std.debug.runtime_safety) return id;
         if (isDeclarationHandle(id)) {
             _ = self.registry.declaration(id) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
