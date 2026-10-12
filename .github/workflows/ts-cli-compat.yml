@@ -26,7 +26,7 @@ jobs:
         env:
           HOME_RUN_MAX_MB: '3840'
         run: perl scripts/run-bounded.pl 1800 zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true -Denable_jsc=false -j1 --summary all
-      - name: Test CLI and entrypoint modules
+      - name: Test compiler modules
         env:
           HOME_RUN_MAX_MB: '3840'
         run: |
@@ -34,6 +34,9 @@ jobs:
           perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsc_main -Denable_jsc=false -j1 --summary all
           perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsconfig -Denable_jsc=false -j1 --summary all
           perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsc_streams -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=ts_program -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=ts_parser -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 900 zig build test -Dfilter=ts_checker -Denable_jsc=false -j1 --summary all
       - name: Install the isolated reference compiler
         run: npm install --prefix "$RUNNER_TEMP/home-ts-reference" --no-save --ignore-scripts typescript@7.0.2
       - name: Compare declaration, build, clean and watch contracts
@@ -44,11 +47,21 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
             --output "$RUNNER_TEMP/home-ts-declaration-contracts"
+      - name: Compare recursive ambient interface contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-recursive-interface-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --output "$RUNNER_TEMP/home-ts-recursive-interface-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ts-declaration-contracts-${{ matrix.os }}
-          path: ${{ runner.temp }}/home-ts-declaration-contracts
+          name: ts-cli-contracts-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/home-ts-declaration-contracts
+            ${{ runner.temp }}/home-ts-recursive-interface-contracts
           if-no-files-found: ignore
           retention-days: 14

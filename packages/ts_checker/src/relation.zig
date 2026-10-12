@@ -307,6 +307,11 @@ pub const Engine = struct {
     gpa: std.mem.Allocator,
     interner: *Interner,
     cache: RelationCache,
+    /// Exact in-flight identity pairs must survive ordinary cache eviction.
+    /// A repeated pair closes a structural cycle, subject to the remaining
+    /// members of the enclosing comparison still matching.
+    identity_active: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    identity_cycle_events: u64 = 0,
     /// Type expansion belongs to the checker, which also owns callable and
     /// declaration metadata. Relations request the same cached surface used by
     /// property/indexed-access consumers rather than an erased second copy.
@@ -577,6 +582,7 @@ pub const Engine = struct {
         self.tp_instances.deinit(self.gpa);
         self.tp_expanding.deinit(self.gpa);
         self.cache.deinit();
+        self.identity_active.deinit(self.gpa);
         self.upper_object_targets.deinit(self.gpa);
         self.source_stack.deinit(self.gpa);
         self.target_stack.deinit(self.gpa);
@@ -592,14 +598,27 @@ pub const Engine = struct {
         const left = try self.resolveRelationSurface(a);
         const right = try self.resolveRelationSurface(b);
         if (left != a or right != b) return self.isIdenticalTo(left, right);
+        const key = (@as(u64, a) << 32) | @as(u64, b);
+        if (self.identity_active.contains(key)) {
+            self.identity_cycle_events +%= 1;
+            return true;
+        }
         switch (self.cache.lookup(.identity, a, b)) {
             .yes => return true,
             .no => return false,
             .pending, .miss => {},
         }
-        try self.cache.put(.identity, a, b, .pending);
+        const outermost = self.identity_active.count() == 0;
+        const cycles_before = self.identity_cycle_events;
+        try self.identity_active.put(self.gpa, key, {});
+        defer _ = self.identity_active.remove(key);
         const result = try self.computeIdentity(a, b);
-        try self.cache.put(.identity, a, b, if (result) .yes else .no);
+        // A nested success may depend on an active ancestor that subsequently
+        // fails. Publish cycle-dependent successes only after the enclosing
+        // comparison closes; concrete mismatches and acyclic successes are
+        // independent of that provisional cycle edge.
+        if (outermost or !result or cycles_before == self.identity_cycle_events)
+            try self.cache.put(.identity, a, b, if (result) .yes else .no);
         return result;
     }
 
@@ -3469,6 +3488,40 @@ test "Engine: object identity includes index signatures" {
     const strings = try ti.internObjectTypeWithIndex(&.{}, Primitive.none, Primitive.string_t);
     const numbers = try ti.internObjectTypeWithIndex(&.{}, Primitive.none, Primitive.number_t);
     try T.expect(!try e.isIdenticalTo(strings, numbers));
+}
+
+test "Engine: recursive method identity closes cycles without caching provisional successes" {
+    const Graph = struct {
+        root: TypeId,
+        child: TypeId,
+
+        fn create(ti: *Interner, leaf: TypeId) !@This() {
+            const root = try ti.internObjectType(&.{});
+            const child = try ti.internObjectType(&.{});
+            const forward = try ti.internSignature(&.{}, child, false);
+            const backward = try ti.internSignature(&.{}, root, false);
+            try ti.completeFreshObjectType(root, &.{ mkMember(1, forward, false), mkMember(2, leaf, false) });
+            try ti.completeFreshObjectType(child, &.{mkMember(1, backward, false)});
+            return .{ .root = root, .child = child };
+        }
+    };
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const first = try Graph.create(&ti, Primitive.number_t);
+    const equivalent = try Graph.create(&ti, Primitive.number_t);
+    const incompatible = try Graph.create(&ti, Primitive.string_t);
+
+    try T.expect(try e.isIdenticalTo(first.root, equivalent.root));
+    try T.expect(try e.isIdenticalTo(equivalent.child, first.child));
+    try T.expect(!try e.isIdenticalTo(first.root, incompatible.root));
+    // The child comparison first closes an active root edge and appears to
+    // succeed, before the root's leaf mismatch is visited. It must be checked
+    // afresh rather than retaining that provisional successful result.
+    try T.expect(!try e.isIdenticalTo(first.child, incompatible.child));
+    try T.expect(!try e.isIdenticalTo(incompatible.root, first.root));
+    try T.expectEqual(@as(u32, 0), e.identity_active.count());
 }
 
 test "Engine: intersection of object types — rejects source missing a member's prop" {

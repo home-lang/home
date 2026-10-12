@@ -81,12 +81,16 @@ attempt hit the disk guard; testing resumed when space recovered without
 changing the safety floors or deleting unrelated artifacts.
 
 A first real-project check remains unqualified: the local table project is
-accepted by its installed TypeScript 7.0.2 compiler, while the pre-emission-fix
+accepted by its installed TypeScript 7.0.2 compiler, while the baseline
 Home image stops with `compile error: EmitError`. That is an internal failure,
 not a passing comparison with zero diagnostics. Two other selected projects
 lost their local reference installations during the run and remain untested.
-The next graph audit must diagnose the table failure and admit every remaining
-entrypoint; the declaration controls do not satisfy that requirement.
+The ownership correction below changes the table outcome to a memory-guard
+failure: the final ReleaseFast image reaches **3,988 MB**, exceeding the unchanged
+3,840 MB ceiling (exit 125), while the reference still exits 0. All 307 recorded
+input hashes are unchanged before and after the replay. The table and every
+remaining entrypoint still require qualification; the hermetic controls do not
+satisfy that requirement.
 
 The reference-control runner is available with explicit compiler paths:
 
@@ -110,3 +114,68 @@ includes payload checksums and native image hashes. No performance measurements
 are claimed. The full Pickier scan now completes discovery but reports 1,857
 errors and 684 warnings in other repository files; the changed TS config,
 README, report and workflow pass their scoped Pickier check.
+
+## Recursive interface ownership controls
+
+The table failure originates in checked-type transfer: recursive nongeneric
+interface definitions can still have an unpublished body when their declaration
+file is imported. Transfer correctly rejects that incomplete graph. A later
+member lookup should not be required to make a checked declaration transferable.
+
+The correction publishes the actual merged interface bodies after file checking
+finishes. Intermediate lookups use the current shape without freezing it before
+later declaration merges. Interface-only files also enter declaration-owned
+recursion handling, and forward references retain the declaration edge rather
+than losing a mutually recursive member to `unknown`.
+Previously exposed interface shapes follow the same binding's merged body.
+Lookup follows the represented merge edges without a fixed sixteen-step cap;
+the CLI controls include twenty-four augmentations.
+
+Recursive method graphs also expose a structural-identity cycle. Identity
+comparison keeps exact active pairs outside the evicting result cache, checks
+the remaining members, and avoids caching successes that depend on an ancestor
+comparison that can still fail. The regression includes incompatible leaf
+types and a subsequent comparison of the child pair.
+
+Tagged templates and their subsequent member/index accesses remain in the
+constructor's callee parse. This keeps nested constructor argument lists at
+their correct levels, instead of constructing the tag result before reading
+its constructor member.
+
+The CLI runner checks self properties, self methods with and without an alias,
+both mutual declaration orders, merged interfaces and nested constructor
+signatures. Every valid consumer has a corresponding deliberate assignment
+error. It compares diagnostic codes, positions and exit statuses under
+`skipLibCheck`, verifies unchanged fixture inputs, and retains partial results
+and timeouts as failures:
+
+```bash
+HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 300 \
+  python3 scripts/tests/test-ts-recursive-interface-cli.py \
+  --home zig-out/bin/home-tsc \
+  --reference /path/to/typescript/lib/tsc.js \
+  --output .home-cache/ts-replacement/recursive-interface-contracts
+```
+
+The final ReleaseFast image passes all **32 recursive-interface observations**
+and the existing **32 declaration observations**. The Debug module suites pass
+**4,570 checker, 268 Program, 201 driver, 908 parser/JSDoc, 80 CLI and 47 entrypoint
+tests** (6,074 test executions). The earlier image fails the long merge control,
+and the original image also accepts the deliberately wrong nested-constructor
+assignment. The final controls preserve the real TS2322 errors and their
+positions.
+
+The broader built-in smoke gate currently passes **69 of 71 cases**, including
+two failures reproduced independently of this change. Its relative-import case
+expects no error despite the missing `./bar`; both the installed reference and
+the baseline Home image correctly report TS2307. The other case exposes a
+compiler gap: strict-mode `let x;` with no uses is accepted by TypeScript, while
+both the baseline and candidate Home images report TS7034. These are retained
+as unresolved gates, rather than treating the failed smoke run as a pass.
+
+The [retained recursive-interface evidence](../../bench/vs_tsgo/evidence/20261011-local-tsc-recursive-interface-controls.tar.gz)
+contains successful production observations, isolated fixture inputs/outputs,
+module logs, rejected intermediate controls, the baseline probes and a redacted
+real-project outcome. It includes payload checksums and native/source hashes;
+private project inputs remain local. Archive SHA-256:
+`6e0f3b9df3b1f4bf67c26a9bb639665cb419e7e0b279d2a2a0cc579b9fb0bdb8`.

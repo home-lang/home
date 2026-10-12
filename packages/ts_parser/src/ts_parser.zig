@@ -19334,8 +19334,8 @@ pub const Parser = struct {
         }
     }
 
-    /// Parse a member-access chain off a primary expression — `dot`,
-    /// `?.`, and `[index]` — but stop at `(`. Used as the callee of
+    /// Parse member accesses and tagged templates off a primary expression,
+    /// but stop at `(`. Used as the callee of
     /// a `new` expression so the parenthesized argument list belongs
     /// to the `new`, not to a call wrapped around it.
     fn parseMemberExpressionOnly(self: *Parser) ParseError!NodeId {
@@ -19365,6 +19365,17 @@ pub const Parser = struct {
                 .open_bracket => {
                     const open_bracket = self.advance();
                     node = try self.finishElementAccess(node, false, open_bracket.span.start);
+                },
+                .less_than => {
+                    const after_gt = self.findCallTypeArgsEnd(self.cursor) orelse break;
+                    const after_kind = self.tokens[after_gt].kind;
+                    if (after_kind != .no_substitution_template and after_kind != .template_head) break;
+                    const type_args = try self.parseExplicitCallTypeArgs(after_gt);
+                    defer self.gpa.free(type_args);
+                    node = try self.parseTaggedTemplateWithTypeArgs(node, type_args);
+                },
+                .no_substitution_template, .template_head => {
+                    node = try self.parseTaggedTemplateWithTypeArgs(node, &.{});
                 },
                 else => break,
             }
@@ -20151,23 +20162,10 @@ pub const Parser = struct {
                 // produce the class instance type rather than the
                 // constructor's call return type. The callee starts as a
                 // member-only parse so `new Foo(args)` doesn't get
-                // pre-consumed as a call, then admits the one call-like
-                // form that can be the constructed expression:
-                // `new tag<T> `...` <U>(...)`.
-                var callee = try self.parseMemberExpressionOnly();
-                if (self.peek().kind == .less_than) {
-                    if (self.findCallTypeArgsEnd(self.cursor)) |after_gt| {
-                        const after_kind = self.tokens[after_gt].kind;
-                        if (after_kind == .no_substitution_template or after_kind == .template_head) {
-                            const callee_type_args = try self.parseExplicitCallTypeArgs(after_gt);
-                            defer self.gpa.free(callee_type_args);
-                            callee = try self.parseTaggedTemplateWithTypeArgs(callee, callee_type_args);
-                        }
-                    }
-                }
-                if (self.peek().kind == .no_substitution_template or self.peek().kind == .template_head) {
-                    callee = try self.parseTaggedTemplateWithTypeArgs(callee, &.{});
-                }
+                // pre-consumed as a call. Tagged templates are member
+                // expressions too, including subsequent `.member`/`[key]`
+                // accesses whose constructor arguments belong to this `new`.
+                const callee = try self.parseMemberExpressionOnly();
                 if (self.peek().kind == .question_dot) {
                     const qdot = self.peek();
                     const callee_span = self.hir.spanOf(callee);
@@ -28380,6 +28378,51 @@ test "parser: new expression" {
     try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(top));
     const args = hir_mod.callArgs(&s.hir, top);
     try T.expectEqual(@as(usize, 2), args.len);
+}
+
+test "parser: new callee retains member chains after tagged templates" {
+    for ([_][]const u8{
+        "new tag`head`.Ctor(1);",
+        "new tag`head ${0}`[\"Ctor\"](1);",
+        "new tag<string>`head`.Ctor<number>(1);",
+        "new tag`first``second`.Ctor(1);",
+    }, 0..) |source, index| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        const expression = hir_mod.blockStmts(&s.hir, root)[0];
+        try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(expression));
+        try T.expectEqual(@as(usize, 1), hir_mod.callArgs(&s.hir, expression).len);
+        const callee = hir_mod.callOf(&s.hir, expression).callee;
+        const tag = if (index == 1) blk: {
+            try T.expectEqual(hir_mod.NodeKind.element_access, s.hir.kindOf(callee));
+            break :blk hir_mod.elementOf(&s.hir, callee).object;
+        } else blk: {
+            try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(callee));
+            break :blk hir_mod.memberOf(&s.hir, callee).object;
+        };
+        try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(tag));
+        try T.expect(hir_mod.callOf(&s.hir, tag).is_tagged_template);
+        try T.expectEqual(@as(usize, if (index == 2) 1 else 0), hir_mod.callTypeArgs(&s.hir, expression).len);
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: nested new arguments bind after tagged template member access" {
+    var s = try newTestSetup("new new new tag`head ${0}`.member(\"value\")(42);");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    var expression = hir_mod.blockStmts(&s.hir, root)[0];
+    for ([_]usize{ 0, 1, 1 }) |count| {
+        try T.expectEqual(hir_mod.NodeKind.new_expr, s.hir.kindOf(expression));
+        try T.expectEqual(count, hir_mod.callArgs(&s.hir, expression).len);
+        expression = hir_mod.callOf(&s.hir, expression).callee;
+    }
+    try T.expectEqual(hir_mod.NodeKind.member_access, s.hir.kindOf(expression));
+    const tag = hir_mod.memberOf(&s.hir, expression).object;
+    try T.expectEqual(hir_mod.NodeKind.call_expr, s.hir.kindOf(tag));
+    try T.expect(hir_mod.callOf(&s.hir, tag).is_tagged_template);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: new.target is accepted in functions and rejected at top level" {

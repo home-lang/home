@@ -16685,3 +16685,85 @@ test "Program: collection polymorphic this does not erase dependent factory call
     };
     try T.expectEqualSlices(usize, &.{ 1, 1 }, &.{ assignments, missing });
 }
+
+test "Program: recursive ambient interfaces transfer before their first consumer lookup" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const declarations = try p.add("/interfaces.d.ts",
+        \\interface TimerLike { ref(): TimerLike; label: string; }
+        \\interface Peer { other: Partner; value: number; }
+        \\interface Partner { other: Peer; label: string; }
+    );
+    const consumer = try p.add("/main.ts",
+        \\declare const timer: TimerLike;
+        \\declare const peer: Peer;
+        \\const label: string = timer.ref().label;
+        \\const value: number = peer.other.other.value;
+        \\const wrongLabel: number = timer.ref().label;
+        \\const wrongValue: string = peer.other.other.value;
+    );
+    try p.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const owner = p.fileById(declarations).compilation.?;
+    var id: ts_driver.TypeId = ts_driver.Primitive.first_dynamic;
+    while (id < owner.type_interner.pool.typeCount()) : (id += 1) {
+        if (owner.type_interner.genericDefinition(id)) |definition| {
+            try T.expect(definition.body != ts_driver.Primitive.none);
+        }
+    }
+    const result = p.fileById(consumer).compilation.?;
+    try T.expectEqual(@as(usize, 2), result.diagnostics.items.len);
+    for (result.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
+test "Program: recursive ambient interface members follow the complete merged binding" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/interfaces.d.ts",
+        \\interface Link { next: Link; }
+        \\interface Link { value: number; }
+    );
+    const consumer = try p.add("/main.ts",
+        \\declare const link: Link;
+        \\const value: number = link.next.next.value;
+        \\const wrong: string = link.next.next.value;
+    );
+    try p.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const result = p.fileById(consumer).compilation.?;
+    try T.expectEqual(@as(usize, 1), result.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), result.diagnostics.items[0].code);
+}
+
+test "Program: recursive ambient interface lookup follows more than sixteen merges" {
+    var declarations: std.ArrayListUnmanaged(u8) = .empty;
+    defer declarations.deinit(T.allocator);
+    try declarations.appendSlice(T.allocator, "interface Link { next: Link; }\n");
+    for (0..24) |index| {
+        const declaration = try std.fmt.allocPrint(T.allocator, "interface Link {{ p{d}: number; }}\n", .{index});
+        defer T.allocator.free(declaration);
+        try declarations.appendSlice(T.allocator, declaration);
+    }
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/interfaces.d.ts", declarations.items);
+    const consumer = try p.add("/main.ts",
+        \\declare const link: Link;
+        \\const value: number = link.next.next.p23;
+        \\const wrong: string = link.next.next.p23;
+    );
+    try p.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const result = p.fileById(consumer).compilation.?;
+    try T.expectEqual(@as(usize, 1), result.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), result.diagnostics.items[0].code);
+}

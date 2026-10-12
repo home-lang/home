@@ -5666,6 +5666,9 @@ pub const Checker = struct {
     /// Type-alias compatibility lookups otherwise walk enclosing and root
     /// statement lists for ordinary named types in alias-free sources.
     source_may_have_type_alias_declaration: bool = false,
+    /// Interface references share declaration-owned recursion handling with
+    /// aliases; interface-only sources must enter that path too.
+    source_may_have_interface_declaration: bool = false,
     /// Checked-JS computed prototype replacement requires a computed access to
     /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
     source_may_have_computed_prototype_assignment: bool = false,
@@ -6265,6 +6268,7 @@ pub const Checker = struct {
             markers.contains("class") or markers.contains("enum");
         self.source_may_have_enum_declaration = markers.contains("enum");
         self.source_may_have_type_alias_declaration = markers.contains("type");
+        self.source_may_have_interface_declaration = markers.contains("interface");
         self.source_may_have_computed_prototype_assignment =
             markers.contains("prototype") and markers.contains("[") and
             markers.contains("=") and markers.contains("{");
@@ -7101,6 +7105,28 @@ pub const Checker = struct {
             try self.applyDirectives(root);
             try self.restoreJsNamespaceSyntaxDiagnostics(root);
             self.sortDiagnosticsByPosition();
+        }
+        try self.completeLocalInterfaceReferences();
+    }
+
+    /// Recursive interface members keep declaration-owned references while
+    /// the interface is being lowered. Publish their completed, merged bodies
+    /// before the checked source leaves this Checker; a later member lookup
+    /// must not be required to make its type graph transferable.
+    fn completeLocalInterfaceReferences(self: *Checker) CheckError!void {
+        var entries = self.local_alias_origins.iterator();
+        while (entries.next()) |entry| {
+            const declaration = entry.value_ptr.*;
+            if (self.hir.kindOf(declaration) != .interface_decl or
+                self.interface_lower_in_progress.contains(declaration)) continue;
+            const definition = self.interner.genericDefinition(entry.key_ptr.*) orelse continue;
+            if (definition.body != types.Primitive.none) continue;
+            const body = self.hir.typeOf(declaration);
+            if (body == types.Primitive.none or body == types.Primitive.unknown) continue;
+            self.interner.completeGenericDefinition(entry.key_ptr.*, &.{}, body) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidTypeGraph => unreachable,
+            };
         }
     }
 
@@ -68000,6 +68026,15 @@ pub const Checker = struct {
                         // `hir.typeOf`, so all earlier decls must
                         // point at the latest merged type, not just
                         // the immediate predecessor (mergeThreeInterfaces).
+                        // Recursive members can already retain the previous
+                        // interface shape rather than its HIR declaration.
+                        // Keep those edges on this same merged binding too.
+                        if (existing_t != merged and
+                            existing_t >= types.Primitive.first_dynamic and
+                            self.interner.pool.flagsOf(existing_t).is_object_type)
+                        {
+                            try self.recursive_interface_targets.put(self.gpa, existing_t, merged);
+                        }
                         self.backPatchSameScopeInterfaces(node, id.name, merged);
                         break :blk merged;
                     }
@@ -73786,14 +73821,17 @@ pub const Checker = struct {
     }
 
     fn localAliasReferenceAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
+        if (self.source != null and !self.source_may_have_type_alias_declaration and
+            !self.source_may_have_interface_declaration) return null;
         const decl = self.findVisibleNamedTypeDecl(anchor, name) orelse return null;
         if (self.hir.kindOf(decl) == .interface_decl) {
             const declaration = hir_mod.interfaceOf(self.hir, decl);
-            if (declaration.type_params_len != 0 or !self.interface_lower_in_progress.contains(decl)) return null;
-            // An alias may be requested by a member of this interface while
-            // its own shape is still under construction. Retain the exact
-            // declaration edge, not its incomplete current HIR type.
+            if (declaration.type_params_len != 0) return null;
+            const declared = self.hir.typeOf(decl);
+            if (!self.interface_lower_in_progress.contains(decl) and
+                declared != types.Primitive.none and declared != types.Primitive.unknown) return null;
+            // A member can reference an interface before or during lowering.
+            // Retain the declaration edge until its full shape is available.
             self.instantiation_defer_events +%= 1;
             return (try self.localAliasDefinition(decl)).reference;
         }
@@ -112218,25 +112256,31 @@ pub const Checker = struct {
         const index = self.interner.pool.payloadOf(t);
         if (index >= self.interner.pool.instantiation_payloads.items.len) return t;
         const reference = self.interner.pool.instantiation_payloads.items[index];
+        var definition = self.interner.genericDefinition(reference.origin) orelse return t;
         if (self.local_alias_origins.get(reference.origin)) |decl| {
-            const pending = self.interner.genericDefinition(reference.origin) orelse return t;
-            if (pending.body == types.Primitive.none) {
+            if (definition.body == types.Primitive.none) {
                 if (self.hir.kindOf(decl) == .interface_decl) {
                     if (!self.interface_lower_in_progress.contains(decl)) {
+                        if (self.hir.typeOf(decl) == types.Primitive.none or
+                            self.hir.typeOf(decl) == types.Primitive.unknown)
+                        {
+                            try self.checkInterfaceDecl(decl);
+                        }
                         const completed = self.hir.typeOf(decl);
                         if (completed != types.Primitive.none and completed != types.Primitive.unknown) {
-                            self.interner.completeGenericDefinition(reference.origin, &.{}, completed) catch |err| switch (err) {
-                                error.OutOfMemory => return error.OutOfMemory,
-                                error.InvalidTypeGraph => unreachable,
-                            };
+                            // Use the current shape for this lookup, but leave
+                            // the definition unpublished until declaration
+                            // merging and forward-reference refreshes finish.
+                            self.instantiation_defer_events +%= 1;
+                            definition.body = completed;
                         }
                     }
                 } else {
                     try self.checkTypeAliasDecl(decl);
+                    definition = self.interner.genericDefinition(reference.origin) orelse return t;
                 }
             }
         }
-        const definition = self.interner.genericDefinition(reference.origin) orelse return t;
         if (definition.body == types.Primitive.none) {
             if (self.local_alias_origins.contains(reference.origin)) self.instantiation_defer_events +%= 1;
             return t;
@@ -149756,8 +149800,11 @@ pub const Checker = struct {
 
     fn resolvedRecursiveInterfaceType(self: *Checker, t: TypeId) TypeId {
         var current = t;
-        var depth: u8 = 0;
-        while (depth < 16) : (depth += 1) {
+        // A valid chain can include arbitrarily many declaration merges.
+        // The number of represented edges bounds traversal without truncating
+        // a long acyclic chain or looping forever on malformed metadata.
+        var depth: usize = 0;
+        while (depth < self.recursive_interface_targets.count()) : (depth += 1) {
             const next = self.recursive_interface_targets.get(current) orelse return current;
             if (next == current) return current;
             current = next;
@@ -215580,7 +215627,7 @@ test "checker: source marker feature facts match independent substring searches"
         "export namespace N as any declare var value: any; import x = require('x');", "myclassify enumtype global module .prototype [ = { protected", "'@import' /* require */",
         "requires require1 $require _require require$ require_",                      "\xffrequire\xc3\xa9",                                          "require",
         "prototype[ = {",                                                             "prototype[ {",                                                 "enum",
-        "type",
+        "type",                                                                       "interface",                                                    "interface First { next: Second } interface Second { next: First }",
     }) |source| {
         s.checker.setSource(source);
         try T.expectEqual(std.mem.indexOf(u8, source, "@filename:") != null or std.mem.indexOf(u8, source, "@Filename:") != null, s.checker.source_has_virtual_sections);
@@ -215594,6 +215641,7 @@ test "checker: source marker feature facts match independent substring searches"
         try T.expectEqual(std.mem.indexOf(u8, source, "class") != null or std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_class_or_enum_declaration);
         try T.expectEqual(std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_enum_declaration);
         try T.expectEqual(std.mem.indexOf(u8, source, "type") != null, s.checker.source_may_have_type_alias_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "interface") != null, s.checker.source_may_have_interface_declaration);
         try T.expectEqual(std.mem.indexOf(u8, source, "prototype") != null and std.mem.indexOfScalar(u8, source, '[') != null and std.mem.indexOfScalar(u8, source, '=') != null and std.mem.indexOfScalar(u8, source, '{') != null, s.checker.source_may_have_computed_prototype_assignment);
         try T.expectEqual(std.mem.indexOf(u8, source, ".prototype") != null, s.checker.source_may_have_prototype_assignment);
         try T.expectEqual(std.mem.indexOf(u8, source, "protected") != null, s.checker.source_may_have_protected_member);
@@ -289786,4 +289834,24 @@ test "checker: exact nested indexed context ignores polymorphic this in an unrel
     try T.expect(s.ti.pool.flagsOf(inner.object).is_type_parameter);
     try T.expectEqual(try s.sint.intern("U"), s.ti.typeParameterName(inner.object).?);
     try T.expect((try s.checker.concreteIndexedContextObject(rebuilt)) == null);
+}
+
+test "checker: completed recursive interfaces publish complete declaration-owned definitions" {
+    const s = try newSetup(
+        \\interface TimerLike { ref(): TimerLike; label: string; }
+        \\interface Peer { other: Partner; value: number; }
+        \\interface Partner { other: Peer; label: string; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var completed: usize = 0;
+    var entries = s.checker.local_alias_origins.iterator();
+    while (entries.next()) |entry| {
+        if (s.hir.kindOf(entry.value_ptr.*) != .interface_decl) continue;
+        const definition = s.ti.genericDefinition(entry.key_ptr.*).?;
+        try T.expect(definition.body != types.Primitive.none);
+        try T.expectEqual(s.hir.typeOf(entry.value_ptr.*), definition.body);
+        completed += 1;
+    }
+    try T.expect(completed > 0);
 }
