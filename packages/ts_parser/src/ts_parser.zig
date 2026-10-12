@@ -14983,7 +14983,10 @@ pub const Parser = struct {
             return false;
         }
         const id1 = self.tokens[after_bracket];
-        if (id1.kind != .identifier) {
+        // tsc's `isUnambiguouslyIndexSignature` takes any identifier or
+        // keyword as the parameter name: @types/node writes
+        // `[symbol: string]: FunctionSignature`.
+        if (id1.kind != .identifier and !id1.kind.isKeyword()) {
             self.cursor = checkpoint;
             return false;
         }
@@ -26171,6 +26174,20 @@ test "parser: class modifier keywords may be property names" {
     const top = hir_mod.blockStmts(&s.hir, root)[0];
     const members = hir_mod.classMembers(&s.hir, top);
     try T.expectEqual(@as(usize, 3), members.len);
+}
+
+test "parser: keyword-named index signature parameters" {
+    var s = try newTestSetup(
+        \\interface A { [symbol: string]: number; [string: string]: number }
+        \\type B = { readonly symbols: { [symbol: string]: bigint } };
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 2), members.len);
+    try T.expectEqual(hir_mod.NodeKind.index_signature, s.hir.kindOf(members[0]));
 }
 
 test "parser: reserved words may follow a class member modifier" {
