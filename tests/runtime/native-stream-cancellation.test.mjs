@@ -163,3 +163,27 @@ try {
  console.log('FileHandle byte/BYOB streams, autoClose on EOF and cancellation, retained ownership and option/lock validation passed')
 } finally {fs.rmSync(dir,{recursive:true,force:true})}
 }
+
+// FileHandle writeFile forwards durability options to the native write lane.
+{
+ const fs = await import("node:fs")
+ const { tmpdir } = await import("node:os")
+ const { join } = await import("node:path")
+const dir=fs.mkdtempSync(join(tmpdir(),'home-filehandle-options-'))
+try {
+ const path=join(dir,'data.txt'), handle=await fs.promises.open(path,'w+')
+ try {
+  await assert.rejects(handle.writeFile('invalid flush',{flush:'yes'}),{code:'ERR_INVALID_ARG_TYPE'})
+  await handle.writeFile('ordinary data',{flush:true})
+  assert.equal(fs.readFileSync(path,'utf8'),'ordinary data')
+  await fs.promises.writeFile(handle,' second',{flush:true})
+  assert.equal((await fs.promises.readFile(handle)).length,0)
+ } finally {await handle.close()}
+ const readHandle=await fs.promises.open(path,'r')
+ try {
+  await readHandle.read(Buffer.alloc(3),0,3,null)
+  assert.equal((await fs.promises.readFile(readHandle)).toString(),'inary data second')
+ } finally {await readHandle.close()}
+ console.log('FileHandle flush options and public read/writeFile preserve native handle operations and offsets')
+} finally {fs.rmSync(dir,{recursive:true,force:true})}
+}

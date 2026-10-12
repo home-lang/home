@@ -379,7 +379,7 @@ function asyncWrap(fn: any, name: string) {
   class FileHandle extends EventEmitter {
     constructor(fd, flag) {
       super();
-      this[kFd] = fd ? fd : -1;
+      this[kFd] = fd ?? -1;
       this[kRefs] = 1;
       this[kClosePromise] = null;
       this[kFlag] = flag;
@@ -627,6 +627,7 @@ function asyncWrap(fn: any, name: string) {
       throwEBADFIfNecessary("writeFile", fd);
       let encoding: string = "utf8";
       let signal: AbortSignal | undefined = undefined;
+      let flush = false;
 
       if (options == null || typeof options === "function") {
       } else if (typeof options === "string") {
@@ -634,6 +635,7 @@ function asyncWrap(fn: any, name: string) {
       } else {
         encoding = options?.encoding ?? encoding;
         signal = options?.signal ?? undefined;
+        flush = options?.flush ?? false;
       }
 
       try {
@@ -642,6 +644,7 @@ function asyncWrap(fn: any, name: string) {
           encoding,
           flag: this[kFlag],
           signal,
+          flush,
         });
       } finally {
         this[kUnref]();
