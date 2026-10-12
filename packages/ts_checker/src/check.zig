@@ -10484,7 +10484,9 @@ pub const Checker = struct {
                     } else {
                         try self.applyFlowNarrowSnapshot(&reachable_flow);
                     }
-                } else if (self.statementDefinitelyTransfersControl(i.then_branch)) {
+                } else if (self.statementDefinitelyTransfersControl(i.then_branch) or
+                    self.statementEndsWithExitingCall(i.then_branch))
+                {
                     try self.applyTypeGuard(i.cond, false);
                 } else {
                     try self.applyNullishGuardAssignmentFlow(i.cond, i.then_branch);
@@ -19237,6 +19239,30 @@ pub const Checker = struct {
     fn caseClauseStatementsExit(self: *Checker, stmts: []const NodeId) bool {
         if (stmts.len == 0) return false;
         return self.statementDefinitelyTransfersControl(stmts[stmts.len - 1]);
+    }
+
+    /// `if (!name) { process.exit(1) }`: the branch ends in a call that tsc
+    /// treats as an exit (explicit `never` return through an annotated
+    /// name, or a failing assertion), so the code after the `if` sees the
+    /// negated guard just as it does after `return`/`throw`.
+    fn statementEndsWithExitingCall(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id) return false;
+        return switch (self.hir.kindOf(node)) {
+            .call_expr => self.callExpressionDefinitelyExits(node),
+            .block_stmt => blk: {
+                const stmts = hir_mod.blockStmts(self.hir, node);
+                var index = stmts.len;
+                while (index > 0) {
+                    index -= 1;
+                    switch (self.hir.kindOf(stmts[index])) {
+                        .type_alias_decl, .interface_decl => continue,
+                        else => break :blk self.statementEndsWithExitingCall(stmts[index]),
+                    }
+                }
+                break :blk false;
+            },
+            else => false,
+        };
     }
 
     fn statementDefinitelyTransfersControl(self: *Checker, node: NodeId) bool {
@@ -279337,6 +279363,22 @@ fn sourceEmitsPropertyDoesNotExist(source: []const u8) !bool {
         if (d.code == TsCodes.property_does_not_exist) return true;
     }
     return false;
+}
+
+test "checker: an exiting call in a guard branch narrows what follows" {
+    // `if (!projectName) { console.error(...); process.exit(1) }` in Craft's
+    // create-craft CLI: `exit` returns an explicit `never` through an
+    // annotated name, so `name` is a string after the `if`.
+    const s = try newSetup(
+        \\declare var proc: { exit(code?: number): never };
+        \\declare function die(): never;
+        \\declare function take(s: string): void;
+        \\function a(name?: string) { if (!name) { take("missing"); proc.exit(1) } take(name) }
+        \\function b(name?: string) { if (!name) die(); take(name) }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| try T.expect(d.code != 2345);
 }
 
 test "checker: named member on interface with call signature resolves (no TS2339)" {
