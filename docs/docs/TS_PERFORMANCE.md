@@ -10,11 +10,13 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-The latest complete timing matrix is `20261010T081352Z`, measuring the landed
-[live-body write proof](#adopted-write-proof-benchmark-matrix-2026-10-10-utc)
-under protocol 5. Home leads **1/20** workloads and beats native TS 7 on
-**13/20**; the broader goal remains incomplete. Its complete 20-workload table,
-150 admissions and 3,000 timing samples are retained in that report.
+The latest complete matrix is the [paused declaration-identity continuation](#landed-declaration-identity-matrix-resumed),
+`20261011T232901Z-resumed`, under protocol 5. Home has the lowest median on
+**1/20** workloads and a lower median than native TS7 on **9/20**. All 150
+admissions and 3,000 samples are retained. Shared-host load and the pause prevent
+causal or portable speed conclusions; the broader goal remains incomplete.
+The earlier [live-body write-proof matrix](#adopted-write-proof-benchmark-matrix-2026-10-10-utc)
+`20261010T081352Z` remains a separate historical snapshot, not a patch A/B baseline.
 The `20261010T051920Z` table below is the earlier protocol-4 historical snapshot,
 not the latest ranking.
 
@@ -614,10 +616,92 @@ payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
 
+## Landed declaration identity matrix resumed
+
+The complete paused five-pin matrix measures the frozen compiler from landed
+[`4b4060e05`](https://github.com/home-lang/home/commit/4b4060e053874895573a8413b83099b0d14b4032).
+Home has the lowest median on **1/20** workloads (startup), and beats native
+TS7 on **9/20**; it trails the fastest competitor on the other 19. These are
+descriptive medians, not significance, equivalence or causal patch claims.
+The [original interrupted checkpoint](#interrupted-landed-source-matrix) remains
+unranked on its own. Recovery is tracked in [#880](https://github.com/home-lang/home/issues/880)
+under [#416](https://github.com/home-lang/home/issues/416).
+
+All five byte-pinned images passed **150/150 protocol-5 admissions** before
+timing. The same 20 positive projects, negative controls, strict no-emit flags,
+minimal ambient declarations and diagnostic contracts remain unchanged.
+Original 621 successful samples were copied verbatim; exactly **2,379 missing
+slots** were measured, with zero repeats. Reexports round 004 retains its
+original Bun sample and supplements only TS6, TS7, Home and Rust. Three original
+warmups were retained for already sampled workloads; untouched workloads used
+three warmups, with all new outputs retained.
+
+All 16 continuation phase guards exit 0 under unchanged 600-second/3,840-MB
+limits, the shared machine lock and 1,024/512-MB disk floors. Finalization also
+exits 0: **600 rounds / 3,000 successful samples**, unchanged before/after
+compiler, tool, harness, corpus and host provenance, and complete disjoint raw
+lineage. Its peak is 24 MB and host low-water 39%; the large-predicate phase
+peaks at 394 MB. No source, library, compiler, row, adverse sample or failure was
+removed, no guard limit raised, and no diagnostic contract weakened.
+
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Pins are
+TS6.0.3, direct native TS7.0.2, Home0.1.0, Rust tsc-rs0.1.0/TS7.1.0-dev, and
+Bun1.4.3-canary.1+bd599f5af. Tools are Node26.10.0, Hyperfine1.20.0 and Python3.9.6.
+Home native SHA-256 is
+`bb4c00dd2fdfba719098150082b696b4f9ba8ab65a7a47640b197540420cf771`;
+its source/build qualification remains in the separate [landed report](#declaration-identity-recovery-landed).
+
+| Workload | TS6 median | Native TS7 median | Home median | Rust median | Bun median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 261.3 ms | 29.1 ms | 32.6 ms | 29.0 ms | 17.4 ms | 1.88× slower |
+| `class_hierarchy` | 235.6 ms | 26.2 ms | 27.5 ms | 22.4 ms | 17.3 ms | 1.59× slower |
+| `commonjs_graph` | 188.4 ms | 22.7 ms | 23.2 ms | 18.7 ms | 15.0 ms | 1.55× slower |
+| `control_flow` | 1502.8 ms | 137.5 ms | 144.3 ms | 100.8 ms | 55.3 ms | 2.61× slower |
+| `deep_types` | 1898.3 ms | 127.5 ms | 138.2 ms | 72.5 ms | 70.7 ms | 1.95× slower |
+| `destructuring` | 184.7 ms | 20.9 ms | 18.1 ms | 19.0 ms | 14.7 ms | 1.23× slower |
+| `generic_calls` | 808.0 ms | 72.5 ms | 79.6 ms | 65.8 ms | 45.4 ms | 1.75× slower |
+| `import_graph` | 974.7 ms | 74.0 ms | 91.2 ms | 63.3 ms | 117.9 ms | 1.44× slower |
+| `interface_composition` | 264.1 ms | 40.0 ms | 41.7 ms | 30.7 ms | 23.0 ms | 1.81× slower |
+| `many_files` | 1067.2 ms | 93.8 ms | 99.8 ms | 55.1 ms | 51.1 ms | 1.95× slower |
+| `null_safe_access` | 286.9 ms | 35.9 ms | 29.2 ms | 31.9 ms | 22.9 ms | 1.28× slower |
+| `overload_resolution` | 268.8 ms | 40.3 ms | 28.7 ms | 32.1 ms | 24.4 ms | 1.18× slower |
+| `recursive_generics` | 194.4 ms | 47.2 ms | 17.9 ms | 39.1 ms | 12.7 ms | 1.41× slower |
+| `reexport_graph` | 550.7 ms | 37.6 ms | 72.4 ms | 31.5 ms | 30.3 ms | 2.39× slower |
+| `startup` | 255.6 ms | 28.7 ms | 10.5 ms | 23.7 ms | 22.8 ms | **2.18× faster** |
+| `structural_objects` | 258.4 ms | 36.1 ms | 27.1 ms | 28.9 ms | 22.1 ms | 1.23× slower |
+| `tsx_components` | 600.8 ms | 45.3 ms | 50.4 ms | 39.7 ms | 29.2 ms | 1.73× slower |
+| `type_predicates` | 1903.9 ms | 186.1 ms | 163.6 ms | 151.9 ms | 101.0 ms | 1.62× slower |
+| `type_predicates_large` | 3215.9 ms | 789.8 ms | 596.0 ms | 680.4 ms | 436.2 ms | 1.37× slower |
+| `variadic_tuples` | 323.2 ms | 56.0 ms | 39.3 ms | 41.6 ms | 23.6 ms | 1.66× slower |
+
+Counts use unrounded medians; display ratios rounding to 1.00× are near ties,
+not statistical equivalence. Absolute timings vary substantially across the
+paused, shared-host phases. The change from the older matrix's 13/20 TS7 count
+to 9/20 here does **not** establish a causal compiler regression. Control flow
+(2.61×) and reexports (2.39×) are observed gaps, not proof of their internal cause;
+current-image profiling must precede an optimization and frozen exact-parent
+qualification. Checked JS remains 1.88× slower than the fastest competitor.
+
+The [complete resumed evidence](../../bench/vs_tsgo/evidence/20261012-declaration-resumed-matrix-880.tar.gz)
+contains **1,502 independently verified payloads**: all original checkpoint
+bytes, 476 raw supplements, assembled rounds, admissions, warmups, phase/guard
+records, execution code/context, full report and unrounded statistics. Every
+archived evidence file matches its retained bytes, including local metadata
+paths required by lineage hashes. Archive SHA-256:
+`dbc34db4978468cc4078f843eed4823f7fc83e79214740f210184d5354e5c81d`.
+
+Linux dispatch again returned HTTP422 with Actions disabled, despite API
+metadata saying active/enabled; zero runs were created and settings were not
+changed. Full Zod still has 233 TS errors and two HM9002 warnings and remains
+unadmitted/untimed. Other platforms and unsupported competitors remain open;
+this complete same-host matrix is not universal leadership.
+
 ## Interrupted landed source matrix
 
-The fresh five-pin matrix for landed declaration-identity source `4b4060e05`
-is **incomplete and unranked**. The unchanged disk guard terminated measurement
+The original five-pin run for landed declaration-identity source `4b4060e05`
+remains **incomplete and unranked on its own**. Its complete continuation is
+[reported separately above](#landed-declaration-identity-matrix-resumed).
+The unchanged disk guard terminated original measurement
 at 510 MB available, below its 512 MB critical floor. All original evidence
 remains; the earlier complete matrix cannot be relabeled as this newer source.
 Recovery is tracked in [#880](https://github.com/home-lang/home/issues/880),
@@ -674,7 +758,8 @@ with [#863](https://github.com/home-lang/home/issues/863) and
 [#548](https://github.com/home-lang/home/issues/548) linked. All full source gates,
 strict actual-CLI controls and the predeclared exact-parent risk protocol pass.
 This is not a universal benchmark win: the previous five-pin ranking describes
-older source, a fresh matrix is still required, and full Zod remains unadmitted.
+older source, the [complete resumed matrix](#landed-declaration-identity-matrix-resumed)
+has separate shared-host limitations, and full Zod remains unadmitted.
 
 The fix preserves declaration-owned non-generic alias identity through forward
 lookup and contextual checks. It resolves completed surfaces for typeof,

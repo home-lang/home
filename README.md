@@ -115,31 +115,34 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261010T081352Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Resumed result `20261011T232901Z-resumed` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
+The run was interrupted and continued without repeating recorded samples.
+Shared-host load and the pause limit interpretation; this is not a causal patch comparison.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 67.8 ms | 7.8 ms | 3.1 ms | 6.4 ms | 6.6 ms | **2.06× faster** |
-| 256 independent files | 207.4 ms | 23.3 ms | 22.4 ms | 16.7 ms | 13.5 ms | 1.66× slower |
-| 128-module import chain | 136.6 ms | 15.6 ms | 18.3 ms | 12.0 ms | 16.0 ms | 1.53× slower |
-| 64 modules through 8 barrel re-exports | 102.2 ms | 11.0 ms | 12.5 ms | 9.3 ms | 8.9 ms | 1.41× slower |
-| Deep conditional / mapped / template types | 142.3 ms | 22.8 ms | 22.4 ms | 15.3 ms | 14.3 ms | 1.56× slower |
-| Recursive generics | 165.5 ms | 42.5 ms | 15.7 ms | 34.9 ms | 10.7 ms | 1.47× slower |
-| Checked JavaScript with JSDoc | 206.6 ms | 23.6 ms | 27.7 ms | 23.3 ms | 14.3 ms | 1.94× slower |
-| Control-flow narrowing (256 unions) | 199.4 ms | 28.9 ms | 27.1 ms | 26.0 ms | 17.2 ms | 1.57× slower |
-| Null-safe access (256 families) | 196.9 ms | 27.3 ms | 22.2 ms | 23.6 ms | 17.2 ms | 1.29× slower |
-| 2,048 type-predicate families | 1,045.1 ms | 325.4 ms | 255.9 ms | 277.7 ms | 166.4 ms | 1.54× slower |
+| Startup (one small file) | 255.6 ms | 28.7 ms | 10.5 ms | 23.7 ms | 22.8 ms | **2.18× faster** |
+| 256 independent files | 1,067.2 ms | 93.8 ms | 99.8 ms | 55.1 ms | 51.1 ms | 1.95× slower |
+| 128-module import chain | 974.7 ms | 74.0 ms | 91.2 ms | 63.3 ms | 117.9 ms | 1.44× slower |
+| 64 modules through 8 barrel re-exports | 550.7 ms | 37.6 ms | 72.4 ms | 31.5 ms | 30.3 ms | 2.39× slower |
+| Deep conditional / mapped / template types | 1,898.3 ms | 127.5 ms | 138.2 ms | 72.5 ms | 70.7 ms | 1.95× slower |
+| Recursive generics | 194.4 ms | 47.2 ms | 17.9 ms | 39.1 ms | 12.7 ms | 1.41× slower |
+| Checked JavaScript with JSDoc | 261.3 ms | 29.1 ms | 32.6 ms | 29.0 ms | 17.4 ms | 1.88× slower |
+| Control-flow narrowing (256 unions) | 1,502.8 ms | 137.5 ms | 144.3 ms | 100.8 ms | 55.3 ms | 2.61× slower |
+| Null-safe access (256 families) | 286.9 ms | 35.9 ms | 29.2 ms | 31.9 ms | 22.9 ms | 1.28× slower |
+| 2,048 type-predicate families | 3,215.9 ms | 789.8 ms | 596.0 ms | 680.4 ms | 436.2 ms | 1.37× slower |
 
 In this dated matrix, Home has the lowest median on **1 / 20** admitted workloads (startup)
-and is faster than native TypeScript 7 on **13 / 20**. These are
+and is faster than native TypeScript 7 on **9 / 20**. These are
 descriptive medians, not statistical-significance claims. The complete
 table, methodology, machine and toolchain versions are in
-[TypeScript performance](docs/docs/TS_PERFORMANCE.md#adopted-write-proof-benchmark-matrix-2026-10-10-utc).
+[TypeScript performance](docs/docs/TS_PERFORMANCE.md#landed-declaration-identity-matrix-resumed).
 All **600 rounds / 3,000 samples / 150 admissions** are retained; no timings
-were repeated or filtered. Current fastest-competitor gaps include null-safe
-access **1.29×**, checked JS **1.94×** and interfaces **1.88×** slower, tracked
+were repeated or filtered. All original checkpoint bytes and supplements are
+checksum-verified. Current fastest-competitor gaps include null-safe
+access **1.28×**, checked JS **1.88×** and interfaces **1.81×** slower, tracked
 under [#864](https://github.com/home-lang/home/issues/864). This is a full
 competitor comparison, not a causal patch A/B.
 The matrix uses protocol 5 with **150/150 pre-timing admissions**, checking
@@ -186,8 +189,8 @@ and [raw evidence](bench/vs_tsgo/evidence/20261010-jsdoc-single-line-scan-reject
 Declaration/context identity recovery under [#879](https://github.com/home-lang/home/issues/879)
 landed in `4b4060e05` after complete source gates, strict real-CLI admission and
 the frozen exact-parent regression-risk protocol. The prior competitor ranking
-above is not a measurement of this new source. Its fresh five-pin matrix stopped
-at the disk guard and remains unranked; continuation must preserve recorded samples.
+above measures its frozen compiler image. The original interrupted run remains
+unranked separately; the complete continuation preserves every recorded sample.
 
 | Landed owned alias qualification | Result |
 |---|---|
@@ -195,7 +198,7 @@ at the disk guard and remains unranked; continuation must preserve recorded samp
 | Extended / six-image protocol-5 admission | 294/294 and 180/180 pass; unchanged inputs/provenance |
 | Exact-parent risk qualification | 590 pairs retained; no wholly negative independent interval; inconclusive is not equivalence |
 | Full unchanged Zod | 233 TS + two HM9002; unadmitted and untimed |
-| New-source five-pin matrix | Interrupted: 621/3,000 samples retained; no complete ranking ([checkpoint report](docs/docs/TS_PERFORMANCE.md#interrupted-landed-source-matrix)) |
+| New-source five-pin matrix | Complete paused continuation: 3,000 samples; 1/20 lowest medians, 9/20 faster than TS7 ([report](docs/docs/TS_PERFORMANCE.md#landed-declaration-identity-matrix-resumed)) |
 
 See the [complete qualification and timing report](docs/docs/TS_PERFORMANCE.md#declaration-identity-recovery-landed)
 and [complete raw evidence](bench/vs_tsgo/evidence/20261011-owned-alias-qualified-landed-879.tar.gz).
