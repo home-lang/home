@@ -4,7 +4,8 @@
 //! destroying/replacing that storage. IDs are never reused during this registry
 //! lifetime, so an old declaration handle cannot alias a replacement source.
 //! Handles are NOT local HIR NodeIds; resolve them through declaration().
-//! Registry and target type pool require exclusive access during importOwner.
+//! The registry locks itself, so imports into distinct target pools may run
+//! concurrently; a target pool needs exclusive access during importOwner.
 //! Untagged provenance belongs to the source owner's local HIR; tagged values
 //! are handles already owned by this registry and survive transitive transfer.
 //! Never place handles from another registry in a source or target pool.
@@ -63,11 +64,35 @@ pub const Imported = struct {
     }
 };
 
+/// Short critical sections only (a lookup or one append), so spin.
+const SpinMutex = struct {
+    state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn lock(self: *SpinMutex) void {
+        while (self.state.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    fn unlock(self: *SpinMutex) void {
+        self.state.store(false, .release);
+    }
+};
+
 pub const Registry = struct {
     allocator: std.mem.Allocator,
     owners: std.ArrayListUnmanaged(?Source) = .empty,
     nodes: std.ArrayListUnmanaged(NodeKey) = .empty,
     node_ids: std.AutoHashMapUnmanaged(NodeKey, hir.NodeId) = .empty,
+    /// Guards `owners`, `nodes` and `node_ids`. The type transfer itself runs
+    /// outside it: one file's import no longer stalls every other worker.
+    mutex: SpinMutex = .{},
+
+    fn lockShared(self: *const Registry) *SpinMutex {
+        const mutex = @constCast(&self.mutex);
+        mutex.lock();
+        return mutex;
+    }
 
     pub fn init(allocator: std.mem.Allocator) Registry {
         return .{ .allocator = allocator };
@@ -83,12 +108,20 @@ pub const Registry = struct {
     /// Every registration denotes a distinct immutable owner/revision, even
     /// when a path or memory address is reused. Callers cache by this ID.
     pub fn register(self: *Registry, view: Source) Error!OwnerId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.owners.items.len == std.math.maxInt(u32)) return error.TypeIdOverflow;
         try self.owners.append(self.allocator, view);
         return @fromBackingInt(@intCast(self.owners.items.len));
     }
 
     pub fn source(self: *const Registry, id: OwnerId) Error!Source {
+        const mutex = self.lockShared();
+        defer mutex.unlock();
+        return self.sourceLocked(id);
+    }
+
+    fn sourceLocked(self: *const Registry, id: OwnerId) Error!Source {
         const index = @backingInt(id);
         if (index == 0 or index > self.owners.items.len) return error.InvalidOwner;
         return self.owners.items[index - 1] orelse error.InvalidOwner;
@@ -98,24 +131,30 @@ pub const Registry = struct {
     /// retained, but no source pointers remain reachable through this owner.
     /// Dependent imported records must no longer be used for semantic lookup.
     pub fn unregister(self: *Registry, id: OwnerId) Error!void {
-        _ = try self.source(id);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = try self.sourceLocked(id);
         self.owners.items[@backingInt(id) - 1] = null;
     }
 
     pub fn declaration(self: *const Registry, handle: hir.NodeId) Error!Declaration {
         if (!isDeclarationHandle(handle)) return error.InvalidDeclaration;
+        const mutex = self.lockShared();
+        defer mutex.unlock();
         const raw_index = handle & declaration_handle_index_mask;
         if (raw_index == 0 or raw_index > self.nodes.items.len) return error.InvalidDeclaration;
         const key = self.nodes.items[raw_index - 1];
-        const owner = try self.source(key.owner);
+        const owner = try self.sourceLocked(key.owner);
         if (key.node == 0 or key.node >= owner.hir.nodeCount()) return error.InvalidDeclaration;
         const location = owner.hir.spanOf(key.node);
         if (location.start > location.end or location.end > owner.text.len) return error.InvalidDeclaration;
         return .{ .owner = key.owner, .source = owner, .node = key.node };
     }
 
-    fn internDeclaration(self: *Registry, owner: OwnerId, node: hir.NodeId) Error!hir.NodeId {
-        const view = try self.source(owner);
+    fn internDeclaration(self: *Registry, owner: OwnerId, node: hir.NodeId, added: ?*std.ArrayListUnmanaged(u32)) Error!hir.NodeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const view = try self.sourceLocked(owner);
         if (node == 0 or isDeclarationHandle(node) or node >= view.hir.nodeCount()) return error.InvalidDeclaration;
         const location = view.hir.spanOf(node);
         if (location.start > location.end or location.end > view.text.len) return error.InvalidDeclaration;
@@ -124,18 +163,29 @@ pub const Registry = struct {
         if (self.nodes.items.len == declaration_handle_index_mask) return error.TypeIdOverflow;
         try self.nodes.ensureUnusedCapacity(self.allocator, 1);
         try self.node_ids.ensureUnusedCapacity(self.allocator, 1);
+        if (added) |list| try list.ensureUnusedCapacity(self.allocator, 1);
+        if (added) |list| list.appendAssumeCapacity(@intCast(self.nodes.items.len));
         self.nodes.appendAssumeCapacity(key);
         const id: hir.NodeId = declaration_handle_tag | @as(hir.NodeId, @intCast(self.nodes.items.len));
         self.node_ids.putAssumeCapacityNoClobber(key, id);
         return id;
     }
 
-    fn cancelDeclarations(self: *Registry, first: usize) void {
-        for (self.nodes.items[first..]) |key| {
-            const removed = self.node_ids.remove(key);
+    /// Withdraw the declarations one failed import added (`added` holds
+    /// their indices in `nodes`). When nothing was appended after them the
+    /// records are dropped; otherwise a concurrent import owns later handles,
+    /// so the withdrawn slots stay as unreachable tombstones.
+    fn cancelDeclarations(self: *Registry, added: []const u32) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (added) |index| {
+            const removed = self.node_ids.remove(self.nodes.items[index]);
             std.debug.assert(removed);
+            self.nodes.items[index] = .{ .owner = .none, .node = 0 };
         }
-        self.nodes.items.len = first;
+        while (self.nodes.items.len > 0 and self.nodes.items[self.nodes.items.len - 1].owner == .none) {
+            self.nodes.items.len -= 1;
+        }
     }
 
     /// Import one owner's payloads, semantics, and declaration mappings as a
@@ -149,9 +199,10 @@ pub const Registry = struct {
         owner: OwnerId,
     ) Error!Imported {
         const view = try self.source(owner);
-        const first = self.nodes.items.len;
-        errdefer self.cancelDeclarations(first);
-        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings };
+        var added: std.ArrayListUnmanaged(u32) = .empty;
+        defer added.deinit(self.allocator);
+        errdefer self.cancelDeclarations(added.items);
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added };
         const imported = try checker.checked_transfer.append(target, view.types, view.checked, .{
             .context = &context,
             .string = Context.string,
@@ -160,6 +211,28 @@ pub const Registry = struct {
         });
         return .{ .owner = owner, .types = imported };
     }
+
+    /// Map `id` of `owner`'s pool into `target` without importing the owner,
+    /// for a target that already holds every identity `id` reaches (it
+    /// imported an owner whose pool covers this one). Null means import it.
+    pub fn projectType(
+        self: *Registry,
+        target: *checker.Interner,
+        target_strings: *strings.Interner,
+        owner: OwnerId,
+        id: checker.TypeId,
+    ) Error!?checker.TypeId {
+        const view = try self.source(owner);
+        var added: std.ArrayListUnmanaged(u32) = .empty;
+        defer added.deinit(self.allocator);
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added };
+        return checker.type_transfer.project(target, view.types, .{
+            .context = &context,
+            .string = Context.string,
+            .declaration = Context.node,
+            .owner = @backingInt(owner),
+        }, id);
+    }
 };
 
 const Context = struct {
@@ -167,6 +240,8 @@ const Context = struct {
     owner: OwnerId,
     from: *const strings.Interner,
     to: *strings.Interner,
+    /// Declarations this import created, withdrawn if it fails.
+    added: *std.ArrayListUnmanaged(u32),
 
     fn string(context: *anyopaque, id: hir.StringId) checker.type_transfer.Error!hir.StringId {
         const self: *Context = @ptrCast(@alignCast(context));
@@ -187,7 +262,7 @@ const Context = struct {
             };
             return id;
         }
-        return self.registry.internDeclaration(self.owner, id) catch |err| switch (err) {
+        return self.registry.internDeclaration(self.owner, id, self.added) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.TypeIdOverflow => error.TypeIdOverflow,
             else => error.UnmappedName,
@@ -250,10 +325,10 @@ test "source owners: real declarations remain distinct and stale revisions canno
     defer registry.deinit();
     var first = try Fixture.init();
     const first_owner = try registry.register(first.view());
-    const old = try registry.internDeclaration(first_owner, first.decl);
+    const old = try registry.internDeclaration(first_owner, first.decl, null);
     try T.expect(isDeclarationHandle(old));
     try T.expectError(error.InvalidDeclaration, registry.declaration(first.decl));
-    try T.expectEqual(old, try registry.internDeclaration(first_owner, first.decl));
+    try T.expectEqual(old, try registry.internDeclaration(first_owner, first.decl, null));
     try T.expectEqualStrings(Fixture.text, (try registry.declaration(old)).text());
     try registry.unregister(first_owner);
     first.deinit();
@@ -264,7 +339,7 @@ test "source owners: real declarations remain distinct and stale revisions canno
     defer second.deinit();
     const second_owner = try registry.register(second.view());
     defer registry.unregister(second_owner) catch unreachable;
-    const current = try registry.internDeclaration(second_owner, second.decl);
+    const current = try registry.internDeclaration(second_owner, second.decl, null);
     try T.expect(isDeclarationHandle(current));
     try T.expect(first_owner != second_owner and old != current);
     var context = Context{ .registry = &registry, .owner = second_owner, .from = &second.names, .to = &second.names };
@@ -275,7 +350,7 @@ test "source owners: real declarations remain distinct and stale revisions canno
     try T.expectError(error.InvalidOwner, registry.declaration(old));
     try T.expectError(error.InvalidDeclaration, registry.declaration(0));
     try T.expectError(error.InvalidDeclaration, registry.declaration(current + 1));
-    try T.expectError(error.InvalidDeclaration, registry.internDeclaration(second_owner, second.tree.nodeCount()));
+    try T.expectError(error.InvalidDeclaration, registry.internDeclaration(second_owner, second.tree.nodeCount(), null));
     const span = second.tree.spans.items[second.decl];
     second.tree.spans.items[second.decl].end = Fixture.text.len + 1;
     try T.expectError(error.InvalidDeclaration, registry.declaration(current));
@@ -304,7 +379,7 @@ fn testImportAllocationFailures(allocator: std.mem.Allocator) !void {
     var registry = Registry.init(allocator);
     defer registry.deinit();
     const existing_owner = try registry.register(fixture.view());
-    const existing_handle = try registry.internDeclaration(existing_owner, fixture.decl);
+    const existing_handle = try registry.internDeclaration(existing_owner, fixture.decl, null);
     const owner = try registry.register(fixture.view());
     var target = try checker.Interner.init(allocator);
     defer target.deinit();

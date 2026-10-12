@@ -463,6 +463,82 @@ pub fn append(target: *interner.Interner, source: *const interner.Interner, name
 
 /// Prepare payloads without publishing them, allowing semantic/provenance
 /// preparation to join the same transaction. Caller must commit or deinit.
+/// Map one source type into a target that already holds every identity the
+/// type reaches, keyed by origin (`names.owner` must be set). This is the
+/// cheap path for a target that imported an owner covering `source`
+/// transitively: identity-bearing types (objects, type parameters, generic
+/// definitions, signatures, enum literals) resolve through the target's
+/// `origin_index`; structural types are re-interned from their mapped parts.
+/// Returns null when some reached identity is missing (import the owner then).
+pub fn project(target: *interner.Interner, source: *const interner.Interner, names: Names, root: types.TypeId) Error!?types.TypeId {
+    if (names.owner == 0) return error.InvalidTypeGraph;
+    if (root < types.Primitive.first_dynamic) return root;
+    const allocator = target.gpa;
+    const count = source.pool.typeCount();
+    if (root >= count) return error.InvalidTypeGraph;
+    var relocation: Relocation = .{
+        .allocator = allocator,
+        .ids = try allocator.alloc(types.TypeId, count),
+        .source_count = count,
+        .destination_start = target.pool.typeCount(),
+    };
+    defer relocation.deinit();
+    @memset(relocation.ids, 0);
+    for (0..types.Primitive.first_dynamic) |id| relocation.ids[id] = @intCast(id);
+    const reused = try allocator.alloc(bool, count);
+    defer allocator.free(reused);
+    @memset(reused, false);
+    var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = &.{}, .reused = reused };
+    defer builder.deinit();
+    const Frame = struct { id: types.TypeId, start: usize, len: usize, next: usize = 0 };
+    var stack: std.ArrayListUnmanaged(Frame) = .empty;
+    defer stack.deinit(allocator);
+    var edges: std.ArrayListUnmanaged(types.TypeId) = .empty;
+    defer edges.deinit(allocator);
+    // Identity nodes must already exist; structural nodes are expanded.
+    const enter = struct {
+        fn call(b: *Builder, id: types.TypeId, out: *std.ArrayListUnmanaged(types.TypeId)) Error!enum { mapped, missing, expand } {
+            const flags = b.source.pool.flagsOf(id);
+            const identity = switch (try payloadColumn(flags)) {
+                .generic_definition_payloads, .object_type_payloads, .type_parameter_payloads, .signature_payloads => true,
+                .literal_payloads => flags.is_enum_literal,
+                else => false,
+            };
+            if (identity) return if (b.reuse(id)) .mapped else .missing;
+            try b.dependencies(id, out);
+            return .expand;
+        }
+    }.call;
+    switch (try enter(&builder, root, &edges)) {
+        .mapped => return builder.relocation.ids[root],
+        .missing => return null,
+        .expand => {},
+    }
+    try stack.append(allocator, .{ .id = root, .start = 0, .len = edges.items.len });
+    while (stack.items.len != 0) {
+        const top = &stack.items[stack.items.len - 1];
+        if (top.next < top.len) {
+            const child = edges.items[top.start + top.next];
+            top.next += 1;
+            if (child >= count) return error.InvalidTypeGraph;
+            if (child < types.Primitive.first_dynamic or builder.relocation.ids[child] != 0) continue;
+            for (stack.items) |frame| if (frame.id == child) return null; // structural cycle
+            const start = edges.items.len;
+            switch (try enter(&builder, child, &edges)) {
+                .mapped => continue,
+                .missing => return null,
+                .expand => try stack.append(allocator, .{ .id = child, .start = start, .len = edges.items.len - start }),
+            }
+        } else {
+            const finished = top.*;
+            builder.relocation.ids[finished.id] = try builder.materialize(finished.id);
+            edges.items.len = finished.start;
+            stack.items.len -= 1;
+        }
+    }
+    return builder.relocation.ids[root];
+}
+
 pub fn prepare(target: *interner.Interner, source: *const interner.Interner, names: Names) Error!Pending {
     if (target == source or target.pool.headers.items.ptr == source.pool.headers.items.ptr) return error.InvalidTypeGraph;
     const allocator = target.gpa;

@@ -179,6 +179,10 @@ pub const File = struct {
     /// Stable checked-source identity in `Program.owners`. Tombstoned before
     /// the compilation storage is destroyed or replaced.
     owner: source_owners.OwnerId = .none,
+    /// Owners whose complete type pools this file's pool contains: its own
+    /// plus everything covered by the owners it imported (a transfer copies
+    /// an owner's whole pool). Sorted; read and written under owners_mutex.
+    covered_owners: []source_owners.OwnerId = &.{},
     /// Outgoing import edges — file ids this file imports from.
     imports: std.ArrayListUnmanaged(FileId),
     /// True for `.d.ts` / `.d.hm` / `.d.home` declaration-only files.
@@ -344,6 +348,8 @@ const ImportedProgramGlobals = struct {
     gpa: std.mem.Allocator,
     imports: std.ArrayListUnmanaged(source_owners.Imported) = .empty,
     import_owners: std.ArrayListUnmanaged(source_owners.OwnerId) = .empty,
+    /// Sorted owners whose pools the file now holds (see `File.covered_owners`).
+    covered: std.ArrayListUnmanaged(source_owners.OwnerId) = .empty,
     checked: std.ArrayListUnmanaged(*const ts_driver.CheckedTypes) = .empty,
     values: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
     types: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
@@ -352,6 +358,7 @@ const ImportedProgramGlobals = struct {
         for (self.imports.items) |*imported| imported.deinit();
         self.imports.deinit(self.gpa);
         self.import_owners.deinit(self.gpa);
+        self.covered.deinit(self.gpa);
         self.checked.deinit(self.gpa);
         self.values.deinit(self.gpa);
         self.types.deinit(self.gpa);
@@ -654,6 +661,8 @@ pub const Program = struct {
             defer self.owners_mutex.unlock();
             self.owners.unregister(f.owner) catch unreachable;
             f.owner = .none;
+            self.gpa.free(f.covered_owners);
+            f.covered_owners = &.{};
         }
         if (f.compilation) |compilation| {
             compilation.deinit();
@@ -833,6 +842,66 @@ pub const Program = struct {
         return order.toOwnedSlice(self.gpa);
     }
 
+    /// A global's type in this file's pool: through the owner's relocation
+    /// when it was imported, otherwise projected through a covering import.
+    fn importedOwnerGlobalType(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        result: *const ImportedProgramGlobals,
+        owner: BoundGlobal,
+    ) ProgramError!?ts_driver.TypeId {
+        if (result.importedFor(owner.file.owner)) |imported| return importedBoundGlobalType(imported, owner);
+        if (!ownerCovered(result.covered.items, owner.file.owner)) return null;
+        const source_type = boundGlobalSourceType(owner) orelse return null;
+        return self.owners.projectType(
+            &compilation.type_interner,
+            &compilation.interner,
+            owner.file.owner,
+            source_type,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => null,
+        };
+    }
+
+    fn ownerCovered(covered: []const source_owners.OwnerId, owner: source_owners.OwnerId) bool {
+        return std.sort.binarySearch(source_owners.OwnerId, covered, owner, struct {
+            fn order(target: source_owners.OwnerId, item: source_owners.OwnerId) std.math.Order {
+                return std.math.order(@backingInt(target), @backingInt(item));
+            }
+        }.order) != null;
+    }
+
+    /// Insert `owners` into the sorted, duplicate-free `covered` list.
+    fn addCoveredOwners(
+        gpa: std.mem.Allocator,
+        covered: *std.ArrayListUnmanaged(source_owners.OwnerId),
+        owners: []const source_owners.OwnerId,
+    ) error{OutOfMemory}!void {
+        for (owners) |owner| {
+            var index: usize = 0;
+            while (index < covered.items.len and @backingInt(covered.items[index]) < @backingInt(owner)) index += 1;
+            if (index < covered.items.len and covered.items[index] == owner) continue;
+            try covered.insert(gpa, index, owner);
+        }
+    }
+
+    /// The owner-local type of a bound global (its binding or declaration).
+    fn boundGlobalSourceType(owner: BoundGlobal) ?ts_driver.TypeId {
+        const compilation = owner.file.compilation orelse return null;
+        for (owner.symbol.decls.items) |decl| {
+            const kind = compilation.hir.kindOf(decl);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                const variable = hir_mod_ns.varDeclOf(&compilation.hir, decl);
+                if (boundPatternIdentifierType(compilation, variable.name, owner.symbol.name)) |binding_type| return binding_type;
+            }
+            const source_type = compilation.hir.typeOf(decl);
+            if (source_type == ts_driver.Primitive.none) continue;
+            return source_type;
+        }
+        return null;
+    }
+
     fn importedBoundGlobalType(
         imported: *const source_owners.Imported,
         owner: BoundGlobal,
@@ -940,34 +1009,57 @@ pub const Program = struct {
         var references: ?GlobalReferenceNames = null;
         defer if (references) |*facts| facts.deinit(self.gpa);
 
-        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
-            if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
-            for (owners.items) |owner| {
-                if (owner.file == file or owner.file.owner == .none or
-                    result.importedFor(owner.file.owner) != null) continue;
-                self.owners_mutex.lock();
-                var imported = self.owners.importOwner(
-                    &compilation.type_interner,
-                    &compilation.interner,
-                    owner.file.owner,
-                ) catch |err| {
-                    self.owners_mutex.unlock();
-                    return switch (err) {
-                        error.OutOfMemory => error.OutOfMemory,
-                        else => error.EmitError,
-                    };
-                };
-                self.owners_mutex.unlock();
-                result.import_owners.append(self.gpa, owner.file.owner) catch |err| {
-                    imported.deinit();
-                    return err;
-                };
-                result.imports.append(self.gpa, imported) catch |err| {
-                    _ = result.import_owners.pop();
-                    imported.deinit();
-                    return err;
-                };
+        // Every owner declaring a global this file uses, with what it covers.
+        const Needed = struct { owner: source_owners.OwnerId, covered: []const source_owners.OwnerId };
+        var needed: std.ArrayListUnmanaged(Needed) = .empty;
+        defer needed.deinit(self.gpa);
+        {
+            self.owners_mutex.lock();
+            defer self.owners_mutex.unlock();
+            for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+                if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
+                for (owners.items) |owner| {
+                    if (owner.file == file or owner.file.owner == .none) continue;
+                    for (needed.items) |existing| {
+                        if (existing.owner == owner.file.owner) break;
+                    } else try needed.append(self.gpa, .{ .owner = owner.file.owner, .covered = owner.file.covered_owners });
+                }
             }
+        }
+        // Import the widest owners first. An owner already inside an imported
+        // pool is not transferred again: transfers copy whole pools, so the
+        // naive per-owner import made each file re-walk the same declarations
+        // once per global-declaring file (minutes for @types/node + bun-types).
+        std.sort.block(Needed, needed.items, {}, struct {
+            fn lessThan(_: void, a: Needed, b: Needed) bool {
+                return a.covered.len > b.covered.len;
+            }
+        }.lessThan);
+        for (needed.items) |candidate| {
+            if (ownerCovered(result.covered.items, candidate.owner)) continue;
+            // The registry locks itself around its own tables; the transfer
+            // into this file's private pool runs unlocked.
+            var imported = self.owners.importOwner(
+                &compilation.type_interner,
+                &compilation.interner,
+                candidate.owner,
+            ) catch |err| {
+                return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.EmitError,
+                };
+            };
+            result.import_owners.append(self.gpa, candidate.owner) catch |err| {
+                imported.deinit();
+                return err;
+            };
+            result.imports.append(self.gpa, imported) catch |err| {
+                _ = result.import_owners.pop();
+                imported.deinit();
+                return err;
+            };
+            try addCoveredOwners(self.gpa, &result.covered, candidate.covered);
+            try addCoveredOwners(self.gpa, &result.covered, &.{candidate.owner});
         }
         try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
         for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
@@ -976,8 +1068,7 @@ pub const Program = struct {
             if (key.space == .value) {
                 for (owners.items) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
-                    const imported = result.importedFor(owner.file.owner) orelse continue;
-                    const value_type = importedBoundGlobalType(imported, owner) orelse continue;
+                    const value_type = (try self.importedOwnerGlobalType(compilation, &result, owner)) orelse continue;
                     try result.values.append(self.gpa, .{
                         .name = key.name,
                         .type = value_type,
@@ -994,8 +1085,7 @@ pub const Program = struct {
             var merged_type: ?ts_driver.TypeId = null;
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.owner == .none) continue;
-                const imported = result.importedFor(owner.file.owner) orelse continue;
-                const owner_type = importedBoundGlobalType(imported, owner) orelse continue;
+                const owner_type = (try self.importedOwnerGlobalType(compilation, &result, owner)) orelse continue;
                 merged_type = if (merged_type) |current|
                     try self.mergeImportedGlobalTypes(compilation, current, owner_type)
                 else
@@ -1091,6 +1181,13 @@ pub const Program = struct {
             error.BindError => error.BindError,
             else => error.EmitError,
         };
+        if (file.owner == .none) return;
+        try addCoveredOwners(self.gpa, &imported.covered, &.{file.owner});
+        const covered = try imported.covered.toOwnedSlice(self.gpa);
+        self.owners_mutex.lock();
+        defer self.owners_mutex.unlock();
+        self.gpa.free(file.covered_owners);
+        file.covered_owners = covered;
     }
 
     fn boundSourceIsExternalModule(c: *const ts_driver.Compilation) bool {
