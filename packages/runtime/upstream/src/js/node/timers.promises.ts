@@ -9,7 +9,6 @@ const setTimeoutGlobal = globalThis.setTimeout;
 const setIntervalGlobal = globalThis.setInterval;
 
 function setTimeout(after, value, options = {}) {
-  const arguments_ = [].concat(value ?? []);
   try {
     // If after is a number, but an invalid one (too big, Infinity, NaN), we only want to emit a
     // warning, not throw an error. So we can't call validateNumber as that will throw if the number
@@ -41,7 +40,7 @@ function setTimeout(after, value, options = {}) {
   }
   let onCancel, abortSubscription;
   const returnValue = new Promise((resolve, reject) => {
-    const timeout = setTimeoutGlobal(() => resolve(value), after, ...arguments_);
+    const timeout = setTimeoutGlobal(() => resolve(value), after);
     if (!reference) {
       timeout?.unref?.();
     }
@@ -142,12 +141,27 @@ async function* setInterval(after, value, options = {}) {
   }
 }
 
+const kScheduler = Symbol("kScheduler");
+class Scheduler {
+  constructor() {
+    throw $ERR_ILLEGAL_CONSTRUCTOR();
+  }
+  yield() {
+    if (!this[kScheduler]) throw $ERR_INVALID_THIS("Scheduler");
+    return setImmediate();
+  }
+  wait(delay, options) {
+    if (!this[kScheduler]) throw $ERR_INVALID_THIS("Scheduler");
+    return setTimeout(delay, undefined, options);
+  }
+}
+const scheduler = Reflect.construct(function () {
+  this[kScheduler] = true;
+}, [], Scheduler);
+
 export default {
   setTimeout,
   setImmediate,
   setInterval,
-  scheduler: {
-    wait: (delay, options) => setTimeout(delay, undefined, options),
-    yield: setImmediate,
-  },
+  scheduler,
 };

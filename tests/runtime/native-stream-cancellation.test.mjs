@@ -372,3 +372,30 @@ async function verifyProtectedCancellation() {
   finally { fs.rmSync(directory, { recursive: true, force: true }) }
 }
 verifyProtectedCancellation().catch(error => { throw error })
+
+// Scheduler methods have their own branded contract and opaque result values.
+async function verifySchedulerContract() {
+  const { scheduler, setTimeout: delay, setImmediate: immediate } = await import('node:timers/promises')
+  assert.equal(scheduler.constructor.name, 'Scheduler')
+  assert.throws(() => new scheduler.constructor(), { code: 'ERR_ILLEGAL_CONSTRUCTOR' })
+  assert.equal(scheduler.yield.name, 'yield')
+  assert.equal(scheduler.yield.length, 0)
+  assert.equal(scheduler.wait.name, 'wait')
+  assert.equal(scheduler.wait.length, 2)
+  assert.throws(() => scheduler.yield.call({}), { code: 'ERR_INVALID_THIS' })
+  assert.throws(() => scheduler.wait.call({}, 1), { code: 'ERR_INVALID_THIS' })
+  assert.equal(await scheduler.yield('ignored result', { signal: AbortSignal.abort() }), undefined)
+  assert.equal(await scheduler.wait(1), undefined)
+  const payload = [1, 2]
+  let inspected = 0
+  Object.defineProperty(payload, Symbol.isConcatSpreadable, {
+    get() {
+      inspected++
+      return true
+    },
+  })
+  assert.strictEqual(await delay(1, payload), payload)
+  assert.equal(inspected, 0)
+  assert.strictEqual(await immediate(payload), payload)
+}
+verifySchedulerContract().catch(error => { throw error })
