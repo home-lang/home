@@ -519,6 +519,7 @@ pub fn build(b: *std.Build) void {
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
     const linker_pkg = createPackage(b, "packages/linker/src/linker.zig", target, optimize, zig_test_framework);
     const build_cli_options_pkg = createPackage(b, "src/build_cli_options.zig", target, optimize, zig_test_framework);
+    const crypto_compat_pkg = createPackage(b, "packages/runtime/src/jsc/crypto_compat.zig", target, optimize, zig_test_framework);
     const compiler_pkg = createPackage(b, "packages/compiler/src/borrow_check_pass.zig", target, optimize, zig_test_framework);
     const optimizer_pkg = createPackage(b, "packages/optimizer/src/pass_manager.zig", target, optimize, zig_test_framework);
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
@@ -1474,6 +1475,9 @@ pub fn build(b: *std.Build) void {
     const build_cli_options_tests = b.addTest(.{ .root_module = build_cli_options_pkg });
     const run_build_cli_options_tests = b.addRunArtifact(build_cli_options_tests);
 
+    const crypto_compat_tests = b.addTest(.{ .root_module = crypto_compat_pkg });
+    const run_crypto_compat_tests = b.addRunArtifact(crypto_compat_tests);
+
     const home_rt_no_jsc_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/home_rt_no_jsc_test.zig"),
@@ -1816,6 +1820,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_linker_tests.step, test_filter, "linker");
     dependOnTest(test_step, &run_linker_integration_tests.step, test_filter, "linker_integration");
     dependOnTest(test_step, &run_build_cli_options_tests.step, test_filter, "build_cli_options");
+    dependOnTest(test_step, &run_crypto_compat_tests.step, test_filter, "crypto_compat");
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
