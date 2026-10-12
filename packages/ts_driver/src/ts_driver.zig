@@ -1354,6 +1354,11 @@ fn reportSelfReferencePathDiagnostics(
         "";
 
     var current_section: []const u8 = importer_basename;
+    // Until a `@filename:` section starts, the directive lives in the real
+    // importer, whose directory anchors the reference (tsc resolves it
+    // against the containing file): `/// <reference path="sub/index.d.ts" />`
+    // inside `index.d.ts` names a different file.
+    var in_importer = options.importer_path.len != 0;
     var offset: usize = 0;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
@@ -1367,6 +1372,7 @@ fn reportSelfReferencePathDiagnostics(
         {
             const value = std.mem.trim(u8, line_without_cr[marker + "@filename:".len ..], " \t\r/*");
             current_section = normalizeReferencePath(std.fs.path.basename(value));
+            in_importer = false;
             continue;
         }
         if (current_section.len == 0) continue;
@@ -1395,9 +1401,15 @@ fn reportSelfReferencePathDiagnostics(
 
         const ref_path = normalizeReferencePath(path);
         const ref_basename = normalizeReferencePath(std.fs.path.basename(ref_path));
-        if (std.mem.eql(u8, ref_path, current_section) or
-            std.mem.eql(u8, ref_basename, current_section))
-        {
+        const is_self = if (in_importer) blk: {
+            const containing = try std.fs.path.resolvePosix(gpa, &.{options.importer_path});
+            defer gpa.free(containing);
+            const referenced = try std.fs.path.resolvePosix(gpa, &.{ std.fs.path.dirname(options.importer_path) orelse ".", path });
+            defer gpa.free(referenced);
+            break :blk std.mem.eql(u8, containing, referenced);
+        } else std.mem.eql(u8, ref_path, current_section) or
+            std.mem.eql(u8, ref_basename, current_section);
+        if (is_self) {
             try appendDriverDiagnostic(
                 gpa,
                 c,

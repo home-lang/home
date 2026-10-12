@@ -1639,6 +1639,9 @@ pub const Parser = struct {
     }
 
     fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        // tsc checks JSDoc tags only in JavaScript files (`checkSourceElement`
+        // visits a tag only when `isInJSFile`); TS/.d.ts JSDoc is commentary.
+        if (!self.is_javascript_file) return;
         // Callback parameters belong to the declared callback signature, not
         // to a host function whose parameter list can be matched here.
         if (self.jsDocBlockHasTag(start, end, "callback")) return;
@@ -7346,7 +7349,11 @@ pub const Parser = struct {
                 continue;
             }
             if (k.isModifierKeyword()) {
-                const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind);
+                // tsc's `canFollowModifier` accepts any literal property
+                // name, reserved words included: `readonly delete: F`
+                // (undici-types `Headers`) is a property named `delete`.
+                const next_can_start_member = canStartClassMemberAfterModifier(self.peekAt(1).kind) or
+                    self.peekAt(1).kind.isKeyword();
                 if (!next_can_start_member and !self.peekAt(1).kind.isModifierKeyword()) {
                     return mods;
                 }
@@ -14421,6 +14428,9 @@ pub const Parser = struct {
             if (self.computedTypeMemberQualifiedRootIsImportedValue(key_expr)) {
                 break :blk @as(hir_mod.StringId, 0);
             }
+            if (self.computedTypeMemberMayBeLocalUniqueSymbol(key_expr)) {
+                break :blk @as(hir_mod.StringId, 0);
+            }
             if (self.hir.kindOf(key_expr) != .identifier) {
                 // A computed type-member key whose expression isn't a
                 // literal-resolvable name (binary_op, call_expr, etc.)
@@ -14844,6 +14854,20 @@ pub const Parser = struct {
         if (self.hir.kindOf(root) != .identifier) return null;
         if (self.identifierNodeIsDeclaredValue(root)) return null;
         return root;
+    }
+
+    /// `[EventEmitter.captureRejectionSymbol]` (@types/node) names a static
+    /// `unique symbol` member of a class declared in this file. Its type is
+    /// the checker's business, so a qualified key over a declared value is
+    /// not reported as TS1169 when the file declares any `unique symbol`.
+    fn computedTypeMemberMayBeLocalUniqueSymbol(self: *Parser, key_expr: NodeId) bool {
+        if (self.hir.kindOf(key_expr) != .member_access) return false;
+        if (std.mem.indexOf(u8, self.source, "unique symbol") == null) return false;
+        var root = key_expr;
+        while (self.hir.kindOf(root) == .member_access) {
+            root = hir_mod.memberOf(self.hir, root).object;
+        }
+        return self.hir.kindOf(root) == .identifier and self.identifierNodeIsDeclaredValue(root);
     }
 
     fn computedTypeMemberQualifiedRootIsImportedValue(self: *Parser, key_expr: NodeId) bool {
@@ -26144,6 +26168,22 @@ test "parser: class modifier keywords may be property names" {
     try T.expectEqual(@as(usize, 3), members.len);
 }
 
+test "parser: reserved words may follow a class member modifier" {
+    var s = try newTestSetup(
+        \\declare class Headers {
+        \\  constructor(init?: string)
+        \\  readonly delete: (name: string) => void
+        \\  readonly new: number
+        \\  static typeof: number
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    try T.expectEqual(@as(usize, 4), hir_mod.classMembers(&s.hir, top).len);
+}
+
 test "parser: optional binding pattern parameter reports TS2463" {
     var s = try newTestSetup("function f([x]?: [number]) {}");
     defer destroyTestSetup(s);
@@ -34164,6 +34204,7 @@ test "parser: qualified JSDoc param requires object-typed parent" {
         \\}
     );
     defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
@@ -34179,6 +34220,21 @@ test "parser: qualified JSDoc param requires object-typed parent" {
     try T.expectEqual(@as(u32, 20), d.pos - @as(u32, @intCast(line_start)) + 1);
 }
 
+test "parser: qualified JSDoc param without a parent is commentary outside JavaScript" {
+    // @types/node and undici-types write `@param opts.limit` with no
+    // `@param opts`; tsc never checks JSDoc tags in TS or .d.ts files.
+    var s = try newTestSetup(
+        \\/**
+        \\ * @param opts.limit Number of bytes to read
+        \\ */
+        \\declare function dump(opts?: { limit: number }): void;
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: qualified JSDoc param parent check preserves object child for later tags" {
     var s = try newTestSetup(
         \\/**
@@ -34190,6 +34246,7 @@ test "parser: qualified JSDoc param parent check preserves object child for late
         \\}
     );
     defer destroyTestSetup(s);
+    s.parser.setJavaScriptFile(true);
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
