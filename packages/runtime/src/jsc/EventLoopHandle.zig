@@ -1,18 +1,7 @@
-// Copied from bun/src/jsc/EventLoopHandle.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// `EventLoopHandle` is a non-owning union over the JS event loop and the
-// "mini" event loop. Almost every method in the upstream file reaches through
-// `this.js.virtual_machine.rareData()`, `this.mini.env.?.map`, etc., which
-// can't compile until `VirtualMachine`, `MiniEventLoop`, `Blob.Store`,
-// `FilePoll`, `bun.DotEnv.Loader`, and `bun.uws.Loop` all land. We keep:
-//   - the `EventLoopKind` discriminant tag enum (pure-Zig),
-//   - the `EventLoopHandle` union shape pointing at opaque
-//     `EventLoop` / `MiniEventLoop` placeholders,
-//   - the `EventLoopTask` / `EventLoopTaskPtr` union shapes (placeholder
-//     payloads — the actual `jsc.ConcurrentTask` and
-//     `jsc.AnyTaskWithExtraContext` re-land alongside `Task.zig`).
-// Method bodies re-attach in Phase 12.2.
+// Ported from Bun EventLoopHandle at 4982b91e3702094330f3be3883354c52b8c01323.
+// MIT — see ../cli/LICENSE.bun.md.
+// Non-owning access to native JS and mini event loops. JS entry/exit forwards
+// to the nesting-aware microtask checkpoint; mini loops have no JS checkpoint.
 
 const std = @import("std");
 const home_rt = @import("home");
@@ -64,9 +53,21 @@ pub const EventLoopHandle = union(EventLoopKind) {
         };
     }
 
-    pub fn enter(_: EventLoopHandle) void {}
+    pub fn enter(this: EventLoopHandle) void {
+        switch (this) {
+            .js => this.js.enter(),
+            .mini => {},
+        }
+    }
 
-    pub fn exit(_: EventLoopHandle) void {}
+    pub fn exit(this: EventLoopHandle) void {
+        switch (this) {
+            .js => this.js.exit(),
+            .mini => {},
+        }
+    }
+
+    pub const platformEventLoop = loop;
 
     // Faithful to upstream EventLoopHandle.{ref,unref,filePolls,putFilePoll}:
     // the FilePoll/KeepAlive machinery refs the loop and stores polls per-VM.
@@ -213,8 +214,8 @@ pub const EventLoopTaskPtr = union {
 };
 
 test "EventLoopKind tag values" {
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(EventLoopKind.js));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(EventLoopKind.mini));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(EventLoopKind.js));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(EventLoopKind.mini));
 }
 
 test "EventLoopHandle.cast returns the right pointer" {

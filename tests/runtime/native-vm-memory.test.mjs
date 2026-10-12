@@ -11,6 +11,26 @@ function bounds(range) {
 }
 
 async function main() {
+  const reuse = spawnSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    const vm = require('node:vm');
+    const sandbox = {};
+    new vm.Script('let retainedLexical=40;globalThis.realmObject=Object;undefined').runInNewContext(sandbox);
+    assert.equal(vm.isContext(sandbox), true);
+    assert.equal(new vm.Script('retainedLexical+2').runInNewContext(sandbox), 42);
+    assert.equal(vm.runInContext('retainedLexical+2', sandbox), 42);
+    assert.equal(new vm.Script('Object===realmObject').runInNewContext(sandbox), true);
+    const already = vm.createContext({});
+    vm.runInContext('let existingLexical=7', already);
+    assert.equal(vm.runInNewContext('existingLexical', already), 7);
+    const checkpoint = vm.createContext({ value: 0 }, { microtaskMode: 'afterEvaluate' });
+    new vm.Script('Promise.resolve().then(() => value++)').runInNewContext(checkpoint);
+    assert.equal(checkpoint.value, 1);
+  `], { encoding: 'utf8', timeout: 10000 })
+  assert.equal(reuse.error, undefined)
+  assert.equal(reuse.signal, null)
+  assert.equal(reuse.status, 0, reuse.stderr)
+
   const small = vm.createContext({})
   const large = vm.createContext({})
   vm.runInContext('globalThis.payload = new Array(2000).fill(7)', small)

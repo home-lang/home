@@ -613,12 +613,22 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInNewContext, (JSGlobalObject * globalObject, 
 
     contextOptions.notContextified = notContextified;
 
-    auto* zigGlobalObject = defaultGlobalObject(globalObject);
     JSObject* context = asObject(contextObjectValue);
+    if (auto* existingContext = NodeVM::getGlobalObjectFromContext(globalObject, contextObjectValue, false)) {
+        RELEASE_AND_RETURN(scope, runInContext(existingContext, script, context, callFrame->argument(1)));
+    }
+    RETURN_IF_EXCEPTION(scope, {});
+
+    auto* zigGlobalObject = defaultGlobalObject(globalObject);
     auto* targetContext = NodeVMGlobalObject::create(vm,
         zigGlobalObject->NodeVMGlobalObjectStructure(),
         contextOptions, importer);
     RETURN_IF_EXCEPTION(scope, {});
+
+    // Contextification is persistent: Script and module evaluation must see
+    // the same realm and lexical environment on later calls with this sandbox.
+    targetContext->setContextifiedObject(context);
+    zigGlobalObject->vmModuleContextMap()->set(vm, context, targetContext);
 
     if (notContextified) {
         auto* specialSandbox = NodeVMSpecialSandbox::create(vm, targetContext);
