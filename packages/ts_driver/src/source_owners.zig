@@ -376,7 +376,9 @@ test "source owners: real declarations remain distinct and stale revisions canno
     const current = try registry.internDeclaration(second_owner, second.decl, null);
     try T.expect(isDeclarationHandle(current));
     try T.expect(first_owner != second_owner and old != current);
-    var context = Context{ .registry = &registry, .owner = second_owner, .from = &second.names, .to = &second.names };
+    var added: std.ArrayListUnmanaged(u32) = .empty;
+    defer added.deinit(T.allocator);
+    var context = Context{ .registry = &registry, .owner = second_owner, .from = &second.names, .to = &second.names, .added = &added, .handles = registry.handles.items[@backingInt(second_owner) - 1] };
     try T.expectEqual(current, try Context.node(&context, current));
     try T.expectError(error.UnmappedName, Context.node(&context, old));
     try T.expectEqualStrings("/same.ts", (try registry.declaration(current)).source.path);
