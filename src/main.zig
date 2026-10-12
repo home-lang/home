@@ -2548,7 +2548,7 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     }
 
-    if (!(try nativeCorpusContext(args)).explicit) if (argTargetsBunCorpus(args)) |target| {
+    if (!(try nativeCorpusContext(args)).explicit and !(try nativeCorpusUsesMixedRoots(allocator, args))) if (argTargetsBunCorpus(args)) |target| {
         const corpus_path = switch (target) {
             .root => |path| path,
             .directory => |directory| directory.corpus_path,
@@ -4583,6 +4583,29 @@ fn nativeCorpusSuiteRequested(args: []const [:0]const u8) !bool {
         }
     }
     return suite and corpus_target;
+}
+
+fn nativeCorpusUsesMixedRoots(allocator: std.mem.Allocator, args: []const [:0]const u8) !bool {
+    const cwd = try Io.Dir.cwd().realPathFileAlloc(g_io, ".", allocator);
+    defer allocator.free(cwd);
+    var roots = home_test.corpus_suite_plan.RootSet.init(allocator);
+    defer roots.deinit();
+    var iterator = NativeCorpusArgIterator{ .args = args };
+    var parser = home_rt.clap.StreamingClap(home_rt.clap.Help, NativeCorpusArgIterator){ .params = &home_rt.cli.Arguments.test_params, .iter = &iterator };
+    while (try parser.next()) |arg| {
+        if (arg.param.names.long != null or arg.param.names.short != null) continue;
+        const value = arg.value orelse continue;
+        const target = resolveBunCorpusTarget(value) orelse continue;
+        const path = switch (target) {
+            .root => |root| root,
+            .directory => |directory| directory.corpus_path,
+            .file => |file| file.corpus_path,
+        };
+        const absolute = try std.fs.path.resolve(allocator, &.{ cwd, path });
+        defer allocator.free(absolute);
+        _ = try roots.retain(try Io.Dir.cwd().realPathFileAlloc(g_io, absolute, allocator));
+    }
+    return roots.items().len > 1;
 }
 
 fn runBunCorpusNativeSuite(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
