@@ -2535,3 +2535,11 @@ An unpublished native prototype uses JSC private branding and an out-of-band des
 [Audit evidence](bun-port-evidence/2026-10-12-filehandle-transfer-audit/manifest.json) retains the baseline, reference/crash outcomes and static findings. Native transfer remains incomplete under [#877](https://github.com/home-lang/home/issues/877), alongside the full [#66](https://github.com/home-lang/home/issues/66) goal.
 
 The defensive prototype compiles 54/54 Debug steps, but receives no runtime feature credit.
+
+### Resource timing option conversions (2026-10-12)
+
+The Node perf_hooks facade delegates setResourceTimingBufferSize to the owned global native API. Fractional and string sizes follow WebIDL unsigned-long conversion, and global/Node calls share the same buffer limit. Named clearResourceTimings converts ordinary values to strings before exact-name filtering; numeric and toString object names clear the matching resource entry.
+
+[Evidence](bun-port-evidence/2026-10-12-resource-options/manifest.json) retains Node controls, Home's pre-fix numeric-name failure, source hashes and 573 artifacts. Validation passes 54/54 Debug steps, 26 native groups, fourteen ABI controls (452 assertions), 32 validator controls and forty unchanged upstream invocations: 168 cases plus twenty-five process checks, zero failures/skips/filters and two TODOs. All 83 replayed report outcomes preserve eleven negatives. Pickier explicitly scans three sources and matches baseline three errors and 61 warnings, zero new findings. Runtime source hashes remain unchanged across build-test/CI-only main updates.
+
+The legacy zero-argument markResourceTiming assertion remains [#874](https://github.com/home-lang/home/issues/874); it was not weakened or credited. Full native performance/fetch parity and all-platform/Release/ASAN proof remain [#873](https://github.com/home-lang/home/issues/873)/[#869](https://github.com/home-lang/home/issues/869). Full Bun parity remains [#66](https://github.com/home-lang/home/issues/66).
