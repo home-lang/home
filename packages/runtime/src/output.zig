@@ -42,6 +42,9 @@ pub fn clearToEnd() void {
 pub const disableScopedDebugWriter = core_output.disableScopedDebugWriter;
 pub const enableScopedDebugWriter = core_output.enableScopedDebugWriter;
 pub const commandOut = core_output.commandOut;
+// This extern aliases the C-visible storage owned by bun_core/output.zig;
+// Markdown capability detection must observe the same descriptor state.
+pub extern var bun_stdio_tty: [3]i32;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
