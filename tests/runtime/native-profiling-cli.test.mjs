@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Session } from 'node:inspector/promises'
+import { Worker } from 'node:worker_threads'
 
 const dir = mkdtempSync(join(tmpdir(), 'home-native-profiling-'))
 const workload = `function profileWork(){let result=0;for(let i=0;i<1000;i++)result+=Math.sqrt(i);return result}const end=performance.now()+150;while(performance.now()<end)profileWork();console.log('done')`
@@ -37,3 +39,49 @@ try {
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
+
+const session = new Session()
+session.connect()
+await session.post('Profiler.enable')
+await session.post('Profiler.start')
+const worker = new Worker(`
+  const { parentPort } = require('node:worker_threads');
+  const { Session } = require('node:inspector');
+  const session = new Session();
+  session.connect();
+  session.disconnect();
+  parentPort.postMessage('done');
+`, { eval: true })
+const exited = new Promise((resolve, reject) => {
+  worker.once('exit', resolve)
+  worker.once('error', reject)
+})
+await new Promise((resolve, reject) => {
+  worker.once('message', resolve)
+  worker.once('error', reject)
+})
+assert.equal(await exited, 0)
+function ownerProfileWork() {
+  let value = 0
+  for (let i = 0; i < 1000; i++) value += Math.sqrt(i)
+  return value
+}
+const deadline = performance.now() + 150
+while (performance.now() < deadline) ownerProfileWork()
+const activeWorker = new Worker(`
+  const { Session } = require('node:inspector');
+  const session = new Session();
+  session.connect();
+  session.post('Profiler.enable');
+  session.post('Profiler.start');
+  const end = performance.now() + 100;
+  while (performance.now() < end) Math.sqrt(42);
+`, { eval: true })
+assert.equal(await new Promise((resolve, reject) => {
+  activeWorker.once('exit', resolve)
+  activeWorker.once('error', reject)
+}), 0)
+const { profile } = await session.post('Profiler.stop')
+assert(profile.samples.length > 0)
+assert(profile.nodes.some(node => node.callFrame.functionName === 'ownerProfileWork'))
+session.disconnect()

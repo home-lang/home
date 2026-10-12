@@ -1,5 +1,8 @@
 #include "root.h"
 #include "BunCPUProfiler.h"
+#include "HomeCPUProfilerState.h"
+#include <mutex>
+#include <unordered_map>
 #include "ZigGlobalObject.h"
 #include "helpers.h"
 #include "BunString.h"
@@ -29,37 +32,50 @@ void Bun__setSamplingInterval(int intervalMicroseconds)
 
 namespace Bun {
 
-// Store the profiling start time in microseconds since Unix epoch
-static double s_profilingStartTime = 0.0;
-// Set sampling interval to 1ms (1000 microseconds) to match Node.js
-static int s_samplingInterval = 1000;
-static bool s_isProfilerRunning = false;
-
-void setSamplingInterval(int intervalMicroseconds)
-{
-    s_samplingInterval = intervalMicroseconds;
+struct HomeCPUProfilerState {
+    double startTime { 0 };
+    int interval { 1000 };
+    bool running { false };
+};
+static std::mutex profilerStateLock;
+static std::unordered_map<JSC::VM*, HomeCPUProfilerState> profilerStates;
+// Preserve the old C ABI for external callers, without sharing its defaults
+// across worker threads. Home entry points use the explicit VM contract.
+static thread_local int pendingInterval = 1000;
+static thread_local JSC::VM* legacyProfilerVM = nullptr;
+void setSamplingInterval(int intervalMicroseconds) { pendingInterval = intervalMicroseconds; }
+void setSamplingIntervalForVM(JSC::VM& vm, int interval) {
+    std::lock_guard lock(profilerStateLock);
+    profilerStates[&vm].interval = interval;
 }
-
-bool isCPUProfilerRunning()
-{
-    return s_isProfilerRunning;
+bool isCPUProfilerRunningForVM(JSC::VM& vm) {
+    std::lock_guard lock(profilerStateLock);
+    auto entry = profilerStates.find(&vm);
+    return entry != profilerStates.end() && entry->second.running;
 }
+bool isCPUProfilerRunning() { return legacyProfilerVM && isCPUProfilerRunningForVM(*legacyProfilerVM); }
 
 void startCPUProfiler(JSC::VM& vm)
 {
-    // Capture the wall clock time when profiling starts (before creating stopwatch)
-    // This will be used as the profile's startTime
-    s_profilingStartTime = MonotonicTime::now().approximate<WTF::WallTime>().secondsSinceEpoch().value() * 1000000.0;
+    HomeCPUProfilerState state;
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto [entry, inserted] = profilerStates.try_emplace(&vm);
+        if (inserted) entry->second.interval = pendingInterval;
+        entry->second.startTime = MonotonicTime::now().approximate<WTF::WallTime>().secondsSinceEpoch().value() * 1000000.0;
+        state = entry->second;
+    }
+    legacyProfilerVM = &vm;
 
     // Create a stopwatch and start it
     auto stopwatch = WTF::Stopwatch::create();
     stopwatch->start();
 
     JSC::SamplingProfiler& samplingProfiler = vm.ensureSamplingProfiler(WTF::move(stopwatch));
-    samplingProfiler.setTimingInterval(WTF::Seconds::fromMicroseconds(s_samplingInterval));
+    samplingProfiler.setTimingInterval(WTF::Seconds::fromMicroseconds(state.interval));
     samplingProfiler.noticeCurrentThreadAsJSCExecutionThread();
     samplingProfiler.start();
-    s_isProfilerRunning = true;
+    { std::lock_guard lock(profilerStateLock); profilerStates[&vm].running = true; }
 }
 
 struct ProfileNode {
@@ -270,13 +286,13 @@ static WTF::String formatCodeSpan(const WTF::String& str)
 }
 
 // Helper to generate a minimal valid cpuprofile JSON with no samples
-static WTF::String generateEmptyProfileJSON()
+static WTF::String generateEmptyProfileJSON(double startTime)
 {
     // Return a minimal valid Chrome DevTools CPU profile format
-    // Use s_profilingStartTime if available, otherwise fall back to current time
+    // Use startTime if available, otherwise fall back to current time
     long long timestamp;
-    if (s_profilingStartTime > 0)
-        timestamp = static_cast<long long>(s_profilingStartTime);
+    if (startTime > 0)
+        timestamp = static_cast<long long>(startTime);
     else
         timestamp = static_cast<long long>(WTF::WallTime::now().secondsSinceEpoch().value() * 1000000.0);
 
@@ -292,7 +308,12 @@ static WTF::String generateEmptyProfileJSON()
 // Unified function that stops the profiler and generates requested output formats
 void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
 {
-    s_isProfilerRunning = false;
+    HomeCPUProfilerState state;
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto entry = profilerStates.find(&vm);
+        if (entry != profilerStates.end()) { entry->second.running = false; state = entry->second; }
+    }
 
     JSC::SamplingProfiler* profiler = vm.samplingProfiler();
     if (!profiler) {
@@ -321,7 +342,7 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
         return;
 
     if (stackTraces.isEmpty()) {
-        if (outJSON) *outJSON = generateEmptyProfileJSON();
+        if (outJSON) *outJSON = generateEmptyProfileJSON(state.startTime);
         if (outText) *outText = "No samples collected.\n"_s;
         return;
     }
@@ -357,8 +378,8 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
         WTF::Vector<int> samples;
         WTF::Vector<long long> timeDeltas;
 
-        double startTime = s_profilingStartTime;
-        double lastTime = s_profilingStartTime;
+        double startTime = state.startTime;
+        double lastTime = state.startTime;
 
         for (size_t idx : sortedIndices) {
             auto& stackTrace = stackTraces[idx];
@@ -617,8 +638,8 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
 
     // Generate text format if requested
     if (outText) {
-        double startTime = s_profilingStartTime;
-        double lastTime = s_profilingStartTime;
+        double startTime = state.startTime;
+        double lastTime = state.startTime;
         double endTime = startTime;
 
         WTF::HashMap<WTF::String, FunctionStats> functionStatsMap;
@@ -746,7 +767,7 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
         output.append(" | "_s);
         output.append(totalSamples);
         output.append(" | "_s);
-        output.append(formatTime(s_samplingInterval));
+        output.append(formatTime(state.interval));
         output.append(" | "_s);
         output.append(numFunctions);
         output.append(" |\n\n"_s);
@@ -944,4 +965,12 @@ extern "C" void Bun__stopCPUProfiler(JSC::VM* vm, BunString* outJSON, BunString*
         *outJSON = Bun::toStringRef(jsonResult);
     if (outText)
         *outText = Bun::toStringRef(textResult);
+}
+
+extern "C" void Home__CPUProfiler__setSamplingInterval(JSC::VM* vm, int interval) { Bun::setSamplingIntervalForVM(*vm, interval); }
+extern "C" void Home__CPUProfiler__cancelForVM(JSC::VM* vm) {
+    if (Bun::isCPUProfilerRunningForVM(*vm)) Bun::stopCPUProfiler(*vm, nullptr, nullptr);
+    std::lock_guard lock(Bun::profilerStateLock);
+    Bun::profilerStates.erase(vm);
+    if (Bun::legacyProfilerVM == vm) Bun::legacyProfilerVM = nullptr;
 }

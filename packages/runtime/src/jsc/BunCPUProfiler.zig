@@ -10,10 +10,10 @@ pub const CPUProfilerConfig = struct {
 // C++ function declarations
 extern fn Bun__startCPUProfiler(vm: *jsc.VM) void;
 extern fn Bun__stopCPUProfiler(vm: *jsc.VM, outJSON: ?*bun.String, outText: ?*bun.String) void;
-extern fn Bun__setSamplingInterval(intervalMicroseconds: c_int) void;
+extern fn Home__CPUProfiler__setSamplingInterval(vm: *jsc.VM, intervalMicroseconds: c_int) void;
 
-pub fn setSamplingInterval(interval: u32) void {
-    Bun__setSamplingInterval(@intCast(interval));
+pub fn setSamplingInterval(vm: *jsc.VM, interval: u32) void {
+    Home__CPUProfiler__setSamplingInterval(vm, @intCast(interval));
 }
 
 pub fn startCPUProfiler(vm: *jsc.VM) void {

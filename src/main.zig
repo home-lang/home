@@ -1903,7 +1903,7 @@ const VmRunState = struct {
         const vm = this.vm;
 
         if (this.cpu_profiler) {
-            home_rt.jsc.CPUProfiler.setSamplingInterval(vm.cpu_profiler_config.?.interval);
+            home_rt.jsc.CPUProfiler.setSamplingInterval(vm.jsc_vm, vm.cpu_profiler_config.?.interval);
             home_rt.jsc.CPUProfiler.startCPUProfiler(vm.jsc_vm);
             home_rt.analytics.Features.cpu_profile += 1;
         }
