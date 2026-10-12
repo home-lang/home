@@ -1458,7 +1458,9 @@ pub const RunCommand = struct {
         // No explicit free() on contents / rendered below: every path out
         // of this function calls Global.exit() or bun.outOfMemory() (both
         // noreturn), so the OS reclaims the allocations on process exit.
-        const contents = switch (bun.sys.File.readFrom(bun.FD.cwd(), path, bun.default_allocator)) {
+        var markdown_path_buf: bun.PathBuffer = undefined;
+        const path_z = bun.path.z(path, &markdown_path_buf);
+        const contents = switch (bun.sys.File.readFrom(bun.FD.cwd(), path_z, bun.default_allocator)) {
             .result => |bytes| bytes,
             .err => |err| {
                 Output.prettyErrorln("<r><red>error<r>: {f}", .{err});
@@ -1604,7 +1606,7 @@ pub const RunCommand = struct {
             const file = bun.FD.fromStdFile((brk: {
                 if (std.fs.path.isAbsolute(script_name_to_search)) {
                     var win_resolver = resolve_path.PosixToWinNormalizer{};
-                    var resolved = win_resolver.resolveCWD(script_name_to_search) catch @panic("Could not resolve path");
+                    var resolved = win_resolver.resolveCWD(script_name_to_search);
                     if (comptime Environment.isWindows) {
                         resolved = resolve_path.normalizeString(resolved, false, .windows);
                     }
@@ -1619,7 +1621,7 @@ pub const RunCommand = struct {
                         break :brk2 script_name_buf[0..file_path.len :0];
                     };
 
-                    break :brk bun.openFileZ(file_pathZ, .{ .mode = .read_only });
+                    break :brk bun.openFileForPath(file_pathZ);
                 } else {
                     var path_buf_2: bun.PathBuffer = undefined;
                     const cwd = bun.getcwd(&path_buf_2) catch return false;
@@ -1634,7 +1636,7 @@ pub const RunCommand = struct {
                     if (file_path.len == 0) return false;
                     script_name_buf[file_path.len] = 0;
                     const file_pathZ = script_name_buf[0..file_path.len :0];
-                    break :brk bun.openFileZ(file_pathZ, .{ .mode = .read_only });
+                    break :brk bun.openFileForPath(file_pathZ);
                 }
             }) catch return false).makeLibUVOwnedForSyscall(.open, .close_on_fail).unwrap() catch return false;
             defer file.close();
@@ -1937,13 +1939,16 @@ pub const RunCommand = struct {
             var list = std.Io.Writer.Allocating.init(stack_fallback.get());
             errdefer list.deinit();
 
-            var file_reader = std.fs.File.stdin().readerStreaming(&.{});
+            var stdin_buffer: [4096]u8 = undefined;
+            var file_reader = std.Io.File.stdin().readerStreaming(std.Io.Threaded.global_single_threaded.io(), &stdin_buffer);
             _ = file_reader.interface.streamRemaining(&list.writer) catch return false;
             ctx.runtime_options.eval.script = list.written();
 
             const trigger = bun.pathLiteral("/[stdin]");
             var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-            const cwd = try std.posix.getcwd(&entry_point_buf);
+            var cwd_buf: bun.PathBuffer = undefined;
+            const cwd = try bun.getcwd(&cwd_buf);
+            @memcpy(entry_point_buf[0..cwd.len], cwd);
             @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
             const entry_path = entry_point_buf[0 .. cwd.len + trigger.len];
 
@@ -2092,7 +2097,9 @@ pub const RunCommand = struct {
         if (ctx.runtime_options.eval.script.len > 0) {
             const trigger = bun.pathLiteral("/[eval]");
             var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-            const cwd = try std.posix.getcwd(&entry_point_buf);
+            var cwd_buf: bun.PathBuffer = undefined;
+            const cwd = try bun.getcwd(&cwd_buf);
+            @memcpy(entry_point_buf[0..cwd.len], cwd);
             @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
             try Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
             return;
@@ -2135,7 +2142,9 @@ pub const RunCommand = struct {
     fn @"bun feedback"(ctx: Command.Context) !noreturn {
         const trigger = bun.pathLiteral("/[eval]");
         var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-        const cwd = try std.posix.getcwd(&entry_point_buf);
+        var cwd_buf: bun.PathBuffer = undefined;
+        const cwd = try bun.getcwd(&cwd_buf);
+        @memcpy(entry_point_buf[0..cwd.len], cwd);
         @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
         ctx.runtime_options.eval.script = if (bun.Environment.codegen_embed)
             @embedFile("eval/feedback.ts")

@@ -1211,7 +1211,9 @@ pub const Command = struct {
     fn @"bun --eval --print"(ctx: Context) !void {
         const trigger = bun.pathLiteral("/[eval]");
         var entry_point_buf: [bun.MAX_PATH_BYTES + trigger.len]u8 = undefined;
-        const cwd = try std.posix.getcwd(&entry_point_buf);
+        var cwd_buf: bun.PathBuffer = undefined;
+        const cwd = try bun.getcwd(&cwd_buf);
+        @memcpy(entry_point_buf[0..cwd.len], cwd);
         @memcpy(entry_point_buf[cwd.len..][0..trigger.len], trigger);
         ctx.passthrough = try std.mem.concat(ctx.allocator, []const u8, &.{ ctx.positionals, ctx.passthrough });
         try bun_js.Run.boot(ctx, entry_point_buf[0 .. cwd.len + trigger.len], null);
@@ -1224,7 +1226,7 @@ pub const Command = struct {
                 @memcpy(path_buf[0..ctx.args.entry_points[0].len], ctx.args.entry_points[0]);
                 path_buf[ctx.args.entry_points[0].len] = 0;
                 const lockfile_path = path_buf[0..ctx.args.entry_points[0].len :0];
-                const file = File.open(lockfile_path, bun.O.RDONLY, 0).unwrap() catch |err| {
+                const file = File.makeOpen(lockfile_path, bun.O.RDONLY, 0).unwrap() catch |err| {
                     Output.err(err, "failed to open lockfile", .{});
                     Global.crash();
                 };

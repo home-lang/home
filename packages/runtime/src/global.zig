@@ -48,10 +48,13 @@ pub fn runExitCallbacks() void {
     exit_callbacks.items.len = 0;
 }
 
-pub fn exit(code: u8) noreturn {
+pub fn exit(code: u32) noreturn {
     runExitCallbacks();
     @import("output.zig").flush();
-    std.process.exit(code);
+    if (comptime @import("environment.zig").isWindows) {
+        std.os.windows.kernel32.ExitProcess(code);
+    }
+    std.c.exit(@bitCast(code));
 }
 
 pub fn crash() noreturn {
