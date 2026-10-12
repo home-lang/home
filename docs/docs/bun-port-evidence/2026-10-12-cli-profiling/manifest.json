@@ -1,0 +1,271 @@
+{
+  "schema": 1,
+  "source_commit": "25f08362b35ca7ca7eb795f74d4442ddafaecdb9",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "source_hashes": [
+    {
+      "file": "packages/runtime/src/jsc/BunCPUProfiler.zig",
+      "sha256": "3fa43440bb46b2e6a92ed655bdc780582dc1ff2a320143bfec2382e29d3ee9bd",
+      "bytes": 5158
+    },
+    {
+      "file": "packages/runtime/src/jsc/BunHeapProfiler.zig",
+      "sha256": "765bc2d567d4308cb5b231cf4b4cf17ebe916847f63acaa73f5cefba5fea7dd0",
+      "bytes": 3964
+    },
+    {
+      "file": "src/main.zig",
+      "sha256": "10046b56b337693ba8d122ea67114c75b68a89f814544546c7b7085aceb553c5",
+      "bytes": 335938
+    },
+    {
+      "file": "tests/runtime/native-profiling-cli.test.mjs",
+      "sha256": "26acc55d4674086b4df2c4f9b41b8795bb30cd1fc8f4c3f3da2c0a2933519bad",
+      "bytes": 2283
+    }
+  ],
+  "results": {
+    "debug_steps": 54,
+    "debug_peak_tree_mb": 5512,
+    "original_files": 2,
+    "counts": {
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "filtered": 0,
+      "retry_attempts": 0
+    },
+    "native_groups": 5,
+    "abi_controls": 14,
+    "abi_expectations": 452,
+    "report_validator_controls": 32,
+    "lint_new_findings": 0
+  },
+  "features": [
+    "Actual native CPU sampling starts before entry evaluation under API lock; idempotent shutdown exports/writes JSON and Markdown, preserving names/directories/dual format behavior.",
+    "Actual engine heap snapshots/profiles now write V8 JSON or Markdown output on ordinary and explicit process exit; correct native BunString ownership replaces pointer/stub ABI."
+  ],
+  "limitations": [
+    "All-platform/Release/ASAN and full Bun-suite proof is incomplete. Profiling success does not resolve #885.",
+    "Refined VM-root probe confirms observed JITWorkList codeblock roots belong to host realms, not NodeVMGlobalObject realms. The actual retaining owner remains unproved. Temporary diagnostics are restored and excluded from production."
+  ],
+  "files": [
+    {
+      "path": "raw/batch.log.gz",
+      "sha256": "d7b07e11241e21e1186aced832abb38437b831fc1ff37c98552ad5e1b0e4ddb1",
+      "bytes": 33
+    },
+    {
+      "path": "raw/build-probe.log.gz",
+      "sha256": "0212e855bcec806ed75963b855739b306a1b267fa150f9fec9602b9da8a3dd8a",
+      "bytes": 4766
+    },
+    {
+      "path": "raw/build-profiling.log.gz",
+      "sha256": "3756563fca317bc521562c3ac4e35a6141152b10d3caab5d8a25e8144f403a87",
+      "bytes": 4451
+    },
+    {
+      "path": "raw/caller-lifetime.log.gz",
+      "sha256": "66213e3a2bbd847e1d6c9aa9bcbb76b8b1079546b90fb8a88928bac39ebb7b1d",
+      "bytes": 41
+    },
+    {
+      "path": "raw/caller-lifetime.mjs.gz",
+      "sha256": "083eb111d9edb6fe0918ed06178f68f894acf7d4c677e3450db276bff085d6a9",
+      "bytes": 522
+    },
+    {
+      "path": "raw/caller-order.log.gz",
+      "sha256": "160f9bd1ca0ea9c334e25f97206e16fbd11a654ec6ddc121da26fb02856c5c86",
+      "bytes": 41
+    },
+    {
+      "path": "raw/caller-order.mjs.gz",
+      "sha256": "4d3185eeb7e7228c4d9855b7b577e6e42d334e20d00da0de9343eb9e67ac914f",
+      "bytes": 522
+    },
+    {
+      "path": "raw/control-batch.py.gz",
+      "sha256": "975b6e14bf4a5a37e20f3b7761762dd16f6651ef6f79f6b513ec7a791e70a7a3",
+      "bytes": 481
+    },
+    {
+      "path": "raw/controls.json.gz",
+      "sha256": "8df8df3a8482c51e91bab059379b37561a7de042628cfac3810316a02378d4e2",
+      "bytes": 108
+    },
+    {
+      "path": "raw/docs-check.log.gz",
+      "sha256": "4b398a75ce41a2479a46571890d104df287474799305f8b1f0dc735df4c86f6d",
+      "bytes": 68
+    },
+    {
+      "path": "raw/lint-final.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "raw/lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "raw/original-profiling/report-1/000000.cases.jsonl.gz",
+      "sha256": "2c094f7bcc5caa320429ea7f0b52db44fc7c8d3cd515c9808f4a9d895a03a01e",
+      "bytes": 1253
+    },
+    {
+      "path": "raw/original-profiling/report-1/000000.junit.xml.gz",
+      "sha256": "f64d558e2bceb3d4833fef71b930f9a56ef8b5306cb9b2cc3bf8bb761080e7de",
+      "bytes": 1434
+    },
+    {
+      "path": "raw/original-profiling/report-1/000000.stderr.gz",
+      "sha256": "aec617fb981e800cd199b97313b570675a9b0af54b7c399aa93f271fa2a91c63",
+      "bytes": 213
+    },
+    {
+      "path": "raw/original-profiling/report-1/000000.stdout.gz",
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2",
+      "bytes": 47
+    },
+    {
+      "path": "raw/original-profiling/report-1/events.jsonl.gz",
+      "sha256": "d5da9389c548731f3c9a985a909ce81ba7c7a64a4c79f56be45b8b3da8a2ae49",
+      "bytes": 4305
+    },
+    {
+      "path": "raw/original-profiling/report-2/000000.cases.jsonl.gz",
+      "sha256": "5fef50f4ebd4d252c6e41f5e4a26eeb384b423a01c2262cda4402be72113d607",
+      "bytes": 1581
+    },
+    {
+      "path": "raw/original-profiling/report-2/000000.junit.xml.gz",
+      "sha256": "916c9c1470a03613ebf37ef97a0391d9e1becc6508c9d6d1136ae03434e4b42c",
+      "bytes": 1949
+    },
+    {
+      "path": "raw/original-profiling/report-2/000000.stderr.gz",
+      "sha256": "1a1182ce62547664356364f5bd88c64618e19fc063e0772dd534b385116ebd71",
+      "bytes": 242
+    },
+    {
+      "path": "raw/original-profiling/report-2/000000.stdout.gz",
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2",
+      "bytes": 47
+    },
+    {
+      "path": "raw/original-profiling/report-2/events.jsonl.gz",
+      "sha256": "8ed0626196771bb2008356f37371b660f16f4297deb99a8873939ff4458bf8e5",
+      "bytes": 4311
+    },
+    {
+      "path": "raw/original-profiling/run-1.log.gz",
+      "sha256": "b9ed8f3ee3b79afcd149ea9c499b1380acd9baa23df418579eda43a871eb4406",
+      "bytes": 1046
+    },
+    {
+      "path": "raw/original-profiling/run-2.log.gz",
+      "sha256": "67e24beb40942b6d179ccf9c36959028be057f4bc2a90d8d352b0a41f528fd70",
+      "bytes": 1081
+    },
+    {
+      "path": "raw/original-profiling/summary.json.gz",
+      "sha256": "bb73b1b4afa8e31e6875ac888ebf5d068d0265daf0ace0bb0351a1b1363d4042",
+      "bytes": 718
+    },
+    {
+      "path": "raw/original-profiling/validate-1.json.gz",
+      "sha256": "98a36d76747ed0cd86df2aa5a236894d3ccbfad6291c5d25151ab4e7e653634b",
+      "bytes": 2146
+    },
+    {
+      "path": "raw/original-profiling/validate-2.json.gz",
+      "sha256": "63736b8933ec98d1e9ca5715eb398ea1ff6daea0126bbf4f86b14349f9635f06",
+      "bytes": 2435
+    },
+    {
+      "path": "raw/original-profiling-identities.json.gz",
+      "sha256": "5ad66e1e4b7ce88b05da6c1fef6ad1c26062054954d85e093892fcfb7aadcc10",
+      "bytes": 299
+    },
+    {
+      "path": "raw/root-owner-probe.patch.gz",
+      "sha256": "f1c98a3a2c426499577a819fc64b38afdc2bb116cbef8374e8166594f0e6d975",
+      "bytes": 1790
+    },
+    {
+      "path": "raw/root-reason.log.gz",
+      "sha256": "dcaa4c6571c8a6c5137f577fa81b3afe3a80af4d63972b1af913e8bf72d81aae",
+      "bytes": 691
+    },
+    {
+      "path": "raw/run-profiling-originals.py.gz",
+      "sha256": "5286f4cbb0e64f6b7030f072b00ca93a923db2d827831de7da07388cb531fa94",
+      "bytes": 1288
+    },
+    {
+      "path": "raw/run-validation.py.gz",
+      "sha256": "5f4e01b61db1a20f63f04da2b574cc6dc465bb6b7ff119d4d0d115495137aa78",
+      "bytes": 1166
+    },
+    {
+      "path": "raw/validation-1.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "raw/validation-2.log.gz",
+      "sha256": "6b1aba20255a439eff58c980453b1b484f85a03cc04f0a0c22658bae9fb0abfc",
+      "bytes": 55
+    },
+    {
+      "path": "raw/validation-3.log.gz",
+      "sha256": "5a314abe4702f10f6ac68e7f50b1e29d4bd2678f95c75101bbc762113031d471",
+      "bytes": 626
+    },
+    {
+      "path": "raw/validation-4.log.gz",
+      "sha256": "bda93df526a93e6e6cd8fe1d8b9a6d61c65c34608e62463c8eed77e6c12c9934",
+      "bytes": 265
+    },
+    {
+      "path": "raw/validation-5.log.gz",
+      "sha256": "617d243b8963f04e94d42d76f85bc3033eb58c492e3bc8c42c1ec91526ffbd39",
+      "bytes": 114
+    },
+    {
+      "path": "raw/validation-6.log.gz",
+      "sha256": "293b2517fc399cbf654f3d5dde0b640c7e213339793331b2a66d29647d158e4e",
+      "bytes": 38
+    },
+    {
+      "path": "raw/validation-7.log.gz",
+      "sha256": "047026204f55e707f16ca761a81af78d8bdbe2022cb130c4ce02a3b58e576b04",
+      "bytes": 1823
+    },
+    {
+      "path": "raw/validation-8.log.gz",
+      "sha256": "8975c6afb37ad7550013ddfd37289e4bfcd0b2fc2c465aa2041a031770fdc159",
+      "bytes": 131
+    },
+    {
+      "path": "raw/validation.json.gz",
+      "sha256": "7ad09ef0b068120250402efc5d88405ec1cca4141fc248f8e4ca6cfb002c4ff6",
+      "bytes": 1293
+    },
+    {
+      "path": "raw/validation.log.gz",
+      "sha256": "3170425417988947f65bd212ed3c2b209f8b0d2b88825b7ebcbfd4991ababa42",
+      "bytes": 119
+    },
+    {
+      "path": "raw/webkit-Completion.cpp.gz",
+      "sha256": "fa4143a343736d3c68a40ce4faa780466525e1cbbd430c76c7849f8264679fd1",
+      "bytes": 16243
+    }
+  ]
+}
