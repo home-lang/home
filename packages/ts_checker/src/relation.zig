@@ -1832,6 +1832,7 @@ pub const Engine = struct {
         for (parameters.items, 0..) |parameter, index| std.mem.writeInt(TypeId, key[(index + 1) * 4 ..][0..4], parameter, .little);
         const definition = if (self.tp_definitions.get(key)) |cached| cached else blk: {
             const reserved = try self.interner.reserveGenericDefinition();
+            errdefer self.interner.abandonGenericDefinition(reserved);
             try self.interner.completeGenericDefinition(reserved, parameters.items, body);
             try self.tp_definitions.put(self.gpa, key, reserved);
             owned = true;

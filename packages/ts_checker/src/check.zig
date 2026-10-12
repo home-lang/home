@@ -112198,6 +112198,7 @@ pub const Checker = struct {
         if (self.program_generic_definitions.get(declaration)) |definition| return definition;
         const watermark = self.interner.pool.typeCount();
         const definition = try self.interner.reserveGenericDefinition();
+        errdefer self.interner.abandonGenericDefinition(definition);
         try self.program_generic_definitions.put(self.gpa, declaration, definition);
         errdefer self.rollbackProgramGenericInstancesFrom(watermark);
         const parameters = try self.gpa.alloc(TypeId, declaration.parameters.len);
@@ -167145,6 +167146,7 @@ pub const Checker = struct {
             cached
         else blk: {
             const reserved = try self.interner.reserveGenericDefinition();
+            errdefer self.interner.abandonGenericDefinition(reserved);
             self.interner.completeGenericDefinition(reserved, parameters.items, body) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidTypeGraph => unreachable,

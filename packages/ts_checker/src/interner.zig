@@ -630,6 +630,23 @@ pub const Interner = struct {
         };
     }
 
+    /// Close a reserved definition whose construction failed so it never
+    /// stays incomplete in the pool: an incomplete definition cannot be
+    /// transferred to another owner (`type_transfer.prepare`), and every file
+    /// that imports this owner's globals would fail. The closed definition
+    /// has no parameters and an `unknown` body; nothing completes it later.
+    pub fn abandonGenericDefinition(self: *Interner, definition: TypeId) void {
+        const current = self.genericDefinition(definition) orelse return;
+        if (current.body != Primitive.none) return;
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        self.pool.generic_definition_payloads.items[self.pool.payloadOf(definition)] = .{
+            .parameters_start = 0,
+            .parameters_len = 0,
+            .body = Primitive.unknown,
+        };
+    }
+
     pub fn genericDefinition(self: *const Interner, id: TypeId) ?types.GenericDefinitionPayload {
         if (id >= self.pool.typeCount()) return null;
         const flags = self.pool.flagsOf(id);
