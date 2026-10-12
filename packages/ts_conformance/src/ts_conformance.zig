@@ -2889,7 +2889,8 @@ fn resolverConfigOptionsFromVirtualTsconfig(
     const parsed = resolved.config.?;
     const options = parsed.compiler_options;
     result.root_files = try selectTsconfigRootFiles(gpa, files, resolved.config_path, parsed);
-    if (options.base_url orelse options.paths_base_path) |value| result.base_url = try gpa.dupe(u8, value);
+    const paths_base = if (options.paths != null) options.paths_base_path else null;
+    if (options.base_url orelse paths_base) |value| result.base_url = try gpa.dupe(u8, value);
     result.paths = try dupeResolverPaths(gpa, options.paths);
     if (options.out_dir) |value| result.out_dir = try gpa.dupe(u8, value);
     if (options.declaration_dir) |value| result.declaration_dir = try gpa.dupe(u8, value);

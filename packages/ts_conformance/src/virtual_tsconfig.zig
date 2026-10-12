@@ -218,6 +218,7 @@ test "virtual tsconfig: inherited paths retain the base config directory" {
     defer arena.deinit();
     const resolved = try resolveRoot(T.allocator, arena.allocator(), &files);
     try T.expect(resolved.failure == null);
-    try T.expectEqualStrings("/other", resolved.config.?.compiler_options.base_url.?);
+    try T.expectEqualStrings("/other", resolved.config.?.compiler_options.paths_base_path.?);
+    try T.expect(resolved.config.?.compiler_options.base_url == null);
     try T.expectEqualStrings("p1", resolved.config.?.compiler_options.paths.?.patterns[0]);
 }
