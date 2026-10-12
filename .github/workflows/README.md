@@ -7,7 +7,8 @@
 ### Core CI / release
 
 - [`ci.yml`](./ci.yml) — lint (pickier), typecheck, test, package smoke, fuzz, filesystem + network tests. Runs on `ubuntu-latest`.
-- [`release.yml`](./release.yml) — automates release tagging + changelog generation.
+- [`release.yml`](./release.yml) — builds release artifacts and runs native tests in the same `ReleaseFast` mode used by the shipped binaries.
+- [`zig-master.yml`](./zig-master.yml) — daily and change-triggered compatibility gate for qualified Zig-master migration seams while the release toolchain remains Pantry-pinned.
 - [`conformance-gate.yml`](./conformance-gate.yml) — per-PR delta gate against the local TypeScript conformance corpus; blocks merges that regress the ratchet.
 - [`fuzz-nightly.yml`](./fuzz-nightly.yml) — nightly extended-budget fuzzing for lexer + parser (issue #10). PR-level fuzzing lives in `ci.yml`.
 

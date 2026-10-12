@@ -81,7 +81,9 @@ jobs:
 
       - name: Run Tests (Native builds only)
         if: matrix.target == 'x86_64-linux-gnu' || matrix.target == 'x86_64-macos' || matrix.target == 'aarch64-macos' || matrix.target == 'x86_64-windows-msvc'
-        run: zig build test --summary all
+        # Exercise the same optimization mode as the binary packaged below.
+        # Debug-only tests can hide linkage and optimization-dependent failures.
+        run: zig build test -Doptimize=ReleaseFast --summary all
 
       - name: Package Binary (Unix)
         if: runner.os != 'Windows'

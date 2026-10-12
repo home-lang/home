@@ -1,0 +1,45 @@
+name: Zig master compatibility
+
+# Keep the release toolchain stable while continuously exposing API changes
+# from Zig master. This lane is intentionally narrow: each target here is a
+# compatibility seam that is expected to compile on both the Pantry pin and the
+# latest nightly. Broader migrations can move into this gate as they qualify.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Zig master
+        uses: mlugg/setup-zig@v2
+        with:
+          version: master
+
+      - name: Verify Zig version
+        run: zig version
+
+      - name: Test std.crypto signature compatibility
+        run: zig build test -Dfilter=crypto_compat -j1 --summary all
+
+      - name: Test optimize-mode and LTO compatibility
+        run: zig build test -Dfilter=lto -j1 --summary all
+
+      - name: Test std.Io package migration
+        run: zig build --build-file packages/io/build.zig test -j1 --summary all
