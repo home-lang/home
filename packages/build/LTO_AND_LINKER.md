@@ -13,7 +13,7 @@ This implementation provides:
 
 ## Components
 
-### 1. Link-Time Optimization (`lto.zig`) - **630 lines**
+### 1. Link-Time Optimization (`lto.zig`)
 
 **Purpose**: Perform inter-procedural optimizations across module boundaries
 
@@ -28,7 +28,14 @@ This implementation provides:
 - ✅ Call graph construction
 - ✅ Inline decision heuristics
 
-**Tests**: ✅ 5/5 tests passing
+**Tests**: ✅ 6/6 tests passing under the repository's pinned Zig 0.17 compiler and Zig 0.18
+
+The top-level `zig build test -Dfilter=lto` target compiles this package
+directly. Optimize-mode dispatch uses qualified `std.builtin.OptimizeMode`
+members so the 0.17 title-case compatibility aliases and 0.18's lowercase
+canonical tags resolve to the same semantic modes. The tests exercise all four
+canonical modes and verify that ThinLTO summaries own their copied function,
+import, and export metadata.
 
 ### 2. Linker Scripts (`linker_script.zig`) - **690 lines**
 

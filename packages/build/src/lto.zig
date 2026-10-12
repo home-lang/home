@@ -20,10 +20,10 @@ pub const LtoLevel = enum {
 
     pub fn fromBuildMode(mode: std.builtin.OptimizeMode) LtoLevel {
         return switch (mode) {
-            .Debug => .None,
-            .ReleaseSafe => .Thin,
-            .ReleaseFast => .Fat,
-            .ReleaseSmall => .Fat,
+            std.builtin.OptimizeMode.Debug => .None,
+            std.builtin.OptimizeMode.ReleaseSafe => .Thin,
+            std.builtin.OptimizeMode.ReleaseFast => .Fat,
+            std.builtin.OptimizeMode.ReleaseSmall => .Fat,
         };
     }
 };
@@ -86,9 +86,9 @@ pub const IrModule = struct {
             .name = try allocator.dupe(u8, name),
             .ir_path = try allocator.dupe(u8, ir_path),
             .object_path = try allocator.dupe(u8, object_path),
-            .exports = .{},
-            .imports = .{},
-            .globals = .{},
+            .exports = .empty,
+            .imports = .empty,
+            .globals = .empty,
             .ir_size = 0,
             .dependencies = &[_][]const u8{},
             .allocator = allocator,
@@ -201,7 +201,7 @@ pub const LtoOptimizer = struct {
         return .{
             .allocator = allocator,
             .config = config,
-            .modules = .{},
+            .modules = .empty,
             .stats = .{},
         };
     }
@@ -357,7 +357,7 @@ pub const LtoOptimizer = struct {
 
         _ = it.next(); // skip "declare"
 
-        var tok = it.next() orelse return; // return type
+        _ = it.next() orelse return; // return type
 
         const func_name_tok = it.next() orelse return;
 
@@ -381,16 +381,15 @@ pub const LtoOptimizer = struct {
 
         const global_name = name_part[1..]; // Strip '@'
 
-        var global = IrGlobal{
-            .name = try self.allocator.dupe(u8, global_name),
-            .is_constant = std.mem.indexOf(u8, line[eq_pos..], "constant") != null,
-            .is_used = false,
-            .visibility = if (std.mem.indexOf(u8, line[eq_pos..], "private") != null or
-                std.mem.indexOf(u8, line[eq_pos..], "internal") != null)
-                .Private
-            else
-                .Public,
-        };
+        var global = try IrGlobal.init(self.allocator, global_name, global_name);
+        errdefer global.deinit(self.allocator);
+        global.is_const = std.mem.indexOf(u8, line[eq_pos..], "constant") != null;
+        global.is_used = false;
+        global.visibility = if (std.mem.indexOf(u8, line[eq_pos..], "private") != null or
+            std.mem.indexOf(u8, line[eq_pos..], "internal") != null)
+            .Private
+        else
+            .Public;
 
         try module.globals.append(self.allocator, global);
     }
@@ -445,8 +444,8 @@ pub const LtoOptimizer = struct {
         const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return &[_][]const u8{};
         defer self.allocator.free(content);
 
-        var calls = std.ArrayList([]const u8).init(self.allocator);
-        defer calls.deinit();
+        var calls = std.ArrayList([]const u8).empty;
+        defer calls.deinit(self.allocator);
 
         // Parse IR looking for call instructions: "call <type> @function_name(...)"
         var line_iter = std.mem.splitScalar(u8, content, '\n');
@@ -461,14 +460,14 @@ pub const LtoOptimizer = struct {
                 while (it.next()) |tok| {
                     if (std.mem.startsWith(u8, tok, "@")) {
                         const func_name = tok[1..]; // Strip '@'
-                        try calls.append(try self.allocator.dupe(u8, func_name));
+                        try calls.append(self.allocator, try self.allocator.dupe(u8, func_name));
                         break;
                     }
                 }
             }
         }
 
-        return try calls.toOwnedSlice();
+        return try calls.toOwnedSlice(self.allocator);
     }
 
     /// Interprocedural optimization
@@ -572,7 +571,7 @@ pub const LtoOptimizer = struct {
 
             // Look for calls with constant arguments: call @func(i32 42, i32 100)
             if (std.mem.indexOf(u8, trimmed, "call @")) |call_pos| {
-                var func_start = call_pos + 6; // Skip "call @"
+                const func_start = call_pos + 6; // Skip "call @"
                 var func_end = func_start;
                 while (func_end < trimmed.len and (std.ascii.isAlphanumeric(trimmed[func_end]) or trimmed[func_end] == '_')) {
                     func_end += 1;
@@ -645,8 +644,8 @@ pub const LtoOptimizer = struct {
         defer self.allocator.free(content);
 
         // Extract function body
-        var func_body = std.ArrayList(u8).init(self.allocator);
-        defer func_body.deinit();
+        var func_body = std.ArrayList(u8).empty;
+        defer func_body.deinit(self.allocator);
 
         var in_target_func = false;
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -666,8 +665,8 @@ pub const LtoOptimizer = struct {
                     in_target_func = false;
                     break;
                 }
-                try func_body.appendSlice(trimmed);
-                try func_body.append('\n');
+                try func_body.appendSlice(self.allocator, trimmed);
+                try func_body.append(self.allocator, '\n');
             }
         }
 
@@ -947,7 +946,12 @@ pub const ThinLto = struct {
         var it = self.module_summaries.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            // Free summary contents
+            for (entry.value_ptr.functions) |function| self.allocator.free(function.name);
+            self.allocator.free(entry.value_ptr.functions);
+            for (entry.value_ptr.imports) |import_name| self.allocator.free(import_name);
+            self.allocator.free(entry.value_ptr.imports);
+            for (entry.value_ptr.exports) |export_name| self.allocator.free(export_name);
+            self.allocator.free(entry.value_ptr.exports);
         }
         self.module_summaries.deinit();
     }
@@ -958,41 +962,64 @@ pub const ThinLto = struct {
         const module_hash = std.hash.Wyhash.hash(0, module.ir_path);
 
         // Collect function summaries
-        var func_summaries = std.ArrayList(FunctionSummary).init(self.allocator);
+        var func_summaries = std.ArrayList(FunctionSummary).empty;
+        defer func_summaries.deinit(self.allocator);
+        errdefer for (func_summaries.items) |function| self.allocator.free(function.name);
         for (module.exports.items) |func| {
             const summary = FunctionSummary{
                 .name = try self.allocator.dupe(u8, func.name),
-                .linkage = func.visibility,
-                .call_count = func.call_count,
-                .size_estimate = func.size,
-                .hot_path = func.call_count > 100, // Heuristic for hot functions
+                .hash = std.hash.Wyhash.hash(0, func.name),
+                .size = @intCast(func.size),
+                .inline_cost = func.inline_cost,
+                .hot = func.call_count > 100,
             };
-            try func_summaries.append(summary);
+            try func_summaries.append(self.allocator, summary);
         }
 
         // Collect imports (external dependencies)
-        var imports = std.ArrayList([]const u8).init(self.allocator);
+        var imports = std.ArrayList([]const u8).empty;
+        defer imports.deinit(self.allocator);
+        errdefer for (imports.items) |import_name| self.allocator.free(import_name);
         for (module.imports.items) |func| {
-            try imports.append(try self.allocator.dupe(u8, func.name));
+            try imports.append(self.allocator, try self.allocator.dupe(u8, func.name));
         }
 
         // Collect exports (public symbols)
-        var exports = std.ArrayList([]const u8).init(self.allocator);
+        var exports = std.ArrayList([]const u8).empty;
+        defer exports.deinit(self.allocator);
+        errdefer for (exports.items) |export_name| self.allocator.free(export_name);
         for (module.exports.items) |func| {
             if (func.visibility == .Public or func.visibility == .Extern) {
-                try exports.append(try self.allocator.dupe(u8, func.name));
+                try exports.append(self.allocator, try self.allocator.dupe(u8, func.name));
             }
         }
 
         // Create and store module summary
+        const functions_owned = try func_summaries.toOwnedSlice(self.allocator);
+        errdefer {
+            for (functions_owned) |function| self.allocator.free(function.name);
+            self.allocator.free(functions_owned);
+        }
+        const imports_owned = try imports.toOwnedSlice(self.allocator);
+        errdefer {
+            for (imports_owned) |import_name| self.allocator.free(import_name);
+            self.allocator.free(imports_owned);
+        }
+        const exports_owned = try exports.toOwnedSlice(self.allocator);
+        errdefer {
+            for (exports_owned) |export_name| self.allocator.free(export_name);
+            self.allocator.free(exports_owned);
+        }
         const summary = ModuleSummary{
             .module_hash = module_hash,
-            .functions = try func_summaries.toOwnedSlice(),
-            .imports = try imports.toOwnedSlice(),
-            .exports = try exports.toOwnedSlice(),
+            .functions = functions_owned,
+            .imports = imports_owned,
+            .exports = exports_owned,
         };
 
-        try self.module_summaries.put(try self.allocator.dupe(u8, module.ir_path), summary);
+        const module_path = try self.allocator.dupe(u8, module.ir_path);
+        errdefer self.allocator.free(module_path);
+        try self.module_summaries.put(module_path, summary);
     }
 
     /// Import resolution for Thin LTO
@@ -1028,10 +1055,6 @@ pub const ThinLto = struct {
                     // 3. Enable cross-module inlining if beneficial
                     _ = importing_module;
                     _ = exporting_module;
-                } else {
-                    // External symbol (libc, system libs, etc.)
-                    // Mark as external dependency
-                    _ = import_name;
                 }
             }
         }
@@ -1152,6 +1175,7 @@ test "LTO level from build mode" {
     try std.testing.expectEqual(LtoLevel.None, LtoLevel.fromBuildMode(.debug));
     try std.testing.expectEqual(LtoLevel.Thin, LtoLevel.fromBuildMode(.safe));
     try std.testing.expectEqual(LtoLevel.Fat, LtoLevel.fromBuildMode(.fast));
+    try std.testing.expectEqual(LtoLevel.Fat, LtoLevel.fromBuildMode(.small));
 }
 
 test "IR module creation" {
@@ -1202,4 +1226,35 @@ test "LTO optimizer pipeline" {
     try optimizer.addModule(module);
 
     try std.testing.expectEqual(@as(usize, 1), optimizer.modules.items.len);
+}
+
+test "Thin LTO summaries own current IR metadata" {
+    const allocator = std.testing.allocator;
+
+    var module = try IrModule.init(allocator, "summary", "summary.ir", "summary.o");
+    defer module.deinit();
+
+    var exported = try IrFunction.init(allocator, "exported", "exported");
+    exported.visibility = .Public;
+    exported.size = 64;
+    exported.inline_cost = 12;
+    exported.call_count = 101;
+    try module.exports.append(allocator, exported);
+
+    var imported = try IrFunction.init(allocator, "external", "external");
+    imported.visibility = .Extern;
+    try module.imports.append(allocator, imported);
+
+    var thin = ThinLto.init(allocator, .{ .level = .Thin });
+    defer thin.deinit();
+    try thin.createSummary(&module);
+
+    const summary = thin.module_summaries.get("summary.ir").?;
+    try std.testing.expectEqual(@as(usize, 1), summary.functions.len);
+    try std.testing.expectEqualStrings("exported", summary.functions[0].name);
+    try std.testing.expectEqual(@as(u32, 64), summary.functions[0].size);
+    try std.testing.expectEqual(@as(u32, 12), summary.functions[0].inline_cost);
+    try std.testing.expect(summary.functions[0].hot);
+    try std.testing.expectEqualStrings("external", summary.imports[0]);
+    try std.testing.expectEqualStrings("exported", summary.exports[0]);
 }
