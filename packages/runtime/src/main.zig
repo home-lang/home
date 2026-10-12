@@ -1,10 +1,5 @@
-pub const panic = _bun.crash_handler.panic;
 pub const std_options = std.Options{
     .enable_segfault_handler = false,
-    // Use BoringSSL's RAND_bytes instead of the default getrandom() syscall.
-    // BoringSSL falls back to /dev/urandom on older kernels (< 3.17) where
-    // the getrandom syscall doesn't exist, avoiding a panic on ENOSYS.
-    .cryptoRandomSeed = _bun.csprng,
 };
 
 pub const io_mode = .blocking;
@@ -18,17 +13,15 @@ extern fn bun_warn_avx_missing(url: [*:0]const u8) void;
 pub extern "c" var _environ: ?*anyopaque;
 pub extern "c" var environ: ?*anyopaque;
 
-pub fn main() void {
-    _bun.crash_handler.init();
-
+pub fn main(init: std.process.Init) !void {
     if (Environment.isPosix) {
         var act: _bun.sys.Sigaction = .{
             .handler = .{ .handler = std.posix.SIG.IGN },
             .mask = _bun.sys.sigemptyset(),
             .flags = 0,
         };
-        _bun.sys.sigaction(std.posix.SIG.PIPE, &act, null);
-        _bun.sys.sigaction(std.posix.SIG.XFSZ, &act, null);
+        _bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.PIPE)), &act, null);
+        _bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.XFSZ)), &act, null);
     }
 
     if (Environment.isDebug) {
@@ -49,12 +42,21 @@ pub fn main() void {
         _environ = @ptrCast(std.os.environ.ptr);
     }
 
-    _bun.start_time = std.time.nanoTimestamp();
-    _bun.initArgv() catch |err| {
-        Output.panic("Failed to initialize argv: {s}\n", .{@errorName(err)});
-    };
+    _bun.start_time = _bun.nanoTimestamp();
+    var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer args_arena.deinit();
+    const process_args = try init.minimal.args.toSlice(args_arena.allocator());
+    _bun.argv = try _bun.default_allocator.alloc([:0]const u8, process_args.len);
+    @memcpy(_bun.argv, process_args);
+    if (_bun.env_var.BUN_OPTIONS.get()) |options| {
+        const original_len = _bun.argv.len;
+        var argv = std.array_list.Managed([:0]const u8).fromOwnedSlice(_bun.default_allocator, _bun.argv);
+        try _bun.appendOptionsEnv(options, [:0]const u8, &argv);
+        _bun.argv = argv.items;
+        _bun.bun_options_argc = _bun.argv.len - original_len;
+    }
 
-    Output.Source.Stdio.init();
+    Output.configure();
     defer Output.flush();
     if (Environment.isX64 and Environment.enableSIMD and Environment.isPosix) {
         bun_warn_avx_missing(_bun.cli.UpgradeCommand.Bun__githubBaselineURL.ptr);
@@ -65,10 +67,6 @@ pub fn main() void {
 
     _bun.cli.Cli.start(_bun.default_allocator);
     _bun.Global.exit(0);
-}
-
-pub export fn Bun__panic(msg: [*]const u8, len: usize) noreturn {
-    Output.panic("{s}", .{msg[0..len]});
 }
 
 // -- Zig Standard Library Additions --

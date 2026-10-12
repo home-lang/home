@@ -4319,6 +4319,8 @@ pub const valkey = @import("runtime/valkey_jsc/index.zig");
 pub const api = runtime.api;
 pub const shell = runtime.shell;
 pub const bun_js = struct {
+    pub const Run = @import("bun.js.zig").Run;
+
     pub fn applyStandaloneRuntimeFlags(b: *Transpiler, graph: *const StandaloneModuleGraph) void {
         _ = b;
         _ = graph;

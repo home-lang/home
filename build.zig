@@ -1162,6 +1162,30 @@ pub fn build(b: *std.Build) void {
     home_rt_pkg.linkSystemLibrary("brotlidec", .{});
     home_rt_pkg.linkSystemLibrary("brotlienc", .{});
     home_rt_pkg.linkSystemLibrary("zstd", .{});
+
+    // Build the Bun-compatible runtime independently from Home's language
+    // compiler frontend. Runtime parity work should not have to compile and
+    // link the parser, type checker, code generator, LSP, and package suite
+    // merely to exercise a Node builtin through the native VM.
+    const runtime_exe = b.addExecutable(.{
+        .name = "home-runtime",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/runtime/src/main.zig"),
+            .target = target,
+            .strip = strip_executables,
+            .optimize = optimize,
+        }),
+    });
+    runtime_exe.root_module.link_libc = true;
+    runtime_exe.root_module.addImport("bun", home_rt_pkg);
+    runtime_exe.root_module.addImport("home", home_rt_pkg);
+    runtime_exe.root_module.addImport("home_rt", home_rt_pkg);
+    runtime_exe.root_module.addImport("build_options", build_options_module);
+
+    const install_runtime_exe = b.addInstallArtifact(runtime_exe, .{});
+    const runtime_step = b.step("home-runtime", "Build and install the standalone Bun-compatible runtime");
+    runtime_step.dependOn(&install_runtime_exe.step);
+
     // Link Craft if enabled
     if (enable_craft) {
         std.debug.print("✅ Craft integration enabled\n", .{});
