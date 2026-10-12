@@ -8,6 +8,7 @@
 const std = @import("std");
 const hir = @import("hir");
 const types = @import("types.zig");
+pub const TypeId = types.TypeId;
 const interner = @import("interner.zig");
 
 pub const Error = error{ OutOfMemory, InvalidTypeGraph, UnmappedName, TypeIdOverflow };
@@ -540,6 +541,25 @@ pub fn project(target: *interner.Interner, source: *const interner.Interner, nam
 }
 
 pub fn prepare(target: *interner.Interner, source: *const interner.Interner, names: Names) Error!Pending {
+    return prepareImpl(target, source, names, null, null);
+}
+
+/// `prepare` restricted to the types reachable from `roots`. Identities the
+/// target already holds by origin are mapped and not walked again, so a file
+/// that imports a large declaration pool (lib.dom, @types/node, bun-types)
+/// copies only what its globals reach that it does not already have.
+/// Unreached source ids stay unmapped.
+pub fn prepareRoots(target: *interner.Interner, source: *const interner.Interner, names: Names, roots: []const types.TypeId, attached: ?Attached) Error!Pending {
+    return prepareImpl(target, source, names, roots, attached);
+}
+
+/// Types the source's metadata ties to a type (checked_transfer.Attachments).
+pub const Attached = struct {
+    context: *const anyopaque,
+    get: *const fn (*const anyopaque, types.TypeId) []const types.TypeId,
+};
+
+fn prepareImpl(target: *interner.Interner, source: *const interner.Interner, names: Names, roots: ?[]const types.TypeId, attached: ?Attached) Error!Pending {
     if (target == source or target.pool.headers.items.ptr == source.pool.headers.items.ptr) return error.InvalidTypeGraph;
     const allocator = target.gpa;
     const count = source.pool.typeCount();
@@ -578,42 +598,108 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures, .reused = reused };
     defer builder.deinit();
     errdefer rollback(target, lengths);
-    // Allocate declaration-scoped identities before walking any structural
-    // keys. Their constraints/members are filled only after all IDs resolve.
-    for (types.Primitive.first_dynamic..count) |index| {
-        const id: types.TypeId = @intCast(index);
-        const flags = source.pool.flagsOf(id);
-        switch (try payloadColumn(flags)) {
-            .generic_definition_payloads => {
-                _ = try builder.payload(.generic_definition_payloads, id);
-                if (builder.reuse(id)) continue;
-                relocation.ids[id] = try target.reserveGenericDefinition();
-                try builder.recordOrigin(id, relocation.ids[id]);
-            },
-            .object_type_payloads => {
-                _ = try builder.payload(.object_type_payloads, id);
-                if (builder.reuse(id)) continue;
-                relocation.ids[id] = try target.internObjectType(&.{});
-                try builder.recordOrigin(id, relocation.ids[id]);
-            },
-            .type_parameter_payloads => {
-                const p = try builder.payload(.type_parameter_payloads, id);
-                if (builder.reuse(id)) continue;
-                relocation.ids[id] = try target.internFreshTypeParameterWithFlags(try builder.string(p.name), types.Primitive.none, types.Primitive.none, p.variance, p.is_const);
-                try builder.recordOrigin(id, relocation.ids[id]);
-            },
-            .literal_payloads => if (flags.is_enum_literal) {
-                _ = builder.reuse(id);
-            },
-            .signature_payloads => {
+    // Partial transfer: reserve identities as they are reached from the roots.
+    var reached: std.ArrayListUnmanaged(types.TypeId) = .empty;
+    defer reached.deinit(allocator);
+    if (roots) |root_ids| {
+        for (types.Primitive.first_dynamic..count) |index| {
+            const id: types.TypeId = @intCast(index);
+            if (source.pool.flagsOf(id).is_signature) {
                 _ = try builder.payload(.signature_payloads, id);
                 signatures[source.pool.payloadOf(id)] = id;
-                // Signatures carry identity too (see
-                // `internSignatureWithThisType`); without reuse every
-                // transitive import appended another copy of each one.
-                _ = builder.reuse(id);
-            },
-            else => {},
+            }
+        }
+        const seen = try allocator.alloc(bool, count);
+        defer allocator.free(seen);
+        @memset(seen, false);
+        var work: std.ArrayListUnmanaged(types.TypeId) = .empty;
+        defer work.deinit(allocator);
+        try work.appendSlice(allocator, root_ids);
+        while (work.pop()) |id| {
+            if (id >= count) return error.InvalidTypeGraph;
+            if (id < types.Primitive.first_dynamic or seen[id]) continue;
+            seen[id] = true;
+            try reached.append(allocator, id);
+            const flags = source.pool.flagsOf(id);
+            if (attached) |lookup| try work.appendSlice(allocator, lookup.get(lookup.context, id));
+            switch (try payloadColumn(flags)) {
+                .generic_definition_payloads => {
+                    const p = try builder.payload(.generic_definition_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.reserveGenericDefinition();
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                    try work.appendSlice(allocator, try builder.slice(.type_arg_pool, p.parameters_start, p.parameters_len));
+                    try work.append(allocator, p.body);
+                },
+                .object_type_payloads => {
+                    const p = try builder.payload(.object_type_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.internObjectType(&.{});
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                    for (try builder.slice(.object_member_pool, p.members_start, p.members_len)) |member| try work.append(allocator, member.type);
+                    for ([_]u32{ p.call_sig, p.construct_sig }) |payload_index| {
+                        if (payload_index == 0) continue;
+                        if (payload_index >= signatures.len or signatures[payload_index] == 0) return error.InvalidTypeGraph;
+                        try work.append(allocator, signatures[payload_index]);
+                    }
+                    try work.appendSlice(allocator, &.{ p.string_index_type, p.number_index_type, p.symbol_index_type });
+                },
+                .type_parameter_payloads => {
+                    const p = try builder.payload(.type_parameter_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.internFreshTypeParameterWithFlags(try builder.string(p.name), types.Primitive.none, types.Primitive.none, p.variance, p.is_const);
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                    try work.appendSlice(allocator, &.{ p.constraint, p.default });
+                },
+                .literal_payloads => if (flags.is_enum_literal) {
+                    _ = builder.reuse(id);
+                },
+                .signature_payloads => {
+                    if (builder.reuse(id)) continue;
+                    try builder.dependencies(id, &work);
+                },
+                else => try builder.dependencies(id, &work),
+            }
+        }
+    }
+    // Allocate declaration-scoped identities before walking any structural
+    // keys. Their constraints/members are filled only after all IDs resolve.
+    if (roots == null) {
+        for (types.Primitive.first_dynamic..count) |index| {
+            const id: types.TypeId = @intCast(index);
+            const flags = source.pool.flagsOf(id);
+            switch (try payloadColumn(flags)) {
+                .generic_definition_payloads => {
+                    _ = try builder.payload(.generic_definition_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.reserveGenericDefinition();
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                },
+                .object_type_payloads => {
+                    _ = try builder.payload(.object_type_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.internObjectType(&.{});
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                },
+                .type_parameter_payloads => {
+                    const p = try builder.payload(.type_parameter_payloads, id);
+                    if (builder.reuse(id)) continue;
+                    relocation.ids[id] = try target.internFreshTypeParameterWithFlags(try builder.string(p.name), types.Primitive.none, types.Primitive.none, p.variance, p.is_const);
+                    try builder.recordOrigin(id, relocation.ids[id]);
+                },
+                .literal_payloads => if (flags.is_enum_literal) {
+                    _ = builder.reuse(id);
+                },
+                .signature_payloads => {
+                    _ = try builder.payload(.signature_payloads, id);
+                    signatures[source.pool.payloadOf(id)] = id;
+                    // Signatures carry identity too (see
+                    // `internSignatureWithThisType`); without reuse every
+                    // transitive import appended another copy of each one.
+                    _ = builder.reuse(id);
+                },
+                else => {},
+            }
         }
     }
     const state = try allocator.alloc(u8, count);
@@ -624,8 +710,11 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     defer stack.deinit(allocator);
     var edges: std.ArrayListUnmanaged(types.TypeId) = .empty;
     defer edges.deinit(allocator);
-    for (types.Primitive.first_dynamic..count) |root_index| {
-        const root: types.TypeId = @intCast(root_index);
+    const all_ids = try allocator.alloc(types.TypeId, if (roots == null) count - types.Primitive.first_dynamic else 0);
+    defer allocator.free(all_ids);
+    for (all_ids, 0..) |*slot, offset| slot.* = @intCast(types.Primitive.first_dynamic + offset);
+    const walk_ids: []const types.TypeId = if (roots == null) all_ids else reached.items;
+    for (walk_ids) |root| {
         if (relocation.ids[root] != 0) continue;
         try builder.dependencies(root, &edges);
         try stack.append(allocator, .{ .id = root, .start = 0, .len = edges.items.len });
@@ -651,12 +740,14 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
             }
         }
     }
-    for (types.Primitive.first_dynamic..count) |index| try builder.finalizeFresh(@intCast(index));
-    for (source.pool.signature_param_pool.items[1..]) |parameter| {
-        var mapped = parameter;
-        mapped.name = try builder.string(parameter.name);
-        mapped.type = try builder.typeId(parameter.type);
-        try target.pool.signature_param_pool.append(allocator, mapped);
+    for (walk_ids) |id| try builder.finalizeFresh(id);
+    if (roots == null) {
+        for (source.pool.signature_param_pool.items[1..]) |parameter| {
+            var mapped = parameter;
+            mapped.name = try builder.string(parameter.name);
+            mapped.type = try builder.typeId(parameter.type);
+            try target.pool.signature_param_pool.append(allocator, mapped);
+        }
     }
     var enum_entries = source.enum_literal_info.iterator();
     while (enum_entries.next()) |entry| {
@@ -1291,4 +1382,44 @@ test "type transfer: owner provenance keeps one copy across transitive imports" 
     var second_copy = try append(&anonymous, &middle, plain);
     defer second_copy.deinit();
     try T.expect(try first_copy.typeId(object) != try second_copy.typeId(try into_middle.typeId(object)));
+}
+
+test "type transfer: roots transfer only what they reach and reuse held identities" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    const leaf = try source.internObjectType(&.{});
+    const unrelated = try source.internObjectType(&.{});
+    const holder = try source.internObjectType(&.{});
+    // holder = { v: leaf | string }; unrelated is never mentioned.
+    const field = try source.internUnion(&.{ leaf, types.Primitive.string_t });
+    try source.pool.object_member_pool.append(T.allocator, .{ .name = 7, .type = field, .is_optional = false, .is_readonly = false, .is_method = false });
+    _ = &unrelated;
+    const members_start: u32 = @intCast(source.pool.object_member_pool.items.len - 1);
+    source.pool.object_type_payloads.items[source.pool.payloadOf(holder)].members_start = members_start;
+    source.pool.object_type_payloads.items[source.pool.payloadOf(holder)].members_len = 1;
+
+    var target = try interner.Interner.init(T.allocator);
+    defer target.deinit();
+    var test_names: TestNames = .{};
+    var names = test_names.names();
+    names.owner = 1;
+    const before = target.pool.typeCount();
+    var first = try prepareRoots(&target, &source, names, &.{holder}, null);
+    var relocation = first.commit();
+    first.deinit();
+    defer relocation.deinit();
+    try T.expect(relocation.ids[unrelated] == 0);
+    try T.expect(relocation.ids[leaf] != 0);
+    const mapped_holder = try relocation.typeId(holder);
+    try T.expectEqual(try relocation.typeId(field), target.objectMembers(mapped_holder)[0].type);
+    // holder, leaf and the union.
+    try T.expectEqual(before + 3, target.pool.typeCount());
+
+    // A second import of the same root reuses every identity it reaches.
+    var second = try prepareRoots(&target, &source, names, &.{holder}, null);
+    var again = second.commit();
+    second.deinit();
+    defer again.deinit();
+    try T.expectEqual(mapped_holder, try again.typeId(holder));
+    try T.expectEqual(before + 3, target.pool.typeCount());
 }

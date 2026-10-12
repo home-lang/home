@@ -10,7 +10,7 @@ const std = @import("std");
 const check = @import("check.zig");
 const transfer = @import("type_transfer.zig");
 
-pub const Error = transfer.Error || error{MetadataCollision};
+pub const Error = transfer.Error || error{ MetadataCollision, Unmapped };
 
 /// One source owner's complete relocated result. The destination type pool,
 /// mapped strings, and declaration provenance are owned by the caller.
@@ -38,6 +38,132 @@ pub fn append(
     defer pending.deinit();
     const copied = try clone(target.gpa, checked, pending.ids(), names);
     return .{ .ids = pending.commit(), .checked = copied };
+}
+
+/// Like `append`, but transfer only the types reachable from `roots` (source
+/// ids) that the target does not already hold by origin, and only the
+/// metadata entries whose types were transferred. Unreached ids stay unmapped
+/// in the relocation (`typeId` reports InvalidTypeGraph for them).
+pub fn appendRoots(
+    target: *@import("interner.zig").Interner,
+    source: *const @import("interner.zig").Interner,
+    checked: *const check.CheckedTypes,
+    names: transfer.Names,
+    roots: []const transfer.TypeId,
+    attachments: ?*const Attachments,
+    root_names: []const u32,
+) Error!Imported {
+    var all_roots: std.ArrayListUnmanaged(transfer.TypeId) = .empty;
+    defer all_roots.deinit(target.gpa);
+    try all_roots.appendSlice(target.gpa, roots);
+    if (attachments) |attached| {
+        for (root_names) |name| try all_roots.appendSlice(target.gpa, attached.forName(name));
+    }
+    var pending = try transfer.prepareRoots(target, source, names, all_roots.items, if (attachments) |attached| attached.lookup() else null);
+    defer pending.deinit();
+    const copied = try clonePartial(target.gpa, checked, pending.ids(), names);
+    return .{ .ids = pending.commit(), .checked = copied };
+}
+
+/// Which types an owner's metadata ties together, so a partial transfer that
+/// reaches one of them also brings the others its metadata entries mention
+/// (a generic interface's parameters with its body, a signature's predicate
+/// target, ...). Name-keyed entries (`type_names`, `generic_aliases`,
+/// `overloads`) are found by the global name a file needs. Built once per
+/// owner; owners are immutable.
+pub const Attachments = struct {
+    gpa: std.mem.Allocator,
+    by_type: std.AutoHashMapUnmanaged(transfer.TypeId, std.ArrayListUnmanaged(transfer.TypeId)) = .empty,
+    by_name: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(transfer.TypeId)) = .empty,
+
+    pub fn deinit(self: *Attachments) void {
+        var types_it = self.by_type.valueIterator();
+        while (types_it.next()) |list| list.deinit(self.gpa);
+        self.by_type.deinit(self.gpa);
+        var names_it = self.by_name.valueIterator();
+        while (names_it.next()) |list| list.deinit(self.gpa);
+        self.by_name.deinit(self.gpa);
+    }
+
+    pub fn forType(self: *const Attachments, id: transfer.TypeId) []const transfer.TypeId {
+        return if (self.by_type.get(id)) |list| list.items else &.{};
+    }
+
+    pub fn forName(self: *const Attachments, name: u32) []const transfer.TypeId {
+        return if (self.by_name.get(name)) |list| list.items else &.{};
+    }
+
+    pub fn lookup(self: *const Attachments) transfer.Attached {
+        return .{ .context = self, .get = struct {
+            fn get(context: *const anyopaque, id: transfer.TypeId) []const transfer.TypeId {
+                const attachments: *const Attachments = @ptrCast(@alignCast(context));
+                return attachments.forType(id);
+            }
+        }.get };
+    }
+
+    fn add(self: *Attachments, map: anytype, key: anytype, ids: []const transfer.TypeId) !void {
+        if (ids.len == 0) return;
+        const entry = try map.getOrPut(self.gpa, key);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        try entry.value_ptr.appendSlice(self.gpa, ids);
+    }
+};
+
+pub fn buildAttachments(gpa: std.mem.Allocator, checked: *const check.CheckedTypes) error{OutOfMemory}!Attachments {
+    @setEvalBranchQuota(30000);
+    var result: Attachments = .{ .gpa = gpa };
+    errdefer result.deinit();
+    var key_ids: std.ArrayListUnmanaged(transfer.TypeId) = .empty;
+    defer key_ids.deinit(gpa);
+    var value_ids: std.ArrayListUnmanaged(transfer.TypeId) = .empty;
+    defer value_ids.deinit(gpa);
+    inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| {
+        const mapping = comptime tableShape(@field(std.meta.FieldEnum(check.CheckedTypes), name));
+        var entries = @field(checked, name).iterator();
+        while (entries.next()) |entry| {
+            key_ids.clearRetainingCapacity();
+            value_ids.clearRetainingCapacity();
+            try collectIds(gpa, @TypeOf(entry.key_ptr.*), mapping.key, entry.key_ptr.*, &key_ids);
+            try collectIds(gpa, @TypeOf(entry.value_ptr.*), mapping.value, entry.value_ptr.*, &value_ids);
+            if (comptime std.meta.activeTag(mapping.key) == .string_id) {
+                try result.add(&result.by_name, @as(u32, entry.key_ptr.*), value_ids.items);
+            } else if (comptime std.meta.activeTag(mapping.key) == .type_id) {
+                try result.add(&result.by_type, @as(transfer.TypeId, entry.key_ptr.*), value_ids.items);
+            }
+            // Every type an entry mentions brings the entry's other types.
+            if (key_ids.items.len + value_ids.items.len > 1) {
+                try key_ids.appendSlice(gpa, value_ids.items);
+                for (key_ids.items) |id| try result.add(&result.by_type, id, key_ids.items);
+            }
+        }
+    }
+    return result;
+}
+
+fn collectIds(
+    gpa: std.mem.Allocator,
+    comptime Value: type,
+    comptime shape: Shape,
+    value: Value,
+    out: *std.ArrayListUnmanaged(transfer.TypeId),
+) error{OutOfMemory}!void {
+    switch (shape) {
+        .scalar, .string_id, .node_id => {},
+        .type_id => if (value != 0) try out.append(gpa, value),
+        .slice => |element| for (value) |item| try collectIds(gpa, @TypeOf(item), element.*, item, out),
+        .list => |element| for (value.items) |item| try collectIds(gpa, @TypeOf(item), element.*, item, out),
+        .map => |mapping| {
+            var entries = value.iterator();
+            while (entries.next()) |entry| {
+                try collectIds(gpa, @TypeOf(entry.key_ptr.*), mapping.key, entry.key_ptr.*, out);
+                try collectIds(gpa, @TypeOf(entry.value_ptr.*), mapping.value, entry.value_ptr.*, out);
+            }
+        },
+        .fields => |fields| inline for (fields) |field| {
+            try collectIds(gpa, @FieldType(Value, field.name), field.shape, @field(value, field.name), out);
+        },
+    }
 }
 
 const Shape = union(enum) {
@@ -261,8 +387,29 @@ pub fn clone(
     ids: transfer.Relocation,
     names: transfer.Names,
 ) Error!check.CheckedTypes {
+    return cloneMode(allocator, source, ids, names, false);
+}
+
+/// `clone` for a partial relocation: entries that mention an unmapped type
+/// are left out instead of failing the whole transfer.
+pub fn clonePartial(
+    allocator: std.mem.Allocator,
+    source: *const check.CheckedTypes,
+    ids: transfer.Relocation,
+    names: transfer.Names,
+) Error!check.CheckedTypes {
+    return cloneMode(allocator, source, ids, names, true);
+}
+
+fn cloneMode(
+    allocator: std.mem.Allocator,
+    source: *const check.CheckedTypes,
+    ids: transfer.Relocation,
+    names: transfer.Names,
+    partial: bool,
+) Error!check.CheckedTypes {
     @setEvalBranchQuota(30000);
-    const copier = Copier{ .allocator = allocator, .ids = ids, .names = names };
+    const copier = Copier{ .allocator = allocator, .ids = ids, .names = names, .partial = partial };
     var result: check.CheckedTypes = .{};
     errdefer result.deinit(allocator);
     inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| {
@@ -276,6 +423,7 @@ const Copier = struct {
     allocator: std.mem.Allocator,
     ids: transfer.Relocation,
     names: transfer.Names,
+    partial: bool = false,
 
     fn copy(self: Copier, comptime Value: type, comptime shape: Shape, source: Value) Error!Value {
         switch (shape) {
@@ -283,7 +431,10 @@ const Copier = struct {
                 .int, .float, .bool, .@"enum", .void => return source,
                 else => @compileError("Non-scalar metadata needs an explicit transfer shape: " ++ @typeName(Value)),
             },
-            .type_id => return self.ids.typeId(source),
+            .type_id => {
+                if (self.partial and source != 0 and (source >= self.ids.ids.len or self.ids.ids[source] == 0)) return error.Unmapped;
+                return self.ids.typeId(source);
+            },
             .string_id, .node_id => {
                 if (source == 0) return 0;
                 const mapped = if (shape == .string_id)
@@ -320,10 +471,19 @@ const Copier = struct {
                 try result.ensureTotalCapacity(self.allocator, source.count());
                 var entries = source.iterator();
                 while (entries.next()) |entry| {
-                    const key = try self.copy(@TypeOf(entry.key_ptr.*), mapping.key, entry.key_ptr.*);
+                    const key = self.copy(@TypeOf(entry.key_ptr.*), mapping.key, entry.key_ptr.*) catch |err| switch (err) {
+                        error.Unmapped => if (self.partial) continue else return err,
+                        else => return err,
+                    };
                     errdefer release(self.allocator, @TypeOf(key), mapping.key, key);
                     if (result.contains(key)) return error.MetadataCollision;
-                    const value = try self.copy(@TypeOf(entry.value_ptr.*), mapping.value, entry.value_ptr.*);
+                    const value = self.copy(@TypeOf(entry.value_ptr.*), mapping.value, entry.value_ptr.*) catch |err| switch (err) {
+                        error.Unmapped => if (self.partial) {
+                            release(self.allocator, @TypeOf(key), mapping.key, key);
+                            continue;
+                        } else return err,
+                        else => return err,
+                    };
                     result.putAssumeCapacityNoClobber(key, value);
                 }
                 return result;

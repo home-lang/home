@@ -394,6 +394,9 @@ pub const Program = struct {
     /// `skipLibCheck` of the last compile: program-level semantic checks
     /// then leave declaration files alone, as tsc's checker does.
     skip_lib_check: bool = false,
+    /// Transfer whole owner pools instead of what a file's globals reach
+    /// (`HOME_TSC_FULL_TRANSFER`, for comparing the two).
+    full_global_transfer: bool = false,
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
@@ -945,6 +948,68 @@ pub const Program = struct {
         }
     }
 
+    const OwnerRoots = struct {
+        owner: source_owners.OwnerId,
+        roots: std.ArrayListUnmanaged(ts_driver.TypeId) = .empty,
+        names: std.ArrayListUnmanaged(u32) = .empty,
+    };
+
+    fn addOwnerName(
+        gpa: std.mem.Allocator,
+        by_owner: *std.ArrayListUnmanaged(OwnerRoots),
+        owner: source_owners.OwnerId,
+        name: u32,
+    ) error{OutOfMemory}!void {
+        for (by_owner.items) |*entry| {
+            if (entry.owner != owner) continue;
+            try entry.names.append(gpa, name);
+            return;
+        }
+        try by_owner.append(gpa, .{ .owner = owner });
+        try by_owner.items[by_owner.items.len - 1].names.append(gpa, name);
+    }
+
+    fn addOwnerRoot(
+        gpa: std.mem.Allocator,
+        by_owner: *std.ArrayListUnmanaged(OwnerRoots),
+        owner: source_owners.OwnerId,
+        root: ts_driver.TypeId,
+    ) error{OutOfMemory}!void {
+        for (by_owner.items) |*entry| {
+            if (entry.owner != owner) continue;
+            try entry.roots.append(gpa, root);
+            return;
+        }
+        try by_owner.append(gpa, .{ .owner = owner });
+        try by_owner.items[by_owner.items.len - 1].roots.append(gpa, root);
+    }
+
+    /// Roots for the types a global namespace declaration publishes.
+    fn addNamespaceRoots(
+        gpa: std.mem.Allocator,
+        by_owner: *std.ArrayListUnmanaged(OwnerRoots),
+        owner: source_owners.OwnerId,
+        c: *const ts_driver.Compilation,
+        namespace_node: hir_mod_ns.NodeId,
+    ) error{OutOfMemory}!void {
+        for (hir_mod_ns.namespaceBody(&c.hir, namespace_node)) |raw| {
+            var statement = raw;
+            if (c.hir.kindOf(statement) == .export_decl) {
+                const exported = hir_mod_ns.exportOf(&c.hir, statement).decl;
+                if (exported == hir_mod_ns.none_node_id) continue;
+                statement = exported;
+            }
+            switch (c.hir.kindOf(statement)) {
+                .namespace_decl, .module_decl => try addNamespaceRoots(gpa, by_owner, owner, c, statement),
+                .interface_decl, .type_alias_decl, .class_decl, .enum_decl => {
+                    const t = c.hir.typeOf(statement);
+                    if (t != ts_driver.Primitive.none) try addOwnerRoot(gpa, by_owner, owner, t);
+                },
+                else => {},
+            }
+        }
+    }
+
     const AmbientImport = struct {
         /// The specifier as this file writes it (borrowed from its interner).
         specifier: []const u8,
@@ -1330,71 +1395,80 @@ pub const Program = struct {
         var references: ?GlobalReferenceNames = null;
         defer if (references) |*facts| facts.deinit(self.gpa);
 
-        // Every owner declaring a global this file uses, with what it covers.
-        const Needed = struct { owner: source_owners.OwnerId, covered: []const source_owners.OwnerId };
-        var needed: std.ArrayListUnmanaged(Needed) = .empty;
-        defer needed.deinit(self.gpa);
-        {
-            self.owners_mutex.lock();
-            defer self.owners_mutex.unlock();
-            for (globals.entries.keys(), globals.entries.values()) |key, owners| {
-                if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
-                for (owners.items) |owner| {
-                    if (owner.file == file or owner.file.owner == .none) continue;
-                    for (needed.items) |existing| {
-                        if (existing.owner == owner.file.owner) break;
-                    } else try needed.append(self.gpa, .{ .owner = owner.file.owner, .covered = owner.file.covered_owners });
-                }
+        // The types this file needs from each owner. Only what those roots
+        // reach is transferred: importing whole pools made every file copy
+        // lib.dom/@types/node/bun-types again (quadratic in the file count).
+        var by_owner: std.ArrayListUnmanaged(OwnerRoots) = .empty;
+        defer {
+            for (by_owner.items) |*entry| {
+                entry.roots.deinit(self.gpa);
+                entry.names.deinit(self.gpa);
             }
+            by_owner.deinit(self.gpa);
         }
-        // Ambient modules this file imports from other files, and their owners.
+        var needed_keys: std.ArrayListUnmanaged(usize) = .empty;
+        defer needed_keys.deinit(self.gpa);
         var ambient_exports: std.ArrayListUnmanaged(AmbientImport) = .empty;
         defer ambient_exports.deinit(self.gpa);
         try self.collectAmbientImports(file, compilation, globals, &ambient_exports);
         {
             self.owners_mutex.lock();
             defer self.owners_mutex.unlock();
+            for (globals.entries.keys(), globals.entries.values(), 0..) |key, owners, key_index| {
+                if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
+                try needed_keys.append(self.gpa, key_index);
+                for (owners.items) |owner| {
+                    if (owner.file == file or owner.file.owner == .none) continue;
+                    const owner_c = owner.file.compilation orelse continue;
+                    try addOwnerName(self.gpa, &by_owner, owner.file.owner, key.name);
+                    if (key.space == .namespace) {
+                        for (owner.symbol.decls.items) |decl| {
+                            if (owner_c.hir.kindOf(decl) != .namespace_decl) continue;
+                            try addNamespaceRoots(self.gpa, &by_owner, owner.file.owner, owner_c, decl);
+                        }
+                        continue;
+                    }
+                    const root = boundGlobalSourceType(owner) orelse continue;
+                    try addOwnerRoot(self.gpa, &by_owner, owner.file.owner, root);
+                }
+            }
             for (ambient_exports.items) |entry| {
+                if (entry.name.len == 0) continue;
                 const owner_file = self.files.items[entry.source];
                 if (owner_file != file and owner_file.owner != .none) {
-                    for (needed.items) |existing| {
-                        if (existing.owner == owner_file.owner) break;
-                    } else try needed.append(self.gpa, .{ .owner = owner_file.owner, .covered = owner_file.covered_owners });
+                    if (owner_file.compilation) |owner_c| {
+                        if (ambientDeclarationType(owner_c, entry.decl)) |root| try addOwnerRoot(self.gpa, &by_owner, owner_file.owner, root);
+                    }
                 }
                 // `export = process` naming a merged global: all its owners.
-                const global_name = ambientGlobalVarName(self.files.items[entry.source], entry.decl) orelse continue;
+                const global_name = ambientGlobalVarName(owner_file, entry.decl) orelse continue;
                 for (globals.lookup(global_name, .value)) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
-                    for (needed.items) |existing| {
-                        if (existing.owner == owner.file.owner) break;
-                    } else try needed.append(self.gpa, .{ .owner = owner.file.owner, .covered = owner.file.covered_owners });
+                    const root = boundGlobalSourceType(owner) orelse continue;
+                    try addOwnerRoot(self.gpa, &by_owner, owner.file.owner, root);
                 }
             }
         }
-        // Import the widest owners first. An owner already inside an imported
-        // pool is not transferred again: transfers copy whole pools, so the
-        // naive per-owner import made each file re-walk the same declarations
-        // once per global-declaring file (minutes for @types/node + bun-types).
-        std.sort.block(Needed, needed.items, {}, struct {
-            fn lessThan(_: void, a: Needed, b: Needed) bool {
-                return a.covered.len > b.covered.len;
-            }
-        }.lessThan);
-        for (needed.items) |candidate| {
-            if (ownerCovered(result.covered.items, candidate.owner)) continue;
+        for (by_owner.items) |entry| {
             // The registry locks itself around its own tables; the transfer
             // into this file's private pool runs unlocked.
-            var imported = self.owners.importOwner(
-                &compilation.type_interner,
-                &compilation.interner,
-                candidate.owner,
-            ) catch |err| {
+            const imported_result = if (self.full_global_transfer)
+                self.owners.importOwner(&compilation.type_interner, &compilation.interner, entry.owner)
+            else
+                self.owners.importOwnerRoots(
+                    &compilation.type_interner,
+                    &compilation.interner,
+                    entry.owner,
+                    entry.roots.items,
+                    entry.names.items,
+                );
+            var imported = imported_result catch |err| {
                 return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     else => error.EmitError,
                 };
             };
-            result.import_owners.append(self.gpa, candidate.owner) catch |err| {
+            result.import_owners.append(self.gpa, entry.owner) catch |err| {
                 imported.deinit();
                 return err;
             };
@@ -1403,14 +1477,14 @@ pub const Program = struct {
                 imported.deinit();
                 return err;
             };
-            try addCoveredOwners(self.gpa, &result.covered, candidate.covered);
-            try addCoveredOwners(self.gpa, &result.covered, &.{candidate.owner});
         }
         try self.resolveAmbientImports(file, compilation, &result, ambient_exports.items, globals);
         try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
         for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
 
-        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+        for (needed_keys.items) |key_index| {
+            const key = globals.entries.keys()[key_index];
+            const owners = globals.entries.values()[key_index];
             if (key.space == .value) {
                 // A merged global is declared in several files (@types/node's
                 // `process` in globals.d.ts and process.d.ts); prefer an owner

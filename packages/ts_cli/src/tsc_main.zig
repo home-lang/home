@@ -3429,6 +3429,8 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
 
     var program = ts_program.Program.init(gpa, &resolver);
     defer program.deinit();
+    // Diagnostic switch: transfer whole owner pools as before partial imports.
+    program.full_global_transfer = environ.get("HOME_TSC_FULL_TRANSFER") != null;
 
     // §file-add — extension gate. tsc rejects an input file whose
     // extension it cannot process before it ever reads the file:

@@ -91,6 +91,8 @@ pub const Registry = struct {
     /// interned. Published under `mutex`, read lock-free by importers: a
     /// handle never changes once set (cancellation clears unpublished ones).
     handles: std.ArrayListUnmanaged([]std.atomic.Value(hir.NodeId)) = .empty,
+    /// Per owner, built on first partial import (see `importOwnerRoots`).
+    attachments: std.ArrayListUnmanaged(?*checker.checked_transfer.Attachments) = .empty,
 
     fn lockShared(self: *const Registry) *SpinMutex {
         const mutex = @constCast(&self.mutex);
@@ -105,6 +107,11 @@ pub const Registry = struct {
     pub fn deinit(self: *Registry) void {
         for (self.handles.items) |table| self.allocator.free(table);
         self.handles.deinit(self.allocator);
+        for (self.attachments.items) |maybe| if (maybe) |attached| {
+            attached.deinit();
+            self.allocator.destroy(attached);
+        };
+        self.attachments.deinit(self.allocator);
         self.node_ids.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.owners.deinit(self.allocator);
@@ -121,8 +128,10 @@ pub const Registry = struct {
         errdefer self.allocator.free(table);
         @memset(table, std.atomic.Value(hir.NodeId).init(0));
         try self.handles.ensureUnusedCapacity(self.allocator, 1);
+        try self.attachments.ensureUnusedCapacity(self.allocator, 1);
         try self.owners.append(self.allocator, view);
         self.handles.appendAssumeCapacity(table);
+        self.attachments.appendAssumeCapacity(null);
         return @fromBackingInt(@intCast(self.owners.items.len));
     }
 
@@ -130,6 +139,18 @@ pub const Registry = struct {
         const mutex = self.lockShared();
         defer mutex.unlock();
         return self.sourceLocked(id);
+    }
+
+    fn ownerAttachments(self: *Registry, owner: OwnerId, view: Source) Error!*const checker.checked_transfer.Attachments {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const slot = &self.attachments.items[@backingInt(owner) - 1];
+        if (slot.*) |built| return built;
+        const built = try self.allocator.create(checker.checked_transfer.Attachments);
+        errdefer self.allocator.destroy(built);
+        built.* = try checker.checked_transfer.buildAttachments(self.allocator, view.checked);
+        slot.* = built;
+        return built;
     }
 
     fn sourceAndHandles(self: *Registry, id: OwnerId) Error!struct { Source, []std.atomic.Value(hir.NodeId) } {
@@ -234,6 +255,31 @@ pub const Registry = struct {
             .declaration = Context.node,
             .owner = @backingInt(owner),
         });
+        return .{ .owner = owner, .types = imported };
+    }
+
+    /// `importOwner` restricted to the types reachable from `roots` (ids of
+    /// the owner's pool) and the metadata entries those types carry.
+    pub fn importOwnerRoots(
+        self: *Registry,
+        target: *checker.Interner,
+        target_strings: *strings.Interner,
+        owner: OwnerId,
+        roots: []const checker.TypeId,
+        root_names: []const u32,
+    ) Error!Imported {
+        const view, const handles = try self.sourceAndHandles(owner);
+        const attachments = try self.ownerAttachments(owner, view);
+        var added: std.ArrayListUnmanaged(u32) = .empty;
+        defer added.deinit(self.allocator);
+        errdefer self.cancelDeclarations(added.items);
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .added = &added, .handles = handles };
+        const imported = try checker.checked_transfer.appendRoots(target, view.types, view.checked, .{
+            .context = &context,
+            .string = Context.string,
+            .declaration = Context.node,
+            .owner = @backingInt(owner),
+        }, roots, attachments, root_names);
         return .{ .owner = owner, .types = imported };
     }
 
