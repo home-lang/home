@@ -1648,6 +1648,24 @@ pub fn build(b: *std.Build) void {
         collision.expectStdErrEqual("");
         collision.expectExitCode(1);
         tsc_streams_step.dependOn(&collision.step);
+
+        const allow_js = b.addRunArtifact(home_tsc_exe);
+        allow_js.setCwd(streams_dir);
+        allow_js.clearEnvironment();
+        allow_js.addArgs(&.{ "--allowJs", "--noEmit", "--listFilesOnly", "--ignoreConfig", "collision/a.js" });
+        allow_js.expectStdOutEqual("collision/a.js\n");
+        allow_js.expectStdErrEqual("");
+        allow_js.expectExitCode(0);
+        tsc_streams_step.dependOn(&allow_js.step);
+
+        const check_js = b.addRunArtifact(home_tsc_exe);
+        check_js.setCwd(streams_dir);
+        check_js.clearEnvironment();
+        check_js.addArgs(&.{ "--checkJs", "--noEmit", "--ignoreConfig", "check_js.js" });
+        check_js.expectStdOutEqual("check_js.js(2,7): error TS2322: Type 'string' is not assignable to type 'number'.\n");
+        check_js.expectStdErrEqual("");
+        check_js.expectExitCode(1);
+        tsc_streams_step.dependOn(&check_js.step);
     }
     dependOnTest(test_step, tsc_streams_step, test_filter, "tsc_streams");
 

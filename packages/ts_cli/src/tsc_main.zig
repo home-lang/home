@@ -3437,7 +3437,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
 
     const allow_js: bool = blk: {
         if (loaded_cfg) |c| break :blk tsconfig_mod.effectiveAllowJs(c.compiler_options);
-        break :blk false;
+        break :blk ts_cli.effectiveAllowJs(opts);
     };
     var extension_errors: bool = false;
     for (input_files.items) |path| {

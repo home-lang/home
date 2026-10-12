@@ -121,6 +121,11 @@ pub const Options = struct {
     show_all_help: bool = false,
     /// `--strict` (and the strict-family individual toggles).
     strict: ?bool = null,
+    /// `--allowJs`. Null means defer to tsconfig/default false.
+    allow_js: ?bool = null,
+    /// `--checkJs`. Null means defer to tsconfig/default false; true implies
+    /// JavaScript admission when `allowJs` is otherwise unspecified.
+    check_js: ?bool = null,
     /// `--target=esXXXX`.
     target: ?[]const u8 = null,
     /// `--outDir=PATH`.
@@ -157,6 +162,14 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
     compile_opts.strict = opts.strict;
     compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
     compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
+    if (opts.allow_js) |value| compile_opts.allow_js = value;
+    if (opts.check_js) |value| {
+        compile_opts.check_js = value;
+        compile_opts.check_js_disabled = !value;
+        if (value and opts.allow_js == null and compile_opts.pub_tsconfig == null) {
+            compile_opts.allow_js = true;
+        }
+    }
     if (opts.target) |value| {
         if (tsconfig_mod.Target.fromString(value)) |target| {
             ts_driver.applyTargetOption(compile_opts, target);
@@ -194,6 +207,8 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
 pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void {
     const compiler_options = &config.compiler_options;
     if (opts.strict) |value| compiler_options.strict = value;
+    if (opts.allow_js) |value| compiler_options.allow_js = value;
+    if (opts.check_js) |value| compiler_options.check_js = value;
     if (opts.no_emit) compiler_options.no_emit = true;
     if (opts.skip_lib_check) |value| compiler_options.skip_lib_check = value;
     if (opts.pretty) |value| compiler_options.pretty = value;
@@ -219,6 +234,12 @@ pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void 
     if (opts.declaration_map) |value| compiler_options.declaration_map = value;
     if (opts.home_options.sound) |value| config.home_options.sound = value;
     if (opts.home_options.list_unmodeled_any) |value| config.home_options.list_unmodeled_any = value;
+}
+
+/// Effective JavaScript admission for command-line-only programs. Parsed
+/// configs use `tsconfig.effectiveAllowJs` after `applyConfigOverrides`.
+pub fn effectiveAllowJs(opts: Options) bool {
+    return opts.allow_js orelse (opts.check_js orelse false);
 }
 
 pub const ParseError = error{
@@ -297,6 +318,10 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.show_all_help = true;
         } else if (std.mem.eql(u8, a, "--strict")) {
             opts.strict = true;
+        } else if (std.mem.eql(u8, a, "--allowJs")) {
+            opts.allow_js = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--checkJs")) {
+            opts.check_js = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--maxNodeModuleJsDepth")) {
             i += 1;
             if (i >= args.len) {
@@ -1520,6 +1545,42 @@ test "parseArgs: boolean library and config flags preserve positional files" {
         try T.expectEqual(@as(usize, 1), opts.files.len);
         try T.expectEqualStrings("src/a.ts", opts.files[0]);
     }
+}
+
+test "parseArgs: allowJs and checkJs reach config and compile options" {
+    const enabled_argv = [_][]const u8{ "--checkJs", "src/app.js" };
+    const enabled = try parseArgs(T.allocator, &enabled_argv);
+    defer T.allocator.free(enabled.files);
+    try T.expectEqual(@as(?bool, null), enabled.allow_js);
+    try T.expectEqual(@as(?bool, true), enabled.check_js);
+    try T.expect(effectiveAllowJs(enabled));
+
+    var compile_options: ts_driver.CompileOptions = .{};
+    applyCompileOptions(&compile_options, enabled);
+    try T.expect(compile_options.allow_js);
+    try T.expect(compile_options.check_js);
+    try T.expect(!compile_options.check_js_disabled);
+
+    const disabled_argv = [_][]const u8{ "--allowJs", "false", "--checkJs", "false", "src/app.js" };
+    const disabled = try parseArgs(T.allocator, &disabled_argv);
+    defer T.allocator.free(disabled.files);
+    try T.expectEqual(@as(?bool, false), disabled.allow_js);
+    try T.expectEqual(@as(?bool, false), disabled.check_js);
+    try T.expect(!effectiveAllowJs(disabled));
+
+    applyCompileOptions(&compile_options, disabled);
+    try T.expect(!compile_options.allow_js);
+    try T.expect(!compile_options.check_js);
+    try T.expect(compile_options.check_js_disabled);
+
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "allowJs": false, "checkJs": false } }
+    );
+    applyConfigOverrides(&config, enabled);
+    try T.expectEqual(@as(?bool, false), config.compiler_options.allow_js);
+    try T.expectEqual(@as(?bool, true), config.compiler_options.check_js);
 }
 
 test "parseArgs: --watch and -w both work" {
