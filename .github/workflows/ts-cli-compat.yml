@@ -1,0 +1,54 @@
+name: TypeScript CLI compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  declaration-output:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.0-dev.2163+89ff10d56'
+      - name: Test local project inventory coverage
+        run: python3 scripts/tests/test-ts-project-inventory.py
+      - name: Build the production TypeScript CLI
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: perl scripts/run-bounded.pl 1800 zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true -Denable_jsc=false -j1 --summary all
+      - name: Test CLI and entrypoint modules
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=ts_cli -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsc_main -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsconfig -Denable_jsc=false -j1 --summary all
+          perl scripts/run-bounded.pl 600 zig build test -Dfilter=tsc_streams -Denable_jsc=false -j1 --summary all
+      - name: Install the isolated reference compiler
+        run: npm install --prefix "$RUNNER_TEMP/home-ts-reference" --no-save --ignore-scripts typescript@7.0.2
+      - name: Compare declaration, build, clean and watch contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-declaration-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --output "$RUNNER_TEMP/home-ts-declaration-contracts"
+      - name: Retain reference and Home observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-declaration-contracts-${{ matrix.os }}
+          path: ${{ runner.temp }}/home-ts-declaration-contracts
+          if-no-files-found: ignore
+          retention-days: 14

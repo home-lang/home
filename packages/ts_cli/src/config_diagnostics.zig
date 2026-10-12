@@ -136,3 +136,52 @@ test "config diagnostics: unlocated diagnostics stay whole-program errors" {
     defer T.allocator.free(rendered);
     try T.expectEqualStrings("error TS5023: Unknown compiler option 'wat'.", rendered);
 }
+
+test "config diagnostics: declaration dependencies point to the owning JSON key" {
+    const source =
+        \\{
+        \\  "compilerOptions": {
+        \\    "emitDeclarationOnly": true
+        \\  }
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig.parseString(std.testing.allocator, arena.allocator(), source);
+    cfg.file_path = "tsconfig.json";
+    const diagnostics = try cfg.validate(std.testing.allocator);
+    defer tsconfig.freeValidationDiagnostics(std.testing.allocator, diagnostics);
+    try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+    const rendered = try format(std.testing.allocator, cfg, source, diagnostics[0], false, false);
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("tsconfig.json(3,5): error TS5069: Option 'emitDeclarationOnly' cannot be specified without specifying option 'declaration' or option 'composite'.", rendered);
+
+    // A command-line value has no corresponding source key in the config.
+    var cli_cfg = try tsconfig.parseString(std.testing.allocator, arena.allocator(), "{}");
+    cli_cfg.file_path = "tsconfig.json";
+    cli_cfg.compiler_options.emit_declaration_only = true;
+    const cli_diagnostics = try cli_cfg.validate(std.testing.allocator);
+    defer tsconfig.freeValidationDiagnostics(std.testing.allocator, cli_diagnostics);
+    try std.testing.expect(cli_diagnostics[0].location == null);
+
+    const earlier_dependency =
+        \\{
+        \\  "compilerOptions": {
+        \\    "declaration": false,
+        \\    "emitDeclarationOnly": true
+        \\  }
+        \\}
+    ;
+    const ordered_cfg = try tsconfig.parseString(std.testing.allocator, arena.allocator(), earlier_dependency);
+    const ordered_diags = try ordered_cfg.validate(std.testing.allocator);
+    defer tsconfig.freeValidationDiagnostics(std.testing.allocator, ordered_diags);
+    try std.testing.expectEqual(@as(u32, 3), ordered_diags[0].location.?.line);
+
+    const root_source = "{\n  \"compilerOptions\": { \"module\": \"ESNext\" }\n}";
+    var root_cfg = try tsconfig.parseString(std.testing.allocator, arena.allocator(), root_source);
+    root_cfg.compiler_options.emit_declaration_only = true;
+    const root_diags = try root_cfg.validate(std.testing.allocator);
+    defer tsconfig.freeValidationDiagnostics(std.testing.allocator, root_diags);
+    try std.testing.expectEqual(@as(u32, 2), root_diags[0].location.?.line);
+    try std.testing.expectEqual(@as(u32, 2), root_diags[0].location.?.column);
+}

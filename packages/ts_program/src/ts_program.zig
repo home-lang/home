@@ -505,7 +505,7 @@ pub const Program = struct {
         return self.files.items[id].redirect_target orelse id;
     }
 
-    fn isDeclarationPath(path: []const u8) bool {
+    pub fn isDeclarationPath(path: []const u8) bool {
         return std.mem.endsWith(u8, path, ".d.ts") or
             std.mem.endsWith(u8, path, ".d.mts") or
             std.mem.endsWith(u8, path, ".d.cts") or

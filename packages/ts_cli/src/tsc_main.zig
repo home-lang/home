@@ -411,6 +411,7 @@ fn projectIsUpToDate(
     out_dir: ?[]const u8,
     declaration_dir: ?[]const u8,
     emit_dts: bool,
+    emit_js: bool,
     project: []const u8,
     verbose: bool,
 ) bool {
@@ -427,22 +428,25 @@ fn projectIsUpToDate(
         }
     }
     for (inputs) |in| {
-        const js = computeOutPath(gpa, in, out_dir, ".js") catch return false;
-        defer gpa.free(js);
-        const jm = fileMtimeNanos(js) orelse {
-            // TS6352 — output file does not exist → out of date.
-            if (verbose) buildStatusMessage(6352, "Project '{s}' is out of date because output file '{s}' does not exist\n", .{ project, js });
-            return false;
-        };
-        if (jm < newest_input) {
-            // TS6350 — output older than input → out of date.
-            if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, js, newest_input_path });
-            return false;
-        }
-        if (verbose and jm < oldest_output) {
-            if (oldest_output_path.len != 0) gpa.free(oldest_output_path);
-            oldest_output_path = gpa.dupe(u8, js) catch "";
-            oldest_output = jm;
+        if (ts_program.Program.isDeclarationPath(in)) continue;
+        if (emit_js) {
+            const js = computeOutPath(gpa, in, out_dir, ".js") catch return false;
+            defer gpa.free(js);
+            const jm = fileMtimeNanos(js) orelse {
+                // TS6352 — output file does not exist → out of date.
+                if (verbose) buildStatusMessage(6352, "Project '{s}' is out of date because output file '{s}' does not exist\n", .{ project, js });
+                return false;
+            };
+            if (jm < newest_input) {
+                // TS6350 — output older than input → out of date.
+                if (verbose) buildStatusMessage(6350, "Project '{s}' is out of date because output '{s}' is older than input '{s}'\n", .{ project, js, newest_input_path });
+                return false;
+            }
+            if (verbose and jm < oldest_output) {
+                if (oldest_output_path.len != 0) gpa.free(oldest_output_path);
+                oldest_output_path = gpa.dupe(u8, js) catch "";
+                oldest_output = jm;
+            }
         }
         if (emit_dts) {
             const dts = computeOutPath(gpa, in, declaration_dir, ".d.ts") catch return false;
@@ -551,6 +555,7 @@ fn buildOneProject(
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
         (std.fs.path.join(arena, &.{ project_dir, d }) catch return .errors_outputs_skipped)
     else
@@ -580,14 +585,14 @@ fn buildOneProject(
             if (verbose) {
                 buildStatusMessage(6412, "Project '{s}' is out of date because buildinfo file '{s}' indicates that file '{s}' was root file of compilation but not any more.\n", .{ config_path, mismatch.buildinfo_path, mismatch.root_path });
             }
-        } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
+        } else if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
             if (verbose) {
                 buildStatusMessage(6400, "Project '{s}' is up to date but needs to update timestamps of output files that are older than input files\n", .{config_path});
                 buildStatusMessage(6359, "Updating output timestamps of project '{s}'...\n", .{config_path});
             }
-            touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts);
+            touchProjectOutputs(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js);
             return .up_to_date;
-        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, verbose and !shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts))) {
+        } else if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js, config_path, verbose and !shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts))) {
             if (verbose and shouldReportUpToDateWithDtsFilesFromDependencies(upstream_dependency_built_with_unchanged_dts)) {
                 buildStatusMessage(6354, "Project '{s}' is up to date with .d.ts files from its dependencies\n", .{config_path});
             }
@@ -649,26 +654,22 @@ fn buildOneProject(
     var reported_unchanged_timestamps = false;
     var changed_dts = false;
     for (program.files.items) |f| {
+        if (!sourceFileMayBeEmittedByProject(f)) continue;
         const c = f.compilation orelse continue;
-        const out_path = computeOutPath(gpa, f.path, out_dir, ".js") catch continue;
-        defer gpa.free(out_path);
-        _ = writeProjectOutput(gpa, out_path, c.js, config_path, verbose, &reported_unchanged_timestamps);
+        if (emit_js) {
+            const out_path = computeOutPath(gpa, f.path, out_dir, ".js") catch continue;
+            defer gpa.free(out_path);
+            _ = writeProjectOutput(gpa, out_path, c.js, config_path, verbose, &reported_unchanged_timestamps);
+        }
         if (emit_dts) {
             const dts_path = computeOutPath(gpa, f.path, declaration_dir, ".d.ts") catch continue;
             defer gpa.free(dts_path);
-            // Prefer zig-dtsx (source-driven, infers exported types); fall
-            // back to the symbol-driven emitter if it can't process the file.
-            if (ts_emit.d_ts_fast.emit(gpa, f.source)) |dts| {
-                defer gpa.free(dts);
-                if (writeProjectOutput(gpa, dts_path, dts, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
-            } else |_| {
-                var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
-                defer emitter.deinit();
-                emitter.emitSourceFile(c.root) catch continue;
-                const dts_bytes = emitter.toOwnedSlice() catch continue;
-                defer gpa.free(dts_bytes);
-                if (writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
-            }
+            // Build mode uses the same checked declaration representation as
+            // normal and watch mode. The optional scanner's placeholder can
+            // return an empty success buffer on a fresh checkout.
+            const dts_bytes = renderDeclarationOutput(gpa, c) catch continue;
+            defer gpa.free(dts_bytes);
+            if (writeProjectOutput(gpa, dts_path, dts_bytes, config_path, verbose, &reported_unchanged_timestamps)) changed_dts = true;
         }
     }
     if (had_errors) return .errors_outputs_generated;
@@ -711,15 +712,16 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
         (std.fs.path.join(arena, &.{ project_dir, d }) catch return .build)
     else
         out_dir;
 
-    if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts)) {
+    if (projectNeedsTimestampUpdate(gpa, arena, config_path, cfg, input_files.items, out_dir, declaration_dir, emit_dts, emit_js)) {
         return .update_timestamps;
     }
-    return if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, config_path, false))
+    return if (projectIsUpToDate(gpa, input_files.items, out_dir, declaration_dir, emit_dts, emit_js, config_path, false))
         .up_to_date
     else
         .build;
@@ -1120,6 +1122,7 @@ fn projectNeedsTimestampUpdate(
     out_dir: ?[]const u8,
     declaration_dir: ?[]const u8,
     emit_dts: bool,
+    emit_js: bool,
 ) bool {
     const buildinfo_path = (projectBuildInfoFilePath(arena, config_path, cfg) catch null) orelse return false;
     const buildinfo_src = RealFs.read(gpa, buildinfo_path) catch return false;
@@ -1141,10 +1144,13 @@ fn projectNeedsTimestampUpdate(
 
     var found_older_output = false;
     for (inputs) |path| {
-        const js = computeOutPath(gpa, path, out_dir, ".js") catch return false;
-        defer gpa.free(js);
-        const js_mtime = fileMtimeNanos(js) orelse return false;
-        if (js_mtime < newest_input) found_older_output = true;
+        if (ts_program.Program.isDeclarationPath(path)) continue;
+        if (emit_js) {
+            const js = computeOutPath(gpa, path, out_dir, ".js") catch return false;
+            defer gpa.free(js);
+            const js_mtime = fileMtimeNanos(js) orelse return false;
+            if (js_mtime < newest_input) found_older_output = true;
+        }
         if (emit_dts) {
             const dts = computeOutPath(gpa, path, declaration_dir, ".d.ts") catch return false;
             defer gpa.free(dts);
@@ -1171,11 +1177,15 @@ fn touchProjectOutputs(
     out_dir: ?[]const u8,
     declaration_dir: ?[]const u8,
     emit_dts: bool,
+    emit_js: bool,
 ) void {
     for (inputs) |path| {
-        const js = computeOutPath(gpa, path, out_dir, ".js") catch continue;
-        defer gpa.free(js);
-        touchFileNow(js);
+        if (ts_program.Program.isDeclarationPath(path)) continue;
+        if (emit_js) {
+            const js = computeOutPath(gpa, path, out_dir, ".js") catch continue;
+            defer gpa.free(js);
+            touchFileNow(js);
+        }
         if (emit_dts) {
             const dts = computeOutPath(gpa, path, declaration_dir, ".d.ts") catch continue;
             defer gpa.free(dts);
@@ -1256,20 +1266,40 @@ fn appendProjectCleanOutputs(
     else
         null;
     const emit_dts = (cfg.compiler_options.declaration orelse false) or (cfg.compiler_options.composite orelse false);
+    const emit_js = !(cfg.compiler_options.emit_declaration_only orelse false);
     const declaration_dir: ?[]const u8 = if (cfg.compiler_options.declaration_dir) |d|
         try std.fs.path.join(arena, &.{ project_dir, d })
     else
         out_dir;
 
     for (input_files.items) |path| {
-        const js = try computeOutPath(gpa, path, out_dir, ".js");
-        defer gpa.free(js);
-        try appendCleanOutputIfPresent(gpa, input_files.items, outputs, js);
+        if (ts_program.Program.isDeclarationPath(path)) continue;
+        if (emit_js) {
+            const js = try computeOutPath(gpa, path, out_dir, ".js");
+            defer gpa.free(js);
+            try appendCleanOutputIfPresent(gpa, input_files.items, outputs, js);
+            if (cfg.compiler_options.source_map == true) {
+                const map = try std.fmt.allocPrint(gpa, "{s}.map", .{js});
+                defer gpa.free(map);
+                try appendCleanOutputIfPresent(gpa, input_files.items, outputs, map);
+            }
+        }
         if (emit_dts) {
             const dts = try computeOutPath(gpa, path, declaration_dir, ".d.ts");
             defer gpa.free(dts);
             try appendCleanOutputIfPresent(gpa, input_files.items, outputs, dts);
+            if (cfg.compiler_options.declaration_map == true) {
+                const map = try std.fmt.allocPrint(gpa, "{s}.map", .{dts});
+                defer gpa.free(map);
+                try appendCleanOutputIfPresent(gpa, input_files.items, outputs, map);
+            }
         }
+    }
+    // Build mode maintains a build-info file even for a non-composite root.
+    var build_config = cfg;
+    build_config.compiler_options.incremental = true;
+    if (try projectBuildInfoFilePath(arena, config_path, build_config)) |info| {
+        try appendCleanOutputIfPresent(gpa, input_files.items, outputs, info);
     }
 }
 
@@ -2835,7 +2865,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         // Parse the build flags (TS5072/5073/5077/5094/6369/6370). Phase A:
         // on clean parse, build each project via the normal per-project
         // compile flow (full topological/incremental orchestration is a
-        // follow-up). Non-dry `--clean` is not yet implemented.
+        // follow-up). Clean traverses the same reference graph.
         var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
             std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
         defer bp.deinit(gpa);
@@ -2845,10 +2875,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             had_build_err = true;
         }
         if (had_build_err) std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
-        if (bp.options.clean and !bp.options.dry) {
-            printStdout("home tsc --build: '--clean' is not yet implemented.\n", .{});
-            return;
-        }
         // Resolve the project reference graph, check for cycles (TS6202),
         // then build every project in dependency order. "." / a directory
         // resolves to its tsconfig.json.
@@ -2877,7 +2903,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             buildStatusMessage(6355, "Projects in this build:\n", .{});
             for (graph.paths) |p| printStdout("    * {s}\n", .{p});
         }
-        if (bp.options.clean and bp.options.dry) {
+        if (bp.options.clean) {
             var clean_outputs: std.ArrayListUnmanaged([]u8) = .empty;
             defer {
                 for (clean_outputs.items) |p| gpa.free(p);
@@ -2886,7 +2912,21 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             for (ord.order) |pi| {
                 try appendProjectCleanOutputs(gpa, args_arena.allocator(), graph.paths[pi], &clean_outputs);
             }
-            printDryCleanOutputs(clean_outputs.items);
+            if (bp.options.dry) {
+                printDryCleanOutputs(clean_outputs.items);
+            } else {
+                var threaded = std.Io.Threaded.init(gpa, .{});
+                defer threaded.deinit();
+                for (clean_outputs.items) |path| {
+                    std.Io.Dir.cwd().deleteFile(threaded.io(), path) catch |err| switch (err) {
+                        error.FileNotFound => {},
+                        else => {
+                            buildStatusMessage(6353, "Failed to delete file '{s}'.\n", .{path});
+                            std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
+                        },
+                    };
+                }
+            }
             return;
         }
         if (bp.options.dry) {
@@ -2970,7 +3010,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
         }
         if (build_had_errors) {
-            std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(build_outputs_generated)));
+            std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(!build_outputs_generated)));
         }
         return;
     } else {
@@ -3461,6 +3501,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // time-to-first-diagnostic down from whole-program time to
     // per-file check time — Phase 5 §5.8 / §5.A.10.
     var any_errors_streaming = false;
+    var reported_config_errors = false;
     var stream_error_count: usize = 0;
     var stream_files_with_errors: usize = 0;
     var stream_first_error_file: []const u8 = "";
@@ -3513,6 +3554,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 diagnostic_color,
             );
             any_errors_streaming = true;
+            reported_config_errors = true;
             stream_error_count = pending_config_summary.count;
             stream_files_with_errors = if (pending_config_summary.file_error_count > 0) 1 else 0;
             stream_first_error_file = pending_config_summary.first_error_file;
@@ -3568,10 +3610,14 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     };
     const emit_dts: bool = blk: {
         if (opts.declaration) |d| break :blk d;
-        if (loaded_cfg) |c| if (c.compiler_options.declaration) |d| break :blk d;
+        if (loaded_cfg) |c| break :blk (c.compiler_options.declaration orelse false) or (c.compiler_options.composite orelse false);
         break :blk false;
     };
-    const declaration_dir: ?[]const u8 = blk: {
+    const emit_js: bool = !(opts.emit_declaration_only orelse blk: {
+        if (loaded_cfg) |c| break :blk c.compiler_options.emit_declaration_only orelse false;
+        break :blk false;
+    });
+    const declaration_dir: ?[]const u8 = opts.declaration_dir orelse blk: {
         if (loaded_cfg) |c| if (c.compiler_options.declaration_dir) |d| break :blk d;
         break :blk out_dir;
     };
@@ -3586,6 +3632,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         out_dir,
         declaration_dir,
         emit_dts,
+        emit_js,
         compile_opts.no_emit,
         loaded_cfg != null,
         &blocked_outputs,
@@ -3611,7 +3658,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 stream_error_file_counts.items,
             );
             if (any_errors_streaming) {
-                std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(false)));
+                std.process.exit(@backingInt(if (reported_config_errors) ts_cli.ExitCode.config_error else ts_cli.diagnosticsExitCode(true)));
             }
             return;
         }
@@ -3678,100 +3725,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     const any_errors = any_errors_streaming;
-    var outputs_generated = false;
-
-    for (program.files.items) |f| {
-        const c = f.compilation orelse continue;
-        if (compile_opts.no_emit) continue;
-        const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
-        defer gpa.free(out_path);
-        // Skip files whose output was blocked by the TS5055/5056 check.
-        if (pathInList(blocked_outputs.items, out_path)) continue;
-
-        // §4.A.13 — when sourceMap is enabled, re-emit through a
-        // Printer hooked up to a SourceMap so the printer records
-        // mappings as it streams. The compileSource path produced
-        // `c.js` without mappings, so we discard it here in favor
-        // of the freshly-emitted bytes that include the trailing
-        // `//# sourceMappingURL=…` comment.
-        var sm_owned_js: ?[]u8 = null;
-        defer if (sm_owned_js) |b| gpa.free(b);
-        var sm_owned_map: ?[]u8 = null;
-        defer if (sm_owned_map) |b| gpa.free(b);
-        var sm_map_path_owned: ?[]u8 = null;
-        defer if (sm_map_path_owned) |b| gpa.free(b);
-
-        if (emit_source_map) {
-            const map_path = std.fmt.allocPrint(gpa, "{s}.map", .{out_path}) catch unreachable;
-            sm_map_path_owned = map_path;
-            const map_basename = std.fs.path.basename(map_path);
-            const out_basename = std.fs.path.basename(out_path);
-            var sm = ts_emit.SourceMap.init(gpa, out_basename);
-            defer sm.deinit();
-            const src_idx = sm.addSource(f.path, f.source) catch 0;
-
-            var emit_options = compile_opts.emit;
-            emit_options.source_map = &sm;
-            emit_options.source_map_src_idx = src_idx;
-            emit_options.source_map_url = map_basename;
-
-            var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, emit_options);
-            defer printer.deinit();
-            printer.setSource(f.source);
-            printer.printSourceFile(c.root) catch |err| {
-                std.debug.print("warning: source-map emit failed for {s}: {s}\n", .{ f.path, @errorName(err) });
-            };
-            sm_owned_js = printer.toOwnedSlice() catch null;
-            sm_owned_map = sm.toJson() catch null;
-        }
-
-        const js_bytes: []const u8 = sm_owned_js orelse c.js;
-        writeOrDie(gpa, out_path, js_bytes);
-        outputs_generated = true;
-        if (emit_source_map) {
-            const map_bytes: []const u8 = sm_owned_map orelse "{}";
-            const map_path = sm_map_path_owned.?;
-            writeOrDie(gpa, map_path, map_bytes);
-        }
-
-        if (emit_dts) {
-            var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &c.hir, &c.interner, &c.type_interner, .{});
-            defer emitter.deinit();
-            emitter.emitSourceFile(c.root) catch |err| {
-                std.debug.print("error emitting d.ts for {s}: {s}\n", .{ f.path, @errorName(err) });
-                continue;
-            };
-            const dts_bytes = emitter.toOwnedSlice() catch continue;
-            defer gpa.free(dts_bytes);
-            const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
-            defer gpa.free(dts_path);
-            writeOrDie(gpa, dts_path, dts_bytes);
-
-            // §4.A.x — when `declarationMap` is on, write a parallel
-            // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
-            // framing only (empty `mappings`); the symbol-driven
-            // re-printer fills in real positions later. Reuses
-            // `d_hm.renderDeclarationMap` since the format is shared
-            // between `.d.hm.map` and `.d.ts.map`.
-            if (emit_decl_map) {
-                const dts_basename = std.fs.path.basename(dts_path);
-                const map_bytes = d_hm.renderDeclarationMap(
-                    gpa,
-                    f.path,
-                    .{ .file = dts_basename },
-                ) catch |err| blk: {
-                    std.debug.print("warning: declaration-map render failed for {s}: {s}\n", .{ f.path, @errorName(err) });
-                    break :blk null;
-                };
-                if (map_bytes) |mb| {
-                    defer gpa.free(mb);
-                    const map_path = try std.fmt.allocPrint(gpa, "{s}.map", .{dts_path});
-                    defer gpa.free(map_path);
-                    writeOrDie(gpa, map_path, mb);
-                }
-            }
-        }
-    }
+    _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
     if (loaded_cfg) |cfg_ptr| {
@@ -3821,7 +3775,6 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 RealFs.write(gpa, bi_path, bi) catch |err| {
                     std.debug.print("warning: could not write {s}: {s}\n", .{ bi_path, @errorName(err) });
                 };
-                outputs_generated = true;
             }
         }
     }
@@ -3919,22 +3872,135 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 streamDiagsCallback(&watch_stream_ctx, f.path, c.diagnostics.items);
             }
             reportWatchErrorStatus(watch_error_count);
-            // Re-emit each changed file's JS to disk.
-            for (changed.items) |path| {
-                const file_id = program.lookupPath(path) orelse continue;
-                const f = program.fileById(file_id);
-                const c = f.compilation orelse continue;
-                if (compile_opts.no_emit) continue;
-                const out_path = computeOutPath(gpa, path, out_dir, ".js") catch continue;
-                defer gpa.free(out_path);
-                writeOrDie(gpa, out_path, c.js);
-            }
+            _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
         }
     }
 
     if (any_errors) {
-        std.process.exit(@backingInt(ts_cli.diagnosticsExitCode(outputs_generated)));
+        const status = if (reported_config_errors)
+            ts_cli.ExitCode.config_error
+        else
+            ts_cli.diagnosticsExitCode(compile_opts.no_emit or output_collision_count != 0);
+        std.process.exit(@backingInt(status));
     }
+}
+
+fn renderDeclarationOutput(gpa: std.mem.Allocator, compilation: *const ts_driver.Compilation) ![]u8 {
+    var emitter = ts_emit.DtsEmitter.initWithTypes(gpa, &compilation.hir, &compilation.interner, &compilation.type_interner, .{});
+    defer emitter.deinit();
+    try emitter.emitSourceFile(compilation.root);
+    return emitter.toOwnedSlice();
+}
+
+fn emitProgramOutputs(
+    gpa: std.mem.Allocator,
+    program: *const ts_program.Program,
+    compile_opts: ts_driver.CompileOptions,
+    out_dir: ?[]const u8,
+    declaration_dir: ?[]const u8,
+    emit_js: bool,
+    emit_dts: bool,
+    emit_source_map: bool,
+    emit_decl_map: bool,
+    blocked_outputs: []const []const u8,
+) !bool {
+    var outputs_generated = false;
+    for (program.files.items) |f| {
+        if (!sourceFileMayBeEmittedByProject(f) or f.redirect_target != null) continue;
+        const c = f.compilation orelse continue;
+        if (compile_opts.no_emit) continue;
+        if (emit_js) {
+            const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
+            defer gpa.free(out_path);
+            // Skip files whose output was blocked by the TS5055/5056 check.
+            if (!pathInList(blocked_outputs, out_path)) {
+
+                // §4.A.13 — when sourceMap is enabled, re-emit through a
+                // Printer hooked up to a SourceMap so the printer records
+                // mappings as it streams. The compileSource path produced
+                // `c.js` without mappings, so we discard it here in favor
+                // of the freshly-emitted bytes that include the trailing
+                // `//# sourceMappingURL=…` comment.
+                var sm_owned_js: ?[]u8 = null;
+                defer if (sm_owned_js) |b| gpa.free(b);
+                var sm_owned_map: ?[]u8 = null;
+                defer if (sm_owned_map) |b| gpa.free(b);
+                var sm_map_path_owned: ?[]u8 = null;
+                defer if (sm_map_path_owned) |b| gpa.free(b);
+
+                if (emit_source_map) {
+                    const map_path = std.fmt.allocPrint(gpa, "{s}.map", .{out_path}) catch unreachable;
+                    sm_map_path_owned = map_path;
+                    const map_basename = std.fs.path.basename(map_path);
+                    const out_basename = std.fs.path.basename(out_path);
+                    var sm = ts_emit.SourceMap.init(gpa, out_basename);
+                    defer sm.deinit();
+                    const src_idx = sm.addSource(f.path, f.source) catch 0;
+
+                    var emit_options = compile_opts.emit;
+                    emit_options.source_map = &sm;
+                    emit_options.source_map_src_idx = src_idx;
+                    emit_options.source_map_url = map_basename;
+
+                    var printer = ts_emit.Printer.init(gpa, &c.hir, &c.interner, emit_options);
+                    defer printer.deinit();
+                    printer.setSource(f.source);
+                    printer.printSourceFile(c.root) catch |err| {
+                        std.debug.print("warning: source-map emit failed for {s}: {s}\n", .{ f.path, @errorName(err) });
+                    };
+                    sm_owned_js = printer.toOwnedSlice() catch null;
+                    sm_owned_map = sm.toJson() catch null;
+                }
+
+                const js_bytes: []const u8 = sm_owned_js orelse c.js;
+                writeOrDie(gpa, out_path, js_bytes);
+                outputs_generated = true;
+                if (emit_source_map) {
+                    const map_bytes: []const u8 = sm_owned_map orelse "{}";
+                    const map_path = sm_map_path_owned.?;
+                    writeOrDie(gpa, map_path, map_bytes);
+                }
+            }
+        }
+        if (emit_dts) {
+            const dts_bytes = renderDeclarationOutput(gpa, c) catch |err| {
+                std.debug.print("error emitting d.ts for {s}: {s}\n", .{ f.path, @errorName(err) });
+                continue;
+            };
+            defer gpa.free(dts_bytes);
+            const dts_path = try computeOutPath(gpa, f.path, declaration_dir, ".d.ts");
+            defer gpa.free(dts_path);
+            if (pathInList(blocked_outputs, dts_path)) continue;
+            writeOrDie(gpa, dts_path, dts_bytes);
+            outputs_generated = true;
+
+            // §4.A.x — when `declarationMap` is on, write a parallel
+            // `.d.ts.map` next to the `.d.ts`. v0 emits Source Map V3
+            // framing only (empty `mappings`); the symbol-driven
+            // re-printer fills in real positions later. Reuses
+            // `d_hm.renderDeclarationMap` since the format is shared
+            // between `.d.hm.map` and `.d.ts.map`.
+            if (emit_decl_map) {
+                const dts_basename = std.fs.path.basename(dts_path);
+                const map_bytes = d_hm.renderDeclarationMap(
+                    gpa,
+                    f.path,
+                    .{ .file = dts_basename },
+                ) catch |err| blk: {
+                    std.debug.print("warning: declaration-map render failed for {s}: {s}\n", .{ f.path, @errorName(err) });
+                    break :blk null;
+                };
+                if (map_bytes) |mb| {
+                    defer gpa.free(mb);
+                    const map_path = try std.fmt.allocPrint(gpa, "{s}.map", .{dts_path});
+                    defer gpa.free(map_path);
+                    writeOrDie(gpa, map_path, mb);
+                }
+            }
+        }
+    }
+
+    return outputs_generated;
 }
 
 fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
@@ -4532,6 +4598,7 @@ fn reportOutputCollisions(
     out_dir: ?[]const u8,
     declaration_dir: ?[]const u8,
     emit_dts: bool,
+    emit_js: bool,
     no_emit: bool,
     has_config: bool,
     blocked_outputs: *std.ArrayListUnmanaged([]const u8),
@@ -4547,8 +4614,8 @@ fn reportOutputCollisions(
     }
     for (program.files.items) |file| {
         try inputs.append(gpa, file.path);
-        if (file.compilation == null) continue;
-        try outputs.append(gpa, try computeOutPath(gpa, file.path, out_dir, ".js"));
+        if (file.compilation == null or !sourceFileMayBeEmittedByProject(file)) continue;
+        if (emit_js) try outputs.append(gpa, try computeOutPath(gpa, file.path, out_dir, ".js"));
         if (emit_dts) try outputs.append(gpa, try computeOutPath(gpa, file.path, declaration_dir, ".d.ts"));
     }
 

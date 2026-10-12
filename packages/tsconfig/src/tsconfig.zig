@@ -519,6 +519,7 @@ pub const TsConfig = struct {
     /// choose the key or value anchor according to TypeScript's option
     /// diagnostic call site.
     compiler_option_locations: []const CompilerOptionLocation = &.{},
+    compiler_options_key_location: ?jsonc.SourceLocation = null,
     /// Known compiler options that were present in this config but converted
     /// to `undefined` (an explicit JSON `null`, or an invalid value retained
     /// alongside its diagnostic). TypeScript's extends merge uses ordinary
@@ -923,6 +924,22 @@ pub const TsConfig = struct {
             }
         }
 
+        // TypeScript visits JSON properties in source order, looking for
+        // either option named by the diagnostic, then falls back to the
+        // compilerOptions key. Do not assume the offending option is first.
+        for (diags.items) |*diagnostic| {
+            if (diagnostic.code == 5069 and diagnostic.location == null) {
+                for (self.compiler_option_locations) |location| {
+                    if (std.mem.eql(u8, location.name, diagnostic.field) or
+                        std.mem.eql(u8, location.name, diagnostic.related_field))
+                    {
+                        diagnostic.location = location.key;
+                        break;
+                    }
+                }
+                if (diagnostic.location == null) diagnostic.location = self.compiler_options_key_location;
+            }
+        }
         return diags.toOwnedSlice(gpa);
     }
 
@@ -957,6 +974,8 @@ pub const ValidationDiagnostic = struct {
     /// Which option triggered the diagnostic. Empty when the issue
     /// spans multiple fields equally.
     field: []const u8 = "",
+    /// A second option name participating in the diagnostic's source lookup.
+    related_field: []const u8 = "",
     /// JSONC token anchor. TypeScript 7's removed-option diagnostics point
     /// at the value when one was supplied and at the key otherwise.
     location: ?jsonc.SourceLocation = null,
@@ -1634,6 +1653,7 @@ fn appendTs5069(
         .message = msg,
         .owns_message = true,
         .field = field,
+        .related_field = first_required,
     });
 }
 
@@ -1955,6 +1975,7 @@ pub fn parseString(
         cfg.has_excludes_root_key = true;
     }
     if (root.get("compilerOptions")) |co_v| {
+        cfg.compiler_options_key_location = root.keyLocation("compilerOptions");
         if (co_v.asObject()) |co| {
             const option_locations = try arena.alloc(CompilerOptionLocation, co.keys.len);
             for (co.keys, 0..) |name, i| {

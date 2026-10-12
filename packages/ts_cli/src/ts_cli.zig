@@ -74,17 +74,16 @@ pub const ExitCode = enum(u8) {
     internal_error = 3,
 };
 
-/// TypeScript's process status distinguishes diagnostics for which emit was
-/// skipped (1) from diagnostics reported alongside generated output (2).
-/// The historical enum names predate that distinction, so keep the mapping in
-/// one place instead of inferring a diagnostic's category at each caller.
-pub fn diagnosticsExitCode(outputs_generated: bool) ExitCode {
-    return if (outputs_generated) .config_error else .type_errors;
+/// Match the reference emit-skipped result, rather than counting written
+/// files. No-emit, list-only and blocked emit use status 1 for program errors;
+/// configuration failures are classified separately by their caller.
+pub fn diagnosticsExitCode(emit_skipped: bool) ExitCode {
+    return if (emit_skipped) .type_errors else .config_error;
 }
 
-test "CLI: diagnostic exit status follows whether emit produced output" {
-    try std.testing.expectEqual(ExitCode.type_errors, diagnosticsExitCode(false));
-    try std.testing.expectEqual(ExitCode.config_error, diagnosticsExitCode(true));
+test "CLI: diagnostic exit status follows the reference emit-skipped result" {
+    try std.testing.expectEqual(ExitCode.type_errors, diagnosticsExitCode(true));
+    try std.testing.expectEqual(ExitCode.config_error, diagnosticsExitCode(false));
 }
 
 pub const Options = struct {
@@ -136,6 +135,10 @@ pub const Options = struct {
     max_node_module_js_depth: ?f64 = null,
     /// `--declaration` / `-d`. `null` means defer to tsconfig.
     declaration: ?bool = null,
+    /// Suppress JavaScript outputs while retaining declaration outputs.
+    emit_declaration_only: ?bool = null,
+    /// Explicit declaration output directory, independent of `--outDir`.
+    declaration_dir: ?[]const u8 = null,
     /// `--sourceMap`. `null` means defer to tsconfig.
     source_map: ?bool = null,
     /// `--declarationMap`. `null` means defer to tsconfig. When true,
@@ -210,6 +213,8 @@ pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void 
     }
     if (opts.max_node_module_js_depth) |value| compiler_options.max_node_module_js_depth = value;
     if (opts.declaration) |value| compiler_options.declaration = value;
+    if (opts.emit_declaration_only) |value| compiler_options.emit_declaration_only = value;
+    if (opts.declaration_dir) |value| compiler_options.declaration_dir = value;
     if (opts.source_map) |value| compiler_options.source_map = value;
     if (opts.declaration_map) |value| compiler_options.declaration_map = value;
     if (opts.home_options.sound) |value| config.home_options.sound = value;
@@ -424,15 +429,26 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.ConfigOnlyOption;
             }
         } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
-            opts.declaration = true;
+            opts.declaration = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--emitDeclarationOnly")) {
+            opts.emit_declaration_only = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--declarationDir")) {
+            i += 1;
+            if (i >= args.len) {
+                ctx.missing_value_option = "declarationDir";
+                return error.MissingValue;
+            }
+            opts.declaration_dir = args[i];
+        } else if (parseEqFlag(a, "--declarationDir=")) |value| {
+            opts.declaration_dir = value;
         } else if (std.mem.eql(u8, a, "--no-declaration")) {
             opts.declaration = false;
         } else if (std.mem.eql(u8, a, "--sourceMap")) {
-            opts.source_map = true;
+            opts.source_map = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--no-sourceMap")) {
             opts.source_map = false;
         } else if (std.mem.eql(u8, a, "--declarationMap")) {
-            opts.declaration_map = true;
+            opts.declaration_map = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
             opts.declaration_map = false;
         } else if (watchOptionFromFlag(a)) |watch| {
@@ -1582,7 +1598,7 @@ test "CLI options: target and jsx reach checking and emit" {
         \\declare namespace JSX { interface IntrinsicElements { span: {}; } }
         \\class Box { #value = 1; read() { return this.#value; } }
         \\const element = <span />;
-        ,
+    ,
         compile_opts,
     );
     defer {
@@ -1601,9 +1617,7 @@ test "CLI options: target and jsx reach checking and emit" {
 test "CLI options: target and jsx override tsconfig coherently" {
     var arena = std.heap.ArenaAllocator.init(T.allocator);
     defer arena.deinit();
-    const config = try tsconfig_mod.parseString(
-        T.allocator,
-        arena.allocator(),
+    const config = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
         \\{ "compilerOptions": { "target": "es5", "jsx": "preserve" } }
     );
     var compile_opts = ts_driver.optionsFromConfig(&config);
@@ -1724,6 +1738,44 @@ test "parseArgs: --strict" {
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expectEqual(@as(?bool, true), opts.strict);
+}
+
+test "CLI: declaration-only build flags retain positional roots and override config" {
+    const argv = [_][]const u8{
+        "--declaration", "--emitDeclarationOnly", "--declarationDir", "types", "--outDir", "js", "index.ts",
+    };
+    const opts = try parseArgs(std.testing.allocator, &argv);
+    defer std.testing.allocator.free(opts.files);
+    try std.testing.expectEqual(@as(usize, 1), opts.files.len);
+    try std.testing.expectEqualStrings("index.ts", opts.files[0]);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    applyConfigOverrides(&config, opts);
+    try std.testing.expectEqual(@as(?bool, true), config.compiler_options.declaration);
+    try std.testing.expectEqual(@as(?bool, true), config.compiler_options.emit_declaration_only);
+    try std.testing.expectEqualStrings("types", config.compiler_options.declaration_dir.?);
+    try std.testing.expectEqualStrings("js", config.compiler_options.out_dir.?);
+
+    const reset_args = [_][]const u8{
+        "--emitDeclarationOnly", "false", "--declaration", "false", "--declarationMap", "false", "--sourceMap", "false", "--declarationDir=other", "index.ts",
+    };
+    const reset = try parseArgs(std.testing.allocator, &reset_args);
+    defer std.testing.allocator.free(reset.files);
+    applyConfigOverrides(&config, reset);
+    try std.testing.expectEqual(@as(?bool, false), config.compiler_options.declaration);
+    try std.testing.expectEqual(@as(?bool, false), config.compiler_options.emit_declaration_only);
+    try std.testing.expectEqual(@as(?bool, false), config.compiler_options.declaration_map);
+    try std.testing.expectEqual(@as(?bool, false), config.compiler_options.source_map);
+    try std.testing.expectEqualStrings("other", config.compiler_options.declaration_dir.?);
+    try std.testing.expectEqual(@as(usize, 1), reset.files.len);
+    try std.testing.expectEqualStrings("index.ts", reset.files[0]);
+}
+
+test "CLI: missing declaration directory reports TS6044 ownership" {
+    var context: ParseContext = .{};
+    try std.testing.expectError(error.MissingValue, parseArgsCtx(std.testing.allocator, &.{"--declarationDir"}, &context));
+    try std.testing.expectEqualStrings("declarationDir", context.missing_value_option);
 }
 
 test "parseArgs: Home options support explicit enable and disable" {

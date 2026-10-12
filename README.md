@@ -699,6 +699,11 @@ See the [TypeScript parity plan](docs/docs/TS_PARITY_PLAN.md) for migration
 status and [TypeScript performance](docs/docs/TS_PERFORMANCE.md) for the full
 real-project audit history.
 
+[Local replacement qualification](docs/docs/TS_LOCAL_REPLACEMENT.md) tracks
+the remaining command, graph, output and wrapper gates across the local project
+tree. Its inventory is discovery evidence; it does not establish that every
+project can already replace `tsc`.
+
 ### Where it is not drop-in yet
 
 - **Real-world graphs still surface false positives.** The conformance corpus

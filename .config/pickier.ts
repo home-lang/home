@@ -9,6 +9,7 @@ const config: PickierConfig = {
     '**/out/**',
     '**/bin/**',
     '**/.git/**',
+    '**/*.git/**',
     '**/coverage/**',
     '**/*.min.js',
     '**/bun.lock',
@@ -22,6 +23,11 @@ const config: PickierConfig = {
     '**/pantry_modules/**',
     '**/.home-cache/**',
     '**/.test-cache/**',
+    '**/_submodules/**',
+    '**/packages/runtime/upstream/**',
+    '**/packages/runtime/test/**',
+    '**/packages/bundler/test/upstream/**',
+    '**/.survey/**',
   ],
 
   lint: {
