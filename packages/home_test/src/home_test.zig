@@ -136,6 +136,7 @@ pub const corpus_vendor_prepare = @import("corpus_vendor_prepare.zig");
 pub const corpus_setup = @import("corpus_setup.zig");
 pub const corpus_platform = @import("corpus_platform.zig");
 pub const corpus_selection = @import("corpus_selection.zig");
+pub const corpus_suite_plan = @import("corpus_suite_plan.zig");
 pub const corpus_vendor = @import("corpus_vendor.zig");
 pub const corpus_runner = @import("corpus_runner.zig");
 pub const result = @import("result.zig");

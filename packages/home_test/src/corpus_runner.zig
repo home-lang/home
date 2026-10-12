@@ -14,6 +14,7 @@ const corpus_journal = @import("corpus_journal.zig");
 const corpus_selection = @import("corpus_selection.zig");
 const corpus_vendor = @import("corpus_vendor.zig");
 const corpus_platform = @import("corpus_platform.zig");
+const corpus_suite_plan = @import("corpus_suite_plan.zig");
 const Io = std.Io;
 
 pub const Subset = enum {
@@ -848,7 +849,7 @@ pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const 
     return summary;
 }
 
-pub const SuiteContext = struct { execution_cwd: ?[]const u8 = null, case_source_base: ?[]const u8 = null };
+pub const SuiteContext = corpus_suite_plan.SuiteContext;
 
 pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, files: []const []const u8, args: []const []const u8, context: SuiteContext) !jsc_bootstrap.HomeCapturedResult {
     if (!build_options.enable_jsc) return error.JscDisabled;
@@ -895,7 +896,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer if (requested) |value| allocator.free(value);
     var journal = try corpus_journal.Journal.createForPurpose(allocator, io, requested, root, .suite);
     defer journal.deinit();
-    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0, .case_source_base = context.case_source_base orelse project });
+    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .roots = context.roots, .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0, .case_source_base = context.case_source_base orelse project });
     try journal.select("@suite");
     const junit = try journal.artifactPath(0, "junit.xml");
     defer allocator.free(junit);

@@ -1,0 +1,105 @@
+const std = @import("std");
+
+pub const SuiteContext = struct {
+    execution_cwd: ?[]const u8,
+    case_source_base: ?[]const u8,
+    roots: []const [:0]u8,
+};
+
+pub const Plan = struct {
+    evidence_root: []const u8,
+    context: SuiteContext,
+};
+
+/// Owns the canonical corpus roots collected from one coordinated invocation.
+/// `retain` consumes its allocation: duplicate spellings are freed immediately,
+/// while the first canonical spelling remains owned until `deinit`.
+pub const RootSet = struct {
+    allocator: std.mem.Allocator,
+    roots: std.ArrayList([:0]u8) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) RootSet {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *RootSet) void {
+        for (self.roots.items) |root| self.allocator.free(root);
+        self.roots.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn retain(self: *RootSet, canonical_root: [:0]u8) ![:0]const u8 {
+        for (self.roots.items) |known_root| {
+            if (!std.mem.eql(u8, known_root, canonical_root)) continue;
+            self.allocator.free(canonical_root);
+            return known_root;
+        }
+        errdefer self.allocator.free(canonical_root);
+        try self.roots.append(self.allocator, canonical_root);
+        return canonical_root;
+    }
+
+    pub fn items(self: *const RootSet) []const [:0]u8 {
+        return self.roots.items;
+    }
+
+    pub fn plan(self: *const RootSet, caller_cwd: []const u8, source_base: []const u8, explicit_context: bool) error{MissingCorpusSuiteRoot}!Plan {
+        if (self.roots.items.len == 0) return error.MissingCorpusSuiteRoot;
+        const mixed_roots = self.roots.items.len > 1;
+        return .{
+            .evidence_root = if (mixed_roots) caller_cwd else self.roots.items[0],
+            .context = .{
+                .execution_cwd = if (explicit_context or mixed_roots) caller_cwd else null,
+                .case_source_base = if (explicit_context or mixed_roots) source_base else null,
+                .roots = self.items(),
+            },
+        };
+    }
+};
+
+test "root set deduplicates canonical roots and owns every retained allocation" {
+    var roots = RootSet.init(std.testing.allocator);
+    defer roots.deinit();
+
+    const first = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/first/packages/runtime/test/test", 0));
+    const duplicate = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/first/packages/runtime/test/test", 0));
+    try std.testing.expectEqual(@as(usize, 1), roots.items().len);
+    try std.testing.expectEqual(first.ptr, duplicate.ptr);
+
+    _ = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/second/packages/runtime/test/test", 0));
+    try std.testing.expectEqual(@as(usize, 2), roots.items().len);
+}
+
+test "single-root plans retain the corpus project default" {
+    var roots = RootSet.init(std.testing.allocator);
+    defer roots.deinit();
+    try std.testing.expectError(error.MissingCorpusSuiteRoot, roots.plan("/tmp/caller", "/tmp/source", false));
+    _ = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/project/packages/runtime/test/test", 0));
+
+    const implicit = try roots.plan("/tmp/caller", "/tmp/source", false);
+    try std.testing.expectEqualStrings(roots.items()[0], implicit.evidence_root);
+    try std.testing.expectEqual(@as(?[]const u8, null), implicit.context.execution_cwd);
+    try std.testing.expectEqual(@as(?[]const u8, null), implicit.context.case_source_base);
+    try std.testing.expectEqual(@as(usize, 1), implicit.context.roots.len);
+
+    const explicit = try roots.plan("/tmp/caller", "/tmp/source", true);
+    try std.testing.expectEqualStrings("/tmp/caller", explicit.context.execution_cwd.?);
+    try std.testing.expectEqualStrings("/tmp/source", explicit.context.case_source_base.?);
+}
+
+test "mixed-root plans execute from the caller and retain source provenance" {
+    var roots = RootSet.init(std.testing.allocator);
+    defer roots.deinit();
+    _ = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/first/packages/runtime/test/test", 0));
+    _ = try roots.retain(try std.testing.allocator.dupeSentinel(u8, "/tmp/second/packages/runtime/test/test", 0));
+
+    const plan = try roots.plan("/tmp/caller", "/tmp/source", false);
+    try std.testing.expectEqualStrings("/tmp/caller", plan.evidence_root);
+    try std.testing.expectEqualStrings("/tmp/caller", plan.context.execution_cwd.?);
+    try std.testing.expectEqualStrings("/tmp/source", plan.context.case_source_base.?);
+    try std.testing.expectEqual(@as(usize, 2), plan.context.roots.len);
+
+    const encoded = try std.json.Stringify.valueAlloc(std.testing.allocator, .{ .roots = plan.context.roots }, .{});
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqualStrings("{\"roots\":[\"/tmp/first/packages/runtime/test/test\",\"/tmp/second/packages/runtime/test/test\"]}", encoded);
+}

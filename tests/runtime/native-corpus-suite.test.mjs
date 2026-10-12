@@ -230,7 +230,27 @@ try {
   assert.equal(overlapRows.find(row => row.event === 'completed').counts.passed, 3)
   assert.equal(overlapRows.find(row => row.event === 'suite_plan').inputs.length, 3)
 
-  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, caller config/cwd, canonical root aliases, overlapping targets, seeded order and single-invocation evidence passed')
+  const secondaryRoot = join(temp, 'secondary/packages/runtime/test/test')
+  const secondaryFolder = join(secondaryRoot, 'js/bun/test/suite')
+  const secondaryFile = join(secondaryFolder, 'secondary.test.js')
+  mkdirSync(secondaryFolder, { recursive: true })
+  writeFileSync(join(secondaryRoot, 'BUN_TRACKED_FILES.txt'), 'js/bun/test/suite/secondary.test.js\n')
+  writeFileSync(files[0], `import {test} from 'bun:test';test('primary root',()=>console.log('MIXED_ROOT:primary'));`)
+  writeFileSync(secondaryFile, `import {test} from 'bun:test';test('secondary root',()=>console.log('MIXED_ROOT:secondary'));`)
+  const mixedRootArgs = [relative(temp, files[0]), relative(temp, secondaryFolder), '--randomize', '--seed=31']
+  const mixedRootDirect = invoke('direct-mixed-roots', mixedRootArgs, true)
+  const mixedRootSuite = invoke('mixed-roots', mixedRootArgs)
+  assert.equal(mixedRootDirect.status, 0, mixedRootDirect.stderr)
+  assert.equal(mixedRootSuite.status, mixedRootDirect.status, mixedRootSuite.stderr)
+  const mixedBodies = text => [...text.matchAll(/MIXED_ROOT:(primary|secondary)/g)].map(match => match[1])
+  assert.deepEqual(mixedBodies(mixedRootSuite.stdout), mixedBodies(mixedRootDirect.stdout))
+  const mixedRows = journal(mixedRootSuite)
+  const mixedPlan = mixedRows.find(row => row.event === 'suite_plan')
+  assert.equal(mixedPlan.inputs.length, 2)
+  assert.deepEqual(mixedPlan.roots.slice().sort(), [realpathSync(root), realpathSync(secondaryRoot)].sort())
+  assert.equal(mixedPlan.case_source_base, realpathSync(temp))
+
+  console.log('native corpus suite shard, global bail, concurrency, coverage, isolation, parallel provenance, reporter outputs, changed selection, caller config/cwd, canonical root aliases, overlapping and distinct-root targets, seeded order and single-invocation evidence passed')
 } finally {
   if (process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR) {
     mkdirSync(process.env.HOME_CORPUS_SUITE_EVIDENCE_DIR)
