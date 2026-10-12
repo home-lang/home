@@ -13,6 +13,7 @@ describe('incremental native module ABI', () => {
   test('assigns the Home performance factory only after a contiguous linked dispatcher', () => {
     const header = 'case 0: return first(global);\ncase 1: return second(global);\n#define JS2NATIVE_COUNT 2\n'
     expect(nativeFunctionId(header, 'cpp', 'JS2Native.cpp', 'Home::createPerformanceBinding', null)).toBe(2)
+    expect(nativeFunctionId(header, 'cpp', 'JS2Native.cpp', 'Home::createInspectorBinding', null)).toBe(3)
     for (const changed of [header.replace('case 1', 'case 2'), header.replace('COUNT 2', 'COUNT 3'), header + '#define JS2NATIVE_COUNT 2\n']) {
       expect(() => nativeFunctionId(changed, 'cpp', 'JS2Native.cpp', 'Home::createPerformanceBinding', null)).toThrow('contiguous')
     }

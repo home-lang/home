@@ -114,7 +114,7 @@ async function main() {
   const privateHeaders = ['HomeMessagePortLifecycle.h', 'HomeWorkerSnapshots.h', 'HomeWebSocketAsyncContext.h', 'HomeAbortListenerState.h'].map(name => ({
     name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings/webcore', name)),
   }))
-  privateHeaders.push(...['ANSIHelpers.h', 'stringWidthTables.h', 'NodeVMScriptFetcher.h', 'HomeVMMeasurement.h', 'HomeCPUProfilerState.h'].map(name => ({
+  privateHeaders.push(...['ANSIHelpers.h', 'stringWidthTables.h', 'NodeVMScriptFetcher.h', 'HomeVMMeasurement.h', 'HomeCPUProfilerState.h', 'HomeInspectorSession.h'].map(name => ({
     name, bytes: readFileSync(path.join(homeSource, 'jsc/bindings', name)),
   })))
   const nativeUnits = ([

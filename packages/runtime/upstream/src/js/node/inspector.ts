@@ -3,11 +3,13 @@
 const { hideFromStack, throwNotImplemented } = require("internal/shared");
 const EventEmitter = require("node:events");
 
-// Native profiler functions exposed via $newCppFunction
-const startCPUProfiler = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_startCPUProfiler", 0);
-const stopCPUProfiler = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_stopCPUProfiler", 0);
-const setCPUSamplingInterval = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_setCPUSamplingInterval", 1);
-const isCPUProfilerRunning = $newCppFunction("JSInspectorProfiler.cpp", "jsFunction_isCPUProfilerRunning", 0);
+const binding = $cpp("JS2Native.cpp", "Home::createInspectorBinding");
+const { validateString, validateObject, validateFunction } = require("internal/validators");
+function inspectorError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 function open() {
   throwNotImplemented("node:inspector", 2445);
@@ -28,110 +30,56 @@ function waitForDebugger() {
 }
 
 class Session extends EventEmitter {
-  #connected = false;
-  #profilerEnabled = false;
-
+  #connection = null;
+  #nextId = 1;
+  #callbacks = new Map();
   connect() {
-    if (this.#connected) {
-      throw new Error("Session is already connected");
-    }
-    this.#connected = true;
+    if (this.#connection) throw inspectorError("ERR_INSPECTOR_ALREADY_CONNECTED", "The inspector session is already connected");
+    this.#connection = binding.connect(message => this.#onMessage(message));
   }
-
   connectToMainThread() {
-    this.connect();
+    const { isMainThread } = require("node:worker_threads");
+    if (isMainThread) throw inspectorError("ERR_INSPECTOR_NOT_WORKER", "Current thread is not a worker");
+    throw inspectorError("ERR_NOT_IMPLEMENTED", "Main-thread inspector attachment is not implemented");
   }
-
+  #onMessage(message) {
+    const parsed = JSON.parse(message);
+    try {
+      if (parsed.id) {
+        const callback = this.#callbacks.get(parsed.id);
+        this.#callbacks.delete(parsed.id);
+        if (callback) {
+          if (parsed.error) callback(inspectorError("ERR_INSPECTOR_COMMAND", `Inspector error ${parsed.error.code}: ${parsed.error.message}`));
+          else callback(null, parsed.result);
+        }
+      } else {
+        this.emit(parsed.method, parsed);
+        this.emit("inspectorNotification", parsed);
+      }
+    } catch (error) {
+      process.emitWarning(error);
+    }
+  }
+  post(method, params, callback) {
+    validateString(method, "method");
+    if (!callback && typeof params === "function") { callback = params; params = null; }
+    if (params) validateObject(params, "params");
+    if (callback) validateFunction(callback, "callback");
+    if (!this.#connection) throw inspectorError("ERR_INSPECTOR_NOT_CONNECTED", "Session is not connected");
+    const id = this.#nextId++;
+    const message = { id, method };
+    if (params) message.params = params;
+    if (callback) this.#callbacks.set(id, callback);
+    binding.dispatch(this.#connection, JSON.stringify(message));
+  }
   disconnect() {
-    if (!this.#connected) return;
-    if (isCPUProfilerRunning()) stopCPUProfiler();
-    this.#profilerEnabled = false;
-    this.#connected = false;
-  }
-
-  post(
-    method: string,
-    params?: object | ((err: Error | null, result?: any) => void),
-    callback?: (err: Error | null, result?: any) => void,
-  ) {
-    // Handle overloaded signature: post(method, callback)
-    if (typeof params === "function") {
-      callback = params;
-      params = undefined;
-    }
-
-    if (!this.#connected) {
-      const error = new Error("Session is not connected");
-      if (callback) {
-        queueMicrotask(() => callback(error));
-        return;
-      }
-      throw error;
-    }
-
-    const result = this.#handleMethod(method, params as object | undefined);
-
-    if (callback) {
-      // Callback API - async
-      queueMicrotask(() => {
-        if (result instanceof Error) {
-          callback(result, undefined);
-        } else {
-          callback(null, result);
-        }
-      });
-    } else {
-      // Sync throw for errors when no callback
-      if (result instanceof Error) {
-        throw result;
-      }
-      return result;
-    }
-  }
-
-  #handleMethod(method: string, params?: object): any {
-    switch (method) {
-      case "Profiler.enable":
-        this.#profilerEnabled = true;
-        return {};
-
-      case "Profiler.disable":
-        if (isCPUProfilerRunning()) {
-          stopCPUProfiler();
-        }
-        this.#profilerEnabled = false;
-        return {};
-
-      case "Profiler.start":
-        if (!this.#profilerEnabled) return new Error("Profiler is not enabled. Call Profiler.enable first.");
-        if (!isCPUProfilerRunning()) startCPUProfiler();
-        return {};
-
-      case "Profiler.stop":
-        if (!isCPUProfilerRunning()) return new Error("Profiler is not started. Call Profiler.start first.");
-        try {
-          return { profile: JSON.parse(stopCPUProfiler()) };
-        } catch (e) {
-          return new Error(`Failed to parse profile JSON: ${e}`);
-        }
-
-      case "Profiler.setSamplingInterval": {
-        if (isCPUProfilerRunning()) return new Error("Cannot change sampling interval while profiler is running");
-        const interval = (params as any)?.interval;
-        if (typeof interval !== "number" || interval <= 0) return new Error("interval must be a positive number");
-        setCPUSamplingInterval(interval);
-        return {};
-      }
-
-      case "Profiler.getBestEffortCoverage":
-      case "Profiler.startPreciseCoverage":
-      case "Profiler.stopPreciseCoverage":
-      case "Profiler.takePreciseCoverage":
-        return new Error("Coverage APIs are not supported");
-
-      default:
-        return new Error(`Inspector method "${method}" is not supported`);
-    }
+    if (!this.#connection) return;
+    const connection = this.#connection;
+    this.#connection = null;
+    binding.disconnect(connection);
+    for (const callback of this.#callbacks.values()) process.nextTick(callback, inspectorError("ERR_INSPECTOR_CLOSED", "Session was closed"));
+    this.#callbacks.clear();
+    this.#nextId = 1;
   }
 }
 

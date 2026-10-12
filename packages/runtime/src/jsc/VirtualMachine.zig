@@ -967,6 +967,7 @@ pub fn onExit(this: *VirtualMachine) void {
         };
     }
 
+    Home__InspectorSession__cancelForGlobal(this.global);
     Home__CPUProfiler__cancelForVM(this.jsc_vm);
 
     // Write heap profile if profiling was enabled - do this after CPU profile but before shutdown
@@ -1123,6 +1124,7 @@ extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
 extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
 extern fn Home__VMMeasureMemory__cancelForGlobal(*JSGlobalObject) void;
 extern fn Home__CPUProfiler__cancelForVM(*jsc.VM) void;
+extern fn Home__InspectorSession__cancelForGlobal(*JSGlobalObject) void;
 
 pub fn globalExit(this: *VirtualMachine) noreturn {
     bun.assert(this.isShuttingDown());
@@ -1150,6 +1152,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         this.native_pollable_work_pool_jobs.closeAdmission();
         this.native_work_pool_jobs.closeAndWait();
         this.native_pollable_work_pool_jobs.cancelRemaining();
+        Home__InspectorSession__cancelForGlobal(this.global);
         Home__CPUProfiler__cancelForVM(this.jsc_vm);
         Home__VMMeasureMemory__cancelForGlobal(this.global);
         @import("../runtime/node/directory_handle.zig").shutdown(this.global);

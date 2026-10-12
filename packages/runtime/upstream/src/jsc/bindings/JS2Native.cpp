@@ -9,6 +9,7 @@
 
 #include "ZigGlobalObject.h"
 
+#include "HomeInspectorSession.h"
 #include "GeneratedJS2Native.h"
 #include "wtf/Assertions.h"
 
@@ -70,11 +71,12 @@ JSC_DEFINE_HOST_FUNCTION(jsDollarLazy, (JSC::JSGlobalObject * lexicalGlobalObjec
 
     int id = target.asInt32();
     RELEASE_ASSERT(
-        id <= JS2NATIVE_COUNT && id >= 0,
+        id <= JS2NATIVE_COUNT + 1 && id >= 0,
         "In call to $lazy, got invalid id '%d'. This is a bug in Bun's JS2Native code generator.",
         id);
     Zig::GlobalObject* ptr = uncheckedDowncast<Zig::GlobalObject>(lexicalGlobalObject);
     if (id == JS2NATIVE_COUNT) return JSValue::encode(Home::createPerformanceBinding(ptr));
+    if (id == JS2NATIVE_COUNT + 1) return JSValue::encode(Home::createInspectorBinding(ptr));
     return JSValue::encode(JS2NativeGenerated::callJS2Native(id, ptr));
 }
 
