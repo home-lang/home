@@ -1627,6 +1627,75 @@ fixed protocols, independent verifiers/statistics and guard terminals. SHA-256:
 This is a rejected performance qualification, not another timed competitor row,
 full Zod support or universal benchmark leadership.
 
+## Latest source native checked JavaScript profile 2026 10 12 UTC
+
+The latest-source profile under [#854](https://github.com/home-lang/home/issues/854)
+still displays explicit PCs in root require-binding scans and local JSDoc work.
+It samples compiler source `36a2d95e88d5fb1117218301ed7fbbfacda919b2`, including
+the recursive-interface fix, in source context
+`175c6cabcea439c0c60a32a8ee168ffa8123c230`. This is a new diagnostic image,
+not the older compiler measured by the resumed competitor matrix. It supplies
+optimization leads, not CPU-share estimates, a speedup or refreshed rankings.
+
+A separate-prefix Zig2163 stripped ReleaseFast/no-JSC build succeeds with
+native SHA-256 `2c6666ac5414edab1c43d5ff1734b653c8aea836b15395850f32df6c764f66f0`.
+Compiler inputs match `36a2d95e` exactly; source hashes and both older retained
+compiler images remain unchanged across the build. The exact matching cached
+link and paired object are retained outside disposable cache. Object SHA-256
+is `896fe64e6e3cd0c21550c05d42612192bd304c39a296f00508413581f33e23c8`.
+Independent verification recomputes **5,894 ranges** and **635,176 whole
+declared relocation-word bytes**, with zero unexplained changed bytes outside
+those masks. Masking does not establish opcode/bit equivalence inside the
+words; the **1,248-byte native tail** remains unmapped. No diagnostic relink
+is sampled.
+
+The unchanged existing 8,192-family positive and negative inventories remain
+`bfb2fb1bef4dcb4ad7df9bffa647b5d44bd35c6895b32772fb4044ce0ced829e` and
+`439cf46bb43c4386f85b07af49583ff7ae3ad1ba6b7e73989fa776dce372b467`.
+All six TS6/native-TS7/Home scale checks pass, including nine TS2322, three
+TS2339 and three TS2345 negatives at first/middle/last families. Home also
+passes all **30 protocol-5 controls** before sampling. Inputs and compiler/tool
+fingerprints remain unchanged; no bodies, types, errors or controls are removed.
+
+One unchanged native process exits 0 silently. Two one-second windows were
+fixed at 0.1 and 3.0 seconds; actual starts were **0.110143** and **3.000690**
+seconds. Both succeed, retaining **694 early and 732 middle main-thread
+observations**. Independent verification resolves **293 explicitly observed
+symbol groups** using the actual ASLR load `0x1022c0000`. Only displayed PCs
+are mapped; ellipses and inclusive/collapsed counts remain unassigned, not
+attributed per-function CPU shares. There are **zero benchmark timing samples**
+and no repeat-to-obtain-observations run.
+
+| Observed function | Preferred address | Early displayed offsets | Middle displayed offsets |
+|---|---|---|---|
+| `memberAccessReceiverIsRequireAssignmentBinding` | `0x10068d69c` | 244, 416 | 244, 376 |
+| `leadingJsDocBodyWithStart` | `0x100241fc8` | 188, 400, 528, 660, 688, 692 | 200, 216, 392, 416 |
+| `jsDocTypeForPreviousIdentifierDecl` | Not displayed | Not displayed | Not displayed |
+
+The require-binding helper's displayed instructions still walk root statements.
+This supports investigating a different declaration-owned algorithm; it does
+not qualify the rejected [root-index](#coherent-root-receiver-facts-unqualified-2026-10-12-utc)
+or [attachment-memo](#owned-jsdoc-attachment-memo-rejected-2026-10-12-utc) candidates.
+Any new candidate still requires complete source/library/CLI controls and a
+predeclared exact-parent performance protocol retaining all adverse intervals.
+
+All guards exit 0 with unchanged 600-second/3,840-MB limits, machine lock and
+disk floors. Build peak tree footprint is 3,011 MB (host low-water 30%), mapping
+81 MB (40%), independent map verification 151 MB (43%), and admission/profile
+1,106 MB (31%). Mapping waited for another job's lock rather than bypassing it.
+Initial inventory preparation stopped before compilation on a directory entry;
+regular-file inventories and separate gitlink entries corrected it. The failure
+record remains, and no compiler or sampling run was repeated.
+
+The [raw evidence](../../bench/vs_tsgo/evidence/20261012-latest-source-native-jsdoc-profile-854.tar.gz)
+contains **68 checksum-verified payloads**, all matching original bytes,
+including native/link/object images, instructions, relocations, symbols, complete
+admissions, both raw samples, verifiers, source/assembly and guard records.
+Archive SHA-256:
+`0eb8da8d3d2223104db338f6e0db2dff4becc2b61719f4797f7a383e0a9dc2a9`.
+Historical progress records remain verbatim; terminal and verified profile
+records establish completion. The earlier measured-image profile remains below.
+
 ## Owned native checked JavaScript profile 2026 10 12 UTC
 
 The exact compiler measured by the [complete resumed matrix](#landed-declaration-identity-matrix-resumed)

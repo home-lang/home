@@ -153,14 +153,20 @@ uses one unchanged compiler process and two fixed windows after 36 admission
 checks. Displayed PCs map to namespace-import scanning even on the import-free
 scaled input; this is an investigation lead, not a CPU-share or speedup claim.
 
-The latest [owned-native checked-JS profile](docs/docs/TS_PERFORMANCE.md#owned-native-checked-javascript-profile-2026-10-12-utc)
-samples the exact compiler measured above and identifies root require-binding
-scans and local JSDoc work. It does not establish a speedup or whole-run CPU share.
+The latest [source-native checked-JS profile](docs/docs/TS_PERFORMANCE.md#latest-source-native-checked-javascript-profile-2026-10-12-utc)
+includes the recursive-interface fix and still displays root require-binding
+scans and local JSDoc work. It is a new image, not a refresh of the matrix above;
+it does not establish a speedup or whole-run CPU share. The
+[earlier profile](docs/docs/TS_PERFORMANCE.md#owned-native-checked-javascript-profile-2026-10-12-utc)
+retains the exact compiler measured by that matrix.
 
-| Current-image diagnostic check | Result |
+| Latest-source diagnostic check | Result |
 |---|---|
 | Unchanged 8,192-family positive/negative and native protocol controls | 6/6 and 30/30 pass |
-| Fixed-window native profile | One process, two windows, 275 mapped symbol groups; zero benchmark timing samples |
+| Fixed-window native profile | One process, two windows, 293 mapped symbol groups; zero benchmark timing samples |
+
+Both windows and all original diagnostics remain in the
+[raw evidence](bench/vs_tsgo/evidence/20261012-latest-source-native-jsdoc-profile-854.tar.gz).
 
 The JSDoc attachment memo under [#882](https://github.com/home-lang/home/issues/882)
 is **rejected and restored** after all 880 fixed pairs completed. Correctness
