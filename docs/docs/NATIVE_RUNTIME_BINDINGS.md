@@ -2525,3 +2525,13 @@ GC performs native descriptor cleanup and queues its warning to the owning conte
 [Evidence](bun-port-evidence/2026-10-12-filehandle-native/manifest.json) contains 594 artifacts and 83 report outcomes with eleven deliberate negatives. Validation passes 54/54 Debug steps, 26 native groups, fourteen ABI controls (452 assertions), 32 validator controls and forty unchanged originals: 168 cases plus twenty-five process checks, zero failures/skips/filters and two TODOs. Ten source hashes remain unchanged across TypeScript-only main updates. Pickier explicitly scans three JS sources and matches the baseline at eighteen errors and 128 warnings, with zero new findings.
 
 General Promise identity/trigger delivery, exact native stream-read resource types, exhaustive transfer/concurrency/error cleanup, Linux/Windows and Release/ASAN proof remain [#877](https://github.com/home-lang/home/issues/877). Full Bun parity remains [#66](https://github.com/home-lang/home/issues/66).
+
+### Native FileHandle transfer audit (2026-10-12)
+
+The worker-only in-band FileHandle marker conversion remains a workaround. A passing unchanged worker fixture establishes one process check, not native host-object structured-clone parity. Same-thread structuredClone, graph identity, transactional detachment and undelivered payload cleanup remain required.
+
+An unpublished native prototype uses JSC private branding and an out-of-band descriptor payload. The Node ordinary reference passes; Home's prototype control crashed and receives no pass credit. It was not rerun. Static review found an empty-value branding hazard and added an explicit nonempty/object guard. The prototype is preserved locally; it is excluded from published main. Crash-trigger source and prototype patch are excluded from the audit archive.
+
+[Audit evidence](bun-port-evidence/2026-10-12-filehandle-transfer-audit/manifest.json) retains the baseline, reference/crash outcomes and static findings. Native transfer remains incomplete under [#877](https://github.com/home-lang/home/issues/877), alongside the full [#66](https://github.com/home-lang/home/issues/66) goal.
+
+The defensive prototype compiles 54/54 Debug steps, but receives no runtime feature credit.

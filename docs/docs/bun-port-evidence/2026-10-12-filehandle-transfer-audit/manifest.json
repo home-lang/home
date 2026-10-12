@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "published_runtime_source": "1b995f634a4a8606e2ee9d60a245bd5308c87838",
+  "unpublished_recovery_commit": "e6bdb4fd641795ff664874d2c2051c10ef8cb8c9",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "results": {
+    "original_worker_baseline_exit": 0,
+    "node_reference_exit": 0,
+    "home_native_reference_exit": 250,
+    "native_transfer_verified": false,
+    "defensive_compile_steps": 54
+  },
+  "findings": [
+    "Worker-only in-band marker implementation remains a workaround, despite passing one original worker fixture. Native replacement is not complete.",
+    "Native structured transfer prototype crashed. Crash-trigger control source is excluded and was not rerun. Static review found missing empty-JSValue guard in brand lookup and added it; defensive compile passes 54/54 steps; runtime transfer remains unproven.",
+    "JSC JSValue::isCell treats the empty encoding as cell on this platform; absent getDirect values require explicit nonempty guard before getObject. This static fix does not establish runtime transfer completion."
+  ],
+  "limitations": [
+    "No new feature pass credit. Original baseline is one process check, no test cases. General native transfer rollback/lifetime/graph/portability proof remains #877 and #66."
+  ],
+  "files": [
+    {
+      "path": "raw/build-corrected.log.gz",
+      "bytes": 4531,
+      "sha256": "8406c36327ba53f1e3aff9adc2866db0ae40406e6b446556733d18ca9c13f1e3"
+    },
+    {
+      "path": "raw/build-refined.log.gz",
+      "bytes": 11849,
+      "sha256": "234c1710dacba3b77c6322214ecab4c372f629bee92eaf82ad42f79d57aa5e19"
+    },
+    {
+      "path": "raw/build.log.gz",
+      "bytes": 13561,
+      "sha256": "c882752cf11c5ba649db5aeedf0ea4d4d43fcfec18cbaccac63eddbb676e4055"
+    },
+    {
+      "path": "raw/control-run.log.gz",
+      "bytes": 314,
+      "sha256": "2dc35bfc0165350aeb73392541cc700085642ed339f7d68092499dbbc1d38974"
+    },
+    {
+      "path": "raw/lint-baseline.log.gz",
+      "bytes": 40617,
+      "sha256": "cffbd70f307620705bb53cdd21686745dee187ffd18a83576cc648b8bc5ed8fe"
+    },
+    {
+      "path": "raw/lint-changed.log.gz",
+      "bytes": 38186,
+      "sha256": "d9a5e44dcfc711e7685526a505c3701262be16b9ab23ba7d66df8238a1fa5acc"
+    },
+    {
+      "path": "raw/lint-new-findings.json.gz",
+      "bytes": 85,
+      "sha256": "c5c01f0450b4b1e0247d78079bcd375ffdfcb5a31f69fab9907bb73d372b2b4a"
+    },
+    {
+      "path": "raw/original-baseline/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "raw/original-baseline/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "raw/original-baseline/events.jsonl.gz",
+      "bytes": 4056,
+      "sha256": "aef43fce8bdd8ef6b8852e0dcc799ac1ec6217c927139cde1415946fe3581044"
+    },
+    {
+      "path": "raw/original-baseline.log.gz",
+      "bytes": 827,
+      "sha256": "5d6b5c2f14a8fef218514b86c9f8f2f9ac8bbea8238a62c25df2a1a6ba09d1c9"
+    },
+    {
+      "path": "raw/original-hashes.json.gz",
+      "bytes": 7157,
+      "sha256": "1801cf15222666f2baad042d867534a93a127fe229574b14165d41f4b2f85e6d"
+    },
+    {
+      "path": "raw/reference-home.log.gz",
+      "bytes": 86,
+      "sha256": "9455deb5c76a67ab2ddb8037a976e0bfe6fca92c25bb048a7af3d4625bdb7108"
+    },
+    {
+      "path": "raw/reference-node.log.gz",
+      "bytes": 335,
+      "sha256": "b96c367a6fa67b5c8071f84c6c15f5575e220f235be2ae9f28af8fb2d82e5cb7"
+    },
+    {
+      "path": "raw/selection.json.gz",
+      "bytes": 2291,
+      "sha256": "78f82043e8466b011e5a16c3e3150e2bd64f1dcdf2b39dcd61700451d54511d7"
+    },
+    {
+      "path": "raw/transfer-audit.json.gz",
+      "bytes": 913,
+      "sha256": "d8c9d33358c9a3bdb97be256a3da96287c231f4b005d8700c34786c66381b77d"
+    },
+    {
+      "path": "raw/unpublished-source-hashes.json.gz",
+      "bytes": 1442,
+      "sha256": "d4f8888f179434ba1f52ad2a79c97c4cc23b0ad20ec7740f705c44a697803e1d"
+    },
+    {
+      "path": "raw/build-defensive.log.gz",
+      "bytes": 4816,
+      "sha256": "d24475ce9680ad96119d2096ee3ffed7a9c4a4854f9fa99503ab87398f39b336"
+    }
+  ]
+}
