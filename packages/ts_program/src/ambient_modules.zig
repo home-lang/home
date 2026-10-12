@@ -205,7 +205,8 @@ const Collector = struct {
 };
 
 /// A declaration named `name` directly in `module_node`'s body or in one of
-/// its `declare global { }` blocks. Value declarations win over types.
+/// its `declare global { }` blocks. Value declarations win over types and
+/// namespaces.
 fn findLocal(c: *const driver.Compilation, module_node: hir.NodeId, name: []const u8) ?hir.NodeId {
     var type_match: ?hir.NodeId = null;
     for (hir.namespaceBody(&c.hir, module_node)) |raw| {
@@ -219,7 +220,7 @@ fn findLocal(c: *const driver.Compilation, module_node: hir.NodeId, name: []cons
                 const declared = declarationName(c, inner) orelse continue;
                 if (!std.mem.eql(u8, declared, name)) continue;
                 switch (c.hir.kindOf(inner)) {
-                    .interface_decl, .type_alias_decl => type_match = type_match orelse inner,
+                    .interface_decl, .type_alias_decl, .namespace_decl, .module_decl => type_match = type_match orelse inner,
                     else => return inner,
                 }
             }
@@ -228,7 +229,10 @@ fn findLocal(c: *const driver.Compilation, module_node: hir.NodeId, name: []cons
         const declared = declarationName(c, statement) orelse continue;
         if (!std.mem.eql(u8, declared, name)) continue;
         switch (kind) {
-            .interface_decl, .type_alias_decl => type_match = type_match orelse statement,
+            // A namespace merged with a `const`/function of the same name
+            // (`namespace path {}` + `const path: path.PlatformPath`) takes
+            // its value from that declaration.
+            .interface_decl, .type_alias_decl, .namespace_decl, .module_decl => type_match = type_match orelse statement,
             else => return statement,
         }
     }
