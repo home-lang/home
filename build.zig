@@ -755,6 +755,7 @@ pub fn build(b: *std.Build) void {
     const ts_program_pkg = createPackage(b, "packages/ts_program/src/ts_program.zig", target, optimize, zig_test_framework);
     ts_program_pkg.addImport("hir", hir_pkg);
     ts_program_pkg.addImport("ts_driver", ts_driver_pkg);
+    ts_program_pkg.addImport("ts_parser", ts_parser_pkg);
     ts_program_pkg.addImport("ts_resolver", ts_resolver_pkg);
     ts_program_pkg.addImport("tsconfig", tsconfig_pkg);
     // Cross-module declaration-emit privacy (`cannot be named`) needs to

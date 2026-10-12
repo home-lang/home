@@ -5,6 +5,7 @@ const binder = @import("binder");
 const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const origins = @import("export_origins.zig");
+const jsdoc_types = @import("jsdoc_types.zig");
 const schema = driver.ProgramClassSchema;
 const Primitive = schema.Primitive;
 
@@ -642,6 +643,10 @@ pub const Builder = struct {
                 try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
         else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
+            if (variable.type_annotation == 0 and jsdoc_types.isJavaScriptPath(source.path)) {
+                if (try jsdoc_types.declarationPrimitive(self.gpa, c, key.node)) |primitive|
+                    break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
+            }
             const type_source = if (variable.type_annotation != 0)
                 variable.type_annotation
             else if (kind == .const_decl)
@@ -731,6 +736,26 @@ pub const Builder = struct {
                 else => {},
             }
         }
+        if (jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
+            for (hir.classMembers(&c.hir, node)) |member| {
+                switch (c.hir.kindOf(member)) {
+                    .fn_decl, .fn_expr, .arrow_fn => {
+                        const function = hir.fnDeclOf(&c.hir, member);
+                        if (!function.flags.is_constructor) continue;
+                        const fields = try jsdoc_types.constructorAssignedFields(self.gpa, c, member);
+                        defer self.gpa.free(fields);
+                        for (fields) |field| {
+                            if (hasMember(members.items, field.name)) continue;
+                            try members.append(self.arena, .{
+                                .name = field.name,
+                                .type = try self.expression(.{ .primitive = schemaPrimitive(field.primitive) }),
+                            });
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
         const own = try self.expression(.{ .object = try members.toOwnedSlice(self.arena) });
         const base = hir.classOf(&c.hir, node).extends;
         if (base == 0) return own;
@@ -738,6 +763,28 @@ pub const Builder = struct {
             try self.classHeritage(context, base),
             own,
         }) });
+    }
+
+    fn hasMember(members: []const schema.Member, name: []const u8) bool {
+        for (members) |member| if (std.mem.eql(u8, member.name, name)) return true;
+        return false;
+    }
+
+    fn schemaPrimitive(primitive: jsdoc_types.Primitive) hir.TypeId {
+        return switch (primitive) {
+            .any => Primitive.any,
+            .unknown => Primitive.unknown,
+            .never => Primitive.never,
+            .void_t => Primitive.void_t,
+            .null_t => Primitive.null_t,
+            .undefined_t => Primitive.undefined_t,
+            .string_t => Primitive.string_t,
+            .number_t => Primitive.number_t,
+            .boolean_t => Primitive.boolean_t,
+            .bigint_t => Primitive.bigint_t,
+            .symbol_t => Primitive.symbol_t,
+            .object_t => Primitive.object_t,
+        };
     }
 
     fn classHeritage(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {

@@ -9,6 +9,7 @@ const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const origins = @import("export_origins.zig");
 const class_schema = @import("class_schema.zig");
+const jsdoc_types = @import("jsdoc_types.zig");
 
 pub const Source = class_schema.Source;
 const Binding = struct { source: usize, name: []const u8 };
@@ -202,6 +203,23 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
             else => {},
         }
     }
+    if (jsdoc_types.isJavaScriptPath(source.path)) {
+        for (hir.classMembers(&c.hir, node)) |member_node| {
+            switch (c.hir.kindOf(member_node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const function = hir.fnDeclOf(&c.hir, member_node);
+                    if (!function.flags.is_constructor) continue;
+                    const fields = try jsdoc_types.constructorAssignedFields(gpa, c, member_node);
+                    defer gpa.free(fields);
+                    for (fields) |field| {
+                        if (hasMember(members.items, field.name)) continue;
+                        try members.append(gpa, .{ .name = field.name, .type_name = jsdoc_types.typeName(field.primitive) });
+                    }
+                },
+                else => {},
+            }
+        }
+    }
     const name = nodeName(c, class.name) orelse "default";
     const parent = c.hir.parentOf(node);
     const container = if (parent != 0 and c.hir.kindOf(parent) == .export_decl) c.hir.parentOf(parent) else parent;
@@ -234,6 +252,11 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
         .members = owned_members,
         .static_members = owned_statics,
     };
+}
+
+fn hasMember(members: []const driver.ProgramExportedClassMember, name: []const u8) bool {
+    for (members) |member| if (std.mem.eql(u8, member.name, name)) return true;
+    return false;
 }
 
 fn simpleTypeName(c: *const driver.Compilation, annotation: hir.NodeId, initializer: hir.NodeId) []const u8 {
