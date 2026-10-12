@@ -133,8 +133,10 @@ const Context = struct {
         // them. A recursively resolved parent reaches this point before it is
         // rebased into its child, so recording the absolute origin here keeps
         // both direct and inherited mappings faithful.
-        if (resolved.compiler_options.paths != null and resolved.compiler_options.base_url == null) {
-            resolved.compiler_options.base_url = try self.arena.dupe(u8, dirname(config_path));
+        // This must not become `baseUrl`: TypeScript 7 removed that option
+        // and reports TS5102 for it.
+        if (own.compiler_options.paths != null) {
+            resolved.compiler_options.paths_base_path = try self.arena.dupe(u8, dirname(config_path));
         }
         return .{ .config = resolved, .config_path = config_path };
     }
@@ -391,13 +393,18 @@ test "config graph: a package config inherits the root compiler options" {
     try T.expectEqual(@as(?bool, true), options.isolated_declarations);
     try T.expectEqual(@as(?bool, true), options.strict);
     try T.expectEqual(@as(usize, 2), options.types.?.len);
-    try T.expectEqualStrings("/repo", options.base_url.?);
+    try T.expectEqualStrings("/repo", options.paths_base_path.?);
+    try T.expect(options.base_url == null);
     try T.expectEqualStrings("/repo/packages/cli/tsconfig.json", config.file_path);
     try T.expectEqualStrings("bin", config.include.?[0]);
     // The extended config's validation must not see a missing `declaration`.
     const diagnostics = try config.validate(T.allocator);
     defer tsconfig.freeValidationDiagnostics(T.allocator, diagnostics);
-    for (diagnostics) |diagnostic| try T.expect(diagnostic.code != 5069);
+    for (diagnostics) |diagnostic| {
+        try T.expect(diagnostic.code != 5069);
+        // `paths` without `baseUrl` is not the removed `baseUrl` option.
+        try T.expect(diagnostic.code != 5102);
+    }
 }
 
 test "config graph: inherited specs and output paths are rebased, references are not inherited" {

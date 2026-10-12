@@ -232,6 +232,10 @@ pub const CompilerOptions = struct {
     module_resolution: ?ModuleResolution = null,
     base_url: ?[]const u8 = null,
     paths: ?Paths = null,
+    /// Not a tsconfig key: the directory of the config that declared
+    /// `paths` (tsc's `pathsBasePath`). Without `baseUrl`, `paths`
+    /// substitutions resolve against it. Set by `config_graph`.
+    paths_base_path: ?[]const u8 = null,
     root_dirs: ?[][]const u8 = null,
     type_roots: ?[][]const u8 = null,
     types: ?[][]const u8 = null,

@@ -1140,7 +1140,7 @@ fn resolverConfigFromConfig(
         };
         resolver_config.explicit_strategy = true;
     }
-    if (co.base_url) |base_url| resolver_config.base_url = base_url;
+    if (co.base_url orelse co.paths_base_path) |base_url| resolver_config.base_url = base_url;
     if (co.paths) |paths| {
         resolver_config.paths = ts_resolver.Config.pathEntriesFromParallel(
             arena,
