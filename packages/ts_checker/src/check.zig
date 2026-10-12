@@ -44091,15 +44091,21 @@ pub const Checker = struct {
                             .public,
                         .decl_node = m,
                     };
+                    // A preseeded slot holds the first declaration of a name;
+                    // further overload signatures (`declare class` bodies
+                    // have no implementation to hide) join the overload set
+                    // instead of overwriting it.
+                    const overload_follows = overload_info_before != null and overload_info_before.?.bodyless_count > 0;
                     if (fn_p.flags.is_static) {
-                        if (preseeded_static_member_indices.get(member_name)) |idx| {
+                        if (!overload_follows) if (preseeded_static_member_indices.get(member_name)) |idx| {
                             static_members.items[idx] = method_member;
                             if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
                             continue;
-                        }
+                        };
                         try static_members.append(self.gpa, method_member);
                         if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
-                    } else if (preseeded_field_indices.get(member_name)) |idx| {
+                    } else if (!overload_follows and preseeded_field_indices.get(member_name) != null) {
+                        const idx = preseeded_field_indices.get(member_name).?;
                         instance_members.items[idx] = method_member;
                         if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
                     } else {
@@ -220356,6 +220362,32 @@ test "checker: constructor parameter properties contribute to instance shape" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
+    }
+}
+
+test "checker: ambient class method overloads all reach the instance" {
+    // @types/node's `declare class ChildProcess` lists `on(event: string,
+    // ...)` before the `"exit"`/`"spawn"` forms; every signature is visible,
+    // so `proc.on("exit", (code) => ...)` matches the first one as in tsc.
+    const s = try newSetup(
+        \\declare class L {
+        \\  on(event: string, cb: (...args: any[]) => void): this;
+        \\  on(event: "exit", cb: (code: number | null) => void): this;
+        \\  on(event: "spawn", cb: () => void): this;
+        \\}
+        \\declare const l: L;
+        \\l.on("exit", (code) => {});
+        \\declare class M { on(event: "a"): 1; on(event: "b"): 2; }
+        \\declare const m: M;
+        \\const one: 1 = m.on("a");
+        \\const two: 2 = m.on("b");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+        try T.expect(d.code != 7006);
     }
 }
 
