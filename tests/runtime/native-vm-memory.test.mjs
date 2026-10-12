@@ -57,6 +57,5 @@ async function main() {
     worker.once('error', reject)
   })
   assert.equal(typeof await worker.terminate(), 'number')
-  console.log('VM native context allocation, bounds, collection timing, overlapping requests and shutdown passed')
 }
 main().catch(error => { throw error })
