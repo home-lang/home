@@ -1,0 +1,291 @@
+{
+  "schema": 1,
+  "source_commit": "583a64a1838f2cdfcbf7f7eb96c67b962bf77bdf",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "source_hashes": [
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "1bde1f275f474d2816656e3b03d4f940f0850fa18b2ff2ba40b50796351a39f8",
+      "bytes": 69405
+    }
+  ],
+  "results": {
+    "restored_debug_steps": 54,
+    "restored_native_groups": 3,
+    "abi_controls": 14,
+    "validator_controls": 32,
+    "header_only_generation_probe_exit": 0,
+    "source_only_generation_probe_exit": 0,
+    "restored_generation_exit": 0,
+    "prototype_evaluation_and_routing_credit": "preliminary only",
+    "notification_control_exit": 1
+  },
+  "prototype": {
+    "prototype_commit": "53f98a3def7d7b3b5b15a7400e4c2b3a3ff88b7c",
+    "publication": "unverified native transport retained locally, excluded from main",
+    "controls": [
+      {
+        "file": "reference",
+        "exit": 1
+      },
+      {
+        "file": "session-routing",
+        "exit": 0
+      },
+      {
+        "file": "native-inspector-session",
+        "exit": 1
+      }
+    ],
+    "remaining": [
+      "Runtime.enable context lifecycle notification is absent in bare JSC runtime agent",
+      "CDP Profiler adapter/per-session sampling ownership",
+      "later termination guard and final transport source have not been rebuilt/tested",
+      "worker main-thread attachment and full enabled lifecycle"
+    ],
+    "source_restored_to": "9e79eb46441e29580ce22a6a50121f0e8cf9b16a"
+  },
+  "limitations": [
+    "Native inspector transport is excluded from main and retained on a local recovery branch. Notification/context lifecycle and CDP Profiler adapters remain incomplete.",
+    "Later transport termination guard was not in the tested copied prototype; its source remains unverified.",
+    "Full inspector protocol, workers, enabled lifecycle, all-platform/Release/ASAN and full Bun-suite proof remain incomplete. No fabricated context event or profile response is used."
+  ],
+  "files": [
+    {
+      "path": "raw/baseline.json.gz",
+      "sha256": "8a08c9459956a05b46268c844938576ee00b6e56cae4b9c49b1ab36b4f90d9d4",
+      "bytes": 95
+    },
+    {
+      "path": "raw/baseline.log.gz",
+      "sha256": "1eb95b8d50f0082a5a42b6ac40740261e845eb4402f6724b9256de83415cb0ff",
+      "bytes": 14
+    },
+    {
+      "path": "raw/build-final-restored.log.gz",
+      "sha256": "44b4787b4fc7f3f89b1004503e7f45984f93ae7e382dcf56fb4310a8005de861",
+      "bytes": 4808
+    },
+    {
+      "path": "raw/build-input-repair.log.gz",
+      "sha256": "0e18b2d53a0a6af90c81f059d102a9e43e563d272a08cb0343e48fe2fa981482",
+      "bytes": 4875
+    },
+    {
+      "path": "raw/build-repair.log.gz",
+      "sha256": "34f55cbb41df0f2953983a8daf4c19907d118eb704edc4887230ae8f42c1cbb8",
+      "bytes": 15233
+    },
+    {
+      "path": "raw/build-restored-inputs.log.gz",
+      "sha256": "d20b1e79d4c1fe4c9f19734516b3bd0d6b903c573d3ae5e8e6113459fa2f8673",
+      "bytes": 4529
+    },
+    {
+      "path": "raw/build.log.gz",
+      "sha256": "fdb9b07683a8d7f39d9d3bf97ba6b6af8092ef8cfafc565b3f4ccc4524dc1c61",
+      "bytes": 14957
+    },
+    {
+      "path": "raw/core-controls.json.gz",
+      "sha256": "24dda130c963bf2615f995e51734a2ae5deb279f95901bfb5249984e9c088f1c",
+      "bytes": 168
+    },
+    {
+      "path": "raw/core-controls.log.gz",
+      "sha256": "e027bcf7135e837e752b2d68b6e631a69574f17b49808adc3b60877f8e40ef63",
+      "bytes": 142
+    },
+    {
+      "path": "raw/docs-check.log.gz",
+      "sha256": "4aafa0ea1a97119a7684220dcb7656c5f2ea244cc954b4473613f2c71d8de430",
+      "bytes": 68
+    },
+    {
+      "path": "raw/home-baseline.log.gz",
+      "sha256": "b50d8a18239afd85913e1fd9fe92dd78748e51d6981a0708639559778c55df03",
+      "bytes": 647
+    },
+    {
+      "path": "raw/input-probe-BunCPUProfiler.cpp.log.gz",
+      "sha256": "be01a33f652400e83fa729a1a01da319506effaa70119515327aa35a3359c19d",
+      "bytes": 118
+    },
+    {
+      "path": "raw/input-probe-HomeCPUProfilerState.h.log.gz",
+      "sha256": "a322ad214aec64f50df9c05811ffb3bd798d83e9ea7ba23f8443f1c10898d855",
+      "bytes": 118
+    },
+    {
+      "path": "raw/input-probe-restored.log.gz",
+      "sha256": "a322ad214aec64f50df9c05811ffb3bd798d83e9ea7ba23f8443f1c10898d855",
+      "bytes": 118
+    },
+    {
+      "path": "raw/input-probe.json.gz",
+      "sha256": "cbee2886141ab06af0d3d3ce62c86fadb873692552f010e86b05add13bf1ee18",
+      "bytes": 456
+    },
+    {
+      "path": "raw/lint-baseline.json.gz",
+      "sha256": "84c95836611e90fef53e7a857ebae13bbff0fa7a62cb867f3a380403cb8877cb",
+      "bytes": 4531
+    },
+    {
+      "path": "raw/lint-changed.json.gz",
+      "sha256": "a70c40dc9f67e208532a2a3538881602b8b1b76f092eefb808ad9572e9125eb0",
+      "bytes": 4531
+    },
+    {
+      "path": "raw/lint-comparison.json.gz",
+      "sha256": "8a80637d432d7e185fdd493b3731ef03e6f8a463ca4f740b1cad0b9f68a6e33f",
+      "bytes": 172
+    },
+    {
+      "path": "raw/native-inspector-session-prototype.log.gz",
+      "sha256": "38c280b1f9b6b9203c854bc942d21965706e62d619511f9158f2c27ba12650d2",
+      "bytes": 834
+    },
+    {
+      "path": "raw/native-inspector-session.mjs.gz",
+      "sha256": "0841851c83dea1f4484ccf7e0962ba3730d5ee3c3a235e7ae146581c3932ca5f",
+      "bytes": 1248
+    },
+    {
+      "path": "raw/node-baseline.log.gz",
+      "sha256": "8ec16042a96932bcb3be73dccc87463b50f19416b131b6ab95cf9dfe4fff2c9d",
+      "bytes": 68
+    },
+    {
+      "path": "raw/node-routing.log.gz",
+      "sha256": "410eecf0a2dd356b0441a142acf6155ba0f8f5bd25480572c1dcbbbbcef32323",
+      "bytes": 50
+    },
+    {
+      "path": "raw/notification-shape.log.gz",
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "bytes": 3
+    },
+    {
+      "path": "raw/notification-shape.mjs.gz",
+      "sha256": "b4361a342e81eb6d2ff767b715b229b69f676320866389beffd1ec9c6b7763df",
+      "bytes": 399
+    },
+    {
+      "path": "raw/protocol-gaps.json.gz",
+      "sha256": "f26bc66059b7363af6fa204e4e99b983fd56536b99ad1fb2f35392b71647d6f4",
+      "bytes": 470
+    },
+    {
+      "path": "raw/prototype-disposition.json.gz",
+      "sha256": "0ad184e0b051cb346927cea9cb76bc037d1cdc2f34df5d609538c3f05ffc3319",
+      "bytes": 751
+    },
+    {
+      "path": "raw/prototype.patch.gz",
+      "sha256": "8c2696046058470f91516d98acb9dbf5d259063a1838f6f4c12beeb91ddafcf3",
+      "bytes": 14776
+    },
+    {
+      "path": "raw/reference-prototype.log.gz",
+      "sha256": "48c721c632597d3ac7e65273b91f3ead060c010e5f343ab91f4c8383947e135c",
+      "bytes": 683
+    },
+    {
+      "path": "raw/reference.mjs.gz",
+      "sha256": "f0dcadce7815ea462a9fefbaeb5fab4d3a76cdf0356dfd2de0d043037448ca8f",
+      "bytes": 740
+    },
+    {
+      "path": "raw/restored-binary-before-final-build.json.gz",
+      "sha256": "99e828f4e97285bafd3ff867088ae5e2a519d0ae6a2ce474b1a7de572a54669c",
+      "bytes": 83
+    },
+    {
+      "path": "raw/restored-binary-final.json.gz",
+      "sha256": "44b7f25ceac8aacbd8853f2dbfff516d22c9c80f7ac9c1b4b9a06626979ad698",
+      "bytes": 158
+    },
+    {
+      "path": "raw/restored-validation-1.log.gz",
+      "sha256": "6560980cce4ab68c746fd3b190d32a0ad31d9d6c08680319f921de5b1b74598d",
+      "bytes": 82
+    },
+    {
+      "path": "raw/restored-validation-2.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "raw/restored-validation-3.log.gz",
+      "sha256": "fb06a4cb594a810af4956cb0a90570f7dffd24e20abc1ffe77cd82cce1a9a452",
+      "bytes": 627
+    },
+    {
+      "path": "raw/restored-validation-4.log.gz",
+      "sha256": "bda93df526a93e6e6cd8fe1d8b9a6d61c65c34608e62463c8eed77e6c12c9934",
+      "bytes": 265
+    },
+    {
+      "path": "raw/restored-validation-5.log.gz",
+      "sha256": "2e240b0e796253f1b506eb11ea143fe817a73449b108d457a113b86c3253633d",
+      "bytes": 1823
+    },
+    {
+      "path": "raw/restored-validation-6.log.gz",
+      "sha256": "7703cfdc6ef468471081fdddd16d82893be27790746d9bf71d1e341cd52847b4",
+      "bytes": 131
+    },
+    {
+      "path": "raw/restored-validation.json.gz",
+      "sha256": "8a0f33c2d723a8d1d92ad0b255ec0d10aa25d39f3d8d6d9c973959e86d965764",
+      "bytes": 994
+    },
+    {
+      "path": "raw/restored-validation.log.gz",
+      "sha256": "f916852f276a3a717e18499d25806b99f55f82d2153295c9cc061b634ce60293",
+      "bytes": 463
+    },
+    {
+      "path": "raw/run-core-controls.py.gz",
+      "sha256": "a4e8ac942d98f4e4b498aa3db9dda70796c52c28be011f2b63e9a7b7f0b8617a",
+      "bytes": 519
+    },
+    {
+      "path": "raw/run-input-probe.py.gz",
+      "sha256": "b6c1452e0ffb746314456c080e55d77a2cab9577f2101343ba83a2bca0886b87",
+      "bytes": 2074
+    },
+    {
+      "path": "raw/run-restored-validation.py.gz",
+      "sha256": "53dbf73a3741af28ed67d4945ee06fb6d46cbd2dcc4c9dd158541f2ae5609076",
+      "bytes": 1015
+    },
+    {
+      "path": "raw/session-routing-prototype.log.gz",
+      "sha256": "410eecf0a2dd356b0441a142acf6155ba0f8f5bd25480572c1dcbbbbcef32323",
+      "bytes": 50
+    },
+    {
+      "path": "raw/session-routing.mjs.gz",
+      "sha256": "4d2c4c89317c2628806f3c05b75673050502c22e344a858429ce22678be5ea4d",
+      "bytes": 636
+    },
+    {
+      "path": "raw/webkit-InspectorBackendDispatcher.cpp.gz",
+      "sha256": "c58ce3ade16b90f406c690d5da9567d60462f0db7acb88a69916aec13d7c1d3e",
+      "bytes": 14035
+    },
+    {
+      "path": "raw/webkit-InspectorRuntimeAgent.cpp.gz",
+      "sha256": "32740a4bdf5f87d6e26d6e7ab2f76107b64aa602a706ce98fc58ee561d861877",
+      "bytes": 23139
+    },
+    {
+      "path": "raw/webkit-JSGlobalObjectRuntimeAgent.cpp.gz",
+      "sha256": "cafcf27e17a6c357e62c333d8a66512eff929aaa944cedb6be9a67bce52f44bd",
+      "bytes": 2688
+    }
+  ]
+}
