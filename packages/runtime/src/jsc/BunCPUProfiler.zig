@@ -14,11 +14,9 @@
 // brings them back online.
 
 const std = @import("std");
-
-// JSC bridge jsc.VM stubbed — re-attaches in Phase 12.2.
-pub const VM = opaque {};
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-pub const String = opaque {};
+const home_rt = @import("home");
+pub const VM = home_rt.jsc.VM;
+pub const String = home_rt.String;
 
 pub const CPUProfilerConfig = struct {
     name: []const u8,
@@ -51,6 +49,10 @@ pub const CPUProfiler = struct {
         Bun__stopCPUProfiler(vm, out_json, out_text);
     }
 };
+
+pub const setSamplingInterval = CPUProfiler.setSamplingInterval;
+pub const startCPUProfiler = CPUProfiler.startCPUProfiler;
+pub const stopCPUProfiler = CPUProfiler.stopCPUProfiler;
 
 pub fn stopAndWriteProfile(_: anytype, _: CPUProfilerConfig) !void {}
 
