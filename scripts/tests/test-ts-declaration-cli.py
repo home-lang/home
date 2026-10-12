@@ -126,6 +126,21 @@ def main() -> None:
                 ["types/index.d.ts", "types/index.d.ts.map"])
         compare("missing-declaration", {"declaration": False, "declarationDir": None, "noEmit": True},
                 [], [], [5069], expected_exit=2)
+        compare("missing-declaration-list", {"declaration": False, "declarationDir": None, "noEmit": True},
+                ["--listFilesOnly"], [], [5069], expected_exit=1)
+        for option_name, invalid_option, code in (
+            ("removed-option", {"outFile": "bundle.js"}, 5102),
+            ("check-js-dependency", {"checkJs": True, "allowJs": False}, 5052),
+        ):
+            for no_emit in (False, True):
+                compare(f"{option_name}-no-emit-{no_emit}", {
+                    "declaration": False, "declarationDir": None, "emitDeclarationOnly": False,
+                    "noEmit": no_emit, **invalid_option,
+                }, [], [] if no_emit else ["js/index.js"], [code], expected_exit=1 if no_emit else 2)
+                compare(f"{option_name}-list-no-emit-{no_emit}", {
+                    "declaration": False, "declarationDir": None, "emitDeclarationOnly": False,
+                    "noEmit": no_emit, **invalid_option,
+                }, ["--listFilesOnly"], [], [code], expected_exit=1)
         compare("javascript-input", {"allowJs": True, "outDir": None}, [], ["types/index.d.ts"],
                 source="export const answer = 42;\n", javascript=True)
 

@@ -928,7 +928,7 @@ pub const TsConfig = struct {
         // either option named by the diagnostic, then falls back to the
         // compilerOptions key. Do not assume the offending option is first.
         for (diags.items) |*diagnostic| {
-            if (diagnostic.code == 5069 and diagnostic.location == null) {
+            if ((diagnostic.code == 5052 or diagnostic.code == 5069) and diagnostic.location == null) {
                 for (self.compiler_option_locations) |location| {
                     if (std.mem.eql(u8, location.name, diagnostic.field) or
                         std.mem.eql(u8, location.name, diagnostic.related_field))
@@ -1351,6 +1351,7 @@ fn appendTs5052(
         .message = msg,
         .owns_message = true,
         .field = field,
+        .related_field = required,
     });
 }
 

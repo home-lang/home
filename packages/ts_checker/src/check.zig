@@ -4476,6 +4476,8 @@ pub const Checker = struct {
     /// Optional bound module ÃÂ¢ÃÂÃÂ when set, identifier expressions
     /// resolve their type via the symbol table.
     module: ?*const binder_mod.Module,
+    bound_value_scopes: std.AutoHashMapUnmanaged(NodeId, *const binder_mod.Scope) = .empty,
+    indexed_bound_value_scopes: bool = false,
     /// Stack of name ÃÂ¢ÃÂÃÂ narrowed-type maps. Each `if`/`while`/etc.
     /// pushes a scope; identifier resolution consults the top of
     /// the stack first before falling back to the static type.
@@ -4525,6 +4527,7 @@ pub const Checker = struct {
     /// typed sources contain none; in that common case identifier lookup can
     /// skip the source-order flow search entirely.
     may_have_evolving_any_candidates: ?bool = null,
+    may_have_automatic_array_candidates: ?bool = null,
     /// Lazily records whether any simple assignment targets an identifier's
     /// dotted member. Function-expando definite-assignment analysis cannot
     /// produce state or diagnostics without at least one such assignment.
@@ -6147,6 +6150,8 @@ pub const Checker = struct {
     /// `Primitive.any`.
     pub fn setModule(self: *Checker, module: *const binder_mod.Module) void {
         self.module = module;
+        self.bound_value_scopes.clearRetainingCapacity();
+        self.indexed_bound_value_scopes = false;
     }
 
     pub fn setStrictFlags(self: *Checker, flags: StrictFlags) void {
@@ -6885,6 +6890,7 @@ pub const Checker = struct {
         self.visible_type_alias_decls.deinit(self.gpa);
         self.indexed_named_type_containers.deinit(self.gpa);
         self.visible_same_name_value_decls.deinit(self.gpa);
+        self.bound_value_scopes.deinit(self.gpa);
         self.indexed_same_name_value_containers.deinit(self.gpa);
         self.additional_resolvable_value_decl_names.deinit(self.gpa);
         self.indexed_additional_resolvable_value_containers.deinit(self.gpa);
@@ -7065,6 +7071,7 @@ pub const Checker = struct {
         try self.checkTopLevelDecoratorDiagnostics(stmts);
         try self.checkUnreachableCode(stmts);
         try self.checkUsedBeforeAssignment(stmts);
+        try self.checkScopedVariableUseBeforeDeclaration();
         try self.checkExpandoPropertyUsedBeforeAssignment(stmts);
         try self.checkExpandoPropertyCircularInference(stmts);
         try self.checkUnsupportedJsPrototypeReplacementMembers();
@@ -10498,6 +10505,8 @@ pub const Checker = struct {
                 var reachable_flow: FlowNarrowSnapshot = .{};
                 defer reachable_flow.deinit(self.gpa);
                 const cond_t = try self.checkExpression(i.cond);
+                var incoming_assignments = try self.captureConditionalIdentifierAssignmentFlow(node);
+                defer incoming_assignments.deinit(self.gpa);
                 try self.reportVoidTruthiness(i.cond, cond_t);
                 try self.reportKnownTruthyCallableCondition(i.cond, cond_t, i.then_branch);
                 if (self.isElseIfStatement(node))
@@ -10520,7 +10529,7 @@ pub const Checker = struct {
                     }
                     self.popNarrowScope();
                     if (static_cond == .unknown) {
-                        try self.applyConditionalIdentifierAssignmentFlow(node);
+                        try self.applyConditionalIdentifierAssignmentFlow(node, &incoming_assignments);
                     } else {
                         try self.applyFlowNarrowSnapshot(&reachable_flow);
                     }
@@ -10531,7 +10540,7 @@ pub const Checker = struct {
                     try self.applyInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyNegatedInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyInstanceofFallthroughJoin(i.cond);
-                    try self.applyConditionalIdentifierAssignmentFlow(node);
+                    try self.applyConditionalIdentifierAssignmentFlow(node, &incoming_assignments);
                 }
             },
             .while_stmt => {
@@ -18477,7 +18486,10 @@ pub const Checker = struct {
             self.hir.setType(node, declared_type);
             if (v.name != hir_mod.none_node_id) self.hir.setType(v.name, declared_type);
         }
-        if (v.init == hir_mod.none_node_id) return;
+        if (v.init == hir_mod.none_node_id) {
+            try self.checkUninitializedVariableImplicitAny(node, if (v.type_annotation == hir_mod.none_node_id) types.Primitive.none else declared_type);
+            return;
+        }
         // TS1039 ÃÂ¢ÃÂÃÂ initializers are not allowed in ambient contexts.
         // `declare namespace M { export var v = expr; }` and friends
         // need this report just like top-level `declare var v = ...`.
@@ -29472,13 +29484,13 @@ pub const Checker = struct {
         const arena = self.diag_arena.allocator();
         var type_buf: std.ArrayListUnmanaged(u8) = .empty;
         errdefer type_buf.deinit(arena);
-        try type_buf.append(arena, '[');
+        try type_buf.appendSlice(arena, if (width == 0) "any[]" else "[");
         var i: usize = 0;
         while (i < width) : (i += 1) {
             if (i > 0) try type_buf.appendSlice(arena, ", ");
             try type_buf.appendSlice(arena, "any");
         }
-        try type_buf.append(arena, ']');
+        if (width != 0) try type_buf.append(arena, ']');
         const msg = try std.fmt.allocPrint(
             arena,
             "Variable '{s}' implicitly has an '{s}' type.",
@@ -89105,21 +89117,35 @@ pub const Checker = struct {
 
     /// Return the unresolved automatic variable captured by `node` from a
     /// source/namespace scope. tsgo keeps these references as `autoType`
-    /// across a function boundary; if no assignment has evolved the type,
-    /// each read owns TS7005 and is then treated as `any`.
+    /// across a function boundary; assignments outside that function do not
+    /// resolve the capture. Each read owns TS7005 and is treated as `any`.
     fn capturedOuterUntypedEvolvingAnyDecl(
         self: *Checker,
         node: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        if (self.enclosingFunctionLike(node) == null) return null;
-        const use_start = self.hir.spanOf(node).start;
+        var crosses_capture_boundary = false;
+        var child = node;
         var cur = self.hir.parentOf(node);
-        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
             const kind = self.hir.kindOf(cur);
             if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                crosses_capture_boundary = true;
+                const function = hir_mod.fnDeclOf(self.hir, cur);
+                if (function.name != hir_mod.none_node_id and
+                    self.hir.kindOf(function.name) == .identifier and
+                    hir_mod.identifierOf(self.hir, function.name).name == name) return null;
                 if (self.functionLocalsContain(cur, name)) return null;
                 continue;
+            }
+            if (kind == .object_property) {
+                const owner = self.hir.parentOf(cur);
+                if (owner != hir_mod.none_node_id and
+                    (self.hir.kindOf(owner) == .class_decl or self.hir.kindOf(owner) == .class_expr) and
+                    hir_mod.objectPropertyOf(self.hir, cur).value == child) crosses_capture_boundary = true;
             }
             const statements: []const NodeId = switch (kind) {
                 .block_stmt => hir_mod.blockStmts(self.hir, cur),
@@ -89128,7 +89154,6 @@ pub const Checker = struct {
             };
             var match = hir_mod.none_node_id;
             for (statements) |stmt| {
-                if (self.hir.spanOf(stmt).start >= use_start) break;
                 const decl = if (self.hir.kindOf(stmt) == .export_decl)
                     hir_mod.exportOf(self.hir, stmt).decl
                 else
@@ -89141,6 +89166,7 @@ pub const Checker = struct {
                 if (hir_mod.identifierOf(self.hir, variable.name).name == name) match = decl;
             }
             if (match != hir_mod.none_node_id) {
+                if (!crosses_capture_boundary) return null;
                 if (!self.varDeclIsUntypedEvolvingAnyCandidate(match)) return null;
                 if (self.enclosingFunctionLike(match) != null) return null;
                 return match;
@@ -89194,8 +89220,14 @@ pub const Checker = struct {
     fn varDeclIsUntypedEvolvingAnyCandidate(self: *Checker, decl: NodeId) bool {
         const dk = self.hir.kindOf(decl);
         if (dk != .var_decl and dk != .let_decl) return false;
+        const parent = self.hir.parentOf(decl);
+        if (parent != hir_mod.none_node_id and
+            (self.hir.kindOf(parent) == .for_in_stmt or self.hir.kindOf(parent) == .for_of_stmt)) return false;
         const v = hir_mod.varDeclOf(self.hir, decl);
         if (v.is_ambient) return false;
+        if (v.init == hir_mod.none_node_id and
+            (self.declarationNodeIsExported(decl) or self.whole_file_is_declaration_file or
+                self.variableHasAmbientNamespaceContext(decl))) return false;
         if (v.type_annotation != hir_mod.none_node_id) return false;
         if (self.varDeclHasJsDocTypeTag(decl)) return false;
         if (v.init == hir_mod.none_node_id) return true;
@@ -89216,18 +89248,455 @@ pub const Checker = struct {
     }
 
     fn varDeclIsCapturedEvolvingAnyCandidate(self: *Checker, decl: NodeId) bool {
-        const dk = self.hir.kindOf(decl);
-        if (dk != .var_decl and dk != .let_decl) return false;
+        return self.varDeclIsUntypedEvolvingAnyCandidate(decl) and
+            hir_mod.varDeclOf(self.hir, decl).init == hir_mod.none_node_id;
+    }
+
+    fn varDeclIsAutomaticArrayCandidate(self: *Checker, decl: NodeId) bool {
+        const kind = self.hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return false;
         const v = hir_mod.varDeclOf(self.hir, decl);
-        if (v.type_annotation != hir_mod.none_node_id) return false;
-        if (self.varDeclHasJsDocTypeTag(decl)) return false;
-        if (v.init == hir_mod.none_node_id) return true;
-        return self.hir.kindOf(v.init) == .array_literal and
-            hir_mod.arrayLiteralElements(self.hir, v.init).len == 0;
+        return self.strict_flags.no_implicit_any and self.isEmptyArrayLiteral(v.init) and
+            v.type_annotation == hir_mod.none_node_id and !v.is_ambient and
+            !self.varDeclHasJsDocTypeTag(decl) and !self.whole_file_is_declaration_file and
+            !self.declarationNodeIsExported(decl) and !self.variableHasAmbientNamespaceContext(decl);
+    }
+
+    fn sourceMayHaveAutomaticArrayCandidate(self: *Checker) bool {
+        if (self.may_have_automatic_array_candidates) |cached| return cached;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.varDeclIsAutomaticArrayCandidate(node)) {
+                self.may_have_automatic_array_candidates = true;
+                return true;
+            }
+        }
+        self.may_have_automatic_array_candidates = false;
+        return false;
+    }
+
+    fn automaticArrayIndexIsNumeric(self: *Checker, type_id: TypeId) bool {
+        if (type_id == types.Primitive.any or type_id == types.Primitive.undefined_t) return true;
+        if (type_id >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(type_id);
+        if (flags.is_number) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(type_id)) |member| {
+                if (!self.automaticArrayIndexIsNumeric(member)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Resolve the binding before looking at flow. A future local declaration,
+    // parameter or named function expression still shadows an outer array.
+    fn nearestScopedValueBinding(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (self.module) |module| {
+            if (!self.indexed_bound_value_scopes) {
+                for (module.scopes.items) |scope| {
+                    if (scope.kind == .interface or scope.kind == .type_params) continue;
+                    self.bound_value_scopes.put(self.gpa, scope.introducing_node, scope) catch return null;
+                }
+                self.indexed_bound_value_scopes = true;
+            }
+            var current = self.hir.parentOf(node);
+            while (true) : (current = self.hir.parentOf(current)) {
+                if (current != hir_mod.none_node_id and self.hir.kindOf(current) == .fn_expr and !self.functionIsMember(current)) {
+                    const f = hir_mod.fnDeclOf(self.hir, current);
+                    if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and
+                        hir_mod.identifierOf(self.hir, f.name).name == name) return current;
+                }
+                if (self.bound_value_scopes.get(current)) |scope| {
+                    if (scope.values.get(name)) |symbol| {
+                        // A class member is reached through a receiver, not a
+                        // bare identifier. Catch/loop binding visibility is
+                        // narrower than the scope in which the binder stores it.
+                        if (!symbol.flags.is_property and !symbol.flags.is_method and !symbol.flags.is_constructor) {
+                            for (symbol.decls.items) |raw| {
+                                if (raw == hir_mod.none_node_id or raw >= self.hir.nodeCount()) continue;
+                                const decl = self.unwrapExportDecl(raw);
+                                if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(decl) != self.virtualSectionStartForNode(node)) continue;
+                                if (self.declarationVisibleAt(decl, node)) return decl;
+                            }
+                        }
+                    }
+                }
+                if (current == hir_mod.none_node_id) break;
+            }
+            return null;
+        }
+        var parent = self.hir.parentOf(node);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            switch (self.hir.kindOf(parent)) {
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const f = hir_mod.fnDeclOf(self.hir, parent);
+                    if (self.functionParametersDeclareName(parent, name)) return null;
+                    if (self.hir.kindOf(parent) == .fn_expr and !self.functionIsMember(parent) and
+                        f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier and
+                        hir_mod.identifierOf(self.hir, f.name).name == name) return null;
+                },
+                .block_stmt, .namespace_decl => {
+                    const statements = if (self.hir.kindOf(parent) == .block_stmt)
+                        hir_mod.blockStmts(self.hir, parent)
+                    else
+                        hir_mod.namespaceBody(self.hir, parent);
+                    self.indexVisibleSameNameValueBindings(parent, statements, self.sourceHasVirtualFilenameSections());
+                    if (self.visible_same_name_value_decls.get(.{
+                        .container = parent,
+                        .name = name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(node) else 0,
+                    })) |decl| {
+                        return decl;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    fn checkScopedVariableUseBeforeDeclaration(self: *Checker) CheckError!void {
+        if (self.has_parse_diagnostics) return;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .identifier or self.isDeclNameSlot(node) or
+                self.hir.typeOf(node) == types.Primitive.none) continue;
+            const name = hir_mod.identifierOf(self.hir, node).name;
+            const decl = self.nearestScopedValueBinding(node, name) orelse continue;
+            const kind = self.hir.kindOf(decl);
+            if (kind != .let_decl and kind != .const_decl and kind != .var_decl) continue;
+            if (self.hir.spanOf(node).start >= self.hir.spanOf(decl).start or
+                self.enclosingFunctionLike(node) != self.enclosingFunctionLike(decl)) continue;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (variable.is_ambient or self.variableHasAmbientNamespaceContext(decl)) continue;
+            if (self.memberAccessClassFieldStaticness(node) == false) continue;
+            var parent = self.hir.parentOf(node);
+            var in_type_query = false;
+            while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                if (self.hir.kindOf(parent) == .typeof_type) {
+                    in_type_query = true;
+                    break;
+                }
+                if (self.hir.kindOf(parent) == .block_stmt) break;
+            }
+            if (in_type_query) continue;
+            if (kind != .var_decl) try self.reportBlockScopedUsedBeforeDeclarationSimple(node, name);
+            const declared_type = self.hir.typeOf(decl);
+            if (self.strict_flags.strict_null_checks and
+                !self.isPlainAssignmentTarget(node) and
+                !self.varDeclIsUntypedEvolvingAnyCandidate(decl) and
+                !self.varDeclIsAutomaticArrayCandidate(decl) and
+                declared_type != types.Primitive.none and !self.typeIsAnyLike(declared_type) and
+                !self.typeIncludesExplicitUndefined(declared_type) and
+                !self.diagnosticExists(node, TsCodes.used_before_assignment))
+            {
+                try self.reportUsedBeforeAssignmentSimple(node, name);
+            }
+        }
+    }
+
+    const AutomaticArrayFlow = struct { type_id: TypeId, evolving: bool };
+
+    fn automaticArrayType(self: *Checker, element: TypeId) CheckError!TypeId {
+        return self.interner.internArrayType(self.string_interner, element) catch return error.OutOfMemory;
+    }
+
+    fn emptyAutomaticArrayFlow(self: *Checker) CheckError!AutomaticArrayFlow {
+        return .{
+            .type_id = try self.automaticArrayType(types.Primitive.never),
+            .evolving = true,
+        };
+    }
+
+    fn mergeAutomaticArrayFlow(self: *Checker, left: AutomaticArrayFlow, right: AutomaticArrayFlow) CheckError!AutomaticArrayFlow {
+        if (left.evolving and right.evolving) {
+            const element = try self.combineAutomaticArrayElements(self.interner.objectNumberIndex(left.type_id), self.interner.objectNumberIndex(right.type_id));
+            return .{ .type_id = try self.automaticArrayType(element), .evolving = true };
+        }
+        const left_type = if (left.evolving and self.interner.objectNumberIndex(left.type_id) == types.Primitive.never)
+            try self.automaticArrayType(types.Primitive.any)
+        else
+            left.type_id;
+        const right_type = if (right.evolving and self.interner.objectNumberIndex(right.type_id) == types.Primitive.never)
+            try self.automaticArrayType(types.Primitive.any)
+        else
+            right.type_id;
+        return .{ .type_id = try self.unionOrAny(&.{ left_type, right_type }), .evolving = false };
+    }
+
+    fn combineAutomaticArrayElements(self: *Checker, left: TypeId, right: TypeId) CheckError!TypeId {
+        if (left == types.Primitive.never) return right;
+        if (right == types.Primitive.never or left == right) return left;
+        return self.unionOrAny(&.{ left, right });
+    }
+
+    fn addAutomaticArrayElement(self: *Checker, incoming: AutomaticArrayFlow, value: NodeId) CheckError!AutomaticArrayFlow {
+        if (!incoming.evolving) return incoming;
+        var element = self.automaticArrayExpressionType(value);
+        if (self.hir.kindOf(value) == .spread) {
+            const operand = hir_mod.spreadOf(self.hir, value).expression;
+            const index = self.interner.objectNumberIndex(self.automaticArrayExpressionType(operand));
+            element = if (index == types.Primitive.none) types.Primitive.any else index;
+        }
+        element = self.widenLiteralType(element);
+        const combined = try self.combineAutomaticArrayElements(self.interner.objectNumberIndex(incoming.type_id), element);
+        return .{ .type_id = try self.automaticArrayType(combined), .evolving = true };
+    }
+
+    fn automaticArrayExpressionType(self: *Checker, value: NodeId) TypeId {
+        const cached = self.hir.typeOf(value);
+        if (cached != types.Primitive.none) return cached;
+        // Loop backedges can precede checking their value expression. Read
+        // context-free literals and already checked bindings without recursively
+        // checking a mutation while resolving its receiver.
+        return switch (self.hir.kindOf(value)) {
+            .literal_number => types.Primitive.number_t,
+            .literal_string => types.Primitive.string_t,
+            .literal_bool => types.Primitive.boolean_t,
+            .literal_null => types.Primitive.null_t,
+            .literal_undefined => types.Primitive.undefined_t,
+            .identifier => blk: {
+                const decl = self.nearestScopedValueBinding(value, hir_mod.identifierOf(self.hir, value).name) orelse break :blk types.Primitive.any;
+                const declared = self.hir.typeOf(decl);
+                break :blk if (declared == types.Primitive.none) types.Primitive.any else declared;
+            },
+            else => types.Primitive.any,
+        };
+    }
+
+    fn automaticArrayFlowAfterStatement(self: *Checker, statement: NodeId, name: hir_mod.StringId, incoming: AutomaticArrayFlow) CheckError!AutomaticArrayFlow {
+        return self.automaticArrayFlowAfterNode(statement, name, incoming, false);
+    }
+
+    fn automaticArrayFlowAfterNode(self: *Checker, statement: NodeId, name: hir_mod.StringId, incoming: AutomaticArrayFlow, backedge: bool) CheckError!AutomaticArrayFlow {
+        if (statement == hir_mod.none_node_id) return incoming;
+        switch (self.hir.kindOf(statement)) {
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod.varDeclOf(self.hir, statement);
+                if (self.declarationName(statement) != name or variable.init == hir_mod.none_node_id) return incoming;
+                if (self.varDeclIsAutomaticArrayCandidate(statement)) return self.emptyAutomaticArrayFlow();
+                const value_type = self.automaticArrayExpressionType(variable.init);
+                return .{ .type_id = value_type, .evolving = false };
+            },
+            .assignment => {
+                const a = hir_mod.assignmentOf(self.hir, statement);
+                if (a.op != null) return incoming;
+                if (self.hir.kindOf(a.target) == .identifier and hir_mod.identifierOf(self.hir, a.target).name == name) {
+                    if (self.isEmptyArrayLiteral(a.value)) return self.emptyAutomaticArrayFlow();
+                    const cached = self.hir.typeOf(a.value);
+                    // A self-dependent unfinished backedge must use its entry
+                    // flow while its value is being checked, rather than erase
+                    // the automatic marker with a provisional any result.
+                    if ((backedge or cached == types.Primitive.none) and self.nodeContainsIdentifier(a.value, name)) return incoming;
+                    const any_array = try self.automaticArrayType(types.Primitive.any);
+                    const assigned = if (cached == types.Primitive.none or !try self.checkerAssignableTo(cached, any_array)) any_array else cached;
+                    return .{ .type_id = assigned, .evolving = false };
+                }
+                if (self.hir.kindOf(a.target) == .element_access) {
+                    const access = hir_mod.elementOf(self.hir, a.target);
+                    if (self.hir.kindOf(access.object) == .identifier and
+                        hir_mod.identifierOf(self.hir, access.object).name == name and
+                        self.automaticArrayIndexIsNumeric(self.hir.typeOf(access.index))) return self.addAutomaticArrayElement(incoming, a.value);
+                }
+            },
+            .call_expr => {
+                const call = hir_mod.callOf(self.hir, statement);
+                if (self.hir.kindOf(call.callee) != .member_access) return incoming;
+                const member = hir_mod.memberOf(self.hir, call.callee);
+                if (self.hir.kindOf(member.object) != .identifier or hir_mod.identifierOf(self.hir, member.object).name != name) return incoming;
+                const method = self.string_interner.get(member.name);
+                if (!std.mem.eql(u8, method, "push") and !std.mem.eql(u8, method, "unshift")) return incoming;
+                var flow = incoming;
+                for (hir_mod.callArgs(self.hir, statement)) |arg| flow = try self.addAutomaticArrayElement(flow, arg);
+                return flow;
+            },
+            .block_stmt => {
+                // A block-local shadow has its own flow and cannot write the
+                // outer binding, even when the spelling is the same.
+                for (hir_mod.blockStmts(self.hir, statement)) |raw| {
+                    const decl = self.unwrapExportDecl(raw);
+                    if (self.hir.kindOf(decl) == .let_decl or self.hir.kindOf(decl) == .const_decl) {
+                        if (self.declarationName(decl) == name) return incoming;
+                    }
+                }
+                var flow = incoming;
+                for (hir_mod.blockStmts(self.hir, statement)) |child| flow = try self.automaticArrayFlowAfterNode(child, name, flow, backedge);
+                return flow;
+            },
+            .if_stmt => {
+                const branch = hir_mod.ifOf(self.hir, statement);
+                switch (self.staticBoolCondition(branch.cond)) {
+                    .true => return self.automaticArrayFlowAfterNode(branch.then_branch, name, incoming, backedge),
+                    .false => return self.automaticArrayFlowAfterNode(branch.else_branch, name, incoming, backedge),
+                    .unknown => {},
+                }
+                return self.mergeAutomaticArrayFlow(
+                    try self.automaticArrayFlowAfterNode(branch.then_branch, name, incoming, backedge),
+                    try self.automaticArrayFlowAfterNode(branch.else_branch, name, incoming, backedge),
+                );
+            },
+            .for_stmt, .for_in_stmt, .for_of_stmt, .while_stmt, .do_while_stmt => {
+                const body = switch (self.hir.kindOf(statement)) {
+                    .for_stmt => hir_mod.forStmtOf(self.hir, statement).body,
+                    .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, statement).body,
+                    .while_stmt => hir_mod.whileOf(self.hir, statement).body,
+                    .do_while_stmt => hir_mod.doWhileOf(self.hir, statement).body,
+                    else => unreachable,
+                };
+                return self.mergeAutomaticArrayFlow(incoming, try self.automaticArrayFlowAfterNode(body, name, incoming, backedge));
+            },
+            else => {},
+        }
+        return incoming;
+    }
+
+    fn automaticArrayFlowBeforeNode(self: *Checker, container: NodeId, node: NodeId, name: hir_mod.StringId, incoming: AutomaticArrayFlow) CheckError!AutomaticArrayFlow {
+        if (container == node or container == hir_mod.none_node_id) return incoming;
+        const use_start = self.hir.spanOf(node).start;
+        switch (self.hir.kindOf(container)) {
+            .block_stmt, .namespace_decl => {
+                const statements = if (self.hir.kindOf(container) == .block_stmt) hir_mod.blockStmts(self.hir, container) else hir_mod.namespaceBody(self.hir, container);
+                var flow = incoming;
+                for (statements) |stmt| {
+                    const span = self.hir.spanOf(stmt);
+                    if (span.start <= use_start and use_start < span.end) return self.automaticArrayFlowBeforeNode(stmt, node, name, flow);
+                    if (span.end <= use_start) flow = try self.automaticArrayFlowAfterStatement(stmt, name, flow);
+                }
+                return flow;
+            },
+            .if_stmt => {
+                const branch = hir_mod.ifOf(self.hir, container);
+                const then_span = self.hir.spanOf(branch.then_branch);
+                return self.automaticArrayFlowBeforeNode(if (then_span.start <= use_start and use_start < then_span.end) branch.then_branch else branch.else_branch, node, name, incoming);
+            },
+            .for_stmt, .for_in_stmt, .for_of_stmt, .while_stmt, .do_while_stmt => {
+                const body = switch (self.hir.kindOf(container)) {
+                    .for_stmt => hir_mod.forStmtOf(self.hir, container).body,
+                    .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, container).body,
+                    .while_stmt => hir_mod.whileOf(self.hir, container).body,
+                    .do_while_stmt => hir_mod.doWhileOf(self.hir, container).body,
+                    else => unreachable,
+                };
+                const initial = if (self.hir.kindOf(container) == .for_stmt)
+                    try self.automaticArrayFlowAfterStatement(hir_mod.forStmtOf(self.hir, container).init, name, incoming)
+                else
+                    incoming;
+                const entry = try self.mergeAutomaticArrayFlow(initial, try self.automaticArrayFlowAfterNode(body, name, initial, true));
+                return self.automaticArrayFlowBeforeNode(body, node, name, entry);
+            },
+            else => return incoming,
+        }
+    }
+
+    fn automaticArrayDeclarationContainer(self: *Checker, decl: NodeId) NodeId {
+        if (self.hir.kindOf(decl) != .var_decl) return self.hir.parentOf(decl);
+        // var belongs to the containing function/namespace/static block even
+        // when its initializer executes in a nested block or conditional.
+        var current = self.hir.parentOf(decl);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            switch (self.hir.kindOf(current)) {
+                .fn_decl, .fn_expr, .arrow_fn => return hir_mod.fnDeclOf(self.hir, current).body,
+                .namespace_decl => return current,
+                .block_stmt => {
+                    const parent = self.hir.parentOf(current);
+                    if (parent != hir_mod.none_node_id and
+                        (self.hir.kindOf(parent) == .class_decl or self.hir.kindOf(parent) == .class_expr)) return current;
+                },
+                else => {},
+            }
+        }
+        return self.rootBlockFor(decl);
+    }
+
+    fn automaticArrayFlowAnchor(self: *Checker, node: NodeId, decl: NodeId, name: hir_mod.StringId) ?NodeId {
+        const container = self.automaticArrayDeclarationContainer(decl);
+        const owner = self.enclosingFunctionLike(decl);
+        var anchor = node;
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id and current != container) : (current = self.hir.parentOf(current)) {
+            switch (self.hir.kindOf(current)) {
+                .fn_decl => return null,
+                .fn_expr, .arrow_fn => {
+                    // Mutable locals retain the flow at callback creation
+                    // after their last assignment. Named function declarations,
+                    // global variables and const automatic arrays keep autoType.
+                    if (owner == null or self.hir.kindOf(decl) == .const_decl) return null;
+                    var candidate: NodeId = 1;
+                    while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+                        if (self.hir.kindOf(candidate) != .assignment) continue;
+                        const target = hir_mod.assignmentOf(self.hir, candidate).target;
+                        if (self.hir.kindOf(target) != .identifier or hir_mod.identifierOf(self.hir, target).name != name) continue;
+                        if (self.nearestScopedValueBinding(target, name) != decl) continue;
+                        if (self.enclosingFunctionLike(candidate) != owner or
+                            self.hir.spanOf(candidate).start > self.hir.spanOf(current).start) return null;
+                    }
+                    anchor = current;
+                },
+                .object_property => {
+                    const parent = self.hir.parentOf(current);
+                    if (parent != hir_mod.none_node_id and
+                        (self.hir.kindOf(parent) == .class_decl or self.hir.kindOf(parent) == .class_expr)) return null;
+                },
+                else => {},
+            }
+        }
+        return if (current == container) anchor else null;
+    }
+
+    fn automaticArrayReferenceType(self: *Checker, node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (!self.strict_flags.no_implicit_any or !self.sourceMayHaveAutomaticArrayCandidate()) return null;
+        const decl = self.nearestScopedValueBinding(node, name) orelse return null;
+        if (!self.varDeclIsAutomaticArrayCandidate(decl)) return null;
+        const any_array = try self.automaticArrayType(types.Primitive.any);
+        if (self.declared_identifier_lookup) return any_array;
+        const parent = self.hir.parentOf(node);
+        if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment and
+            hir_mod.assignmentOf(self.hir, parent).target == node) return any_array;
+        var flow = try self.emptyAutomaticArrayFlow();
+        if (self.automaticArrayFlowAnchor(node, decl, name)) |anchor| {
+            flow = try self.automaticArrayFlowBeforeNode(self.automaticArrayDeclarationContainer(decl), anchor, name, .{
+                .type_id = types.Primitive.undefined_t,
+                .evolving = false,
+            });
+        }
+        if (!flow.evolving) return flow.type_id;
+        if (self.capturedEvolvingAnyReferenceIsWrite(node)) return any_array;
+        if (parent != hir_mod.none_node_id) {
+            if (self.hir.kindOf(parent) == .member_access and hir_mod.memberOf(self.hir, parent).object == node and
+                std.mem.eql(u8, self.string_interner.get(hir_mod.memberOf(self.hir, parent).name), "length")) return any_array;
+            if (self.hir.kindOf(parent) == .element_access) {
+                const assignment_node = self.hir.parentOf(parent);
+                if (assignment_node != hir_mod.none_node_id and self.hir.kindOf(assignment_node) == .assignment) {
+                    const assignment = hir_mod.assignmentOf(self.hir, assignment_node);
+                    if (assignment.target == parent and assignment.op == null and
+                        self.automaticArrayIndexIsNumeric(self.automaticArrayExpressionType(hir_mod.elementOf(self.hir, parent).index))) return any_array;
+                }
+            }
+        }
+        if (self.interner.objectNumberIndex(flow.type_id) != types.Primitive.never) return flow.type_id;
+        const name_node = hir_mod.varDeclOf(self.hir, decl).name;
+        const text = self.string_interner.get(name);
+        if (!self.diagnosticExists(name_node, TsCodes.variable_implicitly_any_declaration)) {
+            try self.report(name_node, TsCodes.variable_implicitly_any_declaration, try std.fmt.allocPrint(self.diag_arena.allocator(), "Variable '{s}' implicitly has type 'any[]' in some locations where its type cannot be determined.", .{text}));
+        }
+        if (!self.diagnosticExists(node, TsCodes.variable_implicitly_any)) {
+            try self.report(node, TsCodes.variable_implicitly_any, try std.fmt.allocPrint(self.diag_arena.allocator(), "Variable '{s}' implicitly has an 'any[]' type.", .{text}));
+        }
+        if (self.evolvingAnyYieldFeedbackAssignment(node, name)) |assignment| {
+            const target = hir_mod.assignmentOf(self.hir, assignment).target;
+            if (!self.diagnosticExists(target, TsCodes.type_not_assignable)) {
+                try self.report(target, TsCodes.type_not_assignable, "Type 'undefined' is not assignable to type 'any[]'.");
+            }
+        }
+        return any_array;
     }
 
     fn initialEvolvingAnyFlowType(self: *Checker, variable: hir_mod.VarDeclPayload) ?TypeId {
-        if (variable.init == hir_mod.none_node_id) return null;
+        if (variable.init == hir_mod.none_node_id) return if (self.strict_flags.strict_null_checks or self.strict_flags.no_implicit_any)
+            types.Primitive.undefined_t
+        else
+            types.Primitive.any;
         return switch (self.hir.kindOf(variable.init)) {
             .literal_null => if (!self.strict_flags.strict_null_checks and !self.strict_flags.no_implicit_any)
                 types.Primitive.any
@@ -91541,6 +92010,15 @@ pub const Checker = struct {
 
         // Type the initializer.
         var init_type: TypeId = if (v.is_ambient) types.Primitive.any else types.Primitive.undefined_t;
+        if (declared_type == types.Primitive.none and
+            v.init == hir_mod.none_node_id and
+            !self.varDeclIsUntypedEvolvingAnyCandidate(node))
+        {
+            // Exported/ambient/const bindings do not use automatic-variable
+            // flow. Their missing initializer infers any, with a declaration
+            // diagnostic, rather than an undefined assignment target.
+            init_type = types.Primitive.any;
+        }
         var contextual_object_return_diag_emitted = false;
         if (!v.is_ambient and
             v.init == hir_mod.none_node_id and
@@ -91589,6 +92067,11 @@ pub const Checker = struct {
                 }
             } else {
                 init_type = try self.checkExpression(v.init);
+                if (declared_type == types.Primitive.none and self.isEmptyArrayLiteral(v.init) and
+                    self.strict_flags.strict_null_checks and !self.varDeclIsAutomaticArrayCandidate(node))
+                {
+                    init_type = try self.automaticArrayType(types.Primitive.never);
+                }
                 if (self.requireCallSpecifier(v.init)) |specifier| {
                     if (try self.programCommonJsWholeExportType(v.init, specifier)) |whole_t| {
                         init_type = whole_t;
@@ -92328,6 +92811,7 @@ pub const Checker = struct {
 
         if (self.strict_flags.no_implicit_any and
             !self.strict_flags.strict_null_checks and
+            !self.varDeclIsAutomaticArrayCandidate(node) and
             declared_type == types.Primitive.none and
             v.type_annotation == hir_mod.none_node_id and
             v.init != hir_mod.none_node_id and
@@ -92337,31 +92821,37 @@ pub const Checker = struct {
             try self.reportImplicitAnyNullishTupleVariable(v.name, v.init);
         }
 
-        // TS7034 vs TS7005: tsc emits the more-specific TS7034 at the
-        // DECLARATION of a `var p;` with no annotation and no
-        // initializer when the variable's type can't be determined
-        // (the "evolving any" flow). For `declare var X;` (ambient
-        // declarations) tsc emits TS7005 instead because evolving-any
-        // doesn't apply to ambient names ÃÂ¢ÃÂÃÂ they're externally
-        // declared and unchangeable. We mirror that split here.
+        try self.checkUninitializedVariableImplicitAny(node, declared_type);
+        try self.reportCapturedEvolvingAnyDiagnostics(node, declared_type);
+    }
+
+    fn checkUninitializedVariableImplicitAny(self: *Checker, node: NodeId, declared_type: TypeId) CheckError!void {
+        const v = hir_mod.varDeclOf(self.hir, node);
+        // Automatic variables acquire TS7034 from unresolved captured reads,
+        // not from the declaration alone. Ambient/exported/const bindings
+        // cannot evolve and own TS7005 at their declaration instead.
         // Hard error (TS7005/TS7034) under noImplicitAny; under
         // !noImplicitAny + suggestions-enabled the matching
         // `.suggestion`-category hints TS7043/TS7046 fire instead.
         const var_implicit_any_report = self.strict_flags.no_implicit_any or
             (self.emit_implicit_any_suggestions and !self.strict_flags.no_implicit_any);
         const recovered_private_indexed_access = self.varDeclIsRecoveredPrivateIndexedAccess(node, v.name);
+        const non_evolving_binding = v.is_ambient or self.whole_file_is_declaration_file or
+            self.variableHasAmbientNamespaceContext(node) or self.declarationNodeIsExported(node) or
+            self.hir.kindOf(node) == .const_decl;
         if (var_implicit_any_report and
+            (!self.strict_flags.no_implicit_any or non_evolving_binding or recovered_private_indexed_access) and
             declared_type == types.Primitive.none and
             v.type_annotation == hir_mod.none_node_id and
             v.init == hir_mod.none_node_id and
             v.name != hir_mod.none_node_id and
             self.hir.kindOf(v.name) == .identifier and
-            !self.untypedVarHasLaterDirectAssignment(node, hir_mod.identifierOf(self.hir, v.name).name) and
+            (non_evolving_binding or !self.untypedVarHasLaterDirectAssignment(node, hir_mod.identifierOf(self.hir, v.name).name)) and
             !self.untypedVarHasLaterClassFallbackRead(node, hir_mod.identifierOf(self.hir, v.name).name) and
             (v.is_ambient or !self.untypedVarIsReadOnlyByJsxSpread(node, hir_mod.identifierOf(self.hir, v.name).name)) and
             (!self.varDeclHasMalformedListSyntax(node, v.name) or recovered_private_indexed_access) and
             !self.varDeclSharesLineWithDestructuringWithoutInitializer(node) and
-            (!self.varDeclIsInsideFunctionLike(node) or recovered_private_indexed_access) and
+            (!self.varDeclIsInsideFunctionLike(node) or non_evolving_binding or recovered_private_indexed_access) and
             !self.varDeclIsRecoveredInvalidLabelBody(node) and
             !self.varDeclIsReservedAwaitInStaticBlock(node, v.name))
         {
@@ -92370,7 +92860,6 @@ pub const Checker = struct {
                 self.string_interner.get(hir_mod.identifierOf(self.hir, v.name).name)
             else
                 "<anonymous>";
-            const is_ambient = v.is_ambient;
             // `const X;` (no init) is a TS1155 syntax error, but tsc
             // still emits the implicit-any diagnostic ÃÂ¢ÃÂÃÂ and it uses
             // TS7005 (not TS7034) because const has no evolving-any
@@ -92378,7 +92867,7 @@ pub const Checker = struct {
             // type). Mirrors fixture `for-of2` where `const v;` expects
             // TS7005 alongside TS1155.
             const is_const = self.hir.kindOf(node) == .const_decl;
-            const use_ts7005 = is_ambient or is_const;
+            const use_ts7005 = non_evolving_binding or is_const;
             const msg = if (var_is_suggestion and use_ts7005)
                 try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -92418,7 +92907,15 @@ pub const Checker = struct {
                 .category = if (var_is_suggestion) .suggestion else .error_,
             });
         }
-        try self.reportCapturedEvolvingAnyDiagnostics(node, declared_type);
+    }
+
+    fn variableHasAmbientNamespaceContext(self: *Checker, node: NodeId) bool {
+        var parent = self.hir.parentOf(node);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            if (self.hir.kindOf(parent) == .namespace_decl and
+                (self.namespaceDeclIsAmbient(parent) or self.declarationSourceHasLeadingDeclare(parent))) return true;
+        }
+        return false;
     }
 
     fn checkUsingInitializerDisposable(
@@ -92662,35 +93159,21 @@ pub const Checker = struct {
         var reads: std.ArrayListUnmanaged(NodeId) = .empty;
         defer reads.deinit(self.gpa);
         if (!try self.collectCapturedEvolvingAnyReads(node, id.name, &reads)) return;
-        const is_array = v.init != hir_mod.none_node_id and self.hir.kindOf(v.init) == .array_literal;
-        const implicit_type = if (is_array) "any[]" else "any";
         const name_str = self.string_interner.get(id.name);
         const decl_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Variable '{s}' implicitly has type '{s}' in some locations where its type cannot be determined.",
-            .{ name_str, implicit_type },
+            "Variable '{s}' implicitly has type 'any' in some locations where its type cannot be determined.",
+            .{name_str},
         );
         try self.diagnostics.append(self.gpa, .{
             .node = v.name,
             .code = TsCodes.variable_implicitly_any_declaration,
             .message = decl_msg,
         });
-        if (is_array) {
-            for (reads.items) |use_node| {
-                const assignment = self.evolvingAnyYieldFeedbackAssignment(use_node, id.name) orelse continue;
-                const target = hir_mod.assignmentOf(self.hir, assignment).target;
-                if (self.diagnosticExists(target, TsCodes.type_not_assignable)) continue;
-                try self.report(
-                    target,
-                    TsCodes.type_not_assignable,
-                    "Type 'undefined' is not assignable to type 'any[]'.",
-                );
-            }
-        }
         const use_msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Variable '{s}' implicitly has an '{s}' type.",
-            .{ name_str, implicit_type },
+            "Variable '{s}' implicitly has an 'any' type.",
+            .{name_str},
         );
         for (reads.items) |use_node| {
             if (self.diagnosticExists(use_node, TsCodes.variable_implicitly_any)) continue;
@@ -92723,7 +93206,13 @@ pub const Checker = struct {
             if (self.capturedEvolvingAnyReferenceIsWrite(candidate)) continue;
             const is_captured = self.enclosingFunctionLike(candidate) != owner or
                 self.evolvingAnyYieldFeedbackAssignment(candidate, name) != null;
-            if (!is_captured and (try self.definiteEvolvingAnyFlowTypeAt(candidate, name)) != null) continue;
+            const flow = try self.definiteEvolvingAnyFlowTypeAt(candidate, name);
+            if (!is_captured and flow != null) continue;
+            // A never-evolved local automatic variable remains undefined even
+            // in a closure. Global captures use the separate auto-type path.
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            if (is_captured and variable.init == hir_mod.none_node_id and
+                flow == types.Primitive.undefined_t) continue;
             try reads.append(self.gpa, candidate);
             if (is_captured) has_captured_read = true;
         }
@@ -133897,7 +134386,16 @@ pub const Checker = struct {
                 if (unary.op != .not) break :blk current;
                 break :blk try self.guardedIdentifierFlowForCondition(unary.operand, name, current, !when_true);
             },
-            else => current,
+            else => blk: {
+                // Use the same guard semantics as branch checking for equality,
+                // instanceof and predicates. The temporary scope makes this
+                // projection independent of writes already checked in a branch.
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                try self.recordNarrow(name, current);
+                try self.applyTypeGuard(condition, when_true);
+                break :blk self.lookupNarrow(name) orelse current;
+            },
         };
     }
 
@@ -133941,7 +134439,7 @@ pub const Checker = struct {
                     // assignment path already resets an invalid write to the
                     // declared type; preserve the incoming branch fact here
                     // while reconstructing the post-conditional join.
-                    break :blk incoming orelse if (declared_t != types.Primitive.none) declared_t else raw_flow;
+                    break :blk if (declared_t != types.Primitive.none) declared_t else incoming orelse raw_flow;
                 }
                 const preserve_contextual_constructor = self.hir.kindOf(assignment.value) == .new_expr and
                     self.typeIsPossiblyNullishStrict(declared_t);
@@ -134017,18 +134515,30 @@ pub const Checker = struct {
         };
     }
 
-    fn applyConditionalIdentifierAssignmentFlow(self: *Checker, node: NodeId) CheckError!void {
+    fn captureConditionalIdentifierAssignmentFlow(self: *Checker, node: NodeId) CheckError!std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) {
+        var incoming: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty;
+        errdefer incoming.deinit(self.gpa);
         var names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
         defer names.deinit(self.gpa);
         try self.collectConditionalAssignedIdentifiers(node, node, &names);
-
         var iterator = names.keyIterator();
         while (iterator.next()) |name_ptr| {
             const name = name_ptr.*;
-            const incoming = self.lookupNarrow(name) orelse
+            // A branch write can change the declaration's cached HIR type.
+            // Capture the actual incoming automatic-variable flow first.
+            const value = (try self.definiteEvolvingAnyFlowTypeAt(node, name)) orelse self.lookupNarrow(name) orelse
                 (try self.typeOfVisibleNameNoDiag(node, name)) orelse
                 continue;
-            const flowed = (try self.conditionalIdentifierFlowAfterStatement(node, name, incoming)) orelse continue;
+            try incoming.put(self.gpa, name, value);
+        }
+        return incoming;
+    }
+
+    fn applyConditionalIdentifierAssignmentFlow(self: *Checker, node: NodeId, incoming: *const std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId)) CheckError!void {
+        var iterator = incoming.iterator();
+        while (iterator.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const flowed = (try self.conditionalIdentifierFlowAfterStatement(node, name, entry.value_ptr.*)) orelse continue;
             if (flowed == types.Primitive.none or flowed == types.Primitive.unknown) continue;
             try self.recordNarrow(name, flowed);
         }
@@ -138272,7 +138782,7 @@ pub const Checker = struct {
                     self.reportDeprecatedDeclarationUse(node, decl, id.name) catch {};
                     if (sk == .var_decl and
                         self.strict_flags.strict_null_checks and
-                        !v.is_ambient and
+                        self.varDeclIsUntypedEvolvingAnyCandidate(decl) and
                         v.type_annotation == hir_mod.none_node_id and
                         v.init == hir_mod.none_node_id)
                     {
@@ -138436,7 +138946,7 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 if (self.hir.kindOf(decl) != .var_decl) continue;
                 const variable = hir_mod.varDeclOf(self.hir, decl);
-                if (variable.is_ambient or
+                if (!self.varDeclIsUntypedEvolvingAnyCandidate(decl) or
                     variable.type_annotation != hir_mod.none_node_id or
                     variable.init != hir_mod.none_node_id or
                     variable.name == hir_mod.none_node_id or
@@ -138690,6 +139200,9 @@ pub const Checker = struct {
         const id = hir_mod.identifierOf(self.hir, node);
         const name_str = self.string_interner.get(id.name);
         const is_this = std.mem.eql(u8, name_str, "this");
+        if (!self.isDeclNameSlot(node)) {
+            if (self.automaticArrayReferenceType(node, id.name) catch null) |array_type| return array_type;
+        }
         const this_rebound_plain_function = is_this and self.thisInsideNonArrowPlainFunction(node);
         if (std.mem.eql(u8, name_str, "await") and self.identifierHasClassStaticAwaitContext(node)) {
             if (self.identifierIsObjectLiteralShorthand(node)) {
@@ -138845,13 +139358,27 @@ pub const Checker = struct {
                 {
                     return types.Primitive.any;
                 }
-                if (is_evolving_untyped and
-                    self.capturedOuterUntypedEvolvingAnyDecl(node, id.name) != null and
-                    (self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) == null)
-                {
+                const captured_global = if (may_have_evolving_any and !self.capturedEvolvingAnyReferenceIsWrite(node))
+                    self.capturedOuterUntypedEvolvingAnyDecl(node, id.name)
+                else
+                    null;
+                if (captured_global) |declaration| {
                     if (self.strict_flags.no_implicit_any and
                         !self.diagnosticExists(node, TsCodes.variable_implicitly_any))
                     {
+                        const name_node = hir_mod.varDeclOf(self.hir, declaration).name;
+                        if (!self.diagnosticExists(name_node, TsCodes.variable_implicitly_any_declaration)) {
+                            const declaration_message = std.fmt.allocPrint(
+                                self.diag_arena.allocator(),
+                                "Variable '{s}' implicitly has type 'any' in some locations where its type cannot be determined.",
+                                .{name_str},
+                            ) catch return types.Primitive.any;
+                            self.diagnostics.append(self.gpa, .{
+                                .node = name_node,
+                                .code = TsCodes.variable_implicitly_any_declaration,
+                                .message = declaration_message,
+                            }) catch return types.Primitive.any;
+                        }
                         const msg = std.fmt.allocPrint(
                             self.diag_arena.allocator(),
                             "Variable '{s}' implicitly has an 'any' type.",
@@ -138870,7 +139397,7 @@ pub const Checker = struct {
                 }
                 active_annotation_t = cached_visible_annotation_t orelse
                     self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
-                if (active_annotation_t == null and may_have_evolving_any) {
+                if (!self.declared_identifier_lookup and active_annotation_t == null and may_have_evolving_any) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
                             if (narrow_t != types.Primitive.any and
@@ -139688,11 +140215,17 @@ pub const Checker = struct {
             if (self.findLaterTopLevelVarLikeDeclInSameSection(node, id.name)) |later| {
                 switch (self.hir.kindOf(later)) {
                     .let_decl, .const_decl => {
-                        self.reportBlockScopedUsedBeforeDeclarationSimple(node, id.name) catch {};
-                        if (!self.diagnosticExists(node, TsCodes.used_before_assignment)) {
-                            self.reportUsedBeforeAssignmentSimple(node, id.name) catch {};
+                        // Function captures and instance field initializers are
+                        // deferred uses. A textual forward reference there is
+                        // not an immediate read in the declaration's flow scope.
+                        if (self.enclosingFunctionLike(node) == self.enclosingFunctionLike(later) and
+                            self.memberAccessClassFieldStaticness(node) != false)
+                        {
+                            self.reportBlockScopedUsedBeforeDeclarationSimple(node, id.name) catch {};
+                            // The completed scoped pass owns TS2454 under
+                            // strictNullChecks after the declaration type exists.
+                            return types.Primitive.any;
                         }
-                        return types.Primitive.any;
                     },
                     else => {},
                 }
@@ -197204,6 +197737,9 @@ pub const Checker = struct {
                 return self.nodeContainsIdentifier(b.lhs, name) or self.nodeContainsIdentifier(b.rhs, name);
             },
             .unary_op => return self.nodeContainsIdentifier(hir_mod.unaryOf(self.hir, node).operand, name),
+            .yield_expr => return self.nodeContainsIdentifier(hir_mod.yieldExprOf(self.hir, node).expr, name),
+            .await_expr => return self.nodeContainsIdentifier(hir_mod.awaitExprOf(self.hir, node).expr, name),
+            .spread => return self.nodeContainsIdentifier(hir_mod.spreadOf(self.hir, node).expression, name),
             .as_expr, .satisfies_expr, .type_assertion, .non_null_expr => return self.nodeContainsIdentifier(hir_mod.asExpressionOf(self.hir, node).expr, name),
             .template_literal => {
                 for (hir_mod.templateLiteralExprs(self.hir, node)) |expr| if (self.nodeContainsIdentifier(expr, name)) return true;
@@ -222481,23 +223017,156 @@ test "checker: noImplicitAny silent when parameter has annotation" {
     try T.expect(s.checker.diagnostics.items.len == 0);
 }
 
-test "checker: noImplicitAny emits TS7034 for bare `let x` declaration" {
-    // tsc uses TS7034 (`Variable 'X' implicitly has type 'any' in some
-    // locations where its type cannot be determined.`) for bare
-    // `var x;` / `let x;` declarations rather than the per-USE TS7005.
-    // Mirrors `tsxReactEmit1`'s (9,5) baseline.
-    const s = try newSetup("let x;");
-    defer destroySetup(s);
-    s.checker.setStrictFlags(.{ .no_implicit_any = true });
-    try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.variable_implicitly_any_declaration) {
-            found = true;
-            try T.expectEqual(@as(u32, 4), s.hir.spanOf(d.node).start);
-        }
+test "checker: noImplicitAny leaves unused automatic declarations valid" {
+    for ([_][]const u8{ "let x;", "var x;", "let x; x;", "let x; function f(x: string) { return x; }" }) |source| {
+        const s = try newSetup(source);
+        defer destroySetup(s);
+        s.checker.setStrictFlags(.{ .no_implicit_any = true });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
     }
-    try T.expect(found);
+}
+
+test "checker: automatic branch joins preserve the unassigned incoming path" {
+    const s = try newSetup(
+        \\declare const condition: boolean;
+        \\let partial;
+        \\if (condition) partial = 1;
+        \\const invalid: number = partial;
+        \\let complete;
+        \\if (condition) complete = 1; else complete = 2;
+        \\const valid: number = complete;
+        \\const wrong: string = complete;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: exported uninitialized binding keeps an any assignment target" {
+    const s = try newSetup("export let value; value = 1; value = 'text';");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+}
+
+test "checker: automatic captures respect forward bindings and class initializers" {
+    const s = try newSetup(
+        \\function capture() { return value; }
+        \\let value;
+        \\value = 1;
+        \\class C { instance = value; static shared = value; }
+        \\function shadow(value: string) { return value; }
+        \\const named = function value() { return value; };
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: automatic array reads own declaration and use diagnostics" {
+    const s = try newSetup(
+        \\const unused = [];
+        \\let global = [];
+        \\global;
+        \\function inspect() { const local = []; return local; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: automatic arrays use bound destructuring and hoisted variable scopes" {
+    const b = try newBoundSetup(
+        \\let values = [];
+        \\function objectShadow() {
+        \\    const { values } = { values: [1] };
+        \\    const wrong: string = values[0];
+        \\}
+        \\function arrayShadow() {
+        \\    const [values] = [[1]];
+        \\    const wrong: string = values[0];
+        \\}
+        \\function hoisted() {
+        \\    { var local = []; local.push(1); }
+        \\    const wrong: string = local[0];
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: automatic array mutations and loop backedges retain element types" {
+    const s = try newSetup(
+        \\let values = [];
+        \\values.push(1);
+        \\const wrong: string = values[0];
+        \\let loopValues = [];
+        \\for (let i = 0; i < 2; i++) {
+        \\    const before: string = loopValues[0];
+        \\    loopValues.push(1);
+        \\    const after: string = loopValues[0];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+}
+
+test "checker: automatic array callback captures depend on binding lifetime" {
+    const s = try newSetup(
+        \\function inspect() {
+        \\    let mutable = [];
+        \\    mutable.push(1);
+        \\    const stable = () => mutable;
+        \\    const fixed = [];
+        \\    fixed.push(1);
+        \\    const unresolved = () => fixed;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any_declaration));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_implicitly_any));
+}
+
+test "checker: future local variable shadows an initialized outer variable" {
+    const s = try newSetup(
+        \\let value = [];
+        \\function inspect() { value; let value = [1]; }
+        \\type Query = typeof later;
+        \\let later = 1;
+        \\class Deferred { field = eventual; }
+        \\let eventual = 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.block_scoped_used_before_decl));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
 }
 
 test "checker: captured top-level evolving any reports every nested read" {
@@ -286647,10 +287316,20 @@ test "checker: recovered legacy parameters retain optional flow in nested callba
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
 
-    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    // With strictNullChecks enabled and noImplicitAny disabled, the unrelated empty
+    // array in collect is never[] and rejects push("line"). The reference
+    // reports that error alongside the two optional-parameter failures.
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    var optional_errors: usize = 0;
+    var empty_array_errors: usize = 0;
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.argument_type_mismatch) continue;
+        if (std.mem.eql(u8, diagnostic.message, "Argument of type '\"line\"' is not assignable to parameter of type 'never'.")) {
+            empty_array_errors += 1;
+            continue;
+        }
+        optional_errors += 1;
         try T.expectEqualStrings(
             "Argument of type 'Options | undefined' is not assignable to parameter of type 'Options'.",
             diagnostic.message,
@@ -286661,6 +287340,8 @@ test "checker: recovered legacy parameters retain optional flow in nested callba
             diagnostic.chain[0].message,
         );
     }
+    try T.expectEqual(@as(usize, 2), optional_errors);
+    try T.expectEqual(@as(usize, 1), empty_array_errors);
 }
 
 test "checker: evolving nullable fields keep repeated object vars compatible" {

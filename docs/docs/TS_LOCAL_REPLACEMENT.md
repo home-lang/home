@@ -4,6 +4,40 @@ Replacing `tsc` across the local project tree is **not yet qualified**. Passing
 compiler unit tests or one library graph cannot establish compatibility for the
 other projects, build commands, or compiler API callers.
 
+The automatic-variable controls added on 2026-10-12 cover unused declarations,
+definite and partial assignments, scalar captures, empty-array mutations,
+loop backedges, callback and class-field captures, exported bindings and
+lexical shadowing. The correction snapshots incoming branch flow before
+checking writes, retains array element types as they evolve, and resolves
+the binding before deciding whether a reference crosses a capture boundary.
+Deferred instance-field and function references do not acquire an immediate
+use-before-declaration error merely because the declaration appears later.
+
+`scripts/tests/test-ts-automatic-variable-cli.py` compares 90 isolated sources
+in strict and loose-null modes: 180 comparisons and 360 compiler observations.
+It retains diagnostic codes and positions, statuses, compiler/input hashes and
+raw output. A mismatch, timeout, unexpected output, modified input or emitted
+file fails the audit. This checks those diagnostics and flow contracts;
+diagnostic prose, emission, other compiler options and real-project/API
+compatibility remain separate qualification requirements. The Mac/Linux CLI
+workflow runs the audit and retains both compilers' observations.
+
+The final Debug and ReleaseFast images pass all 180 comparisons per image.
+The checker suite passes 4,578 tests; Program, driver, CLI, entrypoint,
+configuration, stream and builtin-corpus gates also pass. Both images pass
+50 declaration/output observations, and ReleaseFast passes the 32 recursive
+interface observations. The additional option controls caught an upstream
+regression that suppressed JS output and returned the wrong status for an
+invalid declaration-only configuration; output selection and source locations
+now match the reference controls.
+
+The synthetic inputs, raw observations, compiler versions, source hashes and
+test logs are retained in
+[the 2026-10-12 evidence archive](../../bench/vs_tsgo/evidence/20261012-local-tsc-automatic-variable-controls.tar.gz).
+Its SHA-256 is `00aa448c40f851f392079167514a3cf51e524925e18ce43a13b4a0980d4614cd`;
+all 2,655 payload hashes were verified. These results do not qualify the remaining
+real projects or their compiler API uses.
+
 ## Inventory
 
 Generate the inventory without executing package scripts:
@@ -30,6 +64,14 @@ invalid package-manager fixtures. These counts include nested framework copies
 and test projects; they are not counts of independent applications or successful
 replacements. The local report is retained under `.home-cache`, outside Git,
 because other projects' script contents are not publication artifacts.
+
+The refreshed 2026-10-12 snapshot contains **1,009 manifests with check scripts,
+1,275 scripts, 1,218 literal compiler segments and 2,325 configs**. It retains
+81 scripts requiring review, 55 errors and 2,711 symlink directories requiring
+separate review. The walk and pruning rules are unchanged. Comparing path sets
+finds 1,087 removed and 36 added manifests; many missing paths are worktrees or
+framework copies that no longer exist. This reflects the current filesystem,
+not successful replacement or a decision to exclude projects.
 
 ## Required evidence
 
@@ -69,8 +111,12 @@ declarations. Build mode uses the same checked declaration renderer as ordinary
 compilation, avoiding the optional scanner placeholder's empty success buffer.
 
 Configuration dependency diagnostics now choose the first contributing JSON
-key in source order, with the compilerOptions key as a fallback. Configuration
-errors return status 2; ordinary type errors under no-emit retain status 1.
+key in source order, with the compilerOptions key as a fallback. Exit status
+follows selected emission: skipped outputs under no-emit retain status 1,
+while errors without skipped emission return status 2. An invalid declaration-only
+configuration selects neither JS nor declarations, so it returns 2 even with
+no-emit. List-files-only errors return 1. Option errors suppress semantic
+diagnostics but do not alone suppress ordinary JS output.
 The additional negative control caught and rejected an intermediate change
 that incorrectly returned 2 for ordinary no-emit errors.
 

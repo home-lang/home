@@ -55,6 +55,14 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
             --output "$RUNNER_TEMP/home-ts-recursive-interface-contracts"
+      - name: Compare automatic variable flow and scope contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-automatic-variable-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --output "$RUNNER_TEMP/home-ts-automatic-variable-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -63,5 +71,6 @@ jobs:
           path: |
             ${{ runner.temp }}/home-ts-declaration-contracts
             ${{ runner.temp }}/home-ts-recursive-interface-contracts
+            ${{ runner.temp }}/home-ts-automatic-variable-contracts
           if-no-files-found: ignore
           retention-days: 14
