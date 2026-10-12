@@ -3549,6 +3549,10 @@ pub const Parser = struct {
 
     fn reportInvalidStrictName(self: *Parser, tok: Token) ParseError!void {
         if (!self.isRestrictedStrictName(tok)) return;
+        // tsc's binder checks eval/arguments only outside ambient context
+        // (`!(node.flags & NodeFlags.Ambient)`): bun-types declares
+        // `setImmediate(handler, ...arguments: any[])`.
+        if (self.isAmbientContextAt(tok.span.start)) return;
         // Class bodies are implicitly strict — tsc prefers the
         // class-specific TS1210 wording even when the surrounding file
         // is also a strict external module.
@@ -3726,6 +3730,7 @@ pub const Parser = struct {
         const raw = self.interner.get(id.name);
         if (!std.mem.eql(u8, raw, "eval") and !std.mem.eql(u8, raw, "arguments")) return;
         const sp = self.hir.spanOf(node);
+        if (self.isAmbientContextAt(sp.start)) return;
         if (self.class_body_depth > 0) {
             const message = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
