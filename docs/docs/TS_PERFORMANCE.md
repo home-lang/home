@@ -1352,6 +1352,78 @@ Restoration peak is 3,097 MB. The five-compiler ranking remains **1/20 leads,
 13/20 faster than native TS7**; Zod, finite/symbolic Record, canonical C++
 and other-platform coverage remain incomplete.
 
+## Owned native checked JavaScript profile 2026 10 12 UTC
+
+The exact compiler measured by the [complete resumed matrix](#landed-declaration-identity-matrix-resumed)
+still displays PCs in root require-binding scans and local JSDoc lookup.
+This [#854](https://github.com/home-lang/home/issues/854) profile is diagnostic
+evidence for choosing a subsequent optimization, not a speedup or whole-run
+CPU-share estimate. Compiler implementation remains
+[`4b4060e05`](https://github.com/home-lang/home/commit/4b4060e053874895573a8413b83099b0d14b4032);
+profiling source context is `bd0d82e5d4bd651cd0b58ef8578b2675fc2c5e2c`.
+No compiler code or benchmark semantics changed.
+
+A separate-prefix Zig2163 ReleaseFast/stripped/no-JSC reconstruction matches
+the measured native **byte-for-byte**, SHA-256
+`bb4c00dd2fdfba719098150082b696b4f9ba8ab65a7a47640b197540420cf771`.
+Installed and previously retained images remain unchanged. The matching
+reconstructed link and object are retained independently of disposable cache;
+object SHA-256 is
+`de747c0cb2eecc26006b60aa83e99b8db6aa56c17a50a2c06559223849d328da`.
+Independent mapping recomputes every relocation mask and **5,896** symbol
+ranges: zero undeclared changed bytes outside **634,788 whole declared
+relocation-word bytes**. This does not establish opcode/bit equivalence inside
+masked words. The **1,248-byte** native tail remains explicitly unmapped.
+Only the unchanged native image is sampled, not a relinked diagnostic image.
+
+The existing checked-JS generator produces **8,192 unchanged families**.
+Positive inventory is `bfb2fb1bef4dcb4ad7df9bffa647b5d44bd35c6895b32772fb4044ce0ced829e`;
+negative inventory is `439cf46bb43c4386f85b07af49583ff7ae3ad1ba6b7e73989fa776dce372b467`.
+Both match the earlier published diagnostic inputs exactly. First/middle/last
+controls (0/4,096/8,191) require nine TS2322, three TS2339 and three TS2345.
+TS6.0.3, native TS7.0.2 and actual Home pass all **six complete scale admissions**;
+Home additionally passes **30/30 full protocol-5 controls** before sampling.
+Reference/native/tool fingerprints and positive/negative inventories are
+unchanged across the diagnostic workflow. No bodies, errors or controls are removed.
+
+One native process exits 0 silently. Two one-second exploratory windows are
+fixed at offsets 0.1 and 3.0 seconds, with actual starts **0.105069** and
+**3.003930 seconds**. Both succeed and retain **801 main-thread observations**.
+Independent verification maps **275 explicitly observed symbol groups** using
+the actual ASLR load `0x102abc000`; every original callgraph row is retained.
+Ellipses and inclusive/collapsed counts remain unassigned, not converted into
+per-function CPU shares. There are **zero benchmark timing samples** and no
+repeat-to-obtain-observations run.
+
+| Observed function | Preferred address | Early displayed offsets | Middle displayed offsets |
+|---|---|---|---|
+| `memberAccessReceiverIsRequireAssignmentBinding` | `0x100688bbc` | 416, 476 | 244, 476 |
+| `leadingJsDocBodyWithStart` | `0x10023c858` | 8, 400, 428, 568, 672 | 188, 400, 584, 704 |
+| `jsDocTypeForPreviousIdentifierDecl` | `0x100309bc0` | 532, 1252, 1284, 1844 | None displayed |
+
+The require-binding helper still scans root statements for matching import-equals
+or simple variables initialized by `require`, preserving duplicate-name and
+virtual-section behavior. The existing JSDoc ancestor-prefix index stores only
+the first matching variable; it neither retains every duplicate nor covers
+imports, so it cannot replace this predicate as-is. A subsequent design must
+retain complete declaration/section ownership and equivalent scalar answers,
+with coherent invalidation and OOM fallback. This evidence does not justify
+reviving rejected coarse presence caches, adding layout knobs or weakening
+diagnostics. Full source gates, unchanged library comparison and a new frozen
+exact-parent full-family/risk protocol remain required before adoption.
+
+All unchanged 600-second/3,840-MB guards exit 0. Reconstruction peaks at
+2,986 MB (host low-water 30%), mapping/preparation at 190 MB (42%), and
+admission/profile/verification at 1,099 MB (37%). Shared machine locking and
+disk floors are unchanged; unrelated jobs are untouched.
+The [complete current-native profile evidence](../../bench/vs_tsgo/evidence/20261012-owned-native-jsdoc-profile-854.tar.gz)
+contains **66 verified payloads**, including retained native/link/object images,
+all instruction bytes/symbols/relocations, controls, 36 admissions, both raw
+samples, mapped rows, independent verifiers, source/assembly, protocols and
+guard outcomes. Every archived payload matches its original bytes. SHA-256:
+`fbaa51a4417070796ab5f35da8a27080b63e7e6dacffb82a3299bf206b814200`.
+The older profile below remains a separate image/source snapshot.
+
 ## Current native checked JavaScript profile 2026 10 10 UTC
 
 The current checked-JS profile under [#854](https://github.com/home-lang/home/issues/854)

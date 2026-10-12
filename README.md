@@ -148,10 +148,20 @@ competitor comparison, not a causal patch A/B.
 The matrix uses protocol 5 with **150/150 pre-timing admissions**, checking
 inferred locals and optional-call results.
 See the [new admission contract](docs/docs/TS_PERFORMANCE.md#null-safe-inferred-result-admission-2026-10-10-utc).
-The [current-native profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-profile-2026-10-10-utc)
+The [earlier native null-safe profile](docs/docs/TS_PERFORMANCE.md#exact-native-null-safe-profile-2026-10-10-utc)
 uses one unchanged compiler process and two fixed windows after 36 admission
 checks. Displayed PCs map to namespace-import scanning even on the import-free
 scaled input; this is an investigation lead, not a CPU-share or speedup claim.
+
+The latest [owned-native checked-JS profile](docs/docs/TS_PERFORMANCE.md#owned-native-checked-javascript-profile-2026-10-12-utc)
+samples the exact compiler measured above and identifies root require-binding
+scans and local JSDoc work. It does not establish a speedup or whole-run CPU share.
+
+| Current-image diagnostic check | Result |
+|---|---|
+| Unchanged 8,192-family positive/negative and native protocol controls | 6/6 and 30/30 pass |
+| Fixed-window native profile | One process, two windows, 275 mapped symbol groups; zero benchmark timing samples |
+
 The live-body supported-write proof is now accepted under
 [#864](https://github.com/home-lang/home/issues/864): the independent official
 null-safe workload has a **34.4% lower median**, with **30/30** faster pairs.
