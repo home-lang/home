@@ -1666,6 +1666,36 @@ pub fn build(b: *std.Build) void {
         check_js.expectStdErrEqual("");
         check_js.expectExitCode(1);
         tsc_streams_step.dependOn(&check_js.step);
+
+        const direct_js_rejection = b.addRunArtifact(home_tsc_exe);
+        direct_js_rejection.setCwd(streams_dir);
+        direct_js_rejection.clearEnvironment();
+        direct_js_rejection.addArgs(&.{ "--noEmit", "--ignoreConfig", "collision/a.js" });
+        direct_js_rejection.expectStdOutEqual(
+            \\error TS6504: File 'collision/a.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?
+            \\  The file is in the program because:
+            \\    Root file specified for compilation
+            \\
+        );
+        direct_js_rejection.expectStdErrEqual("");
+        direct_js_rejection.expectExitCode(2);
+        tsc_streams_step.dependOn(&direct_js_rejection.step);
+
+        const option_and_extension = b.addRunArtifact(home_tsc_exe);
+        option_and_extension.setCwd(streams_dir);
+        option_and_extension.clearEnvironment();
+        option_and_extension.addArgs(&.{ "--noEmit", "--listFilesOnly", "--project", "option_and_extension/tsconfig.json" });
+        option_and_extension.expectStdOutMatch(
+            \\option_and_extension/input.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?
+            \\  The file is in the program because:
+            \\    Part of 'files' list in tsconfig.json
+            \\option_and_extension/tsconfig.json(2,24): error TS5102: Option 'outFile' has been removed. Please remove it from your configuration.
+            \\
+        );
+        option_and_extension.expectStdOutMatch("option_and_extension/input.ts\n");
+        option_and_extension.expectStdErrEqual("");
+        option_and_extension.expectExitCode(1);
+        tsc_streams_step.dependOn(&option_and_extension.step);
     }
     dependOnTest(test_step, tsc_streams_step, test_filter, "tsc_streams");
 

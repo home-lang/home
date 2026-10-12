@@ -3439,27 +3439,19 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         if (loaded_cfg) |c| break :blk tsconfig_mod.effectiveAllowJs(c.compiler_options);
         break :blk ts_cli.effectiveAllowJs(opts);
     };
-    var extension_errors: bool = false;
-    for (input_files.items) |path| {
-        switch (classifyExtension(path)) {
-            .supported => {},
-            .javascript => {
-                if (!allow_js) {
-                    const msg = try javaScriptFileNeedsAllowJsDiagnostic(gpa, path);
-                    defer gpa.free(msg);
-                    printStdout("{s}\n", .{msg});
-                    extension_errors = true;
-                }
-            },
-            .unsupported => {
-                const msg = try unsupportedExtensionDiagnostic(gpa, path);
-                defer gpa.free(msg);
-                printStdout("{s}\n", .{msg});
-                extension_errors = true;
-            },
-        }
-    }
-    if (extension_errors) std.process.exit(1);
+    const root_file_reason: RootFileDiagnosticReason = if (opts.files.len > 0)
+        .command_line
+    else if (loaded_cfg != null and loaded_cfg.?.files != null)
+        .files_list
+    else
+        .none;
+    var extension_diagnostics = try collectRootFileExtensionDiagnostics(
+        gpa,
+        &input_files,
+        allow_js,
+        root_file_reason,
+    );
+    defer extension_diagnostics.deinit(gpa);
 
     var source_io_threaded = std.Io.Threaded.init(gpa, .{});
     defer source_io_threaded.deinit();
@@ -3501,7 +3493,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // time-to-first-diagnostic down from whole-program time to
     // per-file check time — Phase 5 §5.8 / §5.A.10.
     var any_errors_streaming = false;
-    var reported_config_errors = false;
+    var reported_command_line_errors = false;
     var stream_error_count: usize = 0;
     var stream_files_with_errors: usize = 0;
     var stream_first_error_file: []const u8 = "";
@@ -3531,7 +3523,8 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // semantic diagnostics. `--listFilesOnly` follows the same syntax/options
     // path but never asks for semantic diagnostics. Preserve streaming for
     // ordinary clean configs; defer only for these exceptional paths.
-    const defer_program_diagnostics = pending_config_summary.hasErrors() or opts.list_files_only;
+    const option_diagnostics_block_emit = extension_diagnostics.hasErrors() or pending_config_summary.hasErrors();
+    const defer_program_diagnostics = option_diagnostics_block_emit or opts.list_files_only;
     if (defer_program_diagnostics) {
         var syntax_probe: SyntaxDiagnosticProbe = .{};
         program.compileAllStreaming(compile_opts, &syntax_probe, SyntaxDiagnosticProbe.receive) catch |err| {
@@ -3544,27 +3537,36 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 const compilation = file.compilation orelse continue;
                 streamDiagsCallback(&stream_ctx, file.path, compilation.diagnostics.items);
             }
-        } else if (pending_config_summary.hasErrors()) {
-            try printConfigValidationDiagnostics(
-                gpa,
-                loaded_cfg.?,
-                cfg_src,
-                config_validation_diags.?,
-                pretty,
-                diagnostic_color,
-            );
-            any_errors_streaming = true;
-            reported_config_errors = true;
-            stream_error_count = pending_config_summary.count;
-            stream_files_with_errors = if (pending_config_summary.file_error_count > 0) 1 else 0;
-            stream_first_error_file = pending_config_summary.first_error_file;
-            stream_first_error_line = pending_config_summary.first_error_line;
-            stream_first_error_col = pending_config_summary.first_error_col;
-            if (pending_config_summary.file_error_count > 0) {
-                try stream_error_file_counts.append(gpa, .{
-                    .path = pending_config_summary.first_error_file,
-                    .count = pending_config_summary.file_error_count,
-                });
+        } else {
+            if (extension_diagnostics.hasErrors()) {
+                for (extension_diagnostics.messages.items) |message| {
+                    printStdout("{s}\n", .{message});
+                }
+                any_errors_streaming = true;
+                reported_command_line_errors = root_file_reason == .command_line;
+                stream_error_count += extension_diagnostics.messages.items.len;
+            }
+            if (pending_config_summary.hasErrors()) {
+                try printConfigValidationDiagnostics(
+                    gpa,
+                    loaded_cfg.?,
+                    cfg_src,
+                    config_validation_diags.?,
+                    pretty,
+                    diagnostic_color,
+                );
+                any_errors_streaming = true;
+                stream_error_count += pending_config_summary.count;
+                stream_files_with_errors = if (pending_config_summary.file_error_count > 0) 1 else 0;
+                stream_first_error_file = pending_config_summary.first_error_file;
+                stream_first_error_line = pending_config_summary.first_error_line;
+                stream_first_error_col = pending_config_summary.first_error_col;
+                if (pending_config_summary.file_error_count > 0) {
+                    try stream_error_file_counts.append(gpa, .{
+                        .path = pending_config_summary.first_error_file,
+                        .count = pending_config_summary.file_error_count,
+                    });
+                }
             }
         }
     } else {
@@ -3658,7 +3660,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 stream_error_file_counts.items,
             );
             if (any_errors_streaming) {
-                std.process.exit(@backingInt(if (reported_config_errors) ts_cli.ExitCode.config_error else ts_cli.diagnosticsExitCode(true)));
+                std.process.exit(@backingInt(if (reported_command_line_errors) ts_cli.ExitCode.config_error else ts_cli.diagnosticsExitCode(true)));
             }
             return;
         }
@@ -3725,7 +3727,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     const any_errors = any_errors_streaming;
-    _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    if (!option_diagnostics_block_emit) {
+        _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+    }
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
     if (loaded_cfg) |cfg_ptr| {
@@ -3877,10 +3881,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     }
 
     if (any_errors) {
-        const status = if (reported_config_errors)
+        const status = if (reported_command_line_errors)
             ts_cli.ExitCode.config_error
         else
-            ts_cli.diagnosticsExitCode(compile_opts.no_emit or output_collision_count != 0);
+            ts_cli.diagnosticsExitCode(compile_opts.no_emit or output_collision_count != 0 or option_diagnostics_block_emit);
         std.process.exit(@backingInt(status));
     }
 }
@@ -4555,6 +4559,81 @@ fn unsupportedExtensionDiagnostic(gpa: std.mem.Allocator, path: []const u8) ![]u
     );
 }
 
+const RootFileDiagnosticReason = enum {
+    none,
+    command_line,
+    files_list,
+};
+
+const RootFileExtensionDiagnostics = struct {
+    messages: std.ArrayListUnmanaged([]u8) = .empty,
+
+    fn deinit(this: *RootFileExtensionDiagnostics, gpa: std.mem.Allocator) void {
+        for (this.messages.items) |message| gpa.free(message);
+        this.messages.deinit(gpa);
+    }
+
+    fn hasErrors(this: RootFileExtensionDiagnostics) bool {
+        return this.messages.items.len > 0;
+    }
+};
+
+fn rootFileExtensionDiagnostic(
+    gpa: std.mem.Allocator,
+    path: []const u8,
+    class: ExtensionClass,
+    reason: RootFileDiagnosticReason,
+) ![]u8 {
+    const base = switch (class) {
+        .supported => unreachable,
+        .javascript => try javaScriptFileNeedsAllowJsDiagnostic(gpa, path),
+        .unsupported => try unsupportedExtensionDiagnostic(gpa, path),
+    };
+    if (reason == .none) return base;
+    defer gpa.free(base);
+    const detail = switch (reason) {
+        .none => unreachable,
+        .command_line => "Root file specified for compilation",
+        .files_list => "Part of 'files' list in tsconfig.json",
+    };
+    return std.fmt.allocPrint(
+        gpa,
+        "{s}\n  The file is in the program because:\n    {s}",
+        .{ base, detail },
+    );
+}
+
+/// Match TypeScript's root-name admission pass: rejected extensions produce
+/// command-line/config diagnostics but never enter the Program. Valid roots
+/// retain their original order so list/explain output and import provenance
+/// remain deterministic after diagnostics are aggregated.
+fn collectRootFileExtensionDiagnostics(
+    gpa: std.mem.Allocator,
+    input_files: *std.ArrayListUnmanaged([]const u8),
+    allow_js: bool,
+    reason: RootFileDiagnosticReason,
+) !RootFileExtensionDiagnostics {
+    var diagnostics: RootFileExtensionDiagnostics = .{};
+    errdefer diagnostics.deinit(gpa);
+    var valid_len: usize = 0;
+    for (input_files.items) |path| {
+        const class = classifyExtension(path);
+        const rejected = class == .unsupported or (class == .javascript and !allow_js);
+        if (!rejected) {
+            input_files.items[valid_len] = path;
+            valid_len += 1;
+            continue;
+        }
+        const message = try rootFileExtensionDiagnostic(gpa, path, class, reason);
+        diagnostics.messages.append(gpa, message) catch |err| {
+            gpa.free(message);
+            return err;
+        };
+    }
+    input_files.items.len = valid_len;
+    return diagnostics;
+}
+
 fn appendJsonStringArray(
     out: *std.ArrayListUnmanaged(u8),
     gpa: std.mem.Allocator,
@@ -4944,6 +5023,42 @@ test "tsc_main: TS6054 unsupported-extension diagnostic text" {
     try std.testing.expectEqualStrings(
         "error TS6054: File 'data/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.",
         msg,
+    );
+}
+
+test "tsc_main: root extension diagnostics retain only admissible Program roots" {
+    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer roots.deinit(std.testing.allocator);
+    try roots.appendSlice(std.testing.allocator, &.{
+        "/repo/input.ts",
+        "/repo/input.js",
+        "/repo/notes.txt",
+        "/repo/component.home",
+    });
+
+    var diagnostics = try collectRootFileExtensionDiagnostics(
+        std.testing.allocator,
+        &roots,
+        false,
+        .files_list,
+    );
+    defer diagnostics.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), roots.items.len);
+    try std.testing.expectEqualStrings("/repo/input.ts", roots.items[0]);
+    try std.testing.expectEqualStrings("/repo/component.home", roots.items[1]);
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.messages.items.len);
+    try std.testing.expectEqualStrings(
+        "error TS6504: File '/repo/input.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
+            "  The file is in the program because:\n" ++
+            "    Part of 'files' list in tsconfig.json",
+        diagnostics.messages.items[0],
+    );
+    try std.testing.expectEqualStrings(
+        "error TS6054: File '/repo/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.\n" ++
+            "  The file is in the program because:\n" ++
+            "    Part of 'files' list in tsconfig.json",
+        diagnostics.messages.items[1],
     );
 }
 
