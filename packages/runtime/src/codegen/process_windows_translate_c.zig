@@ -1,8 +1,7 @@
-// Copied verbatim from bun/src/codegen/process_windows_translate_c.zig at
-// upstream SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see
-// ../cli/LICENSE.bun.md. No `@import("bun")` references; this is a
-// build-time tool invoked via `zig build` to post-process Win32
-// translate-c output.
+// Ported from bun/src/codegen/process_windows_translate_c.zig at upstream SHA
+// 4982b91e3702094330f3be3883354c52b8c01323. MIT — see ../cli/LICENSE.bun.md.
+// The transformation is unchanged; the executable entry point uses Zig 0.17's
+// explicit process, file, and writer APIs.
 
 // translate-c is unable to translate the unsuffixed windows functions
 // like `SetCurrentDirectory` since they are defined with an odd macro
@@ -20,24 +19,33 @@ const symbol_replacements = std.StaticStringMap([]const u8).initComptime(&.{
     &.{ "PHANDLE", "*HANDLE" },
 });
 
-pub fn main() !void {
-    const gpa = std.heap.smp_allocator;
-    var args = try std.process.argsWithAllocator(gpa);
-    errdefer args.deinit();
-    assert(args.skip());
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len < 2) @panic("missing input argument");
+    if (args.len < 3) @panic("missing output argument");
 
-    const in = brk: {
-        const in_path = args.next() orelse @panic("missing argument");
-        const in = try std.fs.cwd().openFile(in_path, .{});
-        defer in.close();
-        break :brk try in.readToEndAllocOptions(gpa, std.math.maxInt(u32), null, .fromByteUnits(1), 0);
-    };
+    const gpa = init.gpa;
+    const in = try std.Io.Dir.cwd().readFileAllocOptions(
+        init.io,
+        args[1],
+        gpa,
+        .limited(std.math.maxInt(u32)),
+        .of(u8),
+        0,
+    );
     defer gpa.free(in);
 
-    var out = try std.array_list.Managed(u8).initCapacity(gpa, in.len);
+    var out = try std.Io.Writer.Allocating.initCapacity(gpa, in.len);
     defer out.deinit();
-    const w = out.writer();
+    try transform(in, &out.writer);
 
+    try std.Io.Dir.cwd().writeFile(init.io, .{
+        .sub_path = args[2],
+        .data = out.written(),
+    });
+}
+
+fn transform(in: [:0]const u8, w: anytype) !void {
     var i: usize = 0;
     while (mem.indexOfPos(u8, in, i, "pub const ")) |pub_i| {
         var tokenizer = std.zig.Tokenizer.init(in);
@@ -65,18 +73,18 @@ pub fn main() !void {
         i = end_of_line;
     }
     try w.writeAll(in[i..]);
-    try std.fs.cwd().writeFile(.{
-        .sub_path = args.next() orelse @panic("missing argument"),
-        .data = out.items,
-    });
 }
 
 fn assert(cond: bool) void {
     if (!cond) @panic("unhandled");
 }
 
-test "process_windows_translate_c.assert does not trip on true" {
-    assert(true);
+test "translate-c declarations use explicit Windows symbols" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+
+    try transform(@embedFile("process_windows_translate_c.input.zig"), &out.writer);
+    try std.testing.expectEqualStrings(@embedFile("process_windows_translate_c.expected.zig"), out.written());
 }
 
 const std = @import("std");
