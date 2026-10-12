@@ -116360,7 +116360,9 @@ pub const Checker = struct {
                     const lit = hir_mod.literalStringOf(self.hir, args[0]);
                     const spec = self.string_interner.get(lit.value);
                     if (!try self.reportAtTypesPackageImport(args[0], spec)) {
-                        if (self.isKnownNodeBuiltinSpecifier(spec) and !try self.hasExplicitAmbientModuleName(args[0], spec)) {
+                        if (self.isKnownNodeBuiltinSpecifier(spec) and !self.programAmbientModuleExists(spec) and
+                            !try self.hasExplicitAmbientModuleName(args[0], spec))
+                        {
                             try self.reportCannotFindNodeName(args[0], lit.value);
                         } else if (try self.isKnownAmbientModuleName(args[0], spec)) {
                             // Ambient declarations for a `node:*` module own the resolved import.

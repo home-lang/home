@@ -1087,6 +1087,22 @@ pub const Program = struct {
             }
         };
         try Scan.statements(self, compilation, hir_mod_ns.blockStmts(&compilation.hir, compilation.root), &globals.ambient, sources, &seen, &exports, out, file.id, 0);
+        // `await import("node:fs/promises")` names an ambient module too.
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < compilation.hir.nodeCount()) : (node += 1) {
+            if (compilation.hir.kindOf(node) != .call_expr) continue;
+            const call = hir_mod_ns.callOf(&compilation.hir, node);
+            if (call.callee == hir_mod_ns.none_node_id or compilation.hir.kindOf(call.callee) != .identifier) continue;
+            if (!std.mem.eql(u8, compilation.interner.get(hir_mod_ns.identifierOf(&compilation.hir, call.callee).name), "import")) continue;
+            const args = hir_mod_ns.callArgs(&compilation.hir, node);
+            if (args.len == 0 or compilation.hir.kindOf(args[0]) != .literal_string) continue;
+            const spec = compilation.interner.get(hir_mod_ns.literalStringOf(&compilation.hir, args[0]).value);
+            if (spec.len == 0 or spec[0] == '.' or spec[0] == '/' or seen.contains(spec)) continue;
+            try seen.put(self.gpa, spec, {});
+            const decls = globals.ambient.lookup(spec);
+            if (decls.len == 0) continue;
+            try out.append(self.gpa, .{ .specifier = spec, .name = "", .source = decls[0].source, .decl = decls[0].node });
+        }
     }
 
     /// Map each collected ambient export's checked type into `file`'s pool.
@@ -1366,7 +1382,14 @@ pub const Program = struct {
         try members.appendSlice(self.gpa, compilation.type_interner.objectMembers(first));
         for (compilation.type_interner.objectMembers(second)) |candidate| {
             for (members.items) |existing| {
-                if (existing.name == candidate.name) break;
+                if (existing.name != candidate.name) continue;
+                // Methods merge as overloads (es2015's `from(arrayLike,
+                // mapfn)` beside es5's `ArrayConstructor`); a property
+                // keeps the first declaration.
+                if (existing.is_method and candidate.is_method and existing.type != candidate.type) {
+                    try members.append(self.gpa, candidate);
+                }
+                break;
             } else try members.append(self.gpa, candidate);
         }
         const string_index = if (compilation.type_interner.objectStringIndex(first) != ts_driver.Primitive.none)
