@@ -1748,10 +1748,19 @@ JSC_DEFINE_HOST_FUNCTION(vmIsModuleNamespaceObject, (JSGlobalObject * globalObje
     return JSValue::encode(jsBoolean(callFrame->argument(0).inherits(JSModuleNamespaceObject::info())));
 }
 
+} // namespace Bun
+#include "HomeVMMeasurement.h"
+namespace Bun {
+JSC_DEFINE_HOST_FUNCTION(vmMeasureMemory, (JSGlobalObject* global, CallFrame* frame)) {
+    return JSValue::encode(Bun::HomeVMMeasurement::begin(global, frame->argument(0).toBoolean(global), frame->argument(1).toBoolean(global)));
+}
+extern "C" void Home__VMMeasureMemory__cancelForGlobal(JSGlobalObject* global) { Bun::HomeVMMeasurement::cancel(global); }
+
 JSC::JSValue createNodeVMBinding(Zig::GlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto* obj = constructEmptyObject(globalObject);
+    obj->putDirect(vm, Identifier::fromString(vm, "measureMemory"_s), JSFunction::create(vm, globalObject, 2, "measureMemory"_s, vmMeasureMemory, ImplementationVisibility::Public), 0);
     obj->putDirect(
         vm, JSC::PropertyName(JSC::Identifier::fromString(vm, "Script"_s)),
         defaultGlobalObject(globalObject)->NodeVMScript(), 0);

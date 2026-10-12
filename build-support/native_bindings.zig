@@ -389,6 +389,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/JSInspectorProfiler.cpp",
         "packages/runtime/upstream/src/jsc/bindings/JSInspectorProfiler.h",
         "packages/runtime/upstream/src/jsc/bindings/NodeVMScriptFetcher.h",
+        "packages/runtime/upstream/src/jsc/bindings/HomeVMMeasurement.h",
         "packages/runtime/upstream/src/js/thirdparty/ws.js",
         "packages/runtime/upstream/src/js/thirdparty/undici.js",
         "packages/runtime/upstream/src/js/thirdparty/node-fetch.ts",

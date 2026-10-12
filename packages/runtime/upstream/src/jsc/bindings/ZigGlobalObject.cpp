@@ -586,10 +586,12 @@ extern "C" JSC::JSGlobalObject* Zig__GlobalObject__create(void* console_client, 
 // Create a fresh Zig::GlobalObject on the *same* JSC::VM as `oldGlobal`, then unprotect
 // the old one so GC can reclaim its module graph. Used by `bun test --isolate` to give
 // each test file a clean global without paying for a new JSC::VM.
+extern "C" void Home__VMMeasureMemory__cancelForGlobal(JSC::JSGlobalObject*);
 extern "C" JSC::JSGlobalObject* Zig__GlobalObject__createForTestIsolation(Zig::GlobalObject* oldGlobal, void* console_client)
 {
     JSC::VM& vm = oldGlobal->vm();
     JSC::JSLockHolder locker(vm);
+    Home__VMMeasureMemory__cancelForGlobal(oldGlobal);
 
     // `JSGlobalObject::finishCreation` → `init()` performs hundreds of allocations
     // before every lazy/write-barrier member of the Bun subclass has been wired up.

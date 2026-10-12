@@ -985,6 +985,7 @@ pub fn onExit(this: *VirtualMachine) void {
     // Workers and late notifications carry only request IDs, so they cannot
     // free a parent HandleSet node after this point. Applies to main + workers.
     Home__Worker__cancelSnapshotsForVM(this.global);
+    Home__VMMeasureMemory__cancelForGlobal(this.global);
 
     const rare_data = this.rare_data orelse return;
     defer rare_data.cleanup_hooks.clearAndFree(bun.default_allocator);
@@ -1118,6 +1119,7 @@ pub const NativePollableWorkPoolJobs = struct {
 
 extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
 extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
+extern fn Home__VMMeasureMemory__cancelForGlobal(*JSGlobalObject) void;
 
 pub fn globalExit(this: *VirtualMachine) noreturn {
     bun.assert(this.isShuttingDown());
@@ -1145,6 +1147,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         this.native_pollable_work_pool_jobs.closeAdmission();
         this.native_work_pool_jobs.closeAndWait();
         this.native_pollable_work_pool_jobs.cancelRemaining();
+        Home__VMMeasureMemory__cancelForGlobal(this.global);
         @import("../runtime/node/directory_handle.zig").shutdown(this.global);
         @import("../runtime/node/file_handle.zig").shutdown(this.global);
         @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
