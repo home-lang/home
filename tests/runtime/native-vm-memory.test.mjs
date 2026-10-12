@@ -37,6 +37,22 @@ async function main() {
       assert.throws(() => run('2+2', { contextOrigin: 19 }), { code: 'ERR_INVALID_ARG_TYPE' });
     }
     assert.throws(() => vm.createContext({}, { importModuleDynamically: 17 }), { code: 'ERR_INVALID_ARG_TYPE' });
+    const extensionContext = vm.createContext({ outside: 7 });
+    const extension = { inside: 40 };
+    const compiled = vm.compileFunction('return inside+outside', [], { parsingContext: extensionContext, contextExtensions: [extension] });
+    assert.equal(compiled(), 47);
+    assert.equal(Object.getPrototypeOf(compiled), vm.runInContext('Function.prototype', extensionContext));
+    assert.equal(vm.runInContext('typeof inside', extensionContext), 'undefined');
+    assert.equal(vm.compileFunction('return typeof inside', [], { parsingContext: extensionContext })(), 'undefined');
+    extension.inside = 50;
+    assert.equal(compiled(), 57);
+    const special = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+    special.value = 42;
+    assert.equal(vm.compileFunction('return value', [], { parsingContext: special })(), 42);
+    assert.throws(() => vm.compileFunction('return 1', [], { importModuleDynamically: 17 }), { code: 'ERR_INVALID_ARG_TYPE' });
+    assert.throws(() => vm.compileFunction('return 1', [], 'filename.js'), { code: 'ERR_INVALID_ARG_TYPE' });
+    assert.throws(() => vm.compileFunction('return 1', [], []), { code: 'ERR_INVALID_ARG_TYPE' });
+    assert.throws(() => vm.compileFunction('return 1', [], { contextExtensions: [{}, 17] }), error => error.code === 'ERR_INVALID_ARG_TYPE' && error.message.includes('contextExtensions[1]'));
   `], { encoding: 'utf8', timeout: 10000 })
   assert.equal(reuse.error, undefined)
   assert.equal(reuse.signal, null)

@@ -133,7 +133,7 @@ JSC::JSFunction* constructAnonymousFunction(JSC::JSGlobalObject* globalObject, c
     auto throwScope = DECLARE_THROW_SCOPE(vm);
 
     TextPosition position(options.lineOffset, options.columnOffset);
-    LexicallyScopedFeatures lexicallyScopedFeatures = globalObject->globalScopeExtension() ? TaintedByWithScopeLexicallyScopedFeature : NoLexicallyScopedFeatures;
+    LexicallyScopedFeatures lexicallyScopedFeatures = dynamicDowncast<JSWithScope>(scope) ? TaintedByWithScopeLexicallyScopedFeature : NoLexicallyScopedFeatures;
 
     // First try parsing the code as is without wrapping it in an anonymous function expression.
     // This is to reject cases where the user passes in a string like "});(function() {".
@@ -195,6 +195,8 @@ JSC::JSFunction* constructAnonymousFunction(JSC::JSGlobalObject* globalObject, c
 
     CodeCache* cache = vm.codeCache();
     ProgramExecutable* programExecutable = ProgramExecutable::create(globalObject, sourceCode);
+    if (lexicallyScopedFeatures & TaintedByWithScopeLexicallyScopedFeature)
+        programExecutable->setTaintedByWithScope();
 
     UnlinkedProgramCodeBlock* unlinkedProgramCodeBlock = nullptr;
     RefPtr<CachedBytecode> cachedBytecode;
@@ -1563,10 +1565,8 @@ JSC_DEFINE_HOST_FUNCTION(vmModuleCompileFunction, (JSGlobalObject * globalObject
         }
     }
 
-    options.parsingContext->setGlobalScopeExtension(functionScope);
-
     // Create the function using constructAnonymousFunction with the appropriate scope chain
-    JSFunction* function = constructAnonymousFunction(globalObject, ArgList(constructFunctionArgs), sourceOrigin, WTF::move(options), JSC::SourceTaintedOrigin::Untainted, functionScope);
+    JSFunction* function = constructAnonymousFunction(functionScope->realm(), ArgList(constructFunctionArgs), sourceOrigin, WTF::move(options), JSC::SourceTaintedOrigin::Untainted, functionScope);
     RETURN_IF_EXCEPTION(scope, {});
 
     if (!function) {
@@ -2010,6 +2010,12 @@ bool CompileFunctionOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& 
         *importer = jsUndefined();
     }
 
+    if (!optionsArg.isUndefined() && (!optionsArg.isObject() || isArray(globalObject, optionsArg) || optionsArg.isCallable())) {
+        ERR::INVALID_ARG_TYPE(scope, globalObject, "options"_s, "object"_s, optionsArg);
+        return false;
+    }
+    RETURN_IF_EXCEPTION(scope, false);
+
     this->parsingContext = globalObject;
     bool any = BaseVMOptions::fromJS(globalObject, vm, scope, optionsArg);
     RETURN_IF_EXCEPTION(scope, false);
@@ -2041,14 +2047,8 @@ bool CompileFunctionOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& 
             if (parsingContextValue.isNull() || !parsingContextValue.isObject())
                 return ERR::INVALID_ARG_INSTANCE(scope, globalObject, "options.parsingContext"_s, "Context"_s, parsingContextValue);
 
-            JSObject* context = asObject(parsingContextValue);
-            auto* zigGlobalObject = defaultGlobalObject(globalObject);
-            JSValue scopeValue = zigGlobalObject->vmModuleContextMap()->get(context);
-
-            if (scopeValue.isUndefined())
-                return ERR::INVALID_ARG_INSTANCE(scope, globalObject, "options.parsingContext"_s, "Context"_s, parsingContextValue);
-
-            parsingContext = dynamicDowncast<NodeVMGlobalObject>(scopeValue);
+            parsingContext = getGlobalObjectFromContext(globalObject, parsingContextValue, false);
+            RETURN_IF_EXCEPTION(scope, false);
             if (!parsingContext)
                 return ERR::INVALID_ARG_INSTANCE(scope, globalObject, "options.parsingContext"_s, "Context"_s, parsingContextValue);
 
@@ -2077,8 +2077,9 @@ bool CompileFunctionOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& 
                 for (unsigned i = 0; i < length; i++) {
                     JSValue extension = contextExtensionsArray->getIndex(globalObject, i);
                     RETURN_IF_EXCEPTION(scope, {});
-                    if (!extension.isObject())
-                        return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.contextExtensions[0]"_s, "object"_s, extension);
+                    if (!extension.isObject() || isArray(globalObject, extension) || extension.isCallable())
+                        return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options.contextExtensions["_s, i, "]"_s), "object"_s, extension);
+                    RETURN_IF_EXCEPTION(scope, false);
                 }
             } else {
                 return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.contextExtensions"_s, "Array"_s, contextExtensionsValue);
@@ -2088,14 +2089,12 @@ bool CompileFunctionOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& 
             any = true;
         }
 
-        // Handle importModuleDynamically option
-        JSValue importModuleDynamicallyValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (importModuleDynamicallyValue && (importModuleDynamicallyValue.isCallable() || isUseMainContextDefaultLoaderConstant(globalObject, importModuleDynamicallyValue))) {
-            if (importer) {
-                *importer = importModuleDynamicallyValue;
-            }
+        JSValue callback = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
+        RETURN_IF_EXCEPTION(scope, false);
+        if (callback && !callback.isUndefined()) {
+            if (!callback.isCallable() && !isUseMainContextDefaultLoaderConstant(globalObject, callback))
+                return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, callback);
+            if (importer) *importer = callback;
             any = true;
         }
     }
