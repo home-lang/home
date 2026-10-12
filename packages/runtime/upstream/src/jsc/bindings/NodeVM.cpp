@@ -593,30 +593,35 @@ std::optional<JSC::EncodedJSValue> getNodeVMContextOptions(JSGlobalObject* globa
 
     JSObject* options = asObject(optionsArg);
 
-    // Check name property
-    auto nameValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "name"_s));
+    const bool scriptContextOptions = codeGenerationKey == "contextCodeGeneration"_s;
+    const ASCIILiteral nameKey = scriptContextOptions ? "contextName"_s : "name"_s;
+    const ASCIILiteral originKey = scriptContextOptions ? "contextOrigin"_s : "origin"_s;
+    auto nameValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, nameKey));
     RETURN_IF_EXCEPTION(scope, {});
     if (nameValue) {
         if (!nameValue.isUndefined() && !nameValue.isString()) {
-            return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.name"_s, "string"_s, nameValue);
+            return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, nameKey), "string"_s, nameValue);
         }
     }
 
     // Check origin property
-    auto originValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "origin"_s));
+    auto originValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, originKey));
     RETURN_IF_EXCEPTION(scope, {});
     if (originValue) {
         if (!originValue.isUndefined() && !originValue.isString()) {
-            return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.origin"_s, "string"_s, originValue);
+            return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, originKey), "string"_s, originValue);
         }
     }
 
-    JSValue importModuleDynamicallyValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
-    RETURN_IF_EXCEPTION(scope, {});
-
-    if (importModuleDynamicallyValue) {
-        if (importer && importModuleDynamicallyValue && (importModuleDynamicallyValue.isCallable() || isUseMainContextDefaultLoaderConstant(globalObject, importModuleDynamicallyValue))) {
-            *importer = importModuleDynamicallyValue;
+    // Script execution options use the Script's own callback; only context
+    // creation owns an importModuleDynamically callback in these options.
+    if (!scriptContextOptions) {
+        JSValue callback = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
+        RETURN_IF_EXCEPTION(scope, {});
+        if (callback && !callback.isUndefined()) {
+            if (!callback.isCallable() && !isUseMainContextDefaultLoaderConstant(globalObject, callback))
+                return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, callback);
+            if (importer) *importer = callback;
         }
     }
 
@@ -1597,6 +1602,9 @@ JSC_DEFINE_HOST_FUNCTION(vmModule_createContext, (JSGlobalObject * globalObject,
         return ERR::INVALID_ARG_TYPE(scope, globalObject, "context"_s, "object"_s, contextArg);
     }
 
+    JSObject* sandbox = asObject(contextArg);
+    if (isContext(globalObject, sandbox)) return JSValue::encode(sandbox);
+
     JSValue optionsArg = callFrame->argument(1);
 
     // Validate options argument
@@ -1611,19 +1619,6 @@ JSC_DEFINE_HOST_FUNCTION(vmModule_createContext, (JSGlobalObject * globalObject,
     }
 
     contextOptions.notContextified = notContextified;
-
-    JSObject* sandbox = asObject(contextArg);
-
-    if (isContext(globalObject, sandbox)) {
-        if (auto* proxy = dynamicDowncast<JSC::JSGlobalProxy>(sandbox)) {
-            if (auto* targetContext = dynamicDowncast<NodeVMGlobalObject>(proxy->target())) {
-                if (targetContext->isNotContextified()) {
-                    return JSValue::encode(targetContext->specialSandbox());
-                }
-            }
-        }
-        return JSValue::encode(sandbox);
-    }
 
     auto* zigGlobalObject = defaultGlobalObject(globalObject);
 

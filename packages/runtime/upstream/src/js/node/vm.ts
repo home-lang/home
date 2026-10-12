@@ -55,6 +55,7 @@ const {
 } = vm;
 
 function createContext(contextObject?, options?) {
+  if (contextObject !== null && typeof contextObject === "object" && isContext(contextObject)) return contextObject;
   if (typeof options === "object" && options !== null) {
     validateOneOf(options.microtaskMode, "options.microtaskMode", ["afterEvaluate", undefined]);
   }
@@ -76,6 +77,27 @@ function runInThisContext(code, options) {
   return new Script(code, options).runInThisContext(options);
 }
 
+function getContextOptions(options) {
+  if (!options) return {};
+  const contextOptions = {
+    name: options.contextName,
+    origin: options.contextOrigin,
+    codeGeneration: undefined,
+    microtaskMode: options.microtaskMode,
+  };
+  if (contextOptions.name !== undefined) validateString(contextOptions.name, "options.contextName");
+  if (contextOptions.origin !== undefined) validateString(contextOptions.origin, "options.contextOrigin");
+  if (options.contextCodeGeneration !== undefined) {
+    validateObject(options.contextCodeGeneration, "options.contextCodeGeneration");
+    const { strings, wasm } = options.contextCodeGeneration;
+    if (strings !== undefined) validateBoolean(strings, "options.contextCodeGeneration.strings");
+    if (wasm !== undefined) validateBoolean(wasm, "options.contextCodeGeneration.wasm");
+    contextOptions.codeGeneration = { strings, wasm };
+  }
+  if (options.microtaskMode !== undefined) validateString(options.microtaskMode, "options.microtaskMode");
+  return contextOptions;
+}
+
 function runInNewContext(code, context, options) {
   if (context !== undefined && (typeof context !== "object" || context === null)) {
     validateContext(context);
@@ -83,7 +105,7 @@ function runInNewContext(code, context, options) {
   if (typeof options === "string") {
     options = { filename: options };
   }
-  context = createContext(context, options);
+  context = createContext(context, getContextOptions(options));
   return createScript(code, options).runInNewContext(context, options);
 }
 

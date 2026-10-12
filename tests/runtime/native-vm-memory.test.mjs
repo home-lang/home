@@ -26,6 +26,17 @@ async function main() {
     const checkpoint = vm.createContext({ value: 0 }, { microtaskMode: 'afterEvaluate' });
     new vm.Script('Promise.resolve().then(() => value++)').runInNewContext(checkpoint);
     assert.equal(checkpoint.value, 1);
+    let reads = 0;
+    const ignored = { get name() { reads++; return 'unused'; }, get microtaskMode() { reads++; return 'afterEvaluate'; } };
+    assert.equal(vm.createContext(already, ignored), already);
+    assert.equal(reads, 0);
+    assert.equal(vm.createContext(already, null), already);
+    for (const run of [(code, options) => vm.runInNewContext(code, {}, options), (code, options) => new vm.Script(code).runInNewContext({}, options)]) {
+      assert.equal(run('2+2', { name: 17, origin: 19 }), 4);
+      assert.throws(() => run('2+2', { contextName: 17 }), { code: 'ERR_INVALID_ARG_TYPE' });
+      assert.throws(() => run('2+2', { contextOrigin: 19 }), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    assert.throws(() => vm.createContext({}, { importModuleDynamically: 17 }), { code: 'ERR_INVALID_ARG_TYPE' });
   `], { encoding: 'utf8', timeout: 10000 })
   assert.equal(reuse.error, undefined)
   assert.equal(reuse.signal, null)
