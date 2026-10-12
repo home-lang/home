@@ -5202,6 +5202,7 @@ pub const Checker = struct {
     /// diagnostic-only: unlike alias names, they must not participate in
     /// declaration identity or relation checks.
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    pending_alias_displays: std.AutoHashMapUnmanaged(TypeId, SubstitutedAliasDisplay) = .empty,
     /// Source-ordered union members whose display is rendered only when a
     /// diagnostic asks (`diagnosticUnionDisplayName`). Rendering eagerly
     /// for every lowered union walked whole declaration graphs (@types/node
@@ -6806,6 +6807,7 @@ pub const Checker = struct {
         self.string_named_export_types.deinit(self.gpa);
         self.diagnostic_union_display_names.deinit(self.gpa);
         self.pending_union_display_members.deinit(self.gpa);
+        self.pending_alias_displays.deinit(self.gpa);
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -19191,7 +19193,7 @@ pub const Checker = struct {
     fn registerUnionConstituentDisplayText(self: *Checker, t: TypeId) CheckError!void {
         if (t >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(t).is_union) return;
-        if (self.alias_display_names.contains(t)) return;
+        if (self.aliasDisplayKnown(t)) return;
         const members = self.interner.unionMembers(t);
         if (members.len == 0) return;
         const arena = self.diag_arena.allocator();
@@ -19210,7 +19212,7 @@ pub const Checker = struct {
 
     fn registerStringLiteralUnionDisplayText(self: *Checker, t: TypeId) CheckError!void {
         if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return;
-        if (self.alias_display_names.contains(t)) return;
+        if (self.aliasDisplayKnown(t)) return;
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
         defer names.deinit(self.gpa);
         for (self.interner.unionMembers(t)) |member| {
@@ -31296,7 +31298,7 @@ pub const Checker = struct {
 
     fn registerModuleNamespaceDisplayName(self: *Checker, t: TypeId, resolved: []const u8) CheckError!void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(t)) return;
+        if (self.aliasDisplayKnown(t)) return;
         const display = try self.allocModuleNamespaceDisplayName(resolved);
         try self.alias_display_names.put(self.gpa, t, display);
     }
@@ -31342,7 +31344,7 @@ pub const Checker = struct {
 
     fn registerEnumNamespaceDisplayName(self: *Checker, t: TypeId, enum_name: hir_mod.StringId) CheckError!void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(t)) return;
+        if (self.aliasDisplayKnown(t)) return;
         const display = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "typeof {s}",
@@ -35441,7 +35443,7 @@ pub const Checker = struct {
         // AsyncGenerator directly, not by Promise<...> like ordinary async
         // functions, so use the unwrapped function return target here.
         const contextual_return = self.contextualReturnTypeForFunction(fn_node) orelse return null;
-        if (self.alias_display_names.get(contextual_return)) |display| {
+        if (self.aliasDisplayName(contextual_return)) |display| {
             // Iterable<T> / AsyncIterable<T> describe only yielded values;
             // unlike Iterator/Generator, they have no declared caller-sent
             // TNext channel. AsyncIterable context nevertheless gives a
@@ -44647,7 +44649,7 @@ pub const Checker = struct {
                                 } else {
                                     try self.class_name_by_instance.put(self.gpa, partial_this_t, class_name_id);
                                 }
-                                if (c.type_params_len > 0 and !self.alias_display_names.contains(partial_this_t)) {
+                                if (c.type_params_len > 0 and !self.aliasDisplayKnown(partial_this_t)) {
                                     if (self.classDisplayName(node, class_name_id) catch null) |display| {
                                         defer self.gpa.free(display);
                                         const stored = try self.diag_arena.allocator().dupe(u8, display);
@@ -44742,7 +44744,7 @@ pub const Checker = struct {
                                 // diag arena resets per source-file
                                 // check; alias_display_names entries
                                 // are pure borrowed views).
-                                if (c.type_params_len > 0 and !self.alias_display_names.contains(partial_this_t)) {
+                                if (c.type_params_len > 0 and !self.aliasDisplayKnown(partial_this_t)) {
                                     if (self.classDisplayName(node, class_name_id) catch null) |display| {
                                         defer self.gpa.free(display);
                                         const stored = try self.diag_arena.allocator().dupe(u8, display);
@@ -55084,7 +55086,7 @@ pub const Checker = struct {
         class_node: NodeId,
     ) CheckError!void {
         if (instance_t < types.Primitive.first_dynamic or instance_t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(instance_t)) return;
+        if (self.aliasDisplayKnown(instance_t)) return;
         const k = self.hir.kindOf(class_node);
         if (k != .class_decl and k != .class_expr) return;
         const c = hir_mod.classOf(self.hir, class_node);
@@ -55728,7 +55730,7 @@ pub const Checker = struct {
     }
 
     fn knownTypeDisplayName(self: *Checker, t: TypeId) ?[]const u8 {
-        if (self.alias_display_names.get(t)) |display| return display;
+        if (self.aliasDisplayName(t)) |display| return display;
         // Directly named non-class types already have their authoritative
         // reverse mapping. Only class instances need the structural pre-pass:
         // an interface with the same shape may be the preferred diagnostic
@@ -56889,10 +56891,9 @@ pub const Checker = struct {
             if (self.program_schema_tuple_types.contains(t)) {
                 try self.program_schema_tuple_types.put(self.gpa, new_obj, {});
             }
-            if (self.alias_display_names.get(t)) |display| {
+            if (self.aliasDisplayName(t)) |display| {
                 if (try self.substitutedAliasDisplayText(t, display, subs, visited)) |substituted_display| {
-                    try self.alias_display_names.put(self.gpa, new_obj, substituted_display.text);
-                    try self.alias_type_args.put(self.gpa, new_obj, substituted_display.args);
+                    try self.putPendingAliasDisplay(new_obj, substituted_display);
                 } else {
                     try self.alias_display_names.put(self.gpa, new_obj, display);
                 }
@@ -56920,10 +56921,16 @@ pub const Checker = struct {
     }
 
     const SubstitutedAliasDisplay = struct {
-        text: []const u8,
+        prefix: []const u8,
         args: []const TypeId,
+        /// The unsubstituted display, used when the new one cannot render.
+        fallback: []const u8,
     };
 
+    /// Substitute an alias display's type arguments. The text itself is
+    /// rendered only when a diagnostic asks (`aliasDisplayName`): rendering
+    /// every instantiation eagerly turned @types/node's large anonymous
+    /// object arguments into gigabytes of display strings.
     fn substitutedAliasDisplayText(
         self: *Checker,
         t: TypeId,
@@ -56934,7 +56941,6 @@ pub const Checker = struct {
         const old_args = self.alias_type_args.get(t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
         if (!std.mem.endsWith(u8, display, ">")) return null;
-        const alias_prefix = display[0..lt];
         const arena = self.diag_arena.allocator();
         const new_args = try arena.alloc(TypeId, old_args.len);
         var changed = false;
@@ -56943,10 +56949,16 @@ pub const Checker = struct {
             if (new_args[i] != arg) changed = true;
         }
         if (!changed) return null;
+        return .{ .prefix = display[0..lt], .args = new_args, .fallback = display };
+    }
+
+    fn renderSubstitutedAliasDisplay(self: *Checker, pending: SubstitutedAliasDisplay) CheckError!?[]const u8 {
+        const alias_prefix = pending.prefix;
+        const arena = self.diag_arena.allocator();
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         try buf.appendSlice(arena, alias_prefix);
         try buf.append(arena, '<');
-        for (new_args, 0..) |arg, i| {
+        for (pending.args, 0..) |arg, i| {
             if (i > 0) try buf.appendSlice(arena, ", ");
             const use_named_pick_source = std.mem.eql(u8, alias_prefix, "Pick") and i == 0;
             const arg_name = if (use_named_pick_source)
@@ -56968,7 +56980,33 @@ pub const Checker = struct {
             try buf.appendSlice(arena, arg_name);
         }
         try buf.append(arena, '>');
-        return .{ .text = buf.items, .args = new_args };
+        return buf.items;
+    }
+
+    fn putPendingAliasDisplay(self: *Checker, t: TypeId, pending: SubstitutedAliasDisplay) CheckError!void {
+        _ = self.alias_display_names.remove(t);
+        try self.pending_alias_displays.put(self.gpa, t, pending);
+        try self.alias_type_args.put(self.gpa, t, pending.args);
+    }
+
+    /// `alias_display_names`, rendering a pending substituted display first.
+    fn aliasDisplayName(self: *Checker, t: TypeId) ?[]const u8 {
+        if (self.alias_display_names.get(t)) |display| return display;
+        const pending = self.pending_alias_displays.get(t) orelse return null;
+        _ = self.pending_alias_displays.remove(t);
+        const text = (self.renderSubstitutedAliasDisplay(pending) catch null) orelse pending.fallback;
+        self.alias_display_names.put(self.gpa, t, text) catch {};
+        return text;
+    }
+
+    fn aliasDisplayKnown(self: *const Checker, t: TypeId) bool {
+        return self.alias_display_names.contains(t) or self.pending_alias_displays.contains(t);
+    }
+
+    fn removeAliasDisplayName(self: *Checker, t: TypeId) bool {
+        const pending = self.pending_alias_displays.remove(t);
+        const shown = self.alias_display_names.remove(t);
+        return shown or pending;
     }
 
     fn reportImplicitThisInTsJsDocConstructor(self: *Checker, fn_node: NodeId) CheckError!void {
@@ -64475,7 +64513,7 @@ pub const Checker = struct {
                 });
             }
             const t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
-            if (!self.alias_display_names.contains(t)) {
+            if (!self.aliasDisplayKnown(t)) {
                 try self.alias_display_names.put(self.gpa, t, exported.name);
             }
             return t;
@@ -74928,7 +74966,7 @@ pub const Checker = struct {
         receiver_t: TypeId,
         member_name: hir_mod.StringId,
     ) bool {
-        const display = self.alias_display_names.get(receiver_t) orelse return false;
+        const display = self.aliasDisplayName(receiver_t) orelse return false;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return false;
         const alias_name = self.string_interner.intern(display[0..lt]) catch return false;
         const info = self.generic_aliases.get(alias_name) orelse return false;
@@ -79916,7 +79954,7 @@ pub const Checker = struct {
                                 kb.appendSlice(self.gpa, std.fmt.bufPrint(&nbuf, ",{d}", .{at}) catch break :memo) catch break :memo;
                             }
                             if (self.alias_instantiation_memo.get(kb.items)) |hit| {
-                                if (allow_alias_display and !self.alias_display_names.contains(hit)) {
+                                if (allow_alias_display and !self.aliasDisplayKnown(hit)) {
                                     try self.registerAliasDisplayNameInner(hit, r.name, alias_arg_list.items, false);
                                 }
                                 return hit;
@@ -79986,7 +80024,7 @@ pub const Checker = struct {
                             if (allow_alias_display and eval_t != info.body) {
                                 const body_kind = self.hir.kindOf(info.body_node);
                                 if ((body_kind != .conditional_type and body_kind != .type_ref) or
-                                    !self.alias_display_names.contains(eval_t))
+                                    !self.aliasDisplayKnown(eval_t))
                                 {
                                     // Skip the remove + re-render when the
                                     // existing registration is IDENTICAL
@@ -80002,7 +80040,7 @@ pub const Checker = struct {
                                     const same_registration = blk_same: {
                                         const existing_args = self.alias_type_args.get(eval_t) orelse break :blk_same false;
                                         if (!std.mem.eql(TypeId, existing_args, alias_arg_list.items)) break :blk_same false;
-                                        const existing_name = self.alias_display_names.get(eval_t) orelse break :blk_same false;
+                                        const existing_name = self.aliasDisplayName(eval_t) orelse break :blk_same false;
                                         const alias_str = self.string_interner.get(r.name);
                                         if (existing_name.len < alias_str.len + 1) break :blk_same false;
                                         if (!std.mem.eql(u8, existing_name[0..alias_str.len], alias_str)) break :blk_same false;
@@ -80010,7 +80048,7 @@ pub const Checker = struct {
                                         break :blk_same true;
                                     };
                                     if (!same_registration) {
-                                        _ = self.alias_display_names.remove(eval_t);
+                                        _ = self.removeAliasDisplayName(eval_t);
                                         _ = self.alias_type_args.remove(eval_t);
                                         try self.registerAliasDisplayNameInner(eval_t, r.name, alias_arg_list.items, true);
                                     }
@@ -82326,7 +82364,7 @@ pub const Checker = struct {
                 });
             }
             const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
-            if (!self.alias_display_names.contains(result)) {
+            if (!self.aliasDisplayKnown(result)) {
                 try self.alias_display_names.put(self.gpa, result, exported.name);
             }
             return result;
@@ -88974,7 +89012,7 @@ pub const Checker = struct {
             std.mem.eql(u8, name, "Object")
         else if (self.namedTypeForId(declared)) |name|
             std.mem.eql(u8, self.string_interner.get(name), "Object")
-        else if (self.alias_display_names.get(declared)) |name|
+        else if (self.aliasDisplayName(declared)) |name|
             std.mem.eql(u8, name, "Object")
         else
             false;
@@ -90735,7 +90773,7 @@ pub const Checker = struct {
                 if (body < self.interner.pool.typeCount() and self.interner.pool.flagsOf(body).is_union) return body;
             }
         }
-        const display = (self.alias_display_names.get(target) orelse (self.simpleDiagnosticTypeName(target) catch null)) orelse return null;
+        const display = (self.aliasDisplayName(target) orelse (self.simpleDiagnosticTypeName(target) catch null)) orelse return null;
         if (std.mem.indexOfScalar(u8, display, '<') != null) return null;
         const display_alias_name = blk: {
             var it = self.type_alias_bodies.iterator();
@@ -94348,7 +94386,7 @@ pub const Checker = struct {
             return false;
         }
         const source_name = self.namedTypeForId(source_t);
-        const source_display = self.alias_display_names.get(source_t);
+        const source_display = self.aliasDisplayName(source_t);
         for (self.interner.unionMembers(target_t)) |member| {
             if (source_t == member or self.sameNonGenericClassInstanceDeclaration(source_t, member)) return true;
             if (member >= self.interner.pool.typeCount()) continue;
@@ -94364,7 +94402,7 @@ pub const Checker = struct {
                 if (self.namedTypeForId(member)) |member_name| {
                     if (std.mem.eql(u8, display, self.string_interner.get(member_name))) return true;
                 }
-                if (self.alias_display_names.get(member)) |member_display| {
+                if (self.aliasDisplayName(member)) |member_display| {
                     if (std.mem.eql(u8, display, member_display)) return true;
                 }
             }
@@ -95551,9 +95589,9 @@ pub const Checker = struct {
         type_param_t: TypeId,
         target_t: TypeId,
     ) bool {
-        const target_display = self.alias_display_names.get(target_t) orelse return false;
+        const target_display = self.aliasDisplayName(target_t) orelse return false;
         if (self.typeParameterConstraint(type_param_t)) |constraint_t| {
-            if (self.alias_display_names.get(constraint_t)) |constraint_display| {
+            if (self.aliasDisplayName(constraint_t)) |constraint_display| {
                 if (typeTextsEqualIgnoringWhitespace(constraint_display, target_display)) return true;
             }
         }
@@ -95743,8 +95781,8 @@ pub const Checker = struct {
         const source_args = self.alias_type_args.get(source_t) orelse return null;
         const target_args = self.alias_type_args.get(target_t) orelse return null;
         if (source_args.len != target_args.len) return null;
-        const source_display = self.alias_display_names.get(source_t) orelse "";
-        const target_display = self.alias_display_names.get(target_t) orelse "";
+        const source_display = self.aliasDisplayName(source_t) orelse "";
+        const target_display = self.aliasDisplayName(target_t) orelse "";
         const standard_covariant =
             (std.mem.startsWith(u8, source_display, "Partial<") and
                 std.mem.startsWith(u8, target_display, "Partial<")) or
@@ -95771,8 +95809,8 @@ pub const Checker = struct {
         if (!source_flags.is_union and !source_flags.is_intersection and !source_flags.is_signature and
             !target_flags.is_union and !target_flags.is_intersection and !target_flags.is_signature)
         {
-            if (self.alias_display_names.get(source_t)) |source_display| {
-                if (self.alias_display_names.get(target_t)) |target_display| {
+            if (self.aliasDisplayName(source_t)) |source_display| {
+                if (self.aliasDisplayName(target_t)) |target_display| {
                     if (std.mem.eql(u8, source_display, target_display)) return true;
                 }
             }
@@ -95898,7 +95936,7 @@ pub const Checker = struct {
     }
 
     fn genericInstanceBaseName(self: *Checker, t: TypeId) CheckError!?hir_mod.StringId {
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
             if (lt == 0) return null;
             return self.string_interner.intern(display[0..lt]) catch return error.OutOfMemory;
@@ -100152,7 +100190,7 @@ pub const Checker = struct {
     fn registerAliasDisplayText(self: *Checker, t: TypeId, text: []const u8) !void {
         if (t < types.Primitive.first_dynamic) return;
         if (t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(t)) return;
+        if (self.aliasDisplayKnown(t)) return;
         if (self.namedTypeForId(t) != null) return;
         if (self.enumNameFromNominal(t) != null) return;
         const display = try self.diag_arena.allocator().dupe(u8, std.mem.trim(u8, text, " \t\r\n"));
@@ -100169,7 +100207,7 @@ pub const Checker = struct {
         if (self.type_names.get(name) == null or t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) {
             return self.registerAliasDisplayText(t, trimmed);
         }
-        _ = self.alias_display_names.remove(t);
+        _ = self.removeAliasDisplayName(t);
         const display = try self.diag_arena.allocator().dupe(u8, trimmed);
         try self.alias_display_names.put(self.gpa, t, display);
     }
@@ -104543,7 +104581,7 @@ pub const Checker = struct {
         if (self.builtin_object_names.get(target_t)) |raw| {
             if (std.mem.eql(u8, raw, "Object") or std.mem.eql(u8, raw, "Number")) return true;
         }
-        if (self.alias_display_names.get(target_t)) |raw| {
+        if (self.aliasDisplayName(target_t)) |raw| {
             if (std.mem.eql(u8, raw, "Object") or std.mem.eql(u8, raw, "Number")) return true;
         }
         if (self.primitiveAssertionMatchesWrapper(types.Primitive.number_t, target_t)) return true;
@@ -105197,7 +105235,7 @@ pub const Checker = struct {
 
     fn typeUsesArrayAliasDisplay(self: *Checker, t: TypeId, depth: u8) bool {
         if (depth > 6 or t >= self.interner.pool.typeCount()) return false;
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             if (std.mem.indexOf(u8, display, "Array<") != null and
                 std.mem.endsWith(u8, display, ">") and
                 self.interner.objectNumberIndex(t) != types.Primitive.none)
@@ -105307,7 +105345,7 @@ pub const Checker = struct {
         }
         if (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(init_node, init_t)) |display| {
             if (init_t >= types.Primitive.first_dynamic and init_t < self.interner.pool.typeCount() and
-                !self.alias_display_names.contains(init_t))
+                !self.aliasDisplayKnown(init_t))
             {
                 try self.alias_display_names.put(self.gpa, init_t, display);
             }
@@ -105404,7 +105442,7 @@ pub const Checker = struct {
         const else_t = self.hir.typeOf(conditional.else_branch);
         if (then_t == types.Primitive.none or else_t == types.Primitive.none) return null;
         const source_name = (try self.allocConditionalFunctionUnionDisplayName(conditional, then_t, else_t)) orelse return null;
-        const target_name = self.alias_display_names.get(target_t) orelse
+        const target_name = self.aliasDisplayName(target_t) orelse
             (try self.simpleDiagnosticTypeName(target_t)) orelse return null;
         const message = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -105460,7 +105498,7 @@ pub const Checker = struct {
 
     fn registerObjectLiteralImportedNamespaceDisplayName(self: *Checker, obj_t: TypeId, members: []const types.ObjectMember) CheckError!void {
         if (obj_t < types.Primitive.first_dynamic or obj_t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(obj_t)) return;
+        if (self.aliasDisplayKnown(obj_t)) return;
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         try buf.appendSlice(arena, "{ ");
@@ -105482,7 +105520,7 @@ pub const Checker = struct {
     }
 
     fn importNamespaceDiagnosticDisplayName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
-        const display = self.alias_display_names.get(t) orelse return null;
+        const display = self.aliasDisplayName(t) orelse return null;
         const synthetic_root_prefix = "typeof import(\"/";
         if (std.mem.startsWith(u8, display, synthetic_root_prefix)) {
             return try std.fmt.allocPrint(
@@ -105496,7 +105534,7 @@ pub const Checker = struct {
 
     fn registerDiagnosticUnionDisplayName(self: *Checker, union_t: TypeId, members: []const TypeId) CheckError!void {
         if (union_t < types.Primitive.first_dynamic or union_t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(union_t)) return;
+        if (self.aliasDisplayKnown(union_t)) return;
         const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return;
         try self.alias_display_names.put(self.gpa, union_t, display);
     }
@@ -106322,15 +106360,15 @@ pub const Checker = struct {
     fn recursiveAliasMemberSelfType(self: *Checker, receiver_t: TypeId, member_t: TypeId) ?TypeId {
         if (receiver_t == member_t) return null;
         if (!self.containsFreeTypeParameter(member_t)) return null;
-        const receiver_display = self.alias_display_names.get(receiver_t) orelse return null;
+        const receiver_display = self.aliasDisplayName(receiver_t) orelse return null;
         _ = std.mem.indexOfScalar(u8, receiver_display, '<') orelse return null;
         if (member_t < self.interner.pool.typeCount()) {
             const member_flags = self.interner.pool.flagsOf(member_t);
-            if (member_flags.is_intersection and !self.alias_display_names.contains(member_t)) {
+            if (member_flags.is_intersection and !self.aliasDisplayKnown(member_t)) {
                 return receiver_t;
             }
         }
-        const member_display = self.alias_display_names.get(member_t) orelse return null;
+        const member_display = self.aliasDisplayName(member_t) orelse return null;
         if (std.mem.eql(u8, receiver_display, member_display)) return null;
         const receiver_lt = std.mem.indexOfScalar(u8, receiver_display, '<') orelse return null;
         const member_lt = std.mem.indexOfScalar(u8, member_display, '<') orelse return null;
@@ -106361,7 +106399,7 @@ pub const Checker = struct {
         // table (which may name a different declaration or an older body).
         if (self.generic_instance_origins.contains(obj_t)) return null;
         const args = self.alias_type_args.get(obj_t) orelse return null;
-        const display = self.alias_display_names.get(obj_t) orelse return null;
+        const display = self.aliasDisplayName(obj_t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
         if (lt == 0) return null;
         const alias_name = self.string_interner.intern(display[0..lt]) catch return error.OutOfMemory;
@@ -109554,7 +109592,7 @@ pub const Checker = struct {
     }
 
     fn es5BuiltinCollectionRequiresDownlevel(self: *Checker, t: TypeId) bool {
-        const display = self.alias_display_names.get(t) orelse return false;
+        const display = self.aliasDisplayName(t) orelse return false;
         return std.mem.startsWith(u8, display, "Set<") or std.mem.startsWith(u8, display, "Map<");
     }
 
@@ -109908,14 +109946,13 @@ pub const Checker = struct {
         try subs.put(self.gpa, indexed.key_tp, types.Primitive.number_t);
         try subs.put(self.gpa, indexed.object_tp, array_constraint);
         var element_t = try self.substituteType(mapped.template, &subs);
-        if (self.alias_display_names.get(mapped.template)) |display| {
+        if (self.aliasDisplayName(mapped.template)) |display| {
             var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
             defer visited.deinit(self.gpa);
             if (try self.substitutedAliasDisplayText(mapped.template, display, &subs, &visited)) |substituted| {
-                try self.alias_display_names.put(self.gpa, element_t, substituted.text);
-                try self.alias_type_args.put(self.gpa, element_t, substituted.args);
+                try self.putPendingAliasDisplay(element_t, substituted);
             }
-        } else if (self.alias_display_names.contains(element_t) and
+        } else if (self.aliasDisplayKnown(element_t) and
             element_t < self.interner.pool.typeCount())
         {
             const flags = self.interner.pool.flagsOf(element_t);
@@ -118282,7 +118319,7 @@ pub const Checker = struct {
                     }
                     if (self.recordKeyofAliasType(access_obj_t)) {
                         if (self.closestBaseClassMemberName(access_obj_t, self.string_interner.get(m.name))) |suggestion| {
-                            const target_text = self.alias_display_names.get(access_obj_t) orelse "Record";
+                            const target_text = self.aliasDisplayName(access_obj_t) orelse "Record";
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "Property '{s}' does not exist on type '{s}'. Did you mean '{s}'?",
@@ -121670,7 +121707,7 @@ pub const Checker = struct {
                 // 18 `ReactNode` would become its fragment element).
                 const has_named_union_alias = children_t < self.interner.pool.typeCount() and
                     self.interner.pool.flagsOf(children_t).is_union and
-                    self.alias_display_names.get(children_t) != null;
+                    self.aliasDisplayName(children_t) != null;
                 const arraylike_element_t = if (children.len > 1 and !has_named_union_alias)
                     try self.jsxArrayLikeChildrenElementType(children_t)
                 else
@@ -123392,8 +123429,8 @@ pub const Checker = struct {
         raw_constraint: TypeId,
         constraint: TypeId,
     ) CheckError!void {
-        if (self.alias_display_names.contains(constraint)) return;
-        const display = self.alias_display_names.get(raw_constraint) orelse blk: {
+        if (self.aliasDisplayKnown(constraint)) return;
+        const display = self.aliasDisplayName(raw_constraint) orelse blk: {
             const name = self.namedTypeForId(raw_constraint) orelse return;
             break :blk self.string_interner.get(name);
         };
@@ -124517,7 +124554,7 @@ pub const Checker = struct {
         // contextually before treating it as one element of that array.
         if (try self.jsxSingleArrayChildAssignableToTarget(child, children_t)) return false;
         const tuple_target = self.actualTupleLength(children_t) != null;
-        const preserves_react_node = if (self.alias_display_names.get(children_t)) |display|
+        const preserves_react_node = if (self.aliasDisplayName(children_t)) |display|
             std.mem.eql(u8, display, "ReactNode")
         else
             false;
@@ -125460,7 +125497,7 @@ pub const Checker = struct {
         else
             combined_name;
         if (managed_t >= types.Primitive.first_dynamic and managed_t < self.interner.pool.typeCount()) {
-            _ = self.alias_display_names.remove(managed_t);
+            _ = self.removeAliasDisplayName(managed_t);
             const stored = try self.diag_arena.allocator().dupe(u8, managed_name);
             try self.alias_display_names.put(self.gpa, managed_t, stored);
         }
@@ -125477,7 +125514,7 @@ pub const Checker = struct {
     }
 
     fn jsxTargetIsLibraryManaged(self: *Checker, target: TypeId) bool {
-        const display = self.alias_display_names.get(target) orelse return false;
+        const display = self.aliasDisplayName(target) orelse return false;
         return std.mem.startsWith(u8, display, "Defaultize<") or
             std.mem.indexOf(u8, display, "InferredPropTypes<") != null;
     }
@@ -126121,7 +126158,7 @@ pub const Checker = struct {
             "JSX.{s}",
             .{self.string_interner.get(element_name)},
         );
-        _ = self.alias_display_names.remove(t);
+        _ = self.removeAliasDisplayName(t);
         try self.alias_display_names.put(self.gpa, t, display);
         try self.qualified_alias_diagnostic_names.put(self.gpa, t, display);
     }
@@ -126814,7 +126851,7 @@ pub const Checker = struct {
                 try display.append(self.gpa, '.');
                 try display.appendSlice(self.gpa, self.string_interner.get(leaf_name));
                 const stored = try self.diag_arena.allocator().dupe(u8, display.items);
-                _ = self.alias_display_names.remove(t);
+                _ = self.removeAliasDisplayName(t);
                 try self.alias_display_names.put(self.gpa, t, stored);
                 try self.qualified_alias_diagnostic_names.put(self.gpa, t, stored);
             }
@@ -127883,7 +127920,7 @@ pub const Checker = struct {
             if (try self.virtualCommonJsModuleExportObjectType(type_node, filename)) |exports_t| {
                 if (exports_t >= types.Primitive.first_dynamic and exports_t < self.interner.pool.typeCount() and
                     !self.commonJsSectionHasWholeExportAssignment(type_node) and
-                    !self.alias_display_names.contains(exports_t))
+                    !self.aliasDisplayKnown(exports_t))
                 {
                     try self.alias_display_names.put(self.gpa, exports_t, try self.currentCommonJsModuleTypeName(type_node));
                 }
@@ -127893,7 +127930,7 @@ pub const Checker = struct {
         const exports_t = self.lookupCommonJsExportNarrow(try self.commonJsModuleExportsDirectKey()) orelse return null;
         if (exports_t >= types.Primitive.first_dynamic and exports_t < self.interner.pool.typeCount() and
             !self.commonJsSectionHasWholeExportAssignment(type_node) and
-            !self.alias_display_names.contains(exports_t))
+            !self.aliasDisplayKnown(exports_t))
         {
             try self.alias_display_names.put(self.gpa, exports_t, try self.currentCommonJsModuleTypeName(type_node));
         }
@@ -128484,7 +128521,7 @@ pub const Checker = struct {
 
     fn recordObjectExpandoInstanceDisplay(self: *Checker, instance_t: TypeId, name: hir_mod.StringId) !void {
         if (instance_t < types.Primitive.first_dynamic or instance_t >= self.interner.pool.typeCount()) return;
-        if (self.alias_display_names.contains(instance_t)) return;
+        if (self.aliasDisplayKnown(instance_t)) return;
         try self.alias_display_names.put(self.gpa, instance_t, self.string_interner.get(name));
     }
 
@@ -129315,7 +129352,7 @@ pub const Checker = struct {
                 const checked_parameter_types = self.interner.signatureParams(checked_callee_signature);
                 if (index < checked_parameter_types.len) {
                     const checked_parameter_t = checked_parameter_types[index];
-                    if (!self.alias_display_names.contains(checked_parameter_t)) {
+                    if (!self.aliasDisplayKnown(checked_parameter_t)) {
                         self.alias_display_names.put(
                             self.gpa,
                             checked_parameter_t,
@@ -131300,7 +131337,7 @@ pub const Checker = struct {
             self.hir.kindOf(callee_node) == .identifier and
             cns_ret >= types.Primitive.first_dynamic and
             cns_ret < self.interner.pool.typeCount() and
-            self.alias_display_names.get(cns_ret) == null)
+            self.aliasDisplayName(cns_ret) == null)
         {
             const class_name = hir_mod.identifierOf(self.hir, callee_node).name;
             if (std.mem.eql(u8, self.string_interner.get(class_name), "Array")) return cns_ret;
@@ -149724,7 +149761,7 @@ pub const Checker = struct {
 
     fn displayedIndexedAliasConstraint(self: *Checker, node: NodeId, t: TypeId) CheckError!?TypeId {
         const alias_name = self.namedTypeForId(t) orelse blk: {
-            const display = self.alias_display_names.get(t) orelse return null;
+            const display = self.aliasDisplayName(t) orelse return null;
             const generic_open = std.mem.indexOfScalar(u8, display, '<') orelse return null;
             if (generic_open == 0) return null;
             break :blk self.string_interner.intern(display[0..generic_open]) catch return error.OutOfMemory;
@@ -149761,7 +149798,7 @@ pub const Checker = struct {
             if (constraint == t) return false;
             return self.indexTypeExcludesSymbol(constraint);
         }
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             const compact = std.mem.trim(u8, display, " \t\r\n");
             if (std.mem.startsWith(u8, compact, "Exclude<") and
                 std.mem.endsWith(u8, compact, ", symbol>"))
@@ -149895,7 +149932,7 @@ pub const Checker = struct {
             }
         }
         if (self.recordKeyofAliasType(obj_t) and self.typeMaybeStringLike(idx_t)) {
-            const obj_name = self.alias_display_names.get(obj_t) orelse "Record";
+            const obj_name = self.aliasDisplayName(obj_t) orelse "Record";
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Type '{s}' is generic and can only be indexed for reading.",
@@ -150026,7 +150063,7 @@ pub const Checker = struct {
     }
 
     fn recordKeyofAliasType(self: *Checker, t: TypeId) bool {
-        const display = self.alias_display_names.get(t) orelse return false;
+        const display = self.aliasDisplayName(t) orelse return false;
         return std.mem.startsWith(u8, display, "Record<") and std.mem.indexOf(u8, display, "keyof ") != null;
     }
 
@@ -151344,7 +151381,7 @@ pub const Checker = struct {
         target_t: TypeId,
     ) CheckError!bool {
         const source_decl = self.interfaceDeclarationForTypeIdentity(source_t) orelse blk: {
-            const source_display = self.alias_display_names.get(source_t) orelse return false;
+            const source_display = self.aliasDisplayName(source_t) orelse return false;
             const source_lt = std.mem.indexOfScalar(u8, source_display, '<') orelse return false;
             if (source_lt == 0) return false;
             const source_qualified = source_display[0..source_lt];
@@ -154430,7 +154467,7 @@ pub const Checker = struct {
             .is_readonly = false,
             .is_method = false,
         }}) catch return error.OutOfMemory;
-        if (!self.alias_display_names.contains(receiver_t)) {
+        if (!self.aliasDisplayKnown(receiver_t)) {
             try self.alias_display_names.put(
                 self.gpa,
                 receiver_t,
@@ -159094,14 +159131,14 @@ pub const Checker = struct {
         }
         if (target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_union and
-            !self.alias_display_names.contains(target_t))
+            !self.aliasDisplayKnown(target_t))
         {
             try self.registerDiagnosticUnionDisplayName(target_t, self.interner.unionMembers(target_t));
         }
         if (target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_union)
         {
-            if (self.alias_display_names.get(target_t)) |display| {
+            if (self.aliasDisplayName(target_t)) |display| {
                 if (std.mem.startsWith(u8, std.mem.trimStart(u8, display, " \t\r\n"), "{")) {
                     if (try self.allocDiagnosticUnionDisplayName(self.interner.unionMembers(target_t))) |canonical| {
                         return canonical;
@@ -159110,7 +159147,7 @@ pub const Checker = struct {
             }
         }
         if (try self.allocSimpleTypeName(target_t)) |name| return name;
-        if (self.alias_display_names.get(target_t)) |name| return name;
+        if (self.aliasDisplayName(target_t)) |name| return name;
         if (target_t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(target_t);
         if (flags.is_object_type and
@@ -159221,7 +159258,7 @@ pub const Checker = struct {
         init_node: NodeId,
     ) CheckError!?[]const u8 {
         if (init_node == hir_mod.none_node_id or self.hir.kindOf(init_node) != .object_literal) return null;
-        const display = self.alias_display_names.get(target_t) orelse return null;
+        const display = self.aliasDisplayName(target_t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
         if (!std.mem.endsWith(u8, display, ">")) return null;
         const alias_base = display[0..lt];
@@ -160453,8 +160490,8 @@ pub const Checker = struct {
     }
 
     fn sameGenericFunctionArgumentAliasMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
-        const source_text = self.alias_display_names.get(source_t) orelse return false;
-        const target_text = self.alias_display_names.get(target_t) orelse return false;
+        const source_text = self.aliasDisplayName(source_t) orelse return false;
+        const target_text = self.aliasDisplayName(target_t) orelse return false;
         const source = (try self.parseGenericFunctionArgumentAnnotation(source_text)) orelse return false;
         const target = (try self.parseGenericFunctionArgumentAnnotation(target_text)) orelse return false;
         if (!std.mem.eql(u8, source.name, target.name)) return false;
@@ -164013,7 +164050,7 @@ pub const Checker = struct {
 
     fn reduceDisplayedAliasInstance(self: *Checker, t: TypeId) CheckError!?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
-        const display = self.alias_display_names.get(t) orelse return null;
+        const display = self.aliasDisplayName(t) orelse return null;
         if (try self.reduceIndexForDisplay(display)) |reduced| return reduced;
         const args = self.alias_type_args.get(t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
@@ -165589,7 +165626,7 @@ pub const Checker = struct {
                 number_idx,
                 symbol_idx,
             ) catch return error.OutOfMemory;
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             try self.alias_display_names.put(self.gpa, refreshed, display);
         }
         if (self.alias_type_args.get(t)) |args| {
@@ -167150,13 +167187,12 @@ pub const Checker = struct {
         result_t: TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!TypeId {
-        const display = self.alias_display_names.get(source_t) orelse return result_t;
+        const display = self.aliasDisplayName(source_t) orelse return result_t;
         var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
         defer visited.deinit(self.gpa);
         try visited.put(self.gpa, source_t, {});
         if (try self.substitutedAliasDisplayText(source_t, display, subs, &visited)) |substituted| {
-            try self.alias_display_names.put(self.gpa, result_t, substituted.text);
-            try self.alias_type_args.put(self.gpa, result_t, substituted.args);
+            try self.putPendingAliasDisplay(result_t, substituted);
         } else {
             try self.alias_display_names.put(self.gpa, result_t, display);
         }
@@ -167834,12 +167870,11 @@ pub const Checker = struct {
             // privacy checks look up the class's private set via the
             // declaring class name, which is now reachable via the
             // propagated `class_name_by_instance` entry.
-            if (self.alias_display_names.get(t)) |display| {
+            if (self.aliasDisplayName(t)) |display| {
                 var alias_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
                 defer alias_visited.deinit(self.gpa);
                 if (try self.substitutedAliasDisplayText(t, display, subs, &alias_visited)) |substituted_display| {
-                    try self.alias_display_names.put(self.gpa, new_obj, substituted_display.text);
-                    try self.alias_type_args.put(self.gpa, new_obj, substituted_display.args);
+                    try self.putPendingAliasDisplay(new_obj, substituted_display);
                 } else {
                     try self.alias_display_names.put(self.gpa, new_obj, display);
                 }
@@ -171912,7 +171947,7 @@ pub const Checker = struct {
             if (names.len > 0) self.string_interner.get(names[0]) else "a"
         else
             "a";
-        const target_alias = self.alias_display_names.get(param_ret) orelse "IterableIterator<any>";
+        const target_alias = self.aliasDisplayName(param_ret) orelse "IterableIterator<any>";
         const angle = std.mem.indexOfScalar(u8, target_alias, '<') orelse target_alias.len;
         const target_base = target_alias[0..angle];
         const target_alias_has_unsubstituted_param = std.mem.indexOf(u8, target_alias, "T") != null;
@@ -172160,7 +172195,7 @@ pub const Checker = struct {
         if (!self.interner.isSignature(param_t)) return param_t;
         const return_t = self.interner.signatureReturn(param_t) orelse return param_t;
         if (self.alias_type_args.contains(return_t)) return param_t;
-        const display = self.alias_display_names.get(return_t) orelse return param_t;
+        const display = self.aliasDisplayName(return_t) orelse return param_t;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return param_t;
         const alias_name = self.string_interner.intern(display[0..lt]) catch return error.OutOfMemory;
         const alias = self.generic_aliases.get(alias_name) orelse return param_t;
@@ -172175,7 +172210,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
         }
-        _ = self.alias_display_names.remove(return_t);
+        _ = self.removeAliasDisplayName(return_t);
         try self.registerAliasDisplayNameInner(return_t, alias_name, fallbacks, true);
         return param_t;
     }
@@ -172375,7 +172410,7 @@ pub const Checker = struct {
     }
 
     fn qualifiedClassArgumentDiagnosticName(self: *Checker, arg_node: NodeId, arg_t: TypeId) ?[]const u8 {
-        const display = self.alias_display_names.get(arg_t) orelse return null;
+        const display = self.aliasDisplayName(arg_t) orelse return null;
         if (std.mem.indexOfScalar(u8, display, '.') == null) return null;
         const class_name = self.classNameForInstanceType(arg_t) orelse return null;
         const declaring_class = self.class_decl_by_instance.get(arg_t) orelse return display;
@@ -172655,8 +172690,8 @@ pub const Checker = struct {
         // the positional placeholder. Restricted to the alias-display
         // table specifically so we don't accidentally render arbitrary
         // structural shapes that upstream tsc elides.
-        if (self.alias_display_names.get(arg_t)) |arg_text| {
-            if (self.alias_display_names.get(param_t)) |param_text| {
+        if (self.aliasDisplayName(arg_t)) |arg_text| {
+            if (self.aliasDisplayName(param_t)) |param_text| {
                 return try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -172683,7 +172718,7 @@ pub const Checker = struct {
         if (display_arg_t < self.interner.pool.typeCount()) {
             const arg_flags = self.interner.pool.flagsOf(display_arg_t);
             const has_name = self.namedTypeForId(display_arg_t) != null or
-                self.alias_display_names.contains(display_arg_t) or
+                self.aliasDisplayKnown(display_arg_t) or
                 self.class_name_by_instance.contains(display_arg_t);
             if (arg_flags.is_object_type and !has_name) {
                 if (try self.simpleDiagnosticTypeName(param_t)) |param_text| {
@@ -172711,10 +172746,10 @@ pub const Checker = struct {
             const arg_flags = self.interner.pool.flagsOf(display_arg_t);
             const param_flags = self.interner.pool.flagsOf(param_t);
             const arg_has_name = self.namedTypeForId(display_arg_t) != null or
-                self.alias_display_names.contains(display_arg_t) or
+                self.aliasDisplayKnown(display_arg_t) or
                 self.class_name_by_instance.contains(display_arg_t);
             const param_has_name = self.namedTypeForId(param_t) != null or
-                self.alias_display_names.contains(param_t) or
+                self.aliasDisplayKnown(param_t) or
                 self.class_name_by_instance.contains(param_t);
             if (arg_flags.is_object_type and param_flags.is_object_type and
                 !arg_has_name and !param_has_name and
@@ -172943,7 +172978,7 @@ pub const Checker = struct {
         // Exact optional diagnostics describe the declared target shape.
         // General anonymous-object rendering widens optionals with
         // `| undefined`, which would contradict this diagnostic's premise.
-        const param_is_named = self.namedTypeForId(param_t) != null or self.alias_display_names.get(param_t) != null;
+        const param_is_named = self.namedTypeForId(param_t) != null or self.aliasDisplayName(param_t) != null;
         const param_text = if (param_is_named)
             (try self.allocSimpleTypeName(param_t)) orelse return null
         else
@@ -173614,7 +173649,7 @@ pub const Checker = struct {
     fn allocSignatureConstituentDisplayName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const entry = try self.signature_constituent_display_in_progress.getOrPut(self.gpa, t);
         if (entry.found_existing) {
-            return self.alias_display_names.get(t) orelse "...";
+            return self.aliasDisplayName(t) orelse "...";
         }
         defer _ = self.signature_constituent_display_in_progress.remove(t);
 
@@ -173639,7 +173674,7 @@ pub const Checker = struct {
                     .{ if (self.typeIsReadonlyArrayLike(t)) "readonly " else "", elem_name },
                 );
         }
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             if (std.mem.indexOf(u8, display, "Array<") != null and std.mem.endsWith(u8, display, ">")) {
                 const elem_t = self.interner.objectNumberIndex(t);
                 if (elem_t != types.Primitive.none) {
@@ -173981,7 +174016,7 @@ pub const Checker = struct {
             } else if (self.namedTypeForId(member)) |name_id| {
                 key.has_name = true;
                 key.name = self.string_interner.get(name_id);
-            } else if (self.alias_display_names.get(member)) |display| {
+            } else if (self.aliasDisplayName(member)) |display| {
                 key.has_name = true;
                 key.name = display[0..(std.mem.indexOfScalar(u8, display, '<') orelse display.len)];
             } else if (self.builtin_object_names.get(member)) |bname| {
@@ -174055,7 +174090,7 @@ pub const Checker = struct {
                 // name. See `enumIsNotASubtypeOfAnythingButNumber.ts(66,5)`
                 // and `subtypesOfUnion.ts(23,5)`.
                 if (if (expand_string_named_export) null else self.namedTypeForId(t)) |type_name| {
-                    if (self.alias_display_names.get(t)) |display| {
+                    if (self.aliasDisplayName(t)) |display| {
                         if (self.qualifiedClassDisplayCanUseBareName(t, type_name, display)) {
                             break :blk self.string_interner.get(type_name);
                         }
@@ -174073,7 +174108,7 @@ pub const Checker = struct {
                 // alias spelling in TS2345 / TS2322 prose rather than
                 // collapsing to the substituted structural shape. See
                 // `iterableArrayPattern26.ts(2,21)`.
-                if (if (expand_string_named_export) null else self.alias_display_names.get(t)) |display| {
+                if (if (expand_string_named_export) null else self.aliasDisplayName(t)) |display| {
                     break :blk display;
                 }
                 if (try self.allocPromiseDisplayName(t)) |display| {
@@ -174424,7 +174459,7 @@ pub const Checker = struct {
         while (instances.next()) |entry| {
             const other_t = entry.key_ptr.*;
             if (other_t == t or entry.value_ptr.* != type_name) continue;
-            const other_display = self.alias_display_names.get(other_t) orelse continue;
+            const other_display = self.aliasDisplayName(other_t) orelse continue;
             if (std.mem.indexOfScalar(u8, other_display, '.') != null and
                 !std.mem.eql(u8, display, other_display))
             {
@@ -179274,8 +179309,8 @@ pub const Checker = struct {
 
     fn sameAliasOrNamedType(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
         if (source_t == target_t) return true;
-        if (self.alias_display_names.get(source_t)) |source_name| {
-            if (self.alias_display_names.get(target_t)) |target_name| {
+        if (self.aliasDisplayName(source_t)) |source_name| {
+            if (self.aliasDisplayName(target_t)) |target_name| {
                 return std.mem.eql(u8, source_name, target_name);
             }
         }
@@ -184274,7 +184309,7 @@ pub const Checker = struct {
     ) bool {
         if (candidate >= self.interner.pool.typeCount() or
             !self.interner.pool.flagsOf(candidate).is_object_type) return false;
-        const display = self.alias_display_names.get(intersection_t) orelse return false;
+        const display = self.aliasDisplayName(intersection_t) orelse return false;
         const angle = std.mem.indexOfScalar(u8, display, '<') orelse return false;
         const alias_name = std.mem.trim(u8, display[0..angle], " \t\r\n");
         if (alias_name.len == 0) return false;
@@ -185570,7 +185605,7 @@ pub const Checker = struct {
     }
 
     fn typeHasAliasDisplayPrefix(self: *Checker, t: TypeId, prefix: []const u8) bool {
-        const display = self.alias_display_names.get(t) orelse return false;
+        const display = self.aliasDisplayName(t) orelse return false;
         return std.mem.startsWith(u8, display, prefix);
     }
 
@@ -189835,7 +189870,7 @@ pub const Checker = struct {
         // `assignmentCompatBetweenTupleAndArray.ts(18,1)`.
         const target_tuple_len_opt = self.actualTupleLength(target);
         const source_has_nominal_display = source < self.interner.pool.typeCount() and
-            (self.namedTypeForId(source) != null or self.alias_display_names.contains(source));
+            (self.namedTypeForId(source) != null or self.aliasDisplayKnown(source));
         if (target_tuple_len_opt != null and
             source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type)
@@ -190265,7 +190300,7 @@ pub const Checker = struct {
         if (try self.diagnosticUnionDisplayName(display_t)) |display| return display;
         if (self.class_name_by_instance.get(display_t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
-            if (self.alias_display_names.get(display_t)) |display| {
+            if (self.aliasDisplayName(display_t)) |display| {
                 if (std.mem.indexOfScalar(u8, display, '<')) |args_start| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
@@ -190306,7 +190341,7 @@ pub const Checker = struct {
         }
         if (self.class_name_by_instance.get(t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
-            if (self.alias_display_names.get(t)) |display| {
+            if (self.aliasDisplayName(t)) |display| {
                 if (std.mem.indexOfScalar(u8, display, '.') != null and
                     !self.qualifiedClassDisplayCanUseBareName(t, class_name, display))
                 {
@@ -190322,7 +190357,7 @@ pub const Checker = struct {
             }
             return bare_name;
         }
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             if (self.namedTypeForId(t)) |name| {
                 if (std.mem.indexOfScalar(u8, display, '<') == null and
                     std.mem.indexOfScalar(u8, display, '.') != null)
@@ -190350,7 +190385,7 @@ pub const Checker = struct {
         if (self.class_decl_by_instance.get(t)) |class_decl| {
             if (self.declarationsShareNamespacePath(class_decl, anchor)) {
                 if (self.class_name_by_instance.get(t)) |class_name| {
-                    if (self.alias_display_names.get(t)) |display| {
+                    if (self.aliasDisplayName(t)) |display| {
                         if (std.mem.indexOfScalar(u8, display, '<')) |args_start| {
                             return try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
@@ -190734,7 +190769,7 @@ pub const Checker = struct {
 
     fn weakTypeDiagnosticName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         if (self.namedTypeForId(t) != null or
-            self.alias_display_names.contains(t) or
+            self.aliasDisplayKnown(t) or
             self.builtin_object_names.contains(t))
         {
             if (try self.allocSimpleTypeName(t)) |name| return name;
@@ -190752,9 +190787,9 @@ pub const Checker = struct {
         // Alias identity is intentionally bare here. Diagnostic rendering may
         // qualify the same aliases by namespace, but that spelling must not
         // make two structurally equivalent recursive aliases unrelated.
-        const source_name = self.alias_display_names.get(source) orelse
+        const source_name = self.aliasDisplayName(source) orelse
             (try self.allocSimpleTypeName(source)) orelse return false;
-        const target_name = self.alias_display_names.get(target) orelse
+        const target_name = self.aliasDisplayName(target) orelse
             (try self.allocSimpleTypeName(target)) orelse return false;
         if (try self.recursiveGenericAliasBodiesAssignable(source, target, source_name, target_name)) return true;
         if (!std.mem.eql(u8, source_name, target_name)) return false;
@@ -191060,8 +191095,8 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
     ) CheckError!bool {
-        const source_display = self.alias_display_names.get(source) orelse return false;
-        const target_display = self.alias_display_names.get(target) orelse return false;
+        const source_display = self.aliasDisplayName(source) orelse return false;
+        const target_display = self.aliasDisplayName(target) orelse return false;
         const source_base = genericAliasBaseName(source_display);
         const target_base = genericAliasBaseName(target_display);
         if (!std.mem.eql(u8, source_base, target_base)) return false;
@@ -191124,7 +191159,7 @@ pub const Checker = struct {
         depth: u8,
     ) bool {
         if (depth >= 8 or t >= self.interner.pool.typeCount()) return false;
-        if (self.alias_display_names.get(t)) |display| {
+        if (self.aliasDisplayName(t)) |display| {
             if (std.mem.eql(u8, genericAliasBaseName(display), alias_base)) return true;
         }
         const flags = self.interner.pool.flagsOf(t);
@@ -191454,10 +191489,10 @@ pub const Checker = struct {
         const source_is_nullish = source == types.Primitive.undefined_t or source == types.Primitive.null_t;
         const source_is_mapped_alias = source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_mapped and
-            self.alias_display_names.contains(source);
+            self.aliasDisplayKnown(source);
         const source_is_conditional_alias = source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_conditional and
-            self.alias_display_names.contains(source);
+            self.aliasDisplayKnown(source);
         if (!source_is_nullish and !source_is_mapped_alias and !source_is_conditional_alias and try self.tryReportSameNameTypeParameterInstantiationMismatch(node, anchor_pos, source, target)) return;
         // A concrete (or unrelated type-parameter) source assigned to a bare
         // type-parameter target is unsound: `T` could be instantiated with an
@@ -192176,7 +192211,7 @@ pub const Checker = struct {
     fn allocAssignmentDiagnosticTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const normalized = try self.normalizeKeyofAlgebra(t);
         if (normalized != t) return try self.allocSimpleTypeName(normalized);
-        const signature_alias = self.alias_display_names.get(t);
+        const signature_alias = self.aliasDisplayName(t);
         const signature_alias_is_syntax = if (signature_alias) |display|
             std.mem.startsWith(u8, display, "(") or std.mem.startsWith(u8, display, "new (")
         else
@@ -194237,7 +194272,7 @@ pub const Checker = struct {
                     // where the partial type for `D<T>` must render
                     // with the formal parameter, not collapse to
                     // `'D'`.
-                    if (self.alias_display_names.get(t)) |display| {
+                    if (self.aliasDisplayName(t)) |display| {
                         // A namespaced class instance carries a qualified
                         // display (`JustStrings.S`), but tsc renders the
                         // BARE name when it is unambiguous at the reference
@@ -194286,7 +194321,7 @@ pub const Checker = struct {
                 // mirrors upstream tsc which preserves the alias name
                 // in TS2322 prose rather than collapsing to the
                 // substituted body. See `conditionalTypes2.ts(15,5)`.
-                if (if (expand_string_named_export) null else self.alias_display_names.get(t)) |display| {
+                if (if (expand_string_named_export) null else self.aliasDisplayName(t)) |display| {
                     break :blk display;
                 }
                 if (try self.allocPromiseDisplayName(t)) |display| {
@@ -194400,7 +194435,7 @@ pub const Checker = struct {
                         // `objectTypeWithConstructSignatureHidingMembersOfFunctionAssignmentCompat.ts(14,1)`.
                         if (members[0].name == construct_id and self.interner.isSignature(members[0].type)) {
                             const return_t = self.interner.signatureReturn(members[0].type) orelse types.Primitive.none;
-                            if (self.alias_display_names.get(return_t)) |display| {
+                            if (self.aliasDisplayName(return_t)) |display| {
                                 if (std.mem.eql(u8, display, "(Anonymous class)")) {
                                     break :blk "typeof (Anonymous class)";
                                 }
@@ -194634,7 +194669,7 @@ pub const Checker = struct {
                         all_string_literal_members = all_string_literal_members and is_string_literal;
                         const is_anonymous_object = member_flags.is_object_type and
                             self.namedTypeForId(member) == null and
-                            self.alias_display_names.get(member) == null;
+                            self.aliasDisplayName(member) == null;
                         all_anonymous_object_members = all_anonymous_object_members and is_anonymous_object;
                         // Skip if we've already emitted this exact label.
                         var duplicate = false;
@@ -194654,7 +194689,7 @@ pub const Checker = struct {
                         // matches upstream tsc for `unionTypeLiterals.ts`
                         // and `intersectionAndUnionTypes.ts(23,1)`.
                         const needs_parens = std.mem.indexOf(u8, member_name, "=>") != null or
-                            (member_flags.is_intersection and self.alias_display_names.get(member) == null);
+                            (member_flags.is_intersection and self.aliasDisplayName(member) == null);
                         try entries.append(self.gpa, .{
                             .name = member_name,
                             .parens = needs_parens,
@@ -195265,7 +195300,7 @@ pub const Checker = struct {
         // `conditionalTypeDoesntSpinForever`) tractable without
         // affecting prose for ordinary shallow instantiations.
         if (self.instantiation_depth > display_name_depth_limit) return;
-        if (self.alias_display_names.contains(t)) {
+        if (self.aliasDisplayKnown(t)) {
             var refresh_unknown_args = false;
             if (override_named_guard) {
                 if (self.alias_type_args.get(t)) |old_args| {
@@ -195280,7 +195315,7 @@ pub const Checker = struct {
                 }
             }
             if (override_named_guard and (!self.alias_type_args.contains(t) or refresh_unknown_args)) {
-                _ = self.alias_display_names.remove(t);
+                _ = self.removeAliasDisplayName(t);
                 if (refresh_unknown_args) _ = self.alias_type_args.remove(t);
             } else {
                 if (!self.alias_type_args.contains(t)) {
