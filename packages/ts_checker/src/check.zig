@@ -190740,10 +190740,21 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
     ) CheckError!bool {
-        if (source < types.Primitive.first_dynamic or
-            source >= self.interner.pool.typeCount()) return false;
+        if (source >= self.interner.pool.typeCount()) return false;
         if (target < types.Primitive.first_dynamic or
             target >= self.interner.pool.typeCount()) return false;
+        if (self.engine.primitiveWeakTypeNoCommonProperties(source, target)) {
+            const source_name = (try self.weakTypeDiagnosticName(source)) orelse return false;
+            const target_name = (try self.weakTypeDiagnosticName(target)) orelse return false;
+            const msg = try std.fmt.allocPrint(
+                self.diag_arena.allocator(),
+                "Type '{s}' has no properties in common with type '{s}'.",
+                .{ source_name, target_name },
+            );
+            try self.report(node, TsCodes.no_properties_in_common, msg);
+            return true;
+        }
+        if (source < types.Primitive.first_dynamic) return false;
         // Delegate weak-type eligibility (weak target, source carries
         // properties, no common property name) to the relation engine,
         // which already mirrors tsc's `isWeakType`/`hasCommonProperties`
@@ -220363,6 +220374,26 @@ test "checker: constructor parameter properties contribute to instance shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
     }
+}
+
+test "checker: a primitive has no properties in common with a weak option bag" {
+    // tsc: TS2559, and overload resolution moves past
+    // `readFileSync(path, options?: { encoding?: null; flag?: string })`.
+    const s = try newSetup(
+        \\declare function rf(path: string, options?: { encoding?: null; flag?: string } | null): number;
+        \\declare function rf(path: string, options: { encoding: "utf-8"; flag?: string } | "utf-8"): string;
+        \\const text: string = rf("x", "utf-8");
+        \\const bag: { encoding?: null; flag?: string } = "utf-8";
+        \\const ok: { toString?(): string } = "utf-8";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var weak: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        if (d.code == TsCodes.no_properties_in_common) weak += 1;
+    }
+    try T.expectEqual(@as(usize, 1), weak);
 }
 
 test "checker: ambient class method overloads all reach the instance" {

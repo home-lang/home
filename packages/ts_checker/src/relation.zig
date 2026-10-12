@@ -1063,6 +1063,12 @@ pub const Engine = struct {
         if ((sf.is_object_type or sf.is_intersection) and self.weakTypeNoCommonProperties(source, target)) {
             return false;
         }
+        // A primitive relates to a weak target through its apparent type
+        // (String, Number, ...), which shares no property with a weak option
+        // bag like `{ encoding?: null; flag?: string }`. tsc reports TS2559;
+        // without it overload resolution took @types/node's Buffer-returning
+        // `readFileSync(path, options?)` for `readFileSync(path, "utf-8")`.
+        if (self.primitiveWeakTypeNoCommonProperties(source, target)) return false;
 
         // A numeric enum-member literal is assignable to its *own*
         // enum's nominal type (`E1.X` → `E1`), but not to a foreign
@@ -1539,6 +1545,32 @@ pub const Engine = struct {
             if (!m.is_optional) return false;
         }
         return true;
+    }
+
+    /// TS2559 for a primitive source (see the relation's use above).
+    pub fn primitiveWeakTypeNoCommonProperties(self: *Engine, source: TypeId, target: TypeId) bool {
+        if (source >= self.pool().typeCount() or target >= self.pool().typeCount()) return false;
+        const sf = self.pool().flagsOf(source);
+        if (!(sf.is_string or sf.is_number or sf.is_boolean or sf.is_bigint or sf.is_symbol)) return false;
+        if (sf.is_union or sf.is_intersection) return false;
+        return self.isWeakType(target) and !self.weakTargetSharesApparentMember(target, sf.is_string);
+    }
+
+    /// Whether a weak target names a member every primitive's apparent type
+    /// has (`toString`, `valueOf`, ...; strings also `length`).
+    fn weakTargetSharesApparentMember(self: *Engine, target: TypeId, is_string: bool) bool {
+        const si = self.string_interner orelse return true;
+        const shared = [_][]const u8{ "toString", "valueOf", "toLocaleString", "constructor" };
+        const string_only = [_][]const u8{ "length", "charAt", "charCodeAt", "concat", "indexOf", "slice", "split", "substring", "toLowerCase", "toUpperCase", "trim" };
+        if (target < Primitive.first_dynamic or target >= self.pool().typeCount()) return true;
+        const flags = self.pool().flagsOf(target);
+        const members: []const types.ObjectMember = if (flags.is_object_type) self.interner.objectMembers(target) else return true;
+        for (members) |member| {
+            const name = si.getOptional(member.name) orelse continue;
+            for (shared) |candidate| if (std.mem.eql(u8, name, candidate)) return true;
+            if (is_string) for (string_only) |candidate| if (std.mem.eql(u8, name, candidate)) return true;
+        }
+        return false;
     }
 
     /// True when a member's name is a synthetic call (`__call`) or
