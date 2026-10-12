@@ -97,8 +97,9 @@ async function* watch(
     watcher.close();
     wake?.();
   }
+  let abortSubscription;
   try {
-    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal) abortSubscription = require("internal/abort_listener").addAbortListener(signal, onAbort);
     while (!signal?.aborted) {
       let event;
       while ((event = queue.shift())) {
@@ -115,7 +116,7 @@ async function* watch(
   }
   finally {
     watcher.close();
-    signal?.removeEventListener("abort", onAbort);
+    abortSubscription?.[Symbol.dispose]();
     wake = undefined;
     queue.clear();
   }

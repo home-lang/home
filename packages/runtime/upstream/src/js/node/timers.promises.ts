@@ -3,33 +3,18 @@
 
 const { validateBoolean, validateAbortSignal, validateObject, validateNumber } = require("internal/validators");
 
-const symbolAsyncIterator = Symbol.asyncIterator;
+const { addAbortListener } = require("internal/abort_listener");
 const setImmediateGlobal = globalThis.setImmediate;
 const setTimeoutGlobal = globalThis.setTimeout;
 const setIntervalGlobal = globalThis.setInterval;
 
-function asyncIterator({ next: nextFunction, return: returnFunction }) {
-  const result = {};
-  if (typeof nextFunction === "function") {
-    result.next = nextFunction;
-  }
-  if (typeof returnFunction === "function") {
-    result.return = returnFunction;
-  }
-  result[symbolAsyncIterator] = function () {
-    return this;
-  };
-
-  return result;
-}
-
-function setTimeout(after = 1, value, options = {}) {
+function setTimeout(after, value, options = {}) {
   const arguments_ = [].concat(value ?? []);
   try {
     // If after is a number, but an invalid one (too big, Infinity, NaN), we only want to emit a
     // warning, not throw an error. So we can't call validateNumber as that will throw if the number
     // is outside of a given range.
-    if (typeof after != "number") {
+    if (after !== undefined && typeof after != "number") {
       validateNumber(after, "delay");
     }
   } catch (error) {
@@ -54,7 +39,7 @@ function setTimeout(after = 1, value, options = {}) {
   if (signal?.aborted) {
     return Promise.$reject($makeAbortError(undefined, { cause: signal.reason }));
   }
-  let onCancel;
+  let onCancel, abortSubscription;
   const returnValue = new Promise((resolve, reject) => {
     const timeout = setTimeoutGlobal(() => resolve(value), after, ...arguments_);
     if (!reference) {
@@ -65,11 +50,11 @@ function setTimeout(after = 1, value, options = {}) {
         clearTimeout(timeout);
         reject($makeAbortError(undefined, { cause: signal.reason }));
       };
-      signal.addEventListener("abort", onCancel);
+      abortSubscription = addAbortListener(signal, onCancel);
     }
   });
   return typeof onCancel !== "undefined"
-    ? returnValue.finally(() => signal.removeEventListener("abort", onCancel))
+    ? returnValue.finally(() => abortSubscription[Symbol.dispose]())
     : returnValue;
 }
 
@@ -93,7 +78,7 @@ function setImmediate(value, options = {}) {
   if (signal?.aborted) {
     return Promise.$reject($makeAbortError(undefined, { cause: signal.reason }));
   }
-  let onCancel;
+  let onCancel, abortSubscription;
   const returnValue = new Promise((resolve, reject) => {
     const immediate = setImmediateGlobal(() => resolve(value));
     if (!reference) {
@@ -104,129 +89,56 @@ function setImmediate(value, options = {}) {
         clearImmediate(immediate);
         reject($makeAbortError(undefined, { cause: signal.reason }));
       };
-      signal.addEventListener("abort", onCancel);
+      abortSubscription = addAbortListener(signal, onCancel);
     }
   });
   return typeof onCancel !== "undefined"
-    ? returnValue.finally(() => signal.removeEventListener("abort", onCancel))
+    ? returnValue.finally(() => abortSubscription[Symbol.dispose]())
     : returnValue;
 }
 
-function setInterval(after = 1, value, options = {}) {
-  /* eslint-disable no-undefined, no-unreachable-loop, no-loop-func */
-  try {
-    // If after is a number, but an invalid one (too big, Infinity, NaN), we only want to emit a
-    // warning, not throw an error. So we can't call validateNumber as that will throw if the number
-    // is outside of a given range.
-    if (typeof after != "number") {
-      validateNumber(after, "delay");
-    }
-  } catch (error) {
-    return asyncIterator({
-      next: function () {
-        return Promise.$reject(error);
-      },
-    });
-  }
-  try {
-    validateObject(options, "options");
-  } catch (error) {
-    return asyncIterator({
-      next: function () {
-        return Promise.$reject(error);
-      },
-    });
-  }
+async function* setInterval(after, value, options = {}) {
+  if (after !== undefined && typeof after !== "number") validateNumber(after, "delay");
+  validateObject(options, "options");
   const { signal, ref: reference = true } = options;
+  validateAbortSignal(signal, "options.signal");
+  validateBoolean(reference, "options.ref");
+  if (signal?.aborted) throw $makeAbortError(undefined, { cause: signal.reason });
+  let notYielded = 0;
+  let wake;
+  let interval, abortSubscription;
   try {
-    validateAbortSignal(signal, "options.signal");
-  } catch (error) {
-    return asyncIterator({
-      next: function () {
-        return Promise.$reject(error);
-      },
-    });
-  }
-  try {
-    validateBoolean(reference, "options.ref");
-  } catch (error) {
-    return asyncIterator({
-      next: function () {
-        return Promise.$reject(error);
-      },
-    });
-  }
-  if (signal?.aborted) {
-    return asyncIterator({
-      next: function () {
-        return Promise.$reject($makeAbortError(undefined, { cause: signal.reason }));
-      },
-    });
-  }
-
-  let onCancel, interval;
-
-  try {
-    let notYielded = 0;
-    let callback;
     interval = setIntervalGlobal(() => {
       notYielded++;
-      if (callback) {
-        callback();
-        callback = undefined;
+      if (wake) {
+        wake();
+        wake = undefined;
       }
     }, after);
-    if (!reference) {
-      interval?.unref?.();
-    }
+    if (!reference) interval?.unref?.();
     if (signal) {
-      onCancel = () => {
+      abortSubscription = addAbortListener(signal, () => {
         clearInterval(interval);
-        if (callback) {
-          callback();
-          callback = undefined;
+        if (wake) {
+          wake(Promise.$reject($makeAbortError(undefined, { cause: signal.reason })));
+          wake = undefined;
         }
-      };
-      signal.addEventListener("abort", onCancel);
+      });
     }
-
-    return asyncIterator({
-      next: function () {
-        return new Promise((resolve, reject) => {
-          if (!signal?.aborted) {
-            if (notYielded === 0) {
-              callback = resolve;
-            } else {
-              resolve();
-            }
-          } else if (notYielded === 0) {
-            reject($makeAbortError(undefined, { cause: signal.reason }));
-          } else {
-            resolve();
-          }
-        }).then(() => {
-          if (notYielded > 0) {
-            notYielded = notYielded - 1;
-            return { done: false, value: value };
-          } else if (signal?.aborted) {
-            throw $makeAbortError(undefined, { cause: signal.reason });
-          }
-          return { done: true };
+    while (!signal?.aborted) {
+      if (notYielded === 0) {
+        await new Promise(resolve => {
+          wake = resolve;
         });
-      },
-      return: function () {
-        clearInterval(interval);
-        signal?.removeEventListener("abort", onCancel);
-        return Promise.$resolve({});
-      },
-    });
-  } catch {
-    return asyncIterator({
-      next: function () {
-        clearInterval(interval);
-        signal?.removeEventListener("abort", onCancel);
-      },
-    });
+      }
+      for (; notYielded > 0; notYielded--) yield value;
+    }
+    throw $makeAbortError(undefined, { cause: signal?.reason });
+  }
+  finally {
+    clearInterval(interval);
+    abortSubscription?.[Symbol.dispose]();
+    wake = undefined;
   }
 }
 

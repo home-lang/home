@@ -316,3 +316,59 @@ async function verifyPromiseWatchIterator() {
   finally { fs.rmSync(directory, { recursive: true, force: true }) }
 }
 verifyPromiseWatchIterator().catch(error => { throw error })
+
+// Internal cancellation must survive stopped user abort propagation.
+async function verifyProtectedCancellation() {
+  const fs = await import('node:fs')
+  const { getEventListeners } = await import('node:events')
+  const { setTimeout: delay, setImmediate: immediate, setInterval: interval } = await import('node:timers/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  assert.equal(delay.length, 2)
+  assert.equal(interval.length, 2)
+  assert.equal(immediate.length, 1)
+  const directory = fs.mkdtempSync(join(tmpdir(), 'home-protected-abort-'))
+  try {
+    const reason = new Error('ordinary cancellation')
+    for (const make of [
+      signal => delay(30, 'timeout', { signal }),
+      signal => immediate('immediate', { signal }),
+      signal => interval(30, 'interval', { signal }).next(),
+    ]) {
+      const controller = new AbortController()
+      controller.signal.addEventListener('abort', event => event.stopImmediatePropagation())
+      const count = getEventListeners(controller.signal, 'abort').length
+      const pending = make(controller.signal)
+      controller.abort(reason)
+      await assert.rejects(pending, error => error.name === 'AbortError' && error.cause === reason)
+      assert.equal(getEventListeners(controller.signal, 'abort').length, count)
+    }
+    const controller = new AbortController()
+    controller.signal.addEventListener('abort', event => event.stopImmediatePropagation())
+    const count = getEventListeners(controller.signal, 'abort').length
+    const watcher = fs.promises.watch(directory, { signal: controller.signal, persistent: false })
+    const pending = watcher.next()
+    controller.abort(reason)
+    let timer
+    try {
+      await assert.rejects(Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('watch abort did not settle')), 300)
+        }),
+      ]), error => error.name === 'AbortError' && error.cause === reason)
+    }
+    finally { clearTimeout(timer) }
+    assert.equal(getEventListeners(controller.signal, 'abort').length, count)
+    const sequence = interval(5, 'tick')
+    assert.strictEqual(sequence[Symbol.asyncIterator](), sequence)
+    const first = sequence.next()
+    const second = sequence.next()
+    assert.deepEqual(await first, { value: 'tick', done: false })
+    assert.deepEqual(await second, { value: 'tick', done: false })
+    assert.deepEqual(await sequence.return(), { value: undefined, done: true })
+    assert.deepEqual(await sequence.next(), { value: undefined, done: true })
+  }
+  finally { fs.rmSync(directory, { recursive: true, force: true }) }
+}
+verifyProtectedCancellation().catch(error => { throw error })
