@@ -13,18 +13,36 @@ pub const NO_COLOR = @import("bun_core/env_var.zig").NO_COLOR;
 pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
 pub const NODE_PRESERVE_SYMLINKS_MAIN = @import("bun_core/env_var.zig").NODE_PRESERVE_SYMLINKS_MAIN;
 pub const AGENT = @import("bun_core/env_var.zig").AGENT;
+pub const BUN_AGENT_RULE_DISABLED = @import("bun_core/env_var.zig").BUN_AGENT_RULE_DISABLED;
+pub const BUN_CONFIG_DISABLE_COPY_FILE_RANGE = @import("bun_core/env_var.zig").BUN_CONFIG_DISABLE_COPY_FILE_RANGE;
+pub const BUN_CONFIG_DISABLE_ioctl_ficlonerange = @import("bun_core/env_var.zig").BUN_CONFIG_DISABLE_ioctl_ficlonerange;
+pub const BUN_CRASH_REPORT_URL = @import("bun_core/env_var.zig").BUN_CRASH_REPORT_URL;
 pub const BUN_DEBUG = @import("bun_core/env_var.zig").BUN_DEBUG;
 pub const BUN_DEBUG_ALL = @import("bun_core/env_var.zig").BUN_DEBUG_ALL;
+pub const BUN_DEBUG_HASH_RANDOM_SEED = @import("bun_core/env_var.zig").BUN_DEBUG_HASH_RANDOM_SEED;
 pub const BUN_DEBUG_QUIET_LOGS = @import("bun_core/env_var.zig").BUN_DEBUG_QUIET_LOGS;
+pub const BUN_ENABLE_CRASH_REPORTING = @import("bun_core/env_var.zig").BUN_ENABLE_CRASH_REPORTING;
+pub const BUN_INOTIFY_COALESCE_INTERVAL = @import("bun_core/env_var.zig").BUN_INOTIFY_COALESCE_INTERVAL;
 pub const BUN_INTERNAL_WEBVIEW_HOST = @import("bun_core/env_var.zig").BUN_INTERNAL_WEBVIEW_HOST;
+pub const BUN_NEEDS_PROC_SELF_WORKAROUND = @import("bun_core/env_var.zig").BUN_NEEDS_PROC_SELF_WORKAROUND;
+pub const BUN_TRACY_PATH = @import("bun_core/env_var.zig").BUN_TRACY_PATH;
 pub const CLAUDECODE = @import("bun_core/env_var.zig").CLAUDECODE;
+pub const CLAUDE_CODE_AGENT_RULE_DISABLED = @import("bun_core/env_var.zig").CLAUDE_CODE_AGENT_RULE_DISABLED;
 pub const COLORTERM = @import("bun_core/env_var.zig").COLORTERM;
+pub const CURSOR_AGENT_RULE_DISABLED = @import("bun_core/env_var.zig").CURSOR_AGENT_RULE_DISABLED;
+pub const CURSOR_TRACE_ID = @import("bun_core/env_var.zig").CURSOR_TRACE_ID;
+pub const DYLD_ROOT_PATH = @import("bun_core/env_var.zig").DYLD_ROOT_PATH;
+pub const fpath = @import("bun_core/env_var.zig").fpath;
 pub const GITHUB_ACTIONS = @import("bun_core/env_var.zig").GITHUB_ACTIONS;
+pub const IS_BUN_AUTO_UPDATE = @import("bun_core/env_var.zig").IS_BUN_AUTO_UPDATE;
+pub const MI_VERBOSE = @import("bun_core/env_var.zig").MI_VERBOSE;
 pub const REPL_ID = @import("bun_core/env_var.zig").REPL_ID;
 pub const RUNNER_DEBUG = @import("bun_core/env_var.zig").RUNNER_DEBUG;
 pub const TERM = @import("bun_core/env_var.zig").TERM;
 pub const TERM_PROGRAM = @import("bun_core/env_var.zig").TERM_PROGRAM;
+pub const SYSTEMROOT = @import("bun_core/env_var.zig").SYSTEMROOT;
 pub const TMUX = @import("bun_core/env_var.zig").TMUX;
+pub const WINDIR = @import("bun_core/env_var.zig").WINDIR;
 pub const WANTS_LOUD = @import("bun_core/env_var.zig").WANTS_LOUD;
 
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
@@ -108,6 +126,7 @@ pub const CI_COMMIT_SHA = StringEnv("CI_COMMIT_SHA");
 pub const GIT_SHA = StringEnv("GIT_SHA");
 pub const BUN_SSG_DISABLE_STATIC_ROUTE_VISITOR = BoolEnv("BUN_SSG_DISABLE_STATIC_ROUTE_VISITOR", false);
 pub const BUN_TRACK_LAST_FN_NAME = BoolEnv("BUN_TRACK_LAST_FN_NAME", false);
+pub const BUN_FEATURE_FLAG_NO_ORPHANS = BoolEnv("BUN_FEATURE_FLAG_NO_ORPHANS", false);
 
 pub const BUN_INSTALL_STREAMING_MIN_SIZE = struct {
     pub fn get() usize {
@@ -150,6 +169,8 @@ pub const XDG_CACHE_HOME = struct {
 };
 
 pub const XDG_CONFIG_HOME = StringEnv("XDG_CONFIG_HOME");
+pub const XDG_DATA_HOME = @import("bun_core/env_var.zig").XDG_DATA_HOME;
+pub const ZDOTDIR = @import("bun_core/env_var.zig").ZDOTDIR;
 
 /// `DO_NOT_TRACK=1` (per https://consoledonottrack.com/) opts callers out
 /// of any telemetry / crash-reporter wakeups. Bun reads this through

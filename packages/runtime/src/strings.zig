@@ -114,6 +114,7 @@ pub const hasSuffixComptime = @import("string/immutable.zig").hasSuffixComptime;
 pub const StringOrTinyString = @import("string/immutable.zig").StringOrTinyString;
 pub const toUTF8AllocWithType = toUTF8Alloc;
 pub const u3_fast = @import("string/immutable.zig").u3_fast;
+pub const sortAsc = @import("string/immutable.zig").sortAsc;
 pub const sortDesc = @import("string/immutable.zig").sortDesc;
 pub const cmpStringsAsc = @import("string/immutable.zig").cmpStringsAsc;
 pub const cmpStringsDesc = @import("string/immutable.zig").cmpStringsDesc;
