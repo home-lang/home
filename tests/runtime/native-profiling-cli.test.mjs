@@ -42,6 +42,12 @@ try {
 
 const session = new Session()
 session.connect()
+const notifications = []
+session.on('inspectorNotification', message => notifications.push(message))
+await session.post('Runtime.enable')
+assert.equal((await session.post('Runtime.evaluate', { expression: '21 * 2', returnByValue: true })).result.value, 42)
+assert(notifications.some(message => message.method === 'Runtime.executionContextCreated' && Number.isInteger(message.params.context.id)))
+assert.throws(() => session.connectToMainThread(), { code: 'ERR_INSPECTOR_ALREADY_CONNECTED' })
 await session.post('Profiler.enable')
 await session.post('Profiler.start')
 const worker = new Worker(`
@@ -85,3 +91,31 @@ const { profile } = await session.post('Profiler.stop')
 assert(profile.samples.length > 0)
 assert(profile.nodes.some(node => node.callFrame.functionName === 'ownerProfileWork'))
 session.disconnect()
+
+const sibling = new Session()
+session.connect()
+sibling.connect()
+await sibling.post('Runtime.enable')
+session.disconnect()
+assert.equal((await sibling.post('Runtime.evaluate', { expression: '6 * 7', returnByValue: true })).result.value, 42)
+sibling.disconnect()
+const { Session: CallbackSession } = await import('node:inspector')
+const callbackSession = new CallbackSession()
+callbackSession.connect()
+let nested = false
+callbackSession.post('Runtime.evaluate', { expression: '2 + 2', returnByValue: true }, (error, result) => {
+  assert.equal(error, null)
+  assert.equal(result.result.value, 4)
+  callbackSession.post('Runtime.evaluate', { expression: '3 + 3', returnByValue: true }, (error, inner) => {
+    assert.equal(error, null)
+    assert.equal(inner.result.value, 6)
+    nested = true
+    callbackSession.disconnect()
+  })
+})
+assert.equal(nested, true)
+
+const mainSession = new Session()
+mainSession.connectToMainThread()
+assert.equal((await mainSession.post('Runtime.evaluate', { expression: '7 * 6', returnByValue: true })).result.value, 42)
+mainSession.disconnect()

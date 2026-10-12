@@ -256,6 +256,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
         native_bindings.scriptExecutionContextObject(b, bun_obj_root),
         native_bindings.napiObject(b, bun_obj_root),
         native_bindings.globalGcObject(b, bun_obj_root),
+        native_bindings.inspectorControllerObject(b, bun_obj_root),
         native_bindings.globalObject(b, bun_obj_root),
         native_bindings.messagePortObject(b, bun_obj_root),
         native_bindings.messagePortPipeObject(b, bun_obj_root),

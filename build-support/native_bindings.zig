@@ -11,6 +11,7 @@ var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_script_execution_context_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
 var cached_global_gc_object: ?std.Build.LazyPath = null;
+var cached_inspector_controller_object: ?std.Build.LazyPath = null;
 var cached_global_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
 var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
@@ -99,6 +100,15 @@ pub fn globalGcObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
     const source = files.addCopyFile(b.path("packages/runtime/src/native/global_gc.cpp"), "global_gc.cpp");
     const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
     cached_global_gc_object = object;
+    return object;
+}
+
+pub fn inspectorControllerObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_inspector_controller_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/src/native/inspector_controller.cpp"), "inspector_controller.cpp");
+    const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
+    cached_inspector_controller_object = object;
     return object;
 }
 
@@ -391,6 +401,8 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/NodeVMScriptFetcher.h",
         "packages/runtime/upstream/src/jsc/bindings/HomeVMMeasurement.h",
         "packages/runtime/upstream/src/jsc/bindings/HomeCPUProfilerState.h",
+        "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+        "packages/runtime/upstream/src/jsc/bindings/HomeInspectorAgents.h",
         "packages/runtime/upstream/src/jsc/bindings/BunCPUProfiler.cpp",
         "packages/runtime/upstream/src/js/thirdparty/ws.js",
         "packages/runtime/upstream/src/js/thirdparty/undici.js",

@@ -78,6 +78,60 @@ void startCPUProfiler(JSC::VM& vm)
     { std::lock_guard lock(profilerStateLock); profilerStates[&vm].running = true; }
 }
 
+Ref<JSON::Object> captureCPUProfilerSamples(JSC::VM& vm) {
+    JSC::JSLockHolder locker(vm);
+    JSC::DeferGC deferGC(vm);
+    auto result = JSON::Object::create();
+    auto tracesJSON = JSON::Array::create();
+    auto* profiler = vm.samplingProfiler();
+    if (!profiler) { result->setArray("traces"_s, WTF::move(tracesJSON)); return result; }
+    WTF::Locker profilerLocker { profiler->getLock() };
+    auto traces = profiler->releaseStackTraces();
+    // Convert while GC is deferred; no raw executable/provider reference is
+    // retained by the inspector's immutable sample broker.
+    for (auto& trace : traces) {
+        auto encodedTrace = JSON::Object::create();
+        encodedTrace->setDouble("timestamp"_s, trace.timestamp.secondsSinceEpoch().seconds());
+        auto frames = JSON::Array::create();
+        for (auto& frame : trace.frames) {
+            auto encodedFrame = JSON::Object::create();
+            encodedFrame->setString("name"_s, frame.displayName(vm));
+            WTF::String url;
+            WTF::String script = "0"_s;
+            int line = -1, column = -1;
+            if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
+                auto [provider, sourceID] = frame.sourceProviderAndID();
+                script = WTF::String::number(sourceID);
+                if (provider) url = provider->sourceURL();
+                int startLine = frame.functionStartLine();
+                unsigned startColumn = frame.functionStartColumn();
+                if (startLine > 0 && startColumn != std::numeric_limits<unsigned>::max()) {
+                    JSC::LineColumn location { static_cast<unsigned>(startLine), startColumn };
+#if USE(BUN_JSC_ADDITIONS)
+                    if (provider) {
+                        auto& remap = vm.computeLineColumnWithSourcemap();
+                        if (remap) remap(vm, provider, location, url);
+                    }
+#endif
+                    line = location.line ? static_cast<int>(location.line) - 1 : 0;
+                    column = location.column ? static_cast<int>(location.column) - 1 : 0;
+                }
+                if (!url.isEmpty() && (url[0] == '/' || (url.length() > 1 && url[1] == ':') || url.startsWith("\\\\"_s)))
+                    url = WTF::URL::fileURLWithFileSystemPath(url).string();
+            }
+            encodedFrame->setString("scriptId"_s, script);
+            encodedFrame->setString("sourceURL"_s, url);
+            encodedFrame->setInteger("line"_s, line);
+            encodedFrame->setInteger("column"_s, column);
+            frames->pushObject(WTF::move(encodedFrame));
+        }
+        encodedTrace->setArray("frames"_s, WTF::move(frames));
+        tracesJSON->pushObject(WTF::move(encodedTrace));
+    }
+    result->setArray("traces"_s, WTF::move(tracesJSON));
+    return result;
+}
+
 struct ProfileNode {
     int id;
     WTF::String functionName;
