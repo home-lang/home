@@ -27,6 +27,20 @@ pub const AssignedField = struct {
     primitive: Primitive,
 };
 
+pub const FunctionParameter = struct {
+    primitive: Primitive,
+    optional: bool,
+};
+
+pub const FunctionSignature = struct {
+    parameters: []FunctionParameter,
+    result: Primitive,
+
+    pub fn deinit(self: FunctionSignature, gpa: std.mem.Allocator) void {
+        gpa.free(self.parameters);
+    }
+};
+
 pub fn isJavaScriptPath(path: []const u8) bool {
     return std.mem.endsWith(u8, path, ".js") or
         std.mem.endsWith(u8, path, ".jsx") or
@@ -57,6 +71,40 @@ pub fn declarationPrimitive(gpa: std.mem.Allocator, c: *const driver.Compilation
         if (tag.kind == .type_tag) return parsePrimitive(tag.type_text);
     }
     return null;
+}
+
+pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?FunctionSignature {
+    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
+    const tags = try jsdoc.parse(gpa, body);
+    defer gpa.free(tags);
+    for (tags) |tag| if (tag.kind == .template_tag) return null;
+
+    var result: ?Primitive = null;
+    for (tags) |tag| {
+        if (tag.kind != .returns_tag) continue;
+        if (result != null) return null;
+        result = parsePrimitive(tag.type_text) orelse return null;
+    }
+    const return_type = result orelse return null;
+    const nodes = hir.fnParams(&c.hir, node);
+    for (nodes) |parameter_node| {
+        const parameter = hir.parameterOf(&c.hir, parameter_node);
+        if (c.hir.kindOf(parameter.name) != .identifier or parameter.flags.is_rest) return null;
+        const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
+        const tag = uniqueParameterTag(tags, name) orelse return null;
+        _ = parsePrimitive(tag.type_text) orelse return null;
+    }
+    const parameters = try gpa.alloc(FunctionParameter, nodes.len);
+    for (nodes, parameters) |parameter_node, *parameter_result| {
+        const parameter = hir.parameterOf(&c.hir, parameter_node);
+        const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
+        const tag = uniqueParameterTag(tags, name).?;
+        parameter_result.* = .{
+            .primitive = parsePrimitive(tag.type_text).?,
+            .optional = tag.optional or parameter.flags.is_optional or parameter.default_value != hir.none_node_id,
+        };
+    }
+    return .{ .parameters = parameters, .result = return_type };
 }
 
 pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) ![]AssignedField {
@@ -106,6 +154,16 @@ fn parameterPrimitive(tags: []const jsdoc.Tag, name: []const u8) ?Primitive {
         if (tag.kind == .param_tag and std.mem.eql(u8, tag.name, name)) return parsePrimitive(tag.type_text);
     }
     return null;
+}
+
+fn uniqueParameterTag(tags: []const jsdoc.Tag, name: []const u8) ?jsdoc.Tag {
+    var result: ?jsdoc.Tag = null;
+    for (tags) |tag| {
+        if (tag.kind != .param_tag or !std.mem.eql(u8, tag.name, name)) continue;
+        if (result != null) return null;
+        result = tag;
+    }
+    return result;
 }
 
 fn parsePrimitive(text: []const u8) ?Primitive {

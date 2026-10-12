@@ -636,12 +636,17 @@ pub const Builder = struct {
         }
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
-        else if (kind == .fn_decl)
+        else if (kind == .fn_decl) blk: {
             if (overload_declarations) |declarations|
-                try self.functionOverloadType(context, declarations)
-            else
-                try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
-        else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
+                break :blk try self.functionOverloadType(context, declarations);
+            if (jsdoc_types.isJavaScriptPath(source.path)) {
+                if (try jsdoc_types.functionSignature(self.gpa, c, key.node)) |signature| {
+                    defer signature.deinit(self.gpa);
+                    break :blk try self.jsdocFunctionType(signature);
+                }
+            }
+            break :blk try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false);
+        } else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
             if (variable.type_annotation == 0 and jsdoc_types.isJavaScriptPath(source.path)) {
                 if (try jsdoc_types.declarationPrimitive(self.gpa, c, key.node)) |primitive|
@@ -687,6 +692,20 @@ pub const Builder = struct {
         if (signatures.items.len == 0) return self.expression(.unsupported);
         if (signatures.items.len == 1) return signatures.items[0];
         return self.expression(.{ .intersection = try signatures.toOwnedSlice(self.arena) });
+    }
+
+    fn jsdocFunctionType(self: *Builder, signature: jsdoc_types.FunctionSignature) !*const schema.Expression {
+        const parameters = try self.arena.alloc(schema.Element, signature.parameters.len);
+        for (signature.parameters, parameters) |parameter, *result| {
+            result.* = .{
+                .type = try self.expression(.{ .primitive = schemaPrimitive(parameter.primitive) }),
+                .optional = parameter.optional,
+            };
+        }
+        return self.expression(.{ .function = .{
+            .parameters = parameters,
+            .result = try self.expression(.{ .primitive = schemaPrimitive(signature.result) }),
+        } });
     }
 
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
