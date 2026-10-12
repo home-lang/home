@@ -47,6 +47,7 @@ pub const StrictFlags = check.StrictFlags;
 pub const ExternalResolver = check.ExternalResolver;
 pub const ScriptObjectExpando = check.ScriptObjectExpando;
 pub const ProgramGlobalBinding = check.ProgramGlobalBinding;
+pub const ProgramAmbientModuleExport = check.ProgramAmbientModuleExport;
 pub const ModuleInterfaceAugmentation = check.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = check.ProgramExportedClass;
 pub const ProgramClassSchema = check.ProgramClassSchema;

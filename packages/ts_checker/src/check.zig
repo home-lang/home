@@ -589,6 +589,18 @@ pub const ScriptObjectExpando = struct {
 /// interner. Names use that checker's string keyspace. This is name lookup,
 /// not owner transfer: callers must separately install any semantic metadata
 /// required by the type before publishing a binding.
+/// One export of an ambient module (`declare module "spec" { ... }`)
+/// declared in another program file, already in this checker's type pool.
+/// `specifier` is the text this source imports it by. `name` is the export
+/// name, `"export="` for an export assignment, or empty for the marker that
+/// only records that the module exists.
+pub const ProgramAmbientModuleExport = struct {
+    specifier: []const u8,
+    name: []const u8,
+    value_type: TypeId = types.Primitive.none,
+    type_type: TypeId = types.Primitive.none,
+};
+
 pub const ProgramGlobalBinding = struct {
     name: hir_mod.StringId,
     type: TypeId,
@@ -5190,6 +5202,11 @@ pub const Checker = struct {
     /// diagnostic-only: unlike alias names, they must not participate in
     /// declaration identity or relation checks.
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// Source-ordered union members whose display is rendered only when a
+    /// diagnostic asks (`diagnosticUnionDisplayName`). Rendering eagerly
+    /// for every lowered union walked whole declaration graphs (@types/node
+    /// + DOM) into strings no diagnostic ever used.
+    pending_union_display_members: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     /// Namespace-qualified names for non-generic aliases, used only while
     /// rendering diagnostics. Keeping these separate from
     /// `alias_display_names` prevents a qualified display name from becoming
@@ -5940,6 +5957,7 @@ pub const Checker = struct {
     this_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     this_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_ambient_module_exports: []const ProgramAmbientModuleExport = &.{},
     program_exported_types: []const ProgramExportedType = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
@@ -6455,6 +6473,10 @@ pub const Checker = struct {
         self.program_global_type_names = names;
     }
 
+    pub fn setProgramAmbientModuleExports(self: *Checker, exports: []const ProgramAmbientModuleExport) void {
+        self.program_ambient_module_exports = exports;
+    }
+
     pub fn setProgramGlobalTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
         self.program_global_types = bindings;
     }
@@ -6783,6 +6805,7 @@ pub const Checker = struct {
         self.alias_display_names.deinit(self.gpa);
         self.string_named_export_types.deinit(self.gpa);
         self.diagnostic_union_display_names.deinit(self.gpa);
+        self.pending_union_display_members.deinit(self.gpa);
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -30250,6 +30273,12 @@ pub const Checker = struct {
         if (self.interner.pool.flagsOf(t).is_union) {
             if (depth >= 8) return .none;
             return self.promiseLikeUnionResult(t, depth);
+        }
+        // `Promise<void>` from the real lib is an instantiation of the
+        // library's generic interface; await its expanded object.
+        if (self.interner.pool.flagsOf(t).is_instantiation and depth < 8) {
+            const expanded = self.resolveGenericType(t) catch return .none;
+            if (expanded != t) return self.promiseLikeResultDepth(expanded, depth + 1);
         }
         if (!self.interner.pool.flagsOf(t).is_object_type) return .none;
         const then_id = self.string_interner.intern("then") catch return .none;
@@ -64252,6 +64281,7 @@ pub const Checker = struct {
                         null;
                 }
                 if (try self.ambientModuleExportTypeForSpec(spec_text, sp.imported)) |t| return t;
+                if (self.programAmbientModuleTypeExport(spec_text, sp.imported)) |t| return t;
                 if (try self.virtualBareModuleExportType(stmt, spec_text, sp.imported)) |t| return t;
                 if (try self.programAmbientModuleInterfaceExportType(spec_text, sp.imported)) |t| return t;
                 if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
@@ -64463,6 +64493,9 @@ pub const Checker = struct {
     }
 
     fn programAmbientModuleExists(self: *Checker, spec: []const u8) bool {
+        for (self.program_ambient_module_exports) |exported| {
+            if (std.mem.eql(u8, exported.specifier, spec)) return true;
+        }
         for (self.program_ambient_module_interface_exports) |exported| {
             if (self.moduleNameMatchesSpecifier(exported.specifier, spec)) return true;
         }
@@ -79111,6 +79144,7 @@ pub const Checker = struct {
                     if (try self.checkJsObjectExpandoTypeRef(type_node)) |t| return t;
                     if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
                     if (try self.resolveQualifiedTypeRef(type_node)) |t| return t;
+                    if (try self.programGlobalQualifiedTypeRef(type_node)) |t| return t;
                     if (try self.reactComponentClassType(type_node)) |t| return t;
                     try self.reportCannotFindNamespaceForQualifiedTypeRef(type_node);
                     // Even when the qualified type can't be resolved
@@ -105470,8 +105504,18 @@ pub const Checker = struct {
     fn registerSourceOrderedUnionDisplayName(self: *Checker, union_t: TypeId, members: []const TypeId) CheckError!void {
         if (union_t < types.Primitive.first_dynamic or union_t >= self.interner.pool.typeCount()) return;
         if (self.diagnostic_union_display_names.contains(union_t)) return;
-        const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return;
+        if (self.pending_union_display_members.contains(union_t)) return;
+        const owned = try self.diag_arena.allocator().dupe(TypeId, members);
+        try self.pending_union_display_members.put(self.gpa, union_t, owned);
+    }
+
+    fn diagnosticUnionDisplayName(self: *Checker, union_t: TypeId) CheckError!?[]const u8 {
+        if (self.diagnostic_union_display_names.get(union_t)) |display| return display;
+        const members = self.pending_union_display_members.get(union_t) orelse return null;
+        _ = self.pending_union_display_members.remove(union_t);
+        const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return null;
         try self.diagnostic_union_display_names.put(self.gpa, union_t, display);
+        return display;
     }
 
     fn allocDiagnosticUnionDisplayName(self: *Checker, members: []const TypeId) CheckError!?[]const u8 {
@@ -110129,11 +110173,103 @@ pub const Checker = struct {
         return try self.moduleInterfaceAugmentationMemberType(ctor.name, member_name, null, anchor);
     }
 
+    fn programAmbientModuleExport(self: *const Checker, spec: []const u8, name: []const u8) ?ProgramAmbientModuleExport {
+        for (self.program_ambient_module_exports) |exported| {
+            if (std.mem.eql(u8, exported.specifier, spec) and std.mem.eql(u8, exported.name, name)) return exported;
+        }
+        return null;
+    }
+
+    /// The module object of an ambient module: its `export =` value, or an
+    /// object of its value exports (`import * as cp from "node:child_process"`).
+    fn programAmbientModuleNamespaceType(self: *Checker, spec: []const u8) CheckError!?TypeId {
+        if (self.programAmbientModuleExport(spec, "export=")) |assigned| {
+            if (assigned.value_type != types.Primitive.none) return assigned.value_type;
+        }
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var found = false;
+        for (self.program_ambient_module_exports) |exported| {
+            if (!std.mem.eql(u8, exported.specifier, spec)) continue;
+            found = true;
+            if (exported.name.len == 0 or exported.value_type == types.Primitive.none) continue;
+            if (std.mem.eql(u8, exported.name, "export=")) continue;
+            const name = self.string_interner.intern(exported.name) catch return error.OutOfMemory;
+            for (members.items) |existing| {
+                if (existing.name == name) break;
+            } else try members.append(self.gpa, .{
+                .name = name,
+                .type = exported.value_type,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+                .decl_node = hir_mod.none_node_id,
+            });
+        }
+        if (!found) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    /// Value of an import binding whose module is an ambient module of another
+    /// program file (`import { spawn } from "node:child_process"`).
+    fn programAmbientModuleValueForImportBinding(
+        self: *Checker,
+        import_node: NodeId,
+        local_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (self.program_ambient_module_exports.len == 0 or self.hir.kindOf(import_node) != .import_decl) return null;
+        const imp = hir_mod.importOf(self.hir, import_node);
+        const spec = self.string_interner.get(imp.module);
+        if (self.programAmbientModuleExport(spec, "") == null) return null;
+        if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.namespace_binding).name == local_name)
+        {
+            return try self.programAmbientModuleNamespaceType(spec);
+        }
+        if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+        {
+            if (self.programAmbientModuleExport(spec, "default")) |exported| {
+                if (exported.value_type != types.Primitive.none) return exported.value_type;
+            }
+            if (self.programAmbientModuleExport(spec, "export=")) |exported| {
+                if (exported.value_type != types.Primitive.none) return exported.value_type;
+            }
+            return null;
+        }
+        for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
+            if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+            const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
+            if (imported.local != local_name) continue;
+            const name = self.string_interner.get(imported.imported);
+            if (self.programAmbientModuleExport(spec, name)) |exported| {
+                if (exported.value_type != types.Primitive.none) return exported.value_type;
+            }
+            // `import { join } from "node:path"`: a member of the module's
+            // `export =` value (`const path: path.PlatformPath; export = path`).
+            if (self.programAmbientModuleExport(spec, "export=")) |assigned| {
+                if (assigned.value_type != types.Primitive.none) {
+                    const resolved = try self.resolveGenericType(assigned.value_type);
+                    if (try self.lookupObjectMember(resolved, imported.imported)) |member_t| return member_t;
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /// Type exported by an ambient module of another program file.
+    fn programAmbientModuleTypeExport(self: *const Checker, spec: []const u8, name: hir_mod.StringId) ?TypeId {
+        const exported = self.programAmbientModuleExport(spec, self.string_interner.get(name)) orelse return null;
+        return if (exported.type_type != types.Primitive.none) exported.type_type else null;
+    }
+
     fn programExportedValueTypeForImportBinding(
         self: *Checker,
         import_node: NodeId,
         local_name: hir_mod.StringId,
     ) CheckError!?TypeId {
+        if (try self.programAmbientModuleValueForImportBinding(import_node, local_name)) |ambient_t| return ambient_t;
         if (self.program_exported_values.len == 0 or self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
         const spec = self.string_interner.get(imp.module);
@@ -138258,6 +138394,7 @@ pub const Checker = struct {
                 // block, a use before its declaration); the import is not the
                 // symbol this name resolves to.
                 if (self.valueNameShadowsImport(id.name, node)) return types.Primitive.any;
+                if (try self.programAmbientModuleValueForImportBinding(decl, id.name)) |ambient_t| return ambient_t;
                 if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
                 if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                 if (try self.programExportedClassTypeForImportBinding(decl, id.name, node)) |class_t| return class_t;
@@ -179293,6 +179430,23 @@ pub const Checker = struct {
         return null;
     }
 
+    /// `NodeJS.Process` where `NodeJS` is a global namespace declared in other
+    /// program files: ts_program publishes its types under dotted names.
+    fn programGlobalQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        if (self.program_global_types.len == 0) return null;
+        const r = hir_mod.typeRefOf(self.hir, type_node);
+        var buffer: std.ArrayListUnmanaged(u8) = .empty;
+        defer buffer.deinit(self.gpa);
+        for (hir_mod.typeRefQualifier(self.hir, type_node)) |segment| {
+            if (self.hir.kindOf(segment) != .identifier) return null;
+            try buffer.appendSlice(self.gpa, self.string_interner.get(hir_mod.identifierOf(self.hir, segment).name));
+            try buffer.append(self.gpa, '.');
+        }
+        try buffer.appendSlice(self.gpa, self.string_interner.get(r.name));
+        const dotted = self.string_interner.lookup(buffer.items) orelse return null;
+        return self.programGlobalType(dotted);
+    }
+
     fn programGlobalType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
         for (self.program_global_types) |binding| {
             if (binding.name == name) return binding.type;
@@ -190108,7 +190262,7 @@ pub const Checker = struct {
 
     fn allocObjectShapeMemberTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const display_t = try self.collapseRedundantLiteralUnionForDisplay(t);
-        if (self.diagnostic_union_display_names.get(display_t)) |display| return display;
+        if (try self.diagnosticUnionDisplayName(display_t)) |display| return display;
         if (self.class_name_by_instance.get(display_t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
             if (self.alias_display_names.get(display_t)) |display| {

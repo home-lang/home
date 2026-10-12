@@ -34,6 +34,8 @@ pub const source_owners = @import("source_owners.zig");
 pub const StringInterner = string_interner.Interner;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
 pub const ProgramGlobalBinding = ts_checker.ProgramGlobalBinding;
+pub const ProgramAmbientModuleExport = ts_checker.ProgramAmbientModuleExport;
+pub const ObjectMember = ts_checker.types.ObjectMember;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
 pub const ProgramClassSchema = ts_checker.ProgramClassSchema;
@@ -455,6 +457,9 @@ pub const CompileOptions = struct {
     /// Non-generic program-global types already relocated into this
     /// compilation's type interner.
     program_global_types: []const ProgramGlobalBinding = &.{},
+    /// Exports of ambient modules declared in other program files, keyed by
+    /// the specifiers this source imports them with (see ts_program).
+    program_ambient_module_exports: []const ProgramAmbientModuleExport = &.{},
     /// Owner-scoped semantic metadata accompanying relocated program-global
     /// types. The checker imports only records whose keys and values are
     /// independent of the source owner's HIR node identity.
@@ -2409,6 +2414,9 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     }
     if (options.program_global_type_names.len > 0) {
         checker.setProgramGlobalTypeNames(options.program_global_type_names);
+    }
+    if (options.program_ambient_module_exports.len > 0) {
+        checker.setProgramAmbientModuleExports(options.program_ambient_module_exports);
     }
     if (options.program_global_types.len > 0) {
         checker.setProgramGlobalTypes(options.program_global_types);

@@ -31,6 +31,7 @@ pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
 const class_declarations = @import("class_declarations.zig");
 const declaration_graph = @import("declaration_graph.zig");
+const ambient_modules = @import("ambient_modules.zig");
 const checked_schema = @import("checked_schema.zig");
 
 const program_source_markers = &[_][]const u8{
@@ -303,10 +304,14 @@ const GlobalReferenceNames = struct {
 const BoundGlobals = struct {
     const Key = struct { name: hir_mod_ns.StringId, space: binder.Binder.Space };
     entries: std.AutoArrayHashMapUnmanaged(Key, std.ArrayListUnmanaged(BoundGlobal)) = .empty,
+    /// `declare module "spec"` declarations of global scripts; sources are
+    /// indices into `Program.files`.
+    ambient: ambient_modules.Index = .{},
 
     fn deinit(self: *BoundGlobals, gpa: std.mem.Allocator) void {
         for (self.entries.values()) |*owners| owners.deinit(gpa);
         self.entries.deinit(gpa);
+        self.ambient.deinit(gpa);
     }
 
     fn lookup(self: *const BoundGlobals, name: hir_mod_ns.StringId, space: binder.Binder.Space) []const BoundGlobal {
@@ -351,6 +356,8 @@ const ImportedProgramGlobals = struct {
     /// Sorted owners whose pools the file now holds (see `File.covered_owners`).
     covered: std.ArrayListUnmanaged(source_owners.OwnerId) = .empty,
     checked: std.ArrayListUnmanaged(*const ts_driver.CheckedTypes) = .empty,
+    /// Exports of other files' ambient modules this file imports.
+    ambient: std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleExport) = .empty,
     values: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
     types: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
 
@@ -360,6 +367,7 @@ const ImportedProgramGlobals = struct {
         self.import_owners.deinit(self.gpa);
         self.covered.deinit(self.gpa);
         self.checked.deinit(self.gpa);
+        self.ambient.deinit(self.gpa);
         self.values.deinit(self.gpa);
         self.types.deinit(self.gpa);
     }
@@ -691,20 +699,22 @@ pub const Program = struct {
     fn collectBoundGlobals(self: *const Program) ProgramError!BoundGlobals {
         var index: BoundGlobals = .{};
         errdefer index.deinit(self.gpa);
-        for (self.files.items) |f| {
+        for (self.files.items, 0..) |f, file_index| {
             if (f.redirect_target != null) continue;
             const c = f.compilation orelse continue;
             if (boundSourceIsExternalModule(c)) continue;
+            try index.ambient.add(self.gpa, file_index, c);
             // Binder insertion order is deterministic within each file, even
             // when files were prepared in parallel. All merged declarations
             // remain reachable through their original symbol and source.
             for (c.module.symbols.items) |symbol| {
-                if (symbol.parent_scope != c.module.root) continue;
+                const scope = symbol.parent_scope orelse continue;
+                if (scope != c.module.root and !scopeIsAmbientModuleGlobalBlock(c, scope)) continue;
                 for ([_]binder.Binder.Space{ .value, .type, .namespace }) |space| {
                     const map = switch (space) {
-                        .value => &c.module.root.values,
-                        .type => &c.module.root.types,
-                        .namespace => &c.module.root.namespaces,
+                        .value => &scope.values,
+                        .type => &scope.types,
+                        .namespace => &scope.namespaces,
                     };
                     if (map.get(symbol.name) != symbol) continue;
                     const entry = try index.entries.getOrPut(self.gpa, .{ .name = symbol.name, .space = space });
@@ -716,7 +726,29 @@ pub const Program = struct {
         return index;
     }
 
+    /// `global { ... }` directly inside a top-level `declare module "spec"`
+    /// of a global script (@types/node's `declare module "process" { global
+    /// { var process: NodeJS.Process } }`): its declarations are globals.
+    fn scopeIsAmbientModuleGlobalBlock(c: *const ts_driver.Compilation, scope: *const binder.Scope) bool {
+        const node = scope.introducing_node;
+        if (node == hir_mod_ns.none_node_id or c.hir.kindOf(node) != .namespace_decl) return false;
+        const ns = hir_mod_ns.namespaceOf(&c.hir, node);
+        if (ns.name == hir_mod_ns.none_node_id or c.hir.kindOf(ns.name) != .identifier) return false;
+        if (!std.mem.eql(u8, c.interner.get(hir_mod_ns.identifierOf(&c.hir, ns.name).name), "global")) return false;
+        const parent = scope.parent orelse return false;
+        const module_node = parent.introducing_node;
+        if (module_node == hir_mod_ns.none_node_id or c.hir.kindOf(module_node) != .namespace_decl) return false;
+        const module_ns = hir_mod_ns.namespaceOf(&c.hir, module_node);
+        if (!module_ns.is_string_named and
+            (module_ns.name == hir_mod_ns.none_node_id or c.hir.kindOf(module_ns.name) != .literal_string)) return false;
+        const grand = parent.parent orelse return false;
+        return grand == c.module.root;
+    }
+
     fn fileContributesGlobals(globals: *const BoundGlobals, file: *const File) bool {
+        for (globals.ambient.modules.values()) |decls| {
+            for (decls.items) |decl| if (decl.source == file.id) return true;
+        }
         for (globals.entries.values()) |owners| {
             for (owners.items) |owner| if (owner.file == file) return true;
         }
@@ -843,6 +875,292 @@ pub const Program = struct {
                 try self.appendGlobalProviderOrder(index, globals, states, &order);
         }
         return order.toOwnedSlice(self.gpa);
+    }
+
+    /// Types declared in a global namespace across files (`NodeJS.Process`
+    /// from @types/node's merged `namespace NodeJS` blocks), published as
+    /// program global types under their dotted names.
+    fn importGlobalNamespaceTypes(
+        self: *Program,
+        file: *const File,
+        compilation: *ts_driver.Compilation,
+        result: *ImportedProgramGlobals,
+        root: hir_mod_ns.StringId,
+        owners: []const BoundGlobal,
+    ) ProgramError!void {
+        var path: std.ArrayListUnmanaged(u8) = .empty;
+        defer path.deinit(self.gpa);
+        for (owners) |owner| {
+            if (owner.file == file or owner.file.owner == .none) continue;
+            const owner_c = owner.file.compilation orelse continue;
+            for (owner.symbol.decls.items) |decl| {
+                if (owner_c.hir.kindOf(decl) != .namespace_decl) continue;
+                path.clearRetainingCapacity();
+                try path.appendSlice(self.gpa, owner_c.interner.get(root));
+                try self.importNamespaceBodyTypes(compilation, result, owner.file, owner_c, decl, &path);
+            }
+        }
+    }
+
+    fn importNamespaceBodyTypes(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        result: *ImportedProgramGlobals,
+        owner_file: *const File,
+        owner_c: *const ts_driver.Compilation,
+        namespace_node: hir_mod_ns.NodeId,
+        path: *std.ArrayListUnmanaged(u8),
+    ) ProgramError!void {
+        const base_len = path.items.len;
+        defer path.items.len = base_len;
+        for (hir_mod_ns.namespaceBody(&owner_c.hir, namespace_node)) |raw| {
+            var statement = raw;
+            if (owner_c.hir.kindOf(statement) == .export_decl) {
+                const exported = hir_mod_ns.exportOf(&owner_c.hir, statement).decl;
+                if (exported == hir_mod_ns.none_node_id) continue;
+                statement = exported;
+            }
+            const kind = owner_c.hir.kindOf(statement);
+            const name = ambient_modules.declarationName(owner_c, statement) orelse continue;
+            path.items.len = base_len;
+            try path.append(self.gpa, '.');
+            try path.appendSlice(self.gpa, name);
+            switch (kind) {
+                .namespace_decl, .module_decl => {
+                    try self.importNamespaceBodyTypes(compilation, result, owner_file, owner_c, statement, path);
+                },
+                .interface_decl, .type_alias_decl, .class_decl, .enum_decl => {
+                    const source_type = owner_c.hir.typeOf(statement);
+                    if (source_type == ts_driver.Primitive.none) continue;
+                    const mapped = (try self.importedOwnerType(compilation, result, owner_file, source_type)) orelse continue;
+                    const dotted = compilation.interner.intern(path.items) catch return error.OutOfMemory;
+                    for (result.types.items) |*existing| {
+                        if (existing.name != dotted) continue;
+                        existing.type = try self.mergeImportedGlobalTypes(compilation, existing.type, mapped);
+                        break;
+                    } else try result.types.append(self.gpa, .{ .name = dotted, .type = mapped });
+                },
+                else => {},
+            }
+        }
+    }
+
+    const AmbientImport = struct {
+        /// The specifier as this file writes it (borrowed from its interner).
+        specifier: []const u8,
+        /// Export name, `"export="`, or empty for the module-exists marker.
+        name: []const u8,
+        source: usize,
+        decl: hir_mod_ns.NodeId,
+    };
+
+    /// Bare specifiers of `file`'s imports (top level and inside its own
+    /// `declare module` bodies) that name another file's ambient module.
+    fn collectAmbientImports(
+        self: *Program,
+        file: *const File,
+        compilation: *const ts_driver.Compilation,
+        globals: *const BoundGlobals,
+        out: *std.ArrayListUnmanaged(AmbientImport),
+    ) ProgramError!void {
+        if (globals.ambient.modules.count() == 0) return;
+        if (compilation.root == hir_mod_ns.none_node_id or compilation.hir.kindOf(compilation.root) != .block_stmt) return;
+        const sources = try self.gpa.alloc(?*const ts_driver.Compilation, self.files.items.len);
+        defer self.gpa.free(sources);
+        for (self.files.items, sources) |candidate, *slot| slot.* = if (candidate.compilation) |c| c else null;
+        var seen: std.StringHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(self.gpa);
+        var exports: std.ArrayListUnmanaged(ambient_modules.Export) = .empty;
+        defer exports.deinit(self.gpa);
+        const Scan = struct {
+            fn statements(
+                program: *Program,
+                c: *const ts_driver.Compilation,
+                list: []const hir_mod_ns.NodeId,
+                index: *const ambient_modules.Index,
+                srcs: []const ?*const ts_driver.Compilation,
+                seen_specs: *std.StringHashMapUnmanaged(void),
+                found: *std.ArrayListUnmanaged(ambient_modules.Export),
+                result: *std.ArrayListUnmanaged(AmbientImport),
+                this_file: usize,
+                depth: u8,
+            ) ProgramError!void {
+                for (list) |statement| {
+                    const kind = c.hir.kindOf(statement);
+                    if ((kind == .namespace_decl or kind == .module_decl) and depth == 0) {
+                        try statements(program, c, hir_mod_ns.namespaceBody(&c.hir, statement), index, srcs, seen_specs, found, result, this_file, 1);
+                        continue;
+                    }
+                    const spec_id = switch (kind) {
+                        .import_decl => hir_mod_ns.importOf(&c.hir, statement).module,
+                        .export_decl => hir_mod_ns.exportOf(&c.hir, statement).module,
+                        else => continue,
+                    };
+                    const spec = c.interner.get(spec_id);
+                    if (spec.len == 0 or spec[0] == '.' or spec[0] == '/') continue;
+                    if (seen_specs.contains(spec)) continue;
+                    try seen_specs.put(program.gpa, spec, {});
+                    const decls = index.lookup(spec);
+                    if (decls.len == 0) continue;
+                    var declared_elsewhere = false;
+                    for (decls) |decl| {
+                        if (decl.source != this_file) declared_elsewhere = true;
+                    }
+                    if (!declared_elsewhere) continue;
+                    try result.append(program.gpa, .{ .specifier = spec, .name = "", .source = decls[0].source, .decl = decls[0].node });
+                    found.clearRetainingCapacity();
+                    try ambient_modules.collectExports(program.gpa, index, srcs, spec, found);
+                    for (found.items) |exported| try result.append(program.gpa, .{
+                        .specifier = spec,
+                        .name = exported.name,
+                        .source = exported.source,
+                        .decl = exported.decl,
+                    });
+                }
+            }
+        };
+        try Scan.statements(self, compilation, hir_mod_ns.blockStmts(&compilation.hir, compilation.root), &globals.ambient, sources, &seen, &exports, out, file.id, 0);
+    }
+
+    /// Map each collected ambient export's checked type into `file`'s pool.
+    fn resolveAmbientImports(
+        self: *Program,
+        file: *const File,
+        compilation: *ts_driver.Compilation,
+        result: *ImportedProgramGlobals,
+        entries: []const AmbientImport,
+        globals: *const BoundGlobals,
+    ) ProgramError!void {
+        for (entries) |entry| {
+            if (entry.name.len == 0) {
+                try result.ambient.append(self.gpa, .{ .specifier = entry.specifier, .name = "" });
+                continue;
+            }
+            const owner_file = self.files.items[entry.source];
+            if (owner_file == file) continue;
+            const owner_c = owner_file.compilation orelse continue;
+            const kind = owner_c.hir.kindOf(entry.decl);
+            var mapped: ts_driver.TypeId = ts_driver.Primitive.none;
+            if (ambientDeclarationType(owner_c, entry.decl)) |source_type| {
+                mapped = (try self.importedOwnerType(compilation, result, owner_file, source_type)) orelse ts_driver.Primitive.none;
+            }
+            // A global var of a `global` block is one declaration of a merged
+            // global: use the program's typed binding when this one is not.
+            if (mapped == ts_driver.Primitive.none or mapped == ts_driver.Primitive.any or mapped == ts_driver.Primitive.unmodeled) {
+                if (ambientGlobalVarName(owner_file, entry.decl)) |global_name| {
+                    for (globals.lookup(global_name, .value)) |owner| {
+                        if (owner.file == file) continue;
+                        const t = (try self.importedOwnerGlobalType(compilation, result, owner)) orelse continue;
+                        if (t == ts_driver.Primitive.any or t == ts_driver.Primitive.unmodeled) continue;
+                        mapped = t;
+                        break;
+                    }
+                }
+            }
+            if (mapped == ts_driver.Primitive.none) continue;
+            const is_value = switch (kind) {
+                .fn_decl, .var_decl, .let_decl, .const_decl, .class_decl, .enum_decl, .namespace_decl, .module_decl => true,
+                else => false,
+            };
+            const is_type = switch (kind) {
+                .interface_decl, .type_alias_decl, .class_decl, .enum_decl => true,
+                else => false,
+            };
+            // Function overloads become one overload set, as the checker
+            // models a local one: an object of `__call` signatures.
+            var merged = false;
+            for (result.ambient.items) |*existing| {
+                if (!std.mem.eql(u8, existing.specifier, entry.specifier) or !std.mem.eql(u8, existing.name, entry.name)) continue;
+                merged = true;
+                if (kind == .fn_decl and existing.value_type != ts_driver.Primitive.none) {
+                    existing.value_type = try addOverload(compilation, existing.value_type, mapped);
+                } else if (existing.value_type == ts_driver.Primitive.none and is_value) {
+                    existing.value_type = mapped;
+                } else if (existing.type_type == ts_driver.Primitive.none and is_type) {
+                    existing.type_type = mapped;
+                }
+                break;
+            }
+            if (merged) continue;
+            try result.ambient.append(self.gpa, .{
+                .specifier = entry.specifier,
+                .name = entry.name,
+                .value_type = if (is_value) mapped else ts_driver.Primitive.none,
+                .type_type = if (is_type) mapped else ts_driver.Primitive.none,
+            });
+        }
+    }
+
+    /// The name of a `var` declared in a `global { }` block, if `decl` is one.
+    fn ambientGlobalVarName(owner_file: *const File, decl: hir_mod_ns.NodeId) ?hir_mod_ns.StringId {
+        const c = owner_file.compilation orelse return null;
+        switch (c.hir.kindOf(decl)) {
+            .var_decl, .let_decl, .const_decl => {},
+            else => return null,
+        }
+        var parent = c.hir.parentOf(decl);
+        if (parent != hir_mod_ns.none_node_id and c.hir.kindOf(parent) == .export_decl) parent = c.hir.parentOf(parent);
+        if (parent == hir_mod_ns.none_node_id or c.hir.kindOf(parent) != .namespace_decl) return null;
+        const ns = hir_mod_ns.namespaceOf(&c.hir, parent);
+        if (ns.name == hir_mod_ns.none_node_id or c.hir.kindOf(ns.name) != .identifier) return null;
+        if (!std.mem.eql(u8, c.interner.get(hir_mod_ns.identifierOf(&c.hir, ns.name).name), "global")) return null;
+        const variable = hir_mod_ns.varDeclOf(&c.hir, decl);
+        if (variable.name == hir_mod_ns.none_node_id or c.hir.kindOf(variable.name) != .identifier) return null;
+        return hir_mod_ns.identifierOf(&c.hir, variable.name).name;
+    }
+
+    /// `set` plus one more call signature, as an overload set object.
+    fn addOverload(compilation: *ts_driver.Compilation, set: ts_driver.TypeId, signature: ts_driver.TypeId) ProgramError!ts_driver.TypeId {
+        const types_pool = &compilation.type_interner;
+        const call_name = compilation.interner.intern("__call") catch return error.OutOfMemory;
+        var members: std.ArrayListUnmanaged(ts_driver.ObjectMember) = .empty;
+        defer members.deinit(compilation.gpa);
+        const flags = types_pool.pool.flagsOf(set);
+        if (flags.is_signature) {
+            try members.append(compilation.gpa, .{ .name = call_name, .type = set, .is_optional = false, .is_readonly = true, .is_method = true });
+        } else if (flags.is_object_type) {
+            try members.appendSlice(compilation.gpa, types_pool.objectMembers(set));
+        } else return set;
+        if (!types_pool.pool.flagsOf(signature).is_signature) return set;
+        try members.append(compilation.gpa, .{ .name = call_name, .type = signature, .is_optional = false, .is_readonly = true, .is_method = true });
+        return types_pool.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn ambientDeclarationType(c: *const ts_driver.Compilation, decl: hir_mod_ns.NodeId) ?ts_driver.TypeId {
+        switch (c.hir.kindOf(decl)) {
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod_ns.varDeclOf(&c.hir, decl);
+                if (variable.name != hir_mod_ns.none_node_id and c.hir.kindOf(variable.name) == .identifier) {
+                    const name = hir_mod_ns.identifierOf(&c.hir, variable.name).name;
+                    if (boundPatternIdentifierType(c, variable.name, name)) |binding_type| return binding_type;
+                }
+            },
+            else => {},
+        }
+        const t = c.hir.typeOf(decl);
+        return if (t == ts_driver.Primitive.none) null else t;
+    }
+
+    /// A type of `owner_file`'s pool in this file's pool: through the owner's
+    /// relocation when imported, otherwise projected through a covering import.
+    fn importedOwnerType(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        result: *const ImportedProgramGlobals,
+        owner_file: *const File,
+        source_type: ts_driver.TypeId,
+    ) ProgramError!?ts_driver.TypeId {
+        if (result.importedFor(owner_file.owner)) |imported| return imported.types.ids.typeId(source_type) catch null;
+        if (!ownerCovered(result.covered.items, owner_file.owner)) return null;
+        return self.owners.projectType(
+            &compilation.type_interner,
+            &compilation.interner,
+            owner_file.owner,
+            source_type,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => null,
+        };
     }
 
     /// A global's type in this file's pool: through the owner's relocation
@@ -1008,7 +1326,7 @@ pub const Program = struct {
         var result: ImportedProgramGlobals = .{ .gpa = self.gpa };
         errdefer result.deinit();
         const compilation = file.compilation orelse return result;
-        if (globals.entries.count() == 0) return result;
+        if (globals.entries.count() == 0 and globals.ambient.modules.count() == 0) return result;
         var references: ?GlobalReferenceNames = null;
         defer if (references) |*facts| facts.deinit(self.gpa);
 
@@ -1022,6 +1340,30 @@ pub const Program = struct {
             for (globals.entries.keys(), globals.entries.values()) |key, owners| {
                 if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
                 for (owners.items) |owner| {
+                    if (owner.file == file or owner.file.owner == .none) continue;
+                    for (needed.items) |existing| {
+                        if (existing.owner == owner.file.owner) break;
+                    } else try needed.append(self.gpa, .{ .owner = owner.file.owner, .covered = owner.file.covered_owners });
+                }
+            }
+        }
+        // Ambient modules this file imports from other files, and their owners.
+        var ambient_exports: std.ArrayListUnmanaged(AmbientImport) = .empty;
+        defer ambient_exports.deinit(self.gpa);
+        try self.collectAmbientImports(file, compilation, globals, &ambient_exports);
+        {
+            self.owners_mutex.lock();
+            defer self.owners_mutex.unlock();
+            for (ambient_exports.items) |entry| {
+                const owner_file = self.files.items[entry.source];
+                if (owner_file != file and owner_file.owner != .none) {
+                    for (needed.items) |existing| {
+                        if (existing.owner == owner_file.owner) break;
+                    } else try needed.append(self.gpa, .{ .owner = owner_file.owner, .covered = owner_file.covered_owners });
+                }
+                // `export = process` naming a merged global: all its owners.
+                const global_name = ambientGlobalVarName(self.files.items[entry.source], entry.decl) orelse continue;
+                for (globals.lookup(global_name, .value)) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
                     for (needed.items) |existing| {
                         if (existing.owner == owner.file.owner) break;
@@ -1064,13 +1406,26 @@ pub const Program = struct {
             try addCoveredOwners(self.gpa, &result.covered, candidate.covered);
             try addCoveredOwners(self.gpa, &result.covered, &.{candidate.owner});
         }
+        try self.resolveAmbientImports(file, compilation, &result, ambient_exports.items, globals);
         try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
         for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
 
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
             if (key.space == .value) {
+                // A merged global is declared in several files (@types/node's
+                // `process` in globals.d.ts and process.d.ts); prefer an owner
+                // that could type it over one that left it `any`.
+                var chosen: ?BoundGlobal = null;
                 for (owners.items) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
+                    const candidate = (try self.importedOwnerGlobalType(compilation, &result, owner)) orelse continue;
+                    if (chosen == null) chosen = owner;
+                    if (candidate != ts_driver.Primitive.any and candidate != ts_driver.Primitive.unmodeled) {
+                        chosen = owner;
+                        break;
+                    }
+                }
+                if (chosen) |owner| {
                     const value_type = (try self.importedOwnerGlobalType(compilation, &result, owner)) orelse continue;
                     try result.values.append(self.gpa, .{
                         .name = key.name,
@@ -1080,8 +1435,11 @@ pub const Program = struct {
                             owner.symbol.flags.is_function or owner.symbol.flags.is_class or
                             owner.symbol.flags.is_enum or owner.symbol.flags.is_namespace_decl,
                     });
-                    break;
                 }
+                continue;
+            }
+            if (key.space == .namespace) {
+                try self.importGlobalNamespaceTypes(file, compilation, &result, key.name, owners.items);
                 continue;
             }
             if (key.space != .type) continue;
@@ -1177,6 +1535,7 @@ pub const Program = struct {
         per_file.program_global_value_types = imported.values.items;
         per_file.program_global_types = imported.types.items;
         per_file.program_checked_types = imported.checked.items;
+        per_file.program_ambient_module_exports = imported.ambient.items;
         self.compileFile(file, per_file) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.LexError => error.LexError,
@@ -6083,6 +6442,90 @@ test "Program: ambient export assignment class supplies require alias type" {
     );
     try program.compileAll(.{ .no_emit = true });
     try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2749);
+}
+
+fn expectDiagnosticMessage(c: *const ts_driver.Compilation, code: u32, message: []const u8) !void {
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == code and std.mem.eql(u8, diagnostic.message, message)) return;
+    }
+    std.debug.print("missing TS{d}: {s}\n", .{ code, message });
+    for (c.diagnostics.items) |diagnostic| std.debug.print("  have TS{d}: {s}\n", .{ diagnostic.code, diagnostic.message });
+    return error.TestExpectedEqual;
+}
+
+fn compileAmbientModuleCase(program: *Program, main_source: []const u8) !*const ts_driver.Compilation {
+    _ = try program.add("/types.d.ts",
+        \\declare module "util" {
+        \\  export function format(value: string): string;
+        \\  export function format(value: string, count: number): string[];
+        \\  export interface Options { depth: number }
+        \\  export const version: number;
+        \\}
+        \\declare module "node:util" { export * from "util"; }
+        \\declare module "proc" {
+        \\  global {
+        \\    interface Proc { pid: number; exit(code?: number): never }
+        \\    var proc: Proc;
+        \\  }
+        \\  export = proc;
+        \\}
+        \\declare module "node:proc" {
+        \\  import proc = require("proc");
+        \\  export = proc;
+        \\}
+    );
+    const main_id = try program.add("/main.ts", main_source);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    return program.fileById(main_id).compilation.?;
+}
+
+// tsc resolves a non-relative import to a declared ambient module of another
+// file before module resolution and types its exports (TS2307 otherwise).
+test "Program: ambient module exports of another file are importable and typed" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const c = try compileAmbientModuleCase(&program,
+        \\import { format, version, type Options } from "util";
+        \\const text: number = format("a");
+        \\const many: string[] = format("a", 2);
+        \\const v: string = version;
+        \\const o: Options = { depth: "deep" };
+        \\export {};
+    );
+    try expectCompilationLacksDiagnosticCode(c, 2307);
+    try expectDiagnosticMessage(c, 2322, "Type 'string' is not assignable to type 'number'.");
+    try expectDiagnosticMessage(c, 2322, "Type 'number' is not assignable to type 'string'.");
+    try expectDiagnosticMessage(c, 2322, "Type 'string' is not assignable to type 'number'.");
+}
+
+// `declare module "node:x" { export * from "x" }` and
+// `import p = require("x"); export = p` (@types/node's node: aliases) give the
+// same declarations, not a silent `any`.
+test "Program: node-prefixed ambient module aliases resolve to their declarations" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const c = try compileAmbientModuleCase(&program,
+        \\import { format } from "node:util";
+        \\import * as util from "node:util";
+        \\import proc from "node:proc";
+        \\const a: number = format("a");
+        \\const b: number = util.version;
+        \\const pid: string = proc.pid;
+        \\declare function take(value: string): void;
+        \\export function run(name?: string) { if (!name) { proc.exit(1) } take(name) }
+    );
+    try expectCompilationLacksDiagnosticCode(c, 2307);
+    try expectCompilationLacksDiagnosticCode(c, 2345);
+    try expectDiagnosticMessage(c, 2322, "Type 'string' is not assignable to type 'number'.");
+    try expectDiagnosticMessage(c, 2322, "Type 'number' is not assignable to type 'string'.");
 }
 
 fn moduleObjectPropertyName(
