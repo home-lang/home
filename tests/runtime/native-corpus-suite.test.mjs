@@ -237,7 +237,7 @@ try {
   writeFileSync(join(secondaryRoot, 'BUN_TRACKED_FILES.txt'), 'js/bun/test/suite/secondary.test.js\n')
   writeFileSync(files[0], `import {test} from 'bun:test';test('primary root',()=>console.log('MIXED_ROOT:primary'));`)
   writeFileSync(secondaryFile, `import {test} from 'bun:test';test('secondary root',()=>console.log('MIXED_ROOT:secondary'));`)
-  const mixedRootArgs = [relative(temp, files[0]), relative(temp, secondaryFolder), '--randomize', '--seed=31']
+  const mixedRootArgs = ['./' + relative(temp, files[0]), './' + relative(temp, secondaryFolder), '--randomize', '--seed=31']
   const mixedRootDirect = invoke('direct-mixed-roots', mixedRootArgs, true)
   const mixedRootSuite = invoke('mixed-roots', mixedRootArgs)
   assert.equal(mixedRootDirect.status, 0, mixedRootDirect.stderr)
