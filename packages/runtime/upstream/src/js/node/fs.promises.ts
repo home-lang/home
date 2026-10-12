@@ -3,7 +3,7 @@ const types = require("node:util/types");
 const EventEmitter = require("node:events");
 const fs = require("internal/fs/binding") as $ZigGeneratedClasses.NodeJSFS;
 const { glob } = require("internal/fs/glob");
-const { validateInteger, validateBoolean, validateObject, validateAbortSignal } = require("internal/validators");
+const { validateInteger, validateBoolean, validateObject, validateAbortSignal, validateOneOf } = require("internal/validators");
 
 const constants = $processBindingConstants.fs;
 
@@ -40,136 +40,85 @@ let nodeFsForIter; // lazy value for require("node:fs") (sync read/write/close f
 
 let Interface; // lazy value for require("node:readline").Interface.
 
-function watch(
+async function* watch(
   filename: string | Buffer | URL,
   options: {
     encoding?: BufferEncoding;
     persistent?: boolean;
     recursive?: boolean;
     signal?: AbortSignal;
+    ignore?: unknown;
+    maxQueue?: number;
+    overflow?: "ignore" | "error";
   } = {},
 ) {
-  type Event = {
-    eventType: string;
-    filename: string | Buffer | undefined;
-  };
-
-  if (filename instanceof URL) {
-    throw new TypeError("Watch URLs are not supported yet");
-  } else if (Buffer.isBuffer(filename)) {
-    filename = filename.toString();
-  } else if (typeof filename !== "string") {
+  if (filename instanceof URL) filename = Bun.fileURLToPath(filename);
+  else if (typeof filename !== "string" && !Buffer.isBuffer(filename)) {
     throw $ERR_INVALID_ARG_TYPE("filename", ["string", "Buffer", "URL"], filename);
   }
-  let nextEventResolve: Function | null = null;
-  if (typeof options === "string") {
-    options = { encoding: options };
-  }
-  const queue = $createFIFO();
-  const ignoreMatcher = require("internal/fs/watch").createIgnoreMatcher(options?.ignore);
-  const signal = options?.signal;
+  if (typeof options === "string") options = { encoding: options };
+  validateObject(options, "options");
+  const { persistent = true, recursive = false, encoding = "utf8", signal, ignore, maxQueue = 2048, overflow = "ignore" } = options;
+  validateBoolean(persistent, "options.persistent");
+  validateBoolean(recursive, "options.recursive");
+  validateInteger(maxQueue, "options.maxQueue");
+  validateOneOf(overflow, "options.overflow", ["ignore", "error"]);
   validateAbortSignal(signal, "options.signal");
+  const ignoreMatcher = require("internal/fs/watch").createIgnoreMatcher(ignore);
+  if (encoding && encoding !== "buffer" && !Buffer.isEncoding(encoding)) {
+    throw $ERR_INVALID_ARG_VALUE("encoding", encoding, "is invalid encoding");
+  }
   function makeAbortError() {
     return $makeAbortError(undefined, { cause: signal!.reason });
   }
-
-  // node never creates the native handle when the signal is already
-  // aborted (its async generator throws on first next() before opening
-  // it); creating one here would leak it, since the "abort" event never
-  // fires for a pre-aborted signal.
-  if (signal?.aborted) {
-    return {
-      [Symbol.asyncIterator]() {
-        let closed = false;
-        return {
-          async next() {
-            if (closed) return { value: undefined, done: true };
-            closed = true;
-            throw makeAbortError();
-          },
-          return() {
-            closed = true;
-            return { value: undefined, done: true };
-          },
-        };
-      },
-    };
-  }
-
-  const watcher = fs.watch(filename, options || {}, (eventType: string, filename: string | Buffer | undefined) => {
-    if (eventType !== "close" && eventType !== "error" && filename != null && ignoreMatcher?.(filename)) {
-      return;
+  if (signal?.aborted) throw makeAbortError();
+  const queue = $createFIFO();
+  let wake;
+  const watcher = fs.watch(filename, { persistent, recursive, encoding }, (eventType, name) => {
+    if (eventType !== "close" && eventType !== "error" && name != null && ignoreMatcher?.(name)) return;
+    if (eventType === "error" || eventType === "close") {
+      queue.push({ __proto__: null, eventType, filename: name });
     }
-    queue.push({ eventType, filename });
-    if (nextEventResolve) {
-      const resolve = nextEventResolve;
-      nextEventResolve = null;
-      resolve();
+    else if (queue.size() < maxQueue) {
+      queue.push({ __proto__: null, eventType, filename: name });
     }
+    else if (overflow === "error") {
+      queue.clear();
+      const error: any = new Error(`fs.watch() queued more than ${maxQueue} events`);
+      error.code = "ERR_FS_WATCH_QUEUE_OVERFLOW";
+      queue.push({ eventType: "error", filename: error });
+    }
+    else {
+      process.emitWarning("fs.watch maxQueue exceeded");
+    }
+    wake?.();
   });
-
   function onAbort() {
     watcher.close();
-    if (nextEventResolve) {
-      const resolve = nextEventResolve;
-      nextEventResolve = null;
-      resolve();
+    wake?.();
+  }
+  try {
+    signal?.addEventListener("abort", onAbort, { once: true });
+    while (!signal?.aborted) {
+      let event;
+      while ((event = queue.shift())) {
+        if (event.eventType === "close") return;
+        if (event.eventType === "error") throw event.filename;
+        yield event;
+      }
+      const pending = Promise.withResolvers();
+      wake = pending.resolve;
+      await pending.promise;
+      wake = undefined;
     }
+    throw makeAbortError();
   }
-  signal?.addEventListener("abort", onAbort, { once: true });
-  // {once: true} only auto-removes when the event fires; detach explicitly on
-  // the other exit paths so a long-lived signal doesn't retain this closure.
-  function removeAbortListener() {
+  finally {
+    watcher.close();
     signal?.removeEventListener("abort", onAbort);
+    wake = undefined;
+    queue.clear();
   }
-
-  return {
-    [Symbol.asyncIterator]() {
-      let closed = false;
-      return {
-        async next() {
-          while (!closed) {
-            if (signal?.aborted) {
-              closed = true;
-              throw makeAbortError();
-            }
-            let event: Event;
-            while ((event = queue.shift() as Event)) {
-              if (event.eventType === "close") {
-                closed = true;
-                removeAbortListener();
-                return { value: undefined, done: true };
-              }
-              if (event.eventType === "error") {
-                closed = true;
-                removeAbortListener();
-                throw event.filename;
-              }
-              return { value: event, done: false };
-            }
-            const { promise, resolve } = Promise.withResolvers();
-            nextEventResolve = resolve;
-            await promise;
-          }
-          return { value: undefined, done: true };
-        },
-
-        return() {
-          if (!closed) {
-            watcher.close();
-            closed = true;
-            removeAbortListener();
-            if (nextEventResolve) {
-              const resolve = nextEventResolve;
-              nextEventResolve = null;
-              resolve();
-            }
-          }
-          return { value: undefined, done: true };
-        },
-      };
-    },
-  };
 }
 
 // attempt to use the native code version if possible

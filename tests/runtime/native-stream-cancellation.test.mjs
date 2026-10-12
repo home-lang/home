@@ -268,3 +268,51 @@ try {
     fs.rmSync(directory, { recursive: true, force: true })
   }
 }
+
+// Promise watchers are lazy native async iterators with one cleanup scope.
+async function verifyPromiseWatchIterator() {
+  const fs = await import('node:fs')
+  const { pathToFileURL } = await import('node:url')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const directory = fs.mkdtempSync(join(tmpdir(), 'home-watch-iterator-'))
+  try {
+    const reason = new Error('ordinary abort')
+    const pre = fs.promises.watch(pathToFileURL(directory), { signal: AbortSignal.abort(reason) })
+    assert.equal(typeof pre.next, 'function')
+    assert.strictEqual(pre[Symbol.asyncIterator](), pre)
+    await assert.rejects(pre.next(), error => error.name === 'AbortError' && error.cause === reason)
+    assert.deepEqual(await pre.next(), { value: undefined, done: true })
+    const unopened = fs.promises.watch(pathToFileURL(directory))
+    assert.deepEqual(await unopened.return(), { value: undefined, done: true })
+    const controller = new AbortController()
+    const watcher = fs.promises.watch(pathToFileURL(directory), { signal: controller.signal })
+    assert.strictEqual(watcher[Symbol.asyncIterator](), watcher)
+    const next = watcher.next()
+    controller.abort(reason)
+    await assert.rejects(next, error => error.name === 'AbortError' && error.cause === reason)
+    assert.deepEqual(await watcher.next(), { value: undefined, done: true })
+    const events = fs.promises.watch(pathToFileURL(directory), { encoding: 'utf8', maxQueue: 16 })
+    const pending = events.next()
+    let timer
+    try {
+      await new Promise(resolve => setTimeout(resolve, 150))
+      fs.writeFileSync(join(directory, 'ordinary.txt'), 'data')
+      const event = await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('ordinary watch timeout')), 5000)
+        }),
+      ])
+      assert.equal(event.done, false)
+      assert.equal(typeof event.value.filename, 'string')
+      assert.equal(event.value.filename, 'ordinary.txt')
+    }
+    finally {
+      clearTimeout(timer)
+      await events.return()
+    }
+  }
+  finally { fs.rmSync(directory, { recursive: true, force: true }) }
+}
+verifyPromiseWatchIterator().catch(error => { throw error })
