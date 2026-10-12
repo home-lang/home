@@ -15530,15 +15530,20 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         \\/** @type {number} */
         \\export let count = 1;
         \\export const label = "home";
+        \\export const literalCount = 1;
+        \\export const enabled = true;
         \\export class Box {
         \\  /** @param {number} value */
         \\  constructor(value) { this.value = value; }
         \\}
     ;
     const consumer_source =
-        \\import { count, label, Box } from "./owner.js";
+        \\import { count, label, literalCount, enabled, Box } from "./owner.js";
         \\const countAsString: string = count;
         \\const labelAsNumber: number = label;
+        \\const exactLabel: "home" = label;
+        \\const exactCount: 1 = literalCount;
+        \\const exactEnabled: true = enabled;
         \\const box = new Box(1);
         \\const boxAsString: string = box.value;
         \\count = 2;
@@ -15567,18 +15572,48 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         else
             try p.compileAll(options);
         const compilation = p.fileById(consumer).compilation.?;
-        try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+        try T.expectEqual(@as(usize, 7), compilation.diagnostics.items.len);
         var assignable: usize = 0;
         var import_assignment: usize = 0;
+        var widened_label = false;
         for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
-            2322 => assignable += 1,
+            2322 => {
+                assignable += 1;
+                if (std.mem.eql(u8, diagnostic.message, "Type 'string' is not assignable to type 'number'.")) widened_label = true;
+            },
             2632 => import_assignment += 1,
             else => return error.TestUnexpectedResult,
         };
-        try T.expectEqual(@as(usize, 3), assignable);
+        try T.expectEqual(@as(usize, 6), assignable);
         try T.expectEqual(@as(usize, 1), import_assignment);
+        try T.expect(widened_label);
         try expectCompilationLacksDiagnosticCode(compilation, 2339);
     }
+}
+
+test "Program: JavaScript const widening does not erase TypeScript literal exports" {
+    const owner_source = "export const label = \"home\";";
+    const consumer_source =
+        \\import { label } from "./owner";
+        \\const exact: "home" = label;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/owner.ts", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(consumer).compilation.?.diagnostics.items.len);
 }
 
 test "Program: CommonJS export table is canonical while retaining source order" {

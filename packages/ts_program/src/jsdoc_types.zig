@@ -34,6 +34,21 @@ pub fn isJavaScriptPath(path: []const u8) bool {
         std.mem.endsWith(u8, path, ".cjs");
 }
 
+/// JavaScript widens primitive initializer literals even for `const`
+/// declarations. TypeScript source keeps their fresh literal types instead,
+/// so callers must also establish that the owner is a JavaScript file.
+pub fn widenedInitializerPrimitive(c: *const driver.Compilation, node: hir.NodeId) ?Primitive {
+    if (node == hir.none_node_id) return null;
+    return switch (c.hir.kindOf(node)) {
+        .literal_string, .template_literal => .string_t,
+        .literal_number => .number_t,
+        .literal_bool => .boolean_t,
+        .literal_bigint => .bigint_t,
+        .literal_undefined => .undefined_t,
+        else => null,
+    };
+}
+
 pub fn declarationPrimitive(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?Primitive {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
     const tags = try jsdoc.parse(gpa, body);

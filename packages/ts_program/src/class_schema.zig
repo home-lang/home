@@ -646,6 +646,10 @@ pub const Builder = struct {
             if (variable.type_annotation == 0 and jsdoc_types.isJavaScriptPath(source.path)) {
                 if (try jsdoc_types.declarationPrimitive(self.gpa, c, key.node)) |primitive|
                     break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
+                if (kind == .const_decl) {
+                    if (jsdoc_types.widenedInitializerPrimitive(c, variable.init)) |primitive|
+                        break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
+                }
             }
             const type_source = if (variable.type_annotation != 0)
                 variable.type_annotation
