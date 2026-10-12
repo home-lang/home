@@ -152,6 +152,15 @@ for (const [inputType, header] of [
   assert.doesNotMatch(failure.stderr, /Module not found/)
 }
 
+for (const completion of [
+  '"native-print-completion"',
+  'new Promise(resolve => setTimeout(() => resolve("native-print-completion"), 10))',
+]) {
+  const printed = run(['--print', completion])
+  assert.equal(printed.status, 0, printed.stderr)
+  assert.equal(printed.stdout.trim(), 'native-print-completion')
+}
+
 const directory = mkdtempSync(join(tmpdir(), 'home-native-core-cli-'))
 try {
   // Failed native spawn setup must report its errno, never watch pid 0 or

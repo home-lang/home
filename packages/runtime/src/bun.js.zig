@@ -552,20 +552,20 @@ pub const Run = struct {
     }
 };
 
-pub export fn Bun__onResolveEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) noreturn {
+pub export fn Bun__onResolveEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
     const arguments = callframe.arguments_old(1).slice();
     const result = arguments[0];
     result.print(global, .Log, .Log);
+    Output.flush();
     Global.exit(global.bunVM().exit_handler.exit_code);
-    return .js_undefined;
 }
 
-pub export fn Bun__onRejectEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) noreturn {
+pub export fn Bun__onRejectEntryPointResult(global: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
     const arguments = callframe.arguments_old(1).slice();
     const result = arguments[0];
     result.print(global, .Log, .Log);
+    Output.flush();
     Global.exit(global.bunVM().exit_handler.exit_code);
-    return .js_undefined;
 }
 
 noinline fn dumpBuildError(vm: *jsc.VirtualMachine) void {

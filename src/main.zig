@@ -1885,7 +1885,7 @@ const VmRunState = struct {
                 // Match Run.start: a pending result does not itself keep the
                 // event loop alive, but a later settlement is printed if work
                 // scheduled by promise reactions makes progress.
-                result.then2(vm.global, .js_undefined, home_rt.jsc.VirtualMachine.onResolveEntryPointResult, home_rt.jsc.VirtualMachine.onRejectEntryPointResult) catch {};
+                result.then2(vm.global, .js_undefined, home_rt.bun_js.Bun__onResolveEntryPointResult, home_rt.bun_js.Bun__onRejectEntryPointResult) catch {};
                 vm.tick();
                 vm.eventLoop().autoTickActive();
                 while (vm.isEventLoopAlive()) {

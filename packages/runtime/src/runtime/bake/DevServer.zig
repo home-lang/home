@@ -4378,12 +4378,16 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
     // being conservative about how much stuff is put on the stack.
     var filepath_buf: [@min(4096, bun.MAX_PATH_BYTES)]u8 = undefined;
     const filepath = std.fmt.bufPrint(&filepath_buf, "incremental-graph-crash-dump.{d}.html", .{bun.timestamp()}) catch "incremental-graph-crash-dump.html";
-    const file = std.fs.cwd().createFileZ(filepath, .{}) catch |err| {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.cwd().createFile(io, filepath, .{}) catch |err| {
         bun.handleErrorReturnTrace(err, @errorReturnTrace());
         Output.warn("Could not open file for dumping incremental graph: {}", .{err});
         return;
     };
-    defer file.close();
+    defer file.close(io);
+    var file_buffer: [1024]u8 = undefined;
+    var file_writer = file.writerStreaming(io, &file_buffer);
+    const writer = &file_writer.interface;
 
     const start, const end = comptime brk: {
         @setEvalBranchQuota(5000);
@@ -4391,8 +4395,8 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
         const i = (std.mem.lastIndexOf(u8, visualizer, "<script>") orelse unreachable) + "<script>".len;
         break :brk .{ visualizer[0..i], visualizer[i..] };
     };
-    try file.writeAll(start);
-    try file.writeAll("\nlet inlinedData = Uint8Array.from(atob(\"");
+    try writer.writeAll(start);
+    try writer.writeAll("\nlet inlinedData = Uint8Array.from(atob(\"");
 
     var sfb = bun.stackFallback(4096, dev.allocator());
     var payload = try std.array_list.Managed(u8).initCapacity(sfb.get(), 4096);
@@ -4402,11 +4406,12 @@ fn dumpStateDueToCrash(dev: *DevServer) !void {
     var buf: [bun.base64.encodeLenFromSize(4096)]u8 = undefined;
     var it = std.mem.window(u8, payload.items, 4096, 4096);
     while (it.next()) |chunk| {
-        try file.writeAll(buf[0..bun.base64.encode(&buf, chunk)]);
+        try writer.writeAll(buf[0..bun.base64.encode(&buf, chunk)]);
     }
 
-    try file.writeAll("\"), c => c.charCodeAt(0));\n");
-    try file.writeAll(end);
+    try writer.writeAll("\"), c => c.charCodeAt(0));\n");
+    try writer.writeAll(end);
+    try writer.flush();
 
     Output.note("Dumped incremental bundler graph to {f}", .{bun.fmt.quote(filepath)});
 }

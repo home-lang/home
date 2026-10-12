@@ -4320,6 +4320,8 @@ pub const api = runtime.api;
 pub const shell = runtime.shell;
 pub const bun_js = struct {
     pub const Run = @import("bun.js.zig").Run;
+    pub const Bun__onResolveEntryPointResult = @import("bun.js.zig").Bun__onResolveEntryPointResult;
+    pub const Bun__onRejectEntryPointResult = @import("bun.js.zig").Bun__onRejectEntryPointResult;
 
     pub fn applyStandaloneRuntimeFlags(b: *Transpiler, graph: *const StandaloneModuleGraph) void {
         _ = b;
