@@ -2563,3 +2563,13 @@ Promise intervals are real lazy async generators. Queued next calls serialize, p
 [Evidence](bun-port-evidence/2026-10-12-protected-cancellation/manifest.json) retains Home's baseline missed rejection, Node controls, source/pin hashes and 645 artifacts. Validation passes 54/54 Debug steps, 26 native groups, fourteen ABI controls (452 assertions), 32 validator controls and fifty-two unchanged originals: 179 cases plus thirty-five process checks, zero failures/skips/filters and two TODOs. Original --no-warnings timer flags are applied. All 95 report outcomes preserve eleven deliberate negatives. Explicit Pickier scans retain eighteen baseline errors and reduce 126 warnings to 117, with zero new findings.
 
 Every abort/error ordering, native Promise hook/trigger integration, watcher overflow lifecycle/stress, FileHandle transfer and all-platform/Release/ASAN proof remain [#877](https://github.com/home-lang/home/issues/877). Full Bun parity remains [#66](https://github.com/home-lang/home/issues/66).
+
+### Scheduler contract and opaque timer payloads (2026-10-12)
+
+The timer-promises scheduler has the actual Scheduler class prototype and an illegal public constructor. Its branded singleton is allocated with Reflect.construct, matching Node's design. yield/wait expose correct names and arity, reject foreign receivers, and use the actual native promise immediate/timeout operations. yield ignores incoming result/options arguments and resolves undefined.
+
+Promise timeouts capture their result value directly instead of concatenating/spreading it. Ordinary payload identity is preserved without accessing Symbol.isConcatSpreadable. Node/Home controls verify prototype, construction, receiver checks, argument/result semantics, names/arity and opaque values. Home's baseline stops at the plain-Object Scheduler mismatch; no pre-fix opaque-value runtime failure is claimed.
+
+[Evidence](bun-port-evidence/2026-10-12-scheduler-contract/manifest.json) retains 643 artifacts and 95 report outcomes with eleven deliberate negatives. Validation passes 54/54 Debug steps, 26 native groups, fourteen ABI controls (452 assertions), 32 validator controls and fifty-two unchanged originals: 179 cases plus thirty-five process checks, zero failures/skips/filters and two TODOs. Two source hashes match tested bytes. Explicit Pickier scans match thirteen baseline errors and 74 warnings, zero new findings.
+
+General Promise identity/trigger hooks, every cancellation/error ordering, FileHandle transfer, watcher overflow lifecycle and all-platform/Release/ASAN/full-suite proof remain [#877](https://github.com/home-lang/home/issues/877)/[#66](https://github.com/home-lang/home/issues/66).
