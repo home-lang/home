@@ -1352,6 +1352,149 @@ Restoration peak is 3,097 MB. The five-compiler ranking remains **1/20 leads,
 13/20 faster than native TS7**; Zod, finite/symbolic Record, canonical C++
 and other-platform coverage remain incomplete.
 
+## Owned JSDoc attachment memo rejected 2026 10 12 UTC
+
+The completed-result attachment memo under [#882](https://github.com/home-lang/home/issues/882)
+is **rejected and restored**. All correctness gates passed, but the official
+checked-JS independent mean-saving interval spans zero and control flow,
+overload resolution and recursive generics have wholly negative independent
+intervals. No candidate compiler source was adopted. The competitor ranking
+above is unchanged; this is a Home-only exact-parent comparison.
+
+The candidate memoizes positive and null JSDoc attachment results for the exact
+owned source slice, retaining the original scalar scanner for misses and
+foreign slices. Source replacement clears the memo; source identity guards
+reuse, and deinitialization releases it. Four added tests cover cold/warm
+answers across every offset, foreign slices, source resets, same-address edits
+and allocation failure. There are no benchmark predicates, semantic caps,
+skipped bodies, weakened negatives or layout tuning.
+
+Source parent is `e7ed4c0088dec5344b007d63ed55f448b918bc32`; compiler/build
+inputs match baseline build source `e00470f05c5918404ffdb6b2bac8933c38a15cd7`
+exactly. The reused baseline is not relabeled as a fresh build. Parent native
+SHA-256 is `b251b7273cd1e659946d073fa905ec5c8c690686c26c63a6fb1b3bf13f9d71bb`;
+candidate native is `307e29a58719a6229b85a5174e18b3c1b96f8258532877e760411c74484f0c3b`.
+The retained 103-line checker patch has SHA-256
+`e56746ac6e9e9c89c9cd551c1a6bd76adeed1ed02e7f027220268d30078ab612`.
+Installed and previously retained compiler binaries remain unchanged.
+
+### Correctness and admission
+
+All unfiltered source suites pass: checker **4,572**, Program **265**, driver
+**201**, CLI **80** and entrypoint **47**, totaling **5,165** tests. Actual-CLI
+extended admission passes **294/294**, six-image protocol-5 admission
+**180/180**, and unchanged 512/8,192-family positive and negative controls
+**16/16**. The full pinned Zod inventory remains unadmitted and untimed:
+parent and candidate each emit **233 TS diagnostics plus two HM9002 warnings**,
+with **zero added or removed identities**. Passing these controls is not a
+performance qualification or production-library admission.
+
+The initial source-gate attempt was refused before compilation at 566 MB free
+disk, exit123. A separate attempt passed after capacity genuinely recovered;
+the refusal and successful logs both remain. Pinned Zig2163, stripped
+ReleaseFast and the shared 600-second/3,840-MB guard, machine lock and
+1,024/512-MB disk floors were unchanged. The candidate build peaked at
+2,997 MB. No guard was bypassed.
+
+### Fixed performance protocol
+
+Before any timing, all 20 official workloads and both existing JS scales were
+fixed for 10 screening pairs and 30 independent pairs each. All **44 phases,
+880 pairs, 264 warmups and 136 phase admissions** completed and independently
+verified. Each phase has three warmups per image; fresh parent/candidate
+processes alternate order through Hyperfine with `--shell=none --runs=1`.
+Raw exits, diagnostics, coverage, ordering, provenance and fingerprints are
+verified. No timing was repeated, discarded or selectively completed.
+
+Intervals use parent-minus-candidate paired mean savings, 20,000 percentile
+bootstrap resamples and seed882. Positive bounds indicate savings; negative
+bounds indicate loss. Medians are descriptive and do not determine the
+interval: control flow has a lower candidate median but a negative paired-mean
+interval. Zero-spanning intervals do not establish equivalence. The frozen
+adoption rule requires a strictly positive independent lower bound on official
+128-family checked JS and no wholly negative independent interval anywhere.
+The candidate fails both conditions, despite three independent savings.
+Shared-host observations are not portable speed guarantees.
+
+### All screening results
+
+Times and intervals are milliseconds. All ten pairs per row remain.
+
+| Workload | Parent median | Candidate median | Mean-saving 95% interval | Faster pairs | Conclusion |
+|---|---:|---:|---:|---:|---|
+| `checkjs_jsdoc` | 29.671 | 29.612 | -1.088 to +2.123 | 5/10 | inconclusive |
+| `class_hierarchy` | 25.856 | 25.676 | -0.509 to +0.630 | 6/10 | inconclusive |
+| `commonjs_graph` | 22.040 | 22.280 | -1.489 to +0.997 | 3/10 | inconclusive |
+| `control_flow` | 30.826 | 29.365 | -1.704 to +2.950 | 7/10 | inconclusive |
+| `deep_types` | 24.862 | 25.009 | -0.492 to +0.852 | 6/10 | inconclusive |
+| `destructuring` | 18.053 | 17.766 | -1.043 to +0.573 | 5/10 | inconclusive |
+| `generic_calls` | 26.782 | 26.967 | -2.338 to +0.976 | 7/10 | inconclusive |
+| `import_graph` | 22.787 | 22.544 | -0.323 to +1.379 | 5/10 | inconclusive |
+| `interface_composition` | 37.028 | 37.869 | -1.222 to -0.286 | 2/10 | loss |
+| `jsdoc_512` | 173.602 | 160.138 | -50.028 to +9.417 | 6/10 | inconclusive |
+| `jsdoc_8192` | 9253.277 | 8777.106 | -607.655 to +435.115 | 4/10 | inconclusive |
+| `many_files` | 33.737 | 32.584 | -15.286 to +1.817 | 7/10 | inconclusive |
+| `null_safe_access` | 21.391 | 21.529 | -0.536 to +0.959 | 5/10 | inconclusive |
+| `overload_resolution` | 31.020 | 30.943 | -6.158 to +15.045 | 6/10 | inconclusive |
+| `recursive_generics` | 16.805 | 16.893 | -1.776 to +0.491 | 4/10 | inconclusive |
+| `reexport_graph` | 15.498 | 15.023 | +0.028 to +0.949 | 8/10 | saving |
+| `startup` | 3.130 | 2.980 | -0.148 to +0.244 | 6/10 | inconclusive |
+| `structural_objects` | 22.832 | 22.634 | -0.023 to +0.709 | 7/10 | inconclusive |
+| `tsx_components` | 21.962 | 21.823 | -0.157 to +0.530 | 6/10 | inconclusive |
+| `type_predicates` | 37.977 | 38.379 | -0.709 to -0.114 | 2/10 | loss |
+| `type_predicates_large` | 282.867 | 287.356 | -19.911 to +4.172 | 5/10 | inconclusive |
+| `variadic_tuples` | 34.769 | 34.721 | -0.326 to +0.791 | 5/10 | inconclusive |
+
+### All independent results
+
+All thirty independently scheduled pairs per row remain, including every
+adverse observation. The official checked-JS paired mean saving is -0.893 ms;
+its interval is -2.001 to +0.011 ms. The large JS scale is inconclusive too.
+
+| Workload | Parent median | Candidate median | Mean-saving 95% interval | Faster pairs | Conclusion |
+|---|---:|---:|---:|---:|---|
+| `checkjs_jsdoc` | 30.935 | 31.232 | -2.001 to +0.011 | 10/30 | inconclusive |
+| `class_hierarchy` | 29.591 | 29.585 | -2.830 to +2.233 | 16/30 | inconclusive |
+| `commonjs_graph` | 25.949 | 25.295 | -1.223 to +2.375 | 15/30 | inconclusive |
+| `control_flow` | 28.467 | 28.195 | -1.560 to -0.099 | 17/30 | loss |
+| `deep_types` | 23.445 | 23.885 | -4.681 to +1.067 | 15/30 | inconclusive |
+| `destructuring` | 17.231 | 17.145 | -0.842 to +0.409 | 16/30 | inconclusive |
+| `generic_calls` | 28.814 | 28.788 | -0.718 to +3.408 | 19/30 | inconclusive |
+| `import_graph` | 20.237 | 20.469 | -0.609 to +0.137 | 14/30 | inconclusive |
+| `interface_composition` | 40.047 | 39.934 | -0.939 to +0.556 | 17/30 | inconclusive |
+| `jsdoc_512` | 128.438 | 127.326 | +0.329 to +17.334 | 14/30 | saving |
+| `jsdoc_8192` | 7812.977 | 8015.294 | -388.473 to +32.794 | 11/30 | inconclusive |
+| `many_files` | 30.320 | 31.105 | -1.576 to +4.119 | 15/30 | inconclusive |
+| `null_safe_access` | 25.621 | 26.057 | -4.010 to +3.232 | 11/30 | inconclusive |
+| `overload_resolution` | 27.877 | 28.729 | -1.190 to -0.084 | 10/30 | loss |
+| `recursive_generics` | 15.989 | 16.205 | -0.720 to -0.198 | 6/30 | loss |
+| `reexport_graph` | 17.043 | 15.926 | -3.352 to +1.948 | 20/30 | inconclusive |
+| `startup` | 6.192 | 6.311 | -0.313 to +0.440 | 19/30 | inconclusive |
+| `structural_objects` | 25.865 | 25.714 | -0.732 to +1.433 | 15/30 | inconclusive |
+| `tsx_components` | 20.621 | 20.947 | -0.329 to +0.793 | 16/30 | inconclusive |
+| `type_predicates` | 37.516 | 37.085 | -1.619 to +0.670 | 16/30 | inconclusive |
+| `type_predicates_large` | 291.905 | 281.523 | +5.407 to +16.131 | 24/30 | saving |
+| `variadic_tuples` | 37.873 | 37.552 | +0.421 to +2.734 | 17/30 | saving |
+
+### Retained evidence and next work
+
+The [raw archive](../../bench/vs_tsgo/evidence/20261012-jsdoc-attachments-rejected-882.tar.gz)
+contains **1,440 checksum-verified payloads**, including 1,439 original files
+verified byte-for-byte, the candidate binary and patch, fixed protocol, complete
+source/build/admission logs, all original pairs and warmups, independent
+statistics and the failed decision. The parent image is also retained in the
+[earlier baseline archive](../../bench/vs_tsgo/evidence/20261012-root-receiver-unqualified-881.tar.gz).
+Archive SHA-256:
+`c46094971355d9a2f0f397c71f9338693694f2e0d3b951b8a293a4d824691500`.
+Historical progress files in the sealed archive remain unchanged; the terminal
+decision and complete phase records govern the outcome.
+
+The source is restored exactly to the parent. Further work under
+[#854](https://github.com/home-lang/home/issues/854) must change the algorithm,
+not repeat this candidate until noise favors it. The broader
+[#416](https://github.com/home-lang/home/issues/416) goal remains incomplete,
+including full-library correctness and unsupported platform measurements.
+
 ## Coherent root receiver facts unqualified 2026 10 12 UTC
 
 The [#881](https://github.com/home-lang/home/issues/881) candidate is **unqualified

@@ -162,6 +162,24 @@ scans and local JSDoc work. It does not establish a speedup or whole-run CPU sha
 | Unchanged 8,192-family positive/negative and native protocol controls | 6/6 and 30/30 pass |
 | Fixed-window native profile | One process, two windows, 275 mapped symbol groups; zero benchmark timing samples |
 
+The JSDoc attachment memo under [#882](https://github.com/home-lang/home/issues/882)
+is **rejected and restored** after all 880 fixed pairs completed. Correctness
+passed, but the primary interval spans zero and three independent intervals
+show losses. No compiler code was adopted.
+
+| Rejected independent comparison, 30 pairs | Parent median | Candidate median | Mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS | 30.935 ms | 31.232 ms | -2.001 to +0.011 ms |
+| Control flow | 28.467 ms | 28.195 ms | -1.560 to -0.099 ms |
+| Overload resolution | 27.877 ms | 28.729 ms | -1.190 to -0.084 ms |
+| Recursive generics | 15.989 ms | 16.205 ms | -0.720 to -0.198 ms |
+
+Medians do not determine paired-mean intervals. All **44 phases / 880 pairs /
+264 warmups** are retained without timing repeats or filtering. See the
+[complete report](docs/docs/TS_PERFORMANCE.md#owned-jsdoc-attachment-memo-rejected-2026-10-12-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261012-jsdoc-attachments-rejected-882.tar.gz).
+This Home-only A/B does not refresh the competitor ranking above.
+
 The coherent root-receiver lookup candidate under [#881](https://github.com/home-lang/home/issues/881)
 is **unqualified and restored**. Its official checked-JS independent interval
 spans zero; scaling gains cannot replace that frozen primary-target requirement.
