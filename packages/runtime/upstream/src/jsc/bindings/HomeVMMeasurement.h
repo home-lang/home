@@ -161,13 +161,20 @@ inline void HomeVMMeasurement::summarize() {
 }
 inline JSC::JSObject* HomeVMMeasurement::rangeObject(JSC::JSGlobalObject* global, const HomeMemoryRange& range) {
     auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
     auto* result = JSC::constructEmptyObject(global);
+    RETURN_IF_EXCEPTION(scope, nullptr);
     result->putDirect(vm, JSC::Identifier::fromString(vm, "jsMemoryEstimate"_s), JSC::jsNumber(range.estimate));
+    RETURN_IF_EXCEPTION(scope, nullptr);
     auto* bounds = JSC::constructEmptyArray(global, nullptr, 2);
+    RETURN_IF_EXCEPTION(scope, nullptr);
     bounds->putDirectIndex(global, 0, JSC::jsNumber(range.lower));
+    RETURN_IF_EXCEPTION(scope, nullptr);
     bounds->putDirectIndex(global, 1, JSC::jsNumber(range.upper));
+    RETURN_IF_EXCEPTION(scope, nullptr);
     result->putDirect(vm, JSC::Identifier::fromString(vm, "jsMemoryRange"_s), bounds);
-    return result;
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    RELEASE_AND_RETURN(scope, result);
 }
 inline void HomeVMMeasurement::deliver(JSC::JSGlobalObject* owner) {
     if (!m_ready || m_requests.empty()) return;
@@ -175,22 +182,40 @@ inline void HomeVMMeasurement::deliver(JSC::JSGlobalObject* owner) {
     JSC::PreventCollectionScope prevent(m_vm.heap);
     auto scope = DECLARE_THROW_SCOPE(m_vm);
     JSC::DeferGCForAWhile deferGC(m_vm);
+    if (m_vm.hasPendingTerminationException() || m_vm.executionForbidden()) { cancel(owner); return; }
     for (auto it = m_requests.begin(); it != m_requests.end();) {
         if (it->global != owner) { ++it; continue; }
-        auto* result = JSC::constructEmptyObject(owner);
-        result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "total"_s), rangeObject(owner, m_total));
-        if (it->detailed) {
-            auto* others = JSC::constructEmptyArray(owner, nullptr);
-            unsigned index = 0;
-            for (size_t i = 0; i < m_globals.size(); ++i) {
-                auto* range = rangeObject(owner, m_ranges[i]);
-                if (m_globals[i] == owner) result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "current"_s), range);
-                else others->putDirectIndex(owner, index++, range);
+        auto buildResult = [&]() -> JSC::JSObject* {
+            auto constructionScope = DECLARE_THROW_SCOPE(m_vm);
+            auto* result = JSC::constructEmptyObject(owner);
+            RETURN_IF_EXCEPTION(constructionScope, nullptr);
+            auto* total = rangeObject(owner, m_total);
+            RETURN_IF_EXCEPTION(constructionScope, nullptr);
+            result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "total"_s), total);
+            RETURN_IF_EXCEPTION(constructionScope, nullptr);
+            if (it->detailed) {
+                auto* others = JSC::constructEmptyArray(owner, nullptr);
+                RETURN_IF_EXCEPTION(constructionScope, nullptr);
+                unsigned index = 0;
+                for (size_t i = 0; i < m_globals.size(); ++i) {
+                    auto* range = rangeObject(owner, m_ranges[i]);
+                    RETURN_IF_EXCEPTION(constructionScope, nullptr);
+                    if (m_globals[i] == owner) result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "current"_s), range);
+                    else others->putDirectIndex(owner, index++, range);
+                    RETURN_IF_EXCEPTION(constructionScope, nullptr);
+                }
+                result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "other"_s), others);
+                RETURN_IF_EXCEPTION(constructionScope, nullptr);
             }
-            result->putDirect(m_vm, JSC::Identifier::fromString(m_vm, "other"_s), others);
-        }
-        if (scope.exception()) it->promise->rejectWithCaughtException(m_vm, scope);
-        else it->promise->resolve(owner, m_vm, result);
+            RELEASE_AND_RETURN(constructionScope, result);
+        };
+        auto* result = buildResult();
+        if (scope.exception()) {
+            // A terminated owner cannot run promise reactions. Retire its
+            // native requests without clearing the engine's termination state.
+            if (m_vm.hasPendingTerminationException()) { cancel(owner); return; }
+            it->promise->rejectWithCaughtException(m_vm, scope);
+        } else it->promise->resolve(owner, m_vm, result);
         it = m_requests.erase(it);
     }
     if (m_requests.empty()) retire();

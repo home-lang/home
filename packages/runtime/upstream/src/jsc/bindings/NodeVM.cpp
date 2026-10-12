@@ -57,6 +57,7 @@
 #include "JavaScriptCore/FunctionCodeBlock.h"
 #include "JavaScriptCore/JIT.h"
 #include "JavaScriptCore/ProgramCodeBlock.h"
+#include "JavaScriptCore/ModuleProgramExecutable.h"
 #include "JavaScriptCore/GlobalObjectMethodTable.h"
 #include "NodeVMScriptFetcher.h"
 #include "wtf/FileHandle.h"
@@ -243,21 +244,22 @@ JSC::JSFunction* constructAnonymousFunction(JSC::JSGlobalObject* globalObject, c
     Structure* structure = JSFunction::selectStructureForNewFuncExp(globalObject, functionExecutable);
     JSFunction* function = JSFunction::create(vm, globalObject, functionExecutable, scope, structure);
 
-    if (bytecodeAccepted == TriState::Indeterminate) {
-        if (options.produceCachedData) {
-            RefPtr<JSC::CachedBytecode> producedBytecode = getBytecode(globalObject, programExecutable, sourceCode);
-            if (producedBytecode) {
-                JSC::JSUint8Array* buffer = WebCore::createBuffer(globalObject, producedBytecode->span());
-                RETURN_IF_EXCEPTION(throwScope, nullptr);
-                function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedData"_s), buffer);
-                function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedDataProduced"_s), jsBoolean(true));
-            } else {
-                function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedDataProduced"_s), jsBoolean(false));
-            }
-        }
-    } else {
+    if (bytecodeAccepted != TriState::Indeterminate) {
         function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedDataRejected"_s), jsBoolean(bytecodeAccepted == TriState::False));
         RETURN_IF_EXCEPTION(throwScope, nullptr);
+    }
+    // Consumption and production are independent requests. A supplied cache
+    // must not suppress producing a fresh cache for the compiled executable.
+    if (options.produceCachedData) {
+        RefPtr<JSC::CachedBytecode> producedBytecode = getBytecode(globalObject, programExecutable, sourceCode);
+        if (producedBytecode) {
+            JSC::JSUint8Array* buffer = WebCore::createBuffer(globalObject, producedBytecode->span());
+            RETURN_IF_EXCEPTION(throwScope, nullptr);
+            function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedData"_s), buffer);
+            function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedDataProduced"_s), jsBoolean(true));
+        } else {
+            function->putDirect(vm, JSC::Identifier::fromString(vm, "cachedDataProduced"_s), jsBoolean(false));
+        }
     }
 
     return function;
@@ -434,7 +436,7 @@ RefPtr<JSC::CachedBytecode> getBytecode(JSGlobalObject* globalObject, JSC::Progr
     if (!unlinked || parserError.isValid()) {
         return nullptr;
     }
-    JSC::LexicallyScopedFeatures lexicallyScopedFeatures = globalObject->globalScopeExtension() ? TaintedByWithScopeLexicallyScopedFeature : NoLexicallyScopedFeatures;
+    JSC::LexicallyScopedFeatures lexicallyScopedFeatures = executable->lexicallyScopedFeatures() & TaintedByWithScopeLexicallyScopedFeature;
     JSC::BytecodeCacheError bytecodeCacheError;
     FileSystem::FileHandle fileHandle;
     return JSC::serializeBytecode(vm, unlinked, source, JSC::SourceCodeType::ProgramType, lexicallyScopedFeatures, JSParserScriptMode::Classic, fileHandle, bytecodeCacheError, {});
@@ -449,7 +451,7 @@ RefPtr<JSC::CachedBytecode> getBytecode(JSGlobalObject* globalObject, JSC::Modul
     if (!unlinked || parserError.isValid()) {
         return nullptr;
     }
-    JSC::LexicallyScopedFeatures lexicallyScopedFeatures = globalObject->globalScopeExtension() ? TaintedByWithScopeLexicallyScopedFeature : NoLexicallyScopedFeatures;
+    JSC::LexicallyScopedFeatures lexicallyScopedFeatures = executable->lexicallyScopedFeatures() & TaintedByWithScopeLexicallyScopedFeature;
     JSC::BytecodeCacheError bytecodeCacheError;
     FileSystem::FileHandle fileHandle;
     return JSC::serializeBytecode(vm, unlinked, source, JSC::SourceCodeType::ProgramType, lexicallyScopedFeatures, JSParserScriptMode::Classic, fileHandle, bytecodeCacheError, {});

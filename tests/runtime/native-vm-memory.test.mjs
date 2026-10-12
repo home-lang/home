@@ -53,6 +53,28 @@ async function main() {
     assert.throws(() => vm.compileFunction('return 1', [], 'filename.js'), { code: 'ERR_INVALID_ARG_TYPE' });
     assert.throws(() => vm.compileFunction('return 1', [], []), { code: 'ERR_INVALID_ARG_TYPE' });
     assert.throws(() => vm.compileFunction('return 1', [], { contextExtensions: [{}, 17] }), error => error.code === 'ERR_INVALID_ARG_TYPE' && error.message.includes('contextExtensions[1]'));
+    const cacheOptions = { parsingContext: extensionContext, contextExtensions: [extension], produceCachedData: true };
+    const cachedFirst = vm.compileFunction('return inside+outside', [], cacheOptions);
+    assert.equal(cachedFirst.cachedDataProduced, true);
+    assert(Buffer.isBuffer(cachedFirst.cachedData));
+    const cachedSecond = vm.compileFunction('return inside+outside', [], { ...cacheOptions, cachedData: cachedFirst.cachedData });
+    assert.equal(cachedSecond.cachedDataRejected, false);
+    assert.equal(cachedSecond.cachedDataProduced, true);
+    assert(Buffer.isBuffer(cachedSecond.cachedData));
+    assert.equal(cachedSecond(), 57);
+    const cachedThird = vm.compileFunction('return inside+outside', [], { ...cacheOptions, contextExtensions: [{ inside: 100 }], cachedData: cachedFirst.cachedData });
+    assert.equal(cachedThird.cachedDataRejected, false);
+    assert.equal(cachedThird(), 107);
+    assert.equal(cachedSecond(), 57);
+    assert.equal(vm.runInContext('typeof inside', extensionContext), 'undefined');
+    const strictSource = '"use strict";globalThis.cacheAnswer=42';
+    const strictScript = new vm.Script(strictSource);
+    const strictCache = strictScript.createCachedData();
+    const strictConsumer = new vm.Script(strictSource, { cachedData: strictCache });
+    assert.equal(strictConsumer.cachedDataRejected, false);
+    const strictContext = vm.createContext({});
+    strictConsumer.runInContext(strictContext);
+    assert.equal(strictContext.cacheAnswer, 42);
   `], { encoding: 'utf8', timeout: 10000 })
   assert.equal(reuse.error, undefined)
   assert.equal(reuse.signal, null)
