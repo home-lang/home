@@ -179493,6 +179493,9 @@ pub const Checker = struct {
             if (binding.name == name) {
                 if (binding.declared_type_name) |type_name| {
                     if (self.type_names.get(type_name)) |merged| return merged;
+                    // The program merges the declared type across files
+                    // (`ArrayConstructor` from es5 with es2015's `from`).
+                    if (self.programGlobalType(type_name)) |merged| return merged;
                 }
                 return binding.type;
             }
@@ -179505,6 +179508,9 @@ pub const Checker = struct {
             if (binding.name == name and binding.is_global_this_property) {
                 if (binding.declared_type_name) |type_name| {
                     if (self.type_names.get(type_name)) |merged| return merged;
+                    // The program merges the declared type across files
+                    // (`ArrayConstructor` from es5 with es2015's `from`).
+                    if (self.programGlobalType(type_name)) |merged| return merged;
                 }
                 return binding.type;
             }

@@ -1416,8 +1416,24 @@ pub const Program = struct {
         {
             self.owners_mutex.lock();
             defer self.owners_mutex.unlock();
+            var needed_set: std.AutoHashMapUnmanaged(usize, void) = .empty;
+            defer needed_set.deinit(self.gpa);
             for (globals.entries.keys(), globals.entries.values(), 0..) |key, owners, key_index| {
                 if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
+                try needed_set.put(self.gpa, key_index, {});
+                // `var Array: ArrayConstructor` merges with other files'
+                // `interface ArrayConstructor` (es2015's `from`): the value
+                // needs its declared type's global too.
+                if (key.space != .value) continue;
+                for (owners.items) |owner| {
+                    const type_name = boundGlobalDeclaredTypeName(owner) orelse continue;
+                    if (globals.entries.getIndex(.{ .name = type_name, .space = .type })) |type_index| {
+                        try needed_set.put(self.gpa, type_index, {});
+                    }
+                }
+            }
+            for (globals.entries.keys(), globals.entries.values(), 0..) |key, owners, key_index| {
+                if (!needed_set.contains(key_index)) continue;
                 try needed_keys.append(self.gpa, key_index);
                 for (owners.items) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
