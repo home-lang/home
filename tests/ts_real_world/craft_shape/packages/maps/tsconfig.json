@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "noEmit": true,
+    "isolatedDeclarations": false,
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "paths": {
+      "craft-core": ["../core/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

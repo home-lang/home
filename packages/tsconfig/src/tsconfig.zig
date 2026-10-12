@@ -8,8 +8,8 @@
 //! Loader behavior:
 //!
 //!   - Reads JSONC (`jsonc.zig`).
-//!   - Resolves `extends`: a string or string-array of paths to other
-//!     tsconfig files; each is loaded recursively and merged
+//!   - Resolves `extends` (`config_graph.zig`): a string or string-array of
+//!     paths to other tsconfig files; each is loaded recursively and merged
 //!     left-to-right with the current file taking precedence on every
 //!     key (matches `tsc`'s observable behavior).
 //!   - Inherits arrays *by replacement*, not concat — exactly what tsc
@@ -34,6 +34,8 @@
 
 const std = @import("std");
 const jsonc = @import("jsonc.zig");
+/// `extends` graph resolution shared by the CLI and the conformance runner.
+pub const config_graph = @import("config_graph.zig");
 
 /// Home's compiler-option compatibility contract follows the native
 /// TypeScript 7 frontend. Older options are still parsed far enough to emit
@@ -2675,6 +2677,10 @@ fn normalizedOptionNamesEqual(a: []const u8, b: []const u8) bool {
 // =============================================================================
 
 const t = std.testing;
+
+test {
+    _ = config_graph;
+}
 
 /// Count how many validation diagnostics carry `code`. Used by tests
 /// whose fixtures unavoidably also trip a TS7 removed-option diagnostic

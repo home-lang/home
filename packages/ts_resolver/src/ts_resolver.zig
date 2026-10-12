@@ -1817,6 +1817,14 @@ pub const Resolver = struct {
         return buf.items;
     }
 
+    /// Whether a package entry belongs to the current resolution pass. The
+    /// TypeScript pass accepts only TypeScript/declaration files; JSON is
+    /// always accepted because `exports` may name it explicitly.
+    fn passAcceptsPath(self: *const Resolver, path: []const u8) bool {
+        if (std.mem.endsWith(u8, path, ".json")) return true;
+        return isSupportedTypeScriptPathForPass(self.config.extensions, path);
+    }
+
     fn tryNodeModulesPass(
         self: *Resolver,
         specifier: []const u8,
@@ -1868,12 +1876,18 @@ pub const Resolver = struct {
                     if (has_root_pkg_json) {
                         const sub_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, split.subpath);
                         switch (sub_outcome) {
-                            .resolved => |r| return try self.withPackageId(.{
+                            .resolved => |r| {
+                                if (!self.passAcceptsPath(r.path)) {
+                                    if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |types_resolution| return types_resolution;
+                                    return null;
+                                }
+                                return try self.withPackageId(.{
                                 .path = r.path,
                                 .source = .node_modules,
                                 .is_declaration = r.is_declaration,
                                 .blocked_by_exports_null = r.blocked_by_exports_null,
-                            }, pkg_root, root_pkg_json, false),
+                            }, pkg_root, root_pkg_json, false);
+                            },
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, split.subpath)) |r| return r;
                                 return null;
@@ -1887,12 +1901,24 @@ pub const Resolver = struct {
                     if (has_root_pkg_json) {
                         const root_outcome = try self.resolvePackageSubpath(pkg_root, root_pkg_json, ".");
                         switch (root_outcome) {
-                            .resolved => |r| return try self.withPackageId(.{
+                            .resolved => |r| {
+                                // tsc's TypeScript pass maps an `exports`
+                                // target such as `./index.js` to declaration
+                                // extensions only; when none exists the
+                                // package has no types here and the sibling
+                                // `@types/<pkg>` (react → @types/react) wins
+                                // over the untyped JavaScript entry.
+                                if (!self.passAcceptsPath(r.path)) {
+                                    if (try self.tryAtTypesFallback(nm, split.name, "")) |types_resolution| return types_resolution;
+                                    return null;
+                                }
+                                return try self.withPackageId(.{
                                 .path = r.path,
                                 .source = .node_modules,
                                 .is_declaration = r.is_declaration,
                                 .blocked_by_exports_null = r.blocked_by_exports_null,
-                            }, pkg_root, root_pkg_json, false),
+                            }, pkg_root, root_pkg_json, false);
+                            },
                             .blocked => {
                                 if (try self.tryAtTypesFallback(nm, split.name, "")) |r| return r;
                                 return null;
@@ -2893,6 +2919,13 @@ fn isSupportedTsOrJsonPath(s: []const u8) bool {
         std.mem.endsWith(u8, s, ".hm") or
         std.mem.endsWith(u8, s, ".home") or
         std.mem.endsWith(u8, s, ".json");
+}
+
+fn isSupportedTypeScriptPathForPass(extensions: []const []const u8, path: []const u8) bool {
+    for (extensions) |extension| {
+        if (std.mem.endsWith(u8, path, extension)) return true;
+    }
+    return false;
 }
 
 fn isSupportedTypeScriptPath(s: []const u8) bool {
@@ -4765,11 +4798,11 @@ test "Resolver: exports routes to JS but legacy types yields alternate_result" {
     try T.expect(saw_types_trace);
 }
 
-test "Resolver: exports routes to JS, @types sibling yields alternate_result" {
+test "Resolver: exports routes to JS, @types sibling wins the declaration pass" {
     // The `bar` package itself ships only JS via `exports`, but a
-    // sibling `@types/bar` declares the types. tsc reports the
-    // alternate path under `/node_modules/@types/` so the checker
-    // rewrites the package name to `@types/bar` in TS6278.
+    // sibling `@types/bar` declares the types. tsgo's TypeScript pass
+    // finds no declaration through `bar`'s exports and resolves the
+    // sibling `@types/bar` (verified against TypeScript 7.1).
     var vfs = VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/node_modules/bar/package.json",
@@ -4798,10 +4831,8 @@ test "Resolver: exports routes to JS, @types sibling yields alternate_result" {
     });
     defer r.deinit();
     const res = try r.resolve("bar", "/index.mts");
-    try T.expectEqualStrings("/node_modules/bar/index.mjs", res.path);
-    try T.expect(!res.is_declaration);
-    try T.expect(res.alternate_result != null);
-    try T.expectEqualStrings("/node_modules/@types/bar/index.d.ts", res.alternate_result.?);
+    try T.expectEqualStrings("/node_modules/@types/bar/index.d.ts", res.path);
+    try T.expect(res.is_declaration);
 }
 
 test "Resolver: no alternate_result when exports already exposes types" {
@@ -5990,4 +6021,36 @@ test "Resolver: #imports — disabled under classic strategy" {
     var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .classic });
     defer r.deinit();
     try T.expectError(error.NotFound, r.resolve("#x", "/proj/src/main.ts"));
+}
+
+test "Resolver: a JavaScript-only exports entry yields to the sibling @types package" {
+    // React ships `exports: { ".": { default: "./index.js" } }` and its
+    // types live in `@types/react`, whose own exports use a `types@<=5.0`
+    // version condition before plain `types`. tsc resolves `react` to
+    // `@types/react/index.d.ts`, not the untyped JavaScript entry.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repo/node_modules/react/package.json",
+        \\{ "name": "react", "main": "index.js",
+        \\  "exports": { ".": { "react-server": "./react.shared-subset.js", "default": "./index.js" },
+        \\               "./jsx-runtime": "./jsx-runtime.js" } }
+    );
+    try vfs.addFile("/repo/node_modules/react/index.js", "");
+    try vfs.addFile("/repo/node_modules/react/jsx-runtime.js", "");
+    try vfs.addFile("/repo/node_modules/@types/react/package.json",
+        \\{ "name": "@types/react", "version": "18.3.31", "types": "index.d.ts",
+        \\  "exports": { ".": { "types@<=5.0": { "default": "./ts5.0/index.d.ts" }, "types": { "default": "./index.d.ts" } },
+        \\               "./jsx-runtime": { "types": { "default": "./jsx-runtime.d.ts" } } } }
+    );
+    try vfs.addFile("/repo/node_modules/@types/react/index.d.ts", "export {};");
+    try vfs.addFile("/repo/node_modules/@types/react/jsx-runtime.d.ts", "export {};");
+    try vfs.addFile("/repo/src/a.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .bundler });
+    defer r.deinit();
+    const root = try r.resolve("react", "/repo/src/a.ts");
+    try T.expectEqualStrings("/repo/node_modules/@types/react/index.d.ts", root.path);
+    try T.expect(root.is_declaration);
+    const sub = try r.resolve("react/jsx-runtime", "/repo/src/a.ts");
+    try T.expectEqualStrings("/repo/node_modules/@types/react/jsx-runtime.d.ts", sub.path);
 }

@@ -1,0 +1,28 @@
+{
+  // Shaped like Craft's root config: every package extends it.
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": ["esnext"],
+    "moduleDetection": "force",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "noFallthroughCasesInSwitch": true,
+    "declaration": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedDeclarations": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipDefaultLibCheck": true,
+    "paths": {
+      "craft-core": ["./packages/core/src/index.ts"]
+    },
+    "skipLibCheck": true,
+    "types": ["bun"]
+  }
+}

@@ -156,6 +156,7 @@ pub const Registry = struct {
             .context = &context,
             .string = Context.string,
             .declaration = Context.node,
+            .owner = @backingInt(owner),
         });
         return .{ .owner = owner, .types = imported };
     }

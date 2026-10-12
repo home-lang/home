@@ -8400,6 +8400,11 @@ pub const Parser = struct {
         var type_anno: NodeId = hir_mod.none_node_id;
         var is_method = false;
         var is_optional_field = false;
+        // `[key]?(...)` / `[key]?<T>(...)` is an optional method, as in
+        // @types/node's `[EventEmitter.captureRejectionSymbol]?<K>(...)`.
+        const is_optional_method = self.peek().kind == .question and
+            (self.peekAt(1).kind == .open_paren or self.peekAt(1).kind == .less_than);
+        if (is_optional_method) _ = self.advance();
         if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
             var type_params: []NodeId = &.{};
             var owns_tps = false;
@@ -8444,6 +8449,7 @@ pub const Parser = struct {
                     .is_generator = is_generator,
                     .is_override = mods.is_override,
                     .is_abstract = mods.is_abstract,
+                    .is_optional = is_optional_method,
                 },
             );
             is_method = true;
@@ -36777,5 +36783,29 @@ test "parser: class field optional and readonly modifiers survive in HIR" {
         const field = hir_mod.objectPropertyOf(&s.hir, node);
         try T.expectEqual(optional, field.is_optional);
         try T.expectEqual(readonly, field.is_readonly);
+    }
+}
+
+test "parser: computed class members accept optional generic method signatures" {
+    // @types/node events.d.ts:
+    //   [EventEmitter.captureRejectionSymbol]?<K>(error: Error, event: Key<K, T>, ...args: Args<K, T>): void;
+    var s = try newTestSetup(
+        \\declare class EventEmitter<T> {
+        \\    static readonly captureRejectionSymbol: unique symbol;
+        \\    [EventEmitter.captureRejectionSymbol]?<K>(error: Error, event: K, ...args: any[]): void;
+        \\    [Symbol.iterator]?(): void;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 3), members.len);
+    for (members[1..]) |member| {
+        const prop = hir_mod.objectPropertyOf(&s.hir, member);
+        try T.expect(prop.is_computed);
+        try T.expect(prop.is_method);
+        try T.expect(hir_mod.fnDeclOf(&s.hir, prop.value).flags.is_optional);
     }
 }

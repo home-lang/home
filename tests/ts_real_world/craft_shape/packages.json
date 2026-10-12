@@ -1,0 +1,60 @@
+{
+  "description": "Pinned npm packages for the Craft-shaped home-tsc regression (versions from Craft's bun.lock, 2026-10-11).",
+  "packages": [
+    {
+      "name": "@types/bun",
+      "version": "1.4.2",
+      "url": "https://registry.npmjs.org/@types/bun/-/bun-1.4.2.tgz",
+      "sha512": "1a29a8b4d9fbf99574b9502b22d05bae266c475a0d7f4f964f33e475c16bcd2848ee4da7a2b2f4bb311a253f13df7756afb3bf73d643b80150adcb4a0a2ef6a1"
+    },
+    {
+      "name": "@types/node",
+      "version": "22.20.1",
+      "url": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+      "sha512": "10036a38217d405cab6bee297f151c5fd493289a422e331b39b573963209a260164a7b9220402fcb3114e7719a6a36d724481d87488470f2fe0c6be951de24d5"
+    },
+    {
+      "name": "@types/prop-types",
+      "version": "15.7.15",
+      "url": "https://registry.npmjs.org/@types/prop-types/-/prop-types-15.7.15.tgz",
+      "sha512": "17a6c4c9a995f632860050449a54277ac44f18e42a4b6f94c22d049b5e717a73b11da7f686fe8bf180959f7acf74f24e8897cf8829cb211cafc156aa318dcc23"
+    },
+    {
+      "name": "@types/react",
+      "version": "18.3.31",
+      "url": "https://registry.npmjs.org/@types/react/-/react-18.3.31.tgz",
+      "sha512": "bdf12aa574efc13f75ca19b075fa2e4ad3768522b04efc91b3caa92df003cababf9310f0d2164ced693d520d4510b8fc8486f2f92ffe910092445177da7bf643"
+    },
+    {
+      "name": "bun-types",
+      "version": "1.4.2",
+      "url": "https://registry.npmjs.org/bun-types/-/bun-types-1.4.2.tgz",
+      "sha512": "6f15751602bbc812338d17b9cc1a3320ce017a6d756497025d2ae35911b76162edf3214378fbb870b8e979b3bc3af3de204f6dadbc8f1787ee8f70a26b8163df"
+    },
+    {
+      "name": "csstype",
+      "version": "3.2.3",
+      "url": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "sha512": "cf51c629c632db103c00641fc2b9f43c0cbe3c1ed7fc64a3dd45495bda8aca7e37c566be825e675e6538aaa2cc4735952c50bc2aeb145fc4ffd240a2398a4021"
+    },
+    {
+      "name": "react",
+      "version": "18.3.1",
+      "url": "https://registry.npmjs.org/react/-/react-18.3.1.tgz",
+      "sha512": "c12fa1020252851d0a844bcf240adfb8f54dd7e1f3d6dd18ea7e632eb1906e46f8bab80f13fd11bdefb590c075bffa16807826e1621c57e8bb176a53563fb689"
+    },
+    {
+      "name": "undici-types",
+      "version": "6.21.0",
+      "url": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "sha512": "8b00d9aa0d10006ae0f516afe47e27d0ceb87379a4479f5c27ac10a7eec2e2723482c984c5a79d6982cd3b8e1e4f802d041c236d38863cc96dd8c7744fd1fd25"
+    }
+  ],
+  "projects": [
+    "packages/core",
+    "packages/cli",
+    "packages/react",
+    "packages/maps"
+  ],
+  "max_seconds_per_project": 5
+}

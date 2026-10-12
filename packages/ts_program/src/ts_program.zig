@@ -201,6 +201,11 @@ pub const File = struct {
     /// first source file as canonical and records later paths as redirect
     /// files for explainFiles (TS1429).
     redirect_target: ?FileId = null,
+    /// `/// <reference types="..."/>` names this file declares that the
+    /// program resolver found (program-owned copies). The checker reports
+    /// TS2688 only for names missing here, so a reference inside
+    /// `node_modules` resolves from its own location, not the cwd.
+    resolved_type_references: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn sourceContains(self: *const File, comptime marker: []const u8) bool {
         if (self.source_markers) |*markers| return markers.contains(marker);
@@ -396,6 +401,8 @@ pub const Program = struct {
         for (self.files.items) |f| {
             self.dropCompilation(f);
             f.imports.deinit(self.gpa);
+            for (f.resolved_type_references.items) |name| self.gpa.free(name);
+            f.resolved_type_references.deinit(self.gpa);
             if (f.include_reason) |ir| {
                 if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
                 if (ir.package_id.len != 0) self.gpa.free(ir.package_id);
@@ -1012,10 +1019,16 @@ pub const Program = struct {
         const compilation = file.compilation orelse return false;
         // Syntax such as tuple/array types depends on lib declarations even
         // when the source contains no explicit `Array` type-reference node.
-        // Declaration owners form the semantic environment; unlike checked
-        // script owners, they must remain available for those implicit uses.
+        // Those implicitly used library globals stay available from every
+        // declaration owner. Any other declaration global is imported only
+        // when this file names it: an owner's checked pool already carries
+        // every type its own declarations reach, so importing all of
+        // lib.dom.d.ts/@types/node into each file is unnecessary work.
         for (owners) |owner| {
-            if (owner.file != file and owner.file.owner != .none and owner.file.is_declaration) return true;
+            if (owner.file != file and owner.file.owner != .none and owner.file.is_declaration) {
+                if (isImplicitLibraryGlobal(compilation.interner.get(key.name))) return true;
+                break;
+            }
         }
         const local_map = switch (key.space) {
             .value => &compilation.module.root.values,
@@ -1025,6 +1038,36 @@ pub const Program = struct {
         if (!local_map.contains(key.name)) return fileReferencesGlobalNameInPass(gpa, file, key, references);
         for (owners) |owner| {
             if (owner.file != file and owner.file.owner != .none) return true;
+        }
+        return false;
+    }
+
+    /// Globals the checker consults without a source reference: the types
+    /// behind literals, array/tuple/function/class syntax, iteration,
+    /// async functions, templates, decorators, `using`, and JSX.
+    fn isImplicitLibraryGlobal(name: []const u8) bool {
+        const names = [_][]const u8{
+            "Array",                     "ReadonlyArray",          "ArrayLike",            "ConcatArray",
+            "Object",                    "Function",               "CallableFunction",     "NewableFunction",
+            "String",                    "Number",                 "Boolean",              "Symbol",
+            "BigInt",                    "RegExp",                 "IArguments",           "Error",
+            "Promise",                   "PromiseLike",            "PromiseConstructorLike", "Awaited",
+            "Iterable",                  "Iterator",               "IterableIterator",     "IteratorResult",
+            "IteratorYieldResult",       "IteratorReturnResult",   "IteratorObject",       "BuiltinIteratorReturn",
+            "ArrayIterator",             "AsyncIterable",          "AsyncIterator",        "AsyncIterableIterator",
+            "AsyncIteratorObject",       "Generator",              "AsyncGenerator",       "TemplateStringsArray",
+            "ImportMeta",                "ImportCallOptions",      "ImportAttributes",     "ThisType",
+            "NonNullable",               "Disposable",             "AsyncDisposable",      "SymbolConstructor",
+            "TypedPropertyDescriptor",   "PropertyDescriptor",     "PropertyKey",          "ClassDecorator",
+            "PropertyDecorator",         "MethodDecorator",        "ParameterDecorator",   "ClassDecoratorContext",
+            "ClassMethodDecoratorContext", "ClassGetterDecoratorContext", "ClassSetterDecoratorContext", "ClassFieldDecoratorContext",
+            "ClassAccessorDecoratorContext", "ClassAccessorDecoratorTarget", "ClassAccessorDecoratorResult", "DecoratorMetadata",
+            "JSX",                       "globalThis",             "Record",               "Partial",
+            "Readonly",                  "Pick",                   "Uppercase",            "Lowercase",
+            "Capitalize",                "Uncapitalize",           "NoInfer",
+        };
+        for (names) |candidate| {
+            if (std.mem.eql(u8, candidate, name)) return true;
         }
         return false;
     }
@@ -1102,8 +1145,24 @@ pub const Program = struct {
     /// All execution modes share the same per-file identity and lifecycle.
     /// A failed check cannot leave a partially checked source available for
     /// retry; successful preparation preserves the actual binder/HIR owner.
+    fn recordResolvedTypeReference(self: *Program, f: *File, name: []const u8) ProgramError!void {
+        for (f.resolved_type_references.items) |known| {
+            if (std.mem.eql(u8, known, name)) return;
+        }
+        const owned = try self.gpa.dupe(u8, name);
+        errdefer self.gpa.free(owned);
+        try f.resolved_type_references.append(self.gpa, owned);
+    }
+
     fn compileFile(self: *Program, f: *File, options: ts_driver.CompileOptions) ts_driver.CompileError!void {
+        var known_type_references: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer known_type_references.deinit(self.gpa);
         var per_file = options;
+        if (f.resolved_type_references.items.len != 0) {
+            try known_type_references.appendSlice(self.gpa, options.known_type_reference_names);
+            try known_type_references.appendSlice(self.gpa, f.resolved_type_references.items);
+            per_file.known_type_reference_names = known_type_references.items;
+        }
         per_file.shared_strings = &self.strings.?;
         per_file.is_tsx = f.is_tsx;
         per_file.package_type_module = f.package_type_module;
@@ -3759,6 +3818,7 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            try self.recordResolvedTypeReference(f, ref.name);
                             const admission = self.admitResolvedImport(f.node_modules_depth, res, options) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,

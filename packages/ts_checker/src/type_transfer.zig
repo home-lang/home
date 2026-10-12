@@ -20,6 +20,11 @@ pub const Names = struct {
     context: *anyopaque,
     string: *const fn (*anyopaque, types.StringId) Error!types.StringId,
     declaration: *const fn (*anyopaque, hir.NodeId) Error!hir.NodeId,
+    /// Stable identity of the source owner (never reused), or 0 when the
+    /// caller has none. With an owner, identity-bearing types are keyed by
+    /// their original (owner, id); a destination that already holds a copy
+    /// of that original reuses it instead of appending another copy.
+    owner: u32 = 0,
 };
 
 /// IDs are source-owner-specific. Literals/structural keys may reuse existing
@@ -104,6 +109,9 @@ const Builder = struct {
     names: Names,
     relocation: Relocation,
     signatures: []types.TypeId,
+    /// Source ids whose identity already exists in the destination (by
+    /// provenance); they are mapped, never re-materialized or finalized.
+    reused: []bool,
     // Borrowed results remain valid until the next operation on that buffer.
     // Interner builders copy them into destination-owned storage before reuse.
     type_scratch: std.ArrayListUnmanaged(types.TypeId) = .empty,
@@ -228,6 +236,7 @@ const Builder = struct {
                         .enum_name = try self.string(identity.enum_name),
                         .member_name = try self.string(identity.member_name),
                     });
+                    try self.recordOrigin(id, result);
                     break :blk result;
                 }
                 break :blk switch (value) {
@@ -308,6 +317,7 @@ const Builder = struct {
                     target.pool.signature_payloads.items[index].type_params_start = start;
                     target.pool.signature_payloads.items[index].type_params_len = @intCast(generics.len);
                 }
+                if (result >= self.relocation.destination_start) try self.recordOrigin(id, result);
                 break :blk result;
             },
             .instantiation_payloads => blk: {
@@ -325,7 +335,33 @@ const Builder = struct {
         return self.target.pool.payloadOf(try self.typeId(self.signatures[source_index]));
     }
 
+    /// The original identity of a source type: its recorded provenance when
+    /// the source itself imported it, otherwise (owner, id).
+    fn origin(self: *const Builder, id: types.TypeId) ?interner.Interner.Origin {
+        if (self.names.owner == 0) return null;
+        return self.source.origins.get(id) orelse .{ .id = id, .owner = self.names.owner };
+    }
+
+    fn recordOrigin(self: *Builder, source_id: types.TypeId, destination_id: types.TypeId) Error!void {
+        const key = self.origin(source_id) orelse return;
+        const allocator = self.target.gpa;
+        try self.target.origins.ensureUnusedCapacity(allocator, 1);
+        try self.target.origin_index.ensureUnusedCapacity(allocator, 1);
+        self.target.origins.putAssumeCapacity(destination_id, key);
+        self.target.origin_index.putAssumeCapacity(key, destination_id);
+    }
+
+    /// Map `id` onto the destination's existing copy of the same original.
+    fn reuse(self: *Builder, id: types.TypeId) bool {
+        const key = self.origin(id) orelse return false;
+        const existing = self.target.origin_index.get(key) orelse return false;
+        self.relocation.ids[id] = existing;
+        self.reused[id] = true;
+        return true;
+    }
+
     fn finalizeFresh(self: *Builder, id: types.TypeId) Error!void {
+        if (self.reused[id]) return;
         const target = self.target;
         const mapped_id = try self.typeId(id);
         switch (try payloadColumn(self.source.pool.flagsOf(id))) {
@@ -401,6 +437,14 @@ fn rollback(target: *interner.Interner, lengths: Offsets) void {
     while (enums.next()) |entry| {
         if (entry.key_ptr.* >= first) _ = target.enum_literal_info.remove(entry.key_ptr.*);
     }
+    var origins = target.origins.iterator();
+    while (origins.next()) |entry| {
+        if (entry.key_ptr.* >= first) _ = target.origins.remove(entry.key_ptr.*);
+    }
+    var origin_index = target.origin_index.iterator();
+    while (origin_index.next()) |entry| {
+        if (entry.value_ptr.* >= first) _ = target.origin_index.remove(entry.key_ptr.*);
+    }
     inline for (comptime std.meta.fieldNames(types.Pool)) |name| {
         const column = @field(Column, name);
         if (comptime column != .gpa) @field(target.pool, name).items.len = lengths.get(column);
@@ -452,29 +496,46 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     const signatures = try allocator.alloc(types.TypeId, source.pool.signature_payloads.items.len);
     defer allocator.free(signatures);
     @memset(signatures, 0);
-    var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures };
+    const reused = try allocator.alloc(bool, count);
+    defer allocator.free(reused);
+    @memset(reused, false);
+    var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures, .reused = reused };
     defer builder.deinit();
     errdefer rollback(target, lengths);
     // Allocate declaration-scoped identities before walking any structural
     // keys. Their constraints/members are filled only after all IDs resolve.
     for (types.Primitive.first_dynamic..count) |index| {
         const id: types.TypeId = @intCast(index);
-        switch (try payloadColumn(source.pool.flagsOf(id))) {
+        const flags = source.pool.flagsOf(id);
+        switch (try payloadColumn(flags)) {
             .generic_definition_payloads => {
                 _ = try builder.payload(.generic_definition_payloads, id);
+                if (builder.reuse(id)) continue;
                 relocation.ids[id] = try target.reserveGenericDefinition();
+                try builder.recordOrigin(id, relocation.ids[id]);
             },
             .object_type_payloads => {
                 _ = try builder.payload(.object_type_payloads, id);
+                if (builder.reuse(id)) continue;
                 relocation.ids[id] = try target.internObjectType(&.{});
+                try builder.recordOrigin(id, relocation.ids[id]);
             },
             .type_parameter_payloads => {
                 const p = try builder.payload(.type_parameter_payloads, id);
+                if (builder.reuse(id)) continue;
                 relocation.ids[id] = try target.internFreshTypeParameterWithFlags(try builder.string(p.name), types.Primitive.none, types.Primitive.none, p.variance, p.is_const);
+                try builder.recordOrigin(id, relocation.ids[id]);
+            },
+            .literal_payloads => if (flags.is_enum_literal) {
+                _ = builder.reuse(id);
             },
             .signature_payloads => {
                 _ = try builder.payload(.signature_payloads, id);
                 signatures[source.pool.payloadOf(id)] = id;
+                // Signatures carry identity too (see
+                // `internSignatureWithThisType`); without reuse every
+                // transitive import appended another copy of each one.
+                _ = builder.reuse(id);
             },
             else => {},
         }
@@ -1107,4 +1168,51 @@ test "type transfer: deep forward references are iterative and unanchored key cy
     try T.expectError(error.InvalidTypeGraph, append(&target, &source, names.names()));
     try T.expectEqualDeep(before, poolLengths(&target.pool));
     try T.expectEqual(keys_before, keyCount(&target));
+}
+
+test "type transfer: owner provenance keeps one copy across transitive imports" {
+    var source = try interner.Interner.init(T.allocator);
+    defer source.deinit();
+    const object = try source.internObjectType(&.{});
+    const parameter = try source.internFreshTypeParameterWithFlags(5, types.Primitive.none, types.Primitive.none, .bivariant, false);
+    const both = try source.internUnion(&.{ object, parameter });
+    const signature = try source.internSignatureWithThisType(&.{object}, parameter, false, false, types.Primitive.none);
+
+    // `middle` imports the source (owner 1); `final` imports the source
+    // directly and again through `middle` (owner 2), as a declaration file
+    // does when it references globals of two earlier files.
+    var middle = try interner.Interner.init(T.allocator);
+    defer middle.deinit();
+    var test_names: TestNames = .{};
+    var source_names = test_names.names();
+    source_names.owner = 1;
+    var into_middle = try append(&middle, &source, source_names);
+    defer into_middle.deinit();
+
+    var final = try interner.Interner.init(T.allocator);
+    defer final.deinit();
+    var direct = try append(&final, &source, source_names);
+    defer direct.deinit();
+    const after_direct = final.pool.typeCount();
+    var middle_names = test_names.names();
+    middle_names.owner = 2;
+    var through_middle = try append(&final, &middle, middle_names);
+    defer through_middle.deinit();
+
+    for ([_]types.TypeId{ object, parameter, both, signature }) |original| {
+        try T.expectEqual(try direct.typeId(original), try through_middle.typeId(try into_middle.typeId(original)));
+    }
+    // Nothing identity-bearing was copied a second time.
+    try T.expectEqual(after_direct, final.pool.typeCount());
+
+    // Without owners every transfer stays an independent copy.
+    var anonymous = try interner.Interner.init(T.allocator);
+    defer anonymous.deinit();
+    var plain = test_names.names();
+    var first_copy = try append(&anonymous, &source, plain);
+    defer first_copy.deinit();
+    plain.owner = 0;
+    var second_copy = try append(&anonymous, &middle, plain);
+    defer second_copy.deinit();
+    try T.expect(try first_copy.typeId(object) != try second_copy.typeId(try into_middle.typeId(object)));
 }

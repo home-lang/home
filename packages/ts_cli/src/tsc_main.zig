@@ -103,6 +103,89 @@ const RealFs = struct {
     }
 };
 
+/// Load a tsconfig from disk and apply its complete `extends` graph. The
+/// returned config (and every string it borrows) lives in `arena`; its
+/// `file_path` is `config_path` as given. A broken `extends` chain prints the
+/// tsc diagnostic (TS5083/TS18000) and returns error.ConfigExtends.
+const LoadedConfigFile = struct {
+    config: tsconfig_mod.TsConfig,
+    /// The root config's own text; diagnostics locate options in it.
+    source: []const u8,
+};
+
+fn loadConfigFile(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) !LoadedConfigFile {
+    const absolute = try absoluteConfigPath(arena, config_path);
+    var real_fs = ResolverRealFs.init(gpa);
+    defer real_fs.deinit();
+    const config_extensions = [_][]const u8{".json"};
+    var package_resolver = ts_resolver.Resolver.init(gpa, real_fs.fs(), .{
+        .strategy = .node16,
+        .module_kind = "esnext",
+        .resolve_json = true,
+        .extensions = &config_extensions,
+    });
+    defer package_resolver.deinit();
+    const DiskHost = struct {
+        arena: std.mem.Allocator,
+        fn readFile(context: *anyopaque, path: []const u8) anyerror!?[]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return RealFs.read(self.arena, path) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => null,
+            };
+        }
+    };
+    var disk = DiskHost{ .arena = arena };
+    // A config that does not exist or does not parse keeps the historical
+    // error paths of each caller.
+    const source = try RealFs.read(arena, absolute);
+    const resolution = try tsconfig_mod.config_graph.resolve(gpa, arena, .{
+        .context = &disk,
+        .readFile = DiskHost.readFile,
+        .package_resolver = &package_resolver,
+    }, absolute);
+    if (resolution.failure) |failure| {
+        if (failure.kind == .invalid and std.mem.eql(u8, failure.path, absolute)) return error.InvalidConfig;
+        const message = try tsconfig_mod.config_graph.formatFailure(arena, failure);
+        printStdout("{s}\n", .{message});
+        return error.ConfigExtends;
+    }
+    var config = resolution.config.?;
+    config.file_path = config_path;
+    return .{ .config = config, .source = source };
+}
+
+/// Locate the TypeScript library declarations (`lib.es5.d.ts`, `lib.dom.d.ts`,
+/// ...) that a project's `lib`/`target` selects. Like tsc, which reads them
+/// from beside its own executable, Home looks for:
+///   1. `HOME_TSC_LIB_DIR` (explicit override, e.g. the pinned
+///      `_submodules/typescript-go/internal/bundled/libs`),
+///   2. `<prefix>/lib/home-tsc/typescript` for an installed `<prefix>/bin`.
+/// Returns null when neither exists; the checker then keeps its built-in
+/// library model (the default for development builds and the frontend
+/// benchmarks, whose projects use `noLib`).
+fn discoverDefaultLibraryPath(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) ?[]const u8 {
+    if (environ.get("HOME_TSC_LIB_DIR")) |dir| {
+        if (dir.len > 0) return arena.dupe(u8, dir) catch null;
+    }
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_len = std.process.executablePath(std.Options.debug_io, &buffer) catch return null;
+    const exe_dir = std.fs.path.dirname(buffer[0..exe_len]) orelse return null;
+    const prefix = std.fs.path.dirname(exe_dir) orelse return null;
+    const dir = std.fs.path.resolvePosix(arena, &.{ prefix, "lib", "home-tsc", "typescript" }) catch return null;
+    const probe = std.fs.path.join(arena, &.{ dir, "lib.es5.d.ts" }) catch return null;
+    if (fileExistsOnDisk(arena, probe)) return dir;
+    return null;
+}
+
+fn absoluteConfigPath(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(path)) return std.fs.path.resolvePosix(arena, &.{path});
+    var threaded = std.Io.Threaded.init(arena, .{});
+    defer threaded.deinit();
+    const cwd = try std.process.currentPathAlloc(threaded.io(), arena);
+    return std.fs.path.resolvePosix(arena, &.{ cwd, path });
+}
+
 /// Expand `@response-file` arguments in place, mirroring tsc's
 /// `parseResponseFile`: a `@file` arg is replaced by the whitespace/
 /// quote-tokenized contents of `file` (recursively). A file that can't be
@@ -187,8 +270,7 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
     var i: usize = 0;
     while (i < paths.items.len) : (i += 1) {
         const cfg_path = paths.items[i];
-        const src = RealFs.read(arena, cfg_path) catch continue; // leaf on read error
-        const cfg = tsconfig_mod.parseString(gpa, arena, src) catch continue;
+        const cfg = (loadConfigFile(gpa, arena, cfg_path) catch continue).config; // leaf on read error
         const base = std.fs.path.dirname(cfg_path) orelse ".";
         const parent_has_inputs = projectConfigHasInputFiles(gpa, cfg_path, cfg) catch false;
         const parent_buildinfo = projectBuildInfoFilePath(arena, cfg_path, cfg) catch null;
@@ -196,8 +278,7 @@ fn loadBuildGraph(gpa: std.mem.Allocator, arena: std.mem.Allocator, root_config:
             const ref_path = resolveConfigPath(arena, base, ref) catch continue;
             const dep_idx = try ensure.idx(arena, &paths, &dep_lists, ref_path);
             try dep_lists.items[i].append(arena, dep_idx);
-            const ref_src = RealFs.read(arena, ref_path) catch continue;
-            const ref_cfg = tsconfig_mod.parseString(gpa, arena, ref_src) catch continue;
+            const ref_cfg = (loadConfigFile(gpa, arena, ref_path) catch continue).config;
             if (parent_buildinfo) |parent_bi| {
                 if (try projectBuildInfoFilePath(arena, ref_path, ref_cfg)) |ref_bi| {
                     if (std.mem.eql(u8, parent_bi, ref_bi)) {
@@ -495,15 +576,16 @@ fn buildOneProject(
     upstream_dependency_built_with_unchanged_dts: bool,
     default_pretty: bool,
 ) BuildOneProjectResult {
-    const cfg_src = RealFs.read(arena, config_path) catch {
-        printStdout("error reading {s}\n", .{config_path});
+    const loaded = loadConfigFile(gpa, arena, config_path) catch |err| {
+        switch (err) {
+            error.ConfigExtends => {},
+            error.InvalidConfig => printStdout("error parsing {s}\n", .{config_path}),
+            else => printStdout("error reading {s}\n", .{config_path}),
+        }
         return .errors_outputs_skipped;
     };
-    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch {
-        printStdout("error parsing {s}\n", .{config_path});
-        return .errors_outputs_skipped;
-    };
-    cfg.file_path = config_path;
+    var cfg = loaded.config;
+    const cfg_src = loaded.source;
     const config_validation_diags = cfg.validate(gpa) catch return .errors_outputs_skipped;
     defer tsconfig_mod.freeValidationDiagnostics(gpa, config_validation_diags);
     const project_pretty = cfg.compiler_options.pretty orelse default_pretty;
@@ -678,9 +760,7 @@ fn buildOneProject(
 const ProjectDryStatus = enum { build, up_to_date, update_timestamps };
 
 fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_path: []const u8) ProjectDryStatus {
-    const cfg_src = RealFs.read(arena, config_path) catch return .build;
-    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return .build;
-    cfg.file_path = config_path;
+    const cfg = (loadConfigFile(gpa, arena, config_path) catch return .build).config;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -1224,9 +1304,7 @@ fn appendProjectCleanOutputs(
     config_path: []const u8,
     outputs: *std.ArrayListUnmanaged([]u8),
 ) !void {
-    const cfg_src = RealFs.read(arena, config_path) catch return;
-    var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch return;
-    cfg.file_path = config_path;
+    const cfg = (loadConfigFile(gpa, arena, config_path) catch return).config;
     const project_dir = std.fs.path.dirname(config_path) orelse ".";
 
     var input_files: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2135,11 +2213,8 @@ pub const LspProject = struct {
         self.config_source_owned = false;
         self.config = null;
         if (config_path) |path| {
-            if (RealFs.read(gpa, path)) |source| {
-                self.config_source = source;
-                self.config_source_owned = true;
-                self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch null;
-                if (self.config) |*c| c.file_path = path;
+            if (loadConfigFile(gpa, self.config_arena.allocator(), path)) |loaded| {
+                self.config = loaded.config;
             } else |_| {}
         }
         self.fs = ResolverRealFs.init(gpa);
@@ -3178,25 +3253,20 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // `loaded_cfg`'s borrowed slices — keep it for the rest of
     // main rather than freeing inside this block.
     var cfg_src: []const u8 = &.{};
-    var cfg_src_owned = false;
-    defer if (cfg_src_owned) gpa.free(cfg_src);
     if (cfg_path_buf) |path| {
-        const read_source: ?[]const u8 = RealFs.read(gpa, path) catch |err| blk: {
-            std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
+        const loaded: ?LoadedConfigFile = loadConfigFile(gpa, cfg_arena.allocator(), path) catch |err| blk: {
+            switch (err) {
+                error.ConfigExtends => std.process.exit(@backingInt(ts_cli.ExitCode.config_error)),
+                error.InvalidConfig => std.debug.print("error parsing tsconfig {s}: {s}\n", .{ path, @errorName(err) }),
+                else => std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) }),
+            }
             break :blk null;
         };
-        if (read_source) |source| {
-            cfg_src = source;
-            cfg_src_owned = true;
-            loaded_cfg = tsconfig_mod.parseString(gpa, cfg_arena.allocator(), cfg_src) catch |err| blk: {
-                std.debug.print("error parsing tsconfig {s}: {s}\n", .{ path, @errorName(err) });
-                break :blk null;
-            };
-            if (loaded_cfg) |*c| {
-                c.file_path = path;
-                ts_cli.applyConfigOverrides(c, opts);
-            }
+        if (loaded) |file| {
+            cfg_src = file.source;
+            loaded_cfg = file.config;
         }
+        if (loaded_cfg) |*c| ts_cli.applyConfigOverrides(c, opts);
     }
 
     const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
@@ -3441,6 +3511,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     else
         .{};
     ts_cli.applyCompileOptions(&compile_opts, opts);
+    if (compile_opts.default_library_path.len == 0) {
+        compile_opts.default_library_path = discoverDefaultLibraryPath(cfg_arena.allocator(), environ) orelse "";
+    }
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
     resolver_adapter.setProgramSources(&program, compile_opts);
@@ -5523,4 +5596,65 @@ test "LspProject: publishes Home diagnostics with HM wire codes" {
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"method\":\"textDocument/publishDiagnostics\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"code\":\"HM9001\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"source\":\"home\"") != null);
+}
+
+test "tsc_main: project config applies its extends chain from disk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "packages/cli/bin");
+    const files = [_]struct { []const u8, []const u8 }{
+        .{ "tsconfig.json",
+        \\{
+        \\  // Craft-shaped root config.
+        \\  "compilerOptions": {
+        \\    "strict": true,
+        \\    "declaration": true,
+        \\    "isolatedDeclarations": true,
+        \\    "noEmit": true,
+        \\    "types": ["bun"],
+        \\    "paths": { "craft-native": ["./packages/typescript/src/index.ts"] }
+        \\  }
+        \\}
+        },
+        .{ "packages/cli/tsconfig.json",
+        \\{ "extends": "../../tsconfig.json", "compilerOptions": { "types": ["node", "bun"] }, "include": ["bin"] }
+        },
+        .{ "packages/cli/tsconfig.build.json",
+        \\{ "extends": "./tsconfig.json", "compilerOptions": { "noEmit": false, "emitDeclarationOnly": true } }
+        },
+        .{ "packages/cli/broken.json",
+        \\{ "extends": "./missing" }
+        },
+    };
+    for (files) |file| {
+        var handle = try tmp.dir.createFile(io, file[0], .{ .truncate = true });
+        defer handle.close(io);
+        try handle.writeStreamingAll(io, file[1]);
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const build_path = try std.fs.path.join(arena.allocator(), &.{ root, "packages/cli/tsconfig.build.json" });
+    const loaded = try loadConfigFile(std.testing.allocator, arena.allocator(), build_path);
+    const options = loaded.config.compiler_options;
+    try std.testing.expectEqualStrings(build_path, loaded.config.file_path);
+    try std.testing.expectEqual(@as(?bool, true), options.strict);
+    try std.testing.expectEqual(@as(?bool, true), options.declaration);
+    try std.testing.expectEqual(@as(?bool, true), options.isolated_declarations);
+    try std.testing.expectEqual(@as(?bool, false), options.no_emit);
+    try std.testing.expectEqual(@as(?bool, true), options.emit_declaration_only);
+    try std.testing.expectEqual(@as(usize, 2), options.types.?.len);
+    try std.testing.expectEqualStrings("bin", loaded.config.include.?[0]);
+    try std.testing.expectEqualStrings(root, options.base_url.?);
+    try std.testing.expect(std.mem.indexOf(u8, loaded.source, "emitDeclarationOnly") != null);
+    // The inherited `declaration` satisfies `isolatedDeclarations` (no TS5069).
+    const diagnostics = try loaded.config.validate(std.testing.allocator);
+    defer tsconfig_mod.freeValidationDiagnostics(std.testing.allocator, diagnostics);
+    for (diagnostics) |diagnostic| try std.testing.expect(diagnostic.code != 5069);
+
+    const broken_path = try std.fs.path.join(arena.allocator(), &.{ root, "packages/cli/broken.json" });
+    try std.testing.expectError(error.ConfigExtends, loadConfigFile(std.testing.allocator, arena.allocator(), broken_path));
 }

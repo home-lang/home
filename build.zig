@@ -747,6 +747,7 @@ pub fn build(b: *std.Build) void {
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
+    tsconfig_pkg.addImport("ts_resolver", ts_resolver_pkg);
 
     // TS-parity Phase 4 — tsc-compatible diagnostic formatter.
     const ts_diagnostics_pkg = createPackage(b, "packages/ts_diagnostics/src/ts_diagnostics.zig", target, optimize, zig_test_framework);

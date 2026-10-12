@@ -391,6 +391,18 @@ pub const Interner = struct {
     /// every lookup).
     enum_literal_info: std.AutoHashMapUnmanaged(TypeId, types.EnumLiteralInfo) = .empty,
 
+    /// Provenance of identity-bearing types (objects, type parameters,
+    /// generic definitions, enum literals) that `type_transfer` copied in
+    /// from another source owner: the owner that first created the type and
+    /// its id there. A pool that already holds a relocated copy reuses it
+    /// when the same original arrives again through another owner, so a
+    /// program of N declaration files that each import their predecessors
+    /// stays linear in size instead of doubling per file.
+    origins: std.AutoHashMapUnmanaged(TypeId, Origin) = .empty,
+    origin_index: std.AutoHashMapUnmanaged(Origin, TypeId) = .empty,
+
+    pub const Origin = packed struct(u64) { id: TypeId, owner: u32 };
+
     pub fn init(gpa: std.mem.Allocator) !Interner {
         var self: Interner = .{
             .gpa = gpa,
@@ -414,6 +426,8 @@ pub const Interner = struct {
             self.shards[i].deinit(self.gpa);
         }
         self.enum_literal_info.deinit(self.gpa);
+        self.origins.deinit(self.gpa);
+        self.origin_index.deinit(self.gpa);
         self.pool.deinit();
     }
 

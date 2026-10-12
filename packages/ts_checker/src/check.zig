@@ -3641,6 +3641,24 @@ const ImportAttributesKeyword = struct { off: usize, is_assert: bool };
 /// the keyword (not the leading space) and whether it is `assert`. Avoids the
 /// false positive a bare substring scan hits on bindings whose names merely
 /// contain the word, e.g. `import { assertNevar } from "x"`.
+/// Reserve room in `dst` for every entry of `src` before copying them.
+/// Copying one std hash map into another in the source's iteration (slot)
+/// order while the destination grows makes the keys cluster at the front of
+/// the smaller table, so each insert probes a long run: merging per-file
+/// checker metadata for `@types/node` spent minutes in `getOrPut`. A
+/// destination at least as large as the source keeps the copy linear.
+fn reserveMerge(gpa: std.mem.Allocator, dst: anytype, src: anytype) std.mem.Allocator.Error!void {
+    const wanted = @max(dst.count() + src.count(), src.capacity());
+    try dst.ensureTotalCapacity(gpa, @intCast(wanted));
+}
+
+/// Copy every entry of `src` into `dst` (later entries win), see `reserveMerge`.
+fn mergeMetadataMap(gpa: std.mem.Allocator, dst: anytype, src: anytype) std.mem.Allocator.Error!void {
+    try reserveMerge(gpa, dst, src);
+    var entries = src.iterator();
+    while (entries.next()) |entry| dst.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
+}
+
 fn importAttributesKeyword(text: []const u8) ?ImportAttributesKeyword {
     var search: usize = 0;
     while (search < text.len) {
@@ -6447,6 +6465,7 @@ pub const Checker = struct {
     /// the program's provenance registry.
     pub fn importProgramTypeMetadata(self: *Checker, sources: []const *const CheckedTypes) CheckError!void {
         for (sources) |source| {
+            try reserveMerge(self.gpa, &self.generic_signature_params, &source.generic_signature_params);
             var generic_signatures = source.generic_signature_params.iterator();
             while (generic_signatures.next()) |entry| {
                 if (self.generic_signature_params.contains(entry.key_ptr.*)) continue;
@@ -6454,45 +6473,16 @@ pub const Checker = struct {
                 errdefer self.gpa.free(params);
                 try self.generic_signature_params.put(self.gpa, entry.key_ptr.*, params);
             }
-            var rest_signatures = source.rest_signatures.iterator();
-            while (rest_signatures.next()) |entry| {
-                try self.rest_signatures.put(self.gpa, entry.key_ptr.*, {});
-            }
-            var signature_min_args = source.signature_min_args.iterator();
-            while (signature_min_args.next()) |entry| {
-                try self.signature_min_args.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var signature_display_min_args = source.signature_display_min_args.iterator();
-            while (signature_display_min_args.next()) |entry| {
-                try self.signature_display_min_args.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var signature_this_params = source.signature_this_params.iterator();
-            while (signature_this_params.next()) |entry| {
-                try self.signature_this_params.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var no_infer_types = source.no_infer_types.iterator();
-            while (no_infer_types.next()) |entry| {
-                try self.no_infer_types.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var placeholder_targets = source.type_parameter_placeholder_targets.iterator();
-            while (placeholder_targets.next()) |entry| {
-                try self.type_parameter_placeholder_targets.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var recursive_interfaces = source.recursive_interface_targets.iterator();
-            while (recursive_interfaces.next()) |entry| {
-                try self.recursive_interface_targets.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            var inferred_variance = source.inferred_variance.iterator();
-            while (inferred_variance.next()) |entry| {
-                try self.inferred_variance.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-            }
-            inline for (.{ "readonly_index_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
-                var entries = @field(source, name).iterator();
-                while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, {});
-            }
-            inline for (.{ "tuple_trailing_rest_types", "tuple_trailing_variadic_types", "decl_single_base", "relation_display_base" }) |name| {
-                var entries = @field(source, name).iterator();
-                while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            try mergeMetadataMap(self.gpa, &self.rest_signatures, &source.rest_signatures);
+            try mergeMetadataMap(self.gpa, &self.signature_min_args, &source.signature_min_args);
+            try mergeMetadataMap(self.gpa, &self.signature_display_min_args, &source.signature_display_min_args);
+            try mergeMetadataMap(self.gpa, &self.signature_this_params, &source.signature_this_params);
+            try mergeMetadataMap(self.gpa, &self.no_infer_types, &source.no_infer_types);
+            try mergeMetadataMap(self.gpa, &self.type_parameter_placeholder_targets, &source.type_parameter_placeholder_targets);
+            try mergeMetadataMap(self.gpa, &self.recursive_interface_targets, &source.recursive_interface_targets);
+            try mergeMetadataMap(self.gpa, &self.inferred_variance, &source.inferred_variance);
+            inline for (.{ "readonly_index_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters", "tuple_trailing_rest_types", "tuple_trailing_variadic_types", "decl_single_base", "relation_display_base" }) |name| {
+                try mergeMetadataMap(self.gpa, &@field(self, name), &@field(source, name));
             }
         }
     }
@@ -56653,6 +56643,100 @@ pub const Checker = struct {
         return false;
     }
 
+    /// Conservative reachability test for a type-parameter rewrite: false
+    /// only when no substitution key is reachable from `t`. The walk stops
+    /// at canonical named declarations (`interface Node`, `class Event`):
+    /// those were lowered in their own scope, so they cannot mention the
+    /// fresh parameters of the declaration being re-checked. Without this
+    /// cut a constraint such as `K extends keyof HTMLElementEventMap` made
+    /// every re-check rebuild a large part of lib.dom.d.ts.
+    fn typeMayMentionSubstitutionKey(
+        self: *Checker,
+        root: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        if (subs.count() == 0 or root == types.Primitive.none) return false;
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        var stack: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer stack.deinit(self.gpa);
+        try stack.append(self.gpa, root);
+        while (stack.pop()) |t| {
+            if (subs.contains(t)) return true;
+            if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) continue;
+            const entry = try visited.getOrPut(self.gpa, t);
+            if (entry.found_existing) continue;
+            const flags = self.interner.pool.flagsOf(t);
+            if (flags.is_type_parameter) {
+                // A different parameter's constraint may mention a key.
+                const payload = self.interner.pool.payloadOf(t);
+                if (payload < self.interner.pool.type_parameter_payloads.items.len) {
+                    const tp = self.interner.pool.type_parameter_payloads.items[payload];
+                    try stack.append(self.gpa, tp.constraint);
+                    try stack.append(self.gpa, tp.default);
+                }
+                continue;
+            }
+            if (flags.is_union) {
+                try stack.appendSlice(self.gpa, self.interner.unionMembers(t));
+                continue;
+            }
+            if (flags.is_intersection) {
+                try stack.appendSlice(self.gpa, self.interner.intersectionMembers(t));
+                continue;
+            }
+            if (flags.is_keyof) {
+                try stack.append(self.gpa, self.interner.pool.keyof_payloads.items[self.interner.pool.payloadOf(t)].operand);
+                continue;
+            }
+            if (flags.is_indexed_access) {
+                const indexed = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+                try stack.appendSlice(self.gpa, &.{ indexed.object, indexed.index });
+                continue;
+            }
+            if (flags.is_mapped) {
+                const mapped = self.interner.mappedPayload(t);
+                try stack.appendSlice(self.gpa, &.{ mapped.constraint, mapped.template, mapped.key_parameter });
+                continue;
+            }
+            if (flags.is_conditional) {
+                const conditional = self.interner.conditionalPayload(t);
+                try stack.appendSlice(self.gpa, &.{ conditional.check_type, conditional.extends_type, conditional.true_branch, conditional.false_branch });
+                continue;
+            }
+            if (flags.is_template_literal) {
+                try stack.appendSlice(self.gpa, self.interner.templateLiteralTypes(t));
+                continue;
+            }
+            if (flags.is_string_mapping) {
+                try stack.append(self.gpa, self.interner.stringMappingPayload(t).inner);
+                continue;
+            }
+            if (flags.is_signature) {
+                try stack.appendSlice(self.gpa, self.interner.signatureParams(t));
+                if (self.interner.signatureReturn(t)) |return_t| try stack.append(self.gpa, return_t);
+                const signature = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(t)];
+                try stack.append(self.gpa, signature.this_type);
+                try stack.appendSlice(self.gpa, self.interner.pool.type_arg_pool.items[signature.type_params_start..][0..signature.type_params_len]);
+                continue;
+            }
+            if (flags.is_object_type) {
+                if (self.namedTypeForId(t) != null) continue;
+                for (self.interner.objectMembers(t)) |member| try stack.append(self.gpa, member.type);
+                try stack.appendSlice(self.gpa, &.{
+                    self.interner.objectStringIndex(t),
+                    self.interner.objectNumberIndex(t),
+                    self.interner.objectSymbolIndex(t),
+                });
+                continue;
+            }
+            // Tuples, instantiations, generic definitions and anything not
+            // modeled above: stay conservative.
+            return true;
+        }
+        return false;
+    }
+
     fn substituteTypeNoCyclesInner(
         self: *Checker,
         t: TypeId,
@@ -67930,9 +68014,13 @@ pub const Checker = struct {
                                             const current_payload = self.interner.pool.type_parameter_payloads.items[
                                                 self.interner.pool.payloadOf(cur_p)
                                             ];
-                                            const constraint = self.substituteTypeNoCycles(current_payload.constraint, &subs) catch
+                                            const constraint = if (try self.typeMayMentionSubstitutionKey(current_payload.constraint, &subs))
+                                                self.substituteTypeNoCycles(current_payload.constraint, &subs) catch current_payload.constraint
+                                            else
                                                 current_payload.constraint;
-                                            const default = self.substituteTypeNoCycles(current_payload.default, &subs) catch
+                                            const default = if (try self.typeMayMentionSubstitutionKey(current_payload.default, &subs))
+                                                self.substituteTypeNoCycles(current_payload.default, &subs) catch current_payload.default
+                                            else
                                                 current_payload.default;
                                             const first_payload = &self.interner.pool.type_parameter_payloads.items[
                                                 self.interner.pool.payloadOf(first_p)
@@ -150222,6 +150310,10 @@ pub const Checker = struct {
         argument_resolved: bool,
     ) CheckError!void {
         if (arg_node == hir_mod.none_node_id) return;
+        // TS2344 is a declaration diagnostic: under `skipLibCheck` a
+        // declaration file's type arguments are never validated, and the
+        // relation work dominates checking large libraries (lib.dom.d.ts).
+        if (self.skip_declaration_validation and self.whole_file_is_declaration_file) return;
         if (arg_t == types.Primitive.any or arg_t == types.Primitive.never) return;
         // A successfully resolved `unknown` argument is not an error-recovery
         // placeholder and must satisfy the constraint like every other type.
