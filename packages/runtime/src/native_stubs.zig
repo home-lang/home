@@ -1,7 +1,5 @@
 const std = @import("std");
 
-pub export var Bun__reported_memory_size: usize = 0;
-
 const Environment = @import("environment.zig");
 
 fn noop() callconv(.c) void {}
@@ -29,16 +27,7 @@ extern fn u_hasBinaryProperty(c: c_int, which: c_int) callconv(.c) u8;
 fn icuHasBinaryProperty(c: u32, which: c_uint) callconv(.c) bool {
     return u_hasBinaryProperty(@intCast(c), @intCast(which)) != 0;
 }
-fn abortingPanic(message: [*]u8, message_len: usize) callconv(.c) noreturn {
-    // Keep Bun's stable crash prefix even when Zig changes its default panic
-    // formatting. Bun's Node-API tests use this line to stop a deliberately
-    // crashing child before symbolization or core-dump handling can stall it.
-    std.debug.print("panic(main thread): {s}\n", .{message[0..message_len]});
-    std.process.abort();
-}
-
 comptime {
-    @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
     // NetworkSink__memoryCost now has its real export (streams.zig NetworkSink,
     // force-referenced once the S3 write path un-stub links the real uploader).
     // Bun object sets differ on whether workaround-missing-symbols.cpp.o
@@ -79,9 +68,6 @@ comptime {
         // Entry-point result handlers are real VirtualMachine exports. Native
         // promiseHandlerID compares their addresses against its fixed table.
         "BlockList__onStructuredCloneDestroy",
-        "CrashHandler__setDlOpenAction",
-        "CrashHandler__setInsideNativePlugin",
-        "CrashHandler__unsupportedUVFunction",
         "CryptoClass__finalize",
         "FileSink__assertLive",
         // NetworkSink__* now have their real exports (streams.zig NetworkSink),

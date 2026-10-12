@@ -103,6 +103,26 @@ pub fn formatter() Formatter {
 
 const Features = @This();
 
+/// The crash-report wire format reserves one bit per `usize` feature counter,
+/// in declaration order, inside a single u64. Returning the backing integer
+/// directly is equivalent to Bun's generated packed struct and avoids relying
+/// on compiler-version-specific `@Type` struct-field descriptors.
+pub const PackedFeatures = u64;
+
+pub fn packedFeatures() PackedFeatures {
+    var bits: u64 = 0;
+    comptime var bit_index: u7 = 0;
+    inline for (@typeInfo(Features).@"struct".decl_names) |decl_name| {
+        if (@TypeOf(@field(Features, decl_name)) == usize) {
+            if (@field(Features, decl_name) > 0) {
+                bits |= @as(u64, 1) << @intCast(bit_index);
+            }
+            bit_index += 1;
+        }
+    }
+    return bits;
+}
+
 pub const Formatter = struct {
     pub fn format(_: Formatter, writer: *std.Io.Writer) !void {
         const fields = comptime brk: {
@@ -114,13 +134,13 @@ pub const Formatter = struct {
             // round-trips cleanly through fmt.
             var buffer: [info.@"struct".decl_names.len][]const u8 = @splat("");
             var count: usize = 0;
-            for (info.@"struct".decl_names) |decl| {
-                var f = &@field(Features, decl.name);
+            for (info.@"struct".decl_names) |decl_name| {
+                var f = &@field(Features, decl_name);
                 _ = &f;
                 const Field = @TypeOf(f);
                 const FieldT: std.builtin.Type = @typeInfo(Field);
                 if (FieldT.pointer.child != usize) continue;
-                buffer[count] = decl.name;
+                buffer[count] = decl_name;
                 count += 1;
             }
 

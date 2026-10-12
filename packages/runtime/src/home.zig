@@ -3909,15 +3909,18 @@ pub const meta = struct {
 };
 
 // ---- src/crash_handler/ ------------------------------------------------
-// Out-of-memory + crash reporting. Only the OOM wrapper is ported today;
-// the full crash handler (stack walking, JSC stop-the-world, native
-// signal handlers) re-lands in a later sub-phase.
+// Out-of-memory + crash reporting. Keep the facade state used by Home's
+// output layer while routing reporting and native crash exports through the
+// real Bun crash-handler implementation.
 pub const crash_handler = struct {
-    // Shared CLI/reporter configuration; keep parsing independent of native
-    // crash-handler exports while the complete reporter is being ported.
+    const impl = @import("crash_handler/crash_handler.zig");
+
+    // The ported implementation reads this through `bun.crash_handler`, as the
+    // original Zig implementation did before Bun moved this state in-module.
     pub var verbose_error_trace = false;
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
+    pub const handleRootError = impl.handleRootError;
     var panicking = std.atomic.Value(bool).init(false);
 
     pub fn beginPanic() void {
@@ -3925,19 +3928,19 @@ pub const crash_handler = struct {
     }
 
     pub fn isPanicking() bool {
-        return panicking.load(.monotonic);
+        return panicking.load(.monotonic) or impl.isPanicking();
     }
-    // DevServer registers an optional diagnostic dump callback through Bun's
-    // crash-handler API. Home's full signal/crash dispatcher is not linked yet,
-    // so keep the registration surface inert without pulling in duplicate
-    // native crash exports.
+
+    pub fn fixDeadCodeElimination() void {
+        impl.fixDeadCodeElimination();
+    }
+
     pub fn appendPreCrashHandler(comptime T: type, context: *T, comptime handler: fn (*T) anyerror!void) !void {
-        _ = context;
-        _ = handler;
+        return impl.appendPreCrashHandler(T, context, handler);
     }
 
     pub fn removePreCrashHandler(context: *anyopaque) void {
-        _ = context;
+        impl.removePreCrashHandler(context);
     }
     // NOTE: crash_handler/crash_handler.zig has fork-`**`-spacing issues; its
     // suppressReporting re-export is deferred until that file is swept.
@@ -6622,6 +6625,8 @@ pub const analytics = struct {
     pub const gate = @import("analytics/analytics.zig");
     pub const Features = @import("analytics/Features.zig");
     pub const GenerateHeader = gate.GenerateHeader;
+    pub const isEnabled = gate.isEnabled;
+    pub const packedFeatures = Features.packedFeatures;
 };
 
 // ---- src/*_sys/ --------------------------------------------------------

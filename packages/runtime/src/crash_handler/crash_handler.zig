@@ -44,6 +44,46 @@ threadlocal var panic_stage: usize = 0;
 threadlocal var inside_native_plugin: ?[*:0]const u8 = null;
 threadlocal var unsupported_uv_function: ?[*:0]const u8 = null;
 
+fn crashIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+const TtyConfig = struct {
+    mode: std.Io.Terminal.Mode,
+
+    fn detectStderr() TtyConfig {
+        const force_color = if (Output.Source.getForceColorDepth()) |depth| depth != .none else false;
+        return .{ .mode = std.Io.Terminal.Mode.detect(
+            crashIo(),
+            std.Io.File.stderr(),
+            Output.Source.isNoColor(),
+            force_color,
+        ) catch .no_color };
+    }
+
+    fn setColor(this: TtyConfig, writer: *std.Io.Writer, color: std.Io.Terminal.Color) !void {
+        var terminal: std.Io.Terminal = .{ .writer = writer, .mode = this.mode };
+        try terminal.setColor(color);
+    }
+};
+
+fn readCrashFile(file: std.Io.File, buffer: []u8) !usize {
+    return file.readStreaming(crashIo(), &.{buffer}) catch |err| switch (err) {
+        error.EndOfStream => 0,
+        else => return err,
+    };
+}
+
+fn writeQuotedArgument(writer: *std.Io.Writer, text: []const u8) !void {
+    if (bun.highway.containsNewlineOrNonASCIIOrQuote(text)) {
+        try bun.js_printer.writeJSONString(text, @TypeOf(writer), writer, bun.strings.Encoding.utf8);
+    } else {
+        try writer.writeByte('"');
+        try writer.writeAll(text);
+        try writer.writeByte('"');
+    }
+}
+
 /// This can be set by various parts of the codebase to indicate a broader
 /// action being taken. It is printed when a crash happens, which can help
 /// narrow down what the bug is. Example: "Crashed while parsing /path/to/file.js"
@@ -232,7 +272,8 @@ pub fn crashHandler(
                 //
                 // Output.errorWriter() is not used here because it may not be configured
                 // if the program crashes immediately at startup.
-                var writer_w = std.fs.File.stderr().writerStreaming(&.{});
+                var writer_buffer: [0]u8 = .{};
+                var writer_w = std.Io.File.stderr().writerStreaming(crashIo(), &writer_buffer);
                 const writer = &writer_w.interface;
 
                 // The format of the panic trace is slightly different in debug
@@ -257,8 +298,8 @@ pub fn crashHandler(
                     Output.flush();
                     Output.Source.Stdio.restore();
 
-                    writer.writeAll("============================================================\n") catch std.posix.abort();
-                    printMetadata(writer) catch std.posix.abort();
+                    writer.writeAll("============================================================\n") catch std.process.abort();
+                    printMetadata(writer) catch std.process.abort();
 
                     if (inside_native_plugin) |name| {
                         const native_plugin_name = name;
@@ -269,7 +310,7 @@ pub fn crashHandler(
                             \\This indicates either a bug in the native plugin or in Bun.
                             \\
                         ;
-                        writer.print(Output.prettyFmt(fmt, true), .{native_plugin_name}) catch std.posix.abort();
+                        writer.print(Output.prettyFmt(fmt, true), .{native_plugin_name}) catch std.process.abort();
                     } else if (bun.analytics.Features.unsupported_uv_function > 0) {
                         const name = unsupported_uv_function orelse "<unknown>";
                         const fmt =
@@ -283,57 +324,57 @@ pub fn crashHandler(
                             \\
                             \\
                         ;
-                        writer.print(Output.prettyFmt(fmt, true), .{name}) catch std.posix.abort();
+                        writer.print(Output.prettyFmt(fmt, true), .{name}) catch std.process.abort();
                         has_printed_message = true;
                     }
                 } else {
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.writeAll(Output.prettyFmt("<red>", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt("<red>", true)) catch std.process.abort();
                     }
-                    writer.writeAll("oh no") catch std.posix.abort();
+                    writer.writeAll("oh no") catch std.process.abort();
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.writeAll(Output.prettyFmt("<r><d>: multiple threads are crashing<r>\n", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt("<r><d>: multiple threads are crashing<r>\n", true)) catch std.process.abort();
                     } else {
-                        writer.writeAll(Output.prettyFmt(": multiple threads are crashing\n", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt(": multiple threads are crashing\n", true)) catch std.process.abort();
                     }
                 }
 
                 if (reason != .out_of_memory or debug_trace) {
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.writeAll(Output.prettyFmt("<red>", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt("<red>", true)) catch std.process.abort();
                     }
 
-                    writer.writeAll("panic") catch std.posix.abort();
+                    writer.writeAll("panic") catch std.process.abort();
 
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.writeAll(Output.prettyFmt("<r><d>", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt("<r><d>", true)) catch std.process.abort();
                     }
 
                     if (bun.cli.Cli.is_main_thread) {
-                        writer.writeAll("(main thread)") catch std.posix.abort();
+                        writer.writeAll("(main thread)") catch std.process.abort();
                     } else switch (bun.Environment.os) {
                         .windows => {
                             var name: std.os.windows.PWSTR = undefined;
                             const result = bun.windows.GetThreadDescription(bun.windows.GetCurrentThread(), &name);
                             if (std.os.windows.HRESULT_CODE(result) == .SUCCESS and name[0] != 0) {
-                                writer.print("({f})", .{bun.fmt.utf16(bun.span(name))}) catch std.posix.abort();
+                                writer.print("({f})", .{bun.fmt.utf16(bun.span(name))}) catch std.process.abort();
                             } else {
-                                writer.print("(thread {d})", .{bun.c.GetCurrentThreadId()}) catch std.posix.abort();
+                                writer.print("(thread {d})", .{bun.c.GetCurrentThreadId()}) catch std.process.abort();
                             }
                         },
                         .mac, .linux, .freebsd => {},
                         .wasm => @compileError("TODO"),
                     }
 
-                    writer.writeAll(": ") catch std.posix.abort();
+                    writer.writeAll(": ") catch std.process.abort();
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.writeAll(Output.prettyFmt("<r>", true)) catch std.posix.abort();
+                        writer.writeAll(Output.prettyFmt("<r>", true)) catch std.process.abort();
                     }
-                    writer.print("{f}\n", .{reason}) catch std.posix.abort();
+                    writer.print("{f}\n", .{reason}) catch std.process.abort();
                 }
 
                 if (current_action) |action| {
-                    writer.print("Crashed while {f}\n", .{action}) catch std.posix.abort();
+                    writer.print("Crashed while {f}\n", .{action}) catch std.process.abort();
                 }
 
                 var addr_buf: [20]usize = undefined;
@@ -350,7 +391,7 @@ pub fn crashHandler(
                     };
                     const desired_begin_addr = begin_addr orelse @returnAddress();
 
-                    if (comptime bun.Environment.isGlibc) {
+                    if (comptime bun.Environment.isLinux and !bun.Environment.isMusl and !bun.Environment.isAndroid) {
                         var addr_buf_libc: [20]usize = undefined;
                         var trace_buf_libc: std.builtin.StackTrace = .{
                             .index = 0,
@@ -375,15 +416,15 @@ pub fn crashHandler(
                         .trace = trace,
                         .reason = reason,
                         .action = .view_trace,
-                    }}) catch std.posix.abort();
+                    }}) catch std.process.abort();
                 } else {
                     if (!has_printed_message) {
                         has_printed_message = true;
-                        writer.writeAll("oh no") catch std.posix.abort();
+                        writer.writeAll("oh no") catch std.process.abort();
                         if (Output.enable_ansi_colors_stderr) {
-                            writer.writeAll(Output.prettyFmt("<r><d>:<r> ", true)) catch std.posix.abort();
+                            writer.writeAll(Output.prettyFmt("<r><d>:<r> ", true)) catch std.process.abort();
                         } else {
-                            writer.writeAll(Output.prettyFmt(": ", true)) catch std.posix.abort();
+                            writer.writeAll(Output.prettyFmt(": ", true)) catch std.process.abort();
                         }
                         if (inside_native_plugin) |name| {
                             const native_plugin_name = name;
@@ -394,7 +435,7 @@ pub fn crashHandler(
                                 \\please file a GitHub issue using the link below:
                                 \\
                                 \\
-                            , true), .{native_plugin_name}) catch std.posix.abort();
+                            , true), .{native_plugin_name}) catch std.process.abort();
                         } else if (bun.analytics.Features.unsupported_uv_function > 0) {
                             const name = unsupported_uv_function orelse "<unknown>";
                             const fmt =
@@ -408,7 +449,7 @@ pub fn crashHandler(
                                 \\
                                 \\
                             ;
-                            writer.print(Output.prettyFmt(fmt, true), .{name}) catch std.posix.abort();
+                            writer.print(Output.prettyFmt(fmt, true), .{name}) catch std.process.abort();
                         } else if (reason == .out_of_memory) {
                             writer.writeAll(
                                 \\Bun has run out of memory.
@@ -417,7 +458,7 @@ pub fn crashHandler(
                                 \\please file a GitHub issue using the link below:
                                 \\
                                 \\
-                            ) catch std.posix.abort();
+                            ) catch std.process.abort();
                         } else {
                             writer.writeAll(
                                 \\Bun has crashed. This indicates a bug in Bun, not your code.
@@ -426,31 +467,31 @@ pub fn crashHandler(
                                 \\please file a GitHub issue using the link below:
                                 \\
                                 \\
-                            ) catch std.posix.abort();
+                            ) catch std.process.abort();
                         }
                     }
 
                     if (Output.enable_ansi_colors_stderr) {
-                        writer.print(Output.prettyFmt("<cyan>", true), .{}) catch std.posix.abort();
+                        writer.print(Output.prettyFmt("<cyan>", true), .{}) catch std.process.abort();
                     }
 
-                    writer.writeAll(" ") catch std.posix.abort();
+                    writer.writeAll(" ") catch std.process.abort();
 
                     trace_str_buf.writer().print("{f}", .{TraceString{
                         .trace = trace,
                         .reason = reason,
                         .action = .open_issue,
-                    }}) catch std.posix.abort();
+                    }}) catch std.process.abort();
 
-                    writer.writeAll(trace_str_buf.slice()) catch std.posix.abort();
+                    writer.writeAll(trace_str_buf.slice()) catch std.process.abort();
 
-                    writer.writeAll("\n") catch std.posix.abort();
+                    writer.writeAll("\n") catch std.process.abort();
                 }
 
                 if (Output.enable_ansi_colors_stderr) {
-                    writer.writeAll(Output.prettyFmt("<r>\n", true)) catch std.posix.abort();
+                    writer.writeAll(Output.prettyFmt("<r>\n", true)) catch std.process.abort();
                 } else {
-                    writer.writeAll("\n") catch std.posix.abort();
+                    writer.writeAll("\n") catch std.process.abort();
                 }
             }
 
@@ -497,10 +538,11 @@ pub fn crashHandler(
             // A panic happened while trying to print a previous panic message,
             // we're still holding the mutex but that's fine as we're going to
             // call abort()
-            var stderr_w = std.fs.File.stderr().writerStreaming(&.{});
+            var stderr_buffer: [0]u8 = .{};
+            var stderr_w = std.Io.File.stderr().writerStreaming(crashIo(), &stderr_buffer);
             const stderr = &stderr_w.interface;
-            stderr.print("\npanic: {f}\n", .{reason}) catch std.posix.abort();
-            stderr.print("panicked during a panic. Aborting.\n", .{}) catch std.posix.abort();
+            stderr.print("\npanic: {f}\n", .{reason}) catch std.process.abort();
+            stderr.print("panicked during a panic. Aborting.\n", .{}) catch std.process.abort();
         },
         3 => {
             // Panicked while printing "Panicked during a panic."
@@ -508,7 +550,7 @@ pub fn crashHandler(
         },
         else => {
             // Panicked or otherwise looped into the panic handler while trying to exit.
-            std.posix.abort();
+            std.process.abort();
         },
     };
 
@@ -557,7 +599,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
                 } else if (comptime bun.Environment.isFreeBSD) {
@@ -576,7 +618,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
                 } else {
@@ -594,7 +636,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
 
@@ -642,7 +684,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
                 } else if (comptime bun.Environment.isFreeBSD) {
@@ -659,7 +701,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
                 } else {
@@ -680,7 +722,7 @@ pub fn handleRootError(err: anyerror, error_return_trace: ?*std.builtin.StackTra
                         \\
                     ,
                         .{
-                            bun.fmt.nullableFallback(limit, "<unknown>"),
+                            @import("../bun_core/fmt.zig").nullableFallback(limit, "<unknown>"),
                         },
                     );
 
@@ -903,10 +945,10 @@ fn updatePosixSegfaultHandler(act: ?*bun.sys.Sigaction) !void {
         }
     }
 
-    bun.sys.sigaction(std.posix.SIG.SEGV, act, null);
-    bun.sys.sigaction(std.posix.SIG.ILL, act, null);
-    bun.sys.sigaction(std.posix.SIG.BUS, act, null);
-    bun.sys.sigaction(std.posix.SIG.FPE, act, null);
+    bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.SEGV)), act, null);
+    bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.ILL)), act, null);
+    bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.BUS)), act, null);
+    bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.FPE)), act, null);
 }
 
 var windows_segfault_handle: ?windows.HANDLE = null;
@@ -999,7 +1041,7 @@ pub fn printMetadata(writer: anytype) !void {
     {
         const platform = bun.analytics.GenerateHeader.GeneratePlatform.forOS();
         const cpu_features = CPUFeatures.get();
-        if (bun.Environment.isGlibc) {
+        if (comptime bun.Environment.isLinux and !bun.Environment.isMusl and !bun.Environment.isAndroid) {
             const version = gnu_get_libc_version() orelse "";
             const kernel_version = bun.analytics.GenerateHeader.GeneratePlatform.kernelVersion();
             if (platform.os == .wsl) {
@@ -1033,7 +1075,7 @@ pub fn printMetadata(writer: anytype) !void {
         var arg_chars_left: usize = if (bun.Environment.isDebug) 4096 else 196;
         for (bun.argv, 0..) |arg, i| {
             if (i != 0) try writer.writeAll(" ");
-            try bun.fmt.quotedWriter(writer, arg[0..@min(arg.len, arg_chars_left)]);
+            try writeQuotedArgument(writer, arg[0..@min(arg.len, arg_chars_left)]);
             arg_chars_left -|= arg.len;
             if (arg_chars_left == 0) {
                 try writer.writeAll("...");
@@ -1216,14 +1258,15 @@ const StackLine = struct {
                     const vmaddr_slide = std.c._dyld_get_image_vmaddr_slide(i);
 
                     var it = std.macho.LoadCommandIterator{
+                        .next_index = 0,
                         .ncmds = header.ncmds,
-                        .buffer = @alignCast(@as(
+                        .r = .fixed(@as(
                             [*]u8,
                             @ptrFromInt(@intFromPtr(header) + @sizeOf(std.macho.mach_header_64)),
                         )[0..header.sizeofcmds]),
                     };
 
-                    while (it.next()) |cmd| switch (cmd.cmd()) {
+                    while (it.next() catch break) |cmd| switch (cmd.hdr.cmd) {
                         .SEGMENT_64 => {
                             const segment_cmd = cmd.cast(std.macho.segment_command_64).?;
                             if (!bun.strings.eqlComptime(segment_cmd.segName(), "__TEXT")) continue;
@@ -1588,7 +1631,7 @@ fn crash() noreturn {
         .windows => {
             // Node.js exits with code 134 (128 + SIGABRT) instead. We use abort() as it includes a
             // breakpoint which makes crashes easier to debug.
-            std.posix.abort();
+            std.process.abort();
         },
         else => {
             // Install default handler so that the tkill below will terminate.
@@ -1602,7 +1645,7 @@ fn crash() noreturn {
                 std.posix.SIG.HUP,
                 std.posix.SIG.TERM,
             }) |sig| {
-                bun.sys.sigaction(sig, &sigact, null);
+                bun.sys.sigaction(@intCast(@backingInt(sig)), &sigact, null);
             }
 
             @trap();
@@ -1693,7 +1736,8 @@ extern "c" fn WTF__DumpStackTrace(ptr: [*]usize, count: usize) void;
 /// cases where such logic fails to run.
 pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimits) void {
     Output.flush();
-    var stderr_w = std.fs.File.stderr().writerStreaming(&.{});
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_w = std.Io.File.stderr().writerStreaming(crashIo(), &stderr_buffer);
     const stderr = &stderr_w.interface;
     if (!bun.Environment.show_crash_trace) {
         // debug symbols aren't available, lets print a tracestring
@@ -1712,7 +1756,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
                 stderr.print("Unable to dump stack trace: Unable to open debug info: {s}\nFallback trace:\n", .{@errorName(err)}) catch return;
                 break :attempt_dump;
             };
-            writeStackTrace(trace, stderr, debug_info, std.io.tty.detectConfig(std.fs.File.stderr()), limits) catch |err| {
+            writeStackTrace(trace, stderr, debug_info, TtyConfig.detectStderr(), limits) catch |err| {
                 stderr.print("Unable to dump stack trace: {s}\nFallback trace:\n", .{@errorName(err)}) catch return;
                 break :attempt_dump;
             };
@@ -1732,7 +1776,7 @@ pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: WriteStackTraceLimi
                 stderr.print("Unable to dump stack trace: Unable to open debug info: {s}\n", .{@errorName(err)}) catch return;
                 return;
             };
-            writeStackTrace(trace, stderr, debug_info, std.io.tty.detectConfig(std.fs.File.stderr()), limits) catch |err| {
+            writeStackTrace(trace, stderr, debug_info, TtyConfig.detectStderr(), limits) catch |err| {
                 stderr.print("Unable to dump stack trace: {s}", .{@errorName(err)}) catch return;
                 return;
             };
@@ -1790,7 +1834,8 @@ fn spawnSymbolizer(program: [:0]const u8, alloc: std.mem.Allocator, trace: *cons
     child.expand_arg0 = .expand;
     child.progress_node = std.Progress.Node.none;
 
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&.{});
+    var stderr_buffer: [0]u8 = .{};
+    var stderr_writer = std.Io.File.stderr().writerStreaming(crashIo(), &stderr_buffer);
     const stderr = &stderr_writer.interface;
     const result = child.spawnAndWait() catch |err| {
         stderr.print("Failed to invoke command: {f}\n", .{bun.fmt.fmtSlice(argv.items, " ")}) catch {};
@@ -1936,7 +1981,7 @@ pub fn writeStackTrace(
     stack_trace: std.builtin.StackTrace,
     out_stream: anytype,
     debug_info: *debug.SelfInfo,
-    tty_config: std.io.tty.Config,
+    tty_config: TtyConfig,
     limits: WriteStackTraceLimits,
 ) !void {
     if (builtin.strip_debug_info) return error.MissingDebugInfo;
@@ -2037,7 +2082,7 @@ fn printLineInfo(
     address: usize,
     symbol_name: []const u8,
     compile_unit_name: []const u8,
-    tty_config: std.io.tty.Config,
+    tty_config: TtyConfig,
 ) !void {
     const base_path = bun.Environment.base_path ++ std.fs.path.sep_str;
     nosuspend {
@@ -2094,17 +2139,18 @@ fn printLineInfo(
 /// - Record the whole slice into a buffer
 /// - Locate the column, expand a highlight to one word.
 /// - Print the line, with the highlight.
-fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.io.tty.Config, source_location: SourceLocation) !void {
+fn printLineFromFileAnyOs(out_stream: anytype, tty_config: TtyConfig, source_location: SourceLocation) !void {
     // Need this to always block even in async I/O mode, because this could potentially
     // be called from e.g. the event loop code crashing.
-    var f = try std.fs.cwd().openFile(source_location.file_name, .{});
-    defer f.close();
+    const io = crashIo();
+    var f = try std.Io.Dir.cwd().openFile(io, source_location.file_name, .{});
+    defer f.close(io);
 
     var line_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&line_buf);
+    var fbs = std.Io.Writer.fixed(&line_buf);
     read_line: {
         var buf: [4096]u8 = undefined;
-        var amt_read = try f.read(buf[0..]);
+        var amt_read = try readCrashFile(f, buf[0..]);
         const line_start = seek: {
             var current_line_start: usize = 0;
             var next_line: usize = 1;
@@ -2113,13 +2159,13 @@ fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.io.tty.Config, so
                 if (bun.strings.indexOfChar(slice, '\n')) |pos| {
                     next_line += 1;
                     if (pos == slice.len - 1) {
-                        amt_read = try f.read(buf[0..]);
+                        amt_read = try readCrashFile(f, buf[0..]);
                         current_line_start = 0;
                     } else current_line_start += pos + 1;
                 } else if (amt_read < buf.len) {
                     return error.EndOfFile;
                 } else {
-                    amt_read = try f.read(buf[0..]);
+                    amt_read = try readCrashFile(f, buf[0..]);
                     current_line_start = 0;
                 }
             }
@@ -2129,29 +2175,29 @@ fn printLineFromFileAnyOs(out_stream: anytype, tty_config: std.io.tty.Config, so
         if (bun.strings.indexOfChar(slice, '\n')) |pos| {
             const line = slice[0..pos];
             std.mem.replaceScalar(u8, line, '\t', ' ');
-            fbs.writer().writeAll(line) catch {};
+            fbs.writeAll(line) catch {};
             break :read_line;
         } else { // Line is the last inside the buffer, and requires another read to find delimiter. Alternatively the file ends.
             std.mem.replaceScalar(u8, slice, '\t', ' ');
-            fbs.writer().writeAll(slice) catch break :read_line;
+            fbs.writeAll(slice) catch break :read_line;
             while (amt_read == buf.len) {
-                amt_read = try f.read(buf[0..]);
+                amt_read = try readCrashFile(f, buf[0..]);
                 if (bun.strings.indexOfChar(buf[0..amt_read], '\n')) |pos| {
                     const line = buf[0..pos];
                     std.mem.replaceScalar(u8, line, '\t', ' ');
-                    fbs.writer().writeAll(line) catch break :read_line;
+                    fbs.writeAll(line) catch break :read_line;
                     break :read_line;
                 } else {
                     const line = buf[0..amt_read];
                     std.mem.replaceScalar(u8, line, '\t', ' ');
-                    fbs.writer().writeAll(line) catch break :read_line;
+                    fbs.writeAll(line) catch break :read_line;
                 }
             }
             break :read_line;
         }
         return;
     }
-    const line_without_newline = std.mem.trimEnd(u8, fbs.getWritten(), "\n");
+    const line_without_newline = std.mem.trimEnd(u8, fbs.buffered(), "\n");
     if (source_location.column > line_without_newline.len) {
         try out_stream.writeAll(line_without_newline);
         try out_stream.writeByte('\n');
