@@ -229,6 +229,34 @@ const initEnv = { ...bunEnv, BUN_AGENT_RULE_DISABLED: "1" };
     );
   });
 
+  test("bun init preserves an existing non-index TypeScript entry", async () => {
+    const source = fs.readFileSync(path.join(import.meta.dir, "existing-entry.fixture.ts"), "utf8");
+    const temp = tempDirWithFiles("bun-init-existing-entry", {
+      "existing-entry.ts": source,
+      "package.json": JSON.stringify({
+        name: "existing-entry",
+        private: true,
+        devDependencies: { "@types/bun": "latest" },
+        peerDependencies: { typescript: "^5" },
+      }),
+    });
+
+    const { exited } = Bun.spawn({
+      cmd: [bunExe(), "init", "-y"],
+      cwd: temp,
+      stdio: ["ignore", "inherit", "inherit"],
+      env: initEnv,
+    });
+
+    expect(await exited).toBe(0);
+    expect(fs.readFileSync(path.join(temp, "existing-entry.ts"), "utf8")).toBe(source);
+    expect(fs.existsSync(path.join(temp, "index.ts"))).toBe(false);
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(temp, "package.json"), "utf8"));
+    expect(pkg.module).toBeUndefined();
+    expect(pkg.main).toBeUndefined();
+  });
+
   test("bun init --react works", async () => {
     const temp = tempDirWithFiles("bun-init--react-works", {});
 

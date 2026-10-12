@@ -52,7 +52,7 @@ pub const InitCommand = struct {
                     if (field.value != expected_value) {
                         @compileError("Choices must be an enum type with consecutive values starting from 0");
                     }
-                    const e: Choices = @enumFromInt(field.value);
+                    const e: Choices = @fromBackingInt(@intCast(field.value));
                     choices[i] = Output.prettyFmt(e.fmt(), colors_comptime);
                     expected_value += 1;
                 }
@@ -81,7 +81,7 @@ pub const InitCommand = struct {
 
             if (reprint_menu) {
                 // Print final selection
-                Output.prettyln("<r><green>✓<r> {s}<d>:<r> {s}<r>", .{ label, choices[@intFromEnum(selected)] });
+                Output.prettyln("<r><green>✓<r> {s}<d>:<r> {s}<r>", .{ label, choices[@backingInt(selected)] });
             }
         }
 
@@ -94,7 +94,7 @@ pub const InitCommand = struct {
 
             // Print options vertically
             inline for (choices, 0..) |option, i| {
-                if (i == @intFromEnum(selected)) {
+                if (i == @backingInt(selected)) {
                     if (colors) {
                         Output.pretty("<r><cyan>❯<r>   ", .{});
                     } else {
@@ -115,8 +115,8 @@ pub const InitCommand = struct {
 
             // Read a single character
             var stdin_b: [1]u8 = undefined;
-            var stdin_r = std.fs.File.stdin().readerStreaming(&stdin_b);
-            var stdin_i = &stdin_r.interface;
+            var stdin_r = std.Io.File.stdin().readerStreaming(std.Io.Threaded.global_single_threaded.io(), &stdin_b);
+            const stdin_i = &stdin_r.interface;
             const byte = stdin_i.takeByte() catch return selected;
 
             switch (byte) {
@@ -127,21 +127,21 @@ pub const InitCommand = struct {
                 '1'...'9' => {
                     const choice = byte - '1';
                     if (choice < choices.len) {
-                        return @enumFromInt(choice);
+                        return @fromBackingInt(@intCast(choice));
                     }
                 },
                 'j' => {
-                    if (@intFromEnum(selected) == choices.len - 1) {
-                        selected = @enumFromInt(0);
+                    if (@backingInt(selected) == choices.len - 1) {
+                        selected = @fromBackingInt(@intCast(0));
                     } else {
-                        selected = @enumFromInt(@intFromEnum(selected) + 1);
+                        selected = @fromBackingInt(@intCast(@backingInt(selected) + 1));
                     }
                 },
                 'k' => {
-                    if (@intFromEnum(selected) == 0) {
-                        selected = @enumFromInt(choices.len - 1);
+                    if (@backingInt(selected) == 0) {
+                        selected = @fromBackingInt(@intCast(choices.len - 1));
                     } else {
-                        selected = @enumFromInt(@intFromEnum(selected) - 1);
+                        selected = @fromBackingInt(@intCast(@backingInt(selected) - 1));
                     }
                 },
                 27 => { // ESC sequence
@@ -153,17 +153,17 @@ pub const InitCommand = struct {
                     const arrow = stdin_i.takeByte() catch return error.EndOfStream;
                     switch (arrow) {
                         'A' => { // Up arrow
-                            if (@intFromEnum(selected) == 0) {
-                                selected = @enumFromInt(choices.len - 1);
+                            if (@backingInt(selected) == 0) {
+                                selected = @fromBackingInt(@intCast(choices.len - 1));
                             } else {
-                                selected = @enumFromInt(@intFromEnum(selected) - 1);
+                                selected = @fromBackingInt(@intCast(@backingInt(selected) - 1));
                             }
                         },
                         'B' => { // Down arrow
-                            if (@intFromEnum(selected) == choices.len - 1) {
-                                selected = @enumFromInt(0);
+                            if (@backingInt(selected) == choices.len - 1) {
+                                selected = @fromBackingInt(@intCast(0));
                             } else {
-                                selected = @enumFromInt(@intFromEnum(selected) + 1);
+                                selected = @fromBackingInt(@intCast(@backingInt(selected) + 1));
                             }
                         },
                         else => {},
@@ -221,10 +221,10 @@ pub const InitCommand = struct {
 
     const Assets = struct {
         // "known" assets
-        const @".gitignore" = @embedFile("init/gitignore.default");
-        const @"tsconfig.json" = @embedFile("init/tsconfig.default.json");
-        const @"README.md" = @embedFile("init/README.default.md");
-        const @"README2.md" = @embedFile("init/README2.default.md");
+        pub const @".gitignore" = @embedFile("init/gitignore.default");
+        pub const @"tsconfig.json" = @embedFile("init/tsconfig.default.json");
+        pub const @"README.md" = @embedFile("init/README.default.md");
+        pub const @"README2.md" = @embedFile("init/README2.default.md");
 
         /// Create a new asset file, overriding anything that already exists. Known
         /// assets will have their contents pre-populated; otherwise the file will be empty.
@@ -260,9 +260,11 @@ pub const InitCommand = struct {
             /// Format arguments
             args: anytype,
         ) !void {
-            var file = try std.fs.cwd().createFile(filename, .{ .truncate = true });
-            defer file.close();
-            var file_w = file.writerStreaming(&.{});
+            const io = std.Io.Threaded.global_single_threaded.io();
+            const file = try std.Io.Dir.cwd().createFile(io, filename, .{ .truncate = true });
+            defer file.close(io);
+            var buffer: [4096]u8 = undefined;
+            var file_w = file.writerStreaming(io, &buffer);
             const file_i = &file_w.interface;
 
             // Write contents of known assets to the new file. Template assets get formatted.
@@ -278,6 +280,7 @@ pub const InitCommand = struct {
             } else {
                 @compileError("missing asset: " ++ asset_name);
             }
+            try file_i.flush();
         }
 
         fn createFullWithContents(
@@ -291,16 +294,19 @@ pub const InitCommand = struct {
             /// Format arguments
             args: anytype,
         ) !void {
-            var file = try std.fs.cwd().createFile(filename, .{ .truncate = true });
-            defer file.close();
-            var file_w = file.writerStreaming(&.{});
-            var file_i = &file_w.interface;
+            const io = std.Io.Threaded.global_single_threaded.io();
+            const file = try std.Io.Dir.cwd().createFile(io, filename, .{ .truncate = true });
+            defer file.close(io);
+            var buffer: [4096]u8 = undefined;
+            var file_w = file.writerStreaming(io, &buffer);
+            const file_i = &file_w.interface;
 
             if (comptime is_template) {
                 try file_i.print(contents, args);
             } else {
                 try file_i.writeAll(contents);
             }
+            try file_i.flush();
 
             Output.prettyln(" + <r><d>{s}{s}<r>", .{ filename, message_suffix });
             Output.flush();
@@ -344,6 +350,7 @@ pub const InitCommand = struct {
     };
 
     pub fn exec(alloc: std.mem.Allocator, init_args: [][:0]const u8) !void {
+        const io = std.Io.Threaded.global_single_threaded.io();
         // --minimal is a special preset to create only empty package.json + tsconfig.json
         var minimal = false;
         var auto_yes = false;
@@ -392,7 +399,7 @@ pub const InitCommand = struct {
         }
 
         if (initialize_in_folder) |ifdir| {
-            std.fs.cwd().makePath(ifdir) catch |err| {
+            std.Io.Dir.cwd().createDirPath(io, ifdir) catch |err| {
                 Output.prettyErrorln("Failed to create directory {s}: {s}", .{ ifdir, @errorName(err) });
                 Global.exit(1);
             };
@@ -404,25 +411,17 @@ pub const InitCommand = struct {
 
         var fs = try Fs.FileSystem.init(null);
         const pathname = Fs.PathName.init(fs.topLevelDirWithoutTrailingSlash());
-        const destination_dir = std.fs.cwd();
+        const destination_dir = std.Io.Dir.cwd();
 
         var fields = PackageJSONFields{};
 
-        var package_json_file = destination_dir.openFile("package.json", .{ .mode = .read_write }) catch null;
+        var package_json_file = destination_dir.openFile(io, "package.json", .{ .mode = .read_write }) catch null;
         var package_json_contents: MutableString = MutableString.initEmpty(alloc);
         initializeStore();
         read_package_json: {
             if (package_json_file) |pkg| {
                 const size = brk: {
-                    if (comptime bun.Environment.isWindows) {
-                        const end = pkg.getEndPos() catch break :read_package_json;
-                        if (end == 0) {
-                            break :read_package_json;
-                        }
-
-                        break :brk end;
-                    }
-                    const stat = pkg.stat() catch break :read_package_json;
+                    const stat = pkg.stat(io) catch break :read_package_json;
 
                     if (stat.kind != .file or stat.size == 0) {
                         break :read_package_json;
@@ -434,12 +433,10 @@ pub const InitCommand = struct {
                 package_json_contents = try MutableString.init(alloc, size);
                 package_json_contents.list.expandToCapacity();
 
-                const prev_file_pos = if (comptime Environment.isWindows) try pkg.getPos() else 0;
-                _ = pkg.preadAll(package_json_contents.list.items, 0) catch {
+                _ = pkg.readPositionalAll(io, package_json_contents.list.items, 0) catch {
                     package_json_file = null;
                     break :read_package_json;
                 };
-                if (comptime Environment.isWindows) try pkg.seekTo(prev_file_pos);
             }
         }
 
@@ -511,8 +508,8 @@ pub const InitCommand = struct {
             }
 
             // Find any source file
-            var dir = std.fs.cwd().openDir(".", .{ .iterate = true }) catch break :infer;
-            defer dir.close();
+            const dir = std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true }) catch break :infer;
+            defer dir.close(io);
             var it = bun.DirIterator.iterate(.fromStdDir(dir), .u8);
             while (try it.next().unwrap()) |file| {
                 if (file.kind != .file) continue;
@@ -750,7 +747,7 @@ pub const InitCommand = struct {
         }
 
         write_package_json: {
-            var fd = bun.FD.fromStdFile(package_json_file orelse try std.fs.cwd().createFileZ("package.json", .{}));
+            var fd = bun.FD.fromStdFile(package_json_file orelse try std.Io.Dir.cwd().createFile(io, "package.json", .{}));
             defer fd.close();
             var buffer_writer = JSPrinter.BufferWriter.init(bun.default_allocator);
             buffer_writer.append_newline = true;
@@ -798,10 +795,10 @@ pub const InitCommand = struct {
                 }
 
                 if (fields.entry_point.len > 0 and !exists(fields.entry_point)) {
-                    const cwd = std.fs.cwd();
+                    const cwd = std.Io.Dir.cwd();
                     if (std.fs.path.dirname(fields.entry_point)) |dirname| {
                         if (!strings.eqlComptime(dirname, ".")) {
-                            cwd.makePath(dirname) catch {};
+                            cwd.createDirPath(io, dirname) catch {};
                         }
                     }
 
@@ -846,17 +843,16 @@ pub const InitCommand = struct {
 
                 if (existsZ("package.json") and need_run_bun_install) {
                     Output.prettyln("", .{});
-                    var process = std.process.Child.init(
-                        &.{
+                    var process = try std.process.spawn(io, .{
+                        .argv = &.{
                             try bun.selfExePath(),
                             "install",
                         },
-                        alloc,
-                    );
-                    process.stderr_behavior = .Inherit;
-                    process.stdin_behavior = .Inherit;
-                    process.stdout_behavior = .Inherit;
-                    _ = try process.spawnAndWait();
+                        .stderr = .inherit,
+                        .stdin = .inherit,
+                        .stdout = .inherit,
+                    });
+                    _ = try process.wait(io);
                 }
             },
             else => {},
@@ -1208,18 +1204,20 @@ const Template = enum {
         Output.pretty("\n", .{});
         Output.flush();
 
-        var install = std.process.Child.init(
-            &.{
+        var threaded = std.Io.Threaded.init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var install = try std.process.spawn(io, .{
+            .argv = &.{
                 try bun.selfExePath(),
                 "install",
             },
-            allocator,
-        );
-        install.stderr_behavior = .Inherit;
-        install.stdin_behavior = .Ignore;
-        install.stdout_behavior = .Inherit;
+            .stderr = .inherit,
+            .stdin = .ignore,
+            .stdout = .inherit,
+        });
 
-        _ = try install.spawnAndWait();
+        _ = try install.wait(io);
 
         Output.prettyln(
             \\
