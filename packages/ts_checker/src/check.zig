@@ -32475,6 +32475,33 @@ pub const Checker = struct {
         return signature;
     }
 
+    /// tsc infers a generic `new` expression's type parameters from its
+    /// contextual type (return-type inference) before typing
+    /// context-sensitive arguments:
+    /// `function f(): Promise<void> { return new Promise((resolve) => resolve()) }`
+    /// gives `resolve` a `void` payload. Instantiate `sig` with what the
+    /// call's contextual type implies, or null when it implies nothing.
+    fn returnContextInstantiatedSignature(self: *Checker, sig: TypeId, callee_node: NodeId) CheckError!?TypeId {
+        if (self.generic_signature_params.get(sig) == null) return null;
+        const call_node = self.hir.parentOf(callee_node);
+        if (call_node == hir_mod.none_node_id) return null;
+        // Calls already reach their return context through the callback
+        // inference path; `new` expressions did not.
+        if (self.hir.kindOf(call_node) != .new_expr) return null;
+        if (hir_mod.callTypeArgs(self.hir, call_node).len != 0) return null;
+        const context = self.contextualTargetTypeForExpression(call_node) orelse
+            self.enclosingReturnTargetType(call_node) orelse return null;
+        if (context == types.Primitive.any or context == types.Primitive.unknown) return null;
+        const return_t = self.interner.signatureReturn(sig) orelse return null;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        try self.inferFromPair(return_t, context, &subs);
+        if (subs.count() == 0) return null;
+        try self.normalizeCallInferenceSubstitutions(sig, &subs);
+        const relowered = try self.relowerSignatureParametersWithInferences(sig, &subs);
+        return self.substituteType(relowered, &subs) catch relowered;
+    }
+
     fn contextualCallArgumentType(
         self: *Checker,
         sig: TypeId,
@@ -32499,14 +32526,14 @@ pub const Checker = struct {
             }
             if (arg_index == 0 or
                 self.hir.kindOf(callee_node) != .member_access or
-                self.generic_signature_params.get(sig) == null) break :blk sig;
+                self.generic_signature_params.get(sig) == null) break :blk (try self.returnContextInstantiatedSignature(sig, callee_node)) orelse sig;
             var stable_count = arg_index;
             for (args[0..arg_index], 0..) |prior_arg, prior_index| {
                 if (!self.expressionHasContextSensitiveFunction(prior_arg)) continue;
                 stable_count = prior_index;
                 break;
             }
-            if (stable_count == 0) break :blk sig;
+            if (stable_count == 0) break :blk (try self.returnContextInstantiatedSignature(sig, callee_node)) orelse sig;
             var prior_types: std.ArrayListUnmanaged(TypeId) = .empty;
             defer prior_types.deinit(self.gpa);
             for (args[0..stable_count]) |prior_arg| {
@@ -220374,6 +220401,30 @@ test "checker: constructor parameter properties contribute to instance shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.class_incorrectly_implements_interface);
     }
+}
+
+test "checker: new Promise takes its payload from the return context" {
+    // create-craft's `function install(): Promise<void> { return new
+    // Promise((resolve, reject) => { ... resolve() }) }`.
+    const s = try newSetup(
+        \\interface PromiseLike<T> { then(cb: (value: T) => void): void }
+        \\interface Box<T> { value: T }
+        \\declare var Box: { new <T>(executor: (resolve: (value: T | PromiseLike<T>) => void) => void): Box<T> };
+        \\function make(): Box<void> {
+        \\  return new Box((resolve) => { resolve(undefined); });
+        \\}
+        \\function count(): Box<number> {
+        \\  return new Box((resolve) => { resolve("no"); });
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    var mismatches: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code == TsCodes.argument_type_mismatch) mismatches += 1;
+    }
+    try T.expectEqual(@as(usize, 1), mismatches);
 }
 
 test "checker: a primitive has no properties in common with a weak option bag" {
