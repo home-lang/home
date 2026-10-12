@@ -1141,6 +1141,14 @@ pub const Program = struct {
                 }
             }
             if (mapped == ts_driver.Primitive.none) continue;
+            // A class's value is its constructor (static side); its type is
+            // the instance. `class X extends EventEmitter` needs the former.
+            var class_static: ts_driver.TypeId = ts_driver.Primitive.none;
+            if (kind == .class_decl) {
+                if (owner_c.checked_types.class_static_type_by_node.get(entry.decl)) |static_t| {
+                    class_static = (try self.importedOwnerType(compilation, result, owner_file, static_t)) orelse ts_driver.Primitive.none;
+                }
+            }
             const is_value = switch (kind) {
                 .fn_decl, .var_decl, .let_decl, .const_decl, .class_decl, .enum_decl, .namespace_decl, .module_decl => true,
                 else => false,
@@ -1168,7 +1176,7 @@ pub const Program = struct {
             try result.ambient.append(self.gpa, .{
                 .specifier = entry.specifier,
                 .name = entry.name,
-                .value_type = if (is_value) mapped else ts_driver.Primitive.none,
+                .value_type = if (class_static != ts_driver.Primitive.none) class_static else if (is_value) mapped else ts_driver.Primitive.none,
                 .type_type = if (is_type) mapped else ts_driver.Primitive.none,
             });
         }
@@ -1479,6 +1487,11 @@ pub const Program = struct {
                 if (owner_file != file and owner_file.owner != .none) {
                     if (owner_file.compilation) |owner_c| {
                         if (ambientDeclarationType(owner_c, entry.decl)) |root| try addOwnerRoot(self.gpa, &by_owner, owner_file.owner, root);
+                        if (owner_c.hir.kindOf(entry.decl) == .class_decl) {
+                            if (owner_c.checked_types.class_static_type_by_node.get(entry.decl)) |static_t| {
+                                try addOwnerRoot(self.gpa, &by_owner, owner_file.owner, static_t);
+                            }
+                        }
                     }
                 }
                 // `export = process` naming a merged global: all its owners.
