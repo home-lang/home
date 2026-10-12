@@ -397,6 +397,8 @@ pub const Program = struct {
     /// Transfer whole owner pools instead of what a file's globals reach
     /// (`HOME_TSC_FULL_TRANSFER`, for comparing the two).
     full_global_transfer: bool = false,
+    /// `HOME_TSC_FILE_STATS`: print each file's pool size after checking.
+    report_file_stats: bool = false,
     files: std.ArrayListUnmanaged(*File),
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
@@ -1610,6 +1612,18 @@ pub const Program = struct {
         per_file.program_global_types = imported.types.items;
         per_file.program_checked_types = imported.checked.items;
         per_file.program_ambient_module_exports = imported.ambient.items;
+        const imported_types: usize = compilation_types: {
+            const c = file.compilation orelse break :compilation_types 0;
+            break :compilation_types c.type_interner.pool.typeCount();
+        };
+        defer if (self.report_file_stats) {
+            if (file.compilation) |c| std.debug.print("[file-stats] {s} imports={d} imported_types={d} types={d}\n", .{
+                file.path,
+                imported.imports.items.len,
+                imported_types,
+                c.type_interner.pool.typeCount(),
+            });
+        };
         self.compileFile(file, per_file) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.LexError => error.LexError,

@@ -5203,6 +5203,8 @@ pub const Checker = struct {
     /// declaration identity or relation checks.
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
     pending_alias_displays: std.AutoHashMapUnmanaged(TypeId, SubstitutedAliasDisplay) = .empty,
+    /// Generic body -> its instantiation with every argument defaulted.
+    default_generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Source-ordered union members whose display is rendered only when a
     /// diagnostic asks (`diagnosticUnionDisplayName`). Rendering eagerly
     /// for every lowered union walked whole declaration graphs (@types/node
@@ -6808,6 +6810,7 @@ pub const Checker = struct {
         self.diagnostic_union_display_names.deinit(self.gpa);
         self.pending_union_display_members.deinit(self.gpa);
         self.pending_alias_displays.deinit(self.gpa);
+        self.default_generic_instances.deinit(self.gpa);
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -68062,6 +68065,11 @@ pub const Checker = struct {
                 const tp_id_v = param_ids.items[tp_ix];
                 tp_ix += 1;
                 if (tpp_h.variance != 0) continue;
+                // skipLibCheck declaration files: inferring variance walks
+                // the interface's whole member graph (@types/node's http2
+                // made millions of types). Unmeasured parameters relate
+                // structurally (bivariant fallback), which only skips work.
+                if (!validate_declaration) continue;
                 const v = self.inferVariance(iface_t, tp_id_v);
                 try self.inferred_variance.put(self.gpa, tp_id_v, v);
             }
@@ -79305,11 +79313,17 @@ pub const Checker = struct {
                         if (try self.reportGenericAliasInvalidTypeArgCount(type_node, r.name, info, 0)) {
                             return info.body;
                         } else if (info.params.len > 0) {
+                            // `Foo` with every argument defaulted names one
+                            // type. Expanding the body again at each mention
+                            // made a fresh copy of the whole member graph
+                            // (@types/node's http2 interfaces: millions).
+                            if (self.default_generic_instances.get(info.body)) |cached| return cached;
                             var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                             defer subs.deinit(self.gpa);
                             try self.putDependentGenericDefaults(info.params, 0, &subs);
                             const instantiated = self.substituteType(info.body, &subs) catch info.body;
                             try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
+                            try self.default_generic_instances.put(self.gpa, info.body, instantiated);
                             return instantiated;
                         }
                     }

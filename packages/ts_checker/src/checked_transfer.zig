@@ -128,13 +128,15 @@ pub fn buildAttachments(gpa: std.mem.Allocator, checked: *const check.CheckedTyp
             try collectIds(gpa, @TypeOf(entry.value_ptr.*), mapping.value, entry.value_ptr.*, &value_ids);
             if (comptime std.meta.activeTag(mapping.key) == .string_id) {
                 try result.add(&result.by_name, @as(u32, entry.key_ptr.*), value_ids.items);
-            } else if (comptime std.meta.activeTag(mapping.key) == .type_id) {
-                try result.add(&result.by_type, @as(transfer.TypeId, entry.key_ptr.*), value_ids.items);
             }
-            // Every type an entry mentions brings the entry's other types.
-            if (key_ids.items.len + value_ids.items.len > 1) {
-                try key_ids.appendSlice(gpa, value_ids.items);
-                for (key_ids.items) |id| try result.add(&result.by_type, id, key_ids.items);
+            // Directional: a type reached as a key brings what its entry
+            // says about it. The reverse would make reaching `Array` bring
+            // every instantiation keyed by its origin.
+            for (key_ids.items) |id| try result.add(&result.by_type, id, value_ids.items);
+            // The types of one value travel together (an alias's parameters
+            // with its body, a predicate's target with its signature).
+            if (value_ids.items.len > 1) {
+                for (value_ids.items) |id| try result.add(&result.by_type, id, value_ids.items);
             }
         }
     }
