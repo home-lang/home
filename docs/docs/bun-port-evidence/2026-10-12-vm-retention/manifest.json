@@ -1,0 +1,378 @@
+{
+  "schema": 1,
+  "source_commit": "5d1395eb9533f1fbc19d7e4af2217259fb30b5d2",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "kind": "investigation-only",
+  "inspection": {
+    "source_commit": "5d1395eb9533f1fbc19d7e4af2217259fb30b5d2",
+    "observation": "Ordering controls show the last evaluated context is retained: array/fill/map/math matrix retains math; reversed order retains array. Prior realms collect. Host runInThisContext does not release it. Original payload retirement remains failed, including 22 seconds of ordinary timer delays/full collections. Temporary private observer reports Output (ordinal13) for realm and JITWorkList (ordinal14) for two code roots named call and unnamed. These are leads, not proof that a particular worklist plan is the strong owner.",
+    "files": [
+      {
+        "file": "root-inspect.mjs",
+        "sha256": "02f1ae926188d40e300c2bc696de26ed11c1c2a1d6e2efec0eb9d09cd70202b5",
+        "bytes": 1610
+      },
+      {
+        "file": "root-inspect.log",
+        "sha256": "b85906a74d3734617c79e32b845ef73aa9dfef5a52a34bb7e5cfb2ec83498de2",
+        "bytes": 262
+      },
+      {
+        "file": "root-reason-probe.patch",
+        "sha256": "c4a2ef8bad6ccec890e2f5a1612fe0344af2f9b9b707b776cdc07965639d113f",
+        "bytes": 1298
+      },
+      {
+        "file": "ordinary-lifetime-controls.mjs",
+        "sha256": "67e03392071ba1852cc498e5e5442e00fd47792187c3bc5ef99dbc34e797b112",
+        "bytes": 1175
+      },
+      {
+        "file": "webkit-VM.cpp",
+        "sha256": "72e259382a77d95e3cc5dda02c3f1e47d3212432c9d309e5c2ad7e922b874aa6",
+        "bytes": 84668
+      },
+      {
+        "file": "webkit-Interpreter.cpp",
+        "sha256": "226d4377f2bad2b1f0601a0333bf60431c56119378c7305e008dc0e667d3f05e",
+        "bytes": 77093
+      },
+      {
+        "file": "webkit-WeakMapImpl.cpp",
+        "sha256": "92d7fa6bbf367109daa8620c92cb529c995314f2350fc1749ee1ccbe19335af2",
+        "bytes": 5120
+      }
+    ],
+    "unpublished_probes": [
+      "root-reason-probe.patch",
+      "code-reason-probe.patch"
+    ],
+    "failed_attempts": [
+      "debug-root-inspect.log: requested GCDebugging metadata unavailable because BunObject.cpp is outside the current owned native rebuild mapping",
+      "build-code-reason.log: CString diagnostic used utf8; corrected to data in pending build"
+    ],
+    "controls": [
+      {
+        "name": "root-reason",
+        "exit": 0
+      },
+      {
+        "name": "payload-lifetime",
+        "exit": 0
+      },
+      {
+        "name": "operator-matrix",
+        "exit": 0
+      },
+      {
+        "name": "timed-retirement",
+        "exit": 0
+      }
+    ],
+    "native_diagnostics_restored": true
+  },
+  "limitations": [
+    "Temporary native diagnostics are excluded from production sources. No retention fix or full-suite pass is claimed. Original failed dead-context assertion is preserved."
+  ],
+  "files": [
+    {
+      "path": "raw/all-code-inspect.log.gz",
+      "sha256": "0f98af248e2ee0e2f37cb1b274268f7a1a02293476c631b0b09c3c9cb103d371",
+      "bytes": 45867
+    },
+    {
+      "path": "raw/all-code-inspect.mjs.gz",
+      "sha256": "93b69ca6b626f719b41aa6fd40ba518214d636bc1e30cb2449da27be1aafbf25",
+      "bytes": 1816
+    },
+    {
+      "path": "raw/build-code-reason-repair.log.gz",
+      "sha256": "1ad9dd9976fe53e3f614db0800b59b1cd2699f7d50328429b06a1a17d4ccf81f",
+      "bytes": 4916
+    },
+    {
+      "path": "raw/build-code-reason.log.gz",
+      "sha256": "162ac40a9fc8519877e1e02c64457140d3e9b7dea470a9f8ca3d7f8202c14978",
+      "bytes": 9576
+    },
+    {
+      "path": "raw/build-production-restored.log.gz",
+      "sha256": "e2dd4cb97722816bd3b88cb7a0db3a158121184cb76ed42892a1baa78459b4f8",
+      "bytes": 4453
+    },
+    {
+      "path": "raw/build-root-reason.log.gz",
+      "sha256": "e36df083df350ee858a15c9428997bcbf0618273e676d8ce5c08e66e90d45c79",
+      "bytes": 4522
+    },
+    {
+      "path": "raw/build-snapshot-probe.log.gz",
+      "sha256": "0fec248b9d27e87b08f0110ad3fdfb2e9c461294ac5c49e95e41cb50c27a664a",
+      "bytes": 4446
+    },
+    {
+      "path": "raw/cleanup.json.gz",
+      "sha256": "9d2d34eb4c8e1d4718fa032436dd7f51529f7bb4b5ed7c3b57e3c68967e26424",
+      "bytes": 470
+    },
+    {
+      "path": "raw/code-batch.log.gz",
+      "sha256": "f48677611138f9dfcdfdccbb85d409a6a3fb1cb594b4e96a77ddff155d2ca76a",
+      "bytes": 317
+    },
+    {
+      "path": "raw/code-controls.json.gz",
+      "sha256": "ca24d76781b8cb0bf4c2e34adec100bdd9288a045a138acb8e2c811de48023c6",
+      "bytes": 217
+    },
+    {
+      "path": "raw/code-reason-probe.patch.gz",
+      "sha256": "c113a72698d10e4dae69ea66b076f93e5af389fdf43af6e8f8c2e7d5b5ad466f",
+      "bytes": 1758
+    },
+    {
+      "path": "raw/code-root-inspect.log.gz",
+      "sha256": "754cc847628d716818f6c0e0c1f0702f4cf02a794dc007db6edb9d64ea85ef7d",
+      "bytes": 278488
+    },
+    {
+      "path": "raw/code-root-inspect.mjs.gz",
+      "sha256": "565e943d4df05a08e17ff347aa4ddccef355c844a06f3dc9d81368aa548f56c5",
+      "bytes": 1692
+    },
+    {
+      "path": "raw/collection-without-measure-probe.log.gz",
+      "sha256": "85ecd0d5e40b26716c28979786b6d18bfe90204ff89f065ae9c4a9cc2cad41cd",
+      "bytes": 116
+    },
+    {
+      "path": "raw/control-batch.log.gz",
+      "sha256": "375af6a96142d1e51b1c3354278aad6233cdd842e9a7b0ccdc529d82642204ed",
+      "bytes": 128
+    },
+    {
+      "path": "raw/controls.json.gz",
+      "sha256": "abeee209f794130637c1eecf8c991d612975824ea51a1d4ea814940a2a4d1002",
+      "bytes": 118
+    },
+    {
+      "path": "raw/debug-root-inspect.log.gz",
+      "sha256": "4a96ff95b8562cab4b731a925727838a3dd7bd231429b0d57476fd20df31571b",
+      "bytes": 1069
+    },
+    {
+      "path": "raw/debug-root-inspect.mjs.gz",
+      "sha256": "9a9317ec02647d451eb135c6b80aed212eded59b88b57c3d8aa43e23a4e1b2fc",
+      "bytes": 1489
+    },
+    {
+      "path": "raw/inspection.json.gz",
+      "sha256": "3c28a8490795c99368a02fd867637a75d0654ea8a707d983a5031224d7879688",
+      "bytes": 2380
+    },
+    {
+      "path": "raw/lifetime-reference-probe.log.gz",
+      "sha256": "5b44a9a095f4bfb2663682c979c8e3928c35a4b83febeea3110019005d694c56",
+      "bytes": 1411
+    },
+    {
+      "path": "raw/more-batch.log.gz",
+      "sha256": "02b487dc22aff2175c0f1b5c6e8e5f207372ed68b80f8ed55324f6162806cac2",
+      "bytes": 81
+    },
+    {
+      "path": "raw/more-controls.json.gz",
+      "sha256": "be9191a1053d41ac6355fab69e456bda2f4da452edc6e068346abcc25acb7f31",
+      "bytes": 297
+    },
+    {
+      "path": "raw/operator-followup.log.gz",
+      "sha256": "60b8f44956845f462f35b422bd36be4f5728077bdd0ca24657dbe201de1e12e8",
+      "bytes": 210
+    },
+    {
+      "path": "raw/operator-matrix-code.log.gz",
+      "sha256": "42cc9c8bb52a9648da8a8654b7116559aa11a8912a50b56ad33a9f6ad9ffd1d0",
+      "bytes": 73
+    },
+    {
+      "path": "raw/operator-matrix-host-eval.mjs.gz",
+      "sha256": "bcd84678db7a4cdf3ce5ff97ba99f14c805e396834105559f07c219deb13e842",
+      "bytes": 667
+    },
+    {
+      "path": "raw/operator-matrix-reverse.mjs.gz",
+      "sha256": "a6d2670d23bf4f6648262cf76925715ec4bda373ae8249ee5e123c2e97d80172",
+      "bytes": 660
+    },
+    {
+      "path": "raw/operator-matrix.mjs.gz",
+      "sha256": "4abfecc5e8a3718048aa54ffbc9710d9efc2992fafab5c4c6ef5aa414167f3d9",
+      "bytes": 639
+    },
+    {
+      "path": "raw/ordinary-lifetime-controls.log.gz",
+      "sha256": "f8d5453157a1b87ab0a6bad87650489b9daecda6991e7c6949440dfda7719117",
+      "bytes": 172
+    },
+    {
+      "path": "raw/ordinary-lifetime-controls.mjs.gz",
+      "sha256": "67e03392071ba1852cc498e5e5442e00fd47792187c3bc5ef99dbc34e797b112",
+      "bytes": 1175
+    },
+    {
+      "path": "raw/payload-lifetime-code.log.gz",
+      "sha256": "961e604b66223e5a03a8a889f3aa5952e969467fa9b6dc10d9e4f922bcfcca50",
+      "bytes": 401
+    },
+    {
+      "path": "raw/payload-lifetime-probe.log.gz",
+      "sha256": "961e604b66223e5a03a8a889f3aa5952e969467fa9b6dc10d9e4f922bcfcca50",
+      "bytes": 401
+    },
+    {
+      "path": "raw/payload-lifetime.mjs.gz",
+      "sha256": "89dca28b6b3c982db3f82bb30182d8cc763fa50c3a7f7dccedbeb6e047406a48",
+      "bytes": 638
+    },
+    {
+      "path": "raw/probe-build.json.gz",
+      "sha256": "eb28c33df7bc05d27cf695a826c360627724b9aa73ab07b2f0c3140c825da17d",
+      "bytes": 103
+    },
+    {
+      "path": "raw/production-vm-memory.log.gz",
+      "sha256": "0cf46415b6d8196f14b652e821cd8d7311b5d9ca5e5404dc9cead2f52fe3bd1f",
+      "bytes": 712
+    },
+    {
+      "path": "raw/realm-code-inspect.log.gz",
+      "sha256": "aebf40469d1891904b441b66df13cb7bdcfa69d3aa3eb7a3d7cc73d2fa8e8a2c",
+      "bytes": 19
+    },
+    {
+      "path": "raw/realm-code-inspect.mjs.gz",
+      "sha256": "32198c368fc662d4423fcbbf6064e7eeafdd2f3452de8f5975e90727ceeaf3a8",
+      "bytes": 1936
+    },
+    {
+      "path": "raw/root-inspect.log.gz",
+      "sha256": "b85906a74d3734617c79e32b845ef73aa9dfef5a52a34bb7e5cfb2ec83498de2",
+      "bytes": 262
+    },
+    {
+      "path": "raw/root-inspect.mjs.gz",
+      "sha256": "02f1ae926188d40e300c2bc696de26ed11c1c2a1d6e2efec0eb9d09cd70202b5",
+      "bytes": 1610
+    },
+    {
+      "path": "raw/root-reason-code.log.gz",
+      "sha256": "eb05e0940806f3b66ac3c5558423bd194a6bfad12a6b8fa6ab57cbb7be383cd9",
+      "bytes": 632
+    },
+    {
+      "path": "raw/root-reason-probe.patch.gz",
+      "sha256": "c4a2ef8bad6ccec890e2f5a1612fe0344af2f9b9b707b776cdc07965639d113f",
+      "bytes": 1298
+    },
+    {
+      "path": "raw/root-reason.log.gz",
+      "sha256": "0f03e97fc7cdcb445f93e9b9c32cc1f183152491b53dcb4a47817eb03af80253",
+      "bytes": 368
+    },
+    {
+      "path": "raw/root-reason.mjs.gz",
+      "sha256": "4e02b1e80902cc41feb2df8374a7f9ad196a10bb7dff8584ae60e8d8bf9409a0",
+      "bytes": 403
+    },
+    {
+      "path": "raw/run-code-controls.py.gz",
+      "sha256": "fb499a84fbb1318980c6491a74e9a3765ea0af24057ca4e14ece1dd5431a38d6",
+      "bytes": 574
+    },
+    {
+      "path": "raw/run-controls-more.py.gz",
+      "sha256": "b2c00036fe21bfbc1689fccb2eddd8c5e9020fed9f3e0ef20a1dba7424dd3707",
+      "bytes": 688
+    },
+    {
+      "path": "raw/run-controls.py.gz",
+      "sha256": "4c422fafe3f8cb1071a3d733e2b2e25b5f4531f106f8dcc20c559a43eeb6adcf",
+      "bytes": 569
+    },
+    {
+      "path": "raw/timed-retirement-code.log.gz",
+      "sha256": "de407bd38ed9ff05f59a23e7785432ed0563055e9e4c523a384bc9e3c0e5f00c",
+      "bytes": 98
+    },
+    {
+      "path": "raw/timed-retirement.mjs.gz",
+      "sha256": "25e35611021ac13ef2f275d0913f39691d8c1d7db5b8da75b522d63bf4cadfe8",
+      "bytes": 377
+    },
+    {
+      "path": "raw/verify-archive.py.gz",
+      "sha256": "e4798ec97b66a8727a8436ea48d9cc67bb01513296f4d1b0e8af0948cb9b5d32",
+      "bytes": 537
+    },
+    {
+      "path": "raw/webkit-BuiltinExecutables.cpp.gz",
+      "sha256": "3272cdd36151b790078d00eda6537cf2061311111952cf38d2dc9de486c59e81",
+      "bytes": 15258
+    },
+    {
+      "path": "raw/webkit-CodeBlock.cpp.gz",
+      "sha256": "f32ae9c72fcb3be8a2a4e2b44b359776144bd31da895a1aea5ce0ba6b4d78475",
+      "bytes": 153636
+    },
+    {
+      "path": "raw/webkit-CodeBlockSet.cpp.gz",
+      "sha256": "198e892a4d14590dd30f0c190ddf773a2f6fa5e925fce91bd7fc9db0ef277c67",
+      "bytes": 3111
+    },
+    {
+      "path": "raw/webkit-FunctionExecutable.cpp.gz",
+      "sha256": "772ad286801b29d70c2b7b913d12da168c071dd6524d087ac6b5024c602ad23a",
+      "bytes": 9642
+    },
+    {
+      "path": "raw/webkit-Interpreter.cpp.gz",
+      "sha256": "226d4377f2bad2b1f0601a0333bf60431c56119378c7305e008dc0e667d3f05e",
+      "bytes": 77093
+    },
+    {
+      "path": "raw/webkit-ScriptExecutable.cpp.gz",
+      "sha256": "fa84975eb64277636d8fdb6eb6cbb8a4510a9968669b8ab760257c4a177d9959",
+      "bytes": 24547
+    },
+    {
+      "path": "raw/webkit-UnlinkedFunctionExecutable.cpp.gz",
+      "sha256": "0ae37508fc5639dd0e920be46e5e374d82627d38f448a306598cb76eef3f5e73",
+      "bytes": 17100
+    },
+    {
+      "path": "raw/webkit-VM.cpp.gz",
+      "sha256": "72e259382a77d95e3cc5dda02c3f1e47d3212432c9d309e5c2ad7e922b874aa6",
+      "bytes": 84668
+    },
+    {
+      "path": "raw/webkit-WeakMapImpl.cpp.gz",
+      "sha256": "92d7fa6bbf367109daa8620c92cb529c995314f2350fc1749ee1ccbe19335af2",
+      "bytes": 5120
+    },
+    {
+      "path": "raw/webkit-WeakMapImplInlines.h.gz",
+      "sha256": "d40436378329d2da53e46a2c694c038ae18a41d5dc164ded32d5e4460f23579d",
+      "bytes": 6021
+    }
+  ],
+  "results": {
+    "production_restoration_build_steps": 54,
+    "production_native_vm_memory_exit": 0,
+    "original_lifetime_control_exit": 1,
+    "operator_matrix_and_reverse_exit": 0,
+    "root_reason_observation": "Output:13; JITWorkList:14",
+    "full_suite_parity": false
+  }
+}
