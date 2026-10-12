@@ -420,7 +420,7 @@ function getResourceTimings(name, type) {
   return resourceBuffer.filter(entry => name === undefined || entry.name === name).sort((a, b) => a.startTime - b.startTime);
 }
 function clearResourceTimings(name) {
-  if (name !== undefined && typeof name !== "string") throw $ERR_INVALID_ARG_TYPE("name", "string", name);
+  if (name !== undefined) name = `${name}`;
   resourceBuffer = name === undefined ? [] : resourceBuffer.filter(entry => entry.name !== name);
 }
 function mergeResourceTimings(entries, name, type) {

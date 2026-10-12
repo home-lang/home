@@ -1,5 +1,5 @@
 // Hardcoded module "node:perf_hooks"
-const { kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList, PerformanceResourceTiming, markResourceTiming, getResourceTimings, setResourceTimingBufferSize } = require('internal/shared');
+const { kNodeEntryTypes, NodeEntryObserver, makeNodeEntryList, PerformanceObserverEntryList, PerformanceResourceTiming, markResourceTiming, getResourceTimings } = require('internal/shared');
 const { validateInteger, validateObject, validateFunction } = require('internal/validators');
 
 const cppCreateHistogram = $newCppFunction("JSNodePerformanceHooksHistogram.cpp", "jsFunction_createHistogram", 3) as (
@@ -221,7 +221,7 @@ export default {
     },
     getEntriesByName(_) { return performance.getEntriesByName(...arguments); },
     getEntriesByType(_) { return performance.getEntriesByType(...arguments); },
-    setResourceTimingBufferSize(_) { setResourceTimingBufferSize(arguments[0]); },
+    setResourceTimingBufferSize(_) { return performance.setResourceTimingBufferSize(...arguments); },
     timeOrigin: performance.timeOrigin,
     toJSON(_) {
       return performance.toJSON(...arguments);
