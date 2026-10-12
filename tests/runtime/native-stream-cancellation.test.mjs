@@ -187,3 +187,31 @@ try {
  console.log('FileHandle flush options and public read/writeFile preserve native handle operations and offsets')
 } finally {fs.rmSync(dir,{recursive:true,force:true})}
 }
+
+// FileHandle.close remains bound when passed directly as cleanup.
+{
+  const fs = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const directory = fs.mkdtempSync(join(tmpdir(), 'home-filehandle-bound-close-'))
+  try {
+    const path = join(directory, 'lines.txt')
+    fs.writeFileSync(path, 'abc\ndef\n')
+    const handle = await fs.promises.open(path, 'r')
+    assert.ok(Object.hasOwn(handle, 'close'))
+    const close = handle.close
+    await close()
+    assert.equal(handle.fd, -1)
+    await close()
+    await assert.rejects(handle.read(Buffer.alloc(1)), { code: 'EBADF', syscall: 'read' })
+    const retained = await fs.promises.open(path, 'r')
+    try {
+      const lines = []
+      for await (const line of retained.readLines({ autoClose: false })) lines.push(line)
+      assert.deepEqual(lines, ['abc', 'def'])
+      assert.ok(retained.fd >= 0)
+    }
+    finally { await retained.close() }
+  }
+  finally { fs.rmSync(directory, { recursive: true, force: true }) }
+}
