@@ -1,5 +1,5 @@
-// Copied from bun/src/runtime/cli/shell_completions.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
+// Ported from Bun's shell-completion implementation and generated assets at
+// upstream SHA 4982b91e3702094330f3be3883354c52b8c01323. MIT — see ../../cli/LICENSE.bun.md.
 //
 // Wave-16 Tier-1 grinder.
 //
@@ -8,12 +8,9 @@
 //   - bun.Output → home_rt.Output
 //   - bun.strings → home_rt.strings
 //
-// Stubs:
-//   - The three `@embedFile("completions-{bash,zsh,fish}")` files are not
-//     yet present in the home_rt tree (they live under
-//     `bun/src/runtime/cli/completions-{bash,zsh,fish}` upstream). They're
-//     replaced by empty literals so the type compiles; the real strings
-//     re-attach when the completions tree ports.
+// Assets:
+//   - The generated completion scripts are copied from Bun's top-level
+//     `completions/bun.{bash,zsh,fish}` files at the pinned upstream SHA.
 
 const std = @import("std");
 const home_rt = @import("home");
@@ -28,11 +25,9 @@ pub const Shell = enum {
     fish,
     pwsh,
 
-    // Home stub: real upstream `@embedFile`s the completions tree. The
-    // empty literals re-attach when the completions tree ports.
-    const bash_completions: []const u8 = "";
-    const zsh_completions: []const u8 = "";
-    const fish_completions: []const u8 = "";
+    const bash_completions = @embedFile("completions-bash");
+    const zsh_completions = @embedFile("completions-zsh");
+    const fish_completions = @embedFile("completions-fish");
 
     pub fn completions(this: Shell) []const u8 {
         return switch (this) {
@@ -105,4 +100,10 @@ test "Shell.fromEnv maps the canonical shell basenames" {
 test "Shell.completions returns empty bytes for unknown" {
     try std.testing.expectEqualStrings("", Shell.unknown.completions());
     try std.testing.expectEqualStrings("", Shell.pwsh.completions());
+}
+
+test "Shell.completions embeds each generated script" {
+    try std.testing.expect(std.mem.startsWith(u8, Shell.bash.completions(), "#/usr/bin/env bash"));
+    try std.testing.expect(std.mem.startsWith(u8, Shell.zsh.completions(), "#compdef bun"));
+    try std.testing.expect(std.mem.startsWith(u8, Shell.fish.completions(), "# This is terribly complicated"));
 }
