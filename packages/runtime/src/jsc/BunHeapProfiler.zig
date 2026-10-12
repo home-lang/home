@@ -1,56 +1,116 @@
-// Copied from bun/src/jsc/BunHeapProfiler.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// Slim leaf port: type-rename `BunHeapProfiler` → `HeapProfiler` per the
-// home_rt naming convention. The `HeapProfilerConfig` struct and the
-// `Bun__generateHeapProfile` / `Bun__generateHeapSnapshotV8` externs are
-// preserved (Bun__ externs are C++ link-time contracts and stay verbatim).
-//
-// The upstream file's `generateAndWriteProfile` / `buildOutputPath` /
-// `generateDefaultFilename` helpers are NOT yet ported. They depend on
-// `bun.sys.File.writeFile`, `bun.AutoAbsPath`, `bun.OSPathBuffer`,
-// `bun.timespec`, `bun.FD.cwd().makePath`, `bun.path.dirname`, and
-// `bun.Output`. Phase 12.5 (full HTTP/FS stack) brings them back online.
-
-const std = @import("std");
-
-// JSC bridge jsc.VM stubbed — re-attaches in Phase 12.2.
-pub const VM = opaque {};
-// JSC bridge bun.String stubbed — re-attaches in Phase 12.2.
-pub const String = opaque {};
-
+// Ported from Bun 4982b91e3702094330f3be3883354c52b8c01323. MIT — see ../cli/LICENSE.bun.md.
 pub const HeapProfilerConfig = struct {
     name: []const u8,
     dir: []const u8,
     text_format: bool,
 };
 
-// C++ function declarations (Bun__-prefixed externs stay verbatim).
-extern fn Bun__generateHeapProfile(vm: *VM) *String;
-extern fn Bun__generateHeapSnapshotV8(vm: *VM) *String;
+// C++ function declarations
+extern fn Bun__generateHeapProfile(vm: *jsc.VM) bun.String;
+extern fn Bun__generateHeapSnapshotV8(vm: *jsc.VM) bun.String;
 
-pub const HeapProfiler = struct {
-    /// Generates a heap profile via the C++ entry point. The caller owns the
-    /// returned `*String` and must `deref` it once Phase 12.2 ports
-    /// `bun.String.deref`.
-    pub fn generate(vm: *VM, text_format: bool) *String {
-        return if (text_format)
-            Bun__generateHeapProfile(vm)
-        else
-            Bun__generateHeapSnapshotV8(vm);
+pub fn generateAndWriteProfile(vm: *jsc.VM, config: HeapProfilerConfig) !void {
+    const profile_string = if (config.text_format)
+        Bun__generateHeapProfile(vm)
+    else
+        Bun__generateHeapSnapshotV8(vm);
+    defer profile_string.deref();
+
+    if (profile_string.isEmpty()) {
+        // No profile data generated
+        return;
     }
+
+    const profile_slice = profile_string.toUTF8(bun.default_allocator);
+    defer profile_slice.deinit();
+
+    // Determine the output path using AutoAbsPath
+    var path_buf: bun.AutoAbsPath = .initTopLevelDir();
+    defer path_buf.deinit();
+
+    try buildOutputPath(&path_buf, config);
+
+    // Convert to OS-specific path (UTF-16 on Windows, UTF-8 elsewhere)
+    var path_buf_os: bun.OSPathBuffer = undefined;
+    const output_path_os: bun.OSPathSliceZ = if (bun.Environment.isWindows)
+        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, path_buf.sliceZ())
+    else
+        path_buf.sliceZ();
+
+    // Write the profile to disk using bun.sys.File.writeFile
+    const result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
+    if (result.asErr()) |err| {
+        // If we got ENOENT, PERM, or ACCES, try creating the directory and retry
+        const errno = err.getErrno();
+        if (errno == .NOENT or errno == .PERM or errno == .ACCES) {
+            // Derive directory from the absolute output path
+            const abs_path = path_buf.slice();
+            const dir_path = bun.path.dirname(abs_path, .auto);
+            if (dir_path.len > 0) {
+                bun.FD.cwd().makePath(u8, dir_path) catch {};
+                // Retry write
+                const retry_result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
+                if (retry_result.asErr()) |_| {
+                    return error.WriteFailed;
+                }
+            } else {
+                return error.WriteFailed;
+            }
+        } else {
+            return error.WriteFailed;
+        }
+    }
+
+    // Print message to stderr to let user know where the profile was written
+    Output.prettyErrorln("Heap profile written to: {s}", .{path_buf.slice()});
+    Output.flush();
+}
+
+fn buildOutputPath(path: *bun.AutoAbsPath, config: HeapProfilerConfig) !void {
+    // Generate filename
+    var filename_buf: bun.PathBuffer = undefined;
+    const filename = if (config.name.len > 0)
+        config.name
+    else
+        try generateDefaultFilename(&filename_buf, config.text_format);
+
+    // Append directory if specified
+    if (config.dir.len > 0) {
+        path.append(config.dir);
+    }
+
+    // Append filename
+    path.append(filename);
+}
+
+fn generateDefaultFilename(buf: *bun.PathBuffer, text_format: bool) ![]const u8 {
+    // Generate filename like:
+    // - Markdown format: Heap.{timestamp}.{pid}.md
+    // - V8 format: Heap.{timestamp}.{pid}.heapsnapshot
+    const timespec = bun.timespec.now(.force_real_time);
+    const pid = if (bun.Environment.isWindows)
+        std.os.windows.GetCurrentProcessId()
+    else
+        std.c.getpid();
+
+    const epoch_microseconds: u64 = @intCast(timespec.sec *% 1_000_000 +% @divTrunc(timespec.nsec, 1000));
+
+    const extension = if (text_format) "md" else "heapsnapshot";
+
+    return try std.fmt.bufPrint(buf, "Heap.{d}.{d}.{s}", .{
+        epoch_microseconds,
+        pid,
+        extension,
+    });
+}
+
+const std = @import("std");
+
+const bun = @import("home");
+const Output = bun.Output;
+const jsc = bun.jsc;
+
+const writeProfile = generateAndWriteProfile;
+pub const HeapProfiler = struct {
+    pub const generateAndWriteProfile = writeProfile;
 };
-
-pub fn generateAndWriteProfile(_: anytype, _: HeapProfilerConfig) !void {}
-
-test "HeapProfilerConfig field shape" {
-    const cfg: HeapProfilerConfig = .{ .name = "a", .dir = "b", .text_format = true };
-    try std.testing.expect(cfg.text_format);
-    try std.testing.expectEqualStrings("a", cfg.name);
-    try std.testing.expectEqualStrings("b", cfg.dir);
-}
-
-test "VM and String stubs are opaque pointer-sized" {
-    try std.testing.expectEqual(@sizeOf(usize), @sizeOf(*VM));
-    try std.testing.expectEqual(@sizeOf(usize), @sizeOf(*String));
-}

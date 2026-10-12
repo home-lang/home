@@ -1,23 +1,4 @@
-// Copied from bun/src/jsc/BunCPUProfiler.zig at upstream SHA
-// fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// Slim leaf port: type-rename `BunCPUProfiler` → `CPUProfiler` per the
-// home_rt naming convention. The `CPUProfilerConfig` struct and the
-// `Bun__startCPUProfiler` / `Bun__setSamplingInterval` extern wrappers are
-// preserved (Bun__ externs are C++ link-time contracts and stay verbatim).
-//
-// The upstream file's `stopAndWriteProfile` / `writeProfileToFile` /
-// `buildOutputPath` / `generateDefaultFilename` helpers are NOT yet ported.
-// They depend on `bun.sys.File.writeFile`, `bun.AutoAbsPath`,
-// `bun.OSPathBuffer`, `bun.timespec`, and `bun.FD.cwd().makePath`, none of
-// which are in home_rt's leaf surface. Phase 12.5 (full HTTP/FS stack)
-// brings them back online.
-
-const std = @import("std");
-const home_rt = @import("home");
-pub const VM = home_rt.jsc.VM;
-pub const String = home_rt.String;
-
+// Ported from Bun 4982b91e3702094330f3be3883354c52b8c01323. MIT — see ../cli/LICENSE.bun.md.
 pub const CPUProfilerConfig = struct {
     name: []const u8,
     dir: []const u8,
@@ -26,43 +7,136 @@ pub const CPUProfilerConfig = struct {
     interval: u32 = 1000,
 };
 
-// C++ function declarations (Bun__-prefixed externs stay verbatim — they
-// are C++ link-time contracts that rename when the C++ side ports).
-extern fn Bun__startCPUProfiler(vm: *VM) void;
-extern fn Bun__stopCPUProfiler(vm: *VM, outJSON: ?*String, outText: ?*String) void;
+// C++ function declarations
+extern fn Bun__startCPUProfiler(vm: *jsc.VM) void;
+extern fn Bun__stopCPUProfiler(vm: *jsc.VM, outJSON: ?*bun.String, outText: ?*bun.String) void;
 extern fn Bun__setSamplingInterval(intervalMicroseconds: c_int) void;
 
-/// Re-export under the home-native name. Upstream's `BunCPUProfiler` namespace
-/// of free functions becomes `CPUProfiler` here.
+pub fn setSamplingInterval(interval: u32) void {
+    Bun__setSamplingInterval(@intCast(interval));
+}
+
+pub fn startCPUProfiler(vm: *jsc.VM) void {
+    Bun__startCPUProfiler(vm);
+}
+
+pub fn stopAndWriteProfile(vm: *jsc.VM, config: CPUProfilerConfig) !void {
+    var json_string: bun.String = .empty;
+    var text_string: bun.String = .empty;
+
+    // Call the unified C++ function with pointers for requested formats
+    Bun__stopCPUProfiler(
+        vm,
+        if (config.json_format) &json_string else null,
+        if (config.md_format) &text_string else null,
+    );
+    defer json_string.deref();
+    defer text_string.deref();
+
+    // Write JSON format if requested and not empty
+    if (config.json_format and !json_string.isEmpty()) {
+        try writeProfileToFile(json_string, config, false);
+    }
+
+    // Write text format if requested and not empty
+    if (config.md_format and !text_string.isEmpty()) {
+        try writeProfileToFile(text_string, config, true);
+    }
+}
+
+fn writeProfileToFile(profile_string: bun.String, config: CPUProfilerConfig, is_md_format: bool) !void {
+    const profile_slice = profile_string.toUTF8(bun.default_allocator);
+    defer profile_slice.deinit();
+
+    // Determine the output path using AutoAbsPath
+    var path_buf: bun.AutoAbsPath = .initTopLevelDir();
+    defer path_buf.deinit();
+
+    try buildOutputPath(&path_buf, config, is_md_format);
+
+    // Convert to OS-specific path (UTF-16 on Windows, UTF-8 elsewhere)
+    var path_buf_os: bun.OSPathBuffer = undefined;
+    const output_path_os: bun.OSPathSliceZ = if (bun.Environment.isWindows)
+        bun.strings.convertUTF8toUTF16InBufferZ(&path_buf_os, path_buf.sliceZ())
+    else
+        path_buf.sliceZ();
+
+    // Write the profile to disk using bun.sys.File.writeFile
+    const result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
+    if (result.asErr()) |err| {
+        // If we got ENOENT, PERM, or ACCES, try creating the directory and retry
+        const errno = err.getErrno();
+        if (errno == .NOENT or errno == .PERM or errno == .ACCES) {
+            if (config.dir.len > 0) {
+                bun.FD.cwd().makePath(u8, config.dir) catch {};
+                // Retry write
+                const retry_result = bun.sys.File.writeFile(bun.FD.cwd(), output_path_os, profile_slice.slice());
+                if (retry_result.asErr()) |_| {
+                    return error.WriteFailed;
+                }
+            } else {
+                return error.WriteFailed;
+            }
+        } else {
+            return error.WriteFailed;
+        }
+    }
+}
+
+fn buildOutputPath(path: *bun.AutoAbsPath, config: CPUProfilerConfig, is_md_format: bool) !void {
+    // Generate filename
+    var filename_buf: bun.PathBuffer = undefined;
+
+    // If both formats are being written and a custom name was specified,
+    // we need to add the appropriate extension to disambiguate
+    const has_both_formats = config.md_format and config.json_format;
+    const filename = if (config.name.len > 0) blk: {
+        if (has_both_formats) {
+            // Custom name with both formats - append extension based on format
+            const ext = if (is_md_format) ".md" else ".cpuprofile";
+            break :blk std.fmt.bufPrint(&filename_buf, "{s}{s}", .{ config.name, ext }) catch return error.FilenameTooLong;
+        } else {
+            break :blk config.name;
+        }
+    } else try generateDefaultFilename(&filename_buf, is_md_format);
+
+    // Append directory if specified
+    if (config.dir.len > 0) {
+        path.join(&.{config.dir});
+    }
+
+    // Append filename
+    path.append(filename);
+}
+
+fn generateDefaultFilename(buf: *bun.PathBuffer, md_format: bool) ![]const u8 {
+    // Generate filename like: CPU.{timestamp}.{pid}.cpuprofile (or .md for markdown format)
+    // Use microsecond timestamp for uniqueness
+    const timespec = bun.timespec.now(.force_real_time);
+    const pid = if (bun.Environment.isWindows)
+        std.os.windows.GetCurrentProcessId()
+    else
+        std.c.getpid();
+
+    const epoch_microseconds: u64 = @intCast(timespec.sec *% 1_000_000 +% @divTrunc(timespec.nsec, 1000));
+
+    const extension = if (md_format) ".md" else ".cpuprofile";
+
+    return std.fmt.bufPrint(buf, "CPU.{d}.{d}{s}", .{
+        epoch_microseconds,
+        pid,
+        extension,
+    }) catch return error.FilenameTooLong;
+}
+
+const std = @import("std");
+
+const bun = @import("home");
+const jsc = bun.jsc;
+
+const setInterval = setSamplingInterval;
+const start = startCPUProfiler;
 pub const CPUProfiler = struct {
-    pub fn setSamplingInterval(interval: u32) void {
-        Bun__setSamplingInterval(@intCast(interval));
-    }
-
-    pub fn startCPUProfiler(vm: *VM) void {
-        Bun__startCPUProfiler(vm);
-    }
-
-    /// Slim stop hook — calls into C++ but does NOT write to disk yet.
-    /// Phase 12.5 reattaches the disk-writing path.
-    pub fn stopCPUProfiler(vm: *VM, out_json: ?*String, out_text: ?*String) void {
-        Bun__stopCPUProfiler(vm, out_json, out_text);
-    }
+    pub const setSamplingInterval = setInterval;
+    pub const startCPUProfiler = start;
 };
-
-pub const setSamplingInterval = CPUProfiler.setSamplingInterval;
-pub const startCPUProfiler = CPUProfiler.startCPUProfiler;
-pub const stopCPUProfiler = CPUProfiler.stopCPUProfiler;
-
-pub fn stopAndWriteProfile(_: anytype, _: CPUProfilerConfig) !void {}
-
-test "CPUProfilerConfig defaults" {
-    const cfg: CPUProfilerConfig = .{ .name = "x", .dir = "y" };
-    try std.testing.expect(!cfg.md_format);
-    try std.testing.expect(!cfg.json_format);
-    try std.testing.expectEqual(@as(u32, 1000), cfg.interval);
-}
-
-test "VM is an opaque pointer-only type" {
-    try std.testing.expect(@sizeOf(*VM) == @sizeOf(usize));
-}

@@ -1840,6 +1840,7 @@ const VmRunState = struct {
     entry_path: []const u8,
     print_result: bool = false,
     expose_gc: bool = false,
+    cpu_profiler: bool = false,
     owned_preload_path: ?[]const u8 = null,
 
     var instance: VmRunState = undefined;
@@ -1901,6 +1902,11 @@ const VmRunState = struct {
     fn start(this: *VmRunState) void {
         const vm = this.vm;
 
+        if (this.cpu_profiler) {
+            home_rt.jsc.CPUProfiler.setSamplingInterval(vm.cpu_profiler_config.?.interval);
+            home_rt.jsc.CPUProfiler.startCPUProfiler(vm.jsc_vm);
+            home_rt.analytics.Features.cpu_profile += 1;
+        }
         if (this.expose_gc) Home__JSGlobalObject__addGc(vm.global);
 
         switch (vm.hot_reload) {
@@ -2427,12 +2433,23 @@ fn runFileViaVMOpts(
     // `bun -e` (argv = [exe, ...userArgs], no script path).
     vm.main_is_eval_entry = synthetic_eval_entry;
 
+    if (ctx.runtime_options.cpu_prof.enabled) {
+        const options = ctx.runtime_options.cpu_prof;
+        vm.cpu_profiler_config = .{ .name = options.name, .dir = options.dir, .md_format = options.md_format, .json_format = options.json_format, .interval = options.interval };
+    }
+    if (ctx.runtime_options.heap_prof.enabled) {
+        const options = ctx.runtime_options.heap_prof;
+        vm.heap_profiler_config = .{ .name = options.name, .dir = options.dir, .text_format = options.text_format };
+        home_rt.analytics.Features.heap_snapshot += 1;
+    }
+
     // Hand control to JSC under the API lock; start() loads + runs the entry.
     VmRunState.instance = .{
         .vm = vm,
         .entry_path = vm_entry_path,
         .print_result = print_result,
         .expose_gc = ctx.runtime_options.expose_gc,
+        .cpu_profiler = ctx.runtime_options.cpu_prof.enabled,
         .owned_preload_path = owned_preload_path,
     };
     if (owned_preload_path != null) home_rt.Global.addExitCallback(VmRunState.cleanupOwnedPreloadAtExit);
