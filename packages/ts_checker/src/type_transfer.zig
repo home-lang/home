@@ -20,6 +20,10 @@ pub const Names = struct {
     context: *anyopaque,
     string: *const fn (*anyopaque, types.StringId) Error!types.StringId,
     declaration: *const fn (*anyopaque, hir.NodeId) Error!hir.NodeId,
+    /// Reuse an already imported identity from the same immutable source
+    /// revision. The callback must not mutate either pool. Returned IDs must
+    /// exist in the destination before this transaction starts.
+    reuse_type: ?*const fn (*anyopaque, types.TypeId) Error!?types.TypeId = null,
 };
 
 /// IDs are source-owner-specific. Literals/structural keys may reuse existing
@@ -455,10 +459,26 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures };
     defer builder.deinit();
     errdefer rollback(target, lengths);
+    const reused = try allocator.alloc(bool, count);
+    defer allocator.free(reused);
+    @memset(reused, false);
+    if (names.reuse_type) |reuse| {
+        for (types.Primitive.first_dynamic..count) |index| {
+            const id: types.TypeId = @intCast(index);
+            if (try reuse(names.context, id)) |existing| {
+                if (existing < types.Primitive.first_dynamic or existing >= relocation.destination_start or
+                    try payloadColumn(source.pool.flagsOf(id)) != try payloadColumn(target.pool.flagsOf(existing))) return error.InvalidTypeGraph;
+                relocation.ids[id] = existing;
+                reused[id] = true;
+                if (try payloadColumn(source.pool.flagsOf(id)) == .signature_payloads) signatures[source.pool.payloadOf(id)] = id;
+            }
+        }
+    }
     // Allocate declaration-scoped identities before walking any structural
     // keys. Their constraints/members are filled only after all IDs resolve.
     for (types.Primitive.first_dynamic..count) |index| {
         const id: types.TypeId = @intCast(index);
+        if (reused[id]) continue;
         switch (try payloadColumn(source.pool.flagsOf(id))) {
             .generic_definition_payloads => {
                 _ = try builder.payload(.generic_definition_payloads, id);
@@ -514,7 +534,9 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
             }
         }
     }
-    for (types.Primitive.first_dynamic..count) |index| try builder.finalizeFresh(@intCast(index));
+    for (types.Primitive.first_dynamic..count) |index| {
+        if (!reused[index]) try builder.finalizeFresh(@intCast(index));
+    }
     for (source.pool.signature_param_pool.items[1..]) |parameter| {
         var mapped = parameter;
         mapped.name = try builder.string(parameter.name);

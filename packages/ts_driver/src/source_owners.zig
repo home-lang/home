@@ -38,6 +38,16 @@ pub const Source = struct {
 };
 
 const NodeKey = struct { owner: OwnerId, node: hir.NodeId };
+const TypeOrigin = struct { owner: OwnerId = .none, id: checker.TypeId = 0 };
+const TargetTypes = struct {
+    origins: std.ArrayListUnmanaged(TypeOrigin) = .empty,
+    canonical: std.AutoHashMapUnmanaged(TypeOrigin, checker.TypeId) = .empty,
+
+    fn deinit(self: *TargetTypes, allocator: std.mem.Allocator) void {
+        self.origins.deinit(allocator);
+        self.canonical.deinit(allocator);
+    }
+};
 
 pub const Declaration = struct {
     owner: OwnerId,
@@ -68,12 +78,16 @@ pub const Registry = struct {
     owners: std.ArrayListUnmanaged(?Source) = .empty,
     nodes: std.ArrayListUnmanaged(NodeKey) = .empty,
     node_ids: std.AutoHashMapUnmanaged(NodeKey, hir.NodeId) = .empty,
+    target_types: std.AutoHashMapUnmanaged(*const checker.Interner, TargetTypes) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Registry {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Registry) void {
+        var targets = self.target_types.valueIterator();
+        while (targets.next()) |target| target.deinit(self.allocator);
+        self.target_types.deinit(self.allocator);
         self.node_ids.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.owners.deinit(self.allocator);
@@ -98,8 +112,26 @@ pub const Registry = struct {
     /// retained, but no source pointers remain reachable through this owner.
     /// Dependent imported records must no longer be used for semantic lookup.
     pub fn unregister(self: *Registry, id: OwnerId) Error!void {
-        _ = try self.source(id);
+        const view = try self.source(id);
+        self.forgetTarget(view.types);
         self.owners.items[@backingInt(id) - 1] = null;
+    }
+
+    /// Call before destroying an importing pool, including a failed/unregistered
+    /// compilation. A reused memory address must never inherit an older pool's
+    /// type identities. Unregister performs this for registered source pools.
+    pub fn forgetTarget(self: *Registry, target: *const checker.Interner) void {
+        if (self.target_types.fetchRemove(target)) |entry| {
+            var state = entry.value;
+            state.deinit(self.allocator);
+        }
+    }
+
+    fn typeOrigin(self: *const Registry, source_types: *const checker.Interner, owner: OwnerId, id: checker.TypeId) TypeOrigin {
+        if (self.target_types.get(source_types)) |state| {
+            if (id < state.origins.items.len and state.origins.items[id].owner != .none) return state.origins.items[id];
+        }
+        return .{ .owner = owner, .id = id };
     }
 
     pub fn declaration(self: *const Registry, handle: hir.NodeId) Error!Declaration {
@@ -149,14 +181,42 @@ pub const Registry = struct {
         owner: OwnerId,
     ) Error!Imported {
         const view = try self.source(owner);
+        if (view.types == target) return error.InvalidTypeGraph;
+        const source_count = view.types.pool.typeCount();
+        const target_count = target.pool.typeCount();
+        if (source_count > std.math.maxInt(u32) - target_count) return error.TypeIdOverflow;
+        // Verify transitive owners even when their payloads can be reused. A
+        // cached destination ID does not make a tombstoned source revision live.
+        for (checker.Primitive.first_dynamic..source_count) |index| {
+            const origin = self.typeOrigin(view.types, owner, @intCast(index));
+            _ = self.source(origin.owner) catch return error.UnmappedName;
+        }
+        const slot = try self.target_types.getOrPut(self.allocator, target);
+        if (!slot.found_existing) slot.value_ptr.* = .{};
+        try slot.value_ptr.canonical.ensureUnusedCapacity(self.allocator, source_count);
+        try slot.value_ptr.origins.ensureTotalCapacity(self.allocator, target_count + source_count);
         const first = self.nodes.items.len;
         errdefer self.cancelDeclarations(first);
-        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings };
+        var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .source_types = view.types, .target_types = target };
         const imported = try checker.checked_transfer.append(target, view.types, view.checked, .{
             .context = &context,
             .string = Context.string,
             .declaration = Context.node,
+            .reuse_type = Context.reuseType,
         });
+        // Capacity was reserved before the payload transaction. Publication of
+        // provenance cannot fail after checked_transfer commits the type graph.
+        const state = self.target_types.getPtr(target).?;
+        const previous = state.origins.items.len;
+        state.origins.items.len = target.pool.typeCount();
+        @memset(state.origins.items[previous..], TypeOrigin{});
+        for (checker.Primitive.first_dynamic..source_count) |index| {
+            const id: checker.TypeId = @intCast(index);
+            const origin = self.typeOrigin(view.types, owner, id);
+            const mapped = imported.ids.ids[id];
+            if (state.origins.items[mapped].owner == .none) state.origins.items[mapped] = origin;
+            state.canonical.putAssumeCapacity(origin, mapped);
+        }
         return .{ .owner = owner, .types = imported };
     }
 };
@@ -166,6 +226,15 @@ const Context = struct {
     owner: OwnerId,
     from: *const strings.Interner,
     to: *strings.Interner,
+    source_types: ?*const checker.Interner = null,
+    target_types: ?*const checker.Interner = null,
+
+    fn reuseType(context: *anyopaque, id: checker.TypeId) checker.type_transfer.Error!?checker.TypeId {
+        const self: *Context = @ptrCast(@alignCast(context));
+        const origin = self.registry.typeOrigin(self.source_types.?, self.owner, id);
+        const state = self.registry.target_types.get(self.target_types.?) orelse return null;
+        return state.canonical.get(origin);
+    }
 
     fn string(context: *anyopaque, id: hir.StringId) checker.type_transfer.Error!hir.StringId {
         const self: *Context = @ptrCast(@alignCast(context));
@@ -363,4 +432,157 @@ test "source owners: invalid semantic nodes cancel prepared types and provenance
     try T.expectEqual(@as(usize, 1), registry.node_ids.count());
     try registry.unregister(owner);
     try T.expectError(error.InvalidOwner, registry.importOwner(&target, &target_strings, owner));
+}
+
+test "source owners: transitive imports preserve original type identity without copying diamonds" {
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    var original = try Fixture.init();
+    defer original.deinit();
+    const original_owner = try registry.register(original.view());
+    var intermediate = try Fixture.init();
+    defer intermediate.deinit();
+    var through_intermediate = try registry.importOwner(&intermediate.types, &intermediate.names, original_owner);
+    defer through_intermediate.deinit();
+    const intermediate_owner = try registry.register(intermediate.view());
+    var destination = try checker.Interner.init(T.allocator);
+    defer destination.deinit();
+    var destination_names = try strings.Interner.init(T.allocator);
+    defer destination_names.deinit();
+    var direct = try registry.importOwner(&destination, &destination_names, original_owner);
+    defer direct.deinit();
+    const original_type = try direct.types.ids.typeId(original.object);
+    const before = destination.pool.typeCount();
+    var indirect = try registry.importOwner(&destination, &destination_names, intermediate_owner);
+    defer indirect.deinit();
+    const intermediate_type = try through_intermediate.types.ids.typeId(original.object);
+    try T.expectEqual(original_type, try indirect.types.ids.typeId(intermediate_type));
+    try T.expect(original_type != try indirect.types.ids.typeId(intermediate.object));
+    try T.expectEqual(before + 1, destination.pool.typeCount());
+    const completed = poolLengths(&destination.pool);
+    var repeated = try registry.importOwner(&destination, &destination_names, intermediate_owner);
+    defer repeated.deinit();
+    try T.expectEqualDeep(completed, poolLengths(&destination.pool));
+    try T.expectEqual(try indirect.types.ids.typeId(intermediate.object), try repeated.types.ids.typeId(intermediate.object));
+}
+
+test "source owners: cached imports still roll back failed metadata and reject stale dependencies" {
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    var original = try Fixture.init();
+    defer original.deinit();
+    const original_owner = try registry.register(original.view());
+    var intermediate = try Fixture.init();
+    defer intermediate.deinit();
+    var imported_original = try registry.importOwner(&intermediate.types, &intermediate.names, original_owner);
+    defer imported_original.deinit();
+    const intermediate_owner = try registry.register(intermediate.view());
+    var target = try checker.Interner.init(T.allocator);
+    defer target.deinit();
+    var names = try strings.Interner.init(T.allocator);
+    defer names.deinit();
+    var first = try registry.importOwner(&target, &names, intermediate_owner);
+    defer first.deinit();
+    const before = poolLengths(&target.pool);
+    const canonical_count = registry.target_types.get(&target).?.canonical.count();
+    const nodes = registry.nodes.items.len;
+    try intermediate.checked.last_iface_decl_for_name.put(T.allocator, intermediate.name, intermediate.tree.nodeCount());
+    try T.expectError(error.UnmappedName, registry.importOwner(&target, &names, intermediate_owner));
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    try T.expectEqual(canonical_count, registry.target_types.get(&target).?.canonical.count());
+    try T.expectEqual(nodes, registry.nodes.items.len);
+    try intermediate.checked.last_iface_decl_for_name.put(T.allocator, intermediate.name, intermediate.decl);
+    var retried = try registry.importOwner(&target, &names, intermediate_owner);
+    defer retried.deinit();
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    try registry.unregister(original_owner);
+    try T.expectError(error.UnmappedName, registry.importOwner(&target, &names, intermediate_owner));
+}
+
+test "source owners: target address reuse and source revisions cannot inherit cached types" {
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    var original = try Fixture.init();
+    defer original.deinit();
+    const original_owner = try registry.register(original.view());
+    var target = try checker.Interner.init(T.allocator);
+    defer target.deinit();
+    var names = try strings.Interner.init(T.allocator);
+    defer names.deinit();
+    _ = try target.internNumberLiteral(42);
+    var old = try registry.importOwner(&target, &names, original_owner);
+    defer old.deinit();
+    const old_type = try old.types.ids.typeId(original.object);
+    registry.forgetTarget(&target);
+    target.deinit();
+    target = try checker.Interner.init(T.allocator);
+    var current = try registry.importOwner(&target, &names, original_owner);
+    defer current.deinit();
+    const current_type = try current.types.ids.typeId(original.object);
+    try T.expect(current_type != old_type);
+    try T.expect(current_type < target.pool.typeCount());
+    try registry.unregister(original_owner);
+    const replacement_owner = try registry.register(original.view());
+    var replacement = try registry.importOwner(&target, &names, replacement_owner);
+    defer replacement.deinit();
+    try T.expect(current_type != try replacement.types.ids.typeId(original.object));
+}
+
+test "source owners: dense declaration import graphs grow by unique owners" {
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    var fixtures: [16]Fixture = undefined;
+    var owners: [16]OwnerId = undefined;
+    var initialized: usize = 0;
+    defer for (fixtures[0..initialized]) |*fixture| fixture.deinit();
+    for (&fixtures, 0..) |*fixture, index| {
+        fixture.* = try Fixture.init();
+        initialized += 1;
+        for (owners[0..index]) |owner| {
+            var imported = try registry.importOwner(&fixture.types, &fixture.names, owner);
+            imported.deinit();
+        }
+        try T.expectEqual(@as(u32, checker.Primitive.first_dynamic + @as(u32, @intCast(index)) + 1), fixture.types.pool.typeCount());
+        owners[index] = try registry.register(fixture.view());
+    }
+}
+
+fn testCachedImportAllocationFailures(allocator: std.mem.Allocator) !void {
+    var registry = Registry.init(allocator);
+    defer registry.deinit();
+    var original = try Fixture.init();
+    defer original.deinit();
+    const original_owner = try registry.register(original.view());
+    var intermediate = try Fixture.init();
+    defer intermediate.deinit();
+    var imported_original = try registry.importOwner(&intermediate.types, &intermediate.names, original_owner);
+    defer imported_original.deinit();
+    const intermediate_owner = try registry.register(intermediate.view());
+    var target = try checker.Interner.init(allocator);
+    defer target.deinit();
+    var names = try strings.Interner.init(T.allocator);
+    defer names.deinit();
+    var direct = try registry.importOwner(&target, &names, original_owner);
+    defer direct.deinit();
+    const before = poolLengths(&target.pool);
+    const keys = keyCount(&target);
+    const nodes = registry.nodes.items.len;
+    const cache = registry.target_types.get(&target).?;
+    const canonical_count = cache.canonical.count();
+    const origins_len = cache.origins.items.len;
+    var imported = registry.importOwner(&target, &names, intermediate_owner) catch |err| {
+        try T.expectEqualDeep(before, poolLengths(&target.pool));
+        try T.expectEqual(keys, keyCount(&target));
+        try T.expectEqual(nodes, registry.nodes.items.len);
+        try T.expectEqual(canonical_count, registry.target_types.get(&target).?.canonical.count());
+        try T.expectEqual(origins_len, registry.target_types.get(&target).?.origins.items.len);
+        try T.expectEqual(original_owner, (try registry.declaration(target.typeSymbol(try direct.types.ids.typeId(original.object)))).owner);
+        return err;
+    };
+    defer imported.deinit();
+    try T.expectEqual(try direct.types.ids.typeId(original.object), try imported.types.ids.typeId(try imported_original.types.ids.typeId(original.object)));
+}
+
+test "source owners: cached import allocation failures preserve existing graph identities" {
+    try T.checkAllAllocationFailures(T.allocator, testCachedImportAllocationFailures, .{});
 }

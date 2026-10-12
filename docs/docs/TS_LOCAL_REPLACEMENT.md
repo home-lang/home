@@ -225,3 +225,38 @@ module logs, rejected intermediate controls, the baseline probes and a redacted
 real-project outcome. It includes payload checksums and native/source hashes;
 private project inputs remain local. Archive SHA-256:
 `6e0f3b9df3b1f4bf67c26a9bb639665cb419e7e0b279d2a2a0cc579b9fb0bdb8`.
+
+## Source identity and demand-sized storage controls
+
+Dependency diamonds previously copied the same declaration-owned types again
+when an intermediate source imported them. Import provenance now retains the
+original immutable owner revision and TypeId through intermediate pools. Direct,
+indirect and repeated imports reuse that identity, while distinct declarations
+with equal shapes remain distinct. Publication follows successful checked-type
+transfer; failed metadata and allocator operations preserve the previous graph.
+Destroying a target pool clears its provenance before its address can be reused.
+Tombstoned transitive owners remain invalid even when a destination has cached IDs.
+
+Prepared compilations now use exclusively owned type storage that starts with
+primitive headers and grows during checking. The shared interner retains its
+existing reserve contract. A 32-file bind-only regression verifies that each
+file avoids reserving a million headers before checking, and a separate growth
+regression verifies stable IDs through reallocations.
+
+The Debug suites pass **4,579 checker, 271 Program and 207 driver tests**. The
+ReleaseFast image passes **180 automatic-variable comparisons** (360 compiler
+observations), **50 declaration contracts** and **32 recursive-interface
+observations** against the installed reference. The source-owner controls cover
+a 16-owner dependency graph, failed metadata, allocation failure, invalidated
+revisions and target-address reuse.
+
+The real table project remains **unqualified**. Its reference returns zero;
+Home still exits through the memory guard (125), at a measured tree footprint
+of 3,938 MB. All 307 input hashes remain unchanged. Profiling now reaches source
+checking and shows substantial recursive generic expansion in Bun's socket
+interfaces. The storage and identity corrections do not establish replacement
+compatibility for that project or the whole local tree.
+
+The [retained source-owner and storage evidence](../../bench/vs_tsgo/evidence/20261012-local-tsc-owner-storage-controls.tar.gz)
+contains the failing diamond reproduction, successful module and CLI controls,
+source/image hashes, payload checksums and a redacted real-project outcome.

@@ -2103,7 +2103,7 @@ pub fn prepareSource(
                 c.module.deinit();
                 gpa.destroy(c.module);
             }
-            c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
+            c.type_interner = ts_checker.Interner.initExclusive(gpa) catch return error.OutOfMemory;
             errdefer c.type_interner.deinit();
             c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
             errdefer c.type_engine.deinit();
@@ -2296,7 +2296,7 @@ pub fn prepareSource(
     c.module = bind.module;
 
     // Initialize owned type storage even for bind-only and recovery results.
-    c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
+    c.type_interner = ts_checker.Interner.initExclusive(gpa) catch return error.OutOfMemory;
     errdefer c.type_interner.deinit();
     c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
     errdefer c.type_engine.deinit();
@@ -4408,6 +4408,23 @@ test "driver: prepared source checks and emits once without replacing bound owne
     try checkPreparedSource(c, options);
     try T.expect(c.js.ptr == output);
     try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+}
+
+test "driver: preparing many bound files allocates only demand-sized type storage" {
+    var compilations: [32]*Compilation = undefined;
+    var prepared: usize = 0;
+    defer for (compilations[0..prepared]) |c| {
+        c.deinit();
+        T.allocator.destroy(c);
+    };
+    for (&compilations) |*slot| {
+        slot.* = try prepareSource(T.allocator, "export const value: number = 1;", .{ .bind_only = true, .no_emit = true });
+        prepared += 1;
+        try T.expectEqual(ts_checker.Primitive.first_dynamic, slot.*.type_interner.pool.typeCount());
+        try T.expect(slot.*.type_interner.pool.headers.capacity < 1024);
+    }
+    try checkPreparedSource(compilations[0], .{ .no_emit = true });
+    try T.expect(compilations[0].check_state == .checked);
 }
 
 test "driver: prepared source retains exact markers through checking" {

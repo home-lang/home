@@ -392,15 +392,28 @@ pub const Interner = struct {
     enum_literal_info: std.AutoHashMapUnmanaged(TypeId, types.EnumLiteralInfo) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) !Interner {
+        return initWithHeaderCapacity(gpa, POOL_INITIAL_CAPACITY);
+    }
+
+    /// Demand-sized storage for an exclusively owned compilation. The caller
+    /// must serialize mutation and must not retain borrowed pool slices across
+    /// interning operations. Completed source owners may then be shared read-only.
+    /// Unlike the shared-reader mode, preparing many files does not reserve a
+    /// million headers for each file before any types have been checked.
+    pub fn initExclusive(gpa: std.mem.Allocator) !Interner {
+        return initWithHeaderCapacity(gpa, types.Primitive.first_dynamic);
+    }
+
+    fn initWithHeaderCapacity(gpa: std.mem.Allocator, capacity: u32) !Interner {
         var self: Interner = .{
             .gpa = gpa,
             .pool = try Pool.init(gpa),
             .shards = undefined,
         };
         errdefer self.pool.deinit();
-        // Pre-reserve generous header capacity so concurrent readers
-        // never observe a reallocation in flight.
-        try self.pool.headers.ensureTotalCapacity(gpa, POOL_INITIAL_CAPACITY);
+        // Shared-reader callers reserve generous capacity; exclusively owned
+        // compilations start with primitives and grow as their graph is checked.
+        try self.pool.headers.ensureTotalCapacity(gpa, capacity);
         var i: u32 = 0;
         while (i < N_SHARDS) : (i += 1) {
             self.shards[i] = Shard.init(gpa);
@@ -1852,6 +1865,20 @@ test "Interner: fresh recursive objects retain reserved identities" {
     try i.completeFreshObjectType(b, &.{.{ .name = 2, .type = a, .is_optional = false, .is_readonly = true, .is_method = false }});
     try T.expectEqual(b, i.objectMember(a, 1).?);
     try T.expectEqual(a, i.objectMember(b, 2).?);
+}
+
+test "Interner: exclusive pools grow without eagerly reserving program-sized headers" {
+    var i = try Interner.initExclusive(T.allocator);
+    defer i.deinit();
+    try T.expect(i.pool.headers.capacity < 1024);
+    const object = try i.internObjectType(&.{});
+    const first = try i.internNumberLiteral(0);
+    for (1..4096) |n| _ = try i.internNumberLiteral(@floatFromInt(n));
+    try T.expectEqual(first, try i.internNumberLiteral(0));
+    try i.completeFreshObjectType(object, &.{.{ .name = 1, .type = first, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try T.expectEqual(first, i.objectMember(object, 1).?);
+    try T.expect(i.pool.typeCount() > 4096);
+    try T.expect(i.pool.headers.capacity < POOL_INITIAL_CAPACITY);
 }
 
 test "Interner: borrowed object member copies survive owning pool relocation" {

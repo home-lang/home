@@ -649,6 +649,12 @@ pub const Program = struct {
             f.owner = .none;
         }
         if (f.compilation) |compilation| {
+            // Imports can populate provenance before the checked source has a
+            // registered owner. Clear that pool's identities on failed builds
+            // as well as normal source invalidation.
+            self.owners_mutex.lock();
+            self.owners.forgetTarget(&compilation.type_interner);
+            self.owners_mutex.unlock();
             compilation.deinit();
             self.gpa.destroy(compilation);
             f.compilation = null;
