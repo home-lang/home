@@ -33,7 +33,6 @@
 #include <JavaScriptCore/Exception.h>
 #include <JavaScriptCore/InjectedScriptHost.h>
 #include <JavaScriptCore/InjectedScriptManager.h>
-#include <JavaScriptCore/InspectorProtocolObjects.h>
 #include <JavaScriptCore/InspectorAgent.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
 #include <JavaScriptCore/InspectorConsoleAgent.h>
@@ -50,9 +49,6 @@
 #include <JavaScriptCore/ScriptCallStackFactory.h>
 #include <JavaScriptCore/TopExceptionScope.h>
 #include <wtf/StackTrace.h>
-#include <wtf/JSONValues.h>
-#include <mutex>
-#include <unordered_map>
 #include <wtf/Stopwatch.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -62,33 +58,6 @@
 #endif
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
-
-namespace Home {
-static std::mutex inspectorManagerLock;
-static auto* inspectorManagers = new std::unordered_map<JSC::JSGlobalObject*, Inspector::InjectedScriptManager*>;
-static void registerInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
-    std::lock_guard lock(inspectorManagerLock); (*inspectorManagers)[&global] = &manager;
-}
-static void retireInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
-    std::lock_guard lock(inspectorManagerLock); auto found = inspectorManagers->find(&global);
-    if (found != inspectorManagers->end() && found->second == &manager) inspectorManagers->erase(found);
-}
-static Inspector::InjectedScriptManager* inspectorManager(JSC::JSGlobalObject& global) {
-    std::lock_guard lock(inspectorManagerLock); auto found = inspectorManagers->find(&global);
-    return found == inspectorManagers->end() ? nullptr : found->second;
-}
-JSC::JSValue inspectorObjectForId(JSC::JSGlobalObject& global, const WTF::String& id) {
-    auto* manager = inspectorManager(global);
-    return manager ? manager->injectedScriptFor(&global).findObjectById(id) : JSC::JSValue();
-}
-RefPtr<JSON::Object> inspectorWrapObject(JSC::JSGlobalObject& global, JSC::JSValue value, const WTF::String& group) {
-    auto* manager = inspectorManager(global); if (!manager || !value) return nullptr;
-    auto wrapped = manager->injectedScriptFor(&global).wrapObject(value, group);
-    if (!wrapped) return nullptr;
-    auto encoded = JSON::Value::parseJSON(wrapped->toJSONString());
-    return encoded ? encoded->asObject() : nullptr;
-}
-}
 
 namespace Inspector {
 
@@ -104,7 +73,6 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     , m_frontendRouter(FrontendRouter::create())
     , m_backendDispatcher(BackendDispatcher::create(m_frontendRouter.copyRef()))
 {
-    Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
@@ -124,7 +92,6 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     , m_frontendRouter(FrontendRouter::create())
     , m_backendDispatcher(BackendDispatcher::create(m_frontendRouter.copyRef()))
 {
-    Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
@@ -138,7 +105,6 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
 
 JSGlobalObjectInspectorController::~JSGlobalObjectInspectorController()
 {
-    Home::retireInspectorManager(m_globalObject, m_injectedScriptManager.get());
     // Non-owning checked agent references must be released before the agent
     // registry members are destroyed (C++ destroys m_agents before these).
     m_inspectorAgent = nullptr;

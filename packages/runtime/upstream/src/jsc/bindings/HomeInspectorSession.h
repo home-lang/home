@@ -29,6 +29,7 @@ public:
     JSC::Weak<LocalInspectorHandle> handle;
     std::vector<WTF::String> messages;
     std::unordered_map<int, int> responseIds;
+    std::unordered_map<int, WTF::String> responseMethods;
     WTF::HashMap<WTF::String, int> realmObjects;
     WTF::HashMap<WTF::String, WTF::String> nativeRealmObjects;
     std::unordered_map<int,std::shared_ptr<InspectorRealmForwarder>> realmFrontends;
@@ -137,34 +138,24 @@ public:
         } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(array->get(i).get());
     }
 };
-inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,JSC::JSGlobalObject& target,const WTF::String& group) {
+inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target) {
     if(auto object=value.asObject()) {
         auto exposed=object->getString("objectId"_s);
         if(!exposed.isEmpty()) {
-            auto native=channel.nativeRealmObjects.find(exposed);
-            if(native!=channel.nativeRealmObjects.end()) {
-                auto owner=channel.realmObjects.find(exposed);
-                JSC::JSGlobalObject* source=channel.global;
-                if(owner!=channel.realmObjects.end()) {
-                    source=nullptr;
-                    for(auto& entry:inspectorRealms()) if(entry.second->owner==channel.global && entry.second->id==owner->value) {source=entry.second->global.get();break;}
-                }
-                if(!source) return false;
-                if(source!=&target) {
-                    JSC::Strong<JSC::JSGlobalObject> protect(source->vm(),source);
-                    auto actual=inspectorObjectForId(*source,native->value);
-                    if(!actual) return false;
-                    auto wrapped=inspectorWrapObject(target,actual,group);
-                    if(!wrapped) return false;
-                    auto translated=wrapped->getString("objectId"_s);
-                    if(translated.isEmpty()) return false;
-                    object->setString("objectId"_s,translated);
-                } else object->setString("objectId"_s,native->value);
-            }
+            auto owner=channel.realmObjects.find(exposed);
+            if(owner!=channel.realmObjects.end()) {
+                if(owner->value!=target) return false;
+                auto native=channel.nativeRealmObjects.find(exposed);
+                if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
+            } else if(target!=channel.executionContext) return false;
         }
-        for(auto& entry:*object) if(!unwrapInspectorObjects(channel,entry.value.get(),target,group)) return false;
-    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target,group)) return false;
+        for(auto& entry:*object) if(!unwrapInspectorObjects(channel,entry.value.get(),target)) return false;
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target)) return false;
     return true;
+}
+inline void inspectorWorldError(LocalInspectorChannel& channel,JSON::Object& request) {
+    auto error=JSON::Object::create();error->setInteger("code"_s,-32000);error->setString("message"_s,"Argument should belong to the same JavaScript world as target object"_s);
+    auto response=JSON::Object::create();response->setInteger("id"_s,*request.getInteger("id"_s));response->setObject("error"_s,WTF::move(error));channel.sendMessageToFrontend(response->toJSONString());
 }
 inline void LocalInspectorChannel::releaseRealmGroups(const WTF::String& group) {
     for(auto& entry:realmFrontends) if(auto* realm=entry.second->global.get()) {
@@ -192,8 +183,8 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
             auto found=channel.realmObjects.find(object);if(found!=channel.realmObjects.end()) requested=found->value;
         }
     }
-    if(!requested) return false;
-    if(*requested==channel.executionContext) {
+    if(!requested || *requested==channel.executionContext) {
+        if(!unwrapInspectorObjects(channel,*params,channel.executionContext)) {inspectorWorldError(channel,request);return true;}
         params->remove("contextId"_s);params->remove("executionContextId"_s);return false;
     }
     InspectorRealm* selected=nullptr;
@@ -207,10 +198,8 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!frontend) {frontend=std::make_shared<InspectorRealmForwarder>(channel,*selected);protect->inspectorController().connectFrontend(*frontend,false,false);}
     auto& controller=protect->inspectorController();
     params->remove("contextId"_s);params->remove("executionContextId"_s);
-    JSC::DeferGC deferGC(channel.global->vm());
-    if(!unwrapInspectorObjects(channel,*params,*protect.get(),params->getString("objectGroup"_s))) {
-        auto error=JSON::Object::create();error->setInteger("code"_s,-32000);error->setString("message"_s,"Cannot find remote object in its owning context"_s);
-        auto response=JSON::Object::create();response->setInteger("id"_s,*request.getInteger("id"_s));response->setObject("error"_s,WTF::move(error));channel.sendMessageToFrontend(response->toJSONString());return true;
+    if(!unwrapInspectorObjects(channel,*params,selected->id)) {
+        inspectorWorldError(channel,request);return true;
     }
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
@@ -228,6 +217,18 @@ inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& mess
         if (auto id = object->getInteger("id"_s)) {
             auto found = responseIds.find(*id);
             if (found == responseIds.end()) return;
+            auto method = responseMethods.find(*id);
+            if (method != responseMethods.end()) {
+                // JSC names the descriptor array "properties"; node:inspector
+                // exposes the CDP Runtime.getProperties "result" field.
+                if (method->second == "Runtime.getProperties"_s) if (auto result = object->getObject("result"_s)) {
+                    if (auto properties = result->getArray("properties"_s)) {
+                        result->remove("properties"_s);
+                        result->setArray("result"_s, properties.releaseNonNull());
+                    }
+                }
+                responseMethods.erase(method);
+            }
             object->setInteger("id"_s, found->second);
             responseIds.erase(found);
             routed = object->toJSONString();
@@ -272,6 +273,7 @@ inline void LocalInspectorChannel::disconnect() {
     handle.clear();
     messages.clear();
     responseIds.clear();
+    responseMethods.clear();
     realmObjects.clear();
     nativeRealmObjects.clear();
     disconnectRealms();
@@ -412,6 +414,7 @@ JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, J
     if (allocatedId > static_cast<uint64_t>(std::numeric_limits<int>::max())) { JSC::throwTypeError(global, scope, "Inspector request ID space exhausted"_s); return {}; }
     int nativeId = static_cast<int>(allocatedId);
     channel->responseIds.emplace(nativeId, *localId);
+    channel->responseMethods.emplace(nativeId, request->getString("method"_s));
     request->setInteger("id"_s, nativeId);
     if (!channel->dispatchAdapter(*request) && !dispatchInspectorRealm(*channel,*request)) global->inspectorController().dispatchMessageFromFrontend(request->toJSONString());
     RETURN_IF_EXCEPTION(scope, {});
