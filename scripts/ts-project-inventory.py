@@ -38,7 +38,7 @@ def command_segments(script: str) -> list[list[str]]:
 def inventory(root: Path) -> dict:
     root = root.resolve()
     report: dict = {"schema": 1, "root": str(root), "pruned_names": sorted(PRUNED_NAMES),
-                    "manifests": [], "configs": [], "symlink_directories": [], "errors": [],
+                    "manifests": [], "configs": [], "symlink_directories": [], "included_pruned_name_projects": [], "errors": [],
                     "replacement_verified": False}
 
     def walk_error(error: OSError) -> None:
@@ -46,11 +46,22 @@ def inventory(root: Path) -> dict:
 
     for dirname, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
         directory = Path(dirname)
+        candidates = []
         for name in sorted(dirs):
             path = directory / name
-            if name not in PRUNED_NAMES and path.is_symlink():
+            # A cache-like name can also identify an actual checkout (e.g.
+            # ~/Code/pantry). A Git directory or worktree pointer distinguishes
+            # that project from installed toolchain/dependency directories.
+            project = name != ".git" and name in PRUNED_NAMES and (path / ".git").exists()
+            if name in PRUNED_NAMES and not project:
+                continue
+            if path.is_symlink():
                 report["symlink_directories"].append(str(path.relative_to(root)))
-        dirs[:] = sorted(name for name in dirs if name not in PRUNED_NAMES and not (directory / name).is_symlink())
+                continue
+            if project:
+                report["included_pruned_name_projects"].append(str(path.relative_to(root)))
+            candidates.append(name)
+        dirs[:] = candidates
         for name in sorted(files):
             path = directory / name
             if name != "package.json" and not CONFIG.fullmatch(name):
@@ -107,6 +118,7 @@ def inventory(root: Path) -> dict:
     for key in ("manifests", "configs"):
         report[key].sort(key=lambda item: item["path"])
     report["symlink_directories"].sort()
+    report["included_pruned_name_projects"].sort()
     report["counts"] = {"manifests_with_check_scripts": len(report["manifests"]),
                         "configs": len(report["configs"]),
                         "scripts": sum(len(row["entrypoints"]) for row in report["manifests"]),

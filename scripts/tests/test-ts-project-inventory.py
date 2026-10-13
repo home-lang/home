@@ -53,6 +53,19 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["symlink_directories"], ["linked-project"])
         self.assertEqual(report["counts"]["configs"], 0)
 
+    def test_keeps_git_projects_with_dependency_or_cache_names(self):
+        self.write("pantry/.git/HEAD", "ref: refs/heads/main\n")
+        self.manifest("pantry/package.json", {"typecheck": "tsc --noEmit"})
+        self.write("pantry/tsconfig.json", "{}")
+        self.write("nested/.cache/.git", "gitdir: /some/worktree\n")
+        self.manifest("nested/.cache/package.json", {"typecheck": "tsc --noEmit"})
+        self.manifest("actual/pantry/package.json", {"typecheck": "tsc"})
+        report = MODULE.inventory(self.root)
+        self.assertEqual(report["counts"]["manifests_with_check_scripts"], 2)
+        self.assertEqual(report["counts"]["configs"], 1)
+        self.assertEqual(report["included_pruned_name_projects"], ["nested/.cache", "pantry"])
+        self.assertFalse(report["replacement_verified"])
+
     def test_retains_indirect_wrappers_and_shell_context_for_review(self):
         self.manifest("package.json", {
             "typecheck": "sh scripts/typecheck.sh",

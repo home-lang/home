@@ -73,6 +73,22 @@ finds 1,087 removed and 36 added manifests; many missing paths are worktrees or
 framework copies that no longer exist. This reflects the current filesystem,
 not successful replacement or a decision to exclude projects.
 
+The latest scan corrects a coverage gap: a directory with a dependency/cache
+name is retained when it is an actual Git checkout or worktree. The old rule
+excluded the real `~/Code/pantry` repository. Seven hermetic inventory controls
+now cover both Git directories and worktree pointer files, while ordinary
+installed dependency/toolchain directories remain pruned. The report records
+these exceptions in `included_pruned_name_projects`.
+
+The resulting current snapshot contains **1,182 manifests with check scripts,
+1,453 scripts, 1,391 literal compiler segments and 2,494 configs**. It retains
+92 scripts requiring review, 55 errors and 1,480 symlink directories. The
+corrected rule adds nine manifest paths under the pantry project and its
+existing worktrees compared with the contemporaneous scan. Other differences
+from earlier snapshots reflect filesystem changes. The report still records
+`replacement_verified: false`; the inventory establishes coverage, not
+compiler compatibility.
+
 ## Required evidence
 
 For every actual compiler entrypoint, qualification must retain:
@@ -151,7 +167,7 @@ HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 300 \
 Its scope is declaration/JavaScript artifact selection, declaration content,
 type-error preservation, build freshness/clean and watch updates. Build-info
 encoding and byte-exact source-map mappings remain separate gates. The local
-inventory controls currently pass all six hermetic tests.
+inventory controls currently pass all seven hermetic tests.
 
 The [retained declaration-control evidence](../../bench/vs_tsgo/evidence/20261011-local-tsc-declaration-controls.tar.gz)
 contains the complete successful observations, fixture inputs/outputs, module
