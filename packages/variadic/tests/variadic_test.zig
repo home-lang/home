@@ -92,13 +92,13 @@ test "printf - asprintf allocation" {
 
 test "logger - all levels" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = variadic.logger.Logger.init(testing.allocator, .{
         .min_level = .Debug,
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     try logger.debug("Debug message", .{});
@@ -107,7 +107,7 @@ test "logger - all levels" {
     try logger.err("Error message", .{});
     try logger.fatal("Fatal message", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "[DEBUG]") != null);
     try testing.expect(std.mem.indexOf(u8, output, "[INFO]") != null);
     try testing.expect(std.mem.indexOf(u8, output, "[WARN]") != null);
@@ -117,17 +117,17 @@ test "logger - all levels" {
 
 test "logger - formatted messages" {
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = variadic.logger.Logger.init(testing.allocator, .{
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     try logger.info("User %s logged in from %s:%d", .{ "alice", "192.168.1.1", @as(u16, 22) });
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "alice") != null);
     try testing.expect(std.mem.indexOf(u8, output, "192.168.1.1") != null);
     try testing.expect(std.mem.indexOf(u8, output, "22") != null);
@@ -135,13 +135,13 @@ test "logger - formatted messages" {
 
 test "logger - level filtering" {
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = variadic.logger.Logger.init(testing.allocator, .{
         .min_level = .Error,
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     try logger.debug("Should not appear", .{});
@@ -150,7 +150,7 @@ test "logger - level filtering" {
     try logger.err("Should appear", .{});
     try logger.fatal("Should appear", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "DEBUG") == null);
     try testing.expect(std.mem.indexOf(u8, output, "INFO") == null);
     try testing.expect(std.mem.indexOf(u8, output, "WARN") == null);
@@ -250,12 +250,12 @@ test "get arg by index" {
 
 test "scenario - kernel logging" {
     var buf: [2048]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = variadic.logger.Logger.init(testing.allocator, .{
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     // Simulate kernel boot messages
@@ -265,7 +265,7 @@ test "scenario - kernel logging" {
     try logger.warn("Device %s not found, using fallback", .{"eth0"});
     try logger.info("Kernel boot complete in %d ms", .{@as(u32, 1523)});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "4 CPU cores") != null);
     try testing.expect(std.mem.indexOf(u8, output, "8192 MB") != null);
     try testing.expect(std.mem.indexOf(u8, output, "eth0") != null);

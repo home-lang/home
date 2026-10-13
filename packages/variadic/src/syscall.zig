@@ -256,45 +256,45 @@ pub fn syscall6(number: SyscallNumber, arg1: usize, arg2: usize, arg3: usize, ar
 
 /// Invoke syscall with variable arguments (type-safe)
 pub fn syscall(number: SyscallNumber, args: anytype) usize {
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+    const field_names = @typeInfo(@TypeOf(args)).@"struct".field_names;
 
-    return switch (fields.len) {
+    return switch (field_names.len) {
         0 => syscall0(number),
-        1 => syscall1(number, @intCast(@field(args, fields[0].name))),
+        1 => syscall1(number, @intCast(@field(args, field_names[0]))),
         2 => syscall2(
             number,
-            @intCast(@field(args, fields[0].name)),
-            @intCast(@field(args, fields[1].name)),
+            @intCast(@field(args, field_names[0])),
+            @intCast(@field(args, field_names[1])),
         ),
         3 => syscall3(
             number,
-            @intCast(@field(args, fields[0].name)),
-            @intCast(@field(args, fields[1].name)),
-            @intCast(@field(args, fields[2].name)),
+            @intCast(@field(args, field_names[0])),
+            @intCast(@field(args, field_names[1])),
+            @intCast(@field(args, field_names[2])),
         ),
         4 => syscall4(
             number,
-            @intCast(@field(args, fields[0].name)),
-            @intCast(@field(args, fields[1].name)),
-            @intCast(@field(args, fields[2].name)),
-            @intCast(@field(args, fields[3].name)),
+            @intCast(@field(args, field_names[0])),
+            @intCast(@field(args, field_names[1])),
+            @intCast(@field(args, field_names[2])),
+            @intCast(@field(args, field_names[3])),
         ),
         5 => syscall5(
             number,
-            @intCast(@field(args, fields[0].name)),
-            @intCast(@field(args, fields[1].name)),
-            @intCast(@field(args, fields[2].name)),
-            @intCast(@field(args, fields[3].name)),
-            @intCast(@field(args, fields[4].name)),
+            @intCast(@field(args, field_names[0])),
+            @intCast(@field(args, field_names[1])),
+            @intCast(@field(args, field_names[2])),
+            @intCast(@field(args, field_names[3])),
+            @intCast(@field(args, field_names[4])),
         ),
         6 => syscall6(
             number,
-            @intCast(@field(args, fields[0].name)),
-            @intCast(@field(args, fields[1].name)),
-            @intCast(@field(args, fields[2].name)),
-            @intCast(@field(args, fields[3].name)),
-            @intCast(@field(args, fields[4].name)),
-            @intCast(@field(args, fields[5].name)),
+            @intCast(@field(args, field_names[0])),
+            @intCast(@field(args, field_names[1])),
+            @intCast(@field(args, field_names[2])),
+            @intCast(@field(args, field_names[3])),
+            @intCast(@field(args, field_names[4])),
+            @intCast(@field(args, field_names[5])),
         ),
         else => @compileError("Too many syscall arguments (max 6)"),
     };

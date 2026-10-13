@@ -15,7 +15,7 @@ pub fn fprintf(writer: anytype, comptime fmt: []const u8, args: anytype) !usize 
     var i: usize = 0;
     var arg_index: usize = 0;
 
-    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+    const field_names = @typeInfo(@TypeOf(args)).@"struct".field_names;
 
     while (i < fmt.len) {
         if (fmt[i] == '%') {
@@ -32,14 +32,14 @@ pub fn fprintf(writer: anytype, comptime fmt: []const u8, args: anytype) !usize 
             const spec = spec_result.spec;
             const spec_len = spec_result.len;
 
-            if (arg_index >= fields.len) {
+            if (arg_index >= field_names.len) {
                 return error.TooFewArguments;
             }
 
             // Write formatted argument
-            inline for (fields, 0..) |field, field_idx| {
+            inline for (field_names, 0..) |field_name, field_idx| {
                 if (field_idx == arg_index) {
-                    const arg = @field(args, field.name);
+                    const arg = @field(args, field_name);
                     const written = try writeFormatted(writer, arg, spec);
                     bytes_written += written;
                     break;
@@ -60,23 +60,27 @@ pub fn fprintf(writer: anytype, comptime fmt: []const u8, args: anytype) !usize 
 
 /// Print formatted output to stdout
 pub fn printf(comptime fmt: []const u8, args: anytype) !usize {
-    const stdout = std.io.getStdOut().writer();
-    return fprintf(stdout, fmt, args);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
+    const bytes_written = try fprintf(&stdout.interface, fmt, args);
+    try stdout.interface.flush();
+    return bytes_written;
 }
 
 /// Print formatted output to string buffer
 pub fn sprintf(buf: []u8, comptime fmt: []const u8, args: anytype) !usize {
-    var fbs = std.io.fixedBufferStream(buf);
-    return fprintf(fbs.writer(), fmt, args);
+    var writer = std.Io.Writer.fixed(buf);
+    return fprintf(&writer, fmt, args);
 }
 
 /// Print formatted output to allocated string
 pub fn asprintf(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![]u8 {
-    var list = std.ArrayList(u8).empty;
-    errdefer list.deinit(allocator);
+    var writer: std.Io.Writer.Allocating = .init(allocator);
+    errdefer writer.deinit();
 
-    _ = try fprintf(list.writer(allocator), fmt, args);
-    return list.toOwnedSlice(allocator);
+    _ = try fprintf(&writer.writer, fmt, args);
+    return writer.toOwnedSlice();
 }
 
 // ============================================================================
@@ -292,9 +296,9 @@ fn writeInteger(writer: anytype, value: anytype, spec: variadic.FormatSpec) !usi
 
             if (spec.flags.left_justify) {
                 try writer.writeAll(str);
-                try writer.writeByteNTimes(pad_char, pad_len);
+                try writer.splatByteAll(pad_char, pad_len);
             } else {
-                try writer.writeByteNTimes(pad_char, pad_len);
+                try writer.splatByteAll(pad_char, pad_len);
                 try writer.writeAll(str);
             }
             return width;

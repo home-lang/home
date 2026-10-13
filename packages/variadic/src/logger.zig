@@ -45,7 +45,7 @@ pub const LoggerConfig = struct {
     use_colors: bool = true,
     show_timestamp: bool = true,
     show_source: bool = true,
-    writer: ?std.io.AnyWriter = null,
+    writer: ?*std.Io.Writer = null,
 };
 
 // ============================================================================
@@ -92,7 +92,7 @@ pub const Logger = struct {
 
         // Write timestamp
         if (self.config.show_timestamp) {
-            const timestamp = std.time.timestamp();
+            const timestamp = std.Io.Clock.real.now(runtimeIo()).toSeconds();
             try writer.print(" {d}", .{timestamp});
         }
 
@@ -130,18 +130,24 @@ pub const Logger = struct {
 // ============================================================================
 
 var global_logger: ?Logger = null;
-var global_mutex = std.Thread.Mutex{};
+var global_mutex: std.Io.Mutex = .init;
+
+fn runtimeIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
 
 pub fn initGlobal(allocator: std.mem.Allocator, config: LoggerConfig) void {
-    global_mutex.lock();
-    defer global_mutex.unlock();
+    const io = runtimeIo();
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
 
     global_logger = Logger.init(allocator, config);
 }
 
 pub fn getGlobal() ?*Logger {
-    global_mutex.lock();
-    defer global_mutex.unlock();
+    const io = runtimeIo();
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
 
     if (global_logger) |*logger| {
         return logger;
@@ -207,18 +213,18 @@ test "logger basic" {
     const testing = std.testing;
 
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = Logger.init(testing.allocator, .{
         .min_level = .Debug,
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     try logger.info("Test message", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "[INFO]") != null);
     try testing.expect(std.mem.indexOf(u8, output, "Test message") != null);
 }
@@ -227,17 +233,17 @@ test "logger with args" {
     const testing = std.testing;
 
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = Logger.init(testing.allocator, .{
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     try logger.info("Value: %d", .{@as(i32, 42)});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "Value: 42") != null);
 }
 
@@ -245,13 +251,13 @@ test "logger min level" {
     const testing = std.testing;
 
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     var logger = Logger.init(testing.allocator, .{
         .min_level = .Warn,
         .use_colors = false,
         .show_timestamp = false,
-        .writer = fbs.writer().any(),
+        .writer = &writer,
     });
 
     // Should not log (below min level)
@@ -261,7 +267,7 @@ test "logger min level" {
     // Should log (at or above min level)
     try logger.warn("Warn message", .{});
 
-    const output = fbs.getWritten();
+    const output = writer.buffered();
     try testing.expect(std.mem.indexOf(u8, output, "Debug") == null);
     try testing.expect(std.mem.indexOf(u8, output, "Info") == null);
     try testing.expect(std.mem.indexOf(u8, output, "Warn") != null);
