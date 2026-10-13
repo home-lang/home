@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "main_base_commit": "b3b54f095353b67095243c29d33d79a5aeb52f7e",
+  "tested_recovery_commit": "6dba78586157d8bc3f708e4270cc00850ec100c7",
+  "proposed_repair_and_tests_commit": "aac562b7cac36c393f277e922873f171c50d0bed",
+  "recovery_branch": "codex/inspector-realms-unverified",
+  "source_hashes": [
+    {
+      "file": "build-support/bundle-native-modules.ts",
+      "sha256": "d50e23e22c272aa6d7da7b5c3086f98d15a9144bee49732f54bfdf741247748a",
+      "bytes": 26445
+    },
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "b0fed4c7357cee71875089ccf430e3eb3fb12c7cfae68816839c21ab46e30acb",
+      "bytes": 70183
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "905797f9ec72c8bf96a6e8b138e49698866587a8358a4d3c5ae2cc0d0204c5da",
+      "bytes": 22786
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "8120ac2e987913423c97691a7268a20e32cbd1e99214e52a1aa114368f91de24",
+      "bytes": 3932
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "1f11f09d7d5b2740703a53330d4d5fce4c3969cfeeee46be6acda2266e7f1c5f",
+      "bytes": 97633
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVMScript.cpp",
+      "sha256": "6419d4f133b757dd16bfa1d6e35fde3140ad917dfc00eca474097f23a9d8ab62",
+      "bytes": 29878
+    },
+    {
+      "file": "tests/runtime/native-profiling-cli.test.mjs",
+      "sha256": "fc4b9f01871481f33df4d274706e861bb8f0026112c762cf03d4ab6d423eb62c",
+      "bytes": 12305
+    }
+  ],
+  "results": {
+    "debug_steps": 56,
+    "debug_peak_tree_mb": 5691,
+    "node_controls_passed": 4,
+    "home_realm_enumeration_and_evaluation_exit": 0,
+    "home_metadata_disable_reenable_exit": 0,
+    "home_object_reference_exit": -6,
+    "home_getter_control_executed": false,
+    "object_repair_verified": false,
+    "new_main_runtime_pass_credit": false
+  },
+  "findings": [
+    "Both named before/after realm enumeration/evaluation and the unchanged metadata disable/re-enable control pass against the repaired executable. The earlier absent-property 0x5 crash is fixed by guarding empty native metadata values; its history remains separate.",
+    "The next object control aborts at 0x10. Crash frames identify Home::unwrapInspectorObjects+280 and dispatchInspectorRealm; populated WTF string maps were queried with null strings when ordinary parameters lacked objectId.",
+    "Recovery repair guards missing/empty objectId before both map lookups. Maintained native-profiling-cli regressions cover realm identity/origin/evaluation, two remote object owners, owner evaluation after maps are populated, disable/re-enable and single getter reads/empty names. Pickier scans the changed regression with zero errors/warnings.",
+    "The proposed object repair build is queued behind a confirmed live shared qualification job at publication; no terminal or runtime-success claim. The previous crash control is not rerun before a repaired executable."
+  ],
+  "limitations": [
+    "Remote-object repair, getter control, maintained combined regression and all native/original/ABI validation remain required; source stays on recovery branch and excluded from main.",
+    "Realm controller roots, retirement, all object/argument/group/exception schemas, asynchronous commands and worker schedules remain incomplete. Full Bun parity is not achieved."
+  ],
+  "files": [
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "bytes": 4624,
+      "sha256": "43161fda126d1e52e4d1f1283b856b391de4efa822dd174d050ebff5b759a311"
+    },
+    {
+      "file": "control-results.json",
+      "archive": "raw/control-results.json.gz",
+      "bytes": 568,
+      "sha256": "641b9daf340a46b8adf07c79f64340c4a2cf8632fc93cafcc947a5d1e07f4dbb"
+    },
+    {
+      "file": "controls.log",
+      "archive": "raw/controls.log.gz",
+      "bytes": 649,
+      "sha256": "7f705675528f3a288585ddba784c96a9cffc81b1351b94e3e32480072738f4a1"
+    },
+    {
+      "file": "executable.json",
+      "archive": "raw/executable.json.gz",
+      "bytes": 105,
+      "sha256": "e5fb144cc4347fd367eb1c4aea582c3827ab8a35cb058f821ac1b57b70ddb288"
+    },
+    {
+      "file": "getter-reference.mjs",
+      "archive": "raw/getter-reference.mjs.gz",
+      "bytes": 786,
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef"
+    },
+    {
+      "file": "home-metadata-reference.mjs.log",
+      "archive": "raw/home-metadata-reference.mjs.log.gz",
+      "bytes": 54,
+      "sha256": "fef63fa3d02e770002f80dfa53fff680379ab7973830d8fd276a69ac2cdcd5b5"
+    },
+    {
+      "file": "home-object-reference.mjs.log",
+      "archive": "raw/home-object-reference.mjs.log.gz",
+      "bytes": 87,
+      "sha256": "fc165bec68006292bfa15e33f144831e4822b68f28a81c44184f3ec02b2f2f3e"
+    },
+    {
+      "file": "home-reference.mjs.log",
+      "archive": "raw/home-reference.mjs.log.gz",
+      "bytes": 199,
+      "sha256": "ba1095917c3b151db7d15a5f19aa3272508239a4b2361cb01788bb4af060bd0d"
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "bytes": 1381,
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09"
+    },
+    {
+      "file": "node-getter-reference.mjs.log",
+      "archive": "raw/node-getter-reference.mjs.log.gz",
+      "bytes": 54,
+      "sha256": "6907ad4c0f62e720b0e352d1aabe14a71c655d6feeab3b3b4c4b700963171bc5"
+    },
+    {
+      "file": "node-metadata-reference.mjs.log",
+      "archive": "raw/node-metadata-reference.mjs.log.gz",
+      "bytes": 54,
+      "sha256": "fef63fa3d02e770002f80dfa53fff680379ab7973830d8fd276a69ac2cdcd5b5"
+    },
+    {
+      "file": "node-object-reference.mjs.log",
+      "archive": "raw/node-object-reference.mjs.log.gz",
+      "bytes": 44,
+      "sha256": "c6c4c8a8635d651ef45894ca563aae83ccad7f1bbfd9617df82e8462c684c2a8"
+    },
+    {
+      "file": "node-reference.mjs.log",
+      "archive": "raw/node-reference.mjs.log.gz",
+      "bytes": 461,
+      "sha256": "8915b071ed30f4ef5725233fb2d5cd29895c2561ae9f19ae03bab2bca59867b5"
+    },
+    {
+      "file": "object-crash-summary.json",
+      "archive": "raw/object-crash-summary.json.gz",
+      "bytes": 4568,
+      "sha256": "8a821229d6c5b1beaee40e919959c8e383a69133354e285db03f4beab968f086"
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "bytes": 1177,
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310"
+    },
+    {
+      "file": "object-repair-recovery-commit.txt",
+      "archive": "raw/object-repair-recovery-commit.txt.gz",
+      "bytes": 41,
+      "sha256": "cea3b39937666b92819ddbf8878851d346beae5ad02a483dda756fa2d0261a3a"
+    },
+    {
+      "file": "pickier.json",
+      "archive": "raw/pickier.json.gz",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "bytes": 1168,
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02"
+    },
+    {
+      "file": "run-batch.py",
+      "archive": "raw/run-batch.py.gz",
+      "bytes": 1381,
+      "sha256": "47e0719cb8c1aeb3fe50712b564ad5926f6c27d3794cb244530c5d7b5af8ade8"
+    },
+    {
+      "file": "run-controls.py",
+      "archive": "raw/run-controls.py.gz",
+      "bytes": 790,
+      "sha256": "a4582999a69832040f259e5b56d0fee025ebda722b2c921b3a7f3da198045f3a"
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "bytes": 1070,
+      "sha256": "4872b23e541cde5f4f67909f6a74fe362ffe1dac08a01eff1be5a92a70e39844"
+    },
+    {
+      "file": "tests-recovery-commit.txt",
+      "archive": "raw/tests-recovery-commit.txt.gz",
+      "bytes": 41,
+      "sha256": "6225d651fa9b7153f64abf07feda28fee42d39bc90b67aa30c5141bee05316d6"
+    }
+  ]
+}
