@@ -58,6 +58,10 @@ use Fcntl qw(:flock O_RDWR O_CREAT);
 use IO::Select;
 use POSIX qw(WNOHANG);
 use Time::HiRes qw(time);
+use Digest::SHA qw(sha256_hex);
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
+use File::Spec;
 
 my $HOST_STREAK   = 3;      # consecutive bad host samples before killing
 my $POLL          = 0.25;   # seconds between liveness/deadline checks
@@ -247,6 +251,28 @@ if ($min_free_mb > 0 || $crit_free_mb > 0) {
     }
 }
 
+# The kernel exposes the same current phys_footprint through libproc. Unlike
+# footprint(1), this query does not traverse each process's VM mappings.
+# Build a source-addressed helper once; preserve the original probe when a
+# host cannot compile it. Both paths keep the same deadline and failure limit.
+my $kernel_footprint_probe;
+if ($^O eq 'darwin') {
+    my $source = File::Spec->rel2abs(dirname($0) . '/phys-footprint.c');
+    if (open(my $input, '<', $source)) {
+        local $/; my $contents = <$input>; close($input);
+        my $directory = "$ENV{HOME}/.cache/home-run";
+        eval { make_path($directory) };
+        my $binary = "$directory/phys-footprint-" . sha256_hex($contents);
+        if (!-x $binary && -d $directory) {
+            my $temporary = "$binary.$$";
+            my $compiled = capture_probe('/usr/bin/clang', '-O2', '-Wall', '-Wextra', '-Werror', $source, '-o', $temporary);
+            if (defined($compiled) && -x $temporary) { rename($temporary, $binary) }
+            unlink($temporary) if -e $temporary;
+        }
+        $kernel_footprint_probe = $binary if -x $binary;
+    }
+}
+
 # --------------------------------------------------------------- the child
 
 my $pid = fork();
@@ -307,7 +333,9 @@ sub tree_footprint_mb {
     # keep it off the caller's stream. It still contributes nothing to the sum,
     # and a sample where NOTHING could be read returns undef and is counted as a
     # measurement failure by the caller.
-    my $snapshot = capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
+    my $snapshot = defined($kernel_footprint_probe)
+        ? capture_probe($kernel_footprint_probe, @pids)
+        : capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
     return undef unless defined $snapshot;
     my $total = 0;
     my $found = 0;
