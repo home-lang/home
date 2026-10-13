@@ -104,7 +104,7 @@ pub const BrotliCompressor = struct {
             .ring_buffer = ring_buffer,
             .ring_buffer_pos = 0,
             .literal_cost_model = LiteralCostModel.init(),
-            .distance_cache = [_]u32{4, 11, 15, 16},
+            .distance_cache = [_]u32{ 4, 11, 15, 16 },
         };
     }
 
@@ -115,6 +115,9 @@ pub const BrotliCompressor = struct {
 
     /// Compress input data
     pub fn compress(self: *BrotliCompressor, input: []const u8) Brotli.Error![]u8 {
+        self.output.clearRetainingCapacity();
+        self.ring_buffer_pos = 0;
+
         // Write Brotli stream header
         try self.writeStreamHeader();
 
@@ -124,6 +127,10 @@ pub const BrotliCompressor = struct {
         // Process input in blocks
         const block_size = @min(1 << 20, input.len); // 1MB blocks
         var offset: usize = 0;
+
+        if (input.len == 0) {
+            try self.compressBlock(input, true);
+        }
 
         while (offset < input.len) {
             const chunk_size = @min(block_size, input.len - offset);
@@ -233,8 +240,9 @@ pub const BrotliCompressor = struct {
                     var match_len: usize = 0;
 
                     while (match_len < max_len and
-                           match_pos + match_len < pos and
-                           data[pos + match_len] == data[match_pos + match_len]) {
+                        match_pos + match_len < pos and
+                        data[pos + match_len] == data[match_pos + match_len])
+                    {
                         match_len += 1;
                     }
 
@@ -249,7 +257,7 @@ pub const BrotliCompressor = struct {
                         // Skip matched bytes
                         for (0..match_len) |i| {
                             if (pos + i + 4 <= data.len) {
-                                const skip_hash = self.hashBytes(data[pos + i..][0..4]) % hash_size;
+                                const skip_hash = self.hashBytes(data[pos + i ..][0..4]) % hash_size;
                                 hash_table[skip_hash] = @truncate(pos + i);
                             }
                         }
@@ -344,6 +352,8 @@ pub const BrotliDecompressor = struct {
     /// Decompress Brotli-compressed data
     pub fn decompress(self: *BrotliDecompressor, input: []const u8) Brotli.Error![]u8 {
         if (input.len == 0) return Brotli.Error.InvalidStream;
+        self.output.clearRetainingCapacity();
+        self.ring_buffer.clearRetainingCapacity();
 
         // Read stream header. wbits+10 must fit in `u5` (max 31), and the
         // Brotli spec restricts the window to 10..24 bits anyway — reject
@@ -355,16 +365,25 @@ pub const BrotliDecompressor = struct {
         pos += 1;
 
         // Process metablocks
+        var saw_last = false;
         while (pos < input.len) {
-            const consumed = try self.decompressMetablock(input[pos..]);
-            pos += consumed;
+            if (saw_last) return Brotli.Error.InvalidStream;
+            const result = try self.decompressMetablock(input[pos..]);
+            pos += result.consumed;
+            saw_last = result.is_last;
         }
+        if (!saw_last) return Brotli.Error.InvalidStream;
 
         return try self.output.toOwnedSlice(self.allocator);
     }
 
-    fn decompressMetablock(self: *BrotliDecompressor, input: []const u8) Brotli.Error!usize {
-        if (input.len == 0) return 0;
+    const MetablockResult = struct {
+        consumed: usize,
+        is_last: bool,
+    };
+
+    fn decompressMetablock(self: *BrotliDecompressor, input: []const u8) Brotli.Error!MetablockResult {
+        if (input.len == 0) return Brotli.Error.InvalidStream;
 
         var pos: usize = 0;
 
@@ -374,9 +393,12 @@ pub const BrotliDecompressor = struct {
 
         const is_last = (header & 0x01) != 0;
         const is_last_empty = (header & 0x02) != 0;
+        if (header & 0xfc != 0 or (is_last_empty and !is_last)) {
+            return Brotli.Error.InvalidMetablock;
+        }
 
         if (is_last and is_last_empty) {
-            return pos;
+            return .{ .consumed = pos, .is_last = true };
         }
 
         // Read data length
@@ -408,9 +430,10 @@ pub const BrotliDecompressor = struct {
                 pos += try self.readVarInt(input[pos..], &distance);
 
                 // Copy from ring buffer
-                if (distance > self.ring_buffer.items.len) {
+                if (distance == 0 or distance > self.ring_buffer.items.len) {
                     return Brotli.Error.InvalidDistance;
                 }
+                if (length > data_len - processed) return Brotli.Error.InvalidMetablock;
 
                 const copy_start = self.ring_buffer.items.len - distance;
                 for (0..length) |i| {
@@ -425,20 +448,27 @@ pub const BrotliDecompressor = struct {
             }
         }
 
-        return pos;
+        if (processed != data_len) return Brotli.Error.InvalidStream;
+
+        return .{ .consumed = pos, .is_last = is_last };
     }
 
     fn readVarInt(self: *BrotliDecompressor, input: []const u8, out_value: *usize) Brotli.Error!usize {
         _ = self;
         var value: usize = 0;
-        var shift: u6 = 0;
+        var shift: u8 = 0;
         var pos: usize = 0;
 
         while (pos < input.len) {
             const byte = input[pos];
             pos += 1;
 
-            value |= @as(usize, byte & 0x7F) << shift;
+            const payload = byte & 0x7f;
+            if (shift >= @bitSizeOf(usize)) return Brotli.Error.InvalidStream;
+            const shift_amount: std.math.Log2Int(usize) = @intCast(shift);
+            const payload_value: usize = payload;
+            if (payload_value > (@as(usize, std.math.maxInt(usize)) >> shift_amount)) return Brotli.Error.InvalidStream;
+            value |= payload_value << shift_amount;
 
             if ((byte & 0x80) == 0) {
                 out_value.* = value;
@@ -446,7 +476,7 @@ pub const BrotliDecompressor = struct {
             }
 
             shift += 7;
-            if (shift >= 64) return Brotli.Error.InvalidStream;
+            if (shift >= @bitSizeOf(usize)) return Brotli.Error.InvalidStream;
         }
 
         return Brotli.Error.InvalidStream;
@@ -550,4 +580,18 @@ test "brotli repeated patterns" {
     defer allocator.free(decompressed);
 
     try std.testing.expectEqualStrings(&input, decompressed);
+}
+
+test "brotli rejects truncated and invalid metablocks" {
+    const allocator = std.testing.allocator;
+    var brotli = try Brotli.init(allocator, 6, 22);
+
+    try std.testing.expectError(Brotli.Error.InvalidStream, brotli.decompress(&.{12}));
+    try std.testing.expectError(Brotli.Error.InvalidMetablock, brotli.decompress(&.{ 12, 0x81 }));
+
+    // One literal is declared but its byte is missing.
+    try std.testing.expectError(Brotli.Error.InvalidStream, brotli.decompress(&.{ 12, 0x01, 0x01, 0x00 }));
+
+    // A zero-distance copy must be rejected rather than reaching i % 0.
+    try std.testing.expectError(Brotli.Error.InvalidDistance, brotli.decompress(&.{ 12, 0x01, 0x04, 0x01, 0x04, 0x00 }));
 }

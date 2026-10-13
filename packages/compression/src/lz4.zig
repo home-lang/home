@@ -13,6 +13,7 @@ pub const LZ4 = struct {
         OutOfMemory,
         InvalidToken,
         InvalidOffset,
+        InvalidLength,
         OutputTooSmall,
         SizeTooLarge,
     };
@@ -85,6 +86,9 @@ pub const LZ4Compressor = struct {
     }
 
     pub fn compress(self: *LZ4Compressor, input: []const u8) LZ4.Error![]u8 {
+        self.output.clearRetainingCapacity();
+        @memset(self.hash_table, 0);
+
         // The frame always begins with the uncompressed size, including for
         // empty inputs. The decoder uses this header to distinguish a valid
         // empty frame from a truncated stream.
@@ -174,8 +178,9 @@ pub const LZ4Compressor = struct {
         const max_len = @min(input.len - pos, 65535 + LZ4.MIN_MATCH);
 
         while (match_len < max_len and
-               match_pos + match_len < pos and
-               input[pos + match_len] == input[match_pos + match_len]) {
+            match_pos + match_len < pos and
+            input[pos + match_len] == input[match_pos + match_len])
+        {
             match_len += 1;
         }
 
@@ -314,6 +319,7 @@ pub const LZ4Decompressor = struct {
 
     pub fn decompress(self: *LZ4Decompressor, input: []const u8) LZ4.Error![]u8 {
         if (input.len < 4) return LZ4.Error.InvalidStream;
+        self.output.clearRetainingCapacity();
 
         // Read uncompressed size
         const uncompressed_size = self.readU32(input[0..4]);
@@ -335,18 +341,25 @@ pub const LZ4Decompressor = struct {
             // Decode literal length
             var literal_length: usize = @intCast(token >> 4);
             if (literal_length == 15) {
+                var terminated = false;
                 while (ip < input.len) {
                     const extra = input[ip];
                     ip += 1;
+                    if (literal_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
                     literal_length += extra;
-                    if (extra != 255) break;
+                    if (extra != 255) {
+                        terminated = true;
+                        break;
+                    }
                 }
+                if (!terminated) return LZ4.Error.InvalidStream;
             }
 
             // Copy literals
-            if (ip + literal_length > input.len) {
+            if (literal_length > input.len - ip) {
                 return LZ4.Error.InvalidStream;
             }
+            if (literal_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
             try self.output.appendSlice(self.allocator, input[ip..][0..literal_length]);
             ip += literal_length;
 
@@ -365,14 +378,22 @@ pub const LZ4Decompressor = struct {
             // Decode match length
             var match_length: usize = @intCast(token & LZ4.ML_MASK);
             if (match_length == 15) {
+                var terminated = false;
                 while (ip < input.len) {
                     const extra = input[ip];
                     ip += 1;
+                    if (match_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
                     match_length += extra;
-                    if (extra != 255) break;
+                    if (extra != 255) {
+                        terminated = true;
+                        break;
+                    }
                 }
+                if (!terminated) return LZ4.Error.InvalidStream;
             }
+            if (match_length > std.math.maxInt(usize) - LZ4.MIN_MATCH) return LZ4.Error.InvalidLength;
             match_length += LZ4.MIN_MATCH;
+            if (match_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
 
             // Copy match
             const match_pos = self.output.items.len - offset;
@@ -382,15 +403,17 @@ pub const LZ4Decompressor = struct {
             }
         }
 
+        if (self.output.items.len != uncompressed_size) return LZ4.Error.InvalidLength;
+
         return try self.output.toOwnedSlice(self.allocator);
     }
 
     fn readU32(self: *LZ4Decompressor, bytes: []const u8) usize {
         _ = self;
         return @as(usize, bytes[0]) |
-               (@as(usize, bytes[1]) << 8) |
-               (@as(usize, bytes[2]) << 16) |
-               (@as(usize, bytes[3]) << 24);
+            (@as(usize, bytes[1]) << 8) |
+            (@as(usize, bytes[2]) << 16) |
+            (@as(usize, bytes[3]) << 24);
     }
 };
 
@@ -521,4 +544,15 @@ test "lz4 incompressible data" {
     defer allocator.free(decompressed);
 
     try std.testing.expectEqualSlices(u8, &input, decompressed);
+}
+
+test "lz4 rejects malformed lengths and offsets" {
+    const allocator = std.testing.allocator;
+    var lz4 = LZ4.init(allocator, 1);
+
+    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 1, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 1, 0, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidOffset, lz4.decompress(&.{ 4, 0, 0, 0, 0, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 4, 0, 0, 0, 0x10, 'A', 1, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 20, 0, 0, 0, 0x1f, 'A', 1, 0 }));
 }

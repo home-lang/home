@@ -19,11 +19,15 @@ pub fn build(b: *std.Build) void {
     });
     tests.root_module.addImport("compression", compression);
 
+    const module_tests = b.addTest(.{ .root_module = compression });
+    const run_module_tests = b.addRunArtifact(module_tests);
     const run_tests = b.addRunArtifact(tests);
     const check_step = b.step("check", "Compile compression tests without running them");
+    check_step.dependOn(&module_tests.step);
     check_step.dependOn(&tests.step);
 
     const test_step = b.step("test", "Run compression tests");
+    test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_tests.step);
 
     const install_docs = b.addInstallDirectory(.{

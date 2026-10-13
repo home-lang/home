@@ -27,6 +27,7 @@ pub const Snappy = struct {
     const TAG_LITERAL: u8 = 0x00;
     const TAG_COPY_1_BYTE_OFFSET: u8 = 0x01;
     const TAG_COPY_2_BYTE_OFFSET: u8 = 0x02;
+    const TAG_COPY_4_BYTE_OFFSET: u8 = 0x03;
 
     /// Initialize Snappy compressor
     pub fn init(allocator: std.mem.Allocator) Snappy {
@@ -81,6 +82,9 @@ pub const SnappyCompressor = struct {
     }
 
     pub fn compress(self: *SnappyCompressor, input: []const u8) Snappy.Error![]u8 {
+        self.output.clearRetainingCapacity();
+        @memset(self.hash_table, std.math.maxInt(usize));
+
         // Write uncompressed length as varint
         try self.writeVarint(input.len);
 
@@ -245,8 +249,8 @@ pub const SnappyCompressor = struct {
                 const length_code: u8 = @intCast(copy_len - 4);
                 const offset_code: u8 = @intCast(offset >> 8);
                 const tag: u8 = Snappy.TAG_COPY_1_BYTE_OFFSET |
-                                (length_code * 4) |
-                                (offset_code * 32);
+                    (length_code * 4) |
+                    (offset_code * 32);
                 try self.output.append(self.allocator, tag);
                 try self.output.append(self.allocator, @intCast(offset & 0xFF));
             } else {
@@ -290,6 +294,7 @@ pub const SnappyDecompressor = struct {
 
     pub fn decompress(self: *SnappyDecompressor, input: []const u8) Snappy.Error![]u8 {
         if (input.len == 0) return Snappy.Error.InvalidStream;
+        self.output.clearRetainingCapacity();
 
         // Read uncompressed length
         var pos: usize = 0;
@@ -311,9 +316,10 @@ pub const SnappyDecompressor = struct {
                 // Literal
                 const literal_len = try self.decodeLiteralLength(input, tag, &pos);
 
-                if (pos + literal_len > input.len) {
+                if (literal_len > input.len - pos) {
                     return Snappy.Error.InvalidStream;
                 }
+                if (literal_len > uncompressed_len -| self.output.items.len) return Snappy.Error.InvalidLength;
 
                 try self.output.appendSlice(self.allocator, input[pos..][0..literal_len]);
                 pos += literal_len;
@@ -325,7 +331,7 @@ pub const SnappyDecompressor = struct {
                 const offset = ((@as(usize, tag) & 0xE0) << 3) | input[pos];
                 pos += 1;
 
-                try self.emitCopy(offset, length);
+                try self.emitCopy(offset, length, uncompressed_len);
             } else if (tag_type == Snappy.TAG_COPY_2_BYTE_OFFSET) {
                 // 2-byte offset copy
                 if (pos + 1 >= input.len) return Snappy.Error.InvalidStream;
@@ -334,9 +340,15 @@ pub const SnappyDecompressor = struct {
                 const offset = @as(usize, input[pos]) | (@as(usize, input[pos + 1]) << 8);
                 pos += 2;
 
-                try self.emitCopy(offset, length);
-            } else {
-                return Snappy.Error.InvalidTag;
+                try self.emitCopy(offset, length, uncompressed_len);
+            } else if (tag_type == Snappy.TAG_COPY_4_BYTE_OFFSET) {
+                if (input.len - pos < 4) return Snappy.Error.InvalidStream;
+
+                const length = 1 + ((tag >> 2) & 0x3f);
+                const offset = std.mem.readInt(u32, input[pos..][0..4], .little);
+                pos += 4;
+
+                try self.emitCopy(offset, length, uncompressed_len);
             }
         }
 
@@ -358,14 +370,19 @@ pub const SnappyDecompressor = struct {
             const byte = input[pos.*];
             pos.* += 1;
 
-            result |= @as(usize, byte & 0x7F) << @intCast(shift);
+            const payload = byte & 0x7f;
+            if (shift >= @bitSizeOf(usize)) return Snappy.Error.InvalidLength;
+            const shift_amount: std.math.Log2Int(usize) = @intCast(shift);
+            const payload_value: usize = payload;
+            if (payload_value > (@as(usize, std.math.maxInt(usize)) >> shift_amount)) return Snappy.Error.InvalidLength;
+            result |= payload_value << shift_amount;
 
             if ((byte & 0x80) == 0) {
                 return result;
             }
 
             shift += 7;
-            if (shift >= 64) return Snappy.Error.InvalidLength;
+            if (shift >= @bitSizeOf(usize)) return Snappy.Error.InvalidLength;
         }
 
         return Snappy.Error.InvalidStream;
@@ -391,10 +408,11 @@ pub const SnappyDecompressor = struct {
         return length + 1;
     }
 
-    fn emitCopy(self: *SnappyDecompressor, offset: usize, length: usize) Snappy.Error!void {
+    fn emitCopy(self: *SnappyDecompressor, offset: usize, length: usize, output_limit: usize) Snappy.Error!void {
         if (offset > self.output.items.len or offset == 0) {
             return Snappy.Error.InvalidOffset;
         }
+        if (length > output_limit -| self.output.items.len) return Snappy.Error.InvalidLength;
 
         const start_pos = self.output.items.len - offset;
 
@@ -545,4 +563,18 @@ test "snappy long repeated sequence" {
     defer allocator.free(decompressed);
 
     try std.testing.expectEqualStrings(input, decompressed);
+}
+
+test "snappy rejects malformed streams and supports four-byte offsets" {
+    const allocator = std.testing.allocator;
+    var snappy = Snappy.init(allocator);
+
+    try std.testing.expectError(Snappy.Error.InvalidStream, snappy.decompress(&.{}));
+    try std.testing.expectError(Snappy.Error.InvalidStream, snappy.decompress(&.{0x80}));
+    try std.testing.expectError(Snappy.Error.InvalidLength, snappy.decompress(&.{ 1, 4, 'A', 'B' }));
+    try std.testing.expectError(Snappy.Error.InvalidOffset, snappy.decompress(&.{ 4, 1, 0 }));
+
+    const decoded = try snappy.decompress(&.{ 5, 0, 'A', 15, 1, 0, 0, 0 });
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings("AAAAA", decoded);
 }
