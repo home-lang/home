@@ -137,6 +137,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .type_alias_bodies,
         .jsdoc_typedef_object_types,
         .jsdoc_callback_signatures,
+        .global_namespace_type_exports,
         => .{ .key = string_id, .value = type_id },
         .generic_aliases => .{ .key = string_id, .value = alias },
         .generic_interfaces_by_decl => .{ .key = node_id, .value = alias },

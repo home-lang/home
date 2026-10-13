@@ -894,7 +894,9 @@ pub const Engine = struct {
     }
 
     fn isEmptyObjectType(self: *Engine, t: TypeId) bool {
-        if (t >= self.pool().typeCount() or !self.pool().flagsOf(t).is_object_type) return false;
+        if (t >= self.pool().typeCount()) return false;
+        const flags = self.pool().flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return false;
         return self.interner.objectMembers(t).len == 0 and
             self.interner.objectStringIndex(t) == Primitive.none and
             self.interner.objectNumberIndex(t) == Primitive.none and
@@ -1267,7 +1269,7 @@ pub const Engine = struct {
         // current lib approximation) accepts every non-nullish value,
         // including primitives. Lowercase `object` remains the
         // primitive `object_t` sentinel and is intentionally stricter.
-        if (tf.is_object_type and
+        if (self.isEmptyObjectType(target) and
             self.interner.objectMembers(target).len == 0 and
             self.interner.objectStringIndex(target) == Primitive.none and
             self.interner.objectNumberIndex(target) == Primitive.none and

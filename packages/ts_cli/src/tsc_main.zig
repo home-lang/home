@@ -305,8 +305,12 @@ fn printConfigValidationDiagnostics(
     pretty: bool,
     color: bool,
 ) !void {
+    var paths = try DiagnosticPaths.init(gpa);
+    defer paths.deinit();
+    var displayed_config = cfg;
+    displayed_config.file_path = try paths.display(cfg.file_path);
     for (diagnostics) |d| {
-        const formatted = try config_diagnostics.format(gpa, cfg, source, d, pretty, color);
+        const formatted = try config_diagnostics.format(gpa, displayed_config, source, d, pretty, color);
         defer gpa.free(formatted);
         printStdout("{s}\n", .{formatted});
     }
@@ -629,9 +633,12 @@ fn buildOneProject(
     _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
     var had_errors = config_errors;
+    var diagnostic_paths = DiagnosticPaths.init(gpa) catch return .errors_outputs_skipped;
+    defer diagnostic_paths.deinit();
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
+        .paths = &diagnostic_paths,
         .use_pretty = project_pretty,
         .use_color = project_pretty,
         .filter = if (config_errors) .syntax_only else .all,
@@ -646,6 +653,7 @@ fn buildOneProject(
             config_path,
             true,
             false,
+            &diagnostic_paths,
         );
         if (composite_summary.error_count > 0) had_errors = true;
     }
@@ -2064,6 +2072,7 @@ fn printCompositeProjectFileListDiagnostics(
     config_path: []const u8,
     use_pretty: bool,
     use_color: bool,
+    paths: *DiagnosticPaths,
 ) CompositeProjectFileListSummary {
     var summary: CompositeProjectFileListSummary = .{};
     var seen_files: std.StringHashMapUnmanaged(void) = .empty;
@@ -2077,8 +2086,9 @@ fn printCompositeProjectFileListDiagnostics(
         defer gpa.free(message);
         var related_buf: [1]ts_diagnostics.Related = undefined;
         const related = compositeDiagnosticRelated(program, f, &related_buf);
+        for (related_buf[0..related.len]) |*info| info.file = paths.display(info.file) catch info.file;
         const diag: ts_diagnostics.Diagnostic = .{
-            .file = anchor.file.path,
+            .file = paths.display(anchor.file.path) catch anchor.file.path,
             .line = lc.line,
             .col = lc.col,
             .code = 6307,
@@ -2101,7 +2111,7 @@ fn printCompositeProjectFileListDiagnostics(
             summary.files_with_errors += 1;
         }
         if (summary.first_error_file.len == 0) {
-            summary.first_error_file = anchor.file.path;
+            summary.first_error_file = paths.display(anchor.file.path) catch anchor.file.path;
             summary.first_error_line = lc.line;
             summary.first_error_col = lc.col;
         }
@@ -3501,9 +3511,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     var stream_first_error_col: usize = 0;
     var stream_error_file_counts: std.ArrayListUnmanaged(ErrorFileCount) = .empty;
     defer stream_error_file_counts.deinit(gpa);
+    var diagnostic_paths = try DiagnosticPaths.init(gpa);
+    defer diagnostic_paths.deinit();
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
+        .paths = &diagnostic_paths,
         .use_pretty = pretty,
         .use_color = diagnostic_color,
         .any_errors = &any_errors_streaming,
@@ -3586,6 +3599,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                     c.file_path,
                     pretty,
                     diagnostic_color,
+                    &diagnostic_paths,
                 );
                 if (composite_summary.error_count > 0) {
                     any_errors_streaming = true;
@@ -3872,6 +3886,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             var watch_stream_ctx: StreamCtx = .{
                 .gpa = gpa,
                 .program = &program,
+                .paths = &diagnostic_paths,
                 .use_pretty = pretty,
                 .use_color = diagnostic_color,
                 .any_errors = &watch_any_errors,
@@ -4047,9 +4062,40 @@ const SyntaxDiagnosticProbe = struct {
 /// the file's source bytes for line/col rendering; `any_errors`
 /// is OR'd from each file's non-emit-phase diagnostics so the
 /// final exit code reflects what's been streamed.
+/// Display paths are relative to the command's working directory. Cache owned
+/// spellings so summaries and watch rounds never borrow per-diagnostic memory.
+const DiagnosticPaths = struct {
+    arena: std.heap.ArenaAllocator,
+    directory: []const u8,
+    cache: std.StringHashMapUnmanaged([]const u8) = .empty,
+
+    fn init(gpa: std.mem.Allocator) !DiagnosticPaths {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer arena.deinit();
+        const directory = try std.process.currentPathAlloc(std.Options.debug_io, arena.allocator());
+        return .{ .arena = arena, .directory = directory };
+    }
+
+    fn deinit(self: *DiagnosticPaths) void {
+        self.arena.deinit();
+    }
+
+    fn display(self: *DiagnosticPaths, path: []const u8) error{OutOfMemory}![]const u8 {
+        if (path.len == 0) return path;
+        if (self.cache.get(path)) |cached| return cached;
+        const allocator = self.arena.allocator();
+        const key = try allocator.dupe(u8, path);
+        const relative = try std.fs.path.relativeAlloc(allocator, self.directory, null, self.directory, path);
+        if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, relative, '\\', '/');
+        try self.cache.put(allocator, key, relative);
+        return relative;
+    }
+};
+
 const StreamCtx = struct {
     gpa: std.mem.Allocator,
     program: *const ts_program.Program,
+    paths: *DiagnosticPaths,
     use_pretty: bool,
     use_color: bool,
     filter: DiagnosticFilter = .all,
@@ -4071,6 +4117,25 @@ const StreamCtx = struct {
     /// table after a multi-file summary.
     error_file_counts: ?*std.ArrayListUnmanaged(ErrorFileCount) = null,
 };
+
+test "tsc_main: diagnostic paths are relative to the working directory and remain owned" {
+    const allocator = std.testing.allocator;
+    var paths = try DiagnosticPaths.init(allocator);
+    defer paths.deinit();
+    var absolute = try std.fs.path.join(allocator, &.{ paths.directory, "virtual-root", "src", "main.ts" });
+    const expected = "virtual-root/src/main.ts";
+    const first = try paths.display(absolute);
+    try std.testing.expectEqualStrings(expected, first);
+    allocator.free(absolute);
+    absolute = try std.fs.path.join(allocator, &.{ paths.directory, "virtual-root", "src", "main.ts" });
+    defer allocator.free(absolute);
+    const repeated = try paths.display(absolute);
+    try std.testing.expect(first.ptr == repeated.ptr);
+    try std.testing.expectEqualStrings(expected, repeated);
+    try std.testing.expectEqualStrings(expected, try paths.display("./virtual-root/src/../src/main.ts"));
+    try std.testing.expectEqualStrings("../outside.ts", try paths.display("../outside.ts"));
+    try std.testing.expectEqualStrings("", try paths.display(""));
+}
 
 const ErrorFileCount = struct {
     path: []const u8,
@@ -4101,9 +4166,10 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         var chain_arena = std.heap.ArenaAllocator.init(ctx.gpa);
         defer chain_arena.deinit();
         const rendered_chain = mapDriverChain(chain_arena.allocator(), d.chain) catch &.{};
-        const rendered_related = mapDriverRelated(chain_arena.allocator(), ctx.program, f, d.related) catch &.{};
+        const rendered_related: []ts_diagnostics.Related = mapDriverRelated(chain_arena.allocator(), ctx.program, f, d.related) catch &.{};
+        for (rendered_related) |*info| info.file = ctx.paths.display(info.file) catch info.file;
         const fdiag: ts_diagnostics.Diagnostic = .{
-            .file = f.path,
+            .file = ctx.paths.display(f.path) catch f.path,
             .line = pos.line,
             .col = pos.col,
             .code = code,
@@ -4133,7 +4199,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
                 if (ctx.files_with_errors) |fc| fc.* += 1;
                 if (ctx.first_error_file) |fe| {
                     if (fe.*.len == 0) {
-                        fe.* = f.path;
+                        fe.* = ctx.paths.display(f.path) catch f.path;
                         if (ctx.first_error_line) |fl| fl.* = pos.line;
                         if (ctx.first_error_col) |fcol| fcol.* = pos.col;
                     }
@@ -4144,12 +4210,12 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
     if (file_error_count > 0) {
         if (ctx.error_file_counts) |counts| {
             for (counts.items) |*entry| {
-                if (std.mem.eql(u8, entry.path, f.path)) {
+                if (std.mem.eql(u8, entry.path, ctx.paths.display(f.path) catch f.path)) {
                     entry.count += file_error_count;
                     return;
                 }
             }
-            counts.append(ctx.gpa, .{ .path = f.path, .count = file_error_count }) catch {};
+            counts.append(ctx.gpa, .{ .path = ctx.paths.display(f.path) catch f.path, .count = file_error_count }) catch {};
         }
     }
 }
@@ -4213,7 +4279,7 @@ fn mapDriverRelated(
     program: *const ts_program.Program,
     primary: *const ts_program.File,
     related: []const ts_driver.RelatedInfo,
-) error{OutOfMemory}![]const ts_diagnostics.Related {
+) error{OutOfMemory}![]ts_diagnostics.Related {
     if (related.len == 0) return &.{};
     const out = try arena.alloc(ts_diagnostics.Related, related.len);
     for (related, 0..) |r, i| {

@@ -263,7 +263,13 @@ const GlobalReferenceNames = struct {
                     .identifier => if (Program.identifierIsValueReference(hir, node)) {
                         try result.add(gpa, hir_mod_ns.identifierOf(hir, node).name, value_mask | namespace_mask);
                     },
-                    .type_ref => try result.add(gpa, hir_mod_ns.typeRefOf(hir, node).name, type_mask | namespace_mask),
+                    .type_ref => {
+                        try result.add(gpa, hir_mod_ns.typeRefOf(hir, node).name, type_mask | namespace_mask);
+                        const qualifiers = hir_mod_ns.typeRefQualifier(hir, node);
+                        if (qualifiers.len != 0 and hir.kindOf(qualifiers[0]) == .identifier) {
+                            try result.add(gpa, hir_mod_ns.identifierOf(hir, qualifiers[0]).name, namespace_mask);
+                        }
+                    },
                     .member_access => {
                         const member = hir_mod_ns.memberOf(hir, node);
                         if (hir.kindOf(member.object) != .identifier) continue;
@@ -9837,6 +9843,83 @@ test "Program: global reference facts rebuild after source replacement" {
             try T.expect(!references.contains(file, .{ .name = other, .space = .value }));
         }
     }
+}
+
+test "Program: qualified recursive declaration generics retain argument types across global owners" {
+    const Mode = enum { serial, parallel, streaming };
+    const Case = struct { declarations: []const u8, consumer: []const u8 };
+    const cases = [_]Case{
+        .{ .declarations = "declare namespace Sockets { interface Link<T> { value: T; next: Sockets.Link<T>; } }\n", .consumer = "declare const link: Sockets.Link<number>;\nconst value: number = link.next.next.value;\nconst wrong: string = link.next.next.value;\n" },
+        .{ .declarations = "declare namespace Left { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\ndeclare namespace Right { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\n", .consumer = "declare const left: Left.Strings; declare const bad: Right.Tree<number>;\nconst right: Right.Strings = left;\nconst wrong: Right.Tree<string> = bad;\n" },
+        .{ .declarations = "declare namespace Sockets { interface Pair<T = number, U = T> { first: T; second: U; } }\n", .consumer = "declare const pair: Sockets.Pair;\nconst value: number = pair.second;\nconst wrong: string = pair.second;\n" },
+        .{ .declarations = "declare namespace Left { interface Box<T> { value: T; } }\ndeclare namespace Right { interface Box<T> { value: T; label: string; } }\n", .consumer = "declare const box: Left.Box<number>;\nconst value: number = box.value;\nconst wrong: string = box.value;\n" },
+        .{ .declarations = "declare namespace Sockets { interface Early<T> { promise: Promise<T>; } interface Promise<T> { value: T; } }\n", .consumer = "declare const early: Sockets.Early<number>;\nconst value: number = early.promise.value;\nconst wrong: string = early.promise.value;\n" },
+        .{ .declarations = "declare namespace Sockets { interface Holder<T> { forward: LaterBox<T>; change<U>(value: U): LaterBox<U>; } interface LaterBox<T> { value: T; next?: Holder<T>; } }\n", .consumer = "declare const holder: Sockets.Holder<number>;\nconst value: number = holder.forward.value;\nconst wrong: string = holder.forward.value;\n" },
+        .{ .declarations = "declare namespace Sockets { interface Holder<T> { forward: LaterBox<T>; change<U>(value: U): LaterBox<U>; } interface LaterBox<T> { value: T; next?: Holder<T>; } }\n", .consumer = "declare const holder: Sockets.Holder<number>;\nconst value: string = holder.change(\"value\").value;\nconst wrong: number = holder.change(\"value\").value;\n" },
+    };
+    for (cases) |case| {
+        inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+            inline for (.{ false, true }) |declarations_first| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                _ = try program.add("/globals.d.ts", "interface Array<T> {}\ninterface Boolean {}\ninterface CallableFunction {}\ninterface Function {}\ninterface IArguments {}\ninterface NewableFunction {}\ninterface Number {}\ninterface Object {}\ninterface RegExp {}\ninterface String {}\ninterface TemplateStringsArray extends Array<string> { readonly raw: readonly string[]; }\n");
+                var app: FileId = undefined;
+                if (declarations_first) {
+                    _ = try program.add("/interfaces.d.ts", case.declarations);
+                    app = try program.add("/main.ts", case.consumer);
+                } else {
+                    app = try program.add("/main.ts", case.consumer);
+                    _ = try program.add("/interfaces.d.ts", case.declarations);
+                }
+                const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+                const Sink = struct {
+                    fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+                };
+                switch (mode) {
+                    .serial => try program.compileAll(options),
+                    .parallel => try program.compileAllParallel(options, 2),
+                    .streaming => try program.compileAllStreaming(options, {}, Sink.callback),
+                }
+                const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 1), diagnostics.len);
+                try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+                try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, case.consumer, "wrong").?)), diagnostics[0].pos);
+            }
+        }
+    }
+}
+
+test "Program: imported namespace generics preserve dependent constraints and arity diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const consumer = "declare const pair: Scoped.Pair<number>;\nconst value: number = pair.second;\nconst wrong: string = pair.second;\ndeclare const constraint: Scoped.Pair<number, string>;\ndeclare const excess: Scoped.One<number, string>;\ndeclare const notGeneric: Scoped.Scalar<number>;\n";
+    const app = try program.add("/main.ts", consumer);
+    _ = try program.add("/interfaces.d.ts", "declare namespace Scoped { interface Pair<T, U extends T = T> { first: T; second: U; } interface One<T> { value: T; } type Scalar = number; }\n");
+    _ = try program.add("/globals.d.ts", "interface Array<T> {}\ninterface Boolean {}\ninterface CallableFunction {}\ninterface Function {}\ninterface IArguments {}\ninterface NewableFunction {}\ninterface Number {}\ninterface Object {}\ninterface RegExp {}\ninterface String {}\ninterface TemplateStringsArray extends Array<string> { readonly raw: readonly string[]; }\n");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 4), diagnostics.len);
+    const codes = [_]u32{ 2322, 2344, 2314, 2315 };
+    const positions = [_]usize{
+        std.mem.indexOf(u8, consumer, "wrong").?,
+        std.mem.indexOf(u8, consumer, "number, string>").? + "number, ".len,
+        std.mem.indexOf(u8, consumer, "Scoped.One").?,
+        std.mem.indexOf(u8, consumer, "Scoped.Scalar").?,
+    };
+    for (diagnostics, codes, positions) |diagnostic, code, pos| {
+        try T.expectEqual(code, diagnostic.code);
+        try T.expectEqual(@as(u32, @intCast(pos)), diagnostic.pos);
+    }
+    try T.expectEqualStrings("Generic type 'One<T>' requires 1 type argument(s).", diagnostics[2].message);
+    try T.expectEqualStrings("Type 'Scalar' is not generic.", diagnostics[3].message);
 }
 
 test "Program: checked global owners publish structural generic lexical and globalThis types in either order" {

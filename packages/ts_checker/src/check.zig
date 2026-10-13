@@ -4318,6 +4318,9 @@ pub const CheckedTypes = struct {
     recursive_indexed_access_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     recursive_mapped_index_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     namespace_value_object_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    /// Qualified global namespace types, including declaration-owned generic
+    /// definitions. This table uses string paths, never foreign HIR nodes.
+    global_namespace_type_exports: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     jsdoc_constrained_type_params: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     string_named_export_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     type_alias_bodies: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
@@ -4875,6 +4878,8 @@ pub const Checker = struct {
     /// is structurally interned, so `(declaration, instantiated body)` is a
     /// stable identity for repeating the same inheritance work.
     generic_interface_refresh_cache: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, TypeId) = .empty,
+    /// Exact body and mapper identities; refreshed/merged bodies get new keys.
+    interface_instantiation_memo: std.StringHashMapUnmanaged(TypeId) = .empty,
     /// Exact refreshes currently walking their inherited interfaces. A
     /// recursive inheritance path cannot contribute new index information
     /// by re-entering the same substituted body, so defer that edge.
@@ -5064,6 +5069,7 @@ pub const Checker = struct {
     /// many member bodies; once synthesized, reuse the object instead of
     /// rechecking every exported member for each reference.
     namespace_value_object_types: std.AutoHashMapUnmanaged(NodeId, TypeId),
+    global_namespace_type_exports: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
     /// JSDoc typedef aliases currently being lowered from source text.
     /// JSDoc alias bodies can recursively reference sibling aliases,
     /// including malformed Closure-style namepaths that our trivia
@@ -5433,6 +5439,7 @@ pub const Checker = struct {
     /// far (or `none`) instead of recursing forever. Mirrors upstream
     /// tsc's `pushTypeResolution`/`popTypeResolution` circularity guard.
     interface_lower_in_progress: std.AutoHashMapUnmanaged(NodeId, void),
+    primary_checked_interfaces: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     /// Cycle guard for `importEqualsTargetHasRuntimeValue`. An
     /// `import x = ns.member` whose target resolution loops back to the
     /// same import (e.g. `import string = test.istring` aliasing the
@@ -5918,6 +5925,7 @@ pub const Checker = struct {
     generic_instance_origins: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     local_alias_definitions: std.AutoHashMapUnmanaged(NodeId, LocalAliasDefinition) = .empty,
+    generic_container_aliases_active: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     local_alias_origins: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
     /// Re-entry depth of `nonNullableBaseConstraint`'s nested-access walk.
     non_nullable_constraint_depth: u8 = 0,
@@ -6056,6 +6064,7 @@ pub const Checker = struct {
             .resolving_value_types = .empty,
             .namespace_value_in_progress = .empty,
             .namespace_value_object_types = .empty,
+            .global_namespace_type_exports = .empty,
             .resolving_jsdoc_typedef_aliases = .empty,
             .resolving_expando_function_names = .empty,
             .resolving_function_signatures = .empty,
@@ -6465,6 +6474,10 @@ pub const Checker = struct {
     /// the program's provenance registry.
     pub fn importProgramTypeMetadata(self: *Checker, sources: []const *const CheckedTypes) CheckError!void {
         for (sources) |source| {
+            var namespace_types = source.global_namespace_type_exports.iterator();
+            while (namespace_types.next()) |entry| {
+                try self.global_namespace_type_exports.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
             var generic_signatures = source.generic_signature_params.iterator();
             while (generic_signatures.next()) |entry| {
                 if (self.generic_signature_params.contains(entry.key_ptr.*)) continue;
@@ -6512,6 +6525,11 @@ pub const Checker = struct {
                 var entries = @field(source, name).iterator();
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
             }
+        }
+        if (self.global_namespace_type_exports.count() != 0) {
+            self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+            self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
+            self.engine.generic_instance_origins = &self.generic_instance_origins;
         }
     }
 
@@ -6616,6 +6634,7 @@ pub const Checker = struct {
         self.generic_instance_origins.deinit(self.gpa);
         self.generic_expansion_active.deinit(self.gpa);
         self.local_alias_definitions.deinit(self.gpa);
+        self.generic_container_aliases_active.deinit(self.gpa);
         self.local_alias_origins.deinit(self.gpa);
         if (self.engine.type_substitution) |owner| {
             if (owner.context == @as(*anyopaque, @ptrCast(self))) self.engine.type_substitution = null;
@@ -6753,6 +6772,8 @@ pub const Checker = struct {
         self.generic_interfaces_by_decl.deinit(self.gpa);
         self.generic_interface_decl_by_instance.deinit(self.gpa);
         self.generic_interface_refresh_cache.deinit(self.gpa);
+        self.clearInterfaceInstantiationMemo();
+        self.interface_instantiation_memo.deinit(self.gpa);
         self.generic_interface_refresh_active.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
         self.variance_relation_in_progress.deinit(self.gpa);
@@ -6778,6 +6799,7 @@ pub const Checker = struct {
         self.resolving_value_types.deinit(self.gpa);
         self.namespace_value_in_progress.deinit(self.gpa);
         self.namespace_value_object_types.deinit(self.gpa);
+        self.global_namespace_type_exports.deinit(self.gpa);
         self.resolving_jsdoc_typedef_aliases.deinit(self.gpa);
         self.resolving_expando_function_names.deinit(self.gpa);
         self.resolving_function_signatures.deinit(self.gpa);
@@ -6875,6 +6897,7 @@ pub const Checker = struct {
         while (pis_it.next()) |items| self.gpa.free(items.*);
         self.pattern_index_signatures.deinit(self.gpa);
         self.interface_lower_in_progress.deinit(self.gpa);
+        self.primary_checked_interfaces.deinit(self.gpa);
         self.import_equals_runtime_in_progress.deinit(self.gpa);
         self.cross_module_type_only_export_cache.deinit(self.gpa);
         self.pattern_binding_source_in_progress.deinit(self.gpa);
@@ -7114,6 +7137,61 @@ pub const Checker = struct {
             self.sortDiagnosticsByPosition();
         }
         try self.completeLocalInterfaceReferences();
+        for (stmts) |statement| {
+            const declaration = self.unwrapExportDecl(statement);
+            if (self.hir.kindOf(declaration) != .namespace_decl or
+                (self.rootHasTopLevelExternalModuleMarker(declaration) and
+                    !self.namespaceIsDeclareGlobalAugmentation(declaration))) continue;
+            try self.publishGlobalNamespaceTypes(declaration, "");
+        }
+    }
+
+    fn publishGlobalNamespaceTypes(self: *Checker, node: NodeId, prefix: []const u8) CheckError!void {
+        const namespace = hir_mod.namespaceOf(self.hir, node);
+        if (self.namespaceNameIsStringLiteral(namespace.name)) return;
+        const namespace_name = self.declarationName(node) orelse return;
+        const path = if (self.namespaceIsDeclareGlobalAugmentation(node))
+            prefix
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}{s}{s}", .{ prefix, if (prefix.len == 0) "" else ".", self.string_interner.get(namespace_name) });
+        const ambient = self.namespaceDeclIsAmbient(node) or self.namespaceNameHasDeclarePrefix(namespace.name);
+        for (hir_mod.namespaceBody(self.hir, node)) |statement| {
+            const declaration = if (self.hir.kindOf(statement) == .export_decl)
+                self.unwrapExportDecl(statement)
+            else if (ambient)
+                statement
+            else
+                continue;
+            const kind = self.hir.kindOf(declaration);
+            if (kind == .namespace_decl) {
+                try self.publishGlobalNamespaceTypes(declaration, path);
+                continue;
+            }
+            if (kind != .interface_decl and kind != .type_alias_decl and
+                kind != .class_decl and kind != .enum_decl) continue;
+            const name = self.declarationName(declaration) orelse continue;
+            var body = self.hir.typeOf(declaration);
+            if (body == types.Primitive.none) continue;
+            const nodes = self.typeParamNodesOfDecl(declaration);
+            if (nodes.len != 0) {
+                const owned = try self.localAliasDefinition(declaration);
+                const definition = self.interner.genericDefinition(owned.definition).?;
+                if (definition.body == types.Primitive.none) {
+                    const parameters = try self.gpa.alloc(TypeId, nodes.len);
+                    defer self.gpa.free(parameters);
+                    for (nodes, parameters) |parameter, *id| id.* = self.hir.typeOf(parameter);
+                    if (self.generic_interfaces_by_decl.get(declaration)) |info| body = info.body;
+                    self.interner.completeGenericDefinition(owned.definition, parameters, body) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidTypeGraph => unreachable,
+                    };
+                }
+                body = owned.definition;
+            }
+            const qualified = try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}{s}{s}", .{ path, if (path.len == 0) "" else ".", self.string_interner.get(name) });
+            const key = self.string_interner.intern(qualified) catch return error.OutOfMemory;
+            try self.global_namespace_type_exports.put(self.gpa, key, body);
+        }
     }
 
     /// Recursive interface members keep declaration-owned references while
@@ -7130,7 +7208,8 @@ pub const Checker = struct {
             if (definition.body != types.Primitive.none) continue;
             const body = self.hir.typeOf(declaration);
             if (body == types.Primitive.none or body == types.Primitive.unknown) continue;
-            self.interner.completeGenericDefinition(entry.key_ptr.*, &.{}, body) catch |err| switch (err) {
+            const parameters = if (self.generic_interfaces_by_decl.get(declaration)) |info| info.params else &.{};
+            self.interner.completeGenericDefinition(entry.key_ptr.*, parameters, body) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidTypeGraph => unreachable,
             };
@@ -10001,7 +10080,12 @@ pub const Checker = struct {
                 try self.checkFnDeclWithFlowBoundary(node);
             },
             .class_decl => try self.checkClassDecl(node),
-            .interface_decl => try self.checkInterfaceDecl(node),
+            .interface_decl => {
+                try self.checkInterfaceDecl(node);
+                if (hir_mod.interfaceOf(self.hir, node).type_params_len != 0) {
+                    try self.primary_checked_interfaces.put(self.gpa, node, {});
+                }
+            },
             .enum_decl => try self.checkEnumDecl(node),
             .type_alias_decl => try self.checkTypeAliasDecl(node),
             .import_decl => try self.checkImportDecl(node),
@@ -25653,6 +25737,7 @@ pub const Checker = struct {
         // visible in the root block we treat it as resolved.
         if (self.hir.kindOf(qs[0]) != .identifier) return false;
         const root_name = hir_mod.identifierOf(self.hir, qs[0]).name;
+        if (self.ambientGlobalNamespaceRootExists(root_name)) return false;
         if (self.findUmdNamespaceExportSection(root_name, type_annotation) != null or
             self.programHasUmdGlobalName(root_name)) return false;
         const root = self.rootBlockFor(type_annotation);
@@ -37550,6 +37635,22 @@ pub const Checker = struct {
         saw_ct: *bool,
         visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
     ) void {
+        var scopes = std.heap.ArenaAllocator.init(self.gpa);
+        defer scopes.deinit();
+        self.scanVarianceWithMappedReads(t, param_id, position, saw_co, saw_ct, visited, null, scopes.allocator());
+    }
+
+    fn scanVarianceWithMappedReads(
+        self: *Checker,
+        t: TypeId,
+        param_id: TypeId,
+        position: types.Variance,
+        saw_co: *bool,
+        saw_ct: *bool,
+        visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
+        scope: ?*const VarianceMappedScope,
+        arena: std.mem.Allocator,
+    ) void {
         if (t == param_id) {
             switch (position) {
                 .covariant => saw_co.* = true,
@@ -37564,19 +37665,33 @@ pub const Checker = struct {
         }
         if (t < types.Primitive.first_dynamic) return;
         if (t >= self.interner.pool.typeCount()) return;
-        const visit = VarianceVisit{ .type_id = t, .position = position };
+        const visit = VarianceVisit{ .type_id = t, .position = position, .mapped_scope = scope };
         if (visited.contains(visit)) return;
         visited.put(self.gpa, visit, {}) catch return;
         const flags = self.interner.pool.flagsOf(t);
         const payload_idx = self.interner.pool.payloadOf(t);
 
+        if (flags.is_union) {
+            if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
+            for (self.interner.unionMembers(t)) |m| {
+                self.scanVarianceWithMappedReads(m, param_id, position, saw_co, saw_ct, visited, scope, arena);
+            }
+            return;
+        }
+        if (flags.is_intersection) {
+            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
+            for (self.interner.intersectionMembers(t)) |m| {
+                self.scanVarianceWithMappedReads(m, param_id, position, saw_co, saw_ct, visited, scope, arena);
+            }
+            return;
+        }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return;
             for (self.interner.signatureParams(t)) |p| {
-                self.scanVariance(p, param_id, flipVariance(position), saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(p, param_id, flipVariance(position), saw_co, saw_ct, visited, scope, arena);
             }
             if (self.interner.signatureReturn(t)) |r| {
-                self.scanVariance(r, param_id, position, saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(r, param_id, position, saw_co, saw_ct, visited, scope, arena);
             }
             return;
         }
@@ -37585,29 +37700,15 @@ pub const Checker = struct {
             const members = self.interner.objectMembers(t);
             for (members) |m| {
                 if (m.is_method) {
-                    self.scanMethodSignatureVariance(m.type, param_id, position, saw_co, saw_ct, visited);
+                    self.scanMethodSignatureVarianceWithMappedReads(m.type, param_id, position, saw_co, saw_ct, visited, scope, arena);
                 } else {
-                    self.scanVariance(m.type, param_id, position, saw_co, saw_ct, visited);
+                    self.scanVarianceWithMappedReads(m.type, param_id, position, saw_co, saw_ct, visited, scope, arena);
                 }
             }
             const si = self.interner.objectStringIndex(t);
-            if (si != types.Primitive.none) self.scanVariance(si, param_id, position, saw_co, saw_ct, visited);
+            if (si != types.Primitive.none) self.scanVarianceWithMappedReads(si, param_id, position, saw_co, saw_ct, visited, scope, arena);
             const ni = self.interner.objectNumberIndex(t);
-            if (ni != types.Primitive.none) self.scanVariance(ni, param_id, position, saw_co, saw_ct, visited);
-            return;
-        }
-        if (flags.is_union) {
-            if (payload_idx >= self.interner.pool.union_payloads.items.len) return;
-            for (self.interner.unionMembers(t)) |m| {
-                self.scanVariance(m, param_id, position, saw_co, saw_ct, visited);
-            }
-            return;
-        }
-        if (flags.is_intersection) {
-            if (payload_idx >= self.interner.pool.intersection_payloads.items.len) return;
-            for (self.interner.intersectionMembers(t)) |m| {
-                self.scanVariance(m, param_id, position, saw_co, saw_ct, visited);
-            }
+            if (ni != types.Primitive.none) self.scanVarianceWithMappedReads(ni, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
         if (flags.is_tuple) {
@@ -37615,7 +37716,7 @@ pub const Checker = struct {
             const payload = self.interner.pool.tuple_payloads.items[payload_idx];
             const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
             for (elems) |e| {
-                self.scanVariance(e.type, param_id, position, saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(e.type, param_id, position, saw_co, saw_ct, visited, scope, arena);
             }
             return;
         }
@@ -37624,7 +37725,7 @@ pub const Checker = struct {
             // widening T can drop them, so the operand is contravariant.
             if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return;
             const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            self.scanVariance(k.operand, param_id, flipVariance(position), saw_co, saw_ct, visited);
+            self.scanVarianceWithMappedReads(k.operand, param_id, flipVariance(position), saw_co, saw_ct, visited, scope, arena);
             return;
         }
         if (flags.is_indexed_access) {
@@ -37632,8 +37733,9 @@ pub const Checker = struct {
             const payload = self.interner.pool.indexed_access_payloads.items[payload_idx];
             // Object slot is read+write ÃÂ¢ÃÂÃÂ invariant. Index slot
             // stays at the surrounding polarity.
-            self.scanVariance(payload.object, param_id, .invariant, saw_co, saw_ct, visited);
-            self.scanVariance(payload.index, param_id, position, saw_co, saw_ct, visited);
+            const is_bound_read = if (scope) |context| context.find(payload.object, payload.index) != null else false;
+            self.scanVarianceWithMappedReads(payload.object, param_id, if (is_bound_read) position else .invariant, saw_co, saw_ct, visited, scope, arena);
+            self.scanVarianceWithMappedReads(payload.index, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
         if (flags.is_conditional) {
@@ -37642,15 +37744,32 @@ pub const Checker = struct {
             // The check/extends operands select a branch but do not
             // themselves contribute declaration-site variance. The selected
             // branch types carry the observable use-sites.
-            self.scanVariance(c.true_branch, param_id, position, saw_co, saw_ct, visited);
-            self.scanVariance(c.false_branch, param_id, position, saw_co, saw_ct, visited);
+            self.scanVarianceWithMappedReads(c.true_branch, param_id, position, saw_co, saw_ct, visited, scope, arena);
+            self.scanVarianceWithMappedReads(c.false_branch, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
         if (flags.is_mapped) {
             if (payload_idx >= self.interner.pool.mapped_payloads.items.len) return;
             const m = self.interner.mappedPayload(t);
-            self.scanVariance(m.constraint, param_id, position, saw_co, saw_ct, visited);
-            self.scanVariance(m.template, param_id, position, saw_co, saw_ct, visited);
+            if (self.homomorphicMappedTypeParameter(t)) |source| {
+                // Property domains vary with the source object, while T[K]
+                // under this map's own K reads its value in the surrounding
+                // polarity. A callback value still reverses that polarity.
+                self.scanVarianceWithMappedReads(source, param_id, position, saw_co, saw_ct, visited, scope, arena);
+                const key = if (m.key_parameter != types.Primitive.none) m.key_parameter else self.mappedTemplateKeyTypeParameter(m.template);
+                if (key != types.Primitive.none) {
+                    const existing = if (scope) |context| context.find(source, key) else null;
+                    const context = existing orelse blk: {
+                        const allocated = arena.create(VarianceMappedScope) catch return;
+                        allocated.* = .{ .source = source, .key = key, .parent = scope };
+                        break :blk allocated;
+                    };
+                    self.scanVarianceWithMappedReads(m.template, param_id, position, saw_co, saw_ct, visited, context, arena);
+                    return;
+                }
+            }
+            self.scanVarianceWithMappedReads(m.constraint, param_id, position, saw_co, saw_ct, visited, scope, arena);
+            self.scanVarianceWithMappedReads(m.template, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
         if (flags.is_instantiation) {
@@ -37661,7 +37780,7 @@ pub const Checker = struct {
             // type-argument slot at the surrounding polarity. A
             // future fixed-point pass can refine this.
             for (args) |a| {
-                self.scanVariance(a, param_id, position, saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(a, param_id, position, saw_co, saw_ct, visited, scope, arena);
             }
             return;
         }
@@ -37678,26 +37797,41 @@ pub const Checker = struct {
         saw_ct: *bool,
         visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
     ) void {
+        var scopes = std.heap.ArenaAllocator.init(self.gpa);
+        defer scopes.deinit();
+        self.scanMethodSignatureVarianceWithMappedReads(t, param_id, position, saw_co, saw_ct, visited, null, scopes.allocator());
+    }
+
+    fn scanMethodSignatureVarianceWithMappedReads(
+        self: *Checker,
+        t: TypeId,
+        param_id: TypeId,
+        position: types.Variance,
+        saw_co: *bool,
+        saw_ct: *bool,
+        visited: *std.AutoHashMapUnmanaged(VarianceVisit, void),
+        scope: ?*const VarianceMappedScope,
+        arena: std.mem.Allocator,
+    ) void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) {
-            self.scanVariance(t, param_id, position, saw_co, saw_ct, visited);
+            self.scanVarianceWithMappedReads(t, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
-        const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_signature) {
-            self.scanVariance(t, param_id, position, saw_co, saw_ct, visited);
+        if (!self.interner.isSignature(t)) {
+            self.scanVarianceWithMappedReads(t, param_id, position, saw_co, saw_ct, visited, scope, arena);
             return;
         }
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.signature_payloads.items.len) return;
         for (self.interner.signatureParams(t)) |p| {
             if (self.firstSignatureType(p) != null) {
-                self.scanVariance(p, param_id, flipVariance(position), saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(p, param_id, flipVariance(position), saw_co, saw_ct, visited, scope, arena);
             } else {
-                self.scanVariance(p, param_id, .bivariant, saw_co, saw_ct, visited);
+                self.scanVarianceWithMappedReads(p, param_id, .bivariant, saw_co, saw_ct, visited, scope, arena);
             }
         }
         if (self.interner.signatureReturn(t)) |r| {
-            self.scanVariance(r, param_id, position, saw_co, saw_ct, visited);
+            self.scanVarianceWithMappedReads(r, param_id, position, saw_co, saw_ct, visited, scope, arena);
         }
     }
 
@@ -42731,6 +42865,81 @@ pub const Checker = struct {
         return .protected;
     }
 
+    /// One cleanup call per class-check exit. Keeping each temporary in a
+    /// separate defer duplicates dozens of destructors at every fallible
+    /// operation, producing a huge control-flow graph before LLVM inlining.
+    const ClassCheckTemporaries = struct {
+        const AccessorAbstract = struct { is_abstract: bool, name_node: NodeId };
+        const AccessorPairKey = struct { name: hir_mod.StringId, is_static: bool };
+        instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty,
+        static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty,
+        ctor_overload_sigs: std.ArrayListUnmanaged(TypeId) = .empty,
+        ctor_overload_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+        ctor_overload_visibilities: std.ArrayListUnmanaged(ConstructorVisibility) = .empty,
+        ctor_overload_positions: std.ArrayListUnmanaged(?u32) = .empty,
+        ctor_overload_max_counts: std.ArrayListUnmanaged(?usize) = .empty,
+        ctor_impl_nodes: std.ArrayListUnmanaged(NodeId) = .empty,
+        private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        unused_private_member_candidates: PrivateMemberCandidateMap = .empty,
+        protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        instance_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        abstract_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        abstract_names_order: std.ArrayListUnmanaged(hir_mod.StringId) = .empty,
+        abstract_property_origins: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty,
+        property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        ctor_param_property_merges: std.AutoHashMapUnmanaged(hir_mod.StringId, ConstructorParamPropertyMerge) = .empty,
+        uninit_instance_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+        method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        private_method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_private_method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        private_set_only_accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_private_set_only_accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        own_member_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+        method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty,
+        static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty,
+        instance_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty,
+        static_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty,
+        ctor_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        strict_init_candidate_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_block_this_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        setter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        getter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        static_getter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        getter_abstract: std.AutoHashMapUnmanaged(AccessorPairKey, AccessorAbstract) = .empty,
+        setter_abstract: std.AutoHashMapUnmanaged(AccessorPairKey, AccessorAbstract) = .empty,
+        preseeded_param_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        parameter_property_field_redeclarations: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+        preseeded_field_indices: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty,
+        preseeded_future_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+        preseeded_static_member_indices: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty,
+        instance_field_initializers: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+        static_field_initializers: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+
+        noinline fn deinit(self: *ClassCheckTemporaries, gpa: std.mem.Allocator) void {
+            // Preserve reverse declaration order, including nested overload
+            // lists. Published maps are reset to empty by their transfer sites.
+            inline for (comptime std.meta.fieldNames(ClassCheckTemporaries), 0..) |_, i| {
+                const name = comptime std.meta.fieldNames(ClassCheckTemporaries)[std.meta.fieldNames(ClassCheckTemporaries).len - 1 - i];
+                if (comptime std.mem.eql(u8, name, "method_seen") or std.mem.eql(u8, name, "static_method_seen")) {
+                    var entries = @field(self, name).iterator();
+                    while (entries.next()) |entry| {
+                        entry.value_ptr.prior_nodes.deinit(gpa);
+                        entry.value_ptr.prior_abstractness.deinit(gpa);
+                        entry.value_ptr.prior_visibilities.deinit(gpa);
+                    }
+                }
+                @field(self, name).deinit(gpa);
+            }
+        }
+    };
+
     fn checkClassDecl(self: *Checker, node: NodeId) CheckError!void {
         if (self.checked_class_decls.contains(node)) return;
         try self.checked_class_decls.put(self.gpa, node, {});
@@ -42898,10 +43107,8 @@ pub const Checker = struct {
         else
             null;
         const override_base_class_name = self.overrideBaseClassDiagnosticNameFromExtends(c.extends);
-        var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer instance_members.deinit(self.gpa);
-        var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer static_members.deinit(self.gpa);
+        var temporaries: ClassCheckTemporaries = .{};
+        defer temporaries.deinit(self.gpa);
         var ctor_sig: TypeId = types.Primitive.none;
         var has_explicit_ctor = false;
         var ctor_visibility: ConstructorVisibility = .public_;
@@ -42911,28 +43118,16 @@ pub const Checker = struct {
         // can consider them during arity / TS2554 checking. We only
         // collect the BODYLESS sigs here ÃÂ¢ÃÂÃÂ the implementation lands
         // in `ctor_sig` separately.
-        var ctor_overload_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
-        defer ctor_overload_sigs.deinit(self.gpa);
         // Parallel to `ctor_overload_sigs` ÃÂ¢ÃÂÃÂ the bodyless ctor decl
         // node for each overload, so the ÃÂÃÂ§6.A TS2394 overload-vs-impl
         // compatibility check can anchor at the right source position.
-        var ctor_overload_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
-        defer ctor_overload_nodes.deinit(self.gpa);
-        var ctor_overload_visibilities: std.ArrayListUnmanaged(ConstructorVisibility) = .empty;
-        defer ctor_overload_visibilities.deinit(self.gpa);
         // Optional source position override for JSDoc `@constructor
         // @overload` blocks. Native constructor overloads stay null and
         // anchor at the constructor declaration node.
-        var ctor_overload_positions: std.ArrayListUnmanaged(?u32) = .empty;
-        defer ctor_overload_positions.deinit(self.gpa);
-        var ctor_overload_max_counts: std.ArrayListUnmanaged(?usize) = .empty;
-        defer ctor_overload_max_counts.deinit(self.gpa);
         var ctor_impl_node: NodeId = hir_mod.none_node_id;
         var ctor_impl_visibility: ?ConstructorVisibility = null;
         // TS2392 ÃÂ¢ÃÂÃÂ every bodied constructor implementation node, so we
         // can flag each one when a class declares more than one.
-        var ctor_impl_nodes: std.ArrayListUnmanaged(NodeId) = .empty;
-        defer ctor_impl_nodes.deinit(self.gpa);
         // Constructor overload tracking. tsc fires TS2390 (Constructor
         // implementation is missing) when one or more `constructor()`
         // signatures appear without a body and there's no concrete
@@ -42974,12 +43169,6 @@ pub const Checker = struct {
         // name is known we move ownership into `class_private_members`
         // and reset this local to `.empty` so the trailing `defer` is
         // a no-op on the success path.
-        var private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer private_names.deinit(self.gpa);
-        var unused_private_member_candidates: PrivateMemberCandidateMap = .empty;
-        defer unused_private_member_candidates.deinit(self.gpa);
-        var protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer protected_names.deinit(self.gpa);
         // Static-only accessibility tracking. Separate from
         // `private_names`/`protected_names` (which mix instance +
         // static for the legacy access-check path) so the heritage
@@ -42987,36 +43176,16 @@ pub const Checker = struct {
         // independently. Moved into `class_static_private_members`
         // / `class_static_protected_members` once the class name
         // is known.
-        var static_private_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_private_names.deinit(self.gpa);
-        var static_protected_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_protected_names.deinit(self.gpa);
         // Names of every member the class actually declares (any
         // accessibility), split by static-vs-instance side. Used
         // by the heritage accessibility check so it only fires on
         // members the derived class redeclares (vs. just inherits).
-        var instance_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer instance_member_names_local.deinit(self.gpa);
-        var static_member_names_local: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_member_names_local.deinit(self.gpa);
         // Names of class members treated as abstract (v0 heuristic:
         // bodyless methods inside an `abstract` class). Moved into
         // `class_abstract_members` once the class name is known.
-        var abstract_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer abstract_names.deinit(self.gpa);
         // Parallel ordered list of abstract member names ÃÂ¢ÃÂÃÂ preserves
         // declaration order for TS2654 prose, while `abstract_names`
         // continues to serve as the fast lookup set.
-        var abstract_names_order: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer abstract_names_order.deinit(self.gpa);
-        var abstract_property_origins: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty;
-        defer abstract_property_origins.deinit(self.gpa);
-        var property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer property_names.deinit(self.gpa);
-        var parameter_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer parameter_property_names.deinit(self.gpa);
-        var ctor_param_property_merges: std.AutoHashMapUnmanaged(hir_mod.StringId, ConstructorParamPropertyMerge) = .empty;
-        defer ctor_param_property_merges.deinit(self.gpa);
         // Instance class fields declared with neither an initializer
         // nor a `!` definite-assignment assertion, in declaration
         // order. Under `useDefineForClassFields: true` these clobber
@@ -43027,90 +43196,28 @@ pub const Checker = struct {
         // Maps each uninitialized instance-field name to its declaring
         // member node, so a later sibling initializer that reads it can
         // anchor a TS2728 "'X' is declared here." related-info.
-        var uninit_instance_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer uninit_instance_field_names.deinit(self.gpa);
         // Names of instance methods declared by this class. Moved into
         // `class_method_members` once the class name is known. Used by
         // TS2423 when a subclass redeclares one of these as an accessor.
-        var method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer method_names.deinit(self.gpa);
-        var accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer accessor_names.deinit(self.gpa);
-        var private_method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer private_method_names.deinit(self.gpa);
-        var static_private_method_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_private_method_names.deinit(self.gpa);
-        var private_set_only_accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer private_set_only_accessor_names.deinit(self.gpa);
-        var static_private_set_only_accessor_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_private_set_only_accessor_names.deinit(self.gpa);
-        var own_member_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer own_member_names.deinit(self.gpa);
         // Names the child concretely implements (methods with a body
         // or any field). Used to satisfy inherited abstract members.
-        var concrete_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer concrete_names.deinit(self.gpa);
-        var static_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer static_names.deinit(self.gpa);
-        var method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
-        defer {
-            var msit = method_seen.iterator();
-            while (msit.next()) |e| {
-                e.value_ptr.prior_nodes.deinit(self.gpa);
-                e.value_ptr.prior_abstractness.deinit(self.gpa);
-                e.value_ptr.prior_visibilities.deinit(self.gpa);
-            }
-            method_seen.deinit(self.gpa);
-        }
-        var static_method_seen: std.AutoHashMapUnmanaged(hir_mod.StringId, ClassMethodSeen) = .empty;
-        defer {
-            var sit = static_method_seen.iterator();
-            while (sit.next()) |e| {
-                e.value_ptr.prior_nodes.deinit(self.gpa);
-                e.value_ptr.prior_abstractness.deinit(self.gpa);
-                e.value_ptr.prior_visibilities.deinit(self.gpa);
-            }
-            static_method_seen.deinit(self.gpa);
-        }
         var previous_bodyless_method_name: ?hir_mod.StringId = null;
         var previous_bodyless_method_static = false;
-        var instance_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
-        defer instance_member_predicates.deinit(self.gpa);
-        var static_member_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty;
-        defer static_member_predicates.deinit(self.gpa);
         // Names that the constructor body definitely assigns via
         // `this.X = ...`. Used to suppress TS2564 for typed instance
         // fields that have no inline initializer but are assigned in
         // the constructor body (matching tsc's strict-property-init
         // detection).
-        var ctor_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer ctor_assigned_names.deinit(self.gpa);
-        var strict_init_candidate_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer strict_init_candidate_names.deinit(self.gpa);
-        var static_block_this_assigned_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_block_this_assigned_names.deinit(self.gpa);
 
         // Pre-scan for accessor pairs: a member name with both a
         // `get` and a `set` accessor is a regular read+write property.
         // A getter alone is `readonly`. Track which names have a
         // setter so we can clear readonly when the getter lands.
-        var setter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer setter_names.deinit(self.gpa);
-        var getter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer getter_names.deinit(self.gpa);
-        var static_getter_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer static_getter_names.deinit(self.gpa);
         // TS2676 — a get/set accessor pair for the same member must
         // agree on the `abstract` modifier. Track each accessor's
         // abstract-ness and name node keyed by (name, static-ness) so a
         // mismatched pair can be flagged on both accessor names after
         // the pre-scan. Mirrors upstream `checkAccessorDeclaration`.
-        const AccessorAbstract = struct { is_abstract: bool, name_node: NodeId };
-        const AccessorPairKey = struct { name: hir_mod.StringId, is_static: bool };
-        var getter_abstract: std.AutoHashMapUnmanaged(AccessorPairKey, AccessorAbstract) = .empty;
-        defer getter_abstract.deinit(self.gpa);
-        var setter_abstract: std.AutoHashMapUnmanaged(AccessorPairKey, AccessorAbstract) = .empty;
-        defer setter_abstract.deinit(self.gpa);
         for (members) |m| {
             const k = self.hir.kindOf(m);
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
@@ -43118,16 +43225,16 @@ pub const Checker = struct {
             const nid = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
             if (fp.flags.is_getter) {
                 if (fp.flags.is_static) {
-                    try static_getter_names.put(self.gpa, nid, {});
+                    try temporaries.static_getter_names.put(self.gpa, nid, {});
                 } else {
-                    try getter_names.put(self.gpa, nid, {});
+                    try temporaries.getter_names.put(self.gpa, nid, {});
                 }
-                try getter_abstract.put(self.gpa, .{ .name = nid, .is_static = fp.flags.is_static }, .{ .is_abstract = fp.flags.is_abstract, .name_node = if (fp.name != hir_mod.none_node_id) fp.name else m });
+                try temporaries.getter_abstract.put(self.gpa, .{ .name = nid, .is_static = fp.flags.is_static }, .{ .is_abstract = fp.flags.is_abstract, .name_node = if (fp.name != hir_mod.none_node_id) fp.name else m });
                 continue;
             }
             if (!fp.flags.is_setter) continue;
-            try setter_names.put(self.gpa, nid, {});
-            try setter_abstract.put(self.gpa, .{ .name = nid, .is_static = fp.flags.is_static }, .{ .is_abstract = fp.flags.is_abstract, .name_node = if (fp.name != hir_mod.none_node_id) fp.name else m });
+            try temporaries.setter_names.put(self.gpa, nid, {});
+            try temporaries.setter_abstract.put(self.gpa, .{ .name = nid, .is_static = fp.flags.is_static }, .{ .is_abstract = fp.flags.is_abstract, .name_node = if (fp.name != hir_mod.none_node_id) fp.name else m });
             const sig = try self.checkFnSignatureOnly(m);
             if (hir_mod.fnTypeParams(self.hir, m).len > 0) self.popNarrowScope();
             const params = self.interner.signatureParams(sig);
@@ -43148,9 +43255,9 @@ pub const Checker = struct {
         // name. Iterate getters and look up the matching setter by
         // (name, static-ness).
         {
-            var git = getter_abstract.iterator();
+            var git = temporaries.getter_abstract.iterator();
             while (git.next()) |entry| {
-                const setter = setter_abstract.get(entry.key_ptr.*) orelse continue;
+                const setter = temporaries.setter_abstract.get(entry.key_ptr.*) orelse continue;
                 if (entry.value_ptr.is_abstract != setter.is_abstract) {
                     try self.report(entry.value_ptr.name_node, TsCodes.accessors_must_both_be_abstract, "Accessors must both be abstract or non-abstract.");
                     try self.report(setter.name_node, TsCodes.accessors_must_both_be_abstract, "Accessors must both be abstract or non-abstract.");
@@ -43175,7 +43282,7 @@ pub const Checker = struct {
                 if (self.classFieldTypeIsAnyOrUnknown(field_t) and
                     self.classFieldAnnotationIsLiteralAnyOrUnknown(op.type_annotation)) continue;
                 const member_name = (try self.strictPropertyInitNameFromKey(op.key, op.is_computed)) orelse continue;
-                try strict_init_candidate_names.put(self.gpa, member_name, {});
+                try temporaries.strict_init_candidate_names.put(self.gpa, member_name, {});
             }
         }
 
@@ -43189,8 +43296,8 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const fp = hir_mod.fnDeclOf(self.hir, m);
             if (!fp.flags.is_constructor) continue;
-            try self.collectConstructorThisAssignedNames(m, &strict_init_candidate_names, &ctor_assigned_names);
-            try self.reportConstructorThisReadsBeforeAssigned(m, &strict_init_candidate_names);
+            try self.collectConstructorThisAssignedNames(m, &temporaries.strict_init_candidate_names, &temporaries.ctor_assigned_names);
+            try self.reportConstructorThisReadsBeforeAssigned(m, &temporaries.strict_init_candidate_names);
             // Track private/protected constructors so a `new C()` outside
             // the class (TS2673/TS2674) can be flagged. Keyed by class
             // name; only named classes participate.
@@ -43219,23 +43326,19 @@ pub const Checker = struct {
         // in object-type building must remain idempotent for
         // parameter-property names.
         // Mirrors `redefinedPararameterProperty.ts(6,14)`.
-        var preseeded_param_property_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer preseeded_param_property_names.deinit(self.gpa);
-        var parameter_property_field_redeclarations: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer parameter_property_field_redeclarations.deinit(self.gpa);
         for (members) |m| {
             if (self.hir.kindOf(m) != .object_property) continue;
             const op = hir_mod.objectPropertyOf(self.hir, m);
             if (op.is_static or op.is_method or op.key == hir_mod.none_node_id) continue;
             const op_is_computed = op.is_computed or self.nodeIsBracketedComputedName(op.key) or self.memberSourceLooksComputed(m);
             const member_name = (try self.classMemberNameFromPropertyKey(op.key, op_is_computed)) orelse continue;
-            try parameter_property_field_redeclarations.put(self.gpa, member_name, {});
-            if (ctor_param_property_merges.contains(member_name)) continue;
+            try temporaries.parameter_property_field_redeclarations.put(self.gpa, member_name, {});
+            if (temporaries.ctor_param_property_merges.contains(member_name)) continue;
             var modifier_key: u8 = 0;
             if (op.visibility == .private) modifier_key |= 1;
             if (op.visibility == .protected) modifier_key |= 2;
             if (self.classMemberSourceHasLeadingKeyword(m, "readonly")) modifier_key |= 4;
-            try ctor_param_property_merges.put(self.gpa, member_name, .{
+            try temporaries.ctor_param_property_merges.put(self.gpa, member_name, .{
                 .first_name_node = op.key,
                 .first_modifier_key = modifier_key,
             });
@@ -43251,9 +43354,9 @@ pub const Checker = struct {
                 if (!pp.flags.is_parameter_property) continue;
                 if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
                 const pid = hir_mod.identifierOf(self.hir, pp.name);
-                try parameter_property_names.put(self.gpa, pid.name, {});
-                if (parameter_property_field_redeclarations.contains(pid.name)) continue;
-                try instance_member_names_local.put(self.gpa, pid.name, {});
+                try temporaries.parameter_property_names.put(self.gpa, pid.name, {});
+                if (temporaries.parameter_property_field_redeclarations.contains(pid.name)) continue;
+                try temporaries.instance_member_names_local.put(self.gpa, pid.name, {});
                 // Seed `instance_members` with the param-property's
                 // declared type so `this.<name>` access type-checks.
                 const param_t = if (pp.type_annotation != hir_mod.none_node_id and
@@ -43265,7 +43368,7 @@ pub const Checker = struct {
                     try self.lowererLowerWithTypeParams(pp.type_annotation)
                 else
                     types.Primitive.any;
-                try instance_members.append(self.gpa, .{
+                try temporaries.instance_members.append(self.gpa, .{
                     .name = pid.name,
                     .type = param_t,
                     .is_optional = pp.flags.is_optional,
@@ -43278,7 +43381,7 @@ pub const Checker = struct {
                     else
                         .public,
                 });
-                try preseeded_param_property_names.put(self.gpa, pid.name, {});
+                try temporaries.preseeded_param_property_names.put(self.gpa, pid.name, {});
             }
         }
 
@@ -43298,16 +43401,6 @@ pub const Checker = struct {
         // (no methods) used by the TS2729 forward-ref check below:
         // `qux = this.bar` where `bar` is a sibling field declared
         // later in source order fires TS2729 on the access.
-        var preseeded_field_indices: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty;
-        defer preseeded_field_indices.deinit(self.gpa);
-        var preseeded_future_field_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer preseeded_future_field_names.deinit(self.gpa);
-        var preseeded_static_member_indices: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty;
-        defer preseeded_static_member_indices.deinit(self.gpa);
-        var instance_field_initializers: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer instance_field_initializers.deinit(self.gpa);
-        var static_field_initializers: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
-        defer static_field_initializers.deinit(self.gpa);
         // Seed inherited instance members from the base class so a
         // sibling field initializer's `this.<inherited-member>`
         // access resolves through the partial class type ÃÂ¢ÃÂÃÂ e.g.
@@ -43322,16 +43415,16 @@ pub const Checker = struct {
             try self.appendInheritedClassMembers(
                 pt,
                 false,
-                &instance_members,
-                &preseeded_field_indices,
+                &temporaries.instance_members,
+                &temporaries.preseeded_field_indices,
             );
         }
         if (parent_static_t) |pt| {
             try self.appendInheritedClassMembers(
                 pt,
                 true,
-                &static_members,
-                &preseeded_static_member_indices,
+                &temporaries.static_members,
+                &temporaries.preseeded_static_member_indices,
             );
         }
         for (members) |m| {
@@ -43348,14 +43441,14 @@ pub const Checker = struct {
                 if (op_is_computed and op_is_method) continue;
                 const member_name = (try self.classMemberNameFromPropertyKey(op.key, op_is_computed)) orelse continue;
                 if (!op_is_method and op.value != hir_mod.none_node_id and op.type_annotation == hir_mod.none_node_id) {
-                    const initializers = if (op.is_static) &static_field_initializers else &instance_field_initializers;
+                    const initializers = if (op.is_static) &temporaries.static_field_initializers else &temporaries.instance_field_initializers;
                     try initializers.put(self.gpa, member_name, m);
                 }
                 if (op.is_static) {
-                    if (preseeded_static_member_indices.contains(member_name)) continue;
-                    try static_member_names_local.put(self.gpa, member_name, {});
-                    try preseeded_static_member_indices.put(self.gpa, member_name, static_members.items.len);
-                    try static_members.append(self.gpa, .{
+                    if (temporaries.preseeded_static_member_indices.contains(member_name)) continue;
+                    try temporaries.static_member_names_local.put(self.gpa, member_name, {});
+                    try temporaries.preseeded_static_member_indices.put(self.gpa, member_name, temporaries.static_members.items.len);
+                    try temporaries.static_members.append(self.gpa, .{
                         .name = member_name,
                         .type = types.Primitive.any,
                         .is_optional = false,
@@ -43364,14 +43457,14 @@ pub const Checker = struct {
                     });
                     continue;
                 }
-                if (preseeded_param_property_names.contains(member_name)) continue;
-                if (preseeded_field_indices.contains(member_name)) continue;
-                try instance_member_names_local.put(self.gpa, member_name, {});
-                try preseeded_field_indices.put(self.gpa, member_name, instance_members.items.len);
+                if (temporaries.preseeded_param_property_names.contains(member_name)) continue;
+                if (temporaries.preseeded_field_indices.contains(member_name)) continue;
+                try temporaries.instance_member_names_local.put(self.gpa, member_name, {});
+                try temporaries.preseeded_field_indices.put(self.gpa, member_name, temporaries.instance_members.items.len);
                 if (!op_is_method) {
-                    try preseeded_future_field_names.put(self.gpa, member_name, m);
+                    try temporaries.preseeded_future_field_names.put(self.gpa, member_name, m);
                 }
-                try instance_members.append(self.gpa, .{
+                try temporaries.instance_members.append(self.gpa, .{
                     .name = member_name,
                     .type = types.Primitive.any,
                     .is_optional = false,
@@ -43392,10 +43485,10 @@ pub const Checker = struct {
                 const member_name = (try self.classMemberNameFromFunctionName(fp.name)) orelse continue;
                 const is_accessor = fp.flags.is_getter or fp.flags.is_setter;
                 if (fp.flags.is_static) {
-                    if (preseeded_static_member_indices.contains(member_name)) continue;
-                    try static_member_names_local.put(self.gpa, member_name, {});
-                    try preseeded_static_member_indices.put(self.gpa, member_name, static_members.items.len);
-                    try static_members.append(self.gpa, .{
+                    if (temporaries.preseeded_static_member_indices.contains(member_name)) continue;
+                    try temporaries.static_member_names_local.put(self.gpa, member_name, {});
+                    try temporaries.preseeded_static_member_indices.put(self.gpa, member_name, temporaries.static_members.items.len);
+                    try temporaries.static_members.append(self.gpa, .{
                         .name = member_name,
                         .type = types.Primitive.any,
                         .is_optional = false,
@@ -43404,19 +43497,19 @@ pub const Checker = struct {
                     });
                     continue;
                 }
-                if (preseeded_param_property_names.contains(member_name)) continue;
+                if (temporaries.preseeded_param_property_names.contains(member_name)) continue;
                 // Sibling accessors (get + set y) and an already-seeded name
                 // fold here, so only the first declaration seeds a stub.
-                if (preseeded_field_indices.contains(member_name)) continue;
-                try instance_member_names_local.put(self.gpa, member_name, {});
-                try preseeded_field_indices.put(self.gpa, member_name, instance_members.items.len);
+                if (temporaries.preseeded_field_indices.contains(member_name)) continue;
+                try temporaries.instance_member_names_local.put(self.gpa, member_name, {});
+                try temporaries.preseeded_field_indices.put(self.gpa, member_name, temporaries.instance_members.items.len);
                 // Accessors are seeded too (as property-like stubs) so a
                 // `this`-typed member checked BEFORE the accessor declaration
                 // (e.g. `x = this` declared above `get y()`) captures a
                 // complete instance shape rather than one missing the getter.
                 // The main loop replaces the stub with the real accessor type.
                 // Pins typeOfThisInInstanceMember.
-                try instance_members.append(self.gpa, .{
+                try temporaries.instance_members.append(self.gpa, .{
                     .name = member_name,
                     .type = types.Primitive.any,
                     .is_optional = false,
@@ -43425,18 +43518,18 @@ pub const Checker = struct {
                 });
             }
         }
-        try self.reportCircularClassFieldInitializers(members, &instance_field_initializers, &static_field_initializers);
+        try self.reportCircularClassFieldInitializers(members, &temporaries.instance_field_initializers, &temporaries.static_field_initializers);
 
         if (class_name_scope) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
             const partial_instance_t = self.interner.internObjectTypeWithIndexAndSymbol(
-                instance_members.items,
+                temporaries.instance_members.items,
                 string_idx,
                 number_idx,
                 symbol_idx,
             ) catch return error.OutOfMemory;
             const partial_static_t = self.interner.internObjectTypeWithIndexAndSymbol(
-                static_members.items,
+                temporaries.static_members.items,
                 static_string_idx,
                 static_number_idx,
                 static_symbol_idx,
@@ -43461,7 +43554,7 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr and k != .arrow_fn) continue;
             const fp = hir_mod.fnDeclOf(self.hir, m);
             if (!fp.flags.is_constructor) continue;
-            try self.collectConstructorThisAssignedNames(m, &instance_member_names_local, &ctor_assigned_names);
+            try self.collectConstructorThisAssignedNames(m, &temporaries.instance_member_names_local, &temporaries.ctor_assigned_names);
         }
 
         var has_binding_pattern_parameter_property = false;
@@ -43478,7 +43571,7 @@ pub const Checker = struct {
 
         for (members) |m| {
             if (self.hir.kindOf(m) != .block_stmt) continue;
-            try self.collectStaticBlockThisAssignedNames(m, &static_block_this_assigned_names);
+            try self.collectStaticBlockThisAssignedNames(m, &temporaries.static_block_this_assigned_names);
         }
 
         for (members, 0..) |m, member_idx| {
@@ -43532,28 +43625,28 @@ pub const Checker = struct {
                             // new-expression arity check can accept
                             // any matching overload (see
                             // `constructSignaturesWithOverloads.ts(10,1)`).
-                            try ctor_overload_sigs.append(self.gpa, sig);
-                            try ctor_overload_nodes.append(self.gpa, m);
-                            try ctor_overload_visibilities.append(self.gpa, this_ctor_visibility);
-                            try ctor_overload_positions.append(self.gpa, null);
-                            try ctor_overload_max_counts.append(self.gpa, null);
+                            try temporaries.ctor_overload_sigs.append(self.gpa, sig);
+                            try temporaries.ctor_overload_nodes.append(self.gpa, m);
+                            try temporaries.ctor_overload_visibilities.append(self.gpa, this_ctor_visibility);
+                            try temporaries.ctor_overload_positions.append(self.gpa, null);
+                            try temporaries.ctor_overload_max_counts.append(self.gpa, null);
                         } else {
                             ctor_impl_count += 1;
                             ctor_impl_node = m;
                             ctor_impl_visibility = this_ctor_visibility;
-                            try ctor_impl_nodes.append(self.gpa, m);
-                            const overload_count_before = ctor_overload_nodes.items.len;
+                            try temporaries.ctor_impl_nodes.append(self.gpa, m);
+                            const overload_count_before = temporaries.ctor_overload_nodes.items.len;
                             try self.collectJsDocConstructorOverloads(
                                 m,
-                                &ctor_overload_sigs,
-                                &ctor_overload_nodes,
-                                &ctor_overload_positions,
-                                &ctor_overload_max_counts,
+                                &temporaries.ctor_overload_sigs,
+                                &temporaries.ctor_overload_nodes,
+                                &temporaries.ctor_overload_positions,
+                                &temporaries.ctor_overload_max_counts,
                             );
-                            while (ctor_overload_visibilities.items.len < ctor_overload_nodes.items.len) {
-                                try ctor_overload_visibilities.append(self.gpa, this_ctor_visibility);
+                            while (temporaries.ctor_overload_visibilities.items.len < temporaries.ctor_overload_nodes.items.len) {
+                                try temporaries.ctor_overload_visibilities.append(self.gpa, this_ctor_visibility);
                             }
-                            std.debug.assert(ctor_overload_nodes.items.len >= overload_count_before);
+                            std.debug.assert(temporaries.ctor_overload_nodes.items.len >= overload_count_before);
                         }
                         const ctor_params = hir_mod.fnParams(self.hir, m);
                         for (ctor_params) |param_node| {
@@ -43562,7 +43655,7 @@ pub const Checker = struct {
                             if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
                             const pid = hir_mod.identifierOf(self.hir, pp.name);
                             if (pp.flags.is_parameter_property) {
-                                try self.checkConstructorParamPropertyMerge(param_node, pid.name, &ctor_param_property_merges);
+                                try self.checkConstructorParamPropertyMerge(param_node, pid.name, &temporaries.ctor_param_property_merges);
                                 // TS2398 ÃÂ¢ÃÂÃÂ a parameter property named
                                 // `constructor` is rejected. Anchored at
                                 // the parameter name. Mirrors tsc
@@ -43583,10 +43676,10 @@ pub const Checker = struct {
                                 // by the pre-scan ÃÂ¢ÃÂÃÂ keeps
                                 // `instance_members` from collecting
                                 // duplicate entries.
-                                if (!preseeded_param_property_names.contains(pid.name) and
-                                    !parameter_property_field_redeclarations.contains(pid.name))
+                                if (!temporaries.preseeded_param_property_names.contains(pid.name) and
+                                    !temporaries.parameter_property_field_redeclarations.contains(pid.name))
                                 {
-                                    try instance_members.append(self.gpa, .{
+                                    try temporaries.instance_members.append(self.gpa, .{
                                         .name = pid.name,
                                         .type = param_t,
                                         .is_optional = pp.flags.is_optional,
@@ -43594,17 +43687,17 @@ pub const Checker = struct {
                                         .is_method = false,
                                     });
                                 }
-                                try concrete_names.put(self.gpa, pid.name, {});
-                                try property_names.put(self.gpa, pid.name, {});
-                                try parameter_property_names.put(self.gpa, pid.name, {});
-                                try own_member_names.put(self.gpa, pid.name, {});
-                                try instance_member_names_local.put(self.gpa, pid.name, {});
-                                if (!parameter_property_field_redeclarations.contains(pid.name)) {
+                                try temporaries.concrete_names.put(self.gpa, pid.name, {});
+                                try temporaries.property_names.put(self.gpa, pid.name, {});
+                                try temporaries.parameter_property_names.put(self.gpa, pid.name, {});
+                                try temporaries.own_member_names.put(self.gpa, pid.name, {});
+                                try temporaries.instance_member_names_local.put(self.gpa, pid.name, {});
+                                if (!temporaries.parameter_property_field_redeclarations.contains(pid.name)) {
                                     if (pp.flags.is_private) {
-                                        try private_names.put(self.gpa, pid.name, {});
-                                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, pid.name, pp.name);
+                                        try temporaries.private_names.put(self.gpa, pid.name, {});
+                                        try self.recordUnusedPrivateMemberCandidate(&temporaries.unused_private_member_candidates, pid.name, pp.name);
                                     }
-                                    if (pp.flags.is_protected) try protected_names.put(self.gpa, pid.name, {});
+                                    if (pp.flags.is_protected) try temporaries.protected_names.put(self.gpa, pid.name, {});
                                 }
                                 // Anchor TS2610 at the parameter-property
                                 // name (`p` in `constructor(public p:
@@ -43619,7 +43712,7 @@ pub const Checker = struct {
                         if ((self.sourceHasCheckJsDirective() or self.virtualSectionIsJsLike(m)) and
                             !self.constructorHasBindingPatternParameterProperty(m))
                         {
-                            try self.collectConstructorThisAssignments(m, parent_instance_t, &instance_members);
+                            try self.collectConstructorThisAssignments(m, parent_instance_t, &temporaries.instance_members);
                         }
                         // Checked-JS: a constructor `this.x = …` assignment may
                         // carry a leading JSDoc `@private`/`@protected` tag that
@@ -43627,7 +43720,7 @@ pub const Checker = struct {
                         // jsdocAccessibilityTags (class C).
                         if (self.check_js_enabled) {
                             const cfp = hir_mod.fnDeclOf(self.hir, m);
-                            try self.collectCtorThisJsDocVisibility(cfp.body, &private_names, &protected_names);
+                            try self.collectCtorThisJsDocVisibility(cfp.body, &temporaries.private_names, &temporaries.protected_names);
                         }
                         continue;
                     }
@@ -43700,8 +43793,8 @@ pub const Checker = struct {
                                         node,
                                         class_privacy_key,
                                         fn_p.flags.is_static,
-                                        instance_members.items,
-                                        static_members.items,
+                                        temporaries.instance_members.items,
+                                        temporaries.static_members.items,
                                         string_idx,
                                         number_idx,
                                         symbol_idx,
@@ -43732,7 +43825,7 @@ pub const Checker = struct {
                             fn_name_is_computed,
                             !fn_p.flags.is_getter and !fn_p.flags.is_setter,
                         );
-                        try static_names.put(self.gpa, member_name, m);
+                        try temporaries.static_names.put(self.gpa, member_name, m);
                     }
                     // Skip implicit-override TS4114 in ambient classes
                     // (`declare class D extends B { foo(): void; }`):
@@ -43743,8 +43836,8 @@ pub const Checker = struct {
                         try self.checkOverrideModifierWithContext(m, if (fn_p.flags.is_static) parent_static_t else parent_instance_t, member_name, fn_p.flags.is_override, false, no_extends_class_name, override_base_class_name);
                     }
                     if (fn_p.flags.is_private) {
-                        try private_names.put(self.gpa, member_name, {});
-                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, member_name, if (fn_p.name != hir_mod.none_node_id) fn_p.name else m);
+                        try temporaries.private_names.put(self.gpa, member_name, {});
+                        try self.recordUnusedPrivateMemberCandidate(&temporaries.unused_private_member_candidates, member_name, if (fn_p.name != hir_mod.none_node_id) fn_p.name else m);
                     } else if (self.memberNameIsEcmaPrivate(member_name)) {
                         // ECMAScript `#method`s and `#`-accessors are
                         // privacy-by-name (not the legacy `private`
@@ -43754,18 +43847,18 @@ pub const Checker = struct {
                         // (recordUnusedPrivateMemberCandidate keeps the
                         // earliest node), matching tsc. Mirrors
                         // privateNameUnused (classes A2/A3).
-                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, member_name, if (fn_p.name != hir_mod.none_node_id) fn_p.name else m);
+                        try self.recordUnusedPrivateMemberCandidate(&temporaries.unused_private_member_candidates, member_name, if (fn_p.name != hir_mod.none_node_id) fn_p.name else m);
                     }
-                    if (fn_p.flags.is_protected) try protected_names.put(self.gpa, member_name, {});
+                    if (fn_p.flags.is_protected) try temporaries.protected_names.put(self.gpa, member_name, {});
                     if (fn_p.flags.is_static) {
-                        try static_member_names_local.put(self.gpa, member_name, {});
-                        if (fn_p.flags.is_private) try static_private_names.put(self.gpa, member_name, {});
-                        if (fn_p.flags.is_protected) try static_protected_names.put(self.gpa, member_name, {});
+                        try temporaries.static_member_names_local.put(self.gpa, member_name, {});
+                        if (fn_p.flags.is_private) try temporaries.static_private_names.put(self.gpa, member_name, {});
+                        if (fn_p.flags.is_protected) try temporaries.static_protected_names.put(self.gpa, member_name, {});
                     } else {
-                        try instance_member_names_local.put(self.gpa, member_name, {});
+                        try temporaries.instance_member_names_local.put(self.gpa, member_name, {});
                     }
-                    const own_already_before = !fn_p.flags.is_static and own_member_names.contains(member_name);
-                    if (!fn_p.flags.is_static) try own_member_names.put(self.gpa, member_name, {});
+                    const own_already_before = !fn_p.flags.is_static and temporaries.own_member_names.contains(member_name);
+                    if (!fn_p.flags.is_static) try temporaries.own_member_names.put(self.gpa, member_name, {});
 
                     // Accessor (get/set): the property type is the
                     // getter's return or the setter's first param.
@@ -43795,41 +43888,41 @@ pub const Checker = struct {
                             // per derived class; the first accessor (get or
                             // set) carries the diagnostic, sibling accessors
                             // for the same name are silent.
-                            const already_seen_accessor = accessor_names.contains(member_name);
-                            try accessor_names.put(self.gpa, member_name, {});
+                            const already_seen_accessor = temporaries.accessor_names.contains(member_name);
+                            try temporaries.accessor_names.put(self.gpa, member_name, {});
                             if (!already_seen_accessor) {
                                 try self.checkAccessorOverridesProperty(m, fn_p.name, parent_class_name, parent_instance_t, c.extends, member_name);
                             }
                         }
                         if (!fn_p.flags.is_static) {
                             if (fn_p.flags.is_abstract and fn_p.body == hir_mod.none_node_id) {
-                                if (!abstract_names.contains(member_name)) {
-                                    try abstract_names_order.append(self.gpa, member_name);
+                                if (!temporaries.abstract_names.contains(member_name)) {
+                                    try temporaries.abstract_names_order.append(self.gpa, member_name);
                                 }
-                                try abstract_names.put(self.gpa, member_name, {});
+                                try temporaries.abstract_names.put(self.gpa, member_name, {});
                                 if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                                     const class_id = hir_mod.identifierOf(self.hir, c.name);
-                                    try abstract_property_origins.put(self.gpa, member_name, class_id.name);
+                                    try temporaries.abstract_property_origins.put(self.gpa, member_name, class_id.name);
                                 }
                             } else {
-                                try concrete_names.put(self.gpa, member_name, {});
+                                try temporaries.concrete_names.put(self.gpa, member_name, {});
                             }
                         }
                         if (fn_p.flags.is_setter and self.memberNameIsEcmaPrivate(member_name)) {
                             const has_getter = if (fn_p.flags.is_static)
-                                static_getter_names.contains(member_name)
+                                temporaries.static_getter_names.contains(member_name)
                             else
-                                getter_names.contains(member_name);
+                                temporaries.getter_names.contains(member_name);
                             if (!has_getter) {
                                 if (fn_p.flags.is_static) {
-                                    try static_private_set_only_accessor_names.put(self.gpa, member_name, {});
+                                    try temporaries.static_private_set_only_accessor_names.put(self.gpa, member_name, {});
                                 } else {
-                                    try private_set_only_accessor_names.put(self.gpa, member_name, {});
+                                    try temporaries.private_set_only_accessor_names.put(self.gpa, member_name, {});
                                 }
                             }
                         }
                         var already: bool = false;
-                        const accessor_members = if (fn_p.flags.is_static) static_members.items else instance_members.items;
+                        const accessor_members = if (fn_p.flags.is_static) temporaries.static_members.items else temporaries.instance_members.items;
                         for (accessor_members) |im| {
                             if (im.name == member_name) {
                                 already = true;
@@ -43845,9 +43938,9 @@ pub const Checker = struct {
                             // member has already been registered
                             // by a PRIOR loop iteration.
                             const is_preseeded_stub = if (fn_p.flags.is_static)
-                                preseeded_static_member_indices.contains(member_name)
+                                temporaries.preseeded_static_member_indices.contains(member_name)
                             else
-                                preseeded_field_indices.contains(member_name);
+                                temporaries.preseeded_field_indices.contains(member_name);
                             if (is_preseeded_stub and !own_already_before) {
                                 // Replace the stub with the accessor
                                 // entry below; do not treat as a
@@ -43855,7 +43948,7 @@ pub const Checker = struct {
                             } else {
                                 const member_name_text = self.string_interner.get(member_name);
                                 if (fn_p.flags.is_getter and
-                                    !setter_names.contains(member_name) and
+                                    !temporaries.setter_names.contains(member_name) and
                                     !std.mem.startsWith(u8, member_name_text, "Symbol."))
                                 {
                                     const pos = self.declarationNameSpanStart(m) orelse self.hir.spanOf(m).start;
@@ -43880,8 +43973,8 @@ pub const Checker = struct {
                                         node,
                                         class_privacy_key,
                                         fn_p.flags.is_static,
-                                        instance_members.items,
-                                        static_members.items,
+                                        temporaries.instance_members.items,
+                                        temporaries.static_members.items,
                                         string_idx,
                                         number_idx,
                                         symbol_idx,
@@ -43897,7 +43990,7 @@ pub const Checker = struct {
                             const params = self.interner.signatureParams(sig);
                             break :blk if (params.len > 0) params[0] else types.Primitive.any;
                         };
-                        const has_setter = setter_names.contains(member_name);
+                        const has_setter = temporaries.setter_names.contains(member_name);
                         const member: types.ObjectMember = .{
                             .name = member_name,
                             .type = accessor_t,
@@ -43913,15 +44006,15 @@ pub const Checker = struct {
                             .decl_node = m,
                         };
                         if (fn_p.flags.is_static) {
-                            if (preseeded_static_member_indices.get(member_name)) |idx| {
-                                static_members.items[idx] = member;
+                            if (temporaries.preseeded_static_member_indices.get(member_name)) |idx| {
+                                temporaries.static_members.items[idx] = member;
                                 continue;
                             }
-                            try static_members.append(self.gpa, member);
-                        } else if (preseeded_field_indices.get(member_name)) |idx| {
-                            instance_members.items[idx] = member;
+                            try temporaries.static_members.append(self.gpa, member);
+                        } else if (temporaries.preseeded_field_indices.get(member_name)) |idx| {
+                            temporaries.instance_members.items[idx] = member;
                         } else {
-                            try instance_members.append(self.gpa, member);
+                            try temporaries.instance_members.append(self.gpa, member);
                         }
                         continue;
                     }
@@ -43945,7 +44038,7 @@ pub const Checker = struct {
                         );
                         try self.report(anchor_node, TsCodes.abstract_method_implementation, msg);
                     }
-                    const seen = if (fn_p.flags.is_static) &static_method_seen else &method_seen;
+                    const seen = if (fn_p.flags.is_static) &temporaries.static_method_seen else &temporaries.method_seen;
                     const is_invalid_declared_ecma_private = self.functionIsInvalidDeclaredEcmaPrivateClassMember(m);
                     const overload_info_before = if (is_invalid_declared_ecma_private) null else seen.get(member_name);
                     // Abstract methods (and ambient overloads inside an
@@ -43975,7 +44068,7 @@ pub const Checker = struct {
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.virtualSectionIsDeclarationFile(node))
                     {
-                        const opposite_seen = if (fn_p.flags.is_static) &method_seen else &static_method_seen;
+                        const opposite_seen = if (fn_p.flags.is_static) &temporaries.method_seen else &temporaries.static_method_seen;
                         if (opposite_seen.getPtr(member_name)) |opposite_info| {
                             if (opposite_info.bodyless_count > 0 and opposite_info.implementation_count == 0) {
                                 const code = if (fn_p.flags.is_static) TsCodes.overload_must_not_be_static else TsCodes.overload_must_be_static;
@@ -43999,20 +44092,20 @@ pub const Checker = struct {
                     }
                     if (!fn_p.flags.is_static) {
                         if ((c.is_abstract or fn_p.flags.is_abstract) and fn_p.body == hir_mod.none_node_id) {
-                            if (!abstract_names.contains(member_name)) {
-                                try abstract_names_order.append(self.gpa, member_name);
+                            if (!temporaries.abstract_names.contains(member_name)) {
+                                try temporaries.abstract_names_order.append(self.gpa, member_name);
                             }
-                            try abstract_names.put(self.gpa, member_name, {});
+                            try temporaries.abstract_names.put(self.gpa, member_name, {});
                         } else {
-                            try concrete_names.put(self.gpa, member_name, {});
+                            try temporaries.concrete_names.put(self.gpa, member_name, {});
                         }
                         // TS2425 / TS2426 ÃÂ¢ÃÂÃÂ a derived instance method that
                         // redeclares a base member the base defined as a
                         // data property or accessor. Fire once per name
                         // (the first method declaration carries it; later
                         // overload signatures for the same name are silent).
-                        const already_seen_method = method_names.contains(member_name);
-                        try method_names.put(self.gpa, member_name, {});
+                        const already_seen_method = temporaries.method_names.contains(member_name);
+                        try temporaries.method_names.put(self.gpa, member_name, {});
                         if (!already_seen_method) {
                             try self.checkMethodOverridesPropertyOrAccessor(m, fn_p.name, parent_class_name, member_name);
                         }
@@ -44053,9 +44146,9 @@ pub const Checker = struct {
                     }
                     if (self.memberNameIsEcmaPrivate(member_name) and !fn_p.flags.is_constructor) {
                         if (fn_p.flags.is_static) {
-                            try static_private_method_names.put(self.gpa, member_name, {});
+                            try temporaries.static_private_method_names.put(self.gpa, member_name, {});
                         } else {
-                            try private_method_names.put(self.gpa, member_name, {});
+                            try temporaries.private_method_names.put(self.gpa, member_name, {});
                         }
                     }
                     var method_t = sig;
@@ -44070,8 +44163,8 @@ pub const Checker = struct {
                             node,
                             class_privacy_key,
                             fn_p.flags.is_static,
-                            instance_members.items,
-                            static_members.items,
+                            temporaries.instance_members.items,
+                            temporaries.static_members.items,
                             string_idx,
                             number_idx,
                             symbol_idx,
@@ -44119,19 +44212,19 @@ pub const Checker = struct {
                         .decl_node = m,
                     };
                     if (fn_p.flags.is_static) {
-                        if (preseeded_static_member_indices.get(member_name)) |idx| {
-                            static_members.items[idx] = method_member;
-                            if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
+                        if (temporaries.preseeded_static_member_indices.get(member_name)) |idx| {
+                            temporaries.static_members.items[idx] = method_member;
+                            if (method_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
                             continue;
                         }
-                        try static_members.append(self.gpa, method_member);
-                        if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
-                    } else if (preseeded_field_indices.get(member_name)) |idx| {
-                        instance_members.items[idx] = method_member;
-                        if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                        try temporaries.static_members.append(self.gpa, method_member);
+                        if (method_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
+                    } else if (temporaries.preseeded_field_indices.get(member_name)) |idx| {
+                        temporaries.instance_members.items[idx] = method_member;
+                        if (method_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                     } else {
-                        try instance_members.append(self.gpa, method_member);
-                        if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                        try temporaries.instance_members.append(self.gpa, method_member);
+                        if (method_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                     }
                 },
                 .object_property => {
@@ -44172,14 +44265,14 @@ pub const Checker = struct {
                             self.classMemberSourceHasModifierBeforeKey(m, op.key, "static");
                         const computed_this_t = if (computed_name_is_static)
                             self.interner.internObjectTypeWithIndexAndSymbol(
-                                static_members.items,
+                                temporaries.static_members.items,
                                 static_string_idx,
                                 static_number_idx,
                                 static_symbol_idx,
                             ) catch return error.OutOfMemory
                         else
                             self.interner.internObjectTypeWithIndexAndSymbol(
-                                instance_members.items,
+                                temporaries.instance_members.items,
                                 string_idx,
                                 number_idx,
                                 symbol_idx,
@@ -44309,7 +44402,7 @@ pub const Checker = struct {
                                 !self.typeExplicitlyIncludesUndefined(dynamic_field_t))
                             {
                                 const dynamic_name = try self.strictPropertyInitNameFromKey(op.key, true);
-                                if (dynamic_name == null or !ctor_assigned_names.contains(dynamic_name.?)) {
+                                if (dynamic_name == null or !temporaries.ctor_assigned_names.contains(dynamic_name.?)) {
                                     const key_text = self.computedKeyIdentifierText(op.key) orelse "computed";
                                     const msg = try std.fmt.allocPrint(
                                         self.diag_arena.allocator(),
@@ -44353,30 +44446,30 @@ pub const Checker = struct {
                     const member_name = member_name_opt.?;
                     try self.reportJsDocAccessibilityOnPrivateIdentifier(m, op.key, member_name);
                     if (op.is_static) {
-                        try static_names.put(self.gpa, member_name, m);
+                        try temporaries.static_names.put(self.gpa, member_name, m);
                     }
                     const redeclares_inherited_instance_field = !op.is_static and
-                        preseeded_field_indices.contains(member_name) and
-                        !instance_member_names_local.contains(member_name);
+                        temporaries.preseeded_field_indices.contains(member_name) and
+                        !temporaries.instance_member_names_local.contains(member_name);
                     try self.checkOverrideModifierWithContext(m, if (op.is_static) parent_static_t else parent_instance_t, member_name, op.is_override, false, no_extends_class_name, override_base_class_name);
                     // In checked JS the accessibility may come from a leading
                     // JSDoc `@private`/`@protected`/`@public` tag rather than a
                     // syntactic modifier. Mirrors jsdocAccessibilityTags.
                     const field_vis = self.jsDocAccessibility(m) orelse op.visibility;
                     if (field_vis == .private) {
-                        try private_names.put(self.gpa, member_name, {});
-                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, member_name, if (op.key != hir_mod.none_node_id) op.key else m);
+                        try temporaries.private_names.put(self.gpa, member_name, {});
+                        try self.recordUnusedPrivateMemberCandidate(&temporaries.unused_private_member_candidates, member_name, if (op.key != hir_mod.none_node_id) op.key else m);
                     } else if (self.memberNameIsEcmaPrivate(member_name)) {
                         // ECMAScript `#field`s are privacy-by-name (not the
                         // legacy `private` modifier) — still subject to the
                         // noUnusedLocals TS6133 unused-member check.
-                        try self.recordUnusedPrivateMemberCandidate(&unused_private_member_candidates, member_name, if (op.key != hir_mod.none_node_id) op.key else m);
+                        try self.recordUnusedPrivateMemberCandidate(&temporaries.unused_private_member_candidates, member_name, if (op.key != hir_mod.none_node_id) op.key else m);
                     }
-                    if (field_vis == .protected) try protected_names.put(self.gpa, member_name, {});
+                    if (field_vis == .protected) try temporaries.protected_names.put(self.gpa, member_name, {});
                     if (op.is_static) {
-                        try static_member_names_local.put(self.gpa, member_name, {});
-                        if (field_vis == .private) try static_private_names.put(self.gpa, member_name, {});
-                        if (field_vis == .protected) try static_protected_names.put(self.gpa, member_name, {});
+                        try temporaries.static_member_names_local.put(self.gpa, member_name, {});
+                        if (field_vis == .private) try temporaries.static_private_names.put(self.gpa, member_name, {});
+                        if (field_vis == .protected) try temporaries.static_protected_names.put(self.gpa, member_name, {});
                         try self.reportStaticFunctionPropertyConflict(
                             node,
                             op.key,
@@ -44385,9 +44478,9 @@ pub const Checker = struct {
                             op_is_method,
                         );
                     } else {
-                        try instance_member_names_local.put(self.gpa, member_name, {});
+                        try temporaries.instance_member_names_local.put(self.gpa, member_name, {});
                     }
-                    if (!op.is_static) try own_member_names.put(self.gpa, member_name, {});
+                    if (!op.is_static) try temporaries.own_member_names.put(self.gpa, member_name, {});
                     if (op_is_method and op.value != hir_mod.none_node_id) {
                         const method_t = if (self.hir.kindOf(op.value) == .fn_decl or self.hir.kindOf(op.value) == .fn_expr or self.hir.kindOf(op.value) == .arrow_fn) blk: {
                             const value_kind = self.hir.kindOf(op.value);
@@ -44404,11 +44497,11 @@ pub const Checker = struct {
                             const sig = try self.checkFnSignatureOnly(op.value);
                             if (hir_mod.fnTypeParams(self.hir, op.value).len > 0) self.popNarrowScope();
                             const fn_v = hir_mod.fnDeclOf(self.hir, op.value);
-                            const seen = if (op.is_static) &static_method_seen else &method_seen;
+                            const seen = if (op.is_static) &temporaries.static_method_seen else &temporaries.method_seen;
                             const overload_info_before = seen.get(member_name);
                             const is_abstract_method = fn_v.flags.is_abstract or (c.is_abstract and fn_v.body == hir_mod.none_node_id);
                             var implementation_is_immediate_for_own_group = false;
-                            const opposite_seen = if (op.is_static) &method_seen else &static_method_seen;
+                            const opposite_seen = if (op.is_static) &temporaries.method_seen else &temporaries.static_method_seen;
                             if (!is_abstract_method) {
                                 if (opposite_seen.getPtr(member_name)) |opposite_info| {
                                     if (opposite_info.bodyless_count > 0 and opposite_info.implementation_count == 0) {
@@ -44467,14 +44560,14 @@ pub const Checker = struct {
                             break :blk sig;
                         } else try self.checkExpression(op.value);
                         if (!op.is_static) {
-                            try concrete_names.put(self.gpa, member_name, {});
-                            try method_names.put(self.gpa, member_name, {});
+                            try temporaries.concrete_names.put(self.gpa, member_name, {});
+                            try temporaries.method_names.put(self.gpa, member_name, {});
                         }
                         if (self.memberNameIsEcmaPrivate(member_name)) {
                             if (op.is_static) {
-                                try static_private_method_names.put(self.gpa, member_name, {});
+                                try temporaries.static_private_method_names.put(self.gpa, member_name, {});
                             } else {
-                                try private_method_names.put(self.gpa, member_name, {});
+                                try temporaries.private_method_names.put(self.gpa, member_name, {});
                             }
                         }
                         if (method_t == types.Primitive.none) continue;
@@ -44502,19 +44595,19 @@ pub const Checker = struct {
                             .decl_node = m,
                         };
                         if (op.is_static) {
-                            if (preseeded_static_member_indices.get(member_name)) |idx| {
-                                static_members.items[idx] = method_member;
-                                if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
+                            if (temporaries.preseeded_static_member_indices.get(member_name)) |idx| {
+                                temporaries.static_members.items[idx] = method_member;
+                                if (method_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
                                 continue;
                             }
-                            try static_members.append(self.gpa, method_member);
-                            if (method_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
-                        } else if (preseeded_field_indices.get(member_name)) |idx| {
-                            instance_members.items[idx] = method_member;
-                            if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                            try temporaries.static_members.append(self.gpa, method_member);
+                            if (method_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
+                        } else if (temporaries.preseeded_field_indices.get(member_name)) |idx| {
+                            temporaries.instance_members.items[idx] = method_member;
+                            if (method_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                         } else {
-                            try instance_members.append(self.gpa, method_member);
-                            if (method_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                            try temporaries.instance_members.append(self.gpa, method_member);
+                            if (method_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                         }
                         continue;
                     }
@@ -44583,14 +44676,14 @@ pub const Checker = struct {
                     }
                     if (!op.is_static) {
                         if (is_auto_accessor) {
-                            const already_seen_accessor = accessor_names.contains(member_name);
-                            try accessor_names.put(self.gpa, member_name, {});
-                            try getter_names.put(self.gpa, member_name, {});
+                            const already_seen_accessor = temporaries.accessor_names.contains(member_name);
+                            try temporaries.accessor_names.put(self.gpa, member_name, {});
+                            try temporaries.getter_names.put(self.gpa, member_name, {});
                             if (!already_seen_accessor) {
                                 try self.checkAccessorOverridesProperty(m, op.key, parent_class_name, parent_instance_t, c.extends, member_name);
                             }
                         } else {
-                            try property_names.put(self.gpa, member_name, {});
+                            try temporaries.property_names.put(self.gpa, member_name, {});
                             try self.checkPropertyOverridesAccessor(m, parent_class_name, member_name);
                             try self.checkPropertyOverwritesBase(
                                 m,
@@ -44600,17 +44693,17 @@ pub const Checker = struct {
                                 op.value != hir_mod.none_node_id,
                                 is_declared_property,
                                 is_abstract_property,
-                                &ctor_assigned_names,
+                                &temporaries.ctor_assigned_names,
                             );
                         }
-                        try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &parameter_property_names);
-                        try self.checkFieldInitializerRedeclaredFieldOrder(op.value, &uninit_instance_field_names);
-                        try self.checkFieldInitializerForwardFieldRef(op.value, &preseeded_future_field_names);
+                        try self.checkFieldInitializerParameterPropertyOrder(m, op.value, &temporaries.parameter_property_names);
+                        try self.checkFieldInitializerRedeclaredFieldOrder(op.value, &temporaries.uninit_instance_field_names);
+                        try self.checkFieldInitializerForwardFieldRef(op.value, &temporaries.preseeded_future_field_names);
                         // The current field is no longer "future" for
                         // following fields. Keep it visible during its own
                         // initializer so `a = this.a` reports TS2729 just
                         // like tsc's `checkPropertyNotUsedBeforeDeclaration`.
-                        _ = preseeded_future_field_names.remove(member_name);
+                        _ = temporaries.preseeded_future_field_names.remove(member_name);
                         // Record fields with no initializer (and no
                         // `!` definite-assignment ÃÂ¢ÃÂÃÂ our HIR doesn't
                         // track `!` yet, so we accept the rare
@@ -44618,7 +44711,7 @@ pub const Checker = struct {
                         // can match `this.<name>` access against this
                         // set. Methods/auto-accessors are excluded.
                         if (!op_is_method and !is_auto_accessor and op.value == hir_mod.none_node_id) {
-                            try uninit_instance_field_names.put(self.gpa, member_name, m);
+                            try temporaries.uninit_instance_field_names.put(self.gpa, member_name, m);
                         }
                         if (is_abstract_property and op.value != hir_mod.none_node_id) {
                             const field_name = self.string_interner.get(member_name);
@@ -44634,16 +44727,16 @@ pub const Checker = struct {
                             });
                         }
                         if (is_abstract_property and op.value == hir_mod.none_node_id) {
-                            if (!abstract_names.contains(member_name)) {
-                                try abstract_names_order.append(self.gpa, member_name);
+                            if (!temporaries.abstract_names.contains(member_name)) {
+                                try temporaries.abstract_names_order.append(self.gpa, member_name);
                             }
-                            try abstract_names.put(self.gpa, member_name, {});
+                            try temporaries.abstract_names.put(self.gpa, member_name, {});
                             if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
                                 const class_id = hir_mod.identifierOf(self.hir, c.name);
-                                try abstract_property_origins.put(self.gpa, member_name, class_id.name);
+                                try temporaries.abstract_property_origins.put(self.gpa, member_name, class_id.name);
                             }
                         } else {
-                            try concrete_names.put(self.gpa, member_name, {});
+                            try temporaries.concrete_names.put(self.gpa, member_name, {});
                         }
                     }
                     const jsdoc_field_t: ?TypeId = if (op.type_annotation == hir_mod.none_node_id)
@@ -44657,14 +44750,14 @@ pub const Checker = struct {
                             const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
                             const partial_this_t = if (op.is_static)
                                 self.interner.internObjectTypeWithIndexAndSymbol(
-                                    static_members.items,
+                                    temporaries.static_members.items,
                                     static_string_idx,
                                     static_number_idx,
                                     static_symbol_idx,
                                 ) catch return error.OutOfMemory
                             else
                                 self.interner.internObjectTypeWithIndexAndSymbol(
-                                    instance_members.items,
+                                    temporaries.instance_members.items,
                                     string_idx,
                                     number_idx,
                                     symbol_idx,
@@ -44733,14 +44826,14 @@ pub const Checker = struct {
                             const super_id = self.string_interner.intern("super") catch return error.OutOfMemory;
                             const partial_this_t = if (op.is_static)
                                 self.interner.internObjectTypeWithIndexAndSymbol(
-                                    static_members.items,
+                                    temporaries.static_members.items,
                                     static_string_idx,
                                     static_number_idx,
                                     static_symbol_idx,
                                 ) catch return error.OutOfMemory
                             else
                                 self.interner.internObjectTypeWithIndexAndSymbol(
-                                    instance_members.items,
+                                    temporaries.instance_members.items,
                                     string_idx,
                                     number_idx,
                                     symbol_idx,
@@ -44795,8 +44888,8 @@ pub const Checker = struct {
                         }
                         if (jsdoc_field_t) |declared_t| break :blk declared_t;
                         if (redeclares_inherited_instance_field) {
-                            if (preseeded_field_indices.get(member_name)) |idx| {
-                                if (idx < instance_members.items.len) break :blk instance_members.items[idx].type;
+                            if (temporaries.preseeded_field_indices.get(member_name)) |idx| {
+                                if (idx < temporaries.instance_members.items.len) break :blk temporaries.instance_members.items[idx].type;
                             }
                         }
                         break :blk types.Primitive.any;
@@ -44816,7 +44909,7 @@ pub const Checker = struct {
                         jsdoc_field_t == null and
                         op.value == hir_mod.none_node_id and
                         !(self.virtualSectionIsJsLike(m) and self.classMemberNameIsPrivateName(member_name)) and
-                        !(op.is_static and static_block_this_assigned_names.contains(member_name)) and
+                        !(op.is_static and temporaries.static_block_this_assigned_names.contains(member_name)) and
                         !redeclares_inherited_instance_field and
                         !is_declared_property and
                         !(class_is_ambient and field_is_private))
@@ -44879,7 +44972,7 @@ pub const Checker = struct {
                         !self.classNodeIsInsideAmbientDeclaredModule(node) and
                         !self.classHasLeadingDeclare(node) and
                         !self.virtualSectionIsDeclarationFile(node) and
-                        !ctor_assigned_names.contains(member_name) and
+                        !temporaries.ctor_assigned_names.contains(member_name) and
                         !self_indexed_class_field_type and
                         self.strictPropertyInitializationChecksField(m, op.key, op_is_computed))
                     {
@@ -44973,43 +45066,43 @@ pub const Checker = struct {
                     else
                         null;
                     if (op.is_static) {
-                        if (preseeded_static_member_indices.get(member_name)) |idx| {
-                            static_members.items[idx] = field_member;
-                            if (field_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
+                        if (temporaries.preseeded_static_member_indices.get(member_name)) |idx| {
+                            temporaries.static_members.items[idx] = field_member;
+                            if (field_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
                             continue;
                         }
-                        try static_members.append(self.gpa, field_member);
-                        if (field_predicate) |pred| try static_member_predicates.put(self.gpa, member_name, pred);
-                    } else if (preseeded_field_indices.get(member_name)) |idx| {
+                        try temporaries.static_members.append(self.gpa, field_member);
+                        if (field_predicate) |pred| try temporaries.static_member_predicates.put(self.gpa, member_name, pred);
+                    } else if (temporaries.preseeded_field_indices.get(member_name)) |idx| {
                         // The pre-scan placed an `any`-typed stub at
                         // `idx`; replace it with the real type now
                         // that we've computed the annotation- or
                         // initializer-inferred type. Keeps
                         // `instance_members` from carrying duplicate
                         // entries for the same field name.
-                        instance_members.items[idx] = field_member;
-                        if (field_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                        temporaries.instance_members.items[idx] = field_member;
+                        if (field_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                     } else {
-                        try instance_members.append(self.gpa, field_member);
-                        if (field_predicate) |pred| try instance_member_predicates.put(self.gpa, member_name, pred);
+                        try temporaries.instance_members.append(self.gpa, field_member);
+                        if (field_predicate) |pred| try temporaries.instance_member_predicates.put(self.gpa, member_name, pred);
                     }
                 },
                 else => {},
             }
         }
-        try self.checkUnusedPrivateClassMembers(node, &unused_private_member_candidates);
-        try self.checkClassMethodMissingImplementations(node, &method_seen);
-        try self.checkClassMethodMissingImplementations(node, &static_method_seen);
-        try self.checkClassMethodOverloadAbstractMismatch(&method_seen);
-        try self.checkClassMethodOverloadAbstractMismatch(&static_method_seen);
-        try self.checkClassMethodOverloadVisibilityMismatch(&method_seen);
-        try self.checkClassMethodOverloadVisibilityMismatch(&static_method_seen);
-        if (ctor_overload_nodes.items.len > 1 or
-            (ctor_overload_nodes.items.len > 0 and ctor_impl_visibility != null))
+        try self.checkUnusedPrivateClassMembers(node, &temporaries.unused_private_member_candidates);
+        try self.checkClassMethodMissingImplementations(node, &temporaries.method_seen);
+        try self.checkClassMethodMissingImplementations(node, &temporaries.static_method_seen);
+        try self.checkClassMethodOverloadAbstractMismatch(&temporaries.method_seen);
+        try self.checkClassMethodOverloadAbstractMismatch(&temporaries.static_method_seen);
+        try self.checkClassMethodOverloadVisibilityMismatch(&temporaries.method_seen);
+        try self.checkClassMethodOverloadVisibilityMismatch(&temporaries.static_method_seen);
+        if (temporaries.ctor_overload_nodes.items.len > 1 or
+            (temporaries.ctor_overload_nodes.items.len > 0 and ctor_impl_visibility != null))
         {
-            const canonical_visibility = ctor_impl_visibility orelse ctor_overload_visibilities.items[0];
-            for (ctor_overload_nodes.items, 0..) |overload_node, overload_idx| {
-                const overload_visibility = ctor_overload_visibilities.items[overload_idx];
+            const canonical_visibility = ctor_impl_visibility orelse temporaries.ctor_overload_visibilities.items[0];
+            for (temporaries.ctor_overload_nodes.items, 0..) |overload_node, overload_idx| {
+                const overload_visibility = temporaries.ctor_overload_visibilities.items[overload_idx];
                 if (overload_visibility == canonical_visibility) continue;
                 try self.reportAt(
                     overload_node,
@@ -45044,8 +45137,8 @@ pub const Checker = struct {
         // signatures plus a single implementation are fine. Mirrors tsc
         // (`checker.go`: `multipleConstructorImplementation`), which
         // flags every implementation declaration.
-        if (ctor_impl_nodes.items.len > 1) {
-            for (ctor_impl_nodes.items) |impl| {
+        if (temporaries.ctor_impl_nodes.items.len > 1) {
+            for (temporaries.ctor_impl_nodes.items) |impl| {
                 try self.report(impl, TsCodes.multiple_constructor_implementations, "Multiple constructor implementations are not allowed.");
             }
         }
@@ -45054,21 +45147,21 @@ pub const Checker = struct {
         // `parserClassDeclaration12.ts(2,4)` baseline. The free-function
         // overload check at `checkFunctionOverloadCompatibilityAfterBody`
         // skips constructors; this branch covers them.
-        if (ctor_impl_count > 0 and ctor_overload_sigs.items.len > 0 and
+        if (ctor_impl_count > 0 and temporaries.ctor_overload_sigs.items.len > 0 and
             ctor_impl_node != hir_mod.none_node_id and
             !self.classHasLeadingDeclare(node) and
             !self.virtualSectionIsDeclarationFile(node))
         {
             const impl_required = self.syntacticRequiredParamCount(ctor_impl_node);
-            for (ctor_overload_sigs.items, ctor_overload_nodes.items, 0..) |ovl_sig, ovl_node, ovl_idx| {
+            for (temporaries.ctor_overload_sigs.items, temporaries.ctor_overload_nodes.items, 0..) |ovl_sig, ovl_node, ovl_idx| {
                 // Syntactic arity: impl must be reachable with each
                 // overload's max-arg count.
-                const ovl_max_opt = if (ovl_idx < ctor_overload_max_counts.items.len and ctor_overload_max_counts.items[ovl_idx] != null)
-                    ctor_overload_max_counts.items[ovl_idx]
+                const ovl_max_opt = if (ovl_idx < temporaries.ctor_overload_max_counts.items.len and temporaries.ctor_overload_max_counts.items[ovl_idx] != null)
+                    temporaries.ctor_overload_max_counts.items[ovl_idx]
                 else
                     self.syntacticMaxParamCount(ovl_node);
                 const arity_bad = if (ovl_max_opt) |ovl_max| (impl_required > ovl_max) else false;
-                const pos = if (ovl_idx < ctor_overload_positions.items.len) ctor_overload_positions.items[ovl_idx] else null;
+                const pos = if (ovl_idx < temporaries.ctor_overload_positions.items.len) temporaries.ctor_overload_positions.items[ovl_idx] else null;
                 if (arity_bad) {
                     if (pos) |p| {
                         try self.diagnostics.append(self.gpa, .{
@@ -45125,8 +45218,8 @@ pub const Checker = struct {
             try self.mergeExtendedMembers(
                 node,
                 c.extends,
-                &instance_members,
-                &instance_member_names_local,
+                &temporaries.instance_members,
+                &temporaries.instance_member_names_local,
                 string_idx,
                 number_idx,
                 symbol_idx,
@@ -45141,7 +45234,7 @@ pub const Checker = struct {
                 if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
             }
             if (parent_static_t) |pst| {
-                try self.mergeInheritedStaticMembers(node, pst, &static_members);
+                try self.mergeInheritedStaticMembers(node, pst, &temporaries.static_members);
                 const parent_static_string_idx = self.interner.objectStringIndex(pst);
                 const parent_static_number_idx = self.interner.objectNumberIndex(pst);
                 const parent_static_symbol_idx = self.interner.objectSymbolIndex(pst);
@@ -45155,13 +45248,13 @@ pub const Checker = struct {
         // methods/getters/setters (the constructor pass above already handled
         // its own assignments). Runs before interning so the inferred members
         // join the instance/static type.
-        try self.collectJsMethodThisMembers(node, members, parent_instance_t, parent_static_t, &instance_members, &static_members);
-        try self.mergeSameNameInterfaceMembers(node, &instance_members);
-        try self.checkIndexSignatureMemberCompatibility(node, instance_members.items, string_idx, number_idx, symbol_idx);
-        try self.checkIndexSignatureMemberCompatibility(node, static_members.items, static_string_idx, static_number_idx, static_symbol_idx);
+        try self.collectJsMethodThisMembers(node, members, parent_instance_t, parent_static_t, &temporaries.instance_members, &temporaries.static_members);
+        try self.mergeSameNameInterfaceMembers(node, &temporaries.instance_members);
+        try self.checkIndexSignatureMemberCompatibility(node, temporaries.instance_members.items, string_idx, number_idx, symbol_idx);
+        try self.checkIndexSignatureMemberCompatibility(node, temporaries.static_members.items, static_string_idx, static_number_idx, static_symbol_idx);
         const class_static_name_id = self.string_interner.intern("name") catch return error.OutOfMemory;
-        if (!objectMemberListContains(static_members.items, class_static_name_id)) {
-            try static_members.append(self.gpa, .{
+        if (!objectMemberListContains(temporaries.static_members.items, class_static_name_id)) {
+            try temporaries.static_members.append(self.gpa, .{
                 .name = class_static_name_id,
                 .type = types.Primitive.string_t,
                 .is_optional = false,
@@ -45170,7 +45263,7 @@ pub const Checker = struct {
             });
         }
 
-        var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+        var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
         var static_ctor_sig = ctor_sig;
         var inherited_ctor_sig: ?TypeId = null;
@@ -45215,7 +45308,7 @@ pub const Checker = struct {
             } else if (inherited_ctor_sig) |parent_sig| {
                 try self.copySignatureParamNames(static_ctor_sig, parent_sig);
             }
-            try static_members.append(self.gpa, .{
+            try temporaries.static_members.append(self.gpa, .{
                 .name = construct_name,
                 .type = static_ctor_sig,
                 .is_optional = false,
@@ -45224,8 +45317,8 @@ pub const Checker = struct {
             });
         }
         const prototype_name_id = self.string_interner.intern("prototype") catch return error.OutOfMemory;
-        if (!objectMemberListContains(static_members.items, prototype_name_id)) {
-            try static_members.append(self.gpa, .{
+        if (!objectMemberListContains(temporaries.static_members.items, prototype_name_id)) {
+            try temporaries.static_members.append(self.gpa, .{
                 .name = prototype_name_id,
                 .type = instance_t,
                 .is_optional = false,
@@ -45233,14 +45326,14 @@ pub const Checker = struct {
                 .is_method = false,
             });
         }
-        var static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
+        var static_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
         if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
         if (parent_static_t) |pst| {
             try self.checkIntersectionFactoryClassStaticSide(node, c.extends, instance_t, pst);
         }
         try self.class_static_type_by_node.put(self.gpa, node, static_t);
-        try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
-        try self.recordMemberPredicatesForReceiver(static_t, &static_member_predicates);
+        try self.recordMemberPredicatesForReceiver(instance_t, &temporaries.instance_member_predicates);
+        try self.recordMemberPredicatesForReceiver(static_t, &temporaries.static_member_predicates);
         if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
         self.hir.setType(node, if (self.hir.kindOf(node) == .class_expr) static_t else instance_t);
         try self.registerAnonymousClassInstanceDisplayName(instance_t, node);
@@ -45260,14 +45353,14 @@ pub const Checker = struct {
                     defer missing.deinit(self.gpa);
                     if (self.class_abstract_members_order.getPtr(ext_name)) |parent_order| {
                         for (parent_order.items) |member_name| {
-                            if (concrete_names.contains(member_name)) continue;
+                            if (temporaries.concrete_names.contains(member_name)) continue;
                             try missing.append(self.gpa, member_name);
                         }
                     } else {
                         var it = parent_abs.keyIterator();
                         while (it.next()) |name_ptr| {
                             const member_name = name_ptr.*;
-                            if (concrete_names.contains(member_name)) continue;
+                            if (temporaries.concrete_names.contains(member_name)) continue;
                             try missing.append(self.gpa, member_name);
                         }
                     }
@@ -45324,7 +45417,7 @@ pub const Checker = struct {
         }
         if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
             const cid = hir_mod.identifierOf(self.hir, c.name);
-            try self.checkMergedNamespaceStaticConflicts(node, cid.name, &static_names);
+            try self.checkMergedNamespaceStaticConflicts(node, cid.name, &temporaries.static_names);
             try self.class_instance_types.put(self.gpa, cid.name, instance_t);
             try self.class_static_types.put(self.gpa, cid.name, static_t);
             if (parent_instance_t) |pt| {
@@ -45393,14 +45486,14 @@ pub const Checker = struct {
             if (has_explicit_ctor) {
                 try self.class_constructor_sigs.put(self.gpa, cid.name, static_ctor_sig);
             }
-            if (ctor_overload_sigs.items.len > 0) {
+            if (temporaries.ctor_overload_sigs.items.len > 0) {
                 // Re-intern each bodyless overload signature with the
                 // instance type as return so the arity-check path can
                 // line them up against `new C(args)` calls. Mirrors
                 // the static-side rewrite for the implementation sig.
                 var converted: std.ArrayListUnmanaged(TypeId) = .empty;
                 errdefer converted.deinit(self.gpa);
-                for (ctor_overload_sigs.items) |ovl_sig| {
+                for (temporaries.ctor_overload_sigs.items) |ovl_sig| {
                     const ovl_params = self.interner.signatureParams(ovl_sig);
                     const new_sig = self.interner.internSignatureWithAbstract(ovl_params, instance_t, true, c.is_abstract) catch return error.OutOfMemory;
                     try self.recordConstructorSignatureVisibility(new_sig, ctor_visibility);
@@ -45566,7 +45659,7 @@ pub const Checker = struct {
                 if (c.is_abstract) try self.abstract_classes.put(self.gpa, cid.name, {});
             }
             if (parent_class_name) |ext_name| {
-                try self.checkPrivateBaseRedeclarations(node, cid.name, ext_name, &private_names, &own_member_names);
+                try self.checkPrivateBaseRedeclarations(node, cid.name, ext_name, &temporaries.private_names, &temporaries.own_member_names);
                 // Heritage accessibility narrowing checks (TS2415 /
                 // TS2417). Walks the redeclared instance/static
                 // members against the parent's recorded
@@ -45577,12 +45670,12 @@ pub const Checker = struct {
                     node,
                     cid.name,
                     ext_name,
-                    &private_names,
-                    &protected_names,
-                    &static_private_names,
-                    &static_protected_names,
-                    &instance_member_names_local,
-                    &static_member_names_local,
+                    &temporaries.private_names,
+                    &temporaries.protected_names,
+                    &temporaries.static_private_names,
+                    &temporaries.static_protected_names,
+                    &temporaries.instance_member_names_local,
+                    &temporaries.static_member_names_local,
                 );
             }
             // Register the private-member set under the class name.
@@ -45593,40 +45686,40 @@ pub const Checker = struct {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_private_members.put(self.gpa, cid.name, private_names);
+            try self.class_private_members.put(self.gpa, cid.name, temporaries.private_names);
             // Ownership has moved into the map; reset the local so
             // the trailing `defer` is a no-op on the success path.
-            private_names = .empty;
+            temporaries.private_names = .empty;
             if (self.class_protected_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_protected_members.put(self.gpa, cid.name, protected_names);
-            protected_names = .empty;
+            try self.class_protected_members.put(self.gpa, cid.name, temporaries.protected_names);
+            temporaries.protected_names = .empty;
             if (self.class_static_private_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_private_members.put(self.gpa, cid.name, static_private_names);
-            static_private_names = .empty;
+            try self.class_static_private_members.put(self.gpa, cid.name, temporaries.static_private_names);
+            temporaries.static_private_names = .empty;
             if (self.class_static_protected_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_protected_members.put(self.gpa, cid.name, static_protected_names);
-            static_protected_names = .empty;
+            try self.class_static_protected_members.put(self.gpa, cid.name, temporaries.static_protected_names);
+            temporaries.static_protected_names = .empty;
             if (self.class_instance_member_names.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_instance_member_names.put(self.gpa, cid.name, instance_member_names_local);
-            instance_member_names_local = .empty;
+            try self.class_instance_member_names.put(self.gpa, cid.name, temporaries.instance_member_names_local);
+            temporaries.instance_member_names_local = .empty;
             if (self.class_static_member_names.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_member_names.put(self.gpa, cid.name, static_member_names_local);
-            static_member_names_local = .empty;
+            try self.class_static_member_names.put(self.gpa, cid.name, temporaries.static_member_names_local);
+            temporaries.static_member_names_local = .empty;
             // Register abstract-member set for this class so subclass
             // checks can consult it. Replace any prior entry. We also
             // fold in each unimplemented abstract member inherited
@@ -45647,21 +45740,21 @@ pub const Checker = struct {
                         // fall back to the hashmap iterator.
                         if (self.class_abstract_members_order.getPtr(parent_name)) |parent_order| {
                             for (parent_order.items) |member_name| {
-                                if (concrete_names.contains(member_name)) continue;
+                                if (temporaries.concrete_names.contains(member_name)) continue;
                                 if (self.mergedInterfaceProvidesClassMember(node, cid.name, member_name)) continue;
-                                if (abstract_names.contains(member_name)) continue;
-                                try abstract_names_order.append(self.gpa, member_name);
-                                try abstract_names.put(self.gpa, member_name, {});
+                                if (temporaries.abstract_names.contains(member_name)) continue;
+                                try temporaries.abstract_names_order.append(self.gpa, member_name);
+                                try temporaries.abstract_names.put(self.gpa, member_name, {});
                             }
                         } else {
                             var it = parent_abs.keyIterator();
                             while (it.next()) |name_ptr| {
                                 const member_name = name_ptr.*;
-                                if (concrete_names.contains(member_name)) continue;
+                                if (temporaries.concrete_names.contains(member_name)) continue;
                                 if (self.mergedInterfaceProvidesClassMember(node, cid.name, member_name)) continue;
-                                if (abstract_names.contains(member_name)) continue;
-                                try abstract_names_order.append(self.gpa, member_name);
-                                try abstract_names.put(self.gpa, member_name, {});
+                                if (temporaries.abstract_names.contains(member_name)) continue;
+                                try temporaries.abstract_names_order.append(self.gpa, member_name);
+                                try temporaries.abstract_names.put(self.gpa, member_name, {});
                             }
                         }
                     }
@@ -45669,87 +45762,87 @@ pub const Checker = struct {
                         var prop_it = parent_props.iterator();
                         while (prop_it.next()) |entry| {
                             const member_name = entry.key_ptr.*;
-                            if (concrete_names.contains(member_name)) continue;
+                            if (temporaries.concrete_names.contains(member_name)) continue;
                             if (self.mergedInterfaceProvidesClassMember(node, cid.name, member_name)) continue;
-                            if (abstract_property_origins.contains(member_name)) continue;
-                            try abstract_property_origins.put(self.gpa, member_name, entry.value_ptr.*);
+                            if (temporaries.abstract_property_origins.contains(member_name)) continue;
+                            try temporaries.abstract_property_origins.put(self.gpa, member_name, entry.value_ptr.*);
                         }
                     }
                 }
             }
-            try self.reportAbstractPropertyAccessesInConstructors(members, &abstract_property_origins);
+            try self.reportAbstractPropertyAccessesInConstructors(members, &temporaries.abstract_property_origins);
             if (self.class_abstract_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_abstract_members.put(self.gpa, cid.name, abstract_names);
-            abstract_names = .empty;
+            try self.class_abstract_members.put(self.gpa, cid.name, temporaries.abstract_names);
+            temporaries.abstract_names = .empty;
             if (self.class_abstract_members_order.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_abstract_members_order.put(self.gpa, cid.name, abstract_names_order);
-            abstract_names_order = .empty;
+            try self.class_abstract_members_order.put(self.gpa, cid.name, temporaries.abstract_names_order);
+            temporaries.abstract_names_order = .empty;
             if (self.class_abstract_property_origins.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_abstract_property_origins.put(self.gpa, cid.name, abstract_property_origins);
-            abstract_property_origins = .empty;
+            try self.class_abstract_property_origins.put(self.gpa, cid.name, temporaries.abstract_property_origins);
+            temporaries.abstract_property_origins = .empty;
             if (self.class_property_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_property_members.put(self.gpa, cid.name, property_names);
-            property_names = .empty;
+            try self.class_property_members.put(self.gpa, cid.name, temporaries.property_names);
+            temporaries.property_names = .empty;
             if (self.class_accessor_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_accessor_members.put(self.gpa, cid.name, accessor_names);
-            accessor_names = .empty;
+            try self.class_accessor_members.put(self.gpa, cid.name, temporaries.accessor_names);
+            temporaries.accessor_names = .empty;
             if (self.class_getter_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_getter_members.put(self.gpa, cid.name, getter_names);
-            getter_names = .empty;
+            try self.class_getter_members.put(self.gpa, cid.name, temporaries.getter_names);
+            temporaries.getter_names = .empty;
             if (self.class_static_getter_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_getter_members.put(self.gpa, cid.name, static_getter_names);
-            static_getter_names = .empty;
+            try self.class_static_getter_members.put(self.gpa, cid.name, temporaries.static_getter_names);
+            temporaries.static_getter_names = .empty;
             if (self.class_method_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_method_members.put(self.gpa, cid.name, method_names);
-            method_names = .empty;
+            try self.class_method_members.put(self.gpa, cid.name, temporaries.method_names);
+            temporaries.method_names = .empty;
             if (self.class_private_method_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_private_method_members.put(self.gpa, cid.name, private_method_names);
-            private_method_names = .empty;
+            try self.class_private_method_members.put(self.gpa, cid.name, temporaries.private_method_names);
+            temporaries.private_method_names = .empty;
             if (self.class_static_private_method_members.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_private_method_members.put(self.gpa, cid.name, static_private_method_names);
-            static_private_method_names = .empty;
+            try self.class_static_private_method_members.put(self.gpa, cid.name, temporaries.static_private_method_names);
+            temporaries.static_private_method_names = .empty;
             if (self.class_private_set_only_accessors.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_private_set_only_accessors.put(self.gpa, cid.name, private_set_only_accessor_names);
-            private_set_only_accessor_names = .empty;
+            try self.class_private_set_only_accessors.put(self.gpa, cid.name, temporaries.private_set_only_accessor_names);
+            temporaries.private_set_only_accessor_names = .empty;
             if (self.class_static_private_set_only_accessors.fetchRemove(cid.name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_private_set_only_accessors.put(self.gpa, cid.name, static_private_set_only_accessor_names);
-            static_private_set_only_accessor_names = .empty;
+            try self.class_static_private_set_only_accessors.put(self.gpa, cid.name, temporaries.static_private_set_only_accessor_names);
+            temporaries.static_private_set_only_accessor_names = .empty;
             if (c.extends != hir_mod.none_node_id) {
                 if (self.classExtendsName(c.extends)) |ext_name| {
                     if (self.class_instance_types.contains(ext_name)) {
@@ -45775,7 +45868,7 @@ pub const Checker = struct {
                             // `'foo', 'bar'`, not alphabetic).
                             if (self.class_abstract_members_order.getPtr(ext_name)) |parent_order| {
                                 for (parent_order.items) |member_name| {
-                                    if (concrete_names.contains(member_name)) continue;
+                                    if (temporaries.concrete_names.contains(member_name)) continue;
                                     if (self.mergedInterfaceProvidesClassMember(node, cid.name, member_name)) continue;
                                     try missing.append(self.gpa, member_name);
                                 }
@@ -45783,7 +45876,7 @@ pub const Checker = struct {
                                 var it = parent_abs.keyIterator();
                                 while (it.next()) |name_ptr| {
                                     const member_name = name_ptr.*;
-                                    if (concrete_names.contains(member_name)) continue;
+                                    if (temporaries.concrete_names.contains(member_name)) continue;
                                     if (self.mergedInterfaceProvidesClassMember(node, cid.name, member_name)) continue;
                                     try missing.append(self.gpa, member_name);
                                 }
@@ -45892,7 +45985,7 @@ pub const Checker = struct {
                     if (parent_instance_t) |pit| {
                         var missing_from_type: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
                         defer missing_from_type.deinit(self.gpa);
-                        try self.collectMissingAbstractMembersFromInstanceType(pit, &concrete_names, &missing_from_type);
+                        try self.collectMissingAbstractMembersFromInstanceType(pit, &temporaries.concrete_names, &missing_from_type);
                         if (missing_from_type.items.len > 0) {
                             const child_str = try self.renderClassNameWithTypeParams(cid.name, c.type_params_start, c.type_params_len);
                             const parent_str = (try self.allocAbstractParentTypeName(pit)) orelse
@@ -45970,14 +46063,14 @@ pub const Checker = struct {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_instance_member_names.put(self.gpa, anon_name, instance_member_names_local);
-            instance_member_names_local = .empty;
+            try self.class_instance_member_names.put(self.gpa, anon_name, temporaries.instance_member_names_local);
+            temporaries.instance_member_names_local = .empty;
             if (self.class_static_member_names.fetchRemove(anon_name)) |old| {
                 var owned = old.value;
                 owned.deinit(self.gpa);
             }
-            try self.class_static_member_names.put(self.gpa, anon_name, static_member_names_local);
-            static_member_names_local = .empty;
+            try self.class_static_member_names.put(self.gpa, anon_name, temporaries.static_member_names_local);
+            temporaries.static_member_names_local = .empty;
         }
         // `const C = class { … }`: register the (immutable) binding
         // name in the value-space class maps so `new C(…)` inside
@@ -46120,7 +46213,7 @@ pub const Checker = struct {
         var refined_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer refined_members.deinit(self.gpa);
         var changed = false;
-        for (instance_members.items) |im| {
+        for (temporaries.instance_members.items) |im| {
             var next = im;
             if (im.is_method) {
                 for (members) |m| {
@@ -46160,7 +46253,7 @@ pub const Checker = struct {
         // surface. Re-read the pass-2 type (derived with `this` =
         // `static_t`) for body-inferred static methods. Mirrors
         // `typeOfThisInStaticMembers`.
-        for (static_members.items) |*sm| {
+        for (temporaries.static_members.items) |*sm| {
             if (!sm.is_method) continue;
             for (members) |m| {
                 const k = self.hir.kindOf(m);
@@ -46217,17 +46310,17 @@ pub const Checker = struct {
                 }
                 try self.copySignatureParamNames(static_ctor_sig, donor_sig);
             }
-            for (static_members.items) |*member| {
+            for (temporaries.static_members.items) |*member| {
                 if (member.name == construct_name) {
                     member.type = static_ctor_sig;
                 } else if (member.name == prototype_name_id) {
                     member.type = instance_t;
                 }
             }
-            static_t = self.interner.internObjectTypeWithIndexAndSymbol(static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
+            static_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
             if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
             try self.class_static_type_by_node.put(self.gpa, node, static_t);
-            try self.recordMemberPredicatesForReceiver(instance_t, &instance_member_predicates);
+            try self.recordMemberPredicatesForReceiver(instance_t, &temporaries.instance_member_predicates);
             if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
             self.hir.setType(node, if (self.hir.kindOf(node) == .class_expr) static_t else instance_t);
             try self.registerAnonymousClassInstanceDisplayName(instance_t, node);
@@ -55787,7 +55880,7 @@ pub const Checker = struct {
     fn objectTypeHasNamedShape(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_object_type) return null;
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
         if (self.interner.objectMembers(t).len == 0) return null;
         const cache = if (prefer_non_class)
             &self.named_shape_non_class_cache
@@ -55899,6 +55992,11 @@ pub const Checker = struct {
     }
 
     fn objectTypesSameDisplayShape(self: *Checker, a: TypeId, b: TypeId) bool {
+        if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return false;
+        const af = self.interner.pool.flagsOf(a);
+        const bf = self.interner.pool.flagsOf(b);
+        if (!af.is_object_type or af.is_union or af.is_intersection or
+            !bf.is_object_type or bf.is_union or bf.is_intersection) return false;
         if (self.interner.objectStringIndex(a) != self.interner.objectStringIndex(b) or
             self.interner.objectNumberIndex(a) != self.interner.objectNumberIndex(b) or
             self.interner.objectSymbolIndex(a) != self.interner.objectSymbolIndex(b))
@@ -67555,6 +67653,10 @@ pub const Checker = struct {
         // Bail on re-entry; the in-flight call resolves the member
         // reference to whatever type is cached on the node so far (or
         // `none`), matching upstream tsc's circularity handling.
+        // Forward checks can run while a parent declaration is incomplete.
+        // Only the primary statement visit marks this declaration checked.
+        // Subsequent same-scope merges still back-patch its owned record.
+        if (self.primary_checked_interfaces.contains(node)) return;
         if (self.interface_lower_in_progress.contains(node)) return;
         try self.interface_lower_in_progress.put(self.gpa, node, {});
         defer _ = self.interface_lower_in_progress.remove(node);
@@ -68132,6 +68234,47 @@ pub const Checker = struct {
         }
     }
 
+    fn clearInterfaceInstantiationMemo(self: *Checker) void {
+        var keys = self.interface_instantiation_memo.keyIterator();
+        while (keys.next()) |key| self.gpa.free(key.*);
+        self.interface_instantiation_memo.clearRetainingCapacity();
+    }
+
+    /// Substituting a completed interface surface is deterministic for an
+    /// exact body and mapper. Free parameters are identities in the key too;
+    /// they need not be concrete. Never retain a cycle-dependent result.
+    fn instantiateInterfaceBody(
+        self: *Checker,
+        body: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!TypeId {
+        if (subs.count() == 0) return body;
+        var parameters: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer parameters.deinit(self.gpa);
+        var entries = subs.keyIterator();
+        while (entries.next()) |parameter| try parameters.append(self.gpa, parameter.*);
+        std.mem.sort(TypeId, parameters.items, {}, std.sort.asc(TypeId));
+        const key = try self.gpa.alloc(u8, 4 + parameters.items.len * 8);
+        var owned = true;
+        defer if (owned) self.gpa.free(key);
+        std.mem.writeInt(TypeId, key[0..4], body, .little);
+        for (parameters.items, 0..) |parameter, index| {
+            std.mem.writeInt(TypeId, key[4 + index * 8 ..][0..4], parameter, .little);
+            std.mem.writeInt(TypeId, key[8 + index * 8 ..][0..4], subs.get(parameter).?, .little);
+        }
+        if (self.interface_instantiation_memo.get(key)) |cached| return cached;
+        const before = self.instantiation_defer_events;
+        const result = try self.substituteTypeWithFreshMemo(body, subs);
+        if (before == self.instantiation_defer_events and !self.type_instantiation_overflow) {
+            const entry = try self.interface_instantiation_memo.getOrPut(self.gpa, key);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = result;
+                owned = false;
+            }
+        }
+        return result;
+    }
+
     fn recordGenericInterfaceDecl(
         self: *Checker,
         node: NodeId,
@@ -68692,6 +68835,16 @@ pub const Checker = struct {
         defer combined.deinit(self.gpa);
         try combined.appendSlice(self.gpa, existing_members);
         outer: for (new_members) |nm| {
+            // Refreshing a forward-checked member replaces the same
+            // declaration. Only distinct method declarations add overloads.
+            if (nm.decl_node != hir_mod.none_node_id) {
+                for (combined.items, 0..) |cm, index| {
+                    if (cm.name == nm.name and cm.decl_node == nm.decl_node) {
+                        combined.items[index] = nm;
+                        continue :outer;
+                    }
+                }
+            }
             if (!nm.is_method) {
                 for (combined.items, 0..) |cm, i| {
                     if (!cm.is_method and cm.name == nm.name) {
@@ -73823,13 +73976,59 @@ pub const Checker = struct {
     fn localAliasDefinition(self: *Checker, node: NodeId) CheckError!LocalAliasDefinition {
         if (self.local_alias_definitions.get(node)) |entry| return entry;
         const definition = try self.interner.reserveGenericDefinition();
-        const reference = try self.interner.internInstantiation(definition, &.{});
+        const generic_interface = self.typeParamNodesOfDecl(node).len != 0;
+        const reference = if (generic_interface) types.Primitive.none else try self.interner.internInstantiation(definition, &.{});
         const entry: LocalAliasDefinition = .{ .definition = definition, .reference = reference };
         try self.local_alias_definitions.put(self.gpa, node, entry);
         errdefer _ = self.local_alias_definitions.remove(node);
         try self.local_alias_origins.put(self.gpa, definition, node);
+        if (generic_interface) {
+            if (self.declarationName(node)) |name| self.interner.setGenericDefinitionName(definition, name);
+        }
         self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
         return entry;
+    }
+
+    /// Preserve in-flight interfaces and recursive container aliases by
+    /// declaration identity. The pool owns the arguments and completed body;
+    /// no querying mapper or provisional structural surface escapes.
+    fn ownedGenericDeclarationReference(self: *Checker, anchor: NodeId, declaration: NodeId) CheckError!?TypeId {
+        const owned_alias = self.hir.kindOf(declaration) == .type_alias_decl and
+            self.local_alias_definitions.contains(declaration);
+        if (!self.interface_lower_in_progress.contains(declaration) and
+            !self.generic_container_aliases_active.contains(declaration) and !owned_alias) return null;
+        const nodes = self.typeParamNodesOfDecl(declaration);
+        if (nodes.len == 0) return null;
+        const ref = hir_mod.typeRefOf(self.hir, anchor);
+        if (ref.qualifier_len == 0 and self.nameHasEnclosingTypeParameter(ref.name, anchor)) return null;
+        const arguments = hir_mod.typeRefArgs(self.hir, anchor);
+        const invalid = try self.reportDeclGenericInvalidTypeArgCount(anchor, ref.name, nodes, arguments.len);
+        if (invalid) return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, if (self.declTypeParamsHaveRangeTypeArgCount(nodes)) TsCodes.generic_type_requires_between_args else TsCodes.generic_type_requires_args));
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        const saved_constraint_subs = self.current_type_arg_constraint_subs;
+        self.current_type_arg_constraint_subs = &substitutions;
+        defer self.current_type_arg_constraint_subs = saved_constraint_subs;
+        const types_for_args = try self.gpa.alloc(TypeId, nodes.len);
+        defer self.gpa.free(types_for_args);
+        for (nodes, types_for_args, 0..) |node, *argument, index| {
+            const parameter = self.hir.typeOf(node);
+            argument.* = if (index < arguments.len)
+                try self.lowererLowerWithTypeParams(arguments[index])
+            else blk: {
+                const syntax = hir_mod.typeParameterOf(self.hir, node);
+                if (syntax.default == hir_mod.none_node_id) break :blk parameter;
+                const default = try self.lowerTypeParameterDefault(syntax.default);
+                break :blk try self.substituteTypeWithFreshMemo(default, &substitutions);
+            };
+            if (index < arguments.len) try self.checkTypeArgSatisfiesConstraint(arguments[index], parameter, argument.*);
+            try substitutions.put(self.gpa, parameter, argument.*);
+        }
+        for (arguments[@min(arguments.len, nodes.len)..]) |argument| _ = try self.lowererLowerWithTypeParams(argument);
+        const entry = try self.localAliasDefinition(declaration);
+        const instantiated = try self.interner.internInstantiation(entry.definition, types_for_args);
+        try self.registerAliasDisplayNameInner(instantiated, ref.name, types_for_args, false);
+        return instantiated;
     }
 
     fn localAliasReferenceAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
@@ -74115,7 +74314,31 @@ pub const Checker = struct {
         try self.checkConditionalInferScopesInTypeNode(ta.aliased, &lexical_names);
         try self.checkTypeNodeComputedKeysForTypeOnlyValues(ta.aliased);
         try self.checkInvalidIndexedAccessTypesInTypeNode(ta.aliased, type_params);
+        // Productive container recursion retains the declaration and exact
+        // argument environment instead of an unknown/unspecialized body.
+        const body_kind = self.hir.kindOf(ta.aliased);
+        var container_body = body_kind == .object_type or body_kind == .tuple_type or body_kind == .array_type or body_kind == .fn_type;
+        if (body_kind == .union_type) {
+            for (hir_mod.unionTypeMembers(self.hir, ta.aliased)) |member| {
+                const kind = self.hir.kindOf(member);
+                container_body = container_body or kind == .object_type or kind == .tuple_type or kind == .array_type or kind == .fn_type;
+            }
+        }
+        if (container_body) try self.generic_container_aliases_active.put(self.gpa, node, {});
+        defer if (container_body) {
+            _ = self.generic_container_aliases_active.remove(node);
+        };
         const body_t = try self.lowererLowerWithTypeParams(ta.aliased);
+        if (self.local_alias_definitions.get(node)) |entry| {
+            const definition = self.interner.genericDefinition(entry.definition).?;
+            if (definition.body == types.Primitive.none) {
+                self.interner.completeGenericDefinition(entry.definition, param_ids.items, body_t) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidTypeGraph => unreachable,
+                };
+            }
+        }
+
         self.hir.setType(node, body_t);
         if (self.typeAliasBodyAllowsVarianceAnnotation(ta.aliased) and
             ta.name != hir_mod.none_node_id and
@@ -76299,7 +76522,7 @@ pub const Checker = struct {
             try self.reportDeclGenericTypeRequiresBetweenArgs(node, name, params);
             return true;
         }
-        if (!self.declTypeParamsHaveRangeTypeArgCount(params) and supplied < params.len) {
+        if (params.len != 0 and !self.declTypeParamsHaveRangeTypeArgCount(params) and supplied != params.len) {
             try self.reportDeclGenericTypeRequiresArgs(node, name, params);
             return true;
         }
@@ -79260,7 +79483,7 @@ pub const Checker = struct {
                             var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                             defer subs.deinit(self.gpa);
                             try self.putDependentGenericDefaults(info.params, 0, &subs);
-                            const instantiated = self.substituteType(info.body, &subs) catch info.body;
+                            const instantiated = self.instantiateInterfaceBody(info.body, &subs) catch info.body;
                             try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
                             return instantiated;
                         }
@@ -79432,6 +79655,14 @@ pub const Checker = struct {
                 // own TypeId (so partial application leaves the
                 // remaining slot in place).
                 if (r.qualifier_len == 0 and r.args_len > 0) {
+                    if (self.findVisibleNamedTypeDecl(type_node, r.name)) |declaration| {
+                        if (self.hir.kindOf(declaration) == .interface_decl or
+                            (self.hir.kindOf(declaration) == .type_alias_decl and
+                                (self.local_alias_definitions.contains(declaration) or self.generic_container_aliases_active.contains(declaration))))
+                        {
+                            if (try self.ownedGenericDeclarationReference(type_node, declaration)) |reference| return reference;
+                        }
+                    }
                     // `ThisType<T>` ÃÂ¢ÃÂÃÂ TS marker that re-binds contextual
                     // `this` inside object literals to T. The marker is
                     // structurally empty for assignment; contextual-this
@@ -79660,8 +79891,9 @@ pub const Checker = struct {
                         // structural Promise (`{ then: (cb: (v: T) =>
                         // any) => any }`) on the fly. This lets
                         // downstream `Awaited<ÃÂ¢ÃÂÃÂ¦>` / `await ÃÂ¢ÃÂÃÂ¦` peel it.
-                        if (std.mem.eql(u8, name_str, "Promise") or
-                            std.mem.eql(u8, name_str, "PromiseLike"))
+                        if ((std.mem.eql(u8, name_str, "Promise") or
+                            std.mem.eql(u8, name_str, "PromiseLike")) and
+                            self.findVisibleNamedTypeDecl(type_node, r.name) == null)
                         {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             const inner = try self.lowererLowerWithTypeParams(args[0]);
@@ -80042,7 +80274,10 @@ pub const Checker = struct {
                             self.memoPutAliasInstantiation(&memo_key, memo_defer_baseline, eval_t, info.body);
                             return eval_t;
                         }
-                        var instantiated = self.substituteType(info.body, &subs) catch blk_s: {
+                        var instantiated = (if (scoped_generic_info != null)
+                            self.instantiateInterfaceBody(info.body, &subs)
+                        else
+                            self.substituteType(info.body, &subs)) catch blk_s: {
                             self.instantiation_defer_events +%= 1;
                             break :blk_s info.body;
                         };
@@ -81095,6 +81330,71 @@ pub const Checker = struct {
         return false;
     }
 
+    fn importedGlobalNamespaceType(self: *Checker, anchor: NodeId, path: []const hir_mod.StringId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.global_namespace_type_exports.count() == 0) return null;
+        var qualified: std.ArrayListUnmanaged(u8) = .empty;
+        defer qualified.deinit(self.gpa);
+        for (path) |part| {
+            try qualified.appendSlice(self.gpa, self.string_interner.get(part));
+            try qualified.append(self.gpa, '.');
+        }
+        try qualified.appendSlice(self.gpa, self.string_interner.get(name));
+        const key = self.string_interner.lookup(qualified.items) orelse return null;
+        const exported = self.global_namespace_type_exports.get(key) orelse return null;
+        const nodes = hir_mod.typeRefArgs(self.hir, anchor);
+        const definition = self.interner.genericDefinition(exported) orelse {
+            if (nodes.len != 0) {
+                const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not generic.", .{self.string_interner.get(name)});
+                try self.reportOnce(anchor, TsCodes.type_not_generic, message);
+                for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+                return try self.diagnosedAnyRecovery(anchor, TsCodes.type_not_generic);
+            }
+            return exported;
+        };
+        const parameters = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len]);
+        defer self.gpa.free(parameters);
+        var minimum: usize = 0;
+        for (parameters, 0..) |parameter, index| {
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
+            if (payload.default == types.Primitive.none) minimum = index + 1;
+        }
+        if (nodes.len < minimum or nodes.len > parameters.len) {
+            var label: std.ArrayListUnmanaged(u8) = .empty;
+            defer label.deinit(self.gpa);
+            try label.appendSlice(self.gpa, self.string_interner.get(name));
+            try label.append(self.gpa, '<');
+            for (parameters, 0..) |parameter, index| {
+                if (index != 0) try label.appendSlice(self.gpa, ", ");
+                const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
+                try label.appendSlice(self.gpa, self.string_interner.get(payload.name));
+            }
+            try label.append(self.gpa, '>');
+            const message = if (minimum == parameters.len)
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires {d} type argument(s).", .{ label.items, parameters.len })
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires between {d} and {d} type arguments.", .{ label.items, minimum, parameters.len });
+            const code = if (minimum == parameters.len) TsCodes.generic_type_requires_args else TsCodes.generic_type_requires_between_args;
+            try self.reportOnce(anchor, code, message);
+            for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+            return try self.diagnosedAnyRecovery(anchor, code);
+        }
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        const saved = self.current_type_arg_constraint_subs;
+        self.current_type_arg_constraint_subs = &substitutions;
+        defer self.current_type_arg_constraint_subs = saved;
+        for (nodes, parameters[0..nodes.len]) |node, parameter| {
+            const argument = try self.lowererLowerWithTypeParams(node);
+            try self.checkTypeArgSatisfiesConstraint(node, parameter, argument);
+            try substitutions.put(self.gpa, parameter, argument);
+        }
+        try self.putDependentGenericDefaults(parameters, nodes.len, &substitutions);
+        const arguments = try self.gpa.alloc(TypeId, parameters.len);
+        defer self.gpa.free(arguments);
+        for (parameters, arguments) |parameter, *argument| argument.* = substitutions.get(parameter) orelse parameter;
+        return try self.resolveGenericType(try self.interner.internInstantiation(exported, arguments));
+    }
+
     fn resolveQualifiedTypeRef(self: *Checker, type_node: NodeId) CheckError!?TypeId {
         const r = hir_mod.typeRefOf(self.hir, type_node);
         const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
@@ -81137,6 +81437,7 @@ pub const Checker = struct {
         else
             null;
         const ns_node = absolute_ns_node orelse relative_ns_node orelse {
+            if (try self.importedGlobalNamespaceType(type_node, resolved_path, r.name)) |imported| return imported;
             if (resolved_path.len == 1 and
                 std.mem.eql(u8, self.string_interner.get(resolved_path[0]), "React") and
                 self.sourceHasReactJsxReference())
@@ -81183,7 +81484,49 @@ pub const Checker = struct {
             try self.preRegisterClassInstanceShape(decl);
         }
         const params = self.typeParamNodesOfDecl(decl);
-        _ = try self.reportDeclGenericInvalidTypeArgCount(type_node, r.name, params, r.args_len);
+        if (decl_kind == .interface_decl or
+            (decl_kind == .type_alias_decl and
+                (self.local_alias_definitions.contains(decl) or self.generic_container_aliases_active.contains(decl))))
+        {
+            if (try self.ownedGenericDeclarationReference(type_node, decl)) |reference| return reference;
+        }
+        const invalid_type_args = try self.reportDeclGenericInvalidTypeArgCount(type_node, r.name, params, r.args_len);
+        if (decl_kind == .interface_decl and params.len != 0) {
+            // The qualified spelling identifies this declaration, rather than
+            // an entry in the flat name cache. Apply its own parameters before
+            // returning the body, including dependent defaults and constraints.
+            try self.checkInterfaceDecl(decl);
+            try self.ensureSameScopeInterfaceMergeComplete(decl, r.name);
+            const info = self.generic_interfaces_by_decl.get(decl) orelse return null;
+            const arguments = hir_mod.typeRefArgs(self.hir, type_node);
+            if (invalid_type_args) {
+                for (arguments) |argument| _ = try self.lowererLowerWithTypeParams(argument);
+                return @as(?TypeId, try self.diagnosedAnyRecovery(type_node, if (self.declTypeParamsHaveRangeTypeArgCount(params)) TsCodes.generic_type_requires_between_args else TsCodes.generic_type_requires_args));
+            }
+            const parameters = try self.gpa.dupe(TypeId, info.params);
+            defer self.gpa.free(parameters);
+            var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer substitutions.deinit(self.gpa);
+            const saved_constraint_subs = self.current_type_arg_constraint_subs;
+            self.current_type_arg_constraint_subs = &substitutions;
+            defer self.current_type_arg_constraint_subs = saved_constraint_subs;
+            const count = @min(arguments.len, parameters.len);
+            for (arguments[0..count], parameters[0..count]) |argument, parameter| {
+                const argument_type = try self.lowererLowerWithTypeParams(argument);
+                try self.checkTypeArgSatisfiesConstraint(argument, parameter, argument_type);
+                try substitutions.put(self.gpa, parameter, argument_type);
+            }
+            for (arguments[count..]) |argument| _ = try self.lowererLowerWithTypeParams(argument);
+            try self.putDependentGenericDefaults(parameters, count, &substitutions);
+            const instantiated = try self.substituteTypeWithFreshMemo(info.body, &substitutions);
+            try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
+            try self.generic_interface_decl_by_instance.put(self.gpa, instantiated, decl);
+            const effective_arguments = try self.gpa.alloc(TypeId, parameters.len);
+            defer self.gpa.free(effective_arguments);
+            for (parameters, effective_arguments) |parameter, *argument| argument.* = substitutions.get(parameter) orelse parameter;
+            try self.registerAliasDisplayNameInner(instantiated, r.name, effective_arguments, false);
+            return instantiated;
+        }
         if (self.hir.kindOf(decl) == .enum_decl) {
             const enum_name = self.declarationName(decl) orelse return self.hir.typeOf(decl);
             const e = hir_mod.enumOf(self.hir, decl);
@@ -94757,7 +95100,8 @@ pub const Checker = struct {
     fn booleanPrimitiveAssignableToApparentObjectTarget(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (!self.typeIsBooleanLike(source_t)) return false;
         if (target_t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(target_t).is_object_type) return false;
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection) return false;
         const boolean_apparent_t = self.lowerBuiltinObjectType("Boolean") orelse return false;
         if (boolean_apparent_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(boolean_apparent_t).is_object_type) return false;
@@ -112551,6 +112895,7 @@ pub const Checker = struct {
     /// unrelated imported class and instance bookkeeping whenever any
     /// declaration graph contains an unsupported leaf.
     fn rollbackProgramGenericInstancesFrom(self: *Checker, watermark: TypeId) void {
+        self.clearInterfaceInstantiationMemo();
         self.rollbackProgramGenericInstancesChecked(watermark) catch self.clearProgramGenericInstances();
     }
 
@@ -112746,6 +113091,7 @@ pub const Checker = struct {
         if (index >= self.interner.pool.instantiation_payloads.items.len) return t;
         const reference = self.interner.pool.instantiation_payloads.items[index];
         var definition = self.interner.genericDefinition(reference.origin) orelse return t;
+        var local_parameters: ?[]const TypeId = null;
         if (self.local_alias_origins.get(reference.origin)) |decl| {
             if (definition.body == types.Primitive.none) {
                 if (self.hir.kindOf(decl) == .interface_decl) {
@@ -112762,9 +113108,10 @@ pub const Checker = struct {
                             // merging and forward-reference refreshes finish.
                             self.instantiation_defer_events +%= 1;
                             definition.body = completed;
+                            if (self.generic_interfaces_by_decl.get(decl)) |info| local_parameters = info.params;
                         }
                     }
-                } else {
+                } else if (!self.generic_container_aliases_active.contains(decl)) {
                     try self.checkTypeAliasDecl(decl);
                     definition = self.interner.genericDefinition(reference.origin) orelse return t;
                 }
@@ -112774,10 +113121,10 @@ pub const Checker = struct {
             if (self.local_alias_origins.contains(reference.origin)) self.instantiation_defer_events +%= 1;
             return t;
         }
-        if (definition.parameters_len != reference.args_len) return t;
+        const parameters = local_parameters orelse self.interner.pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len];
+        if (parameters.len != reference.args_len) return t;
         const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
         defer self.gpa.free(args);
-        const parameters = self.interner.pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len];
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         for (parameters, args) |parameter, arg| try subs.put(self.gpa, parameter, arg);
@@ -112786,14 +113133,14 @@ pub const Checker = struct {
         // A non-productive alias cycle remains symbolic; never publish a
         // guessed body as a completed instantiation.
         if (result == t) return t;
-        if (defer_before != self.instantiation_defer_events or self.type_instantiation_overflow) return result;
-        try self.generic_instances.put(self.gpa, t, result);
         // Only a directly materialized object body belongs to this definition.
         // Identity/reference aliases reuse another type; recording their name
         // as its origin would make recursion identity depend on lookup order.
         if (self.interner.pool.flagsOf(definition.body).is_object_type and result == substituted) {
             try self.generic_instance_origins.put(self.gpa, result, reference.origin);
-            if (self.program_definition_names.get(reference.origin)) |name| {
+            const definition_name = self.program_definition_names.get(reference.origin) orelse definition.name;
+            if (definition_name != 0) {
+                const name = definition_name;
                 if (args.len == 0) {
                     try self.program_type_display_names.put(self.gpa, result, name);
                 } else {
@@ -112807,6 +113154,12 @@ pub const Checker = struct {
             try self.program_class_declarations.put(self.gpa, result, class.declaration);
             if (args.len > 0) try self.alias_type_args.put(self.gpa, result, try self.diag_arena.allocator().dupe(TypeId, args));
             try self.registerAliasDisplayNameInner(result, class.name, args, true);
+        }
+        // A current declaration surface retains its exact origin and name
+        // even while merging can still change the body. Only completed
+        // expansions enter the reusable result cache.
+        if (defer_before == self.instantiation_defer_events and !self.type_instantiation_overflow) {
+            try self.generic_instances.put(self.gpa, t, result);
         }
         return result;
     }
@@ -160268,7 +160621,9 @@ pub const Checker = struct {
     }
 
     fn typeIsEmptyObjectShape(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_object_type) return false;
+        if (t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return false;
         return self.interner.objectMembers(t).len == 0 and
             self.interner.objectStringIndex(t) == types.Primitive.none and
             self.interner.objectNumberIndex(t) == types.Primitive.none and
@@ -164131,6 +164486,17 @@ pub const Checker = struct {
             const inferred = self.substituteType(arg_t, subs) catch arg_t;
             if (!subs.contains(param_t)) {
                 try subs.put(self.gpa, param_t, inferred);
+            } else if (subs.get(param_t)) |existing| {
+                // Preserve literal candidates, but allow a later proper
+                // supertype to satisfy all indexed-element alternatives.
+                // Unrelated candidates retain the first inference, matching
+                // ordinary string[] | number[] argument failures.
+                if (existing != inferred and
+                    (self.engine.isAssignableTo(existing, inferred) catch false) and
+                    !(self.engine.isAssignableTo(inferred, existing) catch false))
+                {
+                    try subs.put(self.gpa, param_t, inferred);
+                }
             }
             return;
         }
@@ -167934,6 +168300,93 @@ pub const Checker = struct {
             self.containsFreeTypeParameter(t);
     }
 
+    /// Prove that a complete reachable graph is independent of this mapper.
+    /// Cycles are visited by identity. Side-table types participate in the proof;
+    /// operators that may evaluate without changing an input remain on the
+    /// ordinary substitution path. Only a completed negative walk is memoized.
+    fn substitutionGraphUnchanged(
+        self: *Checker,
+        root: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        // This read-only walk cannot re-enter checking or free-parameter
+        // discovery, so it may share their retained scratch storage.
+        const pending = &self.free_type_parameter_pending;
+        const visited = &self.free_type_parameter_visited;
+        pending.clearRetainingCapacity();
+        visited.clearRetainingCapacity();
+        try pending.append(self.gpa, root);
+        while (pending.pop()) |current| {
+            if (subs.contains(current)) return false;
+            if (current < types.Primitive.first_dynamic) continue;
+            if (current >= self.interner.pool.typeCount()) return false;
+            const entry = try visited.getOrPut(self.gpa, current);
+            if (entry.found_existing) continue;
+            if (self.noInferInnerType(current) != null) return false;
+            var origin = self.program_contextual_type_origins.get(current);
+            while (origin) |context| : (origin = context.next) try pending.appendSlice(self.gpa, context.args);
+            if (self.alias_type_args.get(current)) |arguments| try pending.appendSlice(self.gpa, arguments);
+            const flags = self.interner.pool.flagsOf(current);
+            if (flags.is_union) {
+                try pending.appendSlice(self.gpa, self.interner.unionMembers(current));
+            } else if (flags.is_intersection) {
+                try pending.appendSlice(self.gpa, self.interner.intersectionMembers(current));
+            } else if (flags.is_conditional or flags.is_mapped or flags.is_keyof or flags.is_indexed_access or flags.is_template_literal or flags.is_string_mapping) {
+                return false;
+            } else if (flags.is_instantiation) {
+                const reference = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(current)];
+                try pending.appendSlice(self.gpa, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+            } else if (flags.is_tuple) {
+                const tuple = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(current)];
+                for (self.interner.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len]) |element| try pending.append(self.gpa, element.type);
+            } else if (flags.is_signature) {
+                const parameters = self.interner.signatureParams(current);
+                try pending.appendSlice(self.gpa, parameters);
+                if (self.interner.signatureReturn(current)) |result| try pending.append(self.gpa, result);
+                if (self.signatureThisParam(current)) |receiver| try pending.append(self.gpa, receiver);
+                if (self.generic_signature_params.get(current)) |binders| try pending.appendSlice(self.gpa, binders);
+                if (self.signature_predicates.get(current)) |predicate| try pending.append(self.gpa, predicate.target_type);
+                for (0..@min(parameters.len, @as(usize, std.math.maxInt(u16)) + 1)) |index| {
+                    const key: SignatureParamKey = .{ .signature = current, .param_index = @intCast(index) };
+                    if (self.signature_param_predicates.get(key)) |predicate| try pending.append(self.gpa, predicate.target_type);
+                    if (self.signature_param_this_types.get(key)) |receiver| try pending.append(self.gpa, receiver);
+                }
+            } else if (flags.is_object_type) {
+                // Declaration parameters also govern instance identity and its
+                // displayed arguments when they do not occur in a member.
+                const declaration = self.class_decl_by_instance.get(current) orelse self.interfaceDeclarationForTypeIdentity(current);
+                if (declaration) |decl| {
+                    if (self.nodeBelongsToCurrentHir(decl)) {
+                        for (self.typeParamNodesOfDecl(decl)) |parameter_node| {
+                            try pending.append(self.gpa, self.hir.typeOf(parameter_node));
+                        }
+                    }
+                }
+                for (self.interner.objectMembers(current)) |member| {
+                    try pending.append(self.gpa, member.type);
+                    if (self.member_predicates.get(.{ .receiver_type = current, .member_name = member.name })) |predicate| try pending.append(self.gpa, predicate.target_type);
+                }
+                try pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current), self.interner.objectSymbolIndex(current) });
+                if (self.this_type_markers.get(current)) |marker| try pending.append(self.gpa, marker);
+                if (self.tuple_trailing_rest_types.get(current)) |rest| try pending.append(self.gpa, rest);
+                if (self.tuple_trailing_variadic_types.get(current)) |variadic| try pending.append(self.gpa, variadic);
+                if (self.symbolic_tuple_layouts.contains(current)) return false;
+                if (self.decl_single_base.get(current)) |base| try pending.append(self.gpa, base);
+                if (self.generator_type_info.get(current)) |generator| try pending.appendSlice(self.gpa, &.{ generator.yield_type, generator.return_type, generator.next_type });
+            } else if (flags.is_type_parameter) {
+                const parameter = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(current)];
+                try pending.appendSlice(self.gpa, &.{ parameter.constraint, parameter.default });
+            }
+        }
+        if (self.subst_memo_subs == subs) {
+            var identities = visited.keyIterator();
+            while (identities.next()) |identity| {
+                if (!self.subst_active.contains(identity.*)) try self.subst_memo.put(self.gpa, identity.*, identity.*);
+            }
+        }
+        return true;
+    }
+
     fn substituteTypeUncached(
         self: *Checker,
         t: TypeId,
@@ -167951,6 +168404,12 @@ pub const Checker = struct {
         self.instantiation_count +|= 1;
         self.instantiation_depth += 1;
         defer self.instantiation_depth -= 1;
+        // An unrelated mapper must not manufacture references in a concrete
+        // recursive graph. Prove independence with an identity walk that also
+        // includes hidden predicate, binder and contextual metadata.
+        const initial_flags = self.interner.pool.flagsOf(t);
+        if ((initial_flags.is_object_type or initial_flags.is_signature) and
+            try self.substitutionGraphUnchanged(t, subs)) return t;
         // Close a recursive edge with its exact substitution environment.
         // An owned reference is independent of the ambient active stack and
         // therefore does not invalidate memoization of completed ancestors.
@@ -167997,7 +168456,10 @@ pub const Checker = struct {
             defer self.gpa.free(args);
             for (args) |*arg| arg.* = try self.substituteType(arg.*, subs);
             // Substitute the argument graph, never expand the referenced body.
-            return self.interner.internInstantiation(reference.origin, args);
+            const result = try self.interner.internInstantiation(reference.origin, args);
+            const name = if (self.interner.genericDefinition(reference.origin)) |definition| definition.name else 0;
+            if (name != 0) try self.registerAliasDisplayNameInner(result, name, args, false);
+            return result;
         }
         if (flags.is_tuple) {
             const tuple = self.interner.pool.tuple_payloads.items[payload_idx];
@@ -189393,6 +189855,20 @@ pub const Checker = struct {
         if (depth > 4) return null;
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return null;
         if (!self.interner.pool.flagsOf(source).is_object_type or !self.interner.pool.flagsOf(target).is_object_type) return null;
+        // Nullable property types expose a single object surface. Follow that
+        // surface explicitly; a union header has no direct object payload.
+        if (self.interner.pool.flagsOf(target).is_union) {
+            var object = types.Primitive.none;
+            for (self.interner.unionMembers(target)) |member| {
+                if (member == types.Primitive.null_t or member == types.Primitive.undefined_t) continue;
+                if (object != types.Primitive.none or member >= self.interner.pool.typeCount() or
+                    !self.interner.pool.flagsOf(member).is_object_type or
+                    self.interner.pool.flagsOf(member).is_union or self.interner.pool.flagsOf(member).is_intersection) return null;
+                object = member;
+            }
+            if (object == types.Primitive.none) return null;
+            return self.deepestPropertyMismatchPath(source, object, depth + 1, prefix);
+        }
         const arena = self.diag_arena.allocator();
         const tms = try arena.dupe(types.ObjectMember, self.interner.objectMembers(target));
         const sms = try arena.dupe(types.ObjectMember, self.interner.objectMembers(source));
@@ -189431,6 +189907,21 @@ pub const Checker = struct {
         include_object_hint: bool,
     ) CheckError![]const DiagnosticChainEntry {
         const empty: []const DiagnosticChainEntry = &.{};
+        const resolved_source = try self.resolveGenericType(source);
+        const resolved_target = try self.resolveGenericType(target);
+        if (resolved_source != source or resolved_target != target) {
+            return self.buildAssignabilityElaborationChainDepth(resolved_source, resolved_target, depth, include_object_hint);
+        }
+        if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) {
+            const members = try self.diag_arena.allocator().dupe(TypeId, self.interner.unionMembers(source));
+            for (members) |member| {
+                if (try self.checkerAssignableTo(member, target)) continue;
+                const entries = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                entries[0] = try self.typeNotAssignableChainEntry(member, target, true);
+                return entries;
+            }
+        }
+
         if (self.primitiveWrapperAssignedToPrimitive(source, target)) |mismatch| {
             const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
             const msg = try std.fmt.allocPrint(
@@ -191060,7 +191551,7 @@ pub const Checker = struct {
     ) CheckError!?[]const u8 {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_object_type) return null;
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
         const members = self.interner.objectMembers(t);
         const string_idx = self.interner.objectStringIndex(t);
         const number_idx = self.interner.objectNumberIndex(t);
@@ -191756,7 +192247,7 @@ pub const Checker = struct {
     fn typeIsEmptyObjectType(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
-        return flags.is_object_type and
+        return flags.is_object_type and !flags.is_union and !flags.is_intersection and
             self.interner.objectMembers(t).len == 0 and
             self.interner.objectStringIndex(t) == types.Primitive.none and
             self.interner.objectNumberIndex(t) == types.Primitive.none and
@@ -194134,7 +194625,8 @@ pub const Checker = struct {
             }
             return true;
         }
-        if (!flags.is_object_type) return false;
+        // A union is a choice of surfaces, not an empty object to flatten.
+        if (!flags.is_object_type or flags.is_union) return false;
         saw_object.* = true;
         for (self.interner.objectMembers(target)) |member| {
             try self.appendOrReplaceObjectMember(members, member);
@@ -194238,7 +194730,7 @@ pub const Checker = struct {
             }
             return self.interner.intersectionMembers(target).len > 0;
         }
-        if (!flags.is_object_type or self.objectHasCallOrConstructSignature(target)) return false;
+        if (!flags.is_object_type or flags.is_union or self.objectHasCallOrConstructSignature(target)) return false;
         if (self.interner.objectStringIndex(target) != types.Primitive.none or
             self.interner.objectNumberIndex(target) != types.Primitive.none or
             self.interner.objectSymbolIndex(target) != types.Primitive.none)
@@ -200654,9 +201146,24 @@ fn flipVariance(v: types.Variance) types.Variance {
     };
 }
 
+const VarianceMappedScope = struct {
+    source: TypeId,
+    key: TypeId,
+    parent: ?*const VarianceMappedScope,
+
+    fn find(self: *const VarianceMappedScope, source: TypeId, key: TypeId) ?*const VarianceMappedScope {
+        var current: ?*const VarianceMappedScope = self;
+        while (current) |context| : (current = context.parent) {
+            if (context.source == source and context.key == key) return context;
+        }
+        return null;
+    }
+};
+
 const VarianceVisit = struct {
     type_id: TypeId,
     position: types.Variance,
+    mapped_scope: ?*const VarianceMappedScope = null,
 };
 
 fn mergeVariance(a: types.Variance, b: types.Variance) types.Variance {
@@ -223113,6 +223620,180 @@ test "checker: automatic arrays use bound destructuring and hoisted variable sco
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.variable_implicitly_any));
 }
 
+test "checker: recursive generic socket heritage preserves unrelated recursive graph identity" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const next = try s.sint.intern("next");
+    const concrete = try s.ti.internObjectType(&.{
+        .{ .name = value, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = next, .type = types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(concrete)];
+    s.ti.pool.object_member_pool.items[payload.members_start + 1].type = concrete;
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, parameter, types.Primitive.number_t);
+    const before = s.ti.pool.typeCount();
+    try T.expectEqual(concrete, try s.checker.substituteType(concrete, &substitutions));
+    try T.expectEqual(before, s.ti.pool.typeCount());
+
+    // A dependency outside the structural shape must defeat that proof.
+    try s.checker.member_predicates.put(T.allocator, .{ .receiver_type = concrete, .member_name = value }, .{
+        .param_index = 0,
+        .target_type = parameter,
+        .target_node = hir_mod.none_node_id,
+        .is_asserts = false,
+    });
+    const with_predicate = try s.checker.substituteType(concrete, &substitutions);
+    try T.expect(with_predicate != concrete);
+    try T.expectEqual(types.Primitive.number_t, s.checker.member_predicates.get(.{ .receiver_type = with_predicate, .member_name = value }).?.target_type);
+
+    // Dependency discovery follows complete identities, including a parameter
+    // reached beyond the old shallow structural search's depth limit.
+    var deep = parameter;
+    for (0..48) |_| {
+        deep = try s.ti.internObjectType(&.{.{ .name = value, .type = deep, .is_optional = false, .is_readonly = false, .is_method = false }});
+    }
+    var replaced = try s.checker.substituteType(deep, &substitutions);
+    for (0..48) |_| replaced = s.ti.objectMember(replaced, value).?;
+    try T.expectEqual(types.Primitive.number_t, replaced);
+}
+
+test "checker: recursive generic socket heritage retains completed declaration identities" {
+    const s = try newSetup(
+        \\declare namespace Sockets { interface Box<T> { value: T; } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var declarations = s.checker.generic_interfaces_by_decl.keyIterator();
+    const declaration = declarations.next().?.*;
+    const before = s.ti.pool.typeCount();
+    const body = s.hir.typeOf(declaration);
+    try s.checker.checkInterfaceDecl(declaration);
+    try T.expectEqual(body, s.hir.typeOf(declaration));
+    try T.expectEqual(before, s.ti.pool.typeCount());
+}
+
+test "checker: recursive generic socket heritage checks forward generic members" {
+    const s = try newSetup(
+        \\declare namespace Sockets {
+        \\  interface Holder<T> { forward: LaterBox<T>; change<U>(value: U): LaterBox<U>; }
+        \\  interface LaterBox<T> { value: T; next?: Holder<T>; }
+        \\  interface Early<T> { promise: Promise<T>; }
+        \\  interface Promise<T> { value: T; }
+        \\}
+        \\declare const holder: Sockets.Holder<number>;
+        \\const correct: number = holder.forward.value;
+        \\const wrong: string = holder.forward.value;
+        \\const changed: string = holder.change("value").value;
+        \\const wrongChanged: number = holder.change("value").value;
+        \\declare const early: Sockets.Early<number>;
+        \\const promiseValue: number = early.promise.value;
+        \\const wrongPromise: string = early.promise.value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: owned generic declarations enforce dependent constraints and fixed arity" {
+    const s = try newSetup(
+        \\declare namespace Scope {
+        \\  interface Pair<T, U extends T = T> { first: T; second: U; recursive: Pair<number, string>; }
+        \\  interface One<T> { value: T; }
+        \\}
+        \\declare const valid: Scope.Pair<number>;
+        \\const first: number = valid.first;
+        \\const second: number = valid.second;
+        \\declare const excessive: Scope.One<number, string>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.generic_type_requires_args));
+}
+
+test "checker: homomorphic mapped variance preserves reads and callback inputs" {
+    const s = try newSetup(
+        \\interface Copy<out T extends object> { value: { [K in keyof T]: T[K] } }
+        \\interface Optional<out T extends object> { value: { readonly [K in keyof T]?: T[K] } }
+        \\interface Conditional<out T extends object, M> { value: { [K in keyof T]: K extends keyof M ? T[K] : T[K] } }
+        \\interface Constant<out T extends object> { value: { [K in keyof T]: string } }
+        \\interface Callback<out T extends object> { value: { [K in keyof T]: (value: T[K]) => void } }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variance_annotation_type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.variance_annotation_type_not_assignable, "Type 'Callback<sub-T>' is not assignable to type 'Callback<super-T>' as implied by variance annotation."));
+}
+
+test "checker: interface instantiation memo preserves body and mapper identities" {
+    const s = try newSetup("interface Pair<T, U> { first: T; second: U; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const name = try s.sint.intern("Pair");
+    const info = s.checker.generic_aliases.get(name).?;
+    var map: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer map.deinit(T.allocator);
+    try map.put(T.allocator, info.params[0], types.Primitive.string_t);
+    try map.put(T.allocator, info.params[1], types.Primitive.number_t);
+    const first = try s.checker.instantiateInterfaceBody(info.body, &map);
+    const before = s.ti.pool.typeCount();
+    map.clearRetainingCapacity();
+    try map.put(T.allocator, info.params[1], types.Primitive.number_t);
+    try map.put(T.allocator, info.params[0], types.Primitive.string_t);
+    try T.expectEqual(first, try s.checker.instantiateInterfaceBody(info.body, &map));
+    try T.expectEqual(before, s.ti.pool.typeCount());
+    const first_name = try s.sint.intern("first");
+    try map.put(T.allocator, info.params[0], types.Primitive.boolean_t);
+    const changed_argument = try s.checker.instantiateInterfaceBody(info.body, &map);
+    try T.expectEqual(types.Primitive.boolean_t, s.ti.objectMember(changed_argument, first_name).?);
+    const changed_body = try s.ti.internObjectType(&.{.{ .name = first_name, .type = info.params[1], .is_optional = false, .is_readonly = false, .is_method = false }});
+    const refreshed = try s.checker.instantiateInterfaceBody(changed_body, &map);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(refreshed, first_name).?);
+    try T.expect(refreshed != changed_argument);
+}
+
+test "checker: recursive generic socket heritage has bounded declaration growth" {
+    const s = try newSetup(
+        \\declare module "sockets" {
+        \\type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+        \\interface Socket<T = unknown> { data: T; listener: Listener; reload(options: Pick<Options<T>, "socket">): void; upgrade<T>(options: Upgrade<T>): [Socket<T>, Socket<T>]; }
+        \\interface Upgrade<T> { socket: Handler<T>; data?: T; }
+        \\interface Listener<T = unknown> { socket: Socket<T>; reload(options: Pick<Options<T>, "socket">): void; }
+        \\interface Promise<T> { then<U>(callback: (value: T) => U): Promise<U>; }
+        \\interface BinaryTypes { buffer: string; arraybuffer: number; }
+        \\interface Handler<T = unknown, B extends keyof BinaryTypes = "buffer"> {
+        \\  open?(socket: Socket<T>): void | Promise<void>;
+        \\  close?(socket: Socket<T>, error?: string): void | Promise<void>;
+        \\  error?(socket: Socket<T>, error: string): void | Promise<void>;
+        \\  data?(socket: Socket<T>, data: BinaryTypes[B]): void | Promise<void>;
+        \\  drain?(socket: Socket<T>): void | Promise<void>;
+        \\  handshake?(socket: Socket<T>, success: boolean, error: string | null): void;
+        \\  end?(socket: Socket<T>): void | Promise<void>;
+        \\  connectError?(socket: Socket<T>, error: string): void | Promise<void>;
+        \\  timeout?(socket: Socket<T>): void | Promise<void>;
+        \\  binaryType?: keyof BinaryTypes;
+        \\}
+        \\interface Options<T = unknown> { socket: Handler<T>; data?: T; }
+        \\interface TCP<T = undefined> extends Options<T> { hostname: string; }
+        \\interface Unix<T = undefined> extends Options<T> { unix: string; }
+        \\interface FD<T = undefined> extends Options<T> { fd: number; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    std.debug.print("socket-heritage-control: types={d}\n", .{s.ti.pool.typeCount()});
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expect(s.ti.pool.typeCount() < 1024);
+}
+
 test "checker: automatic array mutations and loop backedges retain element types" {
     const s = try newSetup(
         \\let values = [];
@@ -224681,6 +225362,18 @@ test "checker: member call finds this mismatch after nested diagnostic updates" 
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_context_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: declared Array inference keeps unrelated element candidates distinct" {
+    const s = try newSetup(
+        \\declare function element<T>(values: readonly T[]): T;
+        \\declare const values: string[] | number[];
+        \\const result = element(values);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: declared Array interface augments array member access" {
@@ -242556,6 +243249,34 @@ test "checker: indexed class-interface modifier merges preserve scanner order an
     }
 }
 
+test "checker: class temporary cleanup releases partial overloads and preserves transferred maps" {
+    const Control = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var temporaries: Checker.ClassCheckTemporaries = .{};
+            defer temporaries.deinit(allocator);
+            try temporaries.ctor_overload_nodes.append(allocator, 1);
+            try temporaries.private_names.put(allocator, 2, {});
+            inline for (.{ "method_seen", "static_method_seen" }) |name| {
+                const entry = try @field(temporaries, name).getOrPut(allocator, 3);
+                entry.value_ptr.* = .{
+                    .first_node = 4,
+                    .last_bodyless_node = 4,
+                    .first_static = false,
+                    .first_visibility = 0,
+                };
+                try entry.value_ptr.prior_nodes.append(allocator, 4);
+                try entry.value_ptr.prior_abstractness.append(allocator, false);
+                try entry.value_ptr.prior_visibilities.append(allocator, 0);
+            }
+            var published = temporaries.private_names;
+            temporaries.private_names = .empty;
+            defer published.deinit(allocator);
+            try T.expect(published.contains(2));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(T.allocator, Control.run, .{});
+}
+
 test "checker: interface index construction failures release every partial group" {
     const s = try newSetup("interface A { x: number; } interface B { y: number; } interface A { z: number; } class A { private x: number; }");
     defer destroySetup(s);
@@ -243762,7 +244483,8 @@ test "checker: recursive generic union alias shortcut preserves type arguments" 
     for (s.base.checker.diagnostics.items) |d| {
         if (d.code != TsCodes.type_not_assignable) continue;
         for (d.chain) |entry| {
-            if (std.mem.indexOf(u8, entry.message, "Container<T>") != null) found_instantiation_mismatch = true;
+            if (entry.code == TsCodes.type_not_assignable and
+                std.mem.eql(u8, entry.message, "Type 'number' is not assignable to type 'Container<string>'.")) found_instantiation_mismatch = true;
         }
     }
     try T.expect(found_instantiation_mismatch);
