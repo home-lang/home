@@ -1,10 +1,6 @@
 const std = @import("std");
-const posix = std.posix;
-
-/// Helper to get current timestamp (Zig 0.16 compatible)
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+fn getTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toSeconds();
 }
 
 /// Realtime driver types
@@ -47,14 +43,14 @@ pub const BroadcastMessage = struct {
     except_socket_id: ?[]const u8 = null, // Exclude sender
     timestamp: i64,
 
-    pub fn init(channel: []const u8, event: []const u8, data: []const u8) BroadcastMessage {
+    pub fn init(io: std.Io, channel: []const u8, event: []const u8, data: []const u8) BroadcastMessage {
         return .{
             .channel = channel,
             .event = event,
             .data = data,
             .channel_type = .public,
             .except_socket_id = null,
-            .timestamp = getTimestamp(),
+            .timestamp = getTimestamp(io),
         };
     }
 
@@ -82,6 +78,7 @@ pub const SubscriptionCallback = *const fn (event: []const u8, data: []const u8)
 
 /// Realtime configuration
 pub const RealtimeConfig = struct {
+    io: std.Io,
     driver_type: RealtimeDriverType,
 
     // Pusher config
@@ -107,8 +104,9 @@ pub const RealtimeConfig = struct {
     max_reconnect_attempts: u32 = 10,
     ping_interval_ms: u64 = 30000,
 
-    pub fn pusher(app_id: []const u8, key: []const u8, secret: []const u8, cluster: []const u8) RealtimeConfig {
+    pub fn pusher(io: std.Io, app_id: []const u8, key: []const u8, secret: []const u8, cluster: []const u8) RealtimeConfig {
         return .{
+            .io = io,
             .driver_type = .pusher,
             .pusher_app_id = app_id,
             .pusher_key = key,
@@ -117,23 +115,26 @@ pub const RealtimeConfig = struct {
         };
     }
 
-    pub fn socketIo(port: u16) RealtimeConfig {
+    pub fn socketIo(io: std.Io, port: u16) RealtimeConfig {
         return .{
+            .io = io,
             .driver_type = .socket_io,
             .socket_io_port = port,
         };
     }
 
-    pub fn websocket(host: []const u8, port: u16) RealtimeConfig {
+    pub fn websocket(io: std.Io, host: []const u8, port: u16) RealtimeConfig {
         return .{
+            .io = io,
             .driver_type = .websocket,
             .ws_host = host,
             .ws_port = port,
         };
     }
 
-    pub fn memory() RealtimeConfig {
+    pub fn memory(io: std.Io) RealtimeConfig {
         return .{
+            .io = io,
             .driver_type = .memory,
         };
     }
@@ -194,7 +195,7 @@ pub const PusherDriver = struct {
     config: RealtimeConfig,
     state: ConnectionState,
     subscriptions: std.StringHashMap(SubscriptionCallback),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -205,7 +206,7 @@ pub const PusherDriver = struct {
             .config = config,
             .state = .disconnected,
             .subscriptions = std.StringHashMap(SubscriptionCallback).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -228,8 +229,8 @@ pub const PusherDriver = struct {
 
     fn connect(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         self.state = .connecting;
         // In real implementation: WebSocket connection to Pusher
@@ -239,8 +240,8 @@ pub const PusherDriver = struct {
 
     fn disconnect(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         self.state = .disconnected;
     }
@@ -252,8 +253,8 @@ pub const PusherDriver = struct {
 
     fn subscribe(ptr: *anyopaque, channel: []const u8, callback: SubscriptionCallback) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         // Re-subscribing to an existing channel should just replace the
         // callback; otherwise `put` keeps the old key and leaks the new
@@ -272,8 +273,8 @@ pub const PusherDriver = struct {
 
     fn unsubscribe(ptr: *anyopaque, channel: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.subscriptions.fetchRemove(channel)) |kv| {
             self.allocator.free(kv.key);
@@ -312,7 +313,7 @@ pub const SocketIODriver = struct {
     state: ConnectionState,
     subscriptions: std.StringHashMap(SubscriptionCallback),
     rooms: std.StringHashMap(std.ArrayList([]const u8)),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -324,7 +325,7 @@ pub const SocketIODriver = struct {
             .state = .disconnected,
             .subscriptions = std.StringHashMap(SubscriptionCallback).init(allocator),
             .rooms = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -347,8 +348,8 @@ pub const SocketIODriver = struct {
 
     fn connect(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         self.state = .connecting;
         // Socket.IO handshake would happen here
@@ -357,8 +358,8 @@ pub const SocketIODriver = struct {
 
     fn disconnect(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
         self.state = .disconnected;
     }
 
@@ -369,8 +370,8 @@ pub const SocketIODriver = struct {
 
     fn subscribe(ptr: *anyopaque, channel: []const u8, callback: SubscriptionCallback) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.subscriptions.getPtr(channel)) |cb| {
             cb.* = callback;
@@ -383,8 +384,8 @@ pub const SocketIODriver = struct {
 
     fn unsubscribe(ptr: *anyopaque, channel: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.subscriptions.fetchRemove(channel)) |kv| {
             self.allocator.free(kv.key);
@@ -393,8 +394,8 @@ pub const SocketIODriver = struct {
 
     fn broadcast(ptr: *anyopaque, message: BroadcastMessage) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         // Emit to room (channel)
         if (self.subscriptions.get(message.channel)) |callback| {
@@ -436,7 +437,7 @@ pub const MemoryDriver = struct {
     state: ConnectionState,
     subscriptions: std.StringHashMap(SubscriptionCallback),
     messages: std.ArrayList(BroadcastMessage),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -448,7 +449,7 @@ pub const MemoryDriver = struct {
             .state = .disconnected,
             .subscriptions = std.StringHashMap(SubscriptionCallback).init(allocator),
             .messages = .empty,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -486,8 +487,8 @@ pub const MemoryDriver = struct {
 
     fn subscribe(ptr: *anyopaque, channel: []const u8, callback: SubscriptionCallback) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const channel_copy = try self.allocator.dupe(u8, channel);
         try self.subscriptions.put(channel_copy, callback);
@@ -495,8 +496,8 @@ pub const MemoryDriver = struct {
 
     fn unsubscribe(ptr: *anyopaque, channel: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.subscriptions.fetchRemove(channel)) |kv| {
             self.allocator.free(kv.key);
@@ -505,8 +506,8 @@ pub const MemoryDriver = struct {
 
     fn broadcast(ptr: *anyopaque, message: BroadcastMessage) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         try self.messages.append(self.allocator, message);
 
@@ -618,19 +619,19 @@ pub const Broadcast = struct {
 
     /// Broadcast to a public channel
     pub fn toChannel(self: *Self, channel: []const u8, event: []const u8, data: []const u8) !void {
-        const message = BroadcastMessage.init(channel, event, data);
+        const message = BroadcastMessage.init(self.config.io, channel, event, data);
         return self.driver.broadcast(message);
     }
 
     /// Broadcast to a private channel
     pub fn toPrivateChannel(self: *Self, channel: []const u8, event: []const u8, data: []const u8) !void {
-        const message = BroadcastMessage.init(channel, event, data).toPrivate();
+        const message = BroadcastMessage.init(self.config.io, channel, event, data).toPrivate();
         return self.driver.broadcast(message);
     }
 
     /// Broadcast to a presence channel
     pub fn toPresenceChannel(self: *Self, channel: []const u8, event: []const u8, data: []const u8) !void {
-        const message = BroadcastMessage.init(channel, event, data).toPresence();
+        const message = BroadcastMessage.init(self.config.io, channel, event, data).toPresence();
         return self.driver.broadcast(message);
     }
 
@@ -643,7 +644,7 @@ pub const Broadcast = struct {
 
     /// Broadcast to all except specific socket
     pub fn toOthers(self: *Self, channel: []const u8, event: []const u8, data: []const u8, socket_id: []const u8) !void {
-        const message = BroadcastMessage.init(channel, event, data).excludeSocket(socket_id);
+        const message = BroadcastMessage.init(self.config.io, channel, event, data).excludeSocket(socket_id);
         return self.driver.broadcast(message);
     }
 
@@ -686,7 +687,7 @@ pub const Channel = struct {
             .data = data,
             .channel_type = self.channel_type,
             .except_socket_id = null,
-            .timestamp = getTimestamp(),
+            .timestamp = getTimestamp(self.broadcast.config.io),
         };
         return self.broadcast.driver.broadcast(message);
     }
@@ -703,14 +704,11 @@ pub const Channel = struct {
 // Tests
 test "broadcast basic operations" {
     const allocator = std.testing.allocator;
-    var broadcast = try Broadcast.init(allocator, RealtimeConfig.memory());
+    var broadcast = try Broadcast.init(allocator, RealtimeConfig.memory(std.testing.io));
     defer broadcast.deinit();
 
     try broadcast.connect();
     try std.testing.expect(broadcast.isConnected());
-
-    var received_event: []const u8 = "";
-    var received_data: []const u8 = "";
 
     const callback = struct {
         fn cb(event: []const u8, data: []const u8) void {
@@ -723,16 +721,13 @@ test "broadcast basic operations" {
     try broadcast.subscribe("test-channel", callback);
     try broadcast.toChannel("test-channel", "message", "{\"text\": \"hello\"}");
 
-    _ = received_event;
-    _ = received_data;
-
     broadcast.unsubscribe("test-channel");
     broadcast.disconnect();
     try std.testing.expect(!broadcast.isConnected());
 }
 
 test "channel types" {
-    const msg = BroadcastMessage.init("channel", "event", "data");
+    const msg = BroadcastMessage.init(std.testing.io, "channel", "event", "data");
     try std.testing.expect(msg.channel_type == .public);
 
     const private = msg.toPrivate();
@@ -743,11 +738,11 @@ test "channel types" {
 }
 
 test "broadcast config" {
-    const pusher_config = RealtimeConfig.pusher("app123", "key123", "secret123", "us2");
+    const pusher_config = RealtimeConfig.pusher(std.testing.io, "app123", "key123", "secret123", "us2");
     try std.testing.expect(pusher_config.driver_type == .pusher);
     try std.testing.expectEqualStrings("app123", pusher_config.pusher_app_id.?);
 
-    const socket_io_config = RealtimeConfig.socketIo(3000);
+    const socket_io_config = RealtimeConfig.socketIo(std.testing.io, 3000);
     try std.testing.expect(socket_io_config.driver_type == .socket_io);
     try std.testing.expectEqual(@as(u16, 3000), socket_io_config.socket_io_port);
 }
