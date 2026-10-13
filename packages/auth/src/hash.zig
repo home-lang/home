@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// Password hashing using Argon2
 pub const Hash = struct {
@@ -26,7 +27,7 @@ pub const Hash = struct {
     pub fn make(self: *Self, password: []const u8) ![]const u8 {
         // Generate random salt
         var salt: [16]u8 = undefined;
-        std.crypto.random.bytes(&salt);
+        try compat.randomSecure(&salt);
 
         return self.hashWithSalt(password, &salt);
     }
@@ -37,14 +38,17 @@ pub const Hash = struct {
 
         // Use Argon2id
         std.crypto.pwhash.argon2.kdf(
+            self.allocator,
             &hash,
             password,
-            salt[0..16].*,
+            salt[0..16],
             .{
                 .t = self.config.time_cost,
                 .m = self.config.memory_cost,
                 .p = self.config.parallelism,
             },
+            .argon2id,
+            compat.io(),
         ) catch return error.HashingFailed;
 
         // Format: $argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
@@ -86,14 +90,17 @@ pub const Hash = struct {
         // Compute hash with same parameters
         var computed: [32]u8 = undefined;
         std.crypto.pwhash.argon2.kdf(
+            self.allocator,
             &computed,
             password,
-            salt[0..16].*,
+            salt[0..16],
             .{
                 .t = params.t,
                 .m = params.m,
                 .p = params.p,
             },
+            .argon2id,
+            compat.io(),
         ) catch return false;
 
         // Constant-time comparison
