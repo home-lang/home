@@ -34,14 +34,14 @@ test "build - target configuration" {
 
 test "build - optimization levels" {
     const OptLevel = enum {
-        Debug,
-        ReleaseSafe,
-        ReleaseFast,
-        ReleaseSmall,
+        debug,
+        safe,
+        fast,
+        small,
 
         pub fn description(self: @This()) []const u8 {
             return switch (self) {
-                .Debug => "No optimization, safety checks enabled",
+                .debug => "No optimization, safety checks enabled",
                 .safe => "Optimize for speed, safety checks enabled",
                 .fast => "Optimize for speed, safety checks disabled",
                 .small => "Optimize for size",
@@ -49,10 +49,17 @@ test "build - optimization levels" {
         }
     };
 
-    const opt: OptLevel = .ReleaseSafe;
+    const opt: OptLevel = .safe;
     const desc = opt.description();
 
     try testing.expect(desc.len > 0);
+}
+
+test "build - qualified optimization aliases" {
+    try testing.expectEqual(std.builtin.OptimizeMode.debug, std.builtin.OptimizeMode.Debug);
+    try testing.expectEqual(std.builtin.OptimizeMode.safe, std.builtin.OptimizeMode.ReleaseSafe);
+    try testing.expectEqual(std.builtin.OptimizeMode.fast, std.builtin.OptimizeMode.ReleaseFast);
+    try testing.expectEqual(std.builtin.OptimizeMode.small, std.builtin.OptimizeMode.ReleaseSmall);
 }
 
 test "build - build mode flags" {
@@ -125,17 +132,18 @@ test "build - incremental build tracking" {
 test "build - compiler flags" {
     const Flags = struct {
         flags: std.ArrayList([]const u8),
+        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) @This() {
-            return .{ .flags = std.ArrayList([]const u8).init(allocator) };
+            return .{ .flags = .empty, .allocator = allocator };
         }
 
         pub fn deinit(self: *@This()) void {
-            self.flags.deinit();
+            self.flags.deinit(self.allocator);
         }
 
         pub fn add(self: *@This(), flag: []const u8) !void {
-            try self.flags.append(flag);
+            try self.flags.append(self.allocator, flag);
         }
 
         pub fn count(self: @This()) usize {
