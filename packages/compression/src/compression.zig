@@ -1,26 +1,33 @@
+//! Compression codecs exposed by the `compression` package build module.
+
 const std = @import("std");
 
-/// Compression package - provides various compression algorithms
-pub const Gzip = @import("gzip.zig").Gzip;
-pub const GzipCompressor = @import("gzip.zig").GzipCompressor;
-pub const GzipDecompressor = @import("gzip.zig").GzipDecompressor;
+const gzip = @import("gzip.zig");
+const zstd = @import("zstd.zig");
+const brotli = @import("brotli.zig");
+const lz4 = @import("lz4.zig");
+const snappy = @import("snappy.zig");
 
-pub const Zstd = @import("zstd.zig").Zstd;
-pub const ZstdCompressor = @import("zstd.zig").ZstdCompressor;
-pub const ZstdDecompressor = @import("zstd.zig").ZstdDecompressor;
+pub const Gzip = gzip.Gzip;
+pub const GzipCompressor = gzip.GzipCompressor;
+pub const GzipDecompressor = gzip.GzipDecompressor;
 
-pub const Brotli = @import("brotli.zig").Brotli;
-pub const BrotliCompressor = @import("brotli.zig").BrotliCompressor;
-pub const BrotliDecompressor = @import("brotli.zig").BrotliDecompressor;
+pub const Zstd = zstd.Zstd;
+pub const ZstdCompressor = zstd.ZstdCompressor;
+pub const ZstdDecompressor = zstd.ZstdDecompressor;
 
-pub const LZ4 = @import("lz4.zig").LZ4;
-pub const LZ4Compressor = @import("lz4.zig").LZ4Compressor;
-pub const LZ4Decompressor = @import("lz4.zig").LZ4Decompressor;
+pub const Brotli = brotli.Brotli;
+pub const BrotliCompressor = brotli.BrotliCompressor;
+pub const BrotliDecompressor = brotli.BrotliDecompressor;
 
-pub const Snappy = @import("snappy.zig").Snappy;
-pub const SnappyCompressor = @import("snappy.zig").SnappyCompressor;
-pub const SnappyDecompressor = @import("snappy.zig").SnappyDecompressor;
+pub const LZ4 = lz4.LZ4;
+pub const LZ4Compressor = lz4.LZ4Compressor;
+pub const LZ4Decompressor = lz4.LZ4Decompressor;
+
+pub const Snappy = snappy.Snappy;
+pub const SnappyCompressor = snappy.SnappyCompressor;
+pub const SnappyDecompressor = snappy.SnappyDecompressor;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

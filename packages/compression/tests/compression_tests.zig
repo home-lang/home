@@ -1,130 +1,112 @@
-// Compression Tests
 const std = @import("std");
+const compression = @import("compression");
+
 const testing = std.testing;
 
-// Deflate/zlib Tests
-test "zlib: header parsing" {
-    // CMF = 0x78 (deflate, window size 32K)
-    // FLG = 0x9C (default compression, FCHECK=28)
-    const cmf: u8 = 0x78;
-    const flg: u8 = 0x9C;
-    
-    const cm = cmf & 0x0F;
-    try testing.expectEqual(@as(u8, 8), cm); // Deflate
-    
-    const cinfo = (cmf >> 4) & 0x0F;
-    try testing.expectEqual(@as(u8, 7), cinfo); // 32K window
-    
-    // Verify FCHECK
-    const check = (@as(u16, cmf) * 256 + flg) % 31;
-    try testing.expectEqual(@as(u16, 0), check);
+test "gzip round trips through the public module" {
+    var gzip = compression.Gzip.init(testing.io, testing.allocator, .balanced);
+    const input = "Home gzip uses the std.Io flate implementation.";
+
+    const encoded = try gzip.compress(input);
+    defer testing.allocator.free(encoded);
+    try testing.expectEqualSlices(u8, &.{ 0x1f, 0x8b }, encoded[0..2]);
+
+    const decoded = try gzip.decompress(encoded);
+    defer testing.allocator.free(decoded);
+    try testing.expectEqualStrings(input, decoded);
 }
 
-test "deflate: block header" {
-    // BFINAL=1, BTYPE=01 (fixed Huffman)
-    const block_header: u8 = 0b00000011;
-    const bfinal = block_header & 1;
-    try testing.expectEqual(@as(u8, 1), bfinal);
-    const btype = (block_header >> 1) & 0b11;
-    try testing.expectEqual(@as(u8, 1), btype);
+test "gzip validates its checksum" {
+    var gzip = compression.Gzip.init(testing.io, testing.allocator, .best_speed);
+    const encoded = try gzip.compress("checksum me");
+    defer testing.allocator.free(encoded);
+
+    encoded[encoded.len - 8] ^= 0xff;
+    try testing.expectError(error.WrongGzipChecksum, gzip.decompress(encoded));
 }
 
-// Gzip Tests
-test "gzip: header structure" {
-    const GzipHeader = packed struct {
-        magic1: u8, // 0x1f
-        magic2: u8, // 0x8b
-        method: u8, // 8 = deflate
-        flags: u8,
-        mtime: u32,
-        xfl: u8,
-        os: u8,
-    };
-    try testing.expectEqual(@as(usize, 10), @sizeOf(GzipHeader));
+test "gzip streaming API emits a complete frame" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var compressor = try compression.GzipCompressor.init(
+        testing.io,
+        testing.allocator,
+        &output.writer,
+        .best_compression,
+    );
+    defer compressor.deinit();
+    try compressor.write("stream ");
+    try compressor.write("payload");
+    try compressor.finish();
+
+    var gzip = compression.Gzip.init(testing.io, testing.allocator, .balanced);
+    const decoded = try gzip.decompress(output.written());
+    defer testing.allocator.free(decoded);
+    try testing.expectEqualStrings("stream payload", decoded);
 }
 
-test "gzip: magic number" {
-    const GZIP_MAGIC = [_]u8{ 0x1f, 0x8b };
-    try testing.expectEqual(@as(u8, 0x1f), GZIP_MAGIC[0]);
-    try testing.expectEqual(@as(u8, 0x8b), GZIP_MAGIC[1]);
+test "zstd round trips escaped literals and repeated data" {
+    var zstd = compression.Zstd.init(testing.allocator, .balanced);
+    const input = [_]u8{ 0xff, 0x00, 0xff, 0x01 } ++ "abcabcabcabcabcabc".*;
+
+    const encoded = try zstd.compress(&input);
+    defer testing.allocator.free(encoded);
+    const decoded = try zstd.decompress(encoded);
+    defer testing.allocator.free(decoded);
+    try testing.expectEqualSlices(u8, &input, decoded);
 }
 
-// LZ4 Tests
-test "LZ4: frame header" {
-    const LZ4_MAGIC: u32 = 0x184D2204;
-    const bytes = std.mem.toBytes(LZ4_MAGIC);
-    try testing.expectEqual(@as(u8, 0x04), bytes[0]);
-    try testing.expectEqual(@as(u8, 0x22), bytes[1]);
+test "zstd round trips an empty frame" {
+    var zstd = compression.Zstd.init(testing.allocator, .fastest);
+    const encoded = try zstd.compress("");
+    defer testing.allocator.free(encoded);
+    const decoded = try zstd.decompress(encoded);
+    defer testing.allocator.free(decoded);
+    try testing.expectEqual(@as(usize, 0), decoded.len);
 }
 
-test "LZ4: block format" {
-    // Token: 4 bits literal length + 4 bits match length
-    const token: u8 = 0xF0; // 15 literals, 0 match
-    const literal_len = token >> 4;
-    try testing.expectEqual(@as(u8, 15), literal_len);
-    const match_len = token & 0x0F;
-    try testing.expectEqual(@as(u8, 0), match_len);
+test "zstd rejects invalid magic and checksums" {
+    var zstd = compression.Zstd.init(testing.allocator, .good);
+    const encoded = try zstd.compress("validate this frame");
+    defer testing.allocator.free(encoded);
+
+    encoded[0] ^= 0xff;
+    try testing.expectError(error.InvalidZstdMagic, zstd.decompress(encoded));
+    encoded[0] ^= 0xff;
+
+    encoded[encoded.len - 1] ^= 0xff;
+    try testing.expectError(error.ChecksumMismatch, zstd.decompress(encoded));
 }
 
-// Zstd Tests
-test "zstd: magic number" {
-    const ZSTD_MAGIC: u32 = 0xFD2FB528;
-    const bytes = std.mem.toBytes(ZSTD_MAGIC);
-    try testing.expectEqual(@as(u8, 0x28), bytes[0]);
-    try testing.expectEqual(@as(u8, 0xB5), bytes[1]);
+test "zstd rejects truncated blocks" {
+    var zstd = compression.Zstd.init(testing.allocator, .balanced);
+    const encoded = try zstd.compress("truncated block");
+    defer testing.allocator.free(encoded);
+
+    // Frame header is 14 bytes. Make the first block claim more bytes than
+    // remain before the checksum.
+    std.mem.writeInt(u32, encoded[14..18], (@as(u32, 4096) << 3) | 1, .little);
+    try testing.expectError(error.EndOfStream, zstd.decompress(encoded));
 }
 
-test "zstd: frame header" {
-    const ZstdFrameHeader = packed struct {
-        magic: u32,
-        frame_header_desc: u8,
-    };
-    try testing.expectEqual(@as(usize, 5), @sizeOf(ZstdFrameHeader));
-}
+test "zstd streaming API emits a validated frame" {
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var compressor = compression.ZstdCompressor.init(
+        testing.allocator,
+        &output.writer,
+        .balanced,
+    );
+    defer compressor.deinit();
+    try compressor.write("two ");
+    try compressor.write("chunks");
+    try compressor.finish();
 
-// Huffman Coding Tests
-test "huffman: code length limits" {
-    const MAX_BITS: u8 = 15;
-    const MAX_CODES: u16 = 286; // Literal/length alphabet
-    try testing.expect(MAX_BITS <= 15);
-    try testing.expect(MAX_CODES <= 288);
-}
-
-// Run-Length Encoding Tests
-test "RLE: basic encoding" {
-    const input = "AAABBBCCCC";
-    var count: usize = 1;
-    var i: usize = 1;
-    while (i < input.len) : (i += 1) {
-        if (input[i] == input[i - 1]) {
-            count += 1;
-        } else {
-            count = 1;
-        }
-    }
-    try testing.expectEqual(@as(usize, 4), count); // Last run of C's
-}
-
-// CRC32 Tests
-test "CRC32: table generation" {
-    const CRC32_POLYNOMIAL: u32 = 0xEDB88320;
-    
-    // Generate first entry
-    var crc: u32 = 0;
-    var i: u8 = 0;
-    while (i < 8) : (i += 1) {
-        if (crc & 1 == 1) {
-            crc = (crc >> 1) ^ CRC32_POLYNOMIAL;
-        } else {
-            crc >>= 1;
-        }
-    }
-    try testing.expectEqual(@as(u32, 0), crc); // Entry for 0
-}
-
-test "CRC32: checksum" {
-    const CRC32_INIT: u32 = 0xFFFFFFFF;
-    var crc = CRC32_INIT;
-    _ = crc;
-    // CRC32 of empty string should be 0
+    var input: std.Io.Reader = .fixed(output.written());
+    var decompressor = compression.ZstdDecompressor.init(testing.allocator, &input);
+    defer decompressor.deinit();
+    var decoded: [10]u8 = undefined;
+    const count = try decompressor.read(&decoded);
+    try testing.expectEqualStrings("two chunks", decoded[0..count]);
+    try testing.expectEqual(@as(usize, 0), try decompressor.read(&decoded));
 }
