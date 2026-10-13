@@ -42,6 +42,7 @@ public:
     bool dispatchAdapter(JSON::Object&);
     void stopProfile();
     void disconnectRealms();
+    void retireRealm(int);
     void releaseRealmGroups(const WTF::String&);
     explicit LocalInspectorChannel(JSC::JSGlobalObject* owner, WebCore::ScriptExecutionContextIdentifier id) : global(owner), context(id), executionContext(inspectorOwnerIdentity(owner)) { }
     ConnectionType connectionType() const final { return ConnectionType::Local; }
@@ -67,7 +68,13 @@ void inspectorRealmCreated(InspectorRealm& realm) {
     std::vector<std::shared_ptr<LocalInspectorChannel>> channels;
     { std::lock_guard lock(localInspectorLock()); auto found=localInspectorChannels().find(realm.owner); if(found!=localInspectorChannels().end()) channels=found->second; }
     auto message=inspectorContextCreatedMessage(realm.id,realm.name,realm.origin);
-    for(auto& channel:channels) if(channel->runtimeEnabled) channel->sendMessageToFrontend(message);
+    // Context creation runs on the owner VM thread, outside GC. Like Node,
+    // deliver the event before createContext returns. Holding the channels
+    // locally makes callback-driven session detachment safe.
+    for(auto& channel:channels) if(channel->runtimeEnabled) {
+        channel->sendMessageToFrontend(message);
+        channel->drain();
+    }
 }
 void inspectorRealmDestroyed(JSC::JSGlobalObject* owner,int id) {
     std::vector<std::shared_ptr<LocalInspectorChannel>> channels;
@@ -76,7 +83,10 @@ void inspectorRealmDestroyed(JSC::JSGlobalObject* owner,int id) {
     auto event=JSON::Object::create();event->setString("method"_s,"Runtime.executionContextDestroyed"_s);event->setObject("params"_s,WTF::move(params));
     auto message=event->toJSONString();
     // GC retirement only queues native data; JS delivery occurs on the owner loop.
-    for(auto& channel:channels) if(channel->runtimeEnabled) channel->sendMessageToFrontend(message);
+    for(auto& channel:channels) {
+        channel->retireRealm(id);
+        if(channel->runtimeEnabled) channel->sendMessageToFrontend(message);
+    }
 }
 class LocalInspectorHandle final : public JSC::JSDestructibleObject {
 public:
@@ -217,6 +227,17 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     }
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
+}
+inline void LocalInspectorChannel::retireRealm(int id) {
+    // Retirement runs on the owner loop after the weak global has cleared.
+    // Drop the frontend and every exposed handle before announcing destruction.
+    realmFrontends.erase(id);
+    std::vector<WTF::String> retired;
+    for(auto& entry:realmObjects) if(entry.value==id) retired.push_back(entry.key);
+    for(auto& object:retired) {
+        realmObjects.remove(object);
+        nativeRealmObjects.remove(object);
+    }
 }
 inline void LocalInspectorChannel::disconnectRealms() {
     for(auto& entry:realmFrontends) entry.second->disconnect();
