@@ -3,6 +3,7 @@
 const std = @import("std");
 const coredump = @import("coredump.zig");
 const keys = @import("keys.zig");
+const compat = @import("compat.zig");
 
 /// Encrypted core dump
 pub const EncryptedDump = struct {
@@ -31,7 +32,7 @@ pub fn encryptDump(
 
     // Generate random nonce
     var nonce: [12]u8 = undefined;
-    std.crypto.random.bytes(&nonce);
+    try compat.randomSecure(&nonce);
 
     // Allocate encrypted data buffer
     const encrypted_data = try allocator.alloc(u8, dump_data.len);

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const coredump = @import("coredump.zig");
+const compat = @import("compat.zig");
 
 /// Encryption key for core dumps
 pub const EncryptionKey = struct {
@@ -27,16 +28,16 @@ pub const EncryptionKey = struct {
         errdefer allocator.free(key_data);
 
         // Generate random key
-        std.crypto.random.bytes(key_data);
+        try compat.randomSecure(key_data);
 
         var key_id: [16]u8 = undefined;
-        std.crypto.random.bytes(&key_id);
+        try compat.randomSecure(&key_id);
 
         return .{
             .algorithm = algorithm,
             .key_data = key_data,
             .key_id = key_id,
-            .created_at = std.time.timestamp(),
+            .created_at = compat.timestamp(),
             .expires_at = 0,
             .allocator = allocator,
         };
@@ -50,7 +51,7 @@ pub const EncryptionKey = struct {
 
     pub fn isExpired(self: *const EncryptionKey) bool {
         if (self.expires_at == 0) return false;
-        return std.time.timestamp() >= self.expires_at;
+        return compat.timestamp() >= self.expires_at;
     }
 
     pub fn setExpiration(self: *EncryptionKey, days: u32) void {
@@ -69,7 +70,7 @@ pub const EncryptionKey = struct {
 
         // Encrypt key data
         var nonce: [12]u8 = undefined;
-        std.crypto.random.bytes(&nonce);
+        try compat.randomSecure(&nonce);
 
         const encrypted_len = self.key_data.len + 16; // + auth tag
         const encrypted = try self.allocator.alloc(u8, encrypted_len);
