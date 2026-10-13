@@ -15989,6 +15989,62 @@ test "Program: checked JavaScript primitive array JSDoc types cross the import b
     }
 }
 
+test "Program: checked JavaScript rest JSDoc types cross the import boundary" {
+    const owner_source =
+        \\/**
+        \\ * @param {...number} values
+        \\ * @returns {string}
+        \\ */
+        \\export function scalarRest(...values) { return values.join(","); }
+        \\/**
+        \\ * @param {number[]} values
+        \\ * @returns {string}
+        \\ */
+        \\export function arrayRest(...values) { return values.join(","); }
+    ;
+    const consumer_source =
+        \\import { arrayRest, scalarRest } from "./owner.js";
+        \\scalarRest(1, "bad");
+        \\arrayRest(1, "bad");
+        \\const scalarResult: number = scalarRest(1);
+        \\const arrayResult: number = arrayRest(1);
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics[0..2]) |diagnostic| {
+            try T.expectEqual(@as(u32, 2345), diagnostic.code);
+            try T.expectEqualStrings("Argument of type 'string' is not assignable to parameter of type 'number'.", diagnostic.message);
+        }
+        for (diagnostics[2..]) |diagnostic| {
+            try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostic.message);
+        }
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

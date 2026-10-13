@@ -48,6 +48,7 @@ pub const AssignedField = struct {
 pub const FunctionParameter = struct {
     type_expression: TypeExpression,
     optional: bool,
+    rest: bool,
 };
 
 pub const FunctionSignature = struct {
@@ -111,10 +112,11 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
     const nodes = hir.fnParams(&c.hir, node);
     for (nodes) |parameter_node| {
         const parameter = hir.parameterOf(&c.hir, parameter_node);
-        if (c.hir.kindOf(parameter.name) != .identifier or parameter.flags.is_rest) return null;
+        if (c.hir.kindOf(parameter.name) != .identifier) return null;
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name) orelse return null;
-        var parsed = try parseTypeExpression(gpa, tag.type_text) orelse return null;
+        if (parameter.flags.is_rest and (tag.optional or parameter.default_value != hir.none_node_id)) return null;
+        var parsed = try parameterTypeExpression(gpa, tag.type_text, parameter.flags.is_rest) orelse return null;
         parsed.deinit(gpa);
     }
     const parameters = try gpa.alloc(FunctionParameter, nodes.len);
@@ -128,8 +130,9 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name).?;
         parameter_result.* = .{
-            .type_expression = (try parseTypeExpression(gpa, tag.type_text)).?,
+            .type_expression = (try parameterTypeExpression(gpa, tag.type_text, parameter.flags.is_rest)).?,
             .optional = tag.optional or parameter.flags.is_optional or parameter.default_value != hir.none_node_id,
+            .rest = parameter.flags.is_rest,
         };
         initialized += 1;
     }
@@ -257,6 +260,25 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     };
 }
 
+fn parameterTypeExpression(gpa: std.mem.Allocator, text: []const u8, rest: bool) !?TypeExpression {
+    if (!rest) return parseTypeExpression(gpa, text);
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "...")) {
+        var parsed = try parseTypeExpression(gpa, std.mem.trim(u8, trimmed[3..], " \t\r\n")) orelse return null;
+        errdefer parsed.deinit(gpa);
+        const containers = try gpa.alloc(Container, parsed.containers.len + 1);
+        containers[0] = .array;
+        @memcpy(containers[1..], parsed.containers);
+        if (parsed.containers.len > 0) gpa.free(parsed.containers);
+        parsed.containers = containers;
+        return parsed;
+    }
+    const parsed = try parseTypeExpression(gpa, trimmed) orelse return null;
+    if (parsed.containers.len > 0) return parsed;
+    parsed.deinit(gpa);
+    return null;
+}
+
 fn genericBody(text: []const u8, name: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, text, name)) return null;
     var cursor = name.len;
@@ -285,6 +307,22 @@ test "JSDoc primitive array expressions preserve nested mutable and readonly wra
 
 test "JSDoc array expression parser rejects unsupported union leaves" {
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | number>")) == null);
+}
+
+test "JSDoc rest parameter expressions preserve element and array forms" {
+    const scalar = (try parameterTypeExpression(std.testing.allocator, "...number", true)).?;
+    defer scalar.deinit(std.testing.allocator);
+    try std.testing.expectEqual(Primitive.number_t, scalar.primitive);
+    try std.testing.expectEqualSlices(Container, &.{.array}, scalar.containers);
+
+    const arrays = (try parameterTypeExpression(std.testing.allocator, "...number[]", true)).?;
+    defer arrays.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{ .array, .array }, arrays.containers);
+
+    const explicit = (try parameterTypeExpression(std.testing.allocator, "number[]", true)).?;
+    defer explicit.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.array}, explicit.containers);
+    try std.testing.expect((try parameterTypeExpression(std.testing.allocator, "number", true)) == null);
 }
 
 fn isParameter(c: *const driver.Compilation, function: hir.NodeId, name: hir.StringId) bool {

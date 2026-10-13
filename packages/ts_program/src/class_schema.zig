@@ -702,6 +702,7 @@ pub const Builder = struct {
             result.* = .{
                 .type = try self.jsdocType(parameter.type_expression),
                 .optional = parameter.optional,
+                .rest = parameter.rest,
             };
         }
         return self.expression(.{ .function = .{
