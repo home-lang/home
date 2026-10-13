@@ -33,6 +33,10 @@
 #include <JavaScriptCore/Exception.h>
 #include <JavaScriptCore/InjectedScriptHost.h>
 #include <JavaScriptCore/InjectedScriptManager.h>
+#include <JavaScriptCore/JSPromise.h>
+#include <JavaScriptCore/DeferGC.h>
+#include <mutex>
+#include <unordered_map>
 #include <JavaScriptCore/InspectorAgent.h>
 #include <JavaScriptCore/InspectorBackendDispatcher.h>
 #include <JavaScriptCore/InspectorConsoleAgent.h>
@@ -59,6 +63,30 @@
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
+namespace Home {
+// Access the canonical injected-script registry without changing the pinned
+// controller ABI. Entries are non-owning and retire with their controller.
+static std::mutex inspectorManagerLock;
+static auto* inspectorManagers = new std::unordered_map<JSC::JSGlobalObject*, Inspector::InjectedScriptManager*>;
+static void registerInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
+    std::lock_guard lock(inspectorManagerLock); (*inspectorManagers)[&global] = &manager;
+}
+static void retireInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
+    std::lock_guard lock(inspectorManagerLock); auto found = inspectorManagers->find(&global);
+    if (found != inspectorManagers->end() && found->second == &manager) inspectorManagers->erase(found);
+}
+bool inspectorObjectIsPromise(JSC::JSGlobalObject& global, const WTF::String& id) {
+    Inspector::InjectedScriptManager* manager;
+    { std::lock_guard lock(inspectorManagerLock); auto found = inspectorManagers->find(&global);
+      if (found == inspectorManagers->end()) return false; manager = found->second; }
+    // The caller holds the VM lock and keeps this global alive throughout
+    // frontend delivery. Inspect the native value, never a user class name.
+    JSC::DeferGC deferGC(global.vm());
+    auto value = manager->injectedScriptFor(&global).findObjectById(id);
+    return value && WTF::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
+}
+}
+
 namespace Inspector {
 
 using namespace JSC;
@@ -73,6 +101,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     , m_frontendRouter(FrontendRouter::create())
     , m_backendDispatcher(BackendDispatcher::create(m_frontendRouter.copyRef()))
 {
+    Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
@@ -92,6 +121,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     , m_frontendRouter(FrontendRouter::create())
     , m_backendDispatcher(BackendDispatcher::create(m_frontendRouter.copyRef()))
 {
+    Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
@@ -105,6 +135,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
 
 JSGlobalObjectInspectorController::~JSGlobalObjectInspectorController()
 {
+    Home::retireInspectorManager(m_globalObject, m_injectedScriptManager.get());
     // Non-owning checked agent references must be released before the agent
     // registry members are destroyed (C++ destroys m_agents before these).
     m_inspectorAgent = nullptr;

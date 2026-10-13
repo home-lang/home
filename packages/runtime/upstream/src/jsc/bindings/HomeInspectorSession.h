@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Home {
@@ -30,9 +31,11 @@ public:
     std::vector<WTF::String> messages;
     std::unordered_map<int, int> responseIds;
     std::unordered_map<int, WTF::String> responseMethods;
+    std::unordered_set<int> accessorPropertyRequests;
     WTF::HashMap<WTF::String, int> realmObjects;
     WTF::HashMap<WTF::String, WTF::String> nativeRealmObjects;
     std::unordered_map<int,std::shared_ptr<InspectorRealmForwarder>> realmFrontends;
+    bool disconnecting { false };
     bool connected { false }, scheduled { false }, runtimeEnabled { false }, profilerEnabled { false }, profiling { false };
     int samplingInterval { 1000 };
     double profileStart { 0 }, profileWallStart { 0 };
@@ -44,7 +47,7 @@ public:
     ConnectionType connectionType() const final { return ConnectionType::Local; }
     void sendMessageToFrontend(const WTF::String&) final;
     void drain();
-    void disconnect();
+    void disconnect(bool deliverPendingErrors = false);
 };
 inline std::mutex& localInspectorLock() { static std::mutex lock; return lock; }
 inline auto& localInspectorChannels() {
@@ -128,29 +131,39 @@ public:
     }
     void remapObjects(JSON::Value& value) {
         if(auto object=value.asObject()) {
+            auto type=object->getString("type"_s);
+            bool remote=type=="object"_s || type=="function"_s;
             auto native=object->getString("objectId"_s);
-            if(!native.isEmpty()) {
+            if(remote && !native.isEmpty()) {
+                if(auto* value=global.get()) if(inspectorObjectIsPromise(*value,native)) object->setString("subtype"_s,"promise"_s);
                 auto exposed=makeString("home-realm:"_s,realm,":"_s,native);
                 channel.realmObjects.set(exposed,realm);channel.nativeRealmObjects.set(exposed,native);
                 object->setString("objectId"_s,exposed);
             }
-            for(auto& entry:*object) remapObjects(entry.value.get());
+            for(auto& entry:*object) if(!remote || entry.key!="value"_s) remapObjects(entry.value.get());
         } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(array->get(i).get());
     }
 };
-inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target) {
+inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target,bool callArgument=false) {
     if(auto object=value.asObject()) {
-        auto exposed=object->getString("objectId"_s);
-        if(!exposed.isEmpty()) {
-            auto owner=channel.realmObjects.find(exposed);
-            if(owner!=channel.realmObjects.end()) {
-                if(owner->value!=target) return false;
-                auto native=channel.nativeRealmObjects.find(exposed);
-                if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
-            } else if(target!=channel.executionContext) return false;
+        for(auto key:{"objectId"_s,"promiseObjectId"_s}) {
+            auto exposed=object->getString(key);
+            if(!exposed.isEmpty()) {
+                auto owner=channel.realmObjects.find(exposed);
+                if(owner!=channel.realmObjects.end()) {
+                    if(owner->value!=target) return false;
+                    auto native=channel.nativeRealmObjects.find(exposed);
+                    if(native!=channel.nativeRealmObjects.end()) object->setString(key,native->value);
+                } else if(target!=channel.executionContext) return false;
+            }
         }
-        for(auto& entry:*object) if(!unwrapInspectorObjects(channel,entry.value.get(),target)) return false;
-    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target)) return false;
+        for(auto& entry:*object) {
+            // CallArgument.value is user JSON, not a remote-object envelope.
+            if(callArgument && entry.key=="value"_s) continue;
+            bool argument=entry.key=="arguments"_s || entry.key=="value"_s;
+            if(!unwrapInspectorObjects(channel,entry.value.get(),target,argument)) return false;
+        }
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target,callArgument)) return false;
     return true;
 }
 inline void inspectorWorldError(LocalInspectorChannel& channel,JSON::Object& request) {
@@ -179,6 +192,7 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!requested) requested=params->getInteger("executionContextId"_s);
     if(!requested) {
         auto object=params->getString("objectId"_s);
+        if(object.isEmpty()) object=params->getString("promiseObjectId"_s);
         if(!object.isEmpty()) {
             auto found=channel.realmObjects.find(object);if(found!=channel.realmObjects.end()) requested=found->value;
         }
@@ -208,6 +222,15 @@ inline void LocalInspectorChannel::disconnectRealms() {
     for(auto& entry:realmFrontends) entry.second->disconnect();
     realmFrontends.clear();
 }
+inline void decorateInspectorObjects(JSC::JSGlobalObject& global,JSON::Value& value) {
+    if(auto object=value.asObject()) {
+        auto type=object->getString("type"_s);
+        bool remote=type=="object"_s || type=="function"_s;
+        auto id=object->getString("objectId"_s);
+        if(remote && !id.isEmpty() && !id.startsWith("home-realm:"_s) && inspectorObjectIsPromise(global,id)) object->setString("subtype"_s,"promise"_s);
+        for(auto& entry:*object) if(!remote || entry.key!="value"_s) decorateInspectorObjects(global,entry.value.get());
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) decorateInspectorObjects(global,array->get(i).get());
+}
 inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& message) {
     if (!connected) return;
     auto parsed = JSON::Value::parseJSON(message);
@@ -217,12 +240,21 @@ inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& mess
         if (auto id = object->getInteger("id"_s)) {
             auto found = responseIds.find(*id);
             if (found == responseIds.end()) return;
+            decorateInspectorObjects(*global,*object);
             auto method = responseMethods.find(*id);
             if (method != responseMethods.end()) {
                 // JSC names the descriptor array "properties"; node:inspector
                 // exposes the CDP Runtime.getProperties "result" field.
                 if (method->second == "Runtime.getProperties"_s) if (auto result = object->getObject("result"_s)) {
                     if (auto properties = result->getArray("properties"_s)) {
+                        if(accessorPropertyRequests.contains(*id)) {
+                            auto filtered=JSON::Array::create();
+                            for(size_t index=0;index<properties->length();++index) {
+                                auto descriptor=properties->get(index).get().asObject();
+                                if(descriptor && (descriptor->getValue("get"_s) || descriptor->getValue("set"_s))) filtered->pushObject(descriptor.releaseNonNull());
+                            }
+                            properties=WTF::move(filtered);
+                        }
                         result->remove("properties"_s);
                         result->setArray("result"_s, properties.releaseNonNull());
                     }
@@ -231,6 +263,7 @@ inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& mess
             }
             object->setInteger("id"_s, found->second);
             responseIds.erase(found);
+            accessorPropertyRequests.erase(*id);
             routed = object->toJSONString();
         }
     }
@@ -265,15 +298,36 @@ inline void LocalInspectorChannel::drain() {
         }
     }
 }
-inline void LocalInspectorChannel::disconnect() {
-    if (!connected) return;
+inline void LocalInspectorChannel::disconnect(bool deliverPendingErrors) {
+    if (!connected || disconnecting) return;
+    disconnecting = true;
     auto retained = shared_from_this();
     stopProfile();
+    // Explicit session detachment ends this frontend's injected execution
+    // context. Deliver completed replies first, then cancel remaining runtime
+    // commands through the normal protocol callback path. GC/owner teardown
+    // uses the default false argument and must never execute JavaScript.
+    if (deliverPendingErrors && handle) {
+        drain();
+        std::vector<int> pending;
+        for (auto& entry : responseMethods) if (entry.second.startsWith("Runtime."_s)) pending.push_back(entry.first);
+        for (int id : pending) {
+            auto error = JSON::Object::create();
+            error->setInteger("code"_s, -32000);
+            error->setString("message"_s, "Execution context was destroyed."_s);
+            auto response = JSON::Object::create();
+            response->setInteger("id"_s, id);
+            response->setObject("error"_s, WTF::move(error));
+            sendMessageToFrontend(response->toJSONString());
+        }
+        drain();
+    }
     connected = false;
     handle.clear();
     messages.clear();
     responseIds.clear();
     responseMethods.clear();
+    accessorPropertyRequests.clear();
     realmObjects.clear();
     nativeRealmObjects.clear();
     disconnectRealms();
@@ -401,7 +455,7 @@ JSC_DEFINE_HOST_FUNCTION(connectLocalInspector, (JSC::JSGlobalObject* global, JS
 JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, JSC::CallFrame* frame)) {
     auto& vm = global->vm(); auto scope = DECLARE_THROW_SCOPE(vm);
     auto* handle = dynamicDowncast<LocalInspectorHandle>(frame->argument(0));
-    if (!handle || !handle->channel->connected) { JSC::throwTypeError(global, scope, "Inspector session is closed"_s); return {}; }
+    if (!handle || !handle->channel->connected || handle->channel->disconnecting) { JSC::throwTypeError(global, scope, "Inspector session is closed"_s); return {}; }
     auto channel = handle->channel;
     auto message = frame->argument(1).toWTFString(global);
     RETURN_IF_EXCEPTION(scope, {});
@@ -416,6 +470,14 @@ JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, J
     channel->responseIds.emplace(nativeId, *localId);
     channel->responseMethods.emplace(nativeId, request->getString("method"_s));
     request->setInteger("id"_s, nativeId);
+    if(request->getString("method"_s)=="Runtime.getProperties"_s) if(auto params=request->getObject("params"_s)) if(auto value=params->getValue("accessorPropertiesOnly"_s)) {
+        auto enabled=value->asBoolean();
+        if(!enabled) {
+            auto error=JSON::Object::create();error->setInteger("code"_s,-32602);error->setString("message"_s,"accessorPropertiesOnly must be a boolean"_s);
+            auto response=JSON::Object::create();response->setInteger("id"_s,nativeId);response->setObject("error"_s,WTF::move(error));channel->sendMessageToFrontend(response->toJSONString());channel->drain();return JSC::JSValue::encode(JSC::jsUndefined());
+        }
+        if(*enabled) channel->accessorPropertyRequests.insert(nativeId);
+    }
     if (!channel->dispatchAdapter(*request) && !dispatchInspectorRealm(*channel,*request)) global->inspectorController().dispatchMessageFromFrontend(request->toJSONString());
     RETURN_IF_EXCEPTION(scope, {});
     channel->drain();
@@ -423,7 +485,7 @@ JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, J
 }
 JSC_DEFINE_HOST_FUNCTION(disconnectLocalInspector, (JSC::JSGlobalObject* global, JSC::CallFrame* frame)) {
     auto* handle = dynamicDowncast<LocalInspectorHandle>(frame->argument(0));
-    if (handle) { auto channel = handle->channel; channel->disconnect(); }
+    if (handle) { auto channel = handle->channel; channel->disconnect(true); }
     return JSC::JSValue::encode(JSC::jsUndefined());
 }
 static JSC::JSValue createInspectorBinding(Zig::GlobalObject* global) {

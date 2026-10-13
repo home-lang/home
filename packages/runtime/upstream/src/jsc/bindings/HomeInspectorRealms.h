@@ -12,6 +12,7 @@
 #include <wtf/text/MakeString.h>
 #include <wtf/JSONValues.h>
 namespace Home {
+bool inspectorObjectIsPromise(JSC::JSGlobalObject&, const WTF::String&);
 struct InspectorRealm {
     JSC::Weak<JSC::JSGlobalObject> global;
     JSC::JSGlobalObject* owner;
