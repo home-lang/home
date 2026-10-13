@@ -1,6 +1,4 @@
 const std = @import("std");
-const net = std.net;
-const posix = std.posix;
 
 /// Email address with optional display name
 pub const Address = struct {
@@ -267,8 +265,9 @@ pub const SmtpTransport = struct {
 /// Memory transport for testing
 pub const MemoryTransport = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sent_messages: std.ArrayListUnmanaged(SentMessage),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -280,12 +279,13 @@ pub const MemoryTransport = struct {
         sent_at: i64,
     };
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .sent_messages = .empty,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -312,14 +312,14 @@ pub const MemoryTransport = struct {
     }
 
     pub fn getSentMessages(self: *Self) []const SentMessage {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.sent_messages.items;
     }
 
     pub fn clear(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.sent_messages.items) |msg| {
             self.allocator.free(msg.from);
@@ -333,11 +333,6 @@ pub const MemoryTransport = struct {
         self.sent_messages.clearRetainingCapacity();
     }
 
-    fn getTimestamp() i64 {
-        const ts = posix.clock_gettime(.REALTIME) catch return 0;
-        return ts.sec;
-    }
-
     fn send(ptr: *anyopaque, message: *const Message) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
@@ -345,8 +340,8 @@ pub const MemoryTransport = struct {
         if (message.from == null) return error.NoFromAddress;
         if (message.to.items.len == 0) return error.NoRecipients;
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Copy recipients
         const to_list = try self.allocator.alloc([]const u8, message.to.items.len);
@@ -371,7 +366,7 @@ pub const MemoryTransport = struct {
             .to = to_list,
             .subject = subject_copy,
             .body = body_copy,
-            .sent_at = getTimestamp(),
+            .sent_at = std.Io.Clock.real.now(self.io).toSeconds(),
         });
     }
 
@@ -571,7 +566,7 @@ test "message builder" {
 test "memory transport" {
     const allocator = std.testing.allocator;
 
-    const mem_transport = try MemoryTransport.init(allocator);
+    const mem_transport = try MemoryTransport.init(allocator, std.testing.io);
     var mailer = Mailer.init(allocator, mem_transport.transport());
     defer mailer.deinit();
 
