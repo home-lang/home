@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     const module_tests = b.addTest(.{ .root_module = compression });
     const run_module_tests = b.addRunArtifact(module_tests);
     const run_tests = b.addRunArtifact(tests);
-    const check_step = b.step("check", "Compile compression tests without running them");
+    const check_step = b.step("check", "Compile module and public API tests without running them");
     check_step.dependOn(&module_tests.step);
     check_step.dependOn(&tests.step);
 

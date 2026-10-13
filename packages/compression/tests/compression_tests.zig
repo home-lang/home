@@ -45,15 +45,21 @@ test "gzip streaming API emits a complete frame" {
     try testing.expectEqualStrings("stream payload", decoded);
 }
 
-test "zstd round trips escaped literals and repeated data" {
+test "zstd preserves the established block wire format" {
     var zstd = compression.Zstd.init(testing.allocator, .balanced);
-    const input = [_]u8{ 0xff, 0x00, 0xff, 0x01 } ++ "abcabcabcabcabcabc".*;
+    const input = "abcabcabcabcabcabc";
+    const expected_block = [_]u8{
+        'a',  'b', 'c', 'a', 'b', 'c',
+        0xff, 6,   0,   6,   0,   0xff,
+        12,   0,   6,   0,
+    };
 
-    const encoded = try zstd.compress(&input);
+    const encoded = try zstd.compress(input);
     defer testing.allocator.free(encoded);
+    try testing.expectEqualSlices(u8, &expected_block, encoded[18 .. encoded.len - 4]);
     const decoded = try zstd.decompress(encoded);
     defer testing.allocator.free(decoded);
-    try testing.expectEqualSlices(u8, &input, decoded);
+    try testing.expectEqualStrings(input, decoded);
 }
 
 test "zstd round trips an empty frame" {

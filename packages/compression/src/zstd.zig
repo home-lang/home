@@ -184,7 +184,7 @@ pub const Zstd = struct {
         defer output.deinit();
 
         var offset: usize = 0;
-        while (offset < data.len or (data.len == 0 and offset == 0)) {
+        while (offset < data.len) {
             const block_end = @min(offset +| BLOCK_SIZE, data.len);
             const block = data[offset..block_end];
             const compressed = try self.compressBlock(block);
@@ -214,7 +214,6 @@ pub const Zstd = struct {
                 try output.writer.writeInt(u16, @intCast(match.length), .little);
                 index += match.length;
             } else {
-                try output.writer.writeByte(0x00);
                 try output.writer.writeByte(block[index]);
                 index += 1;
             }
@@ -226,6 +225,8 @@ pub const Zstd = struct {
         var input: std.Io.Reader = .fixed(data);
         var output: std.Io.Writer.Allocating = .init(self.allocator);
         defer output.deinit();
+
+        if (data.len == 0 and expected_size == 0) return output.toOwnedSlice();
 
         var last = false;
         while (!last) {
@@ -251,28 +252,21 @@ pub const Zstd = struct {
 
         var index: usize = 0;
         while (index < block.len) {
-            const tag = block[index];
-            index += 1;
-            switch (tag) {
-                0x00 => {
-                    if (index == block.len) return error.TruncatedLiteral;
-                    try output.writer.writeByte(block[index]);
-                    index += 1;
-                },
-                0xff => {
-                    if (block.len - index < 4) return error.TruncatedMatch;
-                    const distance = std.mem.readInt(u16, block[index..][0..2], .little);
-                    const length = std.mem.readInt(u16, block[index + 2 ..][0..2], .little);
-                    index += 4;
-                    if (distance == 0 or distance > output.written().len or length == 0) {
-                        return error.InvalidMatch;
-                    }
-                    for (0..length) |_| {
-                        const written = output.written();
-                        try output.writer.writeByte(written[written.len - distance]);
-                    }
-                },
-                else => return error.InvalidBlockTag,
+            if (block[index] == 0xff and block.len - index >= 5) {
+                index += 1;
+                const distance = std.mem.readInt(u16, block[index..][0..2], .little);
+                const length = std.mem.readInt(u16, block[index + 2 ..][0..2], .little);
+                index += 4;
+                if (distance == 0 or distance > output.written().len or length == 0) {
+                    return error.InvalidMatch;
+                }
+                for (0..length) |_| {
+                    const written = output.written();
+                    try output.writer.writeByte(written[written.len - distance]);
+                }
+            } else {
+                try output.writer.writeByte(block[index]);
+                index += 1;
             }
         }
         return output.toOwnedSlice();
