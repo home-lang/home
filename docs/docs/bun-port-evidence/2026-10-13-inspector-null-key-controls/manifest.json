@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 1,
+  "nullKeySource": "311f18d42e6ac0c257e4acd34d51c16b12940ad2",
+  "bridgeDraftSource": "0d4df1f1f3abaf8a5693cabd10b74566eb8cad3c",
+  "queuedRepairSource": "6e08014c766b1c9f66021100345ef98cdab57d1a",
+  "builds": {
+    "nullKey": {
+      "steps": "56/56",
+      "peakTreeMB": 5649
+    },
+    "bridgeDraft": {
+      "steps": "56/56",
+      "peakTreeMB": 5633
+    }
+  },
+  "controls": {
+    "nodePassed": 6,
+    "homePassed": 2,
+    "homeFailed": 1,
+    "homeFailure": "object-reference.mjs: JavaScript TypeError; property reply lacks CDP result array",
+    "laterHomeControls": "not run"
+  },
+  "fullParity": false,
+  "files": [
+    {
+      "file": "build-object-routing-repair.log.gz",
+      "source": "build-object-routing-repair.log",
+      "bytes": 4840,
+      "sha256": "defb29682f1bcf135d6d81b62d08ccf0eefe82218b7e1dceb680f6d8c7c4f8d2"
+    },
+    {
+      "file": "null-key-executable.json.gz",
+      "source": "null-key-executable.json",
+      "bytes": 170,
+      "sha256": "320ed45ef88f6f801401b83e0a3c1e8aba534fbe1277cc8a60137467377a1a93"
+    },
+    {
+      "file": "null-key-generated-identity.json.gz",
+      "source": "null-key-generated-identity.json",
+      "bytes": 555,
+      "sha256": "18bcec9c5f0a99a5b14e6758fb410cbe341d57b4dd5f282eb83defc8bcc815b9"
+    },
+    {
+      "file": "build-cross-realm.log.gz",
+      "source": "build-cross-realm.log",
+      "bytes": 4845,
+      "sha256": "d3d4a767562287e064f3cc5e83446482c8d4f010f8f32ed572090fdec22a614f"
+    },
+    {
+      "file": "bridge-executable.json.gz",
+      "source": "bridge-executable.json",
+      "bytes": 208,
+      "sha256": "c17e50c1120fdc32f5f9df98e1da9401037d939a3ceae92043730dbe31c1bf8a"
+    },
+    {
+      "file": "bridge-active-source-identity.json.gz",
+      "source": "bridge-active-source-identity.json",
+      "bytes": 1397,
+      "sha256": "df6e9c99e23fbe43b4c7f491f383d7d15511502ade0e3793c311aeb23312945e"
+    },
+    {
+      "file": "null-key-corrected-controls.log.gz",
+      "source": "null-key-corrected-controls.log",
+      "bytes": 564,
+      "sha256": "2c81e01007e2866325ce0abd857c6342d0296e022c966f771feca039708f9c20"
+    },
+    {
+      "file": "null-key-corrected-results.json.gz",
+      "source": "null-key-corrected-results.json",
+      "bytes": 739,
+      "sha256": "03cefadffd223d530539e1fc620404a40fd8facb31272af257030dac557ffb5d"
+    },
+    {
+      "file": "cross-realm-success-assumption.mjs.gz",
+      "source": "cross-realm-success-assumption.mjs",
+      "bytes": 1294,
+      "sha256": "b02997db2ac17b2a55c55f78777958511ddb8671d989770916d0b998c5098472"
+    },
+    {
+      "file": "cross-realm-reference.mjs.gz",
+      "source": "cross-realm-reference.mjs",
+      "bytes": 1586,
+      "sha256": "100983dbb9970ae2ad15afef1bcea5a039ccc9662100b2b4cbeb61289c229cd4"
+    },
+    {
+      "file": "world-direction-reference.mjs.gz",
+      "source": "world-direction-reference.mjs",
+      "bytes": 1677,
+      "sha256": "67f59439da8465d3eb070f1088bb60623e16d9642c97f254ee8344bc42600ae1"
+    },
+    {
+      "file": "world-reference-inputs.json.gz",
+      "source": "world-reference-inputs.json",
+      "bytes": 1173,
+      "sha256": "e80f21b3ec281dafb0feea6acfd75105ee8bc09298d3e6c09ff81874ec9eb97f"
+    },
+    {
+      "file": "run-null-key-corrected-controls.py.gz",
+      "source": "run-null-key-corrected-controls.py",
+      "bytes": 879,
+      "sha256": "787d153510922691691ecdfba43a617f828da338b05f14be3e5aff4de5ddab02"
+    },
+    {
+      "file": "world-pickier.json.gz",
+      "source": "world-pickier.json",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "world-validation-source-hashes.json.gz",
+      "source": "world-validation-source-hashes.json",
+      "bytes": 1258,
+      "sha256": "ea456d3d59540e38759b3ac0b3275e559af9ed6134392edd9cb755f00b4ff130"
+    },
+    {
+      "file": "world-validation-recovery-commit.txt.gz",
+      "source": "world-validation-recovery-commit.txt",
+      "bytes": 41,
+      "sha256": "c672d8bdb4775a9715290ffabc648228b17fa078939cb15cfe16b465b93492ee"
+    },
+    {
+      "file": "null-key-corrected-node-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-reference.mjs.log",
+      "bytes": 460,
+      "sha256": "572e61ed0398f0613ebf2bc36cd80d1382c16aaf1cc4b6ebca8134a78b63b355"
+    },
+    {
+      "file": "null-key-corrected-node-metadata-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-metadata-reference.mjs.log",
+      "bytes": 54,
+      "sha256": "fef63fa3d02e770002f80dfa53fff680379ab7973830d8fd276a69ac2cdcd5b5"
+    },
+    {
+      "file": "null-key-corrected-node-object-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-object-reference.mjs.log",
+      "bytes": 44,
+      "sha256": "c6c4c8a8635d651ef45894ca563aae83ccad7f1bbfd9617df82e8462c684c2a8"
+    },
+    {
+      "file": "null-key-corrected-node-getter-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-getter-reference.mjs.log",
+      "bytes": 54,
+      "sha256": "6907ad4c0f62e720b0e352d1aabe14a71c655d6feeab3b3b4c4b700963171bc5"
+    },
+    {
+      "file": "null-key-corrected-node-parameter-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-parameter-reference.mjs.log",
+      "bytes": 68,
+      "sha256": "d2d7a86a16d031521b72a92fd8197ea7441035b2f5ce9ad4337adcda80dc4f29"
+    },
+    {
+      "file": "null-key-corrected-node-cross-realm-reference.mjs.log.gz",
+      "source": "null-key-corrected-node-cross-realm-reference.mjs.log",
+      "bytes": 56,
+      "sha256": "f622b97b7d204b6b2abbebc627c43eb4179ae8a13abd1731febcf4fecdc648ea"
+    },
+    {
+      "file": "null-key-corrected-home-reference.mjs.log.gz",
+      "source": "null-key-corrected-home-reference.mjs.log",
+      "bytes": 199,
+      "sha256": "ba1095917c3b151db7d15a5f19aa3272508239a4b2361cb01788bb4af060bd0d"
+    },
+    {
+      "file": "null-key-corrected-home-metadata-reference.mjs.log.gz",
+      "source": "null-key-corrected-home-metadata-reference.mjs.log",
+      "bytes": 54,
+      "sha256": "fef63fa3d02e770002f80dfa53fff680379ab7973830d8fd276a69ac2cdcd5b5"
+    },
+    {
+      "file": "null-key-corrected-home-object-reference.mjs.log.gz",
+      "source": "null-key-corrected-home-object-reference.mjs.log",
+      "bytes": 1403,
+      "sha256": "9cd4a0c1f9bf5261a3d1371d29112a82e22f6822c8900bf6b62fb0ea4340dcac"
+    },
+    {
+      "file": "reference.mjs.gz",
+      "source": "reference.mjs",
+      "bytes": 1168,
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02"
+    },
+    {
+      "file": "metadata-reference.mjs.gz",
+      "source": "metadata-reference.mjs",
+      "bytes": 1381,
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09"
+    },
+    {
+      "file": "object-reference.mjs.gz",
+      "source": "object-reference.mjs",
+      "bytes": 1177,
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310"
+    },
+    {
+      "file": "getter-reference.mjs.gz",
+      "source": "getter-reference.mjs",
+      "bytes": 786,
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef"
+    },
+    {
+      "file": "parameter-reference.mjs.gz",
+      "source": "parameter-reference.mjs",
+      "bytes": 584,
+      "sha256": "bfb54616897ad2b8e0d12534fe4b6df2c4f5e4c5327ed0b99dfca0bc7813f0c1"
+    }
+  ]
+}
