@@ -1,0 +1,142 @@
+{
+  "schema": 1,
+  "runtime_main_commit": "c8c0db677",
+  "unverified_source_commit": "753992ce52b1129779b0a62f0efdc6b179e9b072",
+  "recovery_branch": "codex/inspector-realms-unverified",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "source_hashes": [
+    {
+      "file": "build-support/bundle-native-modules.ts",
+      "sha256": "d50e23e22c272aa6d7da7b5c3086f98d15a9144bee49732f54bfdf741247748a",
+      "bytes": 26445
+    },
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "b0fed4c7357cee71875089ccf430e3eb3fb12c7cfae68816839c21ab46e30acb",
+      "bytes": 70183
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "9678c96ec34109aa1d8e936f0f555928f5526c521a7da26bb54fda07c221b85e",
+      "bytes": 22613
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "85705f3a14b9fb4355a8f51eee5d54e588c5a06754f5d50b3719e0a8eddf0e69",
+      "bytes": 3475
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "4281358cc3bfd1a0b84f3449c4c89009ba3a92f1f916a451f8affc2742281332",
+      "bytes": 97605
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVMScript.cpp",
+      "sha256": "6419d4f133b757dd16bfa1d6e35fde3140ad917dfc00eca474097f23a9d8ab62",
+      "bytes": 29878
+    }
+  ],
+  "results": {
+    "admitted_build_exit": 123,
+    "disk_floor_mb": 512,
+    "reported_free_mb": 427,
+    "escaped_child_stopped": 74557,
+    "new_runtime_pass_credit": false
+  },
+  "changes": [
+    "Recovery native retirement tasks verify an identity alongside the realm address to prevent stale tasks erasing reused addresses; owner shutdown disconnects realm channels and clears registry/retirement routes.",
+    "Recovery routing unwraps nested object arguments, forwards releaseObjectGroup to attached native controllers, suppresses their internal responses and preserves explicitly empty names. Explicit owner contextId is removed before dispatching to the owner JSC agent.",
+    "Focused metadata/evaluation/object/getter controls are prepared but not executed against a completed repaired executable."
+  ],
+  "limitations": [
+    "Three resource admission refusals and the admitted disk-floor stop remain failures; independent compilation without errors does not prove a complete build. No changed runtime source is on main.",
+    "Controller-held realm roots, GC notification delivery, all object/argument/group/exception schemas, asynchronous commands, colliding IDs, native identity namespace exhaustion, worker shutdown, ABI and full native/original regression checks remain required.",
+    "Older native object cache candidates were inspected only; their producer identities were not sufficiently proven for deletion. Existing full-parity requirements remain unchanged."
+  ],
+  "files": [
+    {
+      "file": "HomeInspectorRealms.h",
+      "archive": "raw/HomeInspectorRealms.h.gz",
+      "sha256": "85705f3a14b9fb4355a8f51eee5d54e588c5a06754f5d50b3719e0a8eddf0e69",
+      "bytes": 3475
+    },
+    {
+      "file": "archive.py",
+      "archive": "raw/archive.py.gz",
+      "sha256": "32ca21015bf45aaa805b5df3208780311ec384bcca1dcc82a35e89deb5738743",
+      "bytes": 3064
+    },
+    {
+      "file": "build-native.log",
+      "archive": "raw/build-native.log.gz",
+      "sha256": "563704658bd5ca6bc3e96038029cdeb8e70f77779ac4a269f0ed88ddd5a3483f",
+      "bytes": 127
+    },
+    {
+      "file": "build-retry.log",
+      "archive": "raw/build-retry.log.gz",
+      "sha256": "95417bb6f4edeb5e032f359358089009a37b5798d762be487783b95d98fe1ac9",
+      "bytes": 75
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "sha256": "995840e8d4032cba79b50150492125e3e32d2c70111670ef0a68ed7bd33588aa",
+      "bytes": 75
+    },
+    {
+      "file": "getter-reference.mjs",
+      "archive": "raw/getter-reference.mjs.gz",
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef",
+      "bytes": 786
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09",
+      "bytes": 1381
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310",
+      "bytes": 1177
+    },
+    {
+      "file": "recovery-commit.txt",
+      "archive": "raw/recovery-commit.txt.gz",
+      "sha256": "8a54aab999a341c2f2b4f51d878ff5f1f10d1a0a0541f502e6b99edb0ea3cc62",
+      "bytes": 41
+    },
+    {
+      "file": "recovery-final-commit.txt",
+      "archive": "raw/recovery-final-commit.txt.gz",
+      "sha256": "507e962919a35464a4b555b02090d6bc045382888cb92ea3e7c671eac9705267",
+      "bytes": 41
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02",
+      "bytes": 1168
+    },
+    {
+      "file": "repair.py",
+      "archive": "raw/repair.py.gz",
+      "sha256": "e1a545c882a4db16f18996f4eda081e60712eae9e32fd6619758d50e165e890c",
+      "bytes": 3730
+    },
+    {
+      "file": "run-controls.py",
+      "archive": "raw/run-controls.py.gz",
+      "sha256": "0b03f079029c1cb55a2c6333278e279e4c1095fa84e23925f08b94618455e57a",
+      "bytes": 792
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "sha256": "872e0fac309d2d37089cff5fd912c9f017ee0f536da0e27e47ffb3ec5f42a361",
+      "bytes": 951
+    }
+  ]
+}
