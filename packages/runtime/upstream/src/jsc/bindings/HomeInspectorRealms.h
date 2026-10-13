@@ -29,12 +29,22 @@ inline auto& inspectorRetirementRoutes() {
     return *routes;
 }
 inline int nextInspectorRealmID() {
-    static std::atomic<int> next { 1000000 };
+    static std::atomic<int> next { 1 };
     return next.fetch_add(1);
+}
+inline auto& inspectorOwnerIdentities() {
+    static thread_local auto* identities=new std::unordered_map<JSC::JSGlobalObject*,int>;
+    return *identities;
+}
+inline int inspectorOwnerIdentity(JSC::JSGlobalObject* global) {
+    auto [entry,inserted]=inspectorOwnerIdentities().try_emplace(global,0);
+    if(inserted) entry->second=nextInspectorRealmID();
+    return entry->second;
 }
 void inspectorRealmCreated(InspectorRealm&);
 void inspectorRealmDestroyed(JSC::JSGlobalObject*, int);
 inline void registerInspectorRealm(JSC::JSGlobalObject* realm, JSC::JSGlobalObject* owner, WTF::String name, WTF::String origin, WebCore::ScriptExecutionContextIdentifier ownerContext) {
+    inspectorOwnerIdentity(owner);
     int id = nextInspectorRealmID();
     if (name.isNull()) name = makeString("VM Context "_s, id);
     realm->setName(name);
@@ -55,6 +65,7 @@ inline void retireInspectorRealm(JSC::JSGlobalObject* realm) {
     });
 }
 inline void cancelInspectorRealms(JSC::JSGlobalObject* owner) {
+    inspectorOwnerIdentities().erase(owner);
     for(auto found=inspectorRealms().begin();found!=inspectorRealms().end();) {
         if(found->second->owner!=owner) {++found;continue;}
         {std::lock_guard lock(inspectorRetirementLock());inspectorRetirementRoutes().erase(found->first);}
