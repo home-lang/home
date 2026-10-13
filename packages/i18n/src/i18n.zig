@@ -179,6 +179,7 @@ pub const Catalog = struct {
 pub const Translator = struct {
     allocator: std.mem.Allocator,
     catalogs: std.StringHashMap(*Catalog),
+    owned_results: std.ArrayList([]u8),
     current_locale: Locale,
     fallback_locale: Locale,
 
@@ -188,12 +189,16 @@ pub const Translator = struct {
         return .{
             .allocator = allocator,
             .catalogs = std.StringHashMap(*Catalog).init(allocator),
+            .owned_results = .empty,
             .current_locale = Locale.parse(default_locale),
             .fallback_locale = Locale.parse("en"),
         };
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.owned_results.items) |result| self.allocator.free(result);
+        self.owned_results.deinit(self.allocator);
+
         var iter = self.catalogs.iterator();
         while (iter.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -301,8 +306,11 @@ pub const Translator = struct {
         // Replace :0, :1, … up to :9 with the matching param. Falls back
         // to the raw template on any allocation failure so callers still
         // get back something usable.
-        var buf = std.ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
+        if (params.len == 0) return template;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        var substituted = false;
         var i: usize = 0;
         while (i < template.len) {
             if (template[i] == ':' and i + 1 < template.len) {
@@ -310,16 +318,24 @@ pub const Translator = struct {
                 if (c >= '0' and c <= '9') {
                     const idx: usize = c - '0';
                     if (idx < params.len) {
-                        buf.appendSlice(params[idx]) catch return template;
+                        buf.appendSlice(self.allocator, params[idx]) catch return template;
+                        substituted = true;
                         i += 2;
                         continue;
                     }
                 }
             }
-            buf.append(template[i]) catch return template;
+            buf.append(self.allocator, template[i]) catch return template;
             i += 1;
         }
-        return buf.toOwnedSlice() catch template;
+        if (!substituted) return template;
+
+        const result = buf.toOwnedSlice(self.allocator) catch return template;
+        self.owned_results.append(self.allocator, result) catch {
+            self.allocator.free(result);
+            return template;
+        };
+        return result;
     }
 
     /// Shorthand for translate
@@ -496,6 +512,18 @@ test "translator plural" {
     try std.testing.expectEqualStrings("1 item", translator.tc("items", 1));
     try std.testing.expectEqualStrings("multiple items", translator.tc("items", 0));
     try std.testing.expectEqualStrings("multiple items", translator.tc("items", 5));
+}
+
+test "translator owns substituted results" {
+    const allocator = std.testing.allocator;
+
+    var translator = Translator.init(allocator, "en");
+    defer translator.deinit();
+
+    const en = try translator.addCatalog("en");
+    try en.add("welcome", Message.simple("Hello, :0!"));
+
+    try std.testing.expectEqualStrings("Hello, Home!", translator.translateWithParams("welcome", &.{"Home"}));
 }
 
 test "message formatter positional" {
