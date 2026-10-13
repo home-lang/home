@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Session } from 'node:inspector/promises'
 import { Worker } from 'node:worker_threads'
+import vm from 'node:vm'
 
 const dir = mkdtempSync(join(tmpdir(), 'home-native-profiling-'))
 const workload = `function profileWork(){let result=0;for(let i=0;i<1000;i++)result+=Math.sqrt(i);return result}const end=performance.now()+150;while(performance.now()<end)profileWork();console.log('done')`
@@ -175,3 +176,57 @@ const mainSession = new Session()
 mainSession.connectToMainThread()
 assert.equal((await mainSession.post('Runtime.evaluate', { expression: '7 * 6', returnByValue: true })).result.value, 42)
 mainSession.disconnect()
+
+
+// Context identities and remote objects come from the inspected native realms.
+const realmBefore = vm.createContext({ answer: 41 }, { name: 'native-before-realm', origin: 'https://before.example' })
+const realmSession = new Session()
+const realmEvents = []
+realmSession.connect()
+realmSession.on('Runtime.executionContextCreated', event => realmEvents.push(event.params.context))
+await realmSession.post('Runtime.enable')
+const realmAfter = vm.createContext({ answer: 42 }, { name: 'native-after-realm', origin: 'https://after.example' })
+await new Promise(resolve => setImmediate(resolve))
+const remoteHandles = []
+for (const [name, origin, value] of [
+  ['native-before-realm', 'https://before.example', 41],
+  ['native-after-realm', 'https://after.example', 42],
+]) {
+  const realm = realmEvents.find(context => context.name === name)
+  assert(realm, name)
+  assert.equal(realm.origin, origin)
+  assert(Number.isInteger(realm.id))
+  assert.equal((await realmSession.post('Runtime.evaluate', { expression: 'answer', contextId: realm.id, returnByValue: true })).result.value, value)
+  const { result } = await realmSession.post('Runtime.evaluate', { expression: '({answer})', contextId: realm.id, objectGroup: 'native-realms' })
+  assert.equal(typeof result.objectId, 'string')
+  remoteHandles.push(result.objectId)
+}
+assert.notEqual(remoteHandles[0], remoteHandles[1])
+for (let index = 0; index < remoteHandles.length; index++) {
+  const properties = await realmSession.post('Runtime.getProperties', { objectId: remoteHandles[index], ownProperties: true })
+  assert.equal(properties.result.find(property => property.name === 'answer').value.value, index === 0 ? 41 : 42)
+  await realmSession.post('Runtime.releaseObject', { objectId: remoteHandles[index] })
+}
+// Missing objectId after maps are populated still dispatches owner evaluation.
+assert.equal((await realmSession.post('Runtime.evaluate', { expression: '6 * 7', returnByValue: true })).result.value, 42)
+await realmSession.post('Runtime.disable')
+const notificationCount = realmEvents.length
+const disabledRealm = vm.createContext({}, { name: 'native-disabled-realm' })
+await new Promise(resolve => setImmediate(resolve))
+assert.equal(realmEvents.length, notificationCount)
+await realmSession.post('Runtime.enable')
+await new Promise(resolve => setImmediate(resolve))
+assert(realmEvents.some(context => context.name === 'native-disabled-realm'))
+const metadataReads = []
+const emptyNameRealm = vm.createContext({}, {
+  get name() { metadataReads.push('name'); return '' },
+  get origin() { metadataReads.push('origin'); return 'https://empty.example' },
+})
+await new Promise(resolve => setImmediate(resolve))
+assert.deepEqual(metadataReads, ['name', 'origin'])
+assert(realmEvents.some(context => context.name === '' && context.origin === 'https://empty.example'))
+assert.equal(vm.createContext(emptyNameRealm, { get name() { throw new Error('must not read existing context metadata') } }), emptyNameRealm)
+realmSession.disconnect()
+assert.equal(vm.runInContext('answer', realmBefore), 41)
+assert.equal(vm.runInContext('answer', realmAfter), 42)
+assert(vm.isContext(disabledRealm))
