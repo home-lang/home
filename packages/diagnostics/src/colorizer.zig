@@ -9,24 +9,17 @@ pub const Colorizer = struct {
     }
 
     /// Detect if terminal supports colors
-    pub fn detectColorSupport() bool {
-        // Check common environment variables
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "NO_COLOR")) |val| {
-            std.heap.page_allocator.free(val);
-            return false;
-        } else |_| {}
+    pub fn detectColorSupport(io: std.Io, environ: *const std.process.Environ.Map) std.Io.Cancelable!bool {
+        if (environ.get("NO_COLOR") != null) return false;
 
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "TERM")) |term| {
-            defer std.heap.page_allocator.free(term);
+        if (environ.get("TERM")) |term| {
             if (std.mem.eql(u8, term, "dumb")) {
                 return false;
             }
-            // Most modern terminals support color
             return true;
-        } else |_| {}
+        }
 
-        // Check if output is a TTY
-        return std.io.getStdErr().isTty();
+        return std.Io.File.stderr().isTty(io);
     }
 
     pub const Style = struct {
@@ -99,8 +92,7 @@ pub const Colorizer = struct {
         };
 
         pub fn toAnsiCode(self: Style, buf: []u8) ![]const u8 {
-            var stream = std.io.fixedBufferStream(buf);
-            const writer = stream.writer();
+            var writer = std.Io.Writer.fixed(buf);
 
             try writer.writeAll("\x1b[");
 
@@ -142,7 +134,7 @@ pub const Colorizer = struct {
 
             try writer.writeAll("m");
 
-            return stream.getWritten();
+            return writer.buffered();
         }
     };
 
@@ -257,12 +249,11 @@ pub const BoxDrawing = struct {
     pub const cross = "┼";
 
     /// Check if terminal supports Unicode
-    pub fn supportsUnicode() bool {
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "LANG")) |lang| {
-            defer std.heap.page_allocator.free(lang);
+    pub fn supportsUnicode(environ: *const std.process.Environ.Map) bool {
+        if (environ.get("LANG")) |lang| {
             return std.mem.indexOf(u8, lang, "UTF-8") != null or
                 std.mem.indexOf(u8, lang, "utf8") != null;
-        } else |_| {}
+        }
 
         return false;
     }

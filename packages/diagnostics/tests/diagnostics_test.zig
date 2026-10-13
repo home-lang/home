@@ -134,3 +134,43 @@ test "diagnostics: severity label" {
     try testing.expectEqualStrings("info", diagnostics.Severity.Info.label());
     try testing.expectEqualStrings("hint", diagnostics.Severity.Hint.label());
 }
+
+test "diagnostics: colorizer emits exact ANSI styles" {
+    const style = diagnostics.Colorizer.Style{
+        .fg_color = .bright_red,
+        .bg_color = .blue,
+        .bold = true,
+        .underline = true,
+    };
+    var buffer: [64]u8 = undefined;
+    try testing.expectEqualStrings("\x1b[1;4;91;44m", try style.toAnsiCode(&buffer));
+
+    const plain = diagnostics.Colorizer.init(false);
+    const text = try plain.red(testing.allocator, "error");
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings("error", text);
+}
+
+test "diagnostics: color detection uses explicit environment" {
+    var environ = std.process.Environ.Map.init(testing.allocator);
+    defer environ.deinit();
+
+    try environ.put("TERM", "xterm-256color");
+    try testing.expect(try diagnostics.Colorizer.detectColorSupport(testing.io, &environ));
+
+    try environ.put("TERM", "dumb");
+    try testing.expect(!try diagnostics.Colorizer.detectColorSupport(testing.io, &environ));
+
+    try environ.put("TERM", "xterm-256color");
+    try environ.put("NO_COLOR", "");
+    try testing.expect(!try diagnostics.Colorizer.detectColorSupport(testing.io, &environ));
+}
+
+test "diagnostics: unicode detection uses explicit locale" {
+    var environ = std.process.Environ.Map.init(testing.allocator);
+    defer environ.deinit();
+
+    try testing.expect(!diagnostics.BoxDrawing.supportsUnicode(&environ));
+    try environ.put("LANG", "C.UTF-8");
+    try testing.expect(diagnostics.BoxDrawing.supportsUnicode(&environ));
+}
