@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "main_source": "2d9025ce57df46e83f2f85374091e48bd9bda8e4",
+  "initial_draft": "1cb8ce8493c201c1a7d77674ea63b4bfd9085545",
+  "proposed_repair": "bb57ac0902cbcc8b86c8707b9af2e67df0abaa9c",
+  "results": {
+    "node_controls_passed": 2,
+    "home_controls_failed": 2,
+    "baseline_hashes_verified": true,
+    "diagnostic_exit": 0,
+    "compiler_unit_exit": 1,
+    "compiler_errors": 2,
+    "stopped_guard_exit": 130,
+    "draft_build_pass_credit": false,
+    "repair_runtime_pass_credit": false
+  },
+  "limitations": [
+    "Corrected build and separate payload baseline/Node regression remain queued; no outcome credited.",
+    "Full inspector/Bun acceptance remains incomplete (#888/#428/#66)."
+  ],
+  "files": [
+    {
+      "file": "await-promise.mjs",
+      "archive": "raw/await-promise.mjs.gz",
+      "sha256": "263e8bcf7659af8caf4206236119115823f1c3c6c93ce5809c8b3d61a5a3738e",
+      "bytes": 1448
+    },
+    {
+      "file": "accessor-properties.mjs",
+      "archive": "raw/accessor-properties.mjs.gz",
+      "sha256": "987f565edb2ab2c065263fb68713edeb33b8a73f27ce71c1045d8189185f3621",
+      "bytes": 1758
+    },
+    {
+      "file": "run-controls.py",
+      "archive": "raw/run-controls.py.gz",
+      "sha256": "50255ec8eb196729028e4e9776e3fa60db23dcb966e33839209e6e1f3d050716",
+      "bytes": 974
+    },
+    {
+      "file": "baseline-verified.log",
+      "archive": "raw/baseline-verified.log.gz",
+      "sha256": "5d46a2c1cfd9e9891c892a31a9824d90eedf87cd0e6c49c2a5774544af26a556",
+      "bytes": 455
+    },
+    {
+      "file": "baseline-verified-results.json",
+      "archive": "raw/baseline-verified-results.json.gz",
+      "sha256": "6ea713a8deab86ff2a7249a8adac5b75f021719814eda17d771ff8d1d1c0a429",
+      "bytes": 1051
+    },
+    {
+      "file": "baseline-audit.json",
+      "archive": "raw/baseline-audit.json.gz",
+      "sha256": "c6b4f2885837e4f1bf9c1b77e8ace5ff26e820ffa747b7d72a988d5332ab0d09",
+      "bytes": 162
+    },
+    {
+      "file": "baseline-executable.json",
+      "archive": "raw/baseline-executable.json.gz",
+      "sha256": "e8fd3b5277845cf10e85a27486068a63a9ac24b05c7b66cc6f92bd450c60c13e",
+      "bytes": 139
+    },
+    {
+      "file": "response-diagnostic.mjs",
+      "archive": "raw/response-diagnostic.mjs.gz",
+      "sha256": "1d92296232b23e7f60ac09778f7bb716951c788ece0201ed9873dcc4a67104af",
+      "bytes": 1094
+    },
+    {
+      "file": "response-diagnostic.log",
+      "archive": "raw/response-diagnostic.log.gz",
+      "sha256": "215ecc09f469fab782f564c66cc40286207b8265fd5c67ae9dd6945d95caabb8",
+      "bytes": 1180
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "sha256": "3a0bfee316dd45d6211663d86cd2e42e2978100defe515addc9fe50f5426604e",
+      "bytes": 5776
+    },
+    {
+      "file": "initial-build-result.json",
+      "archive": "raw/initial-build-result.json.gz",
+      "sha256": "4ee4d3fd5836ae5b0db8a324bab68de3672fd599f1116455428a429c5e20b2a8",
+      "bytes": 265
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "sha256": "23e3271b56afa4c4dee5073e3f61da43b3965b6daaac1d3eaaaeb6e3d4f38f0d",
+      "bytes": 664
+    },
+    {
+      "file": "repair-source-hashes.json",
+      "archive": "raw/repair-source-hashes.json.gz",
+      "sha256": "4ca232c0621d72b50f27e5391007174479e7c608e9a835e7fb157b1ac92098a9",
+      "bytes": 664
+    },
+    {
+      "file": "recovery-commit.txt",
+      "archive": "raw/recovery-commit.txt.gz",
+      "sha256": "ae45fbc9e8119c867aeae639895e98087afbde40e4fd1a72a43e4c95d26a9140",
+      "bytes": 41
+    },
+    {
+      "file": "repair-recovery-commit.txt",
+      "archive": "raw/repair-recovery-commit.txt.gz",
+      "sha256": "70eed1eb768e208857b72f9e6d1a58da0b800786aff2ab86f2fca04c4caac0c6",
+      "bytes": 41
+    },
+    {
+      "file": "repair-pickier.json",
+      "archive": "raw/repair-pickier.json.gz",
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a",
+      "bytes": 51
+    },
+    {
+      "file": "baseline-verified-node-await-promise.mjs.log",
+      "archive": "raw/baseline-verified-node-await-promise.mjs.log.gz",
+      "sha256": "f86b2eab9f35068c9029eb8d83f022cae886c18547979430b0705b158b0919b9",
+      "bytes": 56
+    },
+    {
+      "file": "baseline-verified-node-accessor-properties.mjs.log",
+      "archive": "raw/baseline-verified-node-accessor-properties.mjs.log.gz",
+      "sha256": "3ac67122d0c4d2f96d4a2a2cc9cb6e6945f5ecb046b32b8e168d7544909cb057",
+      "bytes": 58
+    },
+    {
+      "file": "baseline-verified-home-await-promise.mjs.log",
+      "archive": "raw/baseline-verified-home-await-promise.mjs.log.gz",
+      "sha256": "3a88289e5edf44633e457dfa16aaeb817ddbf5a68ce7b3af71519904b6c73d53",
+      "bytes": 1002
+    },
+    {
+      "file": "baseline-verified-home-accessor-properties.mjs.log",
+      "archive": "raw/baseline-verified-home-accessor-properties.mjs.log.gz",
+      "sha256": "9239ceb34e08eef233fe7d9eacd9558622983cd6407f0fc2bc1d98e95e13792e",
+      "bytes": 1671
+    }
+  ]
+}
