@@ -1,18 +1,17 @@
 const std = @import("std");
-const posix = std.posix;
 const ratelimit = @import("../ratelimit.zig");
 
 /// Helper to get current timestamp
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+fn getTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toSeconds();
 }
 
 /// In-memory rate limit store using fixed window
 pub const MemoryStore = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     entries: std.StringHashMap(Entry),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -21,12 +20,13 @@ pub const MemoryStore = struct {
         window_start: i64,
     };
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .entries = std.StringHashMap(Entry).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -50,10 +50,10 @@ pub const MemoryStore = struct {
     fn hit(ptr: *anyopaque, key: []const u8, config: ratelimit.RateLimitConfig) anyerror!ratelimit.RateLimitResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const now = getTimestamp();
+        const now = getTimestamp(self.io);
         const window_start = now - @mod(now, config.window_seconds);
         const reset_at = window_start + config.window_seconds;
 
@@ -90,8 +90,8 @@ pub const MemoryStore = struct {
     fn reset(ptr: *anyopaque, key: []const u8) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.entries.fetchRemove(key)) |removed| {
             self.allocator.free(removed.key);
@@ -101,10 +101,10 @@ pub const MemoryStore = struct {
     fn getRemaining(ptr: *anyopaque, key: []const u8, config: ratelimit.RateLimitConfig) anyerror!u32 {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const now = getTimestamp();
+        const now = getTimestamp(self.io);
         const window_start = now - @mod(now, config.window_seconds);
 
         if (self.entries.get(key)) |entry| {
@@ -120,8 +120,8 @@ pub const MemoryStore = struct {
     fn clear(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var iter = self.entries.iterator();
         while (iter.next()) |entry| {
@@ -148,7 +148,7 @@ pub const MemoryStore = struct {
 test "memory store basic" {
     const allocator = std.testing.allocator;
 
-    const mem_store = try MemoryStore.init(allocator);
+    const mem_store = try MemoryStore.init(allocator, std.testing.io);
     defer mem_store.deinit();
 
     var store = mem_store.store();
@@ -177,7 +177,7 @@ test "memory store basic" {
 test "memory store reset" {
     const allocator = std.testing.allocator;
 
-    const mem_store = try MemoryStore.init(allocator);
+    const mem_store = try MemoryStore.init(allocator, std.testing.io);
     defer mem_store.deinit();
 
     var store = mem_store.store();
@@ -203,7 +203,7 @@ test "memory store reset" {
 test "memory store different keys" {
     const allocator = std.testing.allocator;
 
-    const mem_store = try MemoryStore.init(allocator);
+    const mem_store = try MemoryStore.init(allocator, std.testing.io);
     defer mem_store.deinit();
 
     var store = mem_store.store();

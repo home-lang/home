@@ -1,5 +1,4 @@
 const std = @import("std");
-const posix = std.posix;
 
 // Re-export drivers
 pub const drivers = struct {
@@ -8,15 +7,8 @@ pub const drivers = struct {
 };
 
 /// Helper to get current timestamp in milliseconds
-fn getTimestampMs() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000);
-}
-
-/// Helper to get current timestamp in seconds
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+fn getTimestampMs(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toMilliseconds();
 }
 
 /// Rate limit result
@@ -251,15 +243,17 @@ pub fn throttle(limiter: *RateLimiter, key: []const u8) !ThrottleResult {
 
 /// Token bucket rate limiter entry
 pub const TokenBucket = struct {
+    io: std.Io,
     tokens: f64,
     last_update: i64,
     max_tokens: f64,
     refill_rate: f64, // tokens per second
 
-    pub fn init(max_tokens: u32, refill_rate: f64) TokenBucket {
+    pub fn init(io: std.Io, max_tokens: u32, refill_rate: f64) TokenBucket {
         return .{
+            .io = io,
             .tokens = @floatFromInt(max_tokens),
-            .last_update = getTimestampMs(),
+            .last_update = getTimestampMs(io),
             .max_tokens = @floatFromInt(max_tokens),
             .refill_rate = refill_rate,
         };
@@ -277,7 +271,7 @@ pub const TokenBucket = struct {
     }
 
     pub fn refill(self: *TokenBucket) void {
-        const now = getTimestampMs();
+        const now = getTimestampMs(self.io);
         const elapsed_ms = now - self.last_update;
         const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
 
@@ -319,7 +313,7 @@ test "rate limit result" {
 }
 
 test "token bucket" {
-    var bucket = TokenBucket.init(10, 1.0);
+    var bucket = TokenBucket.init(std.testing.io, 10, 1.0);
 
     // Should have 10 tokens initially
     try std.testing.expect(bucket.tryConsume(5));

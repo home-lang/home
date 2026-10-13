@@ -1,25 +1,18 @@
 const std = @import("std");
-const posix = std.posix;
 const ratelimit = @import("../ratelimit.zig");
 
-/// Helper to get current timestamp in milliseconds
-fn getTimestampMs() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000);
-}
-
 /// Helper to get current timestamp
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+fn getTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toSeconds();
 }
 
 /// Sliding window rate limit store
 /// More accurate than fixed window, prevents burst at window boundaries
 pub const SlidingWindowStore = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     entries: std.StringHashMap(WindowEntry),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -29,12 +22,13 @@ pub const SlidingWindowStore = struct {
         current_window_start: i64,
     };
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .entries = std.StringHashMap(WindowEntry).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -64,10 +58,10 @@ pub const SlidingWindowStore = struct {
     fn hit(ptr: *anyopaque, key: []const u8, config: ratelimit.RateLimitConfig) anyerror!ratelimit.RateLimitResult {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const now = getTimestamp();
+        const now = getTimestamp(self.io);
         const window_seconds = config.window_seconds;
         const current_window_start = now - @mod(now, window_seconds);
         const reset_at = current_window_start + window_seconds;
@@ -131,8 +125,8 @@ pub const SlidingWindowStore = struct {
     fn reset(ptr: *anyopaque, key: []const u8) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.entries.fetchRemove(key)) |removed| {
             self.allocator.free(removed.key);
@@ -142,10 +136,10 @@ pub const SlidingWindowStore = struct {
     fn getRemaining(ptr: *anyopaque, key: []const u8, config: ratelimit.RateLimitConfig) anyerror!u32 {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const now = getTimestamp();
+        const now = getTimestamp(self.io);
         const window_seconds = config.window_seconds;
         const current_window_start = now - @mod(now, window_seconds);
 
@@ -174,8 +168,8 @@ pub const SlidingWindowStore = struct {
     fn clear(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var iter = self.entries.iterator();
         while (iter.next()) |entry| {
@@ -202,7 +196,7 @@ pub const SlidingWindowStore = struct {
 test "sliding window basic" {
     const allocator = std.testing.allocator;
 
-    const sliding_store = try SlidingWindowStore.init(allocator);
+    const sliding_store = try SlidingWindowStore.init(allocator, std.testing.io);
     defer sliding_store.deinit();
 
     var store = sliding_store.store();
@@ -228,7 +222,7 @@ test "sliding window basic" {
 test "sliding window reset" {
     const allocator = std.testing.allocator;
 
-    const sliding_store = try SlidingWindowStore.init(allocator);
+    const sliding_store = try SlidingWindowStore.init(allocator, std.testing.io);
     defer sliding_store.deinit();
 
     var store = sliding_store.store();
@@ -254,7 +248,7 @@ test "sliding window reset" {
 test "sliding window remaining" {
     const allocator = std.testing.allocator;
 
-    const sliding_store = try SlidingWindowStore.init(allocator);
+    const sliding_store = try SlidingWindowStore.init(allocator, std.testing.io);
     defer sliding_store.deinit();
 
     var store = sliding_store.store();
