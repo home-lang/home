@@ -55,6 +55,9 @@
 use strict;
 use warnings;
 use Fcntl qw(:flock O_RDWR O_CREAT);
+use IO::Select;
+use POSIX qw(WNOHANG);
+use Time::HiRes qw(time);
 
 my $HOST_STREAK   = 3;      # consecutive bad host samples before killing
 my $POLL          = 0.25;   # seconds between liveness/deadline checks
@@ -97,24 +100,82 @@ die "usage: run-bounded.pl <seconds> <command> [args...]\n"
 
 # ---------------------------------------------------------------- host state
 
+# A system probe can stall too (ps/footprint did so during a compiler run).
+# Use ordinary pipes, not open('-|'): closing a Perl process pipe waits for
+# its child and can block even after the read deadline has expired.
+my $run_deadline;
+our $reaping = 0;
+my @pending_probes;
+
+sub capture_probe {
+    my (@command) = @_;
+    my $allow_nonzero = ref($command[0]) eq "HASH" ? shift(@command)->{allow_nonzero} : 0;
+    @pending_probes = grep { waitpid($_, WNOHANG) == 0 } @pending_probes;
+    my $until = time + 2;
+    $until = $run_deadline if !$reaping && defined($run_deadline) && $run_deadline < $until;
+    return undef if time >= $until;
+    pipe(my $reader, my $writer) or return undef;
+    my $probe = fork();
+    if (!defined $probe) { close($reader); close($writer); return undef }
+    if ($probe == 0) {
+        setpgrp(0, 0);
+        close($reader);
+        open(STDOUT, '>&', $writer) or exit 127;
+        open(STDERR, '>', '/dev/null') or exit 127;
+        close($writer);
+        $SIG{PIPE} = 'DEFAULT';
+        exec { $command[0] } @command;
+        exit 127;
+    }
+    close($writer);
+    my $select = IO::Select->new($reader);
+    my $output = '';
+    my $finished = 0;
+    while (time < $until) {
+        my $remaining = $until - time;
+        last if $remaining <= 0;
+        next unless $select->can_read($remaining > 0.1 ? 0.1 : $remaining);
+        my $count = sysread($reader, my $buffer, 65536);
+        last unless defined $count;
+        if ($count == 0) { $finished = 1; last }
+        $output .= $buffer;
+    }
+    close($reader);
+    if ($finished) {
+        while (time < $until) {
+            my $done = waitpid($probe, WNOHANG);
+            if ($done == $probe) {
+                my $status = $?;
+                return $output if $status == 0 || ($allow_nonzero && !($status & 127));
+                return undef;
+            }
+            last if $done == -1;
+            select(undef, undef, undef, 0.01);
+        }
+    }
+    kill('KILL', -$probe);
+    kill('KILL', $probe);
+    push @pending_probes, $probe if waitpid($probe, WNOHANG) == 0;
+    return undef;
+}
+
 sub disk_free_mb {
-    # Check both output and temporary-file volumes. argv is passed directly to
-    # df, so paths from the environment are never interpreted by a shell.
+    # Measure both output and temporary volumes, including negative free space.
     local $ENV{LC_ALL} = 'C';
-    open(my $df, '-|', '/bin/df', '-Pk', '.', $ENV{TMPDIR} || '/tmp') or return undef;
+    my $out = capture_probe('/bin/df', '-Pk', '.', $ENV{TMPDIR} || '/tmp');
+    return undef unless defined $out;
     my $lowest;
-    while (<$df>) {
+    for (split /\n/, $out) {
         next unless /^.+?\s+\d+\s+\d+\s+(-?\d+)\s+\d+%/;
         my $mb = $1 / 1024;
         $lowest = $mb if !defined $lowest || $mb < $lowest;
     }
-    return undef unless close($df);
     return $lowest;
 }
 
 sub sysctl_num {
     my ($name) = @_;
-    my $out = `/usr/sbin/sysctl -n $name 2>/dev/null`;
+    my $out = capture_probe('/usr/sbin/sysctl', '-n', $name);
     return undef unless defined $out;
     chomp $out;
     return $out =~ /^-?\d+$/ ? $out + 0 : undef;
@@ -206,15 +267,15 @@ if ($pid == 0) {
 # group. Either relation alone is escapable; together they are not.
 sub tree_pids {
     my ($root) = @_;
-    open(my $ps, '-|', 'ps', '-axo', 'pid=,ppid=,pgid=') or return ();
+    my $snapshot = capture_probe('ps', '-axo', 'pid=,ppid=,pgid=');
+    return () unless defined $snapshot;
     my (%kids, @grp);
-    while (<$ps>) {
+    for (split /\n/, $snapshot) {
         my ($p, $pp, $pg) = split;
         next unless defined $pg;
         push @{ $kids{$pp} }, $p;
         push @grp, $p if $pg == $root;
     }
-    close($ps);
     my (%seen, @out, @queue) = ();
     @queue = ($root, @grp);
     while (@queue) {
@@ -246,22 +307,16 @@ sub tree_footprint_mb {
     # keep it off the caller's stream. It still contributes nothing to the sum,
     # and a sample where NOTHING could be read returns undef and is counted as a
     # measurement failure by the caller.
-    my $pid_fp = open(my $fp, '-|');
-    return undef unless defined $pid_fp;
-    if ($pid_fp == 0) {
-        open(STDERR, '>', '/dev/null');
-        exec('/usr/bin/footprint', @args);
-        exit 127;
-    }
+    my $snapshot = capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
+    return undef unless defined $snapshot;
     my $total = 0;
     my $found = 0;
-    while (<$fp>) {
+    for (split /\n/, $snapshot) {
         my $mb = process_footprint_mb($_);
         next unless defined $mb;
         $total += $mb;
         $found++;
     }
-    close($fp);
     return $found ? $total : undef;
 }
 
@@ -278,22 +333,23 @@ sub note_tree {
     my ($root) = @_;
     my %live = map { $_ => 1 } tree_pids($root);
     return unless %live;
-    open(my $ps, '-|', 'ps', '-axo', 'pid=,args=') or return;
-    while (<$ps>) {
+    my $snapshot = capture_probe('ps', '-axo', 'pid=,args=');
+    return unless defined $snapshot;
+    for (split /\n/, $snapshot) {
         chomp;
         next unless /^\s*(\d+)\s+(.*)$/;
         my ($p, $args) = ($1, $2);
         $seen_cmd{$p} = $args if $live{$p} && !exists $seen_cmd{$p};
     }
-    close($ps);
 }
 
 # Remembered pids that are still alive AND still running the same command.
 sub remembered_survivors {
     my @out;
     return @out unless %seen_cmd;
-    open(my $ps, '-|', 'ps', '-axo', 'pid=,args=') or return @out;
-    while (<$ps>) {
+    my $snapshot = capture_probe('ps', '-axo', 'pid=,args=');
+    return @out unless defined $snapshot;
+    for (split /\n/, $snapshot) {
         chomp;
         next unless /^\s*(\d+)\s+(.*)$/;
         my ($p, $args) = ($1, $2);
@@ -301,12 +357,12 @@ sub remembered_survivors {
         # Same pid AND same command line: not a recycled pid.
         push @out, $p if $seen_cmd{$p} eq $args;
     }
-    close($ps);
     return @out;
 }
 
 sub reap_tree {
     my ($root) = @_;
+    local $reaping = 1;
     note_tree($root);
     my @pids = tree_pids($root);
     kill('TERM', -$root);
@@ -333,6 +389,7 @@ sub reap_tree {
 # ----------------------------------------------------------------- the loop
 
 my $deadline = time + $secs;
+$run_deadline = $deadline;
 my $tick       = 0;
 my $mem_fail   = 0;
 my $disk_fail  = 0;
