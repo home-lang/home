@@ -10,7 +10,10 @@
 #include <unordered_map>
 #include <wtf/text/WTFString.h>
 #include <wtf/text/MakeString.h>
+#include <wtf/JSONValues.h>
 namespace Home {
+JSC::JSValue inspectorObjectForId(JSC::JSGlobalObject&, const WTF::String&);
+RefPtr<JSON::Object> inspectorWrapObject(JSC::JSGlobalObject&, JSC::JSValue, const WTF::String&);
 struct InspectorRealm {
     JSC::Weak<JSC::JSGlobalObject> global;
     JSC::JSGlobalObject* owner;

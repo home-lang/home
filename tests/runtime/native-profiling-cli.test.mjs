@@ -202,6 +202,14 @@ for (const [name, origin, value] of [
   remoteHandles.push(result.objectId)
 }
 assert.notEqual(remoteHandles[0], remoteHandles[1])
+const crossRealmResult = await realmSession.post('Runtime.callFunctionOn', {
+  objectId: remoteHandles[0],
+  functionDeclaration: 'function(other) { return this.answer + other.answer; }',
+  arguments: [{ objectId: remoteHandles[1] }],
+  returnByValue: true,
+  objectGroup: 'native-realms',
+})
+assert.equal(crossRealmResult.result.value, 83)
 for (let index = 0; index < remoteHandles.length; index++) {
   const properties = await realmSession.post('Runtime.getProperties', { objectId: remoteHandles[index], ownProperties: true })
   assert.equal(properties.result.find(property => property.name === 'answer').value.value, index === 0 ? 41 : 42)

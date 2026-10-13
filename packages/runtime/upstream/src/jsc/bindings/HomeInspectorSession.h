@@ -137,15 +137,34 @@ public:
         } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(array->get(i).get());
     }
 };
-inline void unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value) {
+inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,JSC::JSGlobalObject& target,const WTF::String& group) {
     if(auto object=value.asObject()) {
         auto exposed=object->getString("objectId"_s);
         if(!exposed.isEmpty()) {
             auto native=channel.nativeRealmObjects.find(exposed);
-            if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
+            if(native!=channel.nativeRealmObjects.end()) {
+                auto owner=channel.realmObjects.find(exposed);
+                JSC::JSGlobalObject* source=channel.global;
+                if(owner!=channel.realmObjects.end()) {
+                    source=nullptr;
+                    for(auto& entry:inspectorRealms()) if(entry.second->owner==channel.global && entry.second->id==owner->value) {source=entry.second->global.get();break;}
+                }
+                if(!source) return false;
+                if(source!=&target) {
+                    JSC::Strong<JSC::JSGlobalObject> protect(source->vm(),source);
+                    auto actual=inspectorObjectForId(*source,native->value);
+                    if(!actual) return false;
+                    auto wrapped=inspectorWrapObject(target,actual,group);
+                    if(!wrapped) return false;
+                    auto translated=wrapped->getString("objectId"_s);
+                    if(translated.isEmpty()) return false;
+                    object->setString("objectId"_s,translated);
+                } else object->setString("objectId"_s,native->value);
+            }
         }
-        for(auto& entry:*object) unwrapInspectorObjects(channel,entry.value.get());
-    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) unwrapInspectorObjects(channel,array->get(i).get());
+        for(auto& entry:*object) if(!unwrapInspectorObjects(channel,entry.value.get(),target,group)) return false;
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target,group)) return false;
+    return true;
 }
 inline void LocalInspectorChannel::releaseRealmGroups(const WTF::String& group) {
     for(auto& entry:realmFrontends) if(auto* realm=entry.second->global.get()) {
@@ -188,7 +207,11 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!frontend) {frontend=std::make_shared<InspectorRealmForwarder>(channel,*selected);protect->inspectorController().connectFrontend(*frontend,false,false);}
     auto& controller=protect->inspectorController();
     params->remove("contextId"_s);params->remove("executionContextId"_s);
-    unwrapInspectorObjects(channel,*params);
+    JSC::DeferGC deferGC(channel.global->vm());
+    if(!unwrapInspectorObjects(channel,*params,*protect.get(),params->getString("objectGroup"_s))) {
+        auto error=JSON::Object::create();error->setInteger("code"_s,-32000);error->setString("message"_s,"Cannot find remote object in its owning context"_s);
+        auto response=JSON::Object::create();response->setInteger("id"_s,*request.getInteger("id"_s));response->setObject("error"_s,WTF::move(error));channel.sendMessageToFrontend(response->toJSONString());return true;
+    }
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
 }
