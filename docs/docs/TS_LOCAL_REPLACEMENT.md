@@ -367,3 +367,33 @@ has SHA-256
 `a2ee38f18508f915c9a1f5c01f2014cddeba3cb1bface01beda64079e55563bd`;
 all 1,508 payload hashes were verified. The subsequent syslog-only upstream
 commits leave all 64 qualified compiler input hashes unchanged.
+
+## Declaration syntax and grammar controls
+
+Class modifiers now recognize keyword-named properties such as
+`readonly delete: (name: string) => void`. A line-separated optional property
+named `extends` no longer becomes an accidental conditional-type operand.
+Missing property types remain genuine parse errors: `value: ;` now reports
+TS1110 at the same position as the reference under either `skipLibCheck` setting.
+
+Ambient generator diagnostics are classified as grammar diagnostics rather
+than syntactic parse errors. The driver uses the declaration-file state that
+is already known during parsing to apply `skipLibCheck` to grammar diagnostics;
+true syntax errors remain visible. The focused driver regression checks both
+the suppressed grammar error and a retained malformed declaration.
+
+The candidate passes **902 parser, 4,591 checker, 208 driver, 276 Program and 49
+CLI tests**, eight executable stream checks and the existing complete native CLI
+controls. Eight direct declaration comparisons match the reference's output
+byte for byte; the ambient-generator skip control also passes. The retained
+diagnostic matrix includes outstanding differences outside these corrected
+contracts rather than treating the entire matrix as qualified.
+
+On the unchanged 306-file table graph, Home-only diagnostics fall from 61 to
+**53**, with a measured peak process-tree footprint of **3,448 MB**. The reference
+still returns zero and Home returns one. Replacement remains unqualified.
+
+The [declaration-parser evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-declaration-parser-controls.tar.gz)
+has SHA-256
+`a3939a46a1eb1a5a70a13b6bf2b2960f0474b5a3b000ccdb3d51c55f08899b30`;
+all 1,567 payload hashes were verified.

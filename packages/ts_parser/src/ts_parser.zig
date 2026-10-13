@@ -4946,9 +4946,9 @@ pub const Parser = struct {
                 const diag_pos: u32 = if (asterisk_tok) |at| at.span.start else start.span.start;
                 const diag_line: u32 = if (asterisk_tok) |at| at.line else start.line;
                 if (self.ambient_depth > 0) {
-                    try self.reportCodeAt(diag_pos, diag_line, 1221, "Generators are not allowed in an ambient context.");
+                    try self.reportGrammarCodeAt(diag_pos, diag_line, 1221, "Generators are not allowed in an ambient context.");
                 } else {
-                    try self.reportCodeAt(diag_pos, diag_line, 1222, "An overload signature cannot be declared as a generator.");
+                    try self.reportGrammarCodeAt(diag_pos, diag_line, 1222, "An overload signature cannot be declared as a generator.");
                 }
             }
         }
@@ -6971,9 +6971,9 @@ pub const Parser = struct {
                     } else {
                         try self.consumeStatementTerminator();
                         if (is_generator and self.isAmbientContextAt(member_start.span.start)) {
-                            try self.reportCodeAt(member_start.span.start, member_start.line, 1221, "Generators are not allowed in an ambient context.");
+                            try self.reportGrammarCodeAt(member_start.span.start, member_start.line, 1221, "Generators are not allowed in an ambient context.");
                         } else if (is_generator) {
-                            try self.reportCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
+                            try self.reportGrammarCodeAt(member_start.span.start, member_start.line, 1222, "An overload signature cannot be declared as a generator.");
                         }
                         // tsc emits TS2390 (Constructor implementation is missing.)
                         // for missing constructor bodies — handled by the
@@ -7669,7 +7669,7 @@ pub const Parser = struct {
     }
 
     fn canStartClassMemberAfterModifier(kind: TokenKind) bool {
-        return isClassMemberNameStart(kind) or kind == .asterisk or kind == .at;
+        return isClassMemberNameStart(kind) or kind.isKeyword() or kind == .asterisk or kind == .at;
     }
 
     fn isReservedBindingNameToken(kind: TokenKind) bool {
@@ -12130,6 +12130,11 @@ pub const Parser = struct {
             }
         }
         if (self.peek().kind != .kw_extends) return check;
+        // An optional/property type on the next line can use `extends` as
+        // its name. `extends?:` is not the extends operand of a conditional.
+        if (self.peek().flags.preceded_by_newline and
+            (self.peekAt(1).kind == .colon or
+                (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon))) return check;
         const extends_kw = self.advance(); // extends
         _ = extends_kw;
         const extends_t = try self.parseUnionType();
@@ -12778,6 +12783,10 @@ pub const Parser = struct {
                 const this_tok = self.advance();
                 const id = self.interner.intern("this") catch return error.OutOfMemory;
                 break :blk try self.builder.addTypeRef(tokenSpan(this_tok), id, &.{}, &.{});
+            },
+            .semicolon, .close_brace, .comma, .eof => blk: {
+                try self.reportCodeAt(t.span.start, t.line, 1110, "Type expected.");
+                break :blk try self.typeRefName("unknown", .{ .start = t.span.start, .end = t.span.start });
             },
             else => {
                 // Unknown — emit a synthetic type ref so the upstream
@@ -26118,6 +26127,31 @@ test "parser: infer in nested conditional inside extends clause is allowed" {
     for (s.parser.diagnostics.items) |diag| {
         try T.expect(diag.code != 1338);
     }
+}
+
+test "parser: declaration keyword property names follow modifiers and line-separated types" {
+    var s = try newTestSetup(
+        \\export declare class Headers { readonly delete: (name: string) => void; }
+        \\export interface Declaration {
+        \\  generics?: string
+        \\  extends?: string
+        \\  implements?: string[]
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: missing interface property type remains a syntax error" {
+    var s = try newTestSetup("export interface Broken { value: ; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
+    const diagnostic = s.parser.diagnostics.items[0];
+    try T.expectEqual(@as(u32, 1110), diagnostic.code);
+    try T.expectEqual(@as(u32, 33), diagnostic.pos);
+    try T.expect(diagnosticIsSyntacticParseError(diagnostic));
 }
 
 test "parser: class modifier keywords may be property names" {
