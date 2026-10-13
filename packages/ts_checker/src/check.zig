@@ -111076,6 +111076,11 @@ pub const Checker = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.UnsupportedProgramType => return null,
             };
+            // Imported value declarations carry their inferred structural
+            // type, not a named type alias. Do not let the shared generic
+            // definition machinery print `const names` as the type `names`
+            // when its body materializes as an array or object.
+            _ = self.program_definition_names.remove(definition_id);
             if (declaration.is_function) return self.interner.genericDefinition(definition_id).?.body;
             return try self.resolveGenericType(try self.interner.internInstantiation(definition_id, &.{}));
         }

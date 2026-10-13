@@ -15754,6 +15754,70 @@ test "Program: checked JavaScript function JSDoc types cross the import boundary
     }
 }
 
+test "Program: checked JavaScript primitive array JSDoc types cross the import boundary" {
+    const owner_source =
+        \\/** @type {string[]} */
+        \\export const names = ["home"];
+        \\/**
+        \\ * @param {Array<number>} values
+        \\ * @returns {ReadonlyArray<string>}
+        \\ */
+        \\export function formatAll(values) { return [String(values.length)]; }
+        \\/**
+        \\ * @param {string | number} value
+        \\ * @returns {string[]}
+        \\ */
+        \\export function unsupported(value) { return ["value"]; }
+        \\export class Box {
+        \\  /** @param {boolean[]} flags */
+        \\  constructor(flags) { this.flags = flags; }
+        \\}
+    ;
+    const consumer_source =
+        \\import { names, formatAll, Box } from "./owner.js";
+        \\const badNames: number[] = names;
+        \\formatAll(["wrong"]);
+        \\const badResult: number[] = formatAll([1]);
+        \\const box = new Box([true]);
+        \\const badFlags: string[] = box.flags;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try T.expectEqualStrings("Type 'string[]' is not assignable to type 'number[]'.", diagnostics[0].message);
+        try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+        try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+        try T.expectEqual(@as(u32, 4104), diagnostics[2].code);
+        try T.expectEqualStrings("The type 'readonly string[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.", diagnostics[2].message);
+        try T.expectEqual(@as(u32, 2322), diagnostics[3].code);
+        try T.expectEqualStrings("Type 'boolean[]' is not assignable to type 'string[]'.", diagnostics[3].message);
+        try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2339);
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
