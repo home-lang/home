@@ -1822,6 +1822,35 @@ pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
         @panic("home_rt.cpp.Bun__performTask needs the C++ FFI bridge (Phase 12.2)");
     }
 
+    pub fn Bun__HTTPServerAgent__notifyServerStarted(
+        _: ?*jsc.Debugger.HTTPServerAgent.InspectorHTTPServerAgent,
+        _: jsc.Debugger.HTTPServerAgent.ServerId,
+        _: jsc.Debugger.HTTPServerAgent.HotReloadId,
+        _: ?*const String,
+        _: f64,
+        _: ?*anyopaque,
+    ) void {
+        @panic("home_rt.cpp.Bun__HTTPServerAgent__notifyServerStarted needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn Bun__HTTPServerAgent__notifyServerStopped(
+        _: ?*jsc.Debugger.HTTPServerAgent.InspectorHTTPServerAgent,
+        _: jsc.Debugger.HTTPServerAgent.ServerId,
+        _: f64,
+    ) void {
+        @panic("home_rt.cpp.Bun__HTTPServerAgent__notifyServerStopped needs the C++ FFI bridge (Phase 12.2)");
+    }
+
+    pub fn Bun__HTTPServerAgent__notifyServerRoutesUpdated(
+        _: ?*jsc.Debugger.HTTPServerAgent.InspectorHTTPServerAgent,
+        _: jsc.Debugger.HTTPServerAgent.ServerId,
+        _: jsc.Debugger.HTTPServerAgent.HotReloadId,
+        _: ?[*]jsc.Debugger.HTTPServerAgent.Route,
+        _: usize,
+    ) void {
+        @panic("home_rt.cpp.Bun__HTTPServerAgent__notifyServerRoutesUpdated needs the C++ FFI bridge (Phase 12.2)");
+    }
+
     pub fn JSC__JSValue__isCallable(value: anytype) bool {
         _ = value;
         return false;
