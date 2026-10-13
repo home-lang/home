@@ -699,9 +699,14 @@ pub const MemoryQueueDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const result = try self.queues.getOrPut(j.queue_name);
+        const owned_queue_name = try self.allocator.dupe(u8, j.queue_name);
+        errdefer self.allocator.free(owned_queue_name);
+
+        const result = try self.queues.getOrPut(owned_queue_name);
         if (!result.found_existing) {
             result.value_ptr.* = .empty;
+        } else {
+            self.allocator.free(owned_queue_name);
         }
 
         // Insert by priority (lower priority number = higher priority)
@@ -748,10 +753,11 @@ pub const MemoryQueueDriver = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Remove the entire entry from the hash map to avoid dangling key references
-        // (the key points to a job's queue_name which gets freed)
+        // Queue names are owned independently of jobs, so processing and
+        // freeing the first job cannot invalidate the map's lookup key.
         if (self.queues.fetchRemove(queue_name)) |entry| {
-            // Copy items and ArrayList since fetchRemove returns const values
+            self.allocator.free(entry.key);
+            // Copy items and ArrayList since fetchRemove returns const values.
             const jobs = entry.value.items;
             var list = entry.value;
             for (jobs) |j| {
@@ -770,6 +776,7 @@ pub const MemoryQueueDriver = struct {
                 j.deinit();
             }
             entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
         }
         self.queues.deinit();
         self.allocator.destroy(self);
@@ -1719,7 +1726,10 @@ pub const JobChain = struct {
 /// Queue worker
 pub const Worker = struct {
     queue_ref: *Queue,
-    queue_names: []const []const u8,
+    /// `null` means "watch the queue's configured default". Keeping that state
+    /// explicit avoids borrowing a temporary one-element array in `init`;
+    /// `watchQueues` still permits callers to provide zero or multiple queues.
+    queue_names: ?[]const []const u8 = null,
     running: std.atomic.Value(bool),
     allocator: std.mem.Allocator,
     sleep_ms: u64,
@@ -1729,7 +1739,6 @@ pub const Worker = struct {
     pub fn init(allocator: std.mem.Allocator, q: *Queue) Self {
         return .{
             .queue_ref = q,
-            .queue_names = &[_][]const u8{q.config.default_queue},
             .running = std.atomic.Value(bool).init(false),
             .allocator = allocator,
             .sleep_ms = q.config.poll_interval_ms,
@@ -1746,13 +1755,22 @@ pub const Worker = struct {
         return self;
     }
 
+    fn queueCount(self: *const Self) usize {
+        return if (self.queue_names) |queue_names| queue_names.len else 1;
+    }
+
+    fn queueNameAt(self: *const Self, index: usize) []const u8 {
+        return if (self.queue_names) |queue_names| queue_names[index] else self.queue_ref.config.default_queue;
+    }
+
     pub fn work(self: *Self, handler: *const fn (*Job) anyerror!void) !void {
         self.running.store(true, .release);
 
         while (self.running.load(.acquire)) {
             var found_job = false;
 
-            for (self.queue_names) |queue_name| {
+            for (0..self.queueCount()) |queue_index| {
+                const queue_name = self.queueNameAt(queue_index);
                 if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
                     self.queue_ref.processJob(j, handler) catch {};
@@ -1775,7 +1793,8 @@ pub const Worker = struct {
         while (processed < max_jobs) {
             var found_job = false;
 
-            for (self.queue_names) |queue_name| {
+            for (0..self.queueCount()) |queue_index| {
+                const queue_name = self.queueNameAt(queue_index);
                 if (self.queue_ref.getNextJobFrom(queue_name)) |j| {
                     found_job = true;
                     self.queue_ref.processJob(j, handler) catch {};

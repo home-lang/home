@@ -4,22 +4,28 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Module for use as dependency
-    const validation_module = b.createModule(.{
+    const validation_module = b.addModule("validation", .{
         .root_source_file = b.path("src/validation.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const messages_module = b.createModule(.{
+    const messages_module = b.addModule("validation_messages", .{
         .root_source_file = b.path("src/messages.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const rules_module = b.createModule(.{
+    const rules_module = b.addModule("validation_rules", .{
         .root_source_file = b.path("src/rules.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    const lib = b.addLibrary(.{
+        .name = "validation",
+        .linkage = .static,
+        .root_module = validation_module,
+    });
+    b.installArtifact(lib);
 
     // Tests
     const unit_tests = b.addTest(.{
@@ -36,7 +42,8 @@ pub fn build(b: *std.Build) void {
     const message_tests = b.addTest(.{ .root_module = messages_module });
     const rule_tests = b.addTest(.{ .root_module = rules_module });
 
-    const check_step = b.step("check", "Compile validation tests without running them");
+    const check_step = b.step("check", "Compile the shipped validation library and its tests");
+    check_step.dependOn(&lib.step);
     check_step.dependOn(&unit_tests.step);
     check_step.dependOn(&message_tests.step);
     check_step.dependOn(&rule_tests.step);
