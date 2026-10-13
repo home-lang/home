@@ -58,6 +58,10 @@ use Fcntl qw(:flock O_RDWR O_CREAT);
 use IO::Select;
 use POSIX qw(WNOHANG);
 use Time::HiRes qw(time);
+use Digest::SHA qw(sha256_hex);
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
+use File::Spec;
 
 my $HOST_STREAK   = 3;      # consecutive bad host samples before killing
 my $POLL          = 0.25;   # seconds between liveness/deadline checks
@@ -247,6 +251,30 @@ if ($min_free_mb > 0 || $crit_free_mb > 0) {
     }
 }
 
+# The kernel exposes the same current phys_footprint through libproc. Unlike
+# footprint(1), this query does not traverse each process's VM mappings.
+# Build a source-addressed helper once; preserve the original probe when a
+# host cannot compile it. Both paths keep the same deadline and failure limit.
+sub prepare_kernel_probe {
+    my ($name) = @_;
+    return undef unless $^O eq 'darwin';
+    my $source = File::Spec->rel2abs(dirname($0) . "/$name.c");
+    return undef unless open(my $input, '<', $source);
+    local $/; my $contents = <$input>; close($input);
+    my $directory = "$ENV{HOME}/.cache/home-run";
+    eval { make_path($directory) };
+    my $binary = "$directory/$name-" . sha256_hex($contents);
+    if (!-x $binary && -d $directory) {
+        my $temporary = "$binary.$$";
+        my $compiled = capture_probe('/usr/bin/clang', '-O2', '-Wall', '-Wextra', '-Werror', $source, '-o', $temporary);
+        if (defined($compiled) && -x $temporary) { rename($temporary, $binary) }
+        unlink($temporary) if -e $temporary;
+    }
+    return -x $binary ? $binary : undef;
+}
+my $kernel_footprint_probe = prepare_kernel_probe('phys-footprint');
+my $kernel_process_probe = prepare_kernel_probe('process-snapshot');
+
 # --------------------------------------------------------------- the child
 
 my $pid = fork();
@@ -267,7 +295,9 @@ if ($pid == 0) {
 # group. Either relation alone is escapable; together they are not.
 sub tree_pids {
     my ($root) = @_;
-    my $snapshot = capture_probe('ps', '-axo', 'pid=,ppid=,pgid=');
+    my $snapshot = defined($kernel_process_probe)
+        ? capture_probe($kernel_process_probe)
+        : capture_probe('ps', '-axo', 'pid=,ppid=,pgid=');
     return () unless defined $snapshot;
     my (%kids, @grp);
     for (split /\n/, $snapshot) {
@@ -307,7 +337,9 @@ sub tree_footprint_mb {
     # keep it off the caller's stream. It still contributes nothing to the sum,
     # and a sample where NOTHING could be read returns undef and is counted as a
     # measurement failure by the caller.
-    my $snapshot = capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
+    my $snapshot = defined($kernel_footprint_probe)
+        ? capture_probe($kernel_footprint_probe, @pids)
+        : capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
     return undef unless defined $snapshot;
     my $total = 0;
     my $found = 0;
@@ -320,8 +352,8 @@ sub tree_footprint_mb {
     return $found ? $total : undef;
 }
 
-# Every pid ever seen in the tree, mapped to the command line it had when
-# first seen. Membership must be remembered, not recomputed at kill time: a
+# Every pid ever seen in the tree, mapped to its native start identity (or
+# the legacy command-line identity when the native snapshot is unavailable). Membership must be remembered, not recomputed at kill time: a
 # grandchild whose parent exits is reparented to launchd (ppid 1) and keeps its
 # own process group, so by the time the kill runs it is a descendant of nothing
 # and matches no group. Three such processes survived a run and sat holding
@@ -333,12 +365,20 @@ sub note_tree {
     my ($root) = @_;
     my %live = map { $_ => 1 } tree_pids($root);
     return unless %live;
-    my $snapshot = capture_probe('ps', '-axo', 'pid=,args=');
+    my $snapshot = defined($kernel_process_probe)
+        ? capture_probe($kernel_process_probe)
+        : capture_probe('ps', '-axo', 'pid=,args=');
     return unless defined $snapshot;
     for (split /\n/, $snapshot) {
         chomp;
-        next unless /^\s*(\d+)\s+(.*)$/;
-        my ($p, $args) = ($1, $2);
+        my ($p, $args);
+        if (defined($kernel_process_probe)) {
+            next unless /^\s*(\d+)\s+\d+\s+\d+\s+(\d+:\d+)(?:\s+\d+)?$/;
+            ($p, $args) = ($1, $2);
+        } else {
+            next unless /^\s*(\d+)\s+(.*)$/;
+            ($p, $args) = ($1, $2);
+        }
         $seen_cmd{$p} = $args if $live{$p} && !exists $seen_cmd{$p};
     }
 }
@@ -347,14 +387,22 @@ sub note_tree {
 sub remembered_survivors {
     my @out;
     return @out unless %seen_cmd;
-    my $snapshot = capture_probe('ps', '-axo', 'pid=,args=');
+    my $snapshot = defined($kernel_process_probe)
+        ? capture_probe($kernel_process_probe)
+        : capture_probe('ps', '-axo', 'pid=,args=');
     return @out unless defined $snapshot;
     for (split /\n/, $snapshot) {
         chomp;
-        next unless /^\s*(\d+)\s+(.*)$/;
-        my ($p, $args) = ($1, $2);
+        my ($p, $args);
+        if (defined($kernel_process_probe)) {
+            next unless /^\s*(\d+)\s+\d+\s+\d+\s+(\d+:\d+)(?:\s+\d+)?$/;
+            ($p, $args) = ($1, $2);
+        } else {
+            next unless /^\s*(\d+)\s+(.*)$/;
+            ($p, $args) = ($1, $2);
+        }
         next unless exists $seen_cmd{$p};
-        # Same pid AND same command line: not a recycled pid.
+        # Same pid AND same birth identity (legacy: command line): not recycled.
         push @out, $p if $seen_cmd{$p} eq $args;
     }
     return @out;

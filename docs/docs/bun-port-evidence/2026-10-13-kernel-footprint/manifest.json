@@ -1,0 +1,186 @@
+{
+  "schema": 1,
+  "source_hashes": [
+    {
+      "file": "scripts/run-bounded.pl",
+      "sha256": "463eadd1874616c020a8cde9f12c852a77ee6281e012d98ed828e0c3f5842ced"
+    },
+    {
+      "file": "scripts/phys-footprint.c",
+      "sha256": "6f7eee76a943117004e9cdfe6349eee8292ebe28d17db89b9a62e935fb292a7c"
+    },
+    {
+      "file": "scripts/tests/test-run-bounded-kernel-footprint.py",
+      "sha256": "782e2cae904ff95a7c266fb49d1b8cbbd15c23e2a275bd113820fa25e5cc02af"
+    }
+  ],
+  "results": {
+    "footprint_tool_probe_timeouts": 3,
+    "kernel_probe_samples": 3,
+    "physical_allocation_delta_bytes": 67174448,
+    "runaway_memory_exit": 125,
+    "stalled_probe_exit": 124,
+    "probe_child_cleanup": true,
+    "disk_controls_passed": 6,
+    "inspector_baseline_resource_stop": 125,
+    "inspector_build_resource_stop": 125,
+    "inspector_repair_pass_credit": false
+  },
+  "limitations": [
+    "macOS libproc probe; other-platform acceptance remains incomplete.",
+    "Initial kernel test used a mismatched diagnostic phrase; actual memory ceiling fired. Corrected assertion passed. Initial disk test omitted its required output argument; proper invocation passed.",
+    "Inspector repair remains unverified; source recovery bb57ac090 is separate from this guard change."
+  ],
+  "files": [
+    {
+      "file": "build-repair.log",
+      "archive": "raw/build-repair.log.gz",
+      "sha256": "586801ad4573b867a21f3f8e9c29d4fd1f52bb0f57c4504cc53a8b49334de569",
+      "bytes": 263
+    },
+    {
+      "file": "guard-disk-results/admission.log",
+      "archive": "raw/guard-disk-results/admission.log.gz",
+      "sha256": "78a8195d085782d7df04feb470c64aeb806b9727ef329d35e77c67293a901e3d",
+      "bytes": 81
+    },
+    {
+      "file": "guard-disk-results/child-exit-123",
+      "archive": "raw/guard-disk-results/child-exit-123.gz",
+      "sha256": "ea4f442eb4bd8e8cb1c9c1ddcf4ba31667e8bef64686b608158254dc8575ee7b",
+      "bytes": 19
+    },
+    {
+      "file": "guard-disk-results/positive.log",
+      "archive": "raw/guard-disk-results/positive.log.gz",
+      "sha256": "3df6880c359375a1e9c315b740ae365afab34ee55ca2238eb2f9dd4158511daa",
+      "bytes": 22
+    },
+    {
+      "file": "guard-disk-results/results.json",
+      "archive": "raw/guard-disk-results/results.json.gz",
+      "sha256": "fde3f30125adc1436b3dd104bfd8a8394537faa2c32c3ab6994f2b087c6dc4bd",
+      "bytes": 1499
+    },
+    {
+      "file": "guard-disk-results/running.log",
+      "archive": "raw/guard-disk-results/running.log.gz",
+      "sha256": "21df213886adc7a32cb2b7aca831d4c25e6ef6e464fb2ef47c5ad6ff33851153",
+      "bytes": 85
+    },
+    {
+      "file": "guard-disk-results/running.pid",
+      "archive": "raw/guard-disk-results/running.pid.gz",
+      "sha256": "77ec867e21dc93a51d37bf42d435d1ac9c9688f8f071375feedd6a0863a536c7",
+      "bytes": 4
+    },
+    {
+      "file": "guard-disk-results/scanner-child-123.log",
+      "archive": "raw/guard-disk-results/scanner-child-123.log.gz",
+      "sha256": "06f21f3e04d9b908281bc2ebfc174505e31f5adb6e453f99ac3b7e4e421a295b",
+      "bytes": 183
+    },
+    {
+      "file": "guard-disk-results/scanner-child-123.tsv",
+      "archive": "raw/guard-disk-results/scanner-child-123.tsv.gz",
+      "sha256": "4730dde149da71365f4837395840576b421feafc4100955b7108198882aa3bab",
+      "bytes": 286
+    },
+    {
+      "file": "guard-disk-results/scanner-child-123.tsv.logs/000000.log",
+      "archive": "raw/guard-disk-results/scanner-child-123.tsv.logs/000000.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "file": "guard-disk-results/scanner-disk-stop.log",
+      "archive": "raw/guard-disk-results/scanner-disk-stop.log.gz",
+      "sha256": "eff04227f17d616e337a8b06c2c1d9cb09e1835b0ad67ae0c1038a265f01efca",
+      "bytes": 183
+    },
+    {
+      "file": "guard-disk-results/scanner-disk-stop.tsv",
+      "archive": "raw/guard-disk-results/scanner-disk-stop.tsv.gz",
+      "sha256": "ee0995319820d68bcf264b63419086c2f5c65b89a8b179f4172850ac1a5c9255",
+      "bytes": 292
+    },
+    {
+      "file": "guard-disk-results/scanner-disk-stop.tsv.logs/000000.log",
+      "archive": "raw/guard-disk-results/scanner-disk-stop.tsv.logs/000000.log.gz",
+      "sha256": "a68e2c67d2abaa0164fc2899a18f6753e49d95ff2e3cef04915a4ae799e7b280",
+      "bytes": 81
+    },
+    {
+      "file": "guard-disk-results/scanner-fixture/control.test.js",
+      "archive": "raw/guard-disk-results/scanner-fixture/control.test.js.gz",
+      "sha256": "7f27ecf69b3b0edf289608d48ff6eaa7473b71da2d965bc58242126d194612e7",
+      "bytes": 37
+    },
+    {
+      "file": "guard-disk-results/unmeasurable.log",
+      "archive": "raw/guard-disk-results/unmeasurable.log.gz",
+      "sha256": "86f916174fb4579eef046b07c12ebe9b0df1a1370015adf3d81831b554944de7",
+      "bytes": 70
+    },
+    {
+      "file": "guard-disk-test-initial.log",
+      "archive": "raw/guard-disk-test-initial.log.gz",
+      "sha256": "e38254a2534d90d3cf797330b58432e05bf7e3753ce1975f596c30c61cb67cae",
+      "bytes": 133
+    },
+    {
+      "file": "guard-disk-test.log",
+      "archive": "raw/guard-disk-test.log.gz",
+      "sha256": "b1f7531eaf526346564b1454d866685be57b6e0f821774ceeee86938a8c8c829",
+      "bytes": 1254
+    },
+    {
+      "file": "guard-parser-test.log",
+      "archive": "raw/guard-parser-test.log.gz",
+      "sha256": "b488de8e95cef9b0d5df8c5a275ad13b4249db9697186dbdae0678df12753f9c",
+      "bytes": 81
+    },
+    {
+      "file": "guard-probes-test.log",
+      "archive": "raw/guard-probes-test.log.gz",
+      "sha256": "3fd2918c0aff021dfae2e5c8d735647599f7eb0e565665b39de61c93f9fc854f",
+      "bytes": 104
+    },
+    {
+      "file": "kernel-footprint-probe.json",
+      "archive": "raw/kernel-footprint-probe.json.gz",
+      "sha256": "a0fb9abdd6862f367ae9ac8cc27b2fea3d4bb0e787b4a9d8dbd8ead56af700ae",
+      "bytes": 615
+    },
+    {
+      "file": "kernel-footprint-test-initial.log",
+      "archive": "raw/kernel-footprint-test-initial.log.gz",
+      "sha256": "6ac0551c6a1a61b8964c65f0f0d99a25523552e9cd11a8b79f73c1affeeae8f3",
+      "bytes": 352
+    },
+    {
+      "file": "kernel-footprint-test.log",
+      "archive": "raw/kernel-footprint-test.log.gz",
+      "sha256": "55b77bd36a5e811641722960bf878dc7ba1e2b9cd5b8dd086d8cade29574bd6c",
+      "bytes": 73
+    },
+    {
+      "file": "memory-probe-diagnostic.json",
+      "archive": "raw/memory-probe-diagnostic.json.gz",
+      "sha256": "7ff36c25132ab1805c4b2ab4998f95cc3cc43560f4273811fbb6534b5330151c",
+      "bytes": 299
+    },
+    {
+      "file": "payload-baseline.log",
+      "archive": "raw/payload-baseline.log.gz",
+      "sha256": "074c127a19f05cc31e077c0cf7599b70dd029f30c6c673cbac2251599b2c2100",
+      "bytes": 270
+    },
+    {
+      "file": "repair-resource-stop.json",
+      "archive": "raw/repair-resource-stop.json.gz",
+      "sha256": "04e0e4a8c650240e6df829d52657c1db91d249fcbc47f2fdd9095062499aeade",
+      "bytes": 165
+    }
+  ]
+}

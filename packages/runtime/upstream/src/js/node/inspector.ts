@@ -92,8 +92,8 @@ class Session extends EventEmitter {
   disconnect() {
     if (!this.#connection) return;
     const connection = this.#connection;
-    this.#connection = null;
     binding.disconnect(connection);
+    this.#connection = null;
     for (const callback of this.#callbacks.values()) process.nextTick(callback, inspectorError("ERR_INSPECTOR_CLOSED", "Session was closed"));
     this.#callbacks.clear();
     this.#nextId = 1;

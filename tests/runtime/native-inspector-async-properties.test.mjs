@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { Session } from 'node:inspector/promises';
+import { Session as CallbackSession } from 'node:inspector';
 {
 const context=vm.createContext({answer:41},{name:'promise-realm'});
 const session=new Session();session.connect();const contexts=[];
@@ -13,7 +14,7 @@ const reply=await session.post('Runtime.awaitPromise',{promiseObjectId:promise.o
 const object=(await session.post('Runtime.evaluate',{expression:'({answer})',contextId:realm.id,objectGroup:'promise-regression'})).result;
 const called=await session.post('Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:'async function() { return this.answer + 1; }',awaitPromise:true,returnByValue:true});assert.equal(called.result.value,42);
 await session.post('Runtime.releaseObjectGroup',{objectGroup:'promise-regression'});
-const pending=(await session.post('Runtime.evaluate',{expression:'new Promise(() => {})',contextId:realm.id})).result;const awaited=session.post('Runtime.awaitPromise',{promiseObjectId:pending.objectId,returnByValue:true});session.disconnect();await assert.rejects(awaited,error=>error.code==='ERR_INSPECTOR_CLOSED');assert.equal(vm.runInContext('answer',context),41);
+const pending=(await session.post('Runtime.evaluate',{expression:'new Promise(() => {})',contextId:realm.id})).result;const awaited=session.post('Runtime.awaitPromise',{promiseObjectId:pending.objectId,returnByValue:true});session.disconnect();await assert.rejects(awaited,error=>error.code==='ERR_INSPECTOR_COMMAND'&&error.message.includes('-32000')&&error.message.includes('Execution context was destroyed'));assert.equal(vm.runInContext('answer',context),41);
 console.log('realm promise handles and async function replies passed');
 }
 
@@ -41,4 +42,29 @@ for(const contextId of [undefined,contexts.find(context=>context.name==='payload
  const byValue=await session.post('Runtime.evaluate',{expression:'('+JSON.stringify(payload)+')',contextId,returnByValue:true});assert.deepEqual(byValue.result.value,payload);
 }
 session.disconnect();assert(vm.isContext(context));console.log('literal object ID fields remain user data across inspector realms');
+}
+
+{
+  const session = new CallbackSession()
+  session.connect()
+  const post = (method, params) => new Promise((resolve, reject) => session.post(method, params, (error, result) => error ? reject(error) : resolve(result)))
+  const promise = (await post('Runtime.evaluate', { expression: 'new Promise(() => {})' })).result
+  const events = []
+  const pending = new Promise(resolve => session.post('Runtime.awaitPromise', { promiseObjectId: promise.objectId }, error => {
+    events.push('callback')
+    assert.equal(error.code, 'ERR_INSPECTOR_COMMAND')
+    assert(error.message.includes('-32000'))
+    assert(error.message.includes('Execution context was destroyed'))
+    assert.throws(() => session.connect(), error => error.code === 'ERR_INSPECTOR_ALREADY_CONNECTED')
+    resolve()
+  }))
+  events.push('before')
+  session.disconnect()
+  events.push('after')
+  await pending
+  assert.deepEqual(events, ['before', 'callback', 'after'])
+  session.connect()
+  assert.equal((await post('Runtime.evaluate', { expression: '6 * 7', returnByValue: true })).result.value, 42)
+  session.disconnect()
+  console.log('pending native runtime cancellation preserves callback order and reconnection')
 }

@@ -35,6 +35,7 @@ public:
     WTF::HashMap<WTF::String, int> realmObjects;
     WTF::HashMap<WTF::String, WTF::String> nativeRealmObjects;
     std::unordered_map<int,std::shared_ptr<InspectorRealmForwarder>> realmFrontends;
+    bool disconnecting { false };
     bool connected { false }, scheduled { false }, runtimeEnabled { false }, profilerEnabled { false }, profiling { false };
     int samplingInterval { 1000 };
     double profileStart { 0 }, profileWallStart { 0 };
@@ -46,7 +47,7 @@ public:
     ConnectionType connectionType() const final { return ConnectionType::Local; }
     void sendMessageToFrontend(const WTF::String&) final;
     void drain();
-    void disconnect();
+    void disconnect(bool deliverPendingErrors = false);
 };
 inline std::mutex& localInspectorLock() { static std::mutex lock; return lock; }
 inline auto& localInspectorChannels() {
@@ -297,10 +298,30 @@ inline void LocalInspectorChannel::drain() {
         }
     }
 }
-inline void LocalInspectorChannel::disconnect() {
-    if (!connected) return;
+inline void LocalInspectorChannel::disconnect(bool deliverPendingErrors) {
+    if (!connected || disconnecting) return;
+    disconnecting = true;
     auto retained = shared_from_this();
     stopProfile();
+    // Explicit session detachment ends this frontend's injected execution
+    // context. Deliver completed replies first, then cancel remaining runtime
+    // commands through the normal protocol callback path. GC/owner teardown
+    // uses the default false argument and must never execute JavaScript.
+    if (deliverPendingErrors && handle) {
+        drain();
+        std::vector<int> pending;
+        for (auto& entry : responseMethods) if (entry.second.startsWith("Runtime."_s)) pending.push_back(entry.first);
+        for (int id : pending) {
+            auto error = JSON::Object::create();
+            error->setInteger("code"_s, -32000);
+            error->setString("message"_s, "Execution context was destroyed."_s);
+            auto response = JSON::Object::create();
+            response->setInteger("id"_s, id);
+            response->setObject("error"_s, WTF::move(error));
+            sendMessageToFrontend(response->toJSONString());
+        }
+        drain();
+    }
     connected = false;
     handle.clear();
     messages.clear();
@@ -434,7 +455,7 @@ JSC_DEFINE_HOST_FUNCTION(connectLocalInspector, (JSC::JSGlobalObject* global, JS
 JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, JSC::CallFrame* frame)) {
     auto& vm = global->vm(); auto scope = DECLARE_THROW_SCOPE(vm);
     auto* handle = dynamicDowncast<LocalInspectorHandle>(frame->argument(0));
-    if (!handle || !handle->channel->connected) { JSC::throwTypeError(global, scope, "Inspector session is closed"_s); return {}; }
+    if (!handle || !handle->channel->connected || handle->channel->disconnecting) { JSC::throwTypeError(global, scope, "Inspector session is closed"_s); return {}; }
     auto channel = handle->channel;
     auto message = frame->argument(1).toWTFString(global);
     RETURN_IF_EXCEPTION(scope, {});
@@ -464,7 +485,7 @@ JSC_DEFINE_HOST_FUNCTION(dispatchLocalInspector, (JSC::JSGlobalObject* global, J
 }
 JSC_DEFINE_HOST_FUNCTION(disconnectLocalInspector, (JSC::JSGlobalObject* global, JSC::CallFrame* frame)) {
     auto* handle = dynamicDowncast<LocalInspectorHandle>(frame->argument(0));
-    if (handle) { auto channel = handle->channel; channel->disconnect(); }
+    if (handle) { auto channel = handle->channel; channel->disconnect(true); }
     return JSC::JSValue::encode(JSC::jsUndefined());
 }
 static JSC::JSValue createInspectorBinding(Zig::GlobalObject* global) {

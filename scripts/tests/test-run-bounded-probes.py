@@ -27,6 +27,9 @@ die 'probe timeout unbounded' if time - $start > 5;
 subprocess.run(['perl', '-e', 'use strict; use warnings; use IO::Select; use POSIX qw(WNOHANG); use Time::HiRes qw(time);\n' + helper + checks], check=True, timeout=10)
 with tempfile.TemporaryDirectory(prefix='bounded-probes-') as temporary:
     directory = Path(temporary)
+    fallback_guard = directory / 'run-bounded.pl'
+    fallback_guard.write_text(source)
+    # No native helper sources beside this copy: exercise the legacy ps path.
     stub = directory / 'ps'
     probe_pids = directory / 'probes'
     stub.write_text('#!/bin/sh\necho "$$" >> "$PROBE_PIDS"\nexec /bin/sleep 60\n')
@@ -40,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='bounded-probes-') as temporary:
     started = time.monotonic()
     log = directory / 'supervisor.log'
     with log.open('w') as stream:
-        process = subprocess.Popen(['perl', str(guard), '3'] + program,
+        process = subprocess.Popen(['perl', str(fallback_guard), '3'] + program,
                                    env=env, cwd=root, stdout=stream, stderr=subprocess.STDOUT)
         try:
             status = process.wait(timeout=24)
@@ -67,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='bounded-probes-') as temporary:
         assert not state.stdout.strip() or state.stdout.strip().startswith('Z'), (pid, state.stdout)
     positive_log = directory / 'positive.log'
     with positive_log.open('w') as stream:
-        positive_status = subprocess.run(['perl', str(guard), '5', '/bin/echo', 'short-child'],
+        positive_status = subprocess.run(['perl', str(fallback_guard), '5', '/bin/echo', 'short-child'],
                                          env=env, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
                                          timeout=15).returncode
     assert positive_status == 0 and 'short-child' in positive_log.read_text()
