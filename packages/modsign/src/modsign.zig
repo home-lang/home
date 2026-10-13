@@ -111,9 +111,9 @@ test "module signature" {
     try testing.expectEqual(@as(usize, 256), sig.signature.len);
 }
 
-test {
-    _ = keys;
-    _ = sign;
-    _ = verify;
-    _ = format;
+test "public package declarations" {
+    std.testing.refAllDecls(keys);
+    std.testing.refAllDecls(sign);
+    std.testing.refAllDecls(verify);
+    std.testing.refAllDecls(format);
 }
