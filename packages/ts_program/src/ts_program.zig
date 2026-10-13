@@ -687,17 +687,20 @@ pub const Program = struct {
         for (self.files.items) |f| {
             if (f.redirect_target != null) continue;
             const c = f.compilation orelse continue;
-            if (boundSourceIsExternalModule(c)) continue;
+            const external_module = boundSourceIsExternalModule(c);
             // Binder insertion order is deterministic within each file, even
             // when files were prepared in parallel. All merged declarations
             // remain reachable through their original symbol and source.
             for (c.module.symbols.items) |symbol| {
-                if (symbol.parent_scope != c.module.root) continue;
+                const scope = symbol.parent_scope orelse continue;
+                if (scope == c.module.root) {
+                    if (external_module) continue;
+                } else if (!boundScopeIsGlobalAugmentation(c, scope)) continue;
                 for ([_]binder.Binder.Space{ .value, .type, .namespace }) |space| {
                     const map = switch (space) {
-                        .value => &c.module.root.values,
-                        .type => &c.module.root.types,
-                        .namespace => &c.module.root.namespaces,
+                        .value => &scope.values,
+                        .type => &scope.types,
+                        .namespace => &scope.namespaces,
                     };
                     if (map.get(symbol.name) != symbol) continue;
                     const entry = try index.entries.getOrPut(self.gpa, .{ .name = symbol.name, .space = space });
@@ -707,6 +710,19 @@ pub const Program = struct {
             }
         }
         return index;
+    }
+
+    fn boundScopeIsGlobalAugmentation(c: *const ts_driver.Compilation, scope: *const binder.Scope) bool {
+        if (scope.kind != .namespace or scope.parent != c.module.root) return false;
+        const node = scope.introducing_node;
+        if (node == hir_mod_ns.none_node_id or c.hir.kindOf(node) != .namespace_decl) return false;
+        const namespace = hir_mod_ns.namespaceOf(&c.hir, node);
+        if (c.hir.kindOf(namespace.name) != .identifier) return false;
+        const name = hir_mod_ns.identifierOf(&c.hir, namespace.name).name;
+        // `global {}` starts at its name; `namespace global {}` starts at
+        // the namespace keyword and does not augment the program scope.
+        return std.mem.eql(u8, c.interner.get(name), "global") and
+            c.hir.spanOf(node).start == c.hir.spanOf(namespace.name).start;
     }
 
     fn fileContributesGlobals(globals: *const BoundGlobals, file: *const File) bool {
@@ -791,6 +807,12 @@ pub const Program = struct {
         states[file_index] = 1;
         const file = self.files.items[file_index];
         const compilation = file.compilation orelse return;
+        // Augmentation owners can export aliases of imported namespaces.
+        // Their declaration dependencies must have checked owners first.
+        for (file.imports.items) |dependency| {
+            if (self.fileById(dependency).redirect_target != null) continue;
+            try self.appendGlobalProviderOrder(dependency, globals, states, order);
+        }
         var references: ?GlobalReferenceNames = null;
         defer if (references) |*facts| facts.deinit(self.gpa);
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
@@ -836,7 +858,7 @@ pub const Program = struct {
         var order: std.ArrayListUnmanaged(usize) = .empty;
         errdefer order.deinit(self.gpa);
         for (self.files.items, 0..) |file, index| {
-            if (file.redirect_target == null and file.imports.items.len == 0 and
+            if (file.redirect_target == null and
                 !fileIsCommonJsExportProvider(file, commonjs_exports) and
                 fileContributesGlobals(globals, file))
                 try self.appendGlobalProviderOrder(index, globals, states, &order);
@@ -1712,8 +1734,14 @@ pub const Program = struct {
     /// available for callers that explicitly request an export snapshot.
     fn collectProgramDeclarationsForChecking(self: *Program) ProgramError!declaration_graph.Graph {
         for (self.files.items) |file| {
-            if (file.redirect_target == null and file.imports.items.len != 0)
-                return self.collectProgramDeclarations();
+            if (file.redirect_target != null) continue;
+            if (file.imports.items.len != 0) return self.collectProgramDeclarations();
+            // Ambient imports need exact declaration routes even when their
+            // specifiers do not resolve to a filesystem module.
+            const compilation = file.compilation orelse continue;
+            for (compilation.module.symbols.items) |symbol| {
+                if (symbol.flags.is_import) return self.collectProgramDeclarations();
+            }
         }
         return declaration_graph.Graph.init(self.gpa);
     }
@@ -17417,4 +17445,183 @@ test "Program: a global namespace containing only types cannot be used as a valu
     try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2708), c.diagnostics.items[0].code);
     try T.expectEqualStrings("Cannot use namespace 'Types' as a value.", c.diagnostics.items[0].message);
+}
+
+test "Program: global augmentation namespace aliases retain imported value signatures" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/tools.d.ts", "export declare function convert(value: number): string;");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const app = try p.add("/main.ts", "export {}; const text: string = Api.convert(1); const wrong: number = Api.convert(1); Api.convert('bad'); Api.missing;");
+        _ = try p.add("/augmentation.d.ts", "import * as ToolsModule from './tools'; declare global { export import Api = ToolsModule; }");
+        _ = try p.add("/tools.d.ts", "export declare function convert(value: number): string;");
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const c = p.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 3), c.diagnostics.items.len);
+        const expected = [_]u32{ 2322, 2345, 2339 };
+        for (c.diagnostics.items, expected) |d, code| try T.expectEqual(code, d.code);
+    }
+}
+
+test "Program: ambient module aliases retain scoped values and generic types" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const app = try p.add("/main.ts",
+            \\export {};
+            \\const a: string = ApiA.convert(1);
+            \\const b: number = ApiB.convert('ok');
+            \\declare const box: ApiA.Box<number>;
+            \\const value: number = box.value;
+            \\const wrongA: number = ApiA.convert(1);
+            \\const wrongB: string = ApiB.convert('ok');
+            \\const wrongType: string = box.value;
+            \\ApiA.missing;
+        );
+        _ = try p.add("/augmentation.d.ts", "import * as A from 'tool-a'; import * as B from 'tool-b'; declare global { export import ApiA = A; export import ApiB = B; }");
+        _ = try p.add("/api.d.ts", "declare module 'tool-a' { function convert(value: number): string; interface Box<T> { value: T; } } declare module 'tool-b' { function convert(value: string): number; }");
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const compilation = p.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+        const codes = [_]u32{ 2322, 2322, 2322, 2339 };
+        for (compilation.diagnostics.items, codes) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+    }
+}
+
+test "Program: ambient routes support named imports without leaking into relative file imports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/api.d.ts", "declare module 'tool-api' { function convert(value: number): string; interface Box<T> { value: T; } }");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const named = try p.add("/named.ts", "import { convert } from 'tool-api'; import type { Box } from 'tool-api'; const text: string = convert(1); declare const box: Box<number>; const value: number = box.value; const wrong: number = convert(1); const wrongBox: string = box.value;");
+    const relative = try p.add("/relative.ts", "import { convert } from './api'; convert(1);");
+    _ = try p.add("/api.d.ts", "declare module 'tool-api' { function convert(value: number): string; interface Box<T> { value: T; } }");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const named_compilation = p.fileById(named).compilation.?;
+    try T.expectEqual(@as(usize, 2), named_compilation.diagnostics.items.len);
+    for (named_compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+    const relative_compilation = p.fileById(relative).compilation.?;
+    try T.expectEqual(@as(usize, 1), relative_compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2306), relative_compilation.diagnostics.items[0].code);
+}
+
+test "Program: class-only ambient module aliases retain constructors and instance types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const app = try p.add("/main.ts", "export {}; const item = new Api.Item('ok'); const text: string = item.value; declare const other: Api.Item; const otherText: string = other.value; const wrong: number = item.value; const otherWrong: number = other.value;");
+    _ = try p.add("/augmentation.d.ts", "import * as Module from 'class-api'; declare global { export import Api = Module; }");
+    _ = try p.add("/api.d.ts", "declare module 'class-api' { class Item { constructor(value: string); value: string; } }");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const compilation = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
+test "Program: global augmentation index excludes module locals and namespace named global" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/augmentation.ts", "export {}; const privateModule = 0; namespace global { export const hidden = 1; } declare global { const Shared: number; interface Config { value: string; } }");
+    try p.compileAll(.{ .bind_only = true });
+    var index = try p.collectBoundGlobals();
+    defer index.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 1), index.lookup(p.strings.?.lookup("Shared").?, .value).len);
+    try T.expectEqual(@as(usize, 1), index.lookup(p.strings.?.lookup("Config").?, .type).len);
+    try T.expectEqual(@as(usize, 0), index.lookup(p.strings.?.lookup("privateModule").?, .value).len);
+    try T.expectEqual(@as(usize, 0), index.lookup(p.strings.?.lookup("hidden").?, .value).len);
+}
+
+test "Program: global augmentation missing members report without other errors" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/tools.d.ts", "export declare function convert(value: number): string;");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const app = try p.add("/main.ts", "const text: string = Api.convert(1);\nexport {};\nApi.missing;\n");
+        _ = try p.add("/augmentation.d.ts", "import * as ToolsModule from './tools'; declare global { export import Api = ToolsModule; }");
+        _ = try p.add("/tools.d.ts", "export declare function convert(value: number): string;");
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const c = p.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+        const expected = [_]u32{2339};
+        for (c.diagnostics.items, expected) |d, code| try T.expectEqual(code, d.code);
+    }
+}
+
+test "Program: global augmentation aliases preserve generic interface arguments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const declarations = "export interface Box<T> { value: T; }";
+    try vfs.addFile("/tools.d.ts", declarations);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const app = try p.add("/main.ts", "declare const box: Api.Box<number>; const value: number = box.value; const wrong: string = box.value;");
+    _ = try p.add("/augmentation.d.ts", "import * as Module from './tools'; declare global { export import Api = Module; }");
+    _ = try p.add("/tools.d.ts", declarations);
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
 }

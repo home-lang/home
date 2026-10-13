@@ -600,6 +600,19 @@ pub const Interner = struct {
         return id;
     }
 
+    /// Retire an unpublished reservation after its construction fails. IDs
+    /// already allocated during recursive lowering cannot be removed from the
+    /// pool: other payloads may refer to them. Leave a complete, inert unknown
+    /// body instead, while the caller removes failed declaration caches.
+    /// This cleanup allocates nothing and can also run after allocation errors.
+    pub fn abandonGenericDefinition(self: *Interner, definition: TypeId) void {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        const current = self.genericDefinition(definition) orelse unreachable;
+        if (current.body != Primitive.none) return;
+        self.pool.generic_definition_payloads.items[self.pool.payloadOf(definition)].body = Primitive.unknown;
+    }
+
     /// With exclusive ownership of the unpublished definition, complete once,
     /// publishing parameters and body together after allocation
     /// succeeds. Parameters are identities, not names, and the pool owns them.

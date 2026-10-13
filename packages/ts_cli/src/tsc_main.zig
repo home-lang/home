@@ -2537,6 +2537,8 @@ const CheckerResolverAdapter = struct {
         .moduleExport = moduleExportImpl,
         .moduleExportWithMode = moduleExportWithModeImpl,
         .moduleExportNames = moduleExportNamesImpl,
+        .moduleExportForPath = moduleExportForPathImpl,
+        .moduleExportNamesForPath = moduleExportNamesForPathImpl,
         .sameModuleExport = sameModuleExportImpl,
         .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
@@ -2571,9 +2573,14 @@ const CheckerResolverAdapter = struct {
     ) ?[]const []const u8 {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
         const resolved = self.resolveModule(specifier, containing_file) orelse return null;
+        return moduleExportNamesForPathImpl(self_ptr, resolved.path);
+    }
+
+    fn moduleExportNamesForPathImpl(self_ptr: *anyopaque, owner_path: []const u8) ?[]const []const u8 {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
 
         self.cache_mutex.lock();
-        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+        if (self.module_export_names_cache.get(owner_path)) |cached| {
             self.cache_mutex.unlock();
             return cached;
         }
@@ -2586,18 +2593,18 @@ const CheckerResolverAdapter = struct {
                 self.resolver.gpa,
                 self.resolver,
                 &self.export_origin_query,
-                resolved.path,
+                owner_path,
             ) catch return null;
         };
 
         self.cache_mutex.lock();
         defer self.cache_mutex.unlock();
-        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+        if (self.module_export_names_cache.get(owner_path)) |cached| {
             for (names) |name| self.resolver.gpa.free(name);
             self.resolver.gpa.free(names);
             return cached;
         }
-        const stored_path = self.cache_arena.allocator().dupe(u8, resolved.path) catch {
+        const stored_path = self.cache_arena.allocator().dupe(u8, owner_path) catch {
             for (names) |name| self.resolver.gpa.free(name);
             self.resolver.gpa.free(names);
             return null;
@@ -2656,9 +2663,14 @@ const CheckerResolverAdapter = struct {
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
         const r = self.resolveModule(specifier, containing_file) orelse return null;
-        const cache_key: ModuleExportCacheKey = .{ .path = r.path, .name = name, .mode = .normal };
+        return moduleExportForPathImpl(self_ptr, r.path, name);
+    }
+
+    fn moduleExportForPathImpl(self_ptr: *anyopaque, owner_path: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const cache_key: ModuleExportCacheKey = .{ .path = owner_path, .name = name, .mode = .normal };
         if (self.cachedModuleExport(cache_key)) |cached| return cached;
-        const compilation = self.moduleCompilation(r.path) orelse return null;
+        const compilation = self.moduleCompilation(owner_path) orelse return null;
         const export_assignment_class_name = if (name.len == 0)
             ts_program.moduleCommonJsExportAssignmentClassNameFromCompilation(compilation)
         else
@@ -2669,7 +2681,7 @@ const CheckerResolverAdapter = struct {
             break :blk ts_program.moduleExportFactsFromCompilationWithQuery(
                 self.resolver.gpa,
                 self.resolver,
-                r.path,
+                owner_path,
                 compilation,
                 name,
                 &self.export_origin_query,
@@ -2684,9 +2696,9 @@ const CheckerResolverAdapter = struct {
             defer self.resolver_mutex.unlock();
             // The resolver's arena outlives every checker call.
             const arena = self.resolver.arena.allocator();
-            const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-            const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else r.path) catch return null) else "";
-            const origins = self.boundExportOrigins(r.path, compilation, name);
+            const module_name = ts_program.renderModuleDisplayName(arena, owner_path) catch return null;
+            const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else owner_path) catch return null) else "";
+            const origins = self.boundExportOrigins(owner_path, compilation, name);
             break :blk .{
                 .module_name = module_name,
                 .exported_type = exported,
@@ -5781,4 +5793,23 @@ test "LspProject: publishes Home diagnostics with HM wire codes" {
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"method\":\"textDocument/publishDiagnostics\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"code\":\"HM9001\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, opened, "\"source\":\"home\"") != null);
+}
+
+test "CLI resolver: canonical relative export owner paths are distinct from module specifiers" {
+    const allocator = std.testing.allocator;
+    var vfs = ts_resolver.VirtualFs.init(allocator);
+    defer vfs.deinit();
+    try vfs.addFile("project/owner.d.ts", "export declare function convert(value: number): string;");
+    var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter.init(allocator, &resolver);
+    defer adapter.deinit();
+    const owner = adapter.resolveModule("./owner", "project/use.ts") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("project/owner.d.ts", owner.path);
+    const names = CheckerResolverAdapter.moduleExportNamesForPathImpl(&adapter, owner.path) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), names.len);
+    try std.testing.expectEqualStrings("convert", names[0]);
+    const value = CheckerResolverAdapter.moduleExportForPathImpl(&adapter, owner.path, "convert") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(value.exported_value);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportNamesImpl(&adapter, "project/owner.d.ts", "project/use.ts") == null);
 }

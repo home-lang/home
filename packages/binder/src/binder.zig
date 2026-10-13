@@ -709,6 +709,9 @@ pub const Binder = struct {
             const id = hir_mod.identifierOf(self.hir, imp.default_binding);
             const space: Space = if (imp.is_type_only) .type else .value;
             _ = try self.declare(space, id.name, flags, imp.default_binding);
+            if (imp.import_equals != hir_mod.none_node_id) {
+                _ = try self.declare(.namespace, id.name, flags, imp.default_binding);
+            }
         }
         if (imp.namespace_binding != hir_mod.none_node_id and
             self.hir.kindOf(imp.namespace_binding) == .identifier)
