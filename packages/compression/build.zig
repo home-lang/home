@@ -10,6 +10,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const lib = b.addLibrary(.{
+        .name = "compression",
+        .linkage = .static,
+        .root_module = compression,
+    });
+    b.installArtifact(lib);
+
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/compression_tests.zig"),
@@ -22,7 +29,8 @@ pub fn build(b: *std.Build) void {
     const module_tests = b.addTest(.{ .root_module = compression });
     const run_module_tests = b.addRunArtifact(module_tests);
     const run_tests = b.addRunArtifact(tests);
-    const check_step = b.step("check", "Compile module and public API tests without running them");
+    const check_step = b.step("check", "Compile the shipped compression library and its tests");
+    check_step.dependOn(&lib.step);
     check_step.dependOn(&module_tests.step);
     check_step.dependOn(&tests.step);
 
