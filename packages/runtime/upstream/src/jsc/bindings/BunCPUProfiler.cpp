@@ -32,10 +32,25 @@ void Bun__setSamplingInterval(int intervalMicroseconds)
 
 namespace Bun {
 
+// Detached records are safe across sample consumers and GC: no engine cell or
+// executable pointer survives the capture's DeferGC scope.
+struct HomeCPUFrame {
+    WTF::String name, textName, url, textURL;
+    int scriptId { 0 }, line { -1 }, column { -1 }, sampleLine { 0 }, textLine { -1 };
+};
+struct HomeCPUTrace {
+    MonotonicTime timestamp;
+    WTF::Vector<HomeCPUFrame> frames;
+};
 struct HomeCPUProfilerState {
     double startTime { 0 };
+    MonotonicTime nativeStart;
     int interval { 1000 };
     bool running { false };
+    bool nativeOwner { false };
+    std::unordered_map<const void*, int> consumers;
+    WTF::Vector<HomeCPUTrace> nativeSamples;
+    WTF::Vector<HomeCPUTrace> inspectorSamples;
 };
 static std::mutex profilerStateLock;
 static std::unordered_map<JSC::VM*, HomeCPUProfilerState> profilerStates;
@@ -55,15 +70,29 @@ bool isCPUProfilerRunningForVM(JSC::VM& vm) {
 }
 bool isCPUProfilerRunning() { return legacyProfilerVM && isCPUProfilerRunningForVM(*legacyProfilerVM); }
 
-void startCPUProfiler(JSC::VM& vm)
+static void updateProfilerInterval(JSC::VM& vm) {
+    int interval = std::numeric_limits<int>::max();
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto& state = profilerStates[&vm];
+        if (state.nativeOwner) interval = state.interval;
+        for (const auto& owner : state.consumers) interval = std::min(interval, owner.second);
+    }
+    if (auto* profiler = vm.samplingProfiler()) {
+        WTF::Locker lock { profiler->getLock() };
+        profiler->setTimingInterval(WTF::Seconds::fromMicroseconds(interval));
+    }
+}
+static void ensureCPUProfiler(JSC::VM& vm)
 {
     HomeCPUProfilerState state;
     {
         std::lock_guard lock(profilerStateLock);
         auto [entry, inserted] = profilerStates.try_emplace(&vm);
         if (inserted) entry->second.interval = pendingInterval;
+        if (entry->second.running) return;
         entry->second.startTime = MonotonicTime::now().approximate<WTF::WallTime>().secondsSinceEpoch().value() * 1000000.0;
-        state = entry->second;
+        state.interval = entry->second.interval;
     }
     legacyProfilerVM = &vm;
 
@@ -78,6 +107,44 @@ void startCPUProfiler(JSC::VM& vm)
     { std::lock_guard lock(profilerStateLock); profilerStates[&vm].running = true; }
 }
 
+void startCPUProfiler(JSC::VM& vm) {
+    JSC::JSLockHolder locker(vm);
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto [entry, inserted] = profilerStates.try_emplace(&vm);
+        auto& state = entry->second;
+        if (inserted) state.interval = pendingInterval;
+        if (state.nativeOwner) return;
+        state.nativeOwner = true;
+        state.nativeStart = MonotonicTime::now();
+        state.startTime = MonotonicTime::now().approximate<WTF::WallTime>().secondsSinceEpoch().value() * 1000000.0;
+    }
+    ensureCPUProfiler(vm);
+    updateProfilerInterval(vm);
+}
+void registerCPUProfilerConsumer(JSC::VM& vm, const void* owner, int interval) {
+    { std::lock_guard lock(profilerStateLock); profilerStates[&vm].consumers[owner] = interval; }
+    ensureCPUProfiler(vm);
+    updateProfilerInterval(vm);
+}
+void unregisterCPUProfilerConsumer(JSC::VM& vm, const void* owner) {
+    bool stop = false;
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto found = profilerStates.find(&vm);
+        if (found == profilerStates.end()) return;
+        found->second.consumers.erase(owner);
+        stop = !found->second.nativeOwner && found->second.consumers.empty();
+        if (stop) { found->second.running = false; found->second.inspectorSamples.clear(); }
+    }
+    if (stop) {
+        if (auto* profiler = vm.samplingProfiler()) {
+            WTF::Locker lock { profiler->getLock() };
+            profiler->pause(); profiler->clearData();
+        }
+    } else updateProfilerInterval(vm);
+}
+static WTF::Vector<HomeCPUTrace> detachCPUProfilerSamples(JSC::VM&, WTF::Vector<JSC::SamplingProfiler::StackTrace>&&);
 Ref<JSON::Object> captureCPUProfilerSamples(JSC::VM& vm) {
     JSC::JSLockHolder locker(vm);
     JSC::DeferGC deferGC(vm);
@@ -86,47 +153,35 @@ Ref<JSON::Object> captureCPUProfilerSamples(JSC::VM& vm) {
     auto* profiler = vm.samplingProfiler();
     if (!profiler) { result->setArray("traces"_s, WTF::move(tracesJSON)); return result; }
     WTF::Locker profilerLocker { profiler->getLock() };
-    auto traces = profiler->releaseStackTraces();
-    // Convert while GC is deferred; no raw executable/provider reference is
-    // retained by the inspector's immutable sample broker.
+    auto traces = detachCPUProfilerSamples(vm, profiler->releaseStackTraces());
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto& pending = profilerStates[&vm].inspectorSamples;
+        traces.appendVector(WTF::move(pending));
+        pending.clear();
+    }
     for (auto& trace : traces) {
         auto encodedTrace = JSON::Object::create();
         encodedTrace->setDouble("timestamp"_s, trace.timestamp.secondsSinceEpoch().seconds());
         auto frames = JSON::Array::create();
         for (auto& frame : trace.frames) {
             auto encodedFrame = JSON::Object::create();
-            encodedFrame->setString("name"_s, frame.displayName(vm));
-            WTF::String url;
-            WTF::String script = "0"_s;
-            int line = -1, column = -1;
-            if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
-                auto [provider, sourceID] = frame.sourceProviderAndID();
-                script = WTF::String::number(sourceID);
-                if (provider) url = provider->sourceURL();
-                int startLine = frame.functionStartLine();
-                unsigned startColumn = frame.functionStartColumn();
-                if (startLine > 0 && startColumn != std::numeric_limits<unsigned>::max()) {
-                    JSC::LineColumn location { static_cast<unsigned>(startLine), startColumn };
-#if USE(BUN_JSC_ADDITIONS)
-                    if (provider) {
-                        auto& remap = vm.computeLineColumnWithSourcemap();
-                        if (remap) remap(vm, provider, location, url);
-                    }
-#endif
-                    line = location.line ? static_cast<int>(location.line) - 1 : 0;
-                    column = location.column ? static_cast<int>(location.column) - 1 : 0;
-                }
-                if (!url.isEmpty() && (url[0] == '/' || (url.length() > 1 && url[1] == ':') || url.startsWith("\\\\"_s)))
-                    url = WTF::URL::fileURLWithFileSystemPath(url).string();
-            }
-            encodedFrame->setString("scriptId"_s, script);
-            encodedFrame->setString("sourceURL"_s, url);
-            encodedFrame->setInteger("line"_s, line);
-            encodedFrame->setInteger("column"_s, column);
+            encodedFrame->setString("name"_s, frame.name);
+            encodedFrame->setString("scriptId"_s, WTF::String::number(frame.scriptId));
+            encodedFrame->setString("sourceURL"_s, frame.url);
+            encodedFrame->setInteger("line"_s, frame.line);
+            encodedFrame->setInteger("column"_s, frame.column);
             frames->pushObject(WTF::move(encodedFrame));
         }
         encodedTrace->setArray("frames"_s, WTF::move(frames));
         tracesJSON->pushObject(WTF::move(encodedTrace));
+    }
+    {
+        std::lock_guard lock(profilerStateLock);
+        auto& state = profilerStates[&vm];
+        if (state.nativeOwner) {
+            for (auto& trace : traces) if (trace.timestamp >= state.nativeStart) state.nativeSamples.append(WTF::move(trace));
+        }
     }
     result->setArray("traces"_s, WTF::move(tracesJSON));
     return result;
@@ -187,6 +242,130 @@ static WTF::String formatFunctionName(const WTF::String& name, const JSC::Sampli
     }
 
     return displayName;
+}
+
+static WTF::Vector<HomeCPUTrace> detachCPUProfilerSamples(JSC::VM& vm, WTF::Vector<JSC::SamplingProfiler::StackTrace>&& input) {
+    WTF::Vector<HomeCPUTrace> output;
+    for (auto& trace : input) {
+        HomeCPUTrace detached;
+        detached.timestamp = trace.timestamp;
+        for (auto& frame : trace.frames) {
+            HomeCPUFrame record;
+            record.name = frame.displayName(vm);
+            record.textName = formatFunctionName(record.name, frame);
+            WTF::String url;
+            int scriptId = 0, functionDefLine = -1, functionDefColumn = -1, sampleLine = 0;
+            if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
+                auto sourceProviderAndID = frame.sourceProviderAndID();
+                auto* provider = std::get<0>(sourceProviderAndID);
+                if (provider) {
+                    url = provider->sourceURL();
+                    scriptId = static_cast<int>(provider->asID());
+                }
+
+                auto normalizeURL = [](WTF::String& u) {
+                    if (u.isEmpty())
+                        return;
+                    bool isAbsolutePath = false;
+                    if (u[0] == '/') {
+                        isAbsolutePath = true;
+                    } else if (u.length() >= 2 && u[1] == ':') {
+                        char firstChar = u[0];
+                        if ((firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z'))
+                            isAbsolutePath = true;
+                    } else if (u.length() >= 2 && u[0] == '\\' && u[1] == '\\') {
+                        isAbsolutePath = true;
+                    }
+                    if (isAbsolutePath)
+                        u = WTF::URL::fileURLWithFileSystemPath(u).string();
+                };
+
+                int rawFunctionStartLine = frame.functionStartLine();
+                unsigned rawFunctionStartColumn = frame.functionStartColumn();
+                if (rawFunctionStartLine > 0 && rawFunctionStartColumn != std::numeric_limits<unsigned>::max()) {
+                    JSC::LineColumn functionStartLineColumn {
+                        static_cast<unsigned>(rawFunctionStartLine),
+                        rawFunctionStartColumn,
+                    };
+                    if (provider) {
+#if USE(BUN_JSC_ADDITIONS)
+                        auto& fn = vm.computeLineColumnWithSourcemap();
+                        if (fn) {
+                            fn(vm, provider, functionStartLineColumn, url);
+                        }
+#endif
+                    }
+                    functionDefLine = functionStartLineColumn.line > 0
+                        ? static_cast<int>(functionStartLineColumn.line) - 1
+                        : 0;
+                    functionDefColumn = functionStartLineColumn.column > 0
+                        ? static_cast<int>(functionStartLineColumn.column) - 1
+                        : 0;
+                }
+
+                normalizeURL(url);
+
+                if (frame.hasExpressionInfo()) {
+                    JSC::LineColumn sourceMappedLineColumn = frame.semanticLocation.lineColumn;
+                    WTF::String sampleURL = provider ? WTF::String(provider->sourceURL()) : WTF::String();
+                    if (provider) {
+#if USE(BUN_JSC_ADDITIONS)
+                        auto& fn = vm.computeLineColumnWithSourcemap();
+                        if (fn) {
+                            fn(vm, provider, sourceMappedLineColumn, sampleURL);
+                        }
+#endif
+                    }
+                    normalizeURL(sampleURL);
+                    if (sourceMappedLineColumn.line > 0 && sampleURL == url)
+                        sampleLine = static_cast<int>(sourceMappedLineColumn.line);
+                }
+            }
+
+            record.url = url; record.scriptId = scriptId;
+            record.line = functionDefLine; record.column = functionDefColumn; record.sampleLine = sampleLine;
+            url = WTF::String();
+            int lineNumber = -1;
+            if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
+                auto sourceProviderAndID = frame.sourceProviderAndID();
+                auto* provider = std::get<0>(sourceProviderAndID);
+                if (provider) {
+                    url = provider->sourceURL();
+
+                    bool isAbsolutePath = false;
+                    if (!url.isEmpty()) {
+                        if (url[0] == '/')
+                            isAbsolutePath = true;
+                        else if (url.length() >= 2 && url[1] == ':') {
+                            char firstChar = url[0];
+                            if ((firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z'))
+                                isAbsolutePath = true;
+                        } else if (url.length() >= 2 && url[0] == '\\' && url[1] == '\\')
+                            isAbsolutePath = true;
+                    }
+                    if (isAbsolutePath)
+                        url = WTF::URL::fileURLWithFileSystemPath(url).string();
+                }
+
+                if (frame.hasExpressionInfo()) {
+                    JSC::LineColumn sourceMappedLineColumn = frame.semanticLocation.lineColumn;
+                    if (provider) {
+#if USE(BUN_JSC_ADDITIONS)
+                        auto& fn = vm.computeLineColumnWithSourcemap();
+                        if (fn)
+                            fn(vm, provider, sourceMappedLineColumn, url);
+#endif
+                    }
+                    lineNumber = static_cast<int>(sourceMappedLineColumn.line);
+                }
+            }
+
+            record.textURL = url; record.textLine = lineNumber;
+            detached.frames.append(WTF::move(record));
+        }
+        output.append(WTF::move(detached));
+    }
+    return output;
 }
 
 // Helper to format a location string from URL and line number
@@ -366,7 +545,23 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
     {
         std::lock_guard lock(profilerStateLock);
         auto entry = profilerStates.find(&vm);
-        if (entry != profilerStates.end()) { entry->second.running = false; state = entry->second; }
+        if (entry == profilerStates.end() || !entry->second.nativeOwner) {
+            if (outJSON) *outJSON = generateEmptyProfileJSON(entry == profilerStates.end() ? 0 : entry->second.startTime);
+            if (outText) *outText = "No samples collected.\n"_s;
+            return;
+        }
+        if (entry != profilerStates.end()) {
+            entry->second.nativeOwner = false;
+            entry->second.running = !entry->second.consumers.empty();
+            state = WTF::move(entry->second);
+            entry->second = HomeCPUProfilerState();
+            entry->second.startTime = state.startTime;
+            entry->second.nativeStart = state.nativeStart;
+            entry->second.interval = state.interval;
+            entry->second.running = state.running;
+            entry->second.consumers = WTF::move(state.consumers);
+            entry->second.inspectorSamples = WTF::move(state.inspectorSamples);
+        }
     }
 
     JSC::SamplingProfiler* profiler = vm.samplingProfiler();
@@ -385,11 +580,23 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
     // Pause the profiler while holding the lock
     auto& lock = profiler->getLock();
     WTF::Locker profilerLocker { lock };
-    profiler->pause();
+    if (!state.running) profiler->pause();
 
     // releaseStackTraces() calls processUnverifiedStackTraces() internally
-    auto stackTraces = profiler->releaseStackTraces();
-    profiler->clearData();
+    auto stackTraces = WTF::move(state.nativeSamples);
+    auto finalSamples = detachCPUProfilerSamples(vm, profiler->releaseStackTraces());
+    if (state.running) {
+        std::lock_guard stateLock(profilerStateLock);
+        profilerStates[&vm].inspectorSamples.appendVector(finalSamples);
+    }
+    for (auto& trace : finalSamples) if (trace.timestamp >= state.nativeStart) stackTraces.append(WTF::move(trace));
+    if (!state.running) profiler->clearData();
+    else {
+        int interval = std::numeric_limits<int>::max();
+        { std::lock_guard stateLock(profilerStateLock);
+          for (const auto& owner : profilerStates[&vm].consumers) interval = std::min(interval, owner.second); }
+        profiler->setTimingInterval(WTF::Seconds::fromMicroseconds(interval));
+    }
 
     // If neither output is requested, we're done
     if (!outJSON && !outText)
@@ -451,116 +658,12 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
             for (int i = stackTrace.frames.size() - 1; i >= 0; i--) {
                 auto& frame = stackTrace.frames[i];
 
-                WTF::String functionName = frame.displayName(vm);
-                WTF::String url;
-                int scriptId = 0;
-                // Function-definition line/column (0-indexed) for callFrame.
-                int functionDefLine = -1;
-                int functionDefColumn = -1;
-                // Current-sample line (1-indexed) for positionTicks.
-                int sampleLine = 0;
-
-                if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
-                    auto sourceProviderAndID = frame.sourceProviderAndID();
-                    auto* provider = std::get<0>(sourceProviderAndID);
-                    if (provider) {
-                        url = provider->sourceURL();
-                        scriptId = static_cast<int>(provider->asID());
-                    }
-
-                    // Absolute file path → `file://` URL. Chrome DevTools
-                    // expects `callFrame.url` to be a proper URL; leaving
-                    // the raw path breaks source-view resolution. We run
-                    // this AFTER the sourcemap callbacks below because the
-                    // callback (see FormatStackTraceForJS.cpp) unconditionally
-                    // rewrites its out-param back to the raw provider URL when
-                    // no sourcemap is found, which would undo an earlier
-                    // normalization. See #29240.
-                    auto normalizeURL = [](WTF::String& u) {
-                        if (u.isEmpty())
-                            return;
-                        bool isAbsolutePath = false;
-                        if (u[0] == '/') {
-                            isAbsolutePath = true;
-                        } else if (u.length() >= 2 && u[1] == ':') {
-                            char firstChar = u[0];
-                            if ((firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z'))
-                                isAbsolutePath = true;
-                        } else if (u.length() >= 2 && u[0] == '\\' && u[1] == '\\') {
-                            isAbsolutePath = true;
-                        }
-                        if (isAbsolutePath)
-                            u = WTF::URL::fileURLWithFileSystemPath(u).string();
-                    };
-
-                    // Function definition location. JSC returns these 1-based;
-                    // Node/Deno/Chrome DevTools emit them 0-based in the JSON.
-                    // The definition (not the sample position) is remapped
-                    // through the sourcemap callback so callFrame.url and
-                    // callFrame.line/column agree on the function's source.
-                    int rawFunctionStartLine = frame.functionStartLine();
-                    unsigned rawFunctionStartColumn = frame.functionStartColumn();
-                    if (rawFunctionStartLine > 0 && rawFunctionStartColumn != std::numeric_limits<unsigned>::max()) {
-                        JSC::LineColumn functionStartLineColumn {
-                            static_cast<unsigned>(rawFunctionStartLine),
-                            rawFunctionStartColumn,
-                        };
-                        if (provider) {
-#if USE(BUN_JSC_ADDITIONS)
-                            auto& fn = vm.computeLineColumnWithSourcemap();
-                            if (fn) {
-                                // `url` is the out-param — on a successful
-                                // remap it becomes the original-source URL.
-                                fn(vm, provider, functionStartLineColumn, url);
-                            }
-#endif
-                        }
-                        functionDefLine = functionStartLineColumn.line > 0
-                            ? static_cast<int>(functionStartLineColumn.line) - 1
-                            : 0;
-                        functionDefColumn = functionStartLineColumn.column > 0
-                            ? static_cast<int>(functionStartLineColumn.column) - 1
-                            : 0;
-                    }
-
-                    // Normalize `url` to a `file://` URL now that any
-                    // sourcemap rewriting is done.
-                    normalizeURL(url);
-
-                    if (frame.hasExpressionInfo()) {
-                        // Sample position for positionTicks. Use a throwaway
-                        // out-param so the sample remap can't clobber `url`
-                        // with a different file than the function definition.
-                        // We also drop the sample line entirely if the sample
-                        // maps back to a DIFFERENT original source file than
-                        // the definition (cross-module inlining in bundled
-                        // code) — attaching a line number from one file to a
-                        // ProfileNode whose callFrame.url is a different file
-                        // would mislocate the tick in Chrome DevTools.
-                        JSC::LineColumn sourceMappedLineColumn = frame.semanticLocation.lineColumn;
-                        // Seed with the raw provider URL (NOT empty). If the
-                        // sourcemap callback is a no-op — BUN_JSC_ADDITIONS
-                        // off, fn null, or the provider has no sourcemap —
-                        // sampleURL stays at this seed, and normalizeURL()
-                        // below converts it to the same `file://` form as
-                        // `url`, letting the `sampleURL == url` guard pass
-                        // for plain .js files. Seeding empty would silently
-                        // suppress positionTicks for every non-sourcemapped
-                        // script.
-                        WTF::String sampleURL = provider ? WTF::String(provider->sourceURL()) : WTF::String();
-                        if (provider) {
-#if USE(BUN_JSC_ADDITIONS)
-                            auto& fn = vm.computeLineColumnWithSourcemap();
-                            if (fn) {
-                                fn(vm, provider, sourceMappedLineColumn, sampleURL);
-                            }
-#endif
-                        }
-                        normalizeURL(sampleURL);
-                        if (sourceMappedLineColumn.line > 0 && sampleURL == url)
-                            sampleLine = static_cast<int>(sourceMappedLineColumn.line);
-                    }
-                }
+                WTF::String functionName = frame.name;
+                WTF::String url = frame.url;
+                int scriptId = frame.scriptId;
+                int functionDefLine = frame.line;
+                int functionDefColumn = frame.column;
+                int sampleLine = frame.sampleLine;
 
                 // line/column here identify the function's DEFINITION, so all
                 // samples of the same function under the same parent collapse.
@@ -718,44 +821,9 @@ void stopCPUProfiler(JSC::VM& vm, WTF::String* outJSON, WTF::String* outText)
             for (int i = stackTrace.frames.size() - 1; i >= 0; i--) {
                 auto& frame = stackTrace.frames[i];
 
-                WTF::String rawFunctionName = frame.displayName(vm);
-                WTF::String functionName = formatFunctionName(rawFunctionName, frame);
-                WTF::String url;
-                int lineNumber = -1;
-
-                if (frame.frameType == JSC::SamplingProfiler::FrameType::Executable && frame.executable) {
-                    auto sourceProviderAndID = frame.sourceProviderAndID();
-                    auto* provider = std::get<0>(sourceProviderAndID);
-                    if (provider) {
-                        url = provider->sourceURL();
-
-                        bool isAbsolutePath = false;
-                        if (!url.isEmpty()) {
-                            if (url[0] == '/')
-                                isAbsolutePath = true;
-                            else if (url.length() >= 2 && url[1] == ':') {
-                                char firstChar = url[0];
-                                if ((firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z'))
-                                    isAbsolutePath = true;
-                            } else if (url.length() >= 2 && url[0] == '\\' && url[1] == '\\')
-                                isAbsolutePath = true;
-                        }
-                        if (isAbsolutePath)
-                            url = WTF::URL::fileURLWithFileSystemPath(url).string();
-                    }
-
-                    if (frame.hasExpressionInfo()) {
-                        JSC::LineColumn sourceMappedLineColumn = frame.semanticLocation.lineColumn;
-                        if (provider) {
-#if USE(BUN_JSC_ADDITIONS)
-                            auto& fn = vm.computeLineColumnWithSourcemap();
-                            if (fn)
-                                fn(vm, provider, sourceMappedLineColumn, url);
-#endif
-                        }
-                        lineNumber = static_cast<int>(sourceMappedLineColumn.line);
-                    }
-                }
+                WTF::String functionName = frame.textName;
+                WTF::String url = frame.textURL;
+                int lineNumber = frame.textLine;
 
                 WTF::String location = formatLocation(url, lineNumber);
                 // Key uses zero-width space separator internally (not shown in output)
@@ -1023,7 +1091,11 @@ extern "C" void Bun__stopCPUProfiler(JSC::VM* vm, BunString* outJSON, BunString*
 
 extern "C" void Home__CPUProfiler__setSamplingInterval(JSC::VM* vm, int interval) { Bun::setSamplingIntervalForVM(*vm, interval); }
 extern "C" void Home__CPUProfiler__cancelForVM(JSC::VM* vm) {
-    if (Bun::isCPUProfilerRunningForVM(*vm)) Bun::stopCPUProfiler(*vm, nullptr, nullptr);
+    if (auto* profiler = vm->samplingProfiler()) {
+        JSC::JSLockHolder locker(*vm);
+        WTF::Locker samplerLock { profiler->getLock() };
+        profiler->pause(); profiler->clearData();
+    }
     std::lock_guard lock(Bun::profilerStateLock);
     Bun::profilerStates.erase(vm);
     if (Bun::legacyProfilerVM == vm) Bun::legacyProfilerVM = nullptr;

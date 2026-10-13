@@ -144,12 +144,10 @@ inline void LocalInspectorChannel::stopProfile() {
     if (found == inspectorSampleBrokers().end()) return;
     found->second.intervals.erase(this);
     found->second.starts.erase(this);
+    Bun::unregisterCPUProfilerConsumer(vm, this);
     if (--found->second.clients == 0) {
-        Bun::stopCPUProfiler(vm, nullptr, nullptr);
         inspectorSampleBrokers().erase(found);
-    } else if (auto* sampler = vm.samplingProfiler()) {
-        int interval = std::numeric_limits<int>::max();
-        for (const auto& item : found->second.intervals) interval = std::min(interval, item.second);
+    } else {
         double earliest = std::numeric_limits<double>::max();
         for (const auto& item : found->second.starts) earliest = std::min(earliest, item.second);
         std::erase_if(found->second.batches, [earliest](const auto& batch) {
@@ -161,8 +159,6 @@ inline void LocalInspectorChannel::stopProfile() {
             }
             return true;
         });
-        WTF::Locker lock { sampler->getLock() };
-        sampler->setTimingInterval(WTF::Seconds::fromMicroseconds(interval));
     }
 }
 inline bool LocalInspectorChannel::dispatchAdapter(JSON::Object& request) {
@@ -217,17 +213,10 @@ inline bool LocalInspectorChannel::dispatchAdapter(JSON::Object& request) {
         if (!profilerEnabled) { fail("Profiler is not enabled. Call Profiler.enable first."_s); return true; }
         if (!profiling) {
             auto& broker = inspectorSampleBrokers()[&vm];
-            if (!broker.clients && Bun::isCPUProfilerRunningForVM(vm)) { inspectorSampleBrokers().erase(&vm); fail("Another native profiler owner is active"_s); return true; }
-            if (!broker.clients) { Bun::setSamplingIntervalForVM(vm, samplingInterval); Bun::startCPUProfiler(vm); }
+            Bun::registerCPUProfilerConsumer(vm, this, samplingInterval);
             captureInspectorSamples(vm, broker);
             ++broker.clients;
             broker.intervals[this] = samplingInterval;
-            if (auto* sampler = vm.samplingProfiler()) {
-                int interval = std::numeric_limits<int>::max();
-                for (const auto& item : broker.intervals) interval = std::min(interval, item.second);
-                WTF::Locker lock { sampler->getLock() };
-                sampler->setTimingInterval(WTF::Seconds::fromMicroseconds(interval));
-            }
             profileStart = MonotonicTime::now().secondsSinceEpoch().seconds();
             broker.starts[this] = profileStart;
             profileWallStart = WTF::WallTime::now().secondsSinceEpoch().value() * 1000000.0;

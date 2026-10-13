@@ -25,6 +25,62 @@ try {
   const ids = new Set(cpu.nodes.map(node => node.id))
   assert(cpu.samples.every(id => ids.has(id)))
   assert.match(readFileSync(join(dir, 'cpu/nested/sample.md'), 'utf8'), /# CPU Profile/)
+  // CLI and inspector use independent windows over the same native sampler.
+  const sharedWorkload = `
+    const { Session } = require('node:inspector');
+    const { writeFileSync } = require('node:fs');
+    function beforeSessionWork(){const until=performance.now()+150;let n=0;while(performance.now()<until){for(let i=0;i<1000;i++)n+=Math.sqrt(i)}return n}
+    function duringSessionWork(){const until=performance.now()+150;let n=0;while(performance.now()<until){for(let i=0;i<1000;i++)n+=Math.sin(i)}return n}
+    function afterSessionWork(){const until=performance.now()+150;let n=0;while(performance.now()<until){for(let i=0;i<1000;i++)n+=Math.cos(i)}return n}
+    function secondSessionWork(){const until=performance.now()+150;let n=0;while(performance.now()<until){for(let i=0;i<1000;i++)n+=Math.tan(i)}return n}
+    beforeSessionWork();
+    const session=new Session(); session.connect();
+    session.post('Profiler.enable');
+    session.post('Profiler.setSamplingInterval',{interval:500});
+    session.post('Profiler.start'); duringSessionWork();
+    session.post('Profiler.stop', (error, result) => {
+      if(error) throw error;
+      writeFileSync('shared-session.json',JSON.stringify(result.profile));
+    });
+    session.disconnect(); afterSessionWork();
+    const second=new Session(); second.connect(); second.post('Profiler.enable');
+    second.post('Profiler.setSamplingInterval',{interval:3000});
+    second.post('Profiler.start'); secondSessionWork();
+    second.post('Profiler.stop',(error,result)=>{
+      if(error) throw error;
+      writeFileSync('shared-second.json',JSON.stringify(result.profile));
+    }); second.disconnect();
+  `
+  run(['--cpu-prof', '--cpu-prof-md', '--cpu-prof-interval', '2000', '--cpu-prof-name', 'shared'], sharedWorkload)
+  const sharedCLI = JSON.parse(readFileSync(join(dir, 'shared.cpuprofile'), 'utf8'))
+  const sharedSession = JSON.parse(readFileSync(join(dir, 'shared-session.json'), 'utf8'))
+  function sampledNames(profile) {
+    const sampled = new Set(profile.samples)
+    const nodeIDs = new Set(profile.nodes.map(node => node.id))
+    assert(profile.samples.length > 0)
+    assert.equal(profile.samples.length, profile.timeDeltas.length)
+    assert(profile.samples.every(id => nodeIDs.has(id)))
+    assert(profile.timeDeltas.every(delta => Number.isInteger(delta) && delta >= 0))
+    return new Set(profile.nodes.filter(node => sampled.has(node.id)).map(node => node.callFrame.functionName))
+  }
+  const cliNames = sampledNames(sharedCLI)
+  const sessionNames = sampledNames(sharedSession)
+  for (const name of ['beforeSessionWork', 'duringSessionWork', 'afterSessionWork']) assert(cliNames.has(name), name)
+  assert(sessionNames.has('duringSessionWork'))
+  assert(!sessionNames.has('beforeSessionWork'))
+  assert(!sessionNames.has('afterSessionWork'))
+  const secondNames = sampledNames(JSON.parse(readFileSync(join(dir, 'shared-second.json'), 'utf8')))
+  assert(secondNames.has('secondSessionWork'))
+  assert(!secondNames.has('beforeSessionWork'))
+  assert(!secondNames.has('afterSessionWork'))
+  const sharedText = readFileSync(join(dir, 'shared.md'), 'utf8')
+  for (const name of ['beforeSessionWork', 'duringSessionWork', 'afterSessionWork']) assert(sharedText.includes(name), name)
+  // Process shutdown also exports the CLI samples with an active session.
+  run(['--cpu-prof', '--cpu-prof-name', 'active.cpuprofile'], sharedWorkload + `
+    const active=new Session(); active.connect(); active.post('Profiler.enable'); active.post('Profiler.start');
+    duringSessionWork(); process.exit(0);
+  `)
+  assert(sampledNames(JSON.parse(readFileSync(join(dir, 'active.cpuprofile'), 'utf8'))).has('duringSessionWork'))
   const heap = run(['--heap-prof', '--heap-prof-name', 'sample.heapsnapshot', '--heap-prof-dir', 'heap/nested'], `globalThis.payload=Array.from({length:100},(_,i)=>({value:i}));process.exit(0)`)
   assert.match(heap.stderr, /Heap profile written to:/)
   const snapshot = JSON.parse(readFileSync(join(dir, 'heap/nested/sample.heapsnapshot'), 'utf8'))
