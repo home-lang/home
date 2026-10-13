@@ -239,4 +239,7 @@ test "log message" {
 test {
     _ = auth;
     _ = encrypt;
+    _ = access;
+    _ = ratelimit;
+    _ = remote;
 }

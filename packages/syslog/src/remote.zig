@@ -3,6 +3,7 @@
 const std = @import("std");
 const syslog = @import("syslog.zig");
 const auth = @import("auth.zig");
+const compat = @import("compat.zig");
 
 /// Remote syslog server configuration
 pub const RemoteConfig = struct {
@@ -14,7 +15,7 @@ pub const RemoteConfig = struct {
 };
 
 /// Remote connection status
-pub const ConnectionStatus = enum {
+pub const ConnectionStatus = enum(u8) {
     disconnected,
     connecting,
     connected,
@@ -48,7 +49,7 @@ pub const RemoteClient = struct {
 
         // In production, would establish TLS connection
         // For now, simulate connection
-        std.time.sleep(100 * std.time.ns_per_ms);
+        try compat.sleepMilliseconds(100);
 
         self.status.store(.connected, .release);
     }
@@ -130,7 +131,7 @@ pub const LogForwarder = struct {
     max_queue_size: usize,
     retry_attempts: u32,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: RemoteConfig, max_queue: usize) LogForwarder {
         return .{
@@ -139,13 +140,14 @@ pub const LogForwarder = struct {
             .max_queue_size = max_queue,
             .retry_attempts = 3,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .mutex = .init,
         };
     }
 
     pub fn deinit(self: *LogForwarder) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         for (self.retry_queue.items) |*msg| {
             msg.deinit();
@@ -163,7 +165,7 @@ pub const LogForwarder = struct {
                     return err;
                 }
                 // Retry after delay
-                std.time.sleep(100 * std.time.ns_per_ms * (attempts + 1));
+                try compat.sleepMilliseconds(100 * (attempts + 1));
                 continue;
             };
             return;
@@ -171,8 +173,9 @@ pub const LogForwarder = struct {
     }
 
     fn queueMessage(self: *LogForwarder, message: *const syslog.LogMessage) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         if (self.retry_queue.items.len >= self.max_queue_size) {
             // Drop oldest message
@@ -195,8 +198,9 @@ pub const LogForwarder = struct {
     }
 
     pub fn retryQueued(self: *LogForwarder) !usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         var sent: usize = 0;
         var i: usize = 0;
@@ -220,8 +224,9 @@ pub const LogForwarder = struct {
     }
 
     pub fn getQueueSize(self: *LogForwarder) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         return self.retry_queue.items.len;
     }

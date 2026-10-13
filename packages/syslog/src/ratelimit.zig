@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const syslog = @import("syslog.zig");
+const compat = @import("compat.zig");
 
 /// Token bucket rate limiter
 pub const RateLimiter = struct {
@@ -9,23 +10,24 @@ pub const RateLimiter = struct {
     tokens: std.atomic.Value(u32),
     refill_rate: u32, // tokens per second
     last_refill: std.atomic.Value(i64),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(capacity: u32, refill_rate: u32) RateLimiter {
         return .{
             .capacity = capacity,
             .tokens = std.atomic.Value(u32).init(capacity),
             .refill_rate = refill_rate,
-            .last_refill = std.atomic.Value(i64).init(std.time.timestamp()),
-            .mutex = std.Thread.Mutex{},
+            .last_refill = std.atomic.Value(i64).init(compat.timestamp()),
+            .mutex = .init,
         };
     }
 
     pub fn tryAcquire(self: *RateLimiter) bool {
         self.refill();
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         const current = self.tokens.load(.acquire);
         if (current > 0) {
@@ -39,8 +41,9 @@ pub const RateLimiter = struct {
     pub fn tryAcquireN(self: *RateLimiter, n: u32) bool {
         self.refill();
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         const current = self.tokens.load(.acquire);
         if (current >= n) {
@@ -52,7 +55,7 @@ pub const RateLimiter = struct {
     }
 
     fn refill(self: *RateLimiter) void {
-        const now = std.time.timestamp();
+        const now = compat.timestamp();
         const last = self.last_refill.load(.acquire);
         const elapsed = now - last;
 
@@ -62,8 +65,9 @@ pub const RateLimiter = struct {
         const new_tokens = std.math.mul(u32, elapsed_clamped, self.refill_rate) catch std.math.maxInt(u32);
         if (new_tokens == 0) return;
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         const current = self.tokens.load(.acquire);
         const updated = @min(current + new_tokens, self.capacity);
@@ -83,7 +87,7 @@ pub const PerSourceLimiter = struct {
     default_capacity: u32,
     default_rate: u32,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, capacity: u32, rate: u32) PerSourceLimiter {
         return .{
@@ -91,7 +95,7 @@ pub const PerSourceLimiter = struct {
             .default_capacity = capacity,
             .default_rate = rate,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .mutex = .init,
         };
     }
 
@@ -104,8 +108,9 @@ pub const PerSourceLimiter = struct {
     }
 
     pub fn tryAcquire(self: *PerSourceLimiter, source: []const u8) !bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         const gop = try self.limiters.getOrPut(source);
         if (!gop.found_existing) {
@@ -117,8 +122,9 @@ pub const PerSourceLimiter = struct {
     }
 
     pub fn cleanup(self: *PerSourceLimiter) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        const io = compat.io();
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
 
         var to_remove = std.ArrayList([]const u8).init(self.allocator);
         defer to_remove.deinit();
