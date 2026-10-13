@@ -1,0 +1,168 @@
+{
+  "schema": 1,
+  "runtime_main_commit": "fa8acdb93ae9bed68cdf4e0b21098fb41b21025e",
+  "unverified_source_commit": "a7b7b86ab72869ceb1592c5b9f75a30da388e5bd",
+  "recovery_branch": "codex/inspector-realms-unverified",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "webkit_commit": "cd821fecca0d39c8bac874c283d956868c7f0de0",
+  "source_hashes": [
+    {
+      "file": "build-support/bundle-native-modules.ts",
+      "sha256": "d50e23e22c272aa6d7da7b5c3086f98d15a9144bee49732f54bfdf741247748a",
+      "bytes": 26445
+    },
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "b0fed4c7357cee71875089ccf430e3eb3fb12c7cfae68816839c21ab46e30acb",
+      "bytes": 70183
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "438cf9d005c7c2b64e4cf786e944a60f397522bf497eb423603b485b02f8adb5",
+      "bytes": 21340
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "a426421dd294a2eb0b8c4078b228d56e155b4022e84f7ae1ca257cef7ebd7e09",
+      "bytes": 2996
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "4281358cc3bfd1a0b84f3449c4c89009ba3a92f1f916a451f8affc2742281332",
+      "bytes": 97605
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVMScript.cpp",
+      "sha256": "6419d4f133b757dd16bfa1d6e35fde3140ad917dfc00eca474097f23a9d8ab62",
+      "bytes": 29878
+    }
+  ],
+  "results": {
+    "node_reference_exit": 0,
+    "home_reference_exit": 1,
+    "native_compile_exit": 1,
+    "repair_runtime_verified": false,
+    "new_runtime_pass_credit": false
+  },
+  "findings": [
+    "Node reports real before/after vm contexts with names/origins and evaluates within contextId. Verified Home emits only its current owner and fails the first named-realm assertion.",
+    "Pinned JSC JSGlobalObjectRuntimeAgent explicitly rejects execution-context IDs because it owns one global. A real port needs native realm registry/controller routing and lifecycle handling.",
+    "Recovery source retains name/origin in their original getter order without changing NodeVM public header layout, adds weak realm metadata and owner-loop retirement, and drafts per-realm controller channels with opaque remote-object remapping. No completed build/runtime credit.",
+    "First compile failed from the helper declaration in Bun versus definition in Bun::NodeVM. The repaired declaration is preserved remotely. Repair builds refused at disk admission; logs retain actual 1468/1288 MB values."
+  ],
+  "limitations": [
+    "Remote-object argument routing, exception object mapping, object-group release, native realm-controller roots/lifetimes, post-destruction pointer reuse, owner teardown, all platforms and full suite need implementation/verification before landing.",
+    "The original public NodeVM header was restored byte-identically; no ABI guard relaxation is used. Both recovery commits are preserved, including the initial draft that changed a signature.",
+    "Source remains excluded from main. Existing #428/#66/#885 and original inspector conflict #886 remain open."
+  ],
+  "files": [
+    {
+      "file": "HomeInspectorRealms.h",
+      "archive": "raw/HomeInspectorRealms.h.gz",
+      "sha256": "a426421dd294a2eb0b8c4078b228d56e155b4022e84f7ae1ca257cef7ebd7e09",
+      "bytes": 2996
+    },
+    {
+      "file": "JSGlobalObjectRuntimeAgent.cpp",
+      "archive": "raw/JSGlobalObjectRuntimeAgent.cpp.gz",
+      "sha256": "cafcf27e17a6c357e62c333d8a66512eff929aaa944cedb6be9a67bce52f44bd",
+      "bytes": 2688
+    },
+    {
+      "file": "archive.py",
+      "archive": "raw/archive.py.gz",
+      "sha256": "b09c9e6b6756cfb14e719311dca45db144e2c9cbf64db3f3e641170810032476",
+      "bytes": 3343
+    },
+    {
+      "file": "build-native.log",
+      "archive": "raw/build-native.log.gz",
+      "sha256": "12071027fbbeb77caaed83649c8b5a1c545e7edbdea5b84d0cbb0110a66e5ecd",
+      "bytes": 14872
+    },
+    {
+      "file": "build-repair.log",
+      "archive": "raw/build-repair.log.gz",
+      "sha256": "6b38bd94e2a313e59f0b95d305abc538bb1840c1af1459f677f70a9fc4d8e296",
+      "bytes": 75
+    },
+    {
+      "file": "build-repaired-native.log",
+      "archive": "raw/build-repaired-native.log.gz",
+      "sha256": "41de02e5e6180497fc5e148398e94ec1d25b398e0b27a36865962b7d8fa69410",
+      "bytes": 75
+    },
+    {
+      "file": "build-retry.log",
+      "archive": "raw/build-retry.log.gz",
+      "sha256": "83ae147683429eddf8a55b6a69324524201ebc4d4d998f11623da98155cbe29b",
+      "bytes": 75
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "sha256": "95dd1ef700291396f4176063f8bb5f67deaf96b3c88ac40cb5f0981dd57bcefc",
+      "bytes": 75
+    },
+    {
+      "file": "edit-routing.py",
+      "archive": "raw/edit-routing.py.gz",
+      "sha256": "44d776293b721d4232f0fcf317f856b873404dc8144b230f3bdd3e318918487e",
+      "bytes": 3760
+    },
+    {
+      "file": "edit-session.py",
+      "archive": "raw/edit-session.py.gz",
+      "sha256": "0c885766521911de73ed4c70c27fa3ece5285e83905c423a96dcbbd786c6205e",
+      "bytes": 2698
+    },
+    {
+      "file": "edit.py",
+      "archive": "raw/edit.py.gz",
+      "sha256": "58f5b94af9056536f963691d815baa980b9d783cc0206a8c22dea03492f3c05c",
+      "bytes": 3638
+    },
+    {
+      "file": "home-baseline.log",
+      "archive": "raw/home-baseline.log.gz",
+      "sha256": "77b3c58825bad3fa9fe78999f992a516812e09de64c70a6a7d3f11d77fb45e59",
+      "bytes": 780
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09",
+      "bytes": 1381
+    },
+    {
+      "file": "node-baseline.log",
+      "archive": "raw/node-baseline.log.gz",
+      "sha256": "a47ef6428d2be7016ebaed0023827c1e8e1ace3bb5f0568b4b1177773ee447f6",
+      "bytes": 461
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310",
+      "bytes": 1177
+    },
+    {
+      "file": "recovery-commit.txt",
+      "archive": "raw/recovery-commit.txt.gz",
+      "sha256": "26c4fa658029c0e712ee911df21195f4fed5b93e7cfd4f2a06fb3be200f56ad1",
+      "bytes": 41
+    },
+    {
+      "file": "recovery-repaired-commit.txt",
+      "archive": "raw/recovery-repaired-commit.txt.gz",
+      "sha256": "306c567cd6a1dd45360f4333ecd64980295d8b842cd315171d8ccdbee58ced5f",
+      "bytes": 41
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02",
+      "bytes": 1168
+    }
+  ]
+}

@@ -36,6 +36,7 @@ public:
     bool dispatchAdapter(JSON::Object&);
     void stopProfile();
     void disconnectRealms();
+    void releaseRealmGroups(const WTF::String&);
     explicit LocalInspectorChannel(JSC::JSGlobalObject* owner, WebCore::ScriptExecutionContextIdentifier id) : global(owner), context(id) { }
     ConnectionType connectionType() const final { return ConnectionType::Local; }
     void sendMessageToFrontend(const WTF::String&) final;
@@ -117,7 +118,7 @@ public:
     ConnectionType connectionType() const final { return ConnectionType::Local; }
     void sendMessageToFrontend(const WTF::String& message) final {
         auto parsed=JSON::Value::parseJSON(message);auto object=parsed?parsed->asObject():nullptr;
-        if(object && object->getInteger("id"_s)) {
+        if(object && object->getInteger("id"_s).value_or(0)>0) {
             remapObjects(*object);
             channel.sendMessageToFrontend(object->toJSONString());
         }
@@ -134,9 +135,24 @@ public:
         } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(*array->get(i));
     }
 };
+inline void unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value) {
+    if(auto object=value.asObject()) {
+        auto exposed=object->getString("objectId"_s);auto native=channel.nativeRealmObjects.find(exposed);
+        if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
+        for(auto& entry:*object) unwrapInspectorObjects(channel,entry.value.get());
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) unwrapInspectorObjects(channel,*array->get(i));
+}
+inline void LocalInspectorChannel::releaseRealmGroups(const WTF::String& group) {
+    for(auto& entry:realmFrontends) if(auto* realm=entry.second->global.get()) {
+        auto params=JSON::Object::create();params->setString("objectGroup"_s,group);
+        auto request=JSON::Object::create();request->setInteger("id"_s,0);request->setString("method"_s,"Runtime.releaseObjectGroup"_s);request->setObject("params"_s,WTF::move(params));
+        realm->inspectorController().dispatchMessageFromFrontend(request->toJSONString());
+    }
+}
 inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& request) {
     auto params=request.getObject("params"_s);
     if(!params) return false;
+    if(request.getString("method"_s)=="Runtime.releaseObjectGroup"_s) {channel.releaseRealmGroups(params->getString("objectGroup"_s));return false;}
     auto requested=params->getInteger("contextId"_s);
     if(!requested) requested=params->getInteger("executionContextId"_s);
     if(!requested) {
@@ -155,9 +171,7 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!frontend) {frontend=std::make_shared<InspectorRealmForwarder>(channel,*selected);protect->inspectorController().connectFrontend(*frontend,false,false);}
     auto& controller=protect->inspectorController();
     params->remove("contextId"_s);params->remove("executionContextId"_s);
-    auto exposed=params->getString("objectId"_s);
-    auto native=channel.nativeRealmObjects.find(exposed);
-    if(native!=channel.nativeRealmObjects.end()) params->setString("objectId"_s,native->value);
+    unwrapInspectorObjects(channel,*params);
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
 }
@@ -325,6 +339,7 @@ inline void cancelLocalInspector(JSC::JSGlobalObject* global) {
     std::vector<std::shared_ptr<LocalInspectorChannel>> channels;
     { std::lock_guard lock(localInspectorLock()); auto entry = localInspectorChannels().find(global); if (entry != localInspectorChannels().end()) channels = entry->second; }
     for (auto& channel : channels) { channel->disconnect(); channel->handle.clear(); }
+    cancelInspectorRealms(global);
 }
 JSC_DEFINE_HOST_FUNCTION(connectLocalInspector, (JSC::JSGlobalObject* global, JSC::CallFrame* frame)) {
     auto& vm = global->vm(); auto scope = DECLARE_THROW_SCOPE(vm);
