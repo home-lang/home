@@ -583,7 +583,7 @@ bool handleException(JSGlobalObject* globalObject, VM& vm, NakedPtr<JSC::Excepti
 
 // Returns an encoded exception if the options are invalid.
 // Otherwise, returns an empty optional.
-std::optional<JSC::EncodedJSValue> getNodeVMContextOptions(JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSValue optionsArg, NodeVMContextOptions& outOptions, ASCIILiteral codeGenerationKey, JSValue* importer, WTF::String* name, WTF::String* origin)
+std::optional<JSC::EncodedJSValue> getHomeNodeVMContextOptions(JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSValue optionsArg, NodeVMContextOptions& outOptions, ASCIILiteral codeGenerationKey, JSValue* importer, WTF::String* name, WTF::String* origin)
 {
     if (importer) {
         *importer = jsUndefined();
@@ -695,6 +695,10 @@ std::optional<JSC::EncodedJSValue> getNodeVMContextOptions(JSGlobalObject* globa
     }
 
     return std::nullopt;
+}
+
+std::optional<JSC::EncodedJSValue> getNodeVMContextOptions(JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSValue optionsArg, NodeVMContextOptions& outOptions, ASCIILiteral codeGenerationKey, JSValue* importer) {
+    return getHomeNodeVMContextOptions(globalObject,vm,scope,optionsArg,outOptions,codeGenerationKey,importer,nullptr,nullptr);
 }
 
 NodeVMGlobalObject* getGlobalObjectFromContext(JSGlobalObject* globalObject, JSValue contextValue, bool canThrow)
@@ -1391,7 +1395,7 @@ JSC_DEFINE_HOST_FUNCTION(vmModuleRunInNewContext, (JSGlobalObject * globalObject
 
     JSValue globalObjectDynamicImportCallback;
 
-    if (auto encodedException = getNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &globalObjectDynamicImportCallback, &inspectorName, &inspectorOrigin)) {
+    if (auto encodedException = getHomeNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &globalObjectDynamicImportCallback, &inspectorName, &inspectorOrigin)) {
         return *encodedException;
     }
 
@@ -1403,7 +1407,7 @@ JSC_DEFINE_HOST_FUNCTION(vmModuleRunInNewContext, (JSGlobalObject * globalObject
         contextOptions, globalObjectDynamicImportCallback);
 
     context->setContextifiedObject(sandbox);
-    Home::registerInspectorRealm(context, defaultGlobalObject(globalObject), WTF::move(inspectorName), WTF::move(inspectorOrigin));
+    Home::registerInspectorRealm(context, defaultGlobalObject(globalObject), WTF::move(inspectorName), WTF::move(inspectorOrigin), defaultGlobalObject(globalObject)->scriptExecutionContext()->identifier());
 
     JSValue optionsArg = callFrame->argument(2);
     JSValue scriptDynamicImportCallback;
@@ -1629,7 +1633,7 @@ JSC_DEFINE_HOST_FUNCTION(vmModule_createContext, (JSGlobalObject * globalObject,
 
     JSValue importer;
 
-    if (auto encodedException = getNodeVMContextOptions(globalObject, vm, scope, optionsArg, contextOptions, "codeGeneration", &importer, &inspectorName, &inspectorOrigin)) {
+    if (auto encodedException = getHomeNodeVMContextOptions(globalObject, vm, scope, optionsArg, contextOptions, "codeGeneration", &importer, &inspectorName, &inspectorOrigin)) {
         return *encodedException;
     }
 
@@ -1648,7 +1652,7 @@ JSC_DEFINE_HOST_FUNCTION(vmModule_createContext, (JSGlobalObject * globalObject,
 
     // Store context in WeakMap for isContext checks
     zigGlobalObject->vmModuleContextMap()->set(vm, sandbox, targetContext);
-    Home::registerInspectorRealm(targetContext, zigGlobalObject, WTF::move(inspectorName), WTF::move(inspectorOrigin));
+    Home::registerInspectorRealm(targetContext, zigGlobalObject, WTF::move(inspectorName), WTF::move(inspectorOrigin), defaultGlobalObject(globalObject)->scriptExecutionContext()->identifier());
 
     if (notContextified) {
         auto* specialSandbox = NodeVMSpecialSandbox::create(vm, targetContext);

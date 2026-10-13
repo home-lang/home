@@ -609,7 +609,7 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInNewContext, (JSGlobalObject * globalObject, 
     WTF::String inspectorName, inspectorOrigin;
     JSValue importer;
 
-    if (auto encodedException = getNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &importer, &inspectorName, &inspectorOrigin)) {
+    if (auto encodedException = getHomeNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &importer, &inspectorName, &inspectorOrigin)) {
         return *encodedException;
     }
 
@@ -631,7 +631,7 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInNewContext, (JSGlobalObject * globalObject, 
     // the same realm and lexical environment on later calls with this sandbox.
     targetContext->setContextifiedObject(context);
     zigGlobalObject->vmModuleContextMap()->set(vm, context, targetContext);
-    Home::registerInspectorRealm(targetContext, zigGlobalObject, WTF::move(inspectorName), WTF::move(inspectorOrigin));
+    Home::registerInspectorRealm(targetContext, zigGlobalObject, WTF::move(inspectorName), WTF::move(inspectorOrigin), defaultGlobalObject(globalObject)->scriptExecutionContext()->identifier());
 
     if (notContextified) {
         auto* specialSandbox = NodeVMSpecialSandbox::create(vm, targetContext);

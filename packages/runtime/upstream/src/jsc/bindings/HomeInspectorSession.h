@@ -28,6 +28,7 @@ public:
     std::vector<WTF::String> messages;
     std::unordered_map<int, int> responseIds;
     WTF::HashMap<WTF::String, int> realmObjects;
+    WTF::HashMap<WTF::String, WTF::String> nativeRealmObjects;
     std::unordered_map<int,std::shared_ptr<InspectorRealmForwarder>> realmFrontends;
     bool connected { false }, scheduled { false }, runtimeEnabled { false }, profilerEnabled { false }, profiling { false };
     int samplingInterval { 1000 };
@@ -117,13 +118,20 @@ public:
     void sendMessageToFrontend(const WTF::String& message) final {
         auto parsed=JSON::Value::parseJSON(message);auto object=parsed?parsed->asObject():nullptr;
         if(object && object->getInteger("id"_s)) {
-            if(auto result=object->getObject("result"_s)) {
-                if(auto value=result->getObject("result"_s)) {
-                    auto id=value->getString("objectId"_s);if(!id.isEmpty()) channel.realmObjects.set(id,realm);
-                }
-            }
-            channel.sendMessageToFrontend(message);
+            remapObjects(*object);
+            channel.sendMessageToFrontend(object->toJSONString());
         }
+    }
+    void remapObjects(JSON::Value& value) {
+        if(auto object=value.asObject()) {
+            auto native=object->getString("objectId"_s);
+            if(!native.isEmpty()) {
+                auto exposed=makeString("home-realm:"_s,realm,":"_s,native);
+                channel.realmObjects.set(exposed,realm);channel.nativeRealmObjects.set(exposed,native);
+                object->setString("objectId"_s,exposed);
+            }
+            for(auto& entry:*object) remapObjects(entry.value.get());
+        } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(*array->get(i));
     }
 };
 inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& request) {
@@ -147,6 +155,9 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!frontend) {frontend=std::make_shared<InspectorRealmForwarder>(channel,*selected);protect->inspectorController().connectFrontend(*frontend,false,false);}
     auto& controller=protect->inspectorController();
     params->remove("contextId"_s);params->remove("executionContextId"_s);
+    auto exposed=params->getString("objectId"_s);
+    auto native=channel.nativeRealmObjects.find(exposed);
+    if(native!=channel.nativeRealmObjects.end()) params->setString("objectId"_s,native->value);
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
 }
@@ -208,6 +219,7 @@ inline void LocalInspectorChannel::disconnect() {
     messages.clear();
     responseIds.clear();
     realmObjects.clear();
+    nativeRealmObjects.clear();
     disconnectRealms();
     global->inspectorController().disconnectFrontend(*this);
     std::lock_guard lock(localInspectorLock());
