@@ -1,10 +1,12 @@
 const std = @import("std");
-const posix = std.posix;
 
-/// Helper to get current timestamp (Zig 0.16 compatible)
+fn runtimeIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
+/// Get the current Unix timestamp through Zig's I/O capability.
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return std.Io.Clock.real.now(runtimeIo()).toSeconds();
 }
 
 // Re-export drivers

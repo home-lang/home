@@ -734,8 +734,8 @@ test "sms message creation" {
 }
 
 test "sms message multipart" {
-    const long_body = "A" ** 200;
-    const msg = SmsMessage.init("+14155551234", "+14155555678", long_body);
+    const long_body: [200]u8 = @splat('A');
+    const msg = SmsMessage.init("+14155551234", "+14155555678", &long_body);
     try std.testing.expect(msg.isMultipart());
     try std.testing.expectEqual(@as(u32, 2), msg.segmentCount());
 }
