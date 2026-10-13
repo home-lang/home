@@ -38,7 +38,6 @@ pub const FetchTasklet = struct {
     resource_is_fetch: bool = true,
     resource_url_len: usize = 0,
 
-
     /// This is url + proxy memory buffer and is owned by FetchTasklet
     /// We always clone url and proxy (if informed)
     url_proxy_buffer: []const u8 = "",
@@ -534,7 +533,7 @@ pub const FetchTasklet = struct {
         }
 
         const globalThis = this.global_this;
-        if (is_done and this.result.isSuccess() and this.resource_is_fetch and !this.resource_reported) {
+        if (is_done and (this.result.isSuccess() or this.result.isAbort()) and this.resource_is_fetch and !this.resource_reported) {
             this.publishResourceTiming();
         }
         defer {
@@ -1010,6 +1009,9 @@ pub const FetchTasklet = struct {
     fn onStreamCancelledCallback(ctx: ?*anyopaque) void {
         const this = bun.cast(*FetchTasklet, ctx.?);
         if (this.ignore_data) return;
+        // Explicit stream cancellation terminates the native fetch. Abandonment
+        // from the response finalizer may still drain for connection reuse.
+        this.abortTask();
         this.ignoreRemainingResponseBody();
     }
 

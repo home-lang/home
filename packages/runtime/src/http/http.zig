@@ -2743,7 +2743,10 @@ pub const HTTPClientResult = struct {
 };
 
 pub fn toResult(this: *HTTPClient) HTTPClientResult {
-    const response_end_ns = if (this.state.isDone()) bun.timespec.now(.force_real_time).ns() else 0;
+    // Capture the native terminal transition for successful and failed responses.
+    // Abort after headers is an end-of-response milestone too; it must not
+    // wait for the peer to finish sending an abandoned body.
+    const response_end_ns = if (this.state.isDone() or this.state.stage == .fail) bun.timespec.now(.force_real_time).ns() else 0;
     const body_size: HTTPClientResult.BodySize = if (this.state.isChunkedEncoding())
         .{ .total_received = this.state.total_body_received }
     else if (this.state.content_length) |content_length|
