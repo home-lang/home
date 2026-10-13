@@ -159,7 +159,10 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
         auto object=params->getString("objectId"_s);
         auto found=channel.realmObjects.find(object);if(found!=channel.realmObjects.end()) requested=found->value;
     }
-    if(!requested || *requested==static_cast<int>(channel.context)) return false;
+    if(!requested) return false;
+    if(*requested==static_cast<int>(channel.context)) {
+        params->remove("contextId"_s);params->remove("executionContextId"_s);return false;
+    }
     InspectorRealm* selected=nullptr;
     for(auto& entry:inspectorRealms()) if(entry.second->owner==channel.global && entry.second->id==*requested) {selected=entry.second.get();break;}
     if(!selected || !selected->global) {
