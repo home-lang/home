@@ -601,6 +601,8 @@ pub const ProgramGlobalBinding = struct {
     /// `globalThis`; false for top-level lexical `let`/`const` bindings and
     /// type-space entries.
     is_global_this_property: bool = false,
+    /// Namespace declarations containing only types have no runtime value.
+    is_namespace_only: bool = false,
 };
 
 pub const ModuleInterfaceAugmentation = struct {
@@ -7143,6 +7145,12 @@ pub const Checker = struct {
                 (self.rootHasTopLevelExternalModuleMarker(declaration) and
                     !self.namespaceIsDeclareGlobalAugmentation(declaration))) continue;
             try self.publishGlobalNamespaceTypes(declaration, "");
+            // Program consumers cannot ask this checker's HIR to synthesize
+            // a namespace value after its owner snapshot has been published.
+            // Retain that value graph in the existing relocated side table.
+            if (!self.namespaceIsDeclareGlobalAugmentation(declaration)) {
+                _ = try self.namespaceValueObjectType(declaration);
+            }
         }
     }
 
@@ -14013,8 +14021,7 @@ pub const Checker = struct {
 
     fn exportAssignmentTargetNamespaceName(self: *Checker, target: NodeId) ?hir_mod.StringId {
         if (self.hir.kindOf(target) == .namespace_decl or self.hir.kindOf(target) == .module_decl) {
-            if (self.namespaceHasRuntimeValue(target)) return self.declarationName(target);
-            return null;
+            return self.declarationName(target);
         }
         const target_name = self.declarationName(target) orelse return null;
         const root = self.rootBlockFor(target);
@@ -14026,7 +14033,9 @@ pub const Checker = struct {
             if (self.hir.kindOf(decl) != .namespace_decl and self.hir.kindOf(decl) != .module_decl) continue;
             const name = self.declarationName(decl) orelse continue;
             if (name != target_name) continue;
-            if (self.namespaceHasRuntimeValue(decl)) return name;
+            // An empty namespace can merge with a runtime variable. It still
+            // supplies namespace identity for module-augmentation diagnostics.
+            return name;
         }
         return null;
     }
@@ -83743,17 +83752,26 @@ pub const Checker = struct {
             const name = self.declarationName(decl) orelse continue;
             const member_t = switch (self.hir.kindOf(decl)) {
                 .var_decl, .let_decl, .const_decl => blk: {
-                    try self.checkNamespaceValueDecl(decl);
+                    const variable = hir_mod.varDeclOf(self.hir, decl);
+                    // Untyped declarations without initializers deliberately
+                    // retain `none` for automatic-variable analysis. Their
+                    // namespace value surface is any; constructing it must
+                    // not rerun the declaration's implicit-any check.
+                    if (self.hir.typeOf(decl) == types.Primitive.none and
+                        (variable.type_annotation != hir_mod.none_node_id or variable.init != hir_mod.none_node_id))
+                    {
+                        try self.checkNamespaceValueDecl(decl);
+                    }
                     const t = self.hir.typeOf(decl);
                     break :blk if (t != types.Primitive.none) t else types.Primitive.any;
                 },
                 .fn_decl, .fn_expr, .arrow_fn => blk: {
-                    try self.checkFnSignatureOnlyNoBody(decl);
+                    if (self.hir.typeOf(decl) == types.Primitive.none) try self.checkFnSignatureOnlyNoBody(decl);
                     const t = self.hir.typeOf(decl);
                     break :blk if (t != types.Primitive.none) t else types.Primitive.any;
                 },
                 .class_decl, .class_expr => blk: {
-                    try self.checkStatement(decl);
+                    if (!self.class_static_type_by_node.contains(decl)) try self.checkStatement(decl);
                     if (self.class_static_type_by_node.get(decl)) |static_t| break :blk static_t;
                     if (self.class_static_types.get(name)) |static_t| break :blk static_t;
                     const t = self.hir.typeOf(decl);
@@ -140756,7 +140774,7 @@ pub const Checker = struct {
                 }
             }
             if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
-                if (self.programGlobalValueType(id.name)) |t| return t;
+                if (self.programGlobalValueTypeAt(node, id.name)) |t| return t;
             }
             // Module is bound and the name is unknown ÃÂ¢ÃÂÃÂ emit TS2304
             // unless the identifier is a recognized built-in (e.g.
@@ -140863,7 +140881,7 @@ pub const Checker = struct {
             }
         }
         if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
-            if (self.programGlobalValueType(id.name)) |t| return t;
+            if (self.programGlobalValueTypeAt(node, id.name)) |t| return t;
         }
         if (!self.isDeclNameSlot(node) and
             (std.mem.eql(u8, name_str, "atob") or std.mem.eql(u8, name_str, "btoa")) and
@@ -141846,7 +141864,6 @@ pub const Checker = struct {
     fn namespaceHasRuntimeValueDepth(self: *Checker, node: NodeId, depth: u8) bool {
         if (depth > 32) return false;
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .namespace_decl) return false;
-        if (self.declarationSourceHasLeadingDeclare(node) or self.virtualSectionIsDeclarationFile(node)) return true;
         for (hir_mod.namespaceBody(self.hir, node)) |raw| {
             const s = self.unwrapExportDecl(raw);
             switch (self.hir.kindOf(s)) {
@@ -141985,6 +142002,7 @@ pub const Checker = struct {
         node: NodeId,
         name: hir_mod.StringId,
     ) !void {
+        if (self.diagnosticExists(node, TsCodes.namespace_as_value)) return;
         const name_str = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -180512,6 +180530,15 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn programGlobalValueTypeAt(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_value_types) |binding| {
+            if (binding.name != name or !binding.is_namespace_only) continue;
+            self.reportNamespaceAsValue(node, name) catch {};
+            return types.Primitive.any;
+        }
+        return self.programGlobalValueType(name);
     }
 
     fn programGlobalThisPropertyType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
@@ -259113,7 +259140,7 @@ test "checker: exported namespace enum exposes member values" {
     try T.expect(saw_private_day);
 }
 
-test "checker: ambient namespace can be used as a value" {
+test "checker: a type-only ambient namespace cannot be used as a value" {
     const b = try newBoundSetup(
         \\declare namespace mod2 {
         \\  type test1 = string;
@@ -259123,9 +259150,8 @@ test "checker: ambient namespace can be used as a value" {
     );
     defer destroyBoundSetup(b);
     try b.base.checker.checkSourceFile(b.base.root);
-    for (b.base.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.namespace_as_value);
-    }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.namespace_as_value));
+    try T.expect(hasDiagnosticCodeMessage(b.base, TsCodes.namespace_as_value, "Cannot use namespace 'mod2' as a value."));
 }
 
 test "checker: ambient namespace value object exposes unexported function declarations" {
@@ -291369,4 +291395,12 @@ test "checker: completed recursive interfaces publish complete declaration-owned
         completed += 1;
     }
     try T.expect(completed > 0);
+}
+
+test "checker: namespace value snapshots do not repeat uninitialized declaration diagnostics" {
+    const s = try newSetup("namespace N { export let x; } declare namespace A { let y; }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 7005));
 }
