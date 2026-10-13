@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const pcr = @import("pcr.zig");
+const compat = @import("compat.zig");
 
 /// TPM Quote - signed statement of PCR values
 pub const Quote = struct {
@@ -24,13 +25,13 @@ pub const Quote = struct {
             .pcr_selection = pcr.PcrSelection.init(),
             .pcr_values = std.ArrayList(pcr.PcrValue).empty,
             .signature = &[_]u8{},
-            .timestamp = std.time.timestamp(),
+            .timestamp = compat.timestamp(),
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Quote) void {
-        self.pcr_values.deinit();
+        self.pcr_values.deinit(self.allocator);
         if (self.signature.len > 0) {
             self.allocator.free(self.signature);
         }
@@ -116,11 +117,11 @@ pub const AttestationChallenge = struct {
     pcr_selection: pcr.PcrSelection,
     timestamp: i64,
 
-    pub fn init() AttestationChallenge {
+    pub fn init() !AttestationChallenge {
         var challenge: AttestationChallenge = undefined;
-        std.crypto.random.bytes(&challenge.nonce);
+        try compat.randomSecure(&challenge.nonce);
         challenge.pcr_selection = pcr.PcrSelection.init();
-        challenge.timestamp = std.time.timestamp();
+        challenge.timestamp = compat.timestamp();
         return challenge;
     }
 
@@ -145,7 +146,7 @@ pub fn verifyAttestation(
     }
 
     // Verify timestamp (quote should be recent)
-    const now = std.time.timestamp();
+    const now = compat.timestamp();
     const age = now - quote.timestamp;
     if (age < 0 or age > 300) { // 5 minute window
         return false;
@@ -222,7 +223,7 @@ test "attestation challenge-response" {
     const testing = std.testing;
 
     // Create challenge
-    var challenge = AttestationChallenge.init();
+    var challenge = try AttestationChallenge.init();
     try challenge.withPcrs(&[_]pcr.PcrIndex{ 0, 7 });
 
     // Generate quote

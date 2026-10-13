@@ -1,6 +1,7 @@
 // TPM Key Management
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// TPM key types
 pub const KeyType = enum {
@@ -115,7 +116,8 @@ pub const Key = struct {
         // Generate simulated public key
         const key_size = algorithm.keySize();
         const public_key = try allocator.alloc(u8, key_size);
-        std.crypto.random.bytes(public_key);
+        errdefer allocator.free(public_key);
+        try compat.randomSecure(public_key);
 
         return .{
             .handle = handle,
