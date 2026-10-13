@@ -76,35 +76,44 @@ pub fn encryptDump(
 
 /// Save encrypted dump to file
 pub fn saveDump(dump: *const EncryptedDump, path: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
-    defer file.close();
+    const io = compat.io();
+    const private_permissions: std.Io.File.Permissions = if (@bitSizeOf(std.Io.File.Permissions) == 0)
+        .default_file
+    else
+        @enumFromInt(0o600);
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{ .permissions = private_permissions });
+    defer file.close(io);
 
     // Write file header
-    try file.writeAll("HOMECORE");
+    try file.writeStreamingAll(io, "HOMECORE");
 
     // Version
-    try file.writeIntLittle(u16, 1);
+    var encoded_u16: [2]u8 = undefined;
+    std.mem.writeInt(u16, &encoded_u16, 1, .little);
+    try file.writeStreamingAll(io, &encoded_u16);
 
     // Algorithm
-    try file.writeIntLittle(u8, @intFromEnum(dump.metadata.algorithm));
+    try file.writeStreamingAll(io, &.{@intFromEnum(dump.metadata.algorithm)});
 
     // Key ID
-    try file.writeAll(&dump.key_id);
+    try file.writeStreamingAll(io, &dump.key_id);
 
     // Nonce
-    try file.writeAll(&dump.nonce);
+    try file.writeStreamingAll(io, &dump.nonce);
 
     // Auth tag
-    try file.writeAll(&dump.auth_tag);
+    try file.writeStreamingAll(io, &dump.auth_tag);
 
     // Metadata
-    try file.writeAll(&std.mem.toBytes(dump.metadata));
+    try file.writeStreamingAll(io, &std.mem.toBytes(dump.metadata));
 
     // Data length
-    try file.writeIntLittle(u64, dump.encrypted_data.len);
+    var encoded_u64: [8]u8 = undefined;
+    std.mem.writeInt(u64, &encoded_u64, dump.encrypted_data.len, .little);
+    try file.writeStreamingAll(io, &encoded_u64);
 
     // Encrypted data
-    try file.writeAll(dump.encrypted_data);
+    try file.writeStreamingAll(io, dump.encrypted_data);
 }
 
 /// Compress and encrypt dump

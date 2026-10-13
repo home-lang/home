@@ -150,4 +150,7 @@ test "dump metadata" {
 test {
     _ = encrypt;
     _ = keys;
+    _ = decrypt;
+    _ = format;
+    _ = capture;
 }
