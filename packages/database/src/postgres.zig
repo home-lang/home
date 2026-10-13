@@ -1,8 +1,8 @@
 const std = @import("std");
+const net = std.Io.net;
 
 /// PostgreSQL Database Driver for Home
 /// Async PostgreSQL client with connection pooling
-
 pub const PostgresError = error{
     ConnectionFailed,
     QueryFailed,
@@ -13,6 +13,7 @@ pub const PostgresError = error{
 
 /// PostgreSQL connection configuration
 pub const Config = struct {
+    io: std.Io,
     host: []const u8 = "localhost",
     port: u16 = 5432,
     database: []const u8,
@@ -37,7 +38,7 @@ pub const Config = struct {
 pub const Connection = struct {
     allocator: std.mem.Allocator,
     config: Config,
-    socket: ?std.net.Stream = null,
+    socket: ?net.Stream = null,
     transaction_status: TransactionStatus = .idle,
 
     pub const TransactionStatus = enum {
@@ -52,9 +53,9 @@ pub const Connection = struct {
             .config = config,
         };
 
-        // Connect to PostgreSQL server
-        const address = try std.net.Address.parseIp(config.host, config.port);
-        conn.socket = try std.net.tcpConnectToAddress(address);
+        // Connect to PostgreSQL server.
+        conn.socket = try connectToHost(config);
+        errdefer conn.deinit();
 
         // Send startup message
         try conn.sendStartup();
@@ -67,7 +68,8 @@ pub const Connection = struct {
 
     pub fn deinit(self: *Connection) void {
         if (self.socket) |sock| {
-            sock.close();
+            sock.close(self.config.io);
+            self.socket = null;
         }
     }
 
@@ -92,12 +94,11 @@ pub const Connection = struct {
 
     /// Execute query and return results
     pub fn query(self: *Connection, sql: []const u8) !QueryResult {
-        _ = self;
         _ = sql;
         return QueryResult{
             .allocator = self.allocator,
-            .rows = std.ArrayList(Row).init(self.allocator),
-            .columns = std.ArrayList([]const u8).init(self.allocator),
+            .rows = .empty,
+            .columns = .empty,
         };
     }
 
@@ -108,6 +109,7 @@ pub const Connection = struct {
             .connection = self,
             .sql = sql,
             .param_count = 0,
+            .params = .empty,
         };
     }
 
@@ -153,7 +155,7 @@ pub const PreparedStatement = struct {
             .connection = connection,
             .sql = sql,
             .param_count = 0,
-            .params = std.ArrayList(?[]const u8).init(allocator),
+            .params = .empty,
         };
     }
 
@@ -162,27 +164,26 @@ pub const PreparedStatement = struct {
         for (self.params.items) |param| {
             if (param) |p| self.allocator.free(p);
         }
-        self.params.deinit();
+        self.params.deinit(self.allocator);
     }
 
     pub fn bind(self: *PreparedStatement, index: usize, value: anytype) !void {
         if (index > self.params.items.len) return error.IndexOutOfBounds;
         const value_str = try std.fmt.allocPrint(self.allocator, "{any}", .{value});
         errdefer self.allocator.free(value_str);
-        try self.params.insert(index, value_str);
+        try self.params.insert(self.allocator, index, value_str);
     }
 
     pub fn bindNull(self: *PreparedStatement, index: usize) !void {
         if (index > self.params.items.len) return error.IndexOutOfBounds;
-        try self.params.insert(index, null);
+        try self.params.insert(self.allocator, index, null);
     }
 
     pub fn execute(self: *PreparedStatement) !QueryResult {
-        _ = self;
         return QueryResult{
             .allocator = self.allocator,
-            .rows = std.ArrayList(Row).init(self.allocator),
-            .columns = std.ArrayList([]const u8).init(self.allocator),
+            .rows = .empty,
+            .columns = .empty,
         };
     }
 };
@@ -198,8 +199,8 @@ pub const QueryResult = struct {
         for (self.rows.items) |*row| {
             row.deinit();
         }
-        self.rows.deinit();
-        self.columns.deinit();
+        self.rows.deinit(self.allocator);
+        self.columns.deinit(self.allocator);
     }
 
     pub fn next(self: *QueryResult) ?*Row {
@@ -222,7 +223,7 @@ pub const Row = struct {
     values: std.ArrayList(?[]const u8),
 
     pub fn deinit(self: *Row) void {
-        self.values.deinit();
+        self.values.deinit(self.allocator);
     }
 
     pub fn get(self: *Row, index: usize) ?[]const u8 {
@@ -252,16 +253,16 @@ pub const Pool = struct {
     config: Config,
     connections: std.ArrayList(*Connection),
     available: std.ArrayList(*Connection),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     max_size: u32,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Pool {
         return .{
             .allocator = allocator,
             .config = config,
-            .connections = std.ArrayList(*Connection).init(allocator),
-            .available = std.ArrayList(*Connection).init(allocator),
-            .mutex = .{},
+            .connections = .empty,
+            .available = .empty,
+            .mutex = .init,
             .max_size = config.max_pool_size,
         };
     }
@@ -271,22 +272,24 @@ pub const Pool = struct {
             conn.deinit();
             self.allocator.destroy(conn);
         }
-        self.connections.deinit();
-        self.available.deinit();
+        self.connections.deinit(self.allocator);
+        self.available.deinit(self.allocator);
     }
 
     pub fn acquire(self: *Pool) !*Connection {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.available.items.len > 0) {
-            return self.available.pop();
+            return self.available.pop().?;
         }
 
         if (self.connections.items.len < self.max_size) {
             const conn = try self.allocator.create(Connection);
+            errdefer self.allocator.destroy(conn);
             conn.* = try Connection.connect(self.allocator, self.config);
-            try self.connections.append(conn);
+            errdefer conn.deinit();
+            try self.connections.append(self.allocator, conn);
             return conn;
         }
 
@@ -295,17 +298,35 @@ pub const Pool = struct {
     }
 
     pub fn release(self: *Pool, conn: *Connection) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        try self.available.append(conn);
+        try self.available.append(self.allocator, conn);
     }
 };
 
 /// Async query executor
 pub fn executeAsync(allocator: std.mem.Allocator, pool: *Pool, sql: []const u8) !QueryResult {
+    _ = allocator;
     const conn = try pool.acquire();
     defer pool.release(conn) catch {};
 
     return try conn.query(sql);
+}
+
+fn connectToHost(config: Config) !net.Stream {
+    const options: net.IpAddress.ConnectOptions = .{
+        .mode = .stream,
+        .protocol = .tcp,
+    };
+    if (net.IpAddress.parse(config.host, config.port)) |address| {
+        return address.connect(config.io, options);
+    } else |_| {}
+
+    const host_name = try net.HostName.init(config.host);
+    return host_name.connect(config.io, config.port, options);
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

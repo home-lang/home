@@ -1,4 +1,5 @@
 const std = @import("std");
+const net = std.Io.net;
 
 /// Redis client driver (RESP protocol)
 ///
@@ -12,11 +13,15 @@ const std = @import("std");
 /// - Cluster support
 /// - Sentinel support
 pub const Redis = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
-    stream: std.net.Stream,
+    stream: net.Stream,
     protocol_version: ProtocolVersion,
     subscriptions: std.StringHashMap(SubscriptionCallback),
     in_transaction: bool,
+    read_buffer: [8192]u8 = undefined,
+    read_pos: usize = 0,
+    read_len: usize = 0,
 
     pub const ProtocolVersion = enum {
         resp2,
@@ -26,6 +31,7 @@ pub const Redis = struct {
     pub const SubscriptionCallback = *const fn (channel: []const u8, message: []const u8) void;
 
     pub const Config = struct {
+        io: std.Io,
         host: []const u8 = "localhost",
         port: u16 = 6379,
         password: ?[]const u8 = null,
@@ -59,13 +65,13 @@ pub const Redis = struct {
     };
 
     pub fn connect(allocator: std.mem.Allocator, config: Config) !Redis {
-        const address = try std.net.Address.parseIp(config.host, config.port);
-        const stream = try std.net.tcpConnectToAddress(address);
+        const stream = try connectToHost(config);
         // Close the socket if anything below this point fails —
         // previously AUTH/SELECT failures leaked the open connection.
-        errdefer stream.close();
+        errdefer stream.close(config.io);
 
         var redis = Redis{
+            .io = config.io,
             .allocator = allocator,
             .stream = stream,
             .protocol_version = config.protocol_version,
@@ -102,7 +108,7 @@ pub const Redis = struct {
     }
 
     pub fn deinit(self: *Redis) void {
-        self.stream.close();
+        self.stream.close(self.io);
         self.subscriptions.deinit();
     }
 
@@ -173,11 +179,11 @@ pub const Redis = struct {
     }
 
     pub fn del(self: *Redis, keys: []const []const u8) !usize {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
 
-        try args.append("DEL");
-        try args.appendSlice(keys);
+        try args.append(self.allocator, "DEL");
+        try args.appendSlice(self.allocator, keys);
 
         const result = try self.command(args.items);
         defer result.deinit(self.allocator);
@@ -213,12 +219,12 @@ pub const Redis = struct {
 
     /// List operations
     pub fn lpush(self: *Redis, key: []const u8, values: []const []const u8) !usize {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
 
-        try args.append("LPUSH");
-        try args.append(key);
-        try args.appendSlice(values);
+        try args.append(self.allocator, "LPUSH");
+        try args.append(self.allocator, key);
+        try args.appendSlice(self.allocator, values);
 
         const result = try self.command(args.items);
         defer result.deinit(self.allocator);
@@ -230,12 +236,12 @@ pub const Redis = struct {
     }
 
     pub fn rpush(self: *Redis, key: []const u8, values: []const []const u8) !usize {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
 
-        try args.append("RPUSH");
-        try args.append(key);
-        try args.appendSlice(values);
+        try args.append(self.allocator, "RPUSH");
+        try args.append(self.allocator, key);
+        try args.appendSlice(self.allocator, values);
 
         const result = try self.command(args.items);
         defer result.deinit(self.allocator);
@@ -354,12 +360,12 @@ pub const Redis = struct {
 
     /// Set operations
     pub fn sadd(self: *Redis, key: []const u8, members: []const []const u8) !usize {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
 
-        try args.append("SADD");
-        try args.append(key);
-        try args.appendSlice(members);
+        try args.append(self.allocator, "SADD");
+        try args.append(self.allocator, key);
+        try args.appendSlice(self.allocator, members);
 
         const result = try self.command(args.items);
         defer result.deinit(self.allocator);
@@ -450,11 +456,11 @@ pub const Redis = struct {
     }
 
     pub fn subscribe(self: *Redis, channels: []const []const u8, callback: SubscriptionCallback) !void {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.allocator);
 
-        try args.append("SUBSCRIBE");
-        try args.appendSlice(channels);
+        try args.append(self.allocator, "SUBSCRIBE");
+        try args.appendSlice(self.allocator, channels);
 
         // Subscribe and store callback
         _ = try self.command(args.items);
@@ -469,126 +475,159 @@ pub const Redis = struct {
     }
 
     fn sendCommand(self: *Redis, args: []const []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
         // RESP array format: *<count>\r\n
-        try buffer.writer().print("*{d}\r\n", .{args.len});
+        try buffer.writer(self.allocator).print("*{d}\r\n", .{args.len});
 
         for (args) |arg| {
             // Bulk string format: $<length>\r\n<data>\r\n
-            try buffer.writer().print("${d}\r\n", .{arg.len});
-            try buffer.appendSlice(arg);
-            try buffer.appendSlice("\r\n");
+            try buffer.writer(self.allocator).print("${d}\r\n", .{arg.len});
+            try buffer.appendSlice(self.allocator, arg);
+            try buffer.appendSlice(self.allocator, "\r\n");
         }
-
-        try self.stream.writeAll(buffer.items);
+        try self.writeAll(buffer.items);
     }
 
     fn receiveResponse(self: *Redis) !Value {
-        var reader = self.stream.reader();
-
-        const type_byte = try reader.readByte();
+        const type_byte = try self.readByte();
 
         return switch (type_byte) {
-            '+' => try self.readSimpleString(reader), // Simple string
-            '-' => try self.readError(reader),         // Error
-            ':' => try self.readInteger(reader),       // Integer
-            '$' => try self.readBulkString(reader),    // Bulk string
-            '*' => try self.readArray(reader),         // Array
+            '+' => try self.readSimpleString(), // Simple string
+            '-' => try self.readError(), // Error
+            ':' => try self.readInteger(), // Integer
+            '$' => try self.readBulkString(), // Bulk string
+            '*' => try self.readArray(), // Array
             else => error.InvalidRESPType,
         };
     }
 
-    fn readSimpleString(self: *Redis, reader: anytype) !Value {
-        const line = try reader.readUntilDelimiterAlloc(self.allocator, '\n', 1024);
-        // Remove \r if present
-        const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
-            line[0 .. line.len - 1]
-        else
-            line;
-
-        return Value{ .string = try self.allocator.dupe(u8, trimmed) };
+    fn readSimpleString(self: *Redis) !Value {
+        return .{ .string = try self.readLine() };
     }
 
-    fn readError(self: *Redis, reader: anytype) !Value {
-        const line = try reader.readUntilDelimiterAlloc(self.allocator, '\n', 1024);
-        const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
-            line[0 .. line.len - 1]
-        else
-            line;
-
-        return Value{ .error_msg = try self.allocator.dupe(u8, trimmed) };
+    fn readError(self: *Redis) !Value {
+        return .{ .error_msg = try self.readLine() };
     }
 
-    fn readInteger(self: *Redis, reader: anytype) !Value {
-        _ = self;
-        const line = try reader.readUntilDelimiterAlloc(self.allocator, '\n', 1024);
+    fn readInteger(self: *Redis) !Value {
+        const line = try self.readLine();
         defer self.allocator.free(line);
-
-        const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
-            line[0 .. line.len - 1]
-        else
-            line;
-
-        const num = try std.fmt.parseInt(i64, trimmed, 10);
-        return Value{ .integer = num };
+        return .{ .integer = try std.fmt.parseInt(i64, line, 10) };
     }
 
-    fn readBulkString(self: *Redis, reader: anytype) !Value {
-        const line = try reader.readUntilDelimiterAlloc(self.allocator, '\n', 1024);
+    fn readBulkString(self: *Redis) !Value {
+        const line = try self.readLine();
         defer self.allocator.free(line);
-
-        const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
-            line[0 .. line.len - 1]
-        else
-            line;
-
-        const len = try std.fmt.parseInt(i64, trimmed, 10);
+        const len = try std.fmt.parseInt(i64, line, 10);
 
         if (len == -1) {
-            return Value{ .bulk_string = null };
+            return .{ .bulk_string = null };
         }
+        if (len < 0) return error.InvalidBulkStringLength;
 
         const str_len: usize = @intCast(len);
         const data = try self.allocator.alloc(u8, str_len);
         errdefer self.allocator.free(data);
 
-        try reader.readNoEof(data);
+        try self.readAll(data);
 
-        // Read trailing \r\n
-        _ = try reader.readByte(); // \r
-        _ = try reader.readByte(); // \n
+        if (try self.readByte() != '\r' or try self.readByte() != '\n') {
+            return error.InvalidRESPTerminator;
+        }
 
-        return Value{ .bulk_string = data };
+        return .{ .bulk_string = data };
     }
 
-    fn readArray(self: *Redis, reader: anytype) !Value {
-        const line = try reader.readUntilDelimiterAlloc(self.allocator, '\n', 1024);
+    fn readArray(self: *Redis) !Value {
+        const line = try self.readLine();
         defer self.allocator.free(line);
-
-        const trimmed = if (line.len > 0 and line[line.len - 1] == '\r')
-            line[0 .. line.len - 1]
-        else
-            line;
-
-        const count = try std.fmt.parseInt(i64, trimmed, 10);
+        const count = try std.fmt.parseInt(i64, line, 10);
 
         if (count == -1) {
             return Value.nil;
         }
+        if (count < 0) return error.InvalidArrayLength;
 
         const array_len: usize = @intCast(count);
         var array = try self.allocator.alloc(Value, array_len);
-        errdefer self.allocator.free(array);
+        var initialized: usize = 0;
+        errdefer {
+            for (array[0..initialized]) |*item| item.deinit(self.allocator);
+            self.allocator.free(array);
+        }
 
         for (0..array_len) |i| {
             array[i] = try self.receiveResponse();
+            initialized += 1;
         }
 
-        return Value{ .array = array };
+        return .{ .array = array };
+    }
+
+    fn writeAll(self: *Redis, bytes: []const u8) !void {
+        var buffer: [4096]u8 = undefined;
+        var stream_writer = self.stream.writer(self.io, &buffer);
+        const writer = &stream_writer.interface;
+        try writer.writeAll(bytes);
+        try writer.flush();
+    }
+
+    fn readByte(self: *Redis) !u8 {
+        if (self.read_pos >= self.read_len) try self.fillReadBuffer();
+        const byte = self.read_buffer[self.read_pos];
+        self.read_pos += 1;
+        return byte;
+    }
+
+    fn fillReadBuffer(self: *Redis) !void {
+        var buffers: [1][]u8 = .{&self.read_buffer};
+        self.read_len = try self.stream.read(self.io, &buffers);
+        self.read_pos = 0;
+        if (self.read_len == 0) return error.EndOfStream;
+    }
+
+    fn readAll(self: *Redis, bytes: []u8) !void {
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            if (self.read_pos >= self.read_len) try self.fillReadBuffer();
+            const available = self.read_len - self.read_pos;
+            const copy_len = @min(available, bytes.len - offset);
+            @memcpy(bytes[offset..][0..copy_len], self.read_buffer[self.read_pos..][0..copy_len]);
+            self.read_pos += copy_len;
+            offset += copy_len;
+        }
+    }
+
+    fn readLine(self: *Redis) ![]u8 {
+        var line: std.ArrayList(u8) = .empty;
+        errdefer line.deinit(self.allocator);
+
+        while (line.items.len < 1024) {
+            const byte = try self.readByte();
+            if (byte == '\r') {
+                if (try self.readByte() != '\n') return error.InvalidRESPTerminator;
+                return line.toOwnedSlice(self.allocator);
+            }
+            try line.append(self.allocator, byte);
+        }
+        return error.ResponseTooLarge;
     }
 };
+
+fn connectToHost(config: Redis.Config) !net.Stream {
+    const options: net.IpAddress.ConnectOptions = .{
+        .mode = .stream,
+        .protocol = .tcp,
+    };
+    if (net.IpAddress.parse(config.host, config.port)) |address| {
+        return address.connect(config.io, options);
+    } else |_| {}
+
+    const host_name = try net.HostName.init(config.host);
+    return host_name.connect(config.io, config.port, options);
+}
 
 /// Connection pool for Redis
 pub const ConnectionPool = struct {
@@ -597,16 +636,16 @@ pub const ConnectionPool = struct {
     connections: std.ArrayList(*Redis),
     available: std.ArrayList(*Redis),
     max_connections: usize,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: Redis.Config, max_connections: usize) ConnectionPool {
         return .{
             .allocator = allocator,
             .config = config,
-            .connections = std.ArrayList(*Redis).init(allocator),
-            .available = std.ArrayList(*Redis).init(allocator),
+            .connections = .empty,
+            .available = .empty,
             .max_connections = max_connections,
-            .mutex = .{},
+            .mutex = .init,
         };
     }
 
@@ -615,22 +654,24 @@ pub const ConnectionPool = struct {
             conn.deinit();
             self.allocator.destroy(conn);
         }
-        self.connections.deinit();
-        self.available.deinit();
+        self.connections.deinit(self.allocator);
+        self.available.deinit(self.allocator);
     }
 
     pub fn acquire(self: *ConnectionPool) !*Redis {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        if (self.available.popOrNull()) |conn| {
+        if (self.available.pop()) |conn| {
             return conn;
         }
 
         if (self.connections.items.len < self.max_connections) {
             const conn = try self.allocator.create(Redis);
+            errdefer self.allocator.destroy(conn);
             conn.* = try Redis.connect(self.allocator, self.config);
-            try self.connections.append(conn);
+            errdefer conn.deinit();
+            try self.connections.append(self.allocator, conn);
             return conn;
         }
 
@@ -638,9 +679,13 @@ pub const ConnectionPool = struct {
     }
 
     pub fn release(self: *ConnectionPool, conn: *Redis) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        try self.available.append(conn);
+        try self.available.append(self.allocator, conn);
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

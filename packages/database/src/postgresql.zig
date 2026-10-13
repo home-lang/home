@@ -1,4 +1,5 @@
 const std = @import("std");
+const net = std.Io.net;
 
 /// Parsed PostgreSQL CommandComplete message.
 ///
@@ -128,8 +129,9 @@ fn commandTagKind(command: []const u8) CommandTagKind {
 /// - LISTEN/NOTIFY
 /// - SSL/TLS support
 pub const PostgreSQL = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
-    stream: std.net.Stream,
+    stream: net.Stream,
     process_id: u32,
     secret_key: u32,
     transaction_status: TransactionStatus,
@@ -142,6 +144,7 @@ pub const PostgreSQL = struct {
     };
 
     pub const Config = struct {
+        io: std.Io,
         host: []const u8 = "localhost",
         port: u16 = 5432,
         database: []const u8,
@@ -183,16 +186,16 @@ pub const PostgreSQL = struct {
             for (self.rows.items) |*row| {
                 row.deinit();
             }
-            self.rows.deinit();
+            self.rows.deinit(self.allocator);
         }
     };
 
     pub fn connect(allocator: std.mem.Allocator, config: Config) !PostgreSQL {
-        const address = try std.net.Address.parseIp(config.host, config.port);
-        const stream = try std.net.tcpConnectToAddress(address);
-        errdefer stream.close();
+        const stream = try connectToHost(config);
+        errdefer stream.close(config.io);
 
         var pg = PostgreSQL{
+            .io = config.io,
             .allocator = allocator,
             .stream = stream,
             .process_id = 0,
@@ -219,7 +222,7 @@ pub const PostgreSQL = struct {
 
     pub fn deinit(self: *PostgreSQL) void {
         self.terminate() catch {};
-        self.stream.close();
+        self.stream.close(self.io);
 
         var it = self.parameters.iterator();
         while (it.next()) |entry| {
@@ -230,22 +233,22 @@ pub const PostgreSQL = struct {
     }
 
     fn startup(self: *PostgreSQL, config: Config) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
         // Protocol version 3.0
-        try buffer.appendSlice(&[_]u8{ 0, 3, 0, 0 });
+        try buffer.appendSlice(self.allocator, &[_]u8{ 0, 3, 0, 0 });
 
         // Parameters
-        try buffer.appendSlice("user\x00");
-        try buffer.appendSlice(config.user);
-        try buffer.append(0);
+        try buffer.appendSlice(self.allocator, "user\x00");
+        try buffer.appendSlice(self.allocator, config.user);
+        try buffer.append(self.allocator, 0);
 
-        try buffer.appendSlice("database\x00");
-        try buffer.appendSlice(config.database);
-        try buffer.append(0);
+        try buffer.appendSlice(self.allocator, "database\x00");
+        try buffer.appendSlice(self.allocator, config.database);
+        try buffer.append(self.allocator, 0);
 
-        try buffer.append(0); // Terminator
+        try buffer.append(self.allocator, 0); // Terminator
 
         // Send startup message
         try self.sendMessage(null, buffer.items);
@@ -258,6 +261,7 @@ pub const PostgreSQL = struct {
 
             switch (msg.type) {
                 'R' => { // Authentication
+                    if (msg.payload.len < 4) return error.MalformedAuthMessage;
                     const auth_type = std.mem.readInt(u32, msg.payload[0..4], .big);
                     switch (auth_type) {
                         0 => break, // Auth OK
@@ -304,7 +308,8 @@ pub const PostgreSQL = struct {
                     gop.value_ptr.* = value_copy;
                 },
                 'Z' => { // ReadyForQuery
-                    self.transaction_status = @enumFromInt(msg.payload[0]);
+                    if (msg.payload.len < 1) return error.MalformedReadyForQuery;
+                    self.transaction_status = @fromBackingInt(@intCast(msg.payload[0]));
                     break;
                 },
                 'E' => { // Error
@@ -322,9 +327,10 @@ pub const PostgreSQL = struct {
 
         var result = QueryResult{
             .allocator = self.allocator,
-            .rows = std.ArrayList(Row).init(self.allocator),
+            .rows = .empty,
             .affected_rows = 0,
         };
+        errdefer result.deinit();
 
         // Process response
         while (true) {
@@ -335,18 +341,19 @@ pub const PostgreSQL = struct {
                 'T' => { // RowDescription - ignore for now
                 },
                 'D' => { // DataRow
-                    const row = try self.parseDataRow(msg.payload);
-                    try result.rows.append(row);
+                    var row = try self.parseDataRow(msg.payload);
+                    errdefer row.deinit();
+                    try result.rows.append(self.allocator, row);
                 },
                 'C' => { // CommandComplete
                     result.affected_rows = (try decodeCommandComplete(msg.payload)).affectedRows();
                 },
                 'Z' => { // ReadyForQuery
-                    self.transaction_status = @enumFromInt(msg.payload[0]);
+                    if (msg.payload.len < 1) return error.MalformedReadyForQuery;
+                    self.transaction_status = @fromBackingInt(@intCast(msg.payload[0]));
                     break;
                 },
                 'E' => { // ErrorResponse
-                    result.deinit();
                     return error.QueryFailed;
                 },
                 else => {},
@@ -386,46 +393,48 @@ pub const PostgreSQL = struct {
     }
 
     fn sendMessage(self: *PostgreSQL, msg_type: ?u8, payload: []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
         if (msg_type) |t| {
-            try buffer.append(t);
+            try buffer.append(self.allocator, t);
         }
 
         const len: u32 = @intCast(payload.len + 4);
         var len_bytes: [4]u8 = undefined;
-        std.mem.writeIntBig(u32, &len_bytes, len);
-        try buffer.appendSlice(&len_bytes);
+        std.mem.writeInt(u32, &len_bytes, len, .big);
+        try buffer.appendSlice(self.allocator, &len_bytes);
 
-        try buffer.appendSlice(payload);
-        try self.stream.writeAll(buffer.items);
+        try buffer.appendSlice(self.allocator, payload);
+        try self.writeAll(buffer.items);
     }
 
     fn receiveMessage(self: *PostgreSQL) !struct { type: u8, payload: []u8 } {
         var msg_type: [1]u8 = undefined;
-        try self.stream.reader().readNoEof(&msg_type);
+        try self.readAll(&msg_type);
 
         var len_bytes: [4]u8 = undefined;
-        try self.stream.reader().readNoEof(&len_bytes);
-        const len = std.mem.readIntBig(u32, &len_bytes) - 4;
+        try self.readAll(&len_bytes);
+        const encoded_len = std.mem.readInt(u32, &len_bytes, .big);
+        if (encoded_len < 4) return error.MalformedMessageLength;
+        const len = encoded_len - 4;
 
         const payload = try self.allocator.alloc(u8, len);
         errdefer self.allocator.free(payload);
 
         if (len > 0) {
-            try self.stream.reader().readNoEof(payload);
+            try self.readAll(payload);
         }
 
         return .{ .type = msg_type[0], .payload = payload };
     }
 
     fn sendPasswordMessage(self: *PostgreSQL, password: []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
-        try buffer.appendSlice(password);
-        try buffer.append(0);
+        try buffer.appendSlice(self.allocator, password);
+        try buffer.append(self.allocator, 0);
 
         try self.sendMessage('p', buffer.items);
     }
@@ -436,22 +445,31 @@ pub const PostgreSQL = struct {
     }
 
     fn parseDataRow(self: *PostgreSQL, payload: []const u8) !Row {
-        const col_count = std.mem.readIntBig(u16, payload[0..2]);
+        if (payload.len < 2) return error.MalformedDataRow;
+        const col_count = std.mem.readInt(u16, payload[0..2], .big);
         var columns = try self.allocator.alloc([]const u8, col_count);
-        errdefer self.allocator.free(columns);
+        var initialized: usize = 0;
+        errdefer {
+            for (columns[0..initialized]) |column| self.allocator.free(column);
+            self.allocator.free(columns);
+        }
 
         var offset: usize = 2;
         for (0..col_count) |i| {
-            const len = std.mem.readIntBig(i32, payload[offset .. offset + 4]);
+            if (offset + 4 > payload.len) return error.MalformedDataRow;
+            const len = std.mem.readInt(i32, payload[offset..][0..4], .big);
             offset += 4;
 
             if (len == -1) {
                 columns[i] = try self.allocator.dupe(u8, "");
             } else {
+                if (len < 0) return error.MalformedDataRow;
                 const col_len: usize = @intCast(len);
+                if (offset + col_len > payload.len) return error.MalformedDataRow;
                 columns[i] = try self.allocator.dupe(u8, payload[offset .. offset + col_len]);
                 offset += col_len;
             }
+            initialized += 1;
         }
 
         return Row{ .allocator = self.allocator, .columns = columns };
@@ -463,46 +481,46 @@ pub const PostgreSQL = struct {
     }
 
     fn sendBindMessage(self: *PostgreSQL, name: []const u8, params: []const []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
-        try buffer.append(0); // Portal name
-        try buffer.appendSlice(name);
-        try buffer.append(0);
+        try buffer.append(self.allocator, 0); // Portal name
+        try buffer.appendSlice(self.allocator, name);
+        try buffer.append(self.allocator, 0);
 
         // Parameter format codes
-        try buffer.appendSlice(&[_]u8{ 0, 0 }); // All text
+        try buffer.appendSlice(self.allocator, &[_]u8{ 0, 0 }); // All text
 
         // Parameter count
         const param_count: u16 = @intCast(params.len);
         var count_bytes: [2]u8 = undefined;
-        std.mem.writeIntBig(u16, &count_bytes, param_count);
-        try buffer.appendSlice(&count_bytes);
+        std.mem.writeInt(u16, &count_bytes, param_count, .big);
+        try buffer.appendSlice(self.allocator, &count_bytes);
 
         // Parameters
         for (params) |param| {
             const len: i32 = @intCast(param.len);
             var len_bytes: [4]u8 = undefined;
-            std.mem.writeIntBig(i32, &len_bytes, len);
-            try buffer.appendSlice(&len_bytes);
-            try buffer.appendSlice(param);
+            std.mem.writeInt(i32, &len_bytes, len, .big);
+            try buffer.appendSlice(self.allocator, &len_bytes);
+            try buffer.appendSlice(self.allocator, param);
         }
 
         // Result format codes
-        try buffer.appendSlice(&[_]u8{ 0, 0 }); // All text
+        try buffer.appendSlice(self.allocator, &[_]u8{ 0, 0 }); // All text
 
         try self.sendMessage('B', buffer.items);
     }
 
     fn sendExecuteMessage(self: *PostgreSQL, portal: []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(self.allocator);
 
-        try buffer.appendSlice(portal);
-        try buffer.append(0);
+        try buffer.appendSlice(self.allocator, portal);
+        try buffer.append(self.allocator, 0);
 
         // Max rows (0 = unlimited)
-        try buffer.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+        try buffer.appendSlice(self.allocator, &[_]u8{ 0, 0, 0, 0 });
 
         try self.sendMessage('E', buffer.items);
     }
@@ -510,9 +528,10 @@ pub const PostgreSQL = struct {
     fn readQueryResult(self: *PostgreSQL) !QueryResult {
         var result = QueryResult{
             .allocator = self.allocator,
-            .rows = std.ArrayList(Row).init(self.allocator),
+            .rows = .empty,
             .affected_rows = 0,
         };
+        errdefer result.deinit();
 
         while (true) {
             const msg = try self.receiveMessage();
@@ -520,18 +539,19 @@ pub const PostgreSQL = struct {
 
             switch (msg.type) {
                 'D' => {
-                    const row = try self.parseDataRow(msg.payload);
-                    try result.rows.append(row);
+                    var row = try self.parseDataRow(msg.payload);
+                    errdefer row.deinit();
+                    try result.rows.append(self.allocator, row);
                 },
                 'C' => {
                     result.affected_rows = (try decodeCommandComplete(msg.payload)).affectedRows();
                 },
                 'Z' => {
-                    self.transaction_status = @enumFromInt(msg.payload[0]);
+                    if (msg.payload.len < 1) return error.MalformedReadyForQuery;
+                    self.transaction_status = @fromBackingInt(@intCast(msg.payload[0]));
                     break;
                 },
                 'E' => {
-                    result.deinit();
                     return error.QueryFailed;
                 },
                 else => {},
@@ -544,7 +564,38 @@ pub const PostgreSQL = struct {
     fn terminate(self: *PostgreSQL) !void {
         try self.sendMessage('X', &.{});
     }
+
+    fn writeAll(self: *PostgreSQL, bytes: []const u8) !void {
+        var buffer: [4096]u8 = undefined;
+        var stream_writer = self.stream.writer(self.io, &buffer);
+        const writer = &stream_writer.interface;
+        try writer.writeAll(bytes);
+        try writer.flush();
+    }
+
+    fn readAll(self: *PostgreSQL, bytes: []u8) !void {
+        var offset: usize = 0;
+        while (offset < bytes.len) {
+            var buffers: [1][]u8 = .{bytes[offset..]};
+            const read_len = try self.stream.read(self.io, &buffers);
+            if (read_len == 0) return error.EndOfStream;
+            offset += read_len;
+        }
+    }
 };
+
+fn connectToHost(config: PostgreSQL.Config) !net.Stream {
+    const options: net.IpAddress.ConnectOptions = .{
+        .mode = .stream,
+        .protocol = .tcp,
+    };
+    if (net.IpAddress.parse(config.host, config.port)) |address| {
+        return address.connect(config.io, options);
+    } else |_| {}
+
+    const host_name = try net.HostName.init(config.host);
+    return host_name.connect(config.io, config.port, options);
+}
 
 /// Format PostgreSQL's legacy MD5 password response, including its trailing
 /// zero byte for the PasswordMessage payload.
@@ -579,16 +630,16 @@ pub const ConnectionPool = struct {
     connections: std.ArrayList(*PostgreSQL),
     available: std.ArrayList(*PostgreSQL),
     max_connections: usize,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: PostgreSQL.Config, max_connections: usize) ConnectionPool {
         return .{
             .allocator = allocator,
             .config = config,
-            .connections = std.ArrayList(*PostgreSQL).init(allocator),
-            .available = std.ArrayList(*PostgreSQL).init(allocator),
+            .connections = .empty,
+            .available = .empty,
             .max_connections = max_connections,
-            .mutex = .{},
+            .mutex = .init,
         };
     }
 
@@ -597,22 +648,24 @@ pub const ConnectionPool = struct {
             conn.deinit();
             self.allocator.destroy(conn);
         }
-        self.connections.deinit();
-        self.available.deinit();
+        self.connections.deinit(self.allocator);
+        self.available.deinit(self.allocator);
     }
 
     pub fn acquire(self: *ConnectionPool) !*PostgreSQL {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        if (self.available.popOrNull()) |conn| {
+        if (self.available.pop()) |conn| {
             return conn;
         }
 
         if (self.connections.items.len < self.max_connections) {
             const conn = try self.allocator.create(PostgreSQL);
+            errdefer self.allocator.destroy(conn);
             conn.* = try PostgreSQL.connect(self.allocator, self.config);
-            try self.connections.append(conn);
+            errdefer conn.deinit();
+            try self.connections.append(self.allocator, conn);
             return conn;
         }
 
@@ -620,9 +673,13 @@ pub const ConnectionPool = struct {
     }
 
     pub fn release(self: *ConnectionPool, conn: *PostgreSQL) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        try self.available.append(conn);
+        try self.available.append(self.allocator, conn);
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

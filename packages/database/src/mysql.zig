@@ -1,8 +1,8 @@
 const std = @import("std");
+const net = std.Io.net;
 
 /// MySQL Database Driver for Home
 /// Async MySQL client with connection pooling
-
 pub const MySQLError = error{
     ConnectionFailed,
     QueryFailed,
@@ -11,6 +11,7 @@ pub const MySQLError = error{
 };
 
 pub const Config = struct {
+    io: std.Io,
     host: []const u8 = "localhost",
     port: u16 = 3306,
     database: []const u8,
@@ -24,7 +25,7 @@ pub const Config = struct {
 pub const Connection = struct {
     allocator: std.mem.Allocator,
     config: Config,
-    socket: ?std.net.Stream = null,
+    socket: ?net.Stream = null,
 
     pub fn connect(allocator: std.mem.Allocator, config: Config) !Connection {
         var conn = Connection{
@@ -32,8 +33,8 @@ pub const Connection = struct {
             .config = config,
         };
 
-        const address = try std.net.Address.parseIp(config.host, config.port);
-        conn.socket = try std.net.tcpConnectToAddress(address);
+        conn.socket = try connectToHost(config);
+        errdefer conn.deinit();
 
         try conn.handshake();
         return conn;
@@ -41,7 +42,8 @@ pub const Connection = struct {
 
     pub fn deinit(self: *Connection) void {
         if (self.socket) |sock| {
-            sock.close();
+            sock.close(self.config.io);
+            self.socket = null;
         }
     }
 
@@ -56,11 +58,10 @@ pub const Connection = struct {
     }
 
     pub fn query(self: *Connection, sql: []const u8) !QueryResult {
-        _ = self;
         _ = sql;
         return QueryResult{
             .allocator = self.allocator,
-            .rows = std.ArrayList(Row).init(self.allocator),
+            .rows = .empty,
         };
     }
 
@@ -83,7 +84,7 @@ pub const QueryResult = struct {
     current_row: usize = 0,
 
     pub fn deinit(self: *QueryResult) void {
-        self.rows.deinit();
+        self.rows.deinit(self.allocator);
     }
 
     pub fn next(self: *QueryResult) ?*Row {
@@ -107,14 +108,14 @@ pub const Pool = struct {
     allocator: std.mem.Allocator,
     config: Config,
     connections: std.ArrayList(*Connection),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Pool {
         return .{
             .allocator = allocator,
             .config = config,
-            .connections = std.ArrayList(*Connection).init(allocator),
-            .mutex = .{},
+            .connections = .empty,
+            .mutex = .init,
         };
     }
 
@@ -123,25 +124,43 @@ pub const Pool = struct {
             conn.deinit();
             self.allocator.destroy(conn);
         }
-        self.connections.deinit();
+        self.connections.deinit(self.allocator);
     }
 
     pub fn acquire(self: *Pool) !*Connection {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.connections.items.len > 0) {
-            return self.connections.pop();
+            return self.connections.pop().?;
         }
 
         const conn = try self.allocator.create(Connection);
+        errdefer self.allocator.destroy(conn);
         conn.* = try Connection.connect(self.allocator, self.config);
         return conn;
     }
 
     pub fn release(self: *Pool, conn: *Connection) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        try self.connections.append(conn);
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
+        try self.connections.append(self.allocator, conn);
     }
 };
+
+fn connectToHost(config: Config) !net.Stream {
+    const options: net.IpAddress.ConnectOptions = .{
+        .mode = .stream,
+        .protocol = .tcp,
+    };
+    if (net.IpAddress.parse(config.host, config.port)) |address| {
+        return address.connect(config.io, options);
+    } else |_| {}
+
+    const host_name = try net.HostName.init(config.host);
+    return host_name.connect(config.io, config.port, options);
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}
