@@ -520,3 +520,11 @@ test "config init" {
     const config = Config.init(creds, .us_east_1);
     try std.testing.expectEqual(Region.us_east_1, config.region);
 }
+
+test "public runtime service declarations" {
+    std.testing.refAllDecls(sqs);
+    std.testing.refAllDecls(ses);
+    std.testing.refAllDecls(sns);
+    std.testing.refAllDecls(dynamodb);
+    std.testing.refAllDecls(s3);
+}
