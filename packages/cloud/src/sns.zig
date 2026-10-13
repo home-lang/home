@@ -69,6 +69,7 @@ pub const Protocol = enum {
 
 /// SNS client
 pub const Client = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     config: aws.Config,
     signer: aws.Signer,
@@ -76,8 +77,9 @@ pub const Client = struct {
     const Self = @This();
     const SERVICE = "sns";
 
-    pub fn init(allocator: std.mem.Allocator, config: aws.Config) Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: aws.Config) Self {
         return .{
+            .io = io,
             .allocator = allocator,
             .config = config,
             .signer = aws.Signer.init(allocator, config.credentials, config.region.toString(), SERVICE),
@@ -107,7 +109,7 @@ pub const Client = struct {
         _ = message;
         _ = topic_arn;
 
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(self.io).toSeconds();
 
         var signed = try self.signer.sign(
             "POST",
@@ -141,15 +143,16 @@ pub const Client = struct {
 
     /// Create a new topic
     pub fn createTopic(self: *Self, name: []const u8) ![]const u8 {
-        var arn: std.ArrayList(u8) = .empty;
-        const writer = arn.writer(self.allocator);
+        var arn: std.Io.Writer.Allocating = .init(self.allocator);
+        defer arn.deinit();
+        const writer = &arn.writer;
 
         try writer.print("arn:aws:sns:{s}:123456789012:{s}", .{
             self.config.region.toString(),
             name,
         });
 
-        return arn.toOwnedSlice(self.allocator);
+        return arn.toOwnedSlice();
     }
 
     /// Delete a topic
@@ -265,7 +268,7 @@ test "sns client init" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     _ = &client;
 }
 
@@ -274,7 +277,7 @@ test "sns publish" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     var result = try client.publish("arn:aws:sns:us-east-1:123:test", "Hello");
     defer result.deinit();
 
@@ -286,7 +289,7 @@ test "sns create topic" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     const arn = try client.createTopic("my-topic");
     defer allocator.free(arn);
 

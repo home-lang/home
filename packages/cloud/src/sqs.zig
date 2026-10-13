@@ -35,6 +35,7 @@ pub const SendMessageResult = struct {
 
 /// SQS client
 pub const Client = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     config: aws.Config,
     signer: aws.Signer,
@@ -42,8 +43,9 @@ pub const Client = struct {
     const Self = @This();
     const SERVICE = "sqs";
 
-    pub fn init(allocator: std.mem.Allocator, config: aws.Config) Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: aws.Config) Self {
         return .{
+            .io = io,
             .allocator = allocator,
             .config = config,
             .signer = aws.Signer.init(allocator, config.credentials, config.region.toString(), SERVICE),
@@ -72,9 +74,9 @@ pub const Client = struct {
         _ = queue_url;
 
         // Build request body
-        var body: std.ArrayList(u8) = .empty;
-        defer body.deinit(self.allocator);
-        const writer = body.writer(self.allocator);
+        var body: std.Io.Writer.Allocating = .init(self.allocator);
+        defer body.deinit();
+        const writer = &body.writer;
 
         try writer.writeAll("Action=SendMessage");
         try writer.writeAll("&MessageBody=");
@@ -82,7 +84,7 @@ pub const Client = struct {
         try writer.writeAll("&Version=2012-11-05");
 
         // Get current timestamp
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(self.io).toSeconds();
 
         // Sign the request
         var signed = try self.signer.sign(
@@ -93,7 +95,7 @@ pub const Client = struct {
                 .{ "Content-Type", "application/x-www-form-urlencoded" },
                 .{ "Host", self.getHost() },
             },
-            body.items,
+            body.written(),
             timestamp,
         );
         defer signed.deinit();
@@ -152,15 +154,16 @@ pub const Client = struct {
 
     /// Get the queue URL for a queue name
     pub fn getQueueUrl(self: *Self, queue_name: []const u8) ![]const u8 {
-        var url: std.ArrayList(u8) = .empty;
-        const writer = url.writer(self.allocator);
+        var url: std.Io.Writer.Allocating = .init(self.allocator);
+        defer url.deinit();
+        const writer = &url.writer;
 
         try writer.print("https://sqs.{s}.amazonaws.com/account/{s}", .{
             self.config.region.toString(),
             queue_name,
         });
 
-        return url.toOwnedSlice(self.allocator);
+        return url.toOwnedSlice();
     }
 
     /// Purge all messages from a queue
@@ -200,7 +203,7 @@ test "sqs client init" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     _ = &client;
 }
 
@@ -209,7 +212,7 @@ test "sqs send message" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     var result = try client.sendMessage("https://sqs.us-east-1.amazonaws.com/123/test", "Hello");
     defer result.deinit();
 

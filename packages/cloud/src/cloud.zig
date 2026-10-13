@@ -187,9 +187,9 @@ pub const Signer = struct {
         @memcpy(&date_buf, date);
 
         // Create canonical request
-        var canonical: std.ArrayList(u8) = .empty;
-        defer canonical.deinit(self.allocator);
-        const cw = canonical.writer(self.allocator);
+        var canonical: std.Io.Writer.Allocating = .init(self.allocator);
+        defer canonical.deinit();
+        const cw = &canonical.writer;
 
         // Method
         try cw.writeAll(method);
@@ -222,7 +222,7 @@ pub const Signer = struct {
         for (header_names.items) |name| {
             for (headers) |h| {
                 if (std.ascii.eqlIgnoreCase(h[0], name)) {
-                    try cw.writeAll(toLower(self.allocator, name) catch name);
+                    try writeLowerAscii(cw, name);
                     try cw.writeAll(":");
                     try cw.writeAll(h[1]);
                     try cw.writeAll("\n");
@@ -233,16 +233,16 @@ pub const Signer = struct {
         try cw.writeAll("\n");
 
         // Signed headers
-        var signed_headers: std.ArrayList(u8) = .empty;
-        defer signed_headers.deinit(self.allocator);
-        const shw = signed_headers.writer(self.allocator);
+        var signed_headers: std.Io.Writer.Allocating = .init(self.allocator);
+        defer signed_headers.deinit();
+        const shw = &signed_headers.writer;
 
         for (header_names.items, 0..) |name, i| {
             if (i > 0) try shw.writeAll(";");
-            try shw.writeAll(toLower(self.allocator, name) catch name);
+            try writeLowerAscii(shw, name);
         }
 
-        try cw.writeAll(signed_headers.items);
+        try cw.writeAll(signed_headers.written());
         try cw.writeAll("\n");
 
         // Payload hash
@@ -252,12 +252,12 @@ pub const Signer = struct {
 
         // Hash the canonical request
         var canonical_hash: [64]u8 = undefined;
-        sha256Hex(canonical.items, &canonical_hash);
+        sha256Hex(canonical.written(), &canonical_hash);
 
         // Create string to sign
-        var string_to_sign: std.ArrayList(u8) = .empty;
-        defer string_to_sign.deinit(self.allocator);
-        const stsw = string_to_sign.writer(self.allocator);
+        var string_to_sign: std.Io.Writer.Allocating = .init(self.allocator);
+        defer string_to_sign.deinit();
+        const stsw = &string_to_sign.writer;
 
         try stsw.writeAll("AWS4-HMAC-SHA256\n");
         try stsw.writeAll(datetime);
@@ -281,38 +281,35 @@ pub const Signer = struct {
 
         // Calculate signature
         var signature: [32]u8 = undefined;
-        hmacSha256(&k_signing, string_to_sign.items, &signature);
+        hmacSha256(&k_signing, string_to_sign.written(), &signature);
 
         var signature_hex: [64]u8 = undefined;
-        _ = std.fmt.bufPrint(&signature_hex, "{}", .{std.fmt.fmtSliceHexLower(&signature)}) catch {};
+        _ = std.fmt.bufPrint(&signature_hex, "{x}", .{signature}) catch {};
 
         // Build authorization header
-        var auth_header: std.ArrayList(u8) = .empty;
-        const ahw = auth_header.writer(self.allocator);
+        var auth_header: std.Io.Writer.Allocating = .init(self.allocator);
+        defer auth_header.deinit();
+        const ahw = &auth_header.writer;
 
         try ahw.print("AWS4-HMAC-SHA256 Credential={s}/{s}/{s}/{s}/aws4_request, SignedHeaders={s}, Signature={s}", .{
             self.credentials.access_key_id,
             &date_buf,
             self.region,
             self.service,
-            signed_headers.items,
+            signed_headers.written(),
             &signature_hex,
         });
 
         return SignedRequest{
-            .authorization = try auth_header.toOwnedSlice(self.allocator),
+            .authorization = try auth_header.toOwnedSlice(),
             .x_amz_date = try self.allocator.dupe(u8, datetime),
             .x_amz_content_sha256 = try self.allocator.dupe(u8, &payload_hash),
             .allocator = self.allocator,
         };
     }
 
-    fn toLower(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-        var lower = try allocator.alloc(u8, s.len);
-        for (s, 0..) |c, i| {
-            lower[i] = std.ascii.toLower(c);
-        }
-        return lower;
+    fn writeLowerAscii(writer: *std.Io.Writer, value: []const u8) !void {
+        for (value) |byte| try writer.writeByte(std.ascii.toLower(byte));
     }
 
     fn formatIso8601(buf: *[16]u8, timestamp: i64) []const u8 {
@@ -357,7 +354,7 @@ pub const Signer = struct {
     fn sha256Hex(data: []const u8, out: *[64]u8) void {
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(data, &hash, .{});
-        _ = std.fmt.bufPrint(out, "{}", .{std.fmt.fmtSliceHexLower(&hash)}) catch {};
+        _ = std.fmt.bufPrint(out, "{x}", .{hash}) catch {};
     }
 
     fn hmacSha256(key: []const u8, data: []const u8, out: *[32]u8) void {
