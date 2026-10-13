@@ -1,0 +1,224 @@
+{
+  "schema": 1,
+  "runtime_main_commit": "7e0f249a26db9ec12ed01f8db5952a29529086e8",
+  "unverified_source_commit": "0ebc3c20842550713a86b30e786d6ab65e00a201",
+  "recovery_branch": "codex/profiler-sharing-unverified",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "results": {
+    "node_coexistence_exit": 0,
+    "previous_home_coexistence_exit": 1,
+    "build_attempts": 8,
+    "disk_guard_stops": 7,
+    "host_memory_guard_stops": 1,
+    "new_runtime_pass_credit": false,
+    "pickier_errors": 0,
+    "pickier_warnings": 0,
+    "approximate_cleanup_gib": 10.6
+  },
+  "findings": [
+    "The bounded ordinary Node control retains CLI before/during/after samples and inspector-only session samples. Previous main Home rejects Profiler.start while CLI profiling is active with Another native profiler owner is active.",
+    "The pushed recovery source introduces detached native trace records, independent native/inspector ownership, shortest active sampling cadence and preserved CLI JSON/Markdown data. It has not completed a build or runtime validation; it is excluded from main.",
+    "All eight normal Debug attempts stopped at enforced shared disk/host memory limits. Successful native compiler steps do not establish runtime correctness. Original inspector conflict #886 remains unchanged."
+  ],
+  "files": [
+    {
+      "file": "archive.py",
+      "archive": "raw/archive.py.gz",
+      "bytes": 2253,
+      "sha256": "3415819bfea650e7d1b3d4bce1c655841d7bb502edd92b2801a4375c67305d0e"
+    },
+    {
+      "file": "audit-originals.py",
+      "archive": "raw/audit-originals.py.gz",
+      "bytes": 1341,
+      "sha256": "31b9092b8380e78053cbcbd647fee1d7256361326892661b72b97e9ff1f9f532"
+    },
+    {
+      "file": "baseline-executable.json",
+      "archive": "raw/baseline-executable.json.gz",
+      "bytes": 166,
+      "sha256": "d92daaa23a60fa95a07cba957584b5c4a06af7165cfff0bcf28ec032163fd74f"
+    },
+    {
+      "file": "baseline-summary.json",
+      "archive": "raw/baseline-summary.json.gz",
+      "bytes": 259,
+      "sha256": "58814ee0585c03f657982d8c4f2ddcc471013c250d85a2ed4bb31caaeecc87b8"
+    },
+    {
+      "file": "build-disk-stop.json",
+      "archive": "raw/build-disk-stop.json.gz",
+      "bytes": 100,
+      "sha256": "2d2fffc445fe1ee8b78c835c194ce046c4ea038187f2b16325aaccde5a5880be"
+    },
+    {
+      "file": "build-eighth-disk-stop.json",
+      "archive": "raw/build-eighth-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "bd7166ed42b8f7df766221468c7cccec598b3b025d1d3e92eefe1a622c3d7d1c"
+    },
+    {
+      "file": "build-eighth.log",
+      "archive": "raw/build-eighth.log.gz",
+      "bytes": 77,
+      "sha256": "b340d6e3b0a335f3c5ddbb0cb2601817cac0bdd5a400c412fa1a024488e6b257"
+    },
+    {
+      "file": "build-fifth-disk-stop.json",
+      "archive": "raw/build-fifth-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "db04757ce8763c7d539b2aa4ce979ce804cb2fe9f573e4e69682c6c5f036cfed"
+    },
+    {
+      "file": "build-fifth.log",
+      "archive": "raw/build-fifth.log.gz",
+      "bytes": 77,
+      "sha256": "7c7e44ba31764d6706f53cb03e8426cc22efdd7557598fa7a71ef6eed951e8db"
+    },
+    {
+      "file": "build-final-disk-stop.json",
+      "archive": "raw/build-final-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "3aaec7812ff714883eeb3de32a340a034abc5abacbd87341a6cd6480c1c093ca"
+    },
+    {
+      "file": "build-final.log",
+      "archive": "raw/build-final.log.gz",
+      "bytes": 77,
+      "sha256": "dfd73ed07d537bc532ddf1ef66c544a16c063ed30e5b756debf69b802c889ef2"
+    },
+    {
+      "file": "build-fourth-disk-stop.json",
+      "archive": "raw/build-fourth-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "80ea1859e840298036e687689afe35edb4cb861b04ddf89f7f88335ece9404d3"
+    },
+    {
+      "file": "build-fourth.log",
+      "archive": "raw/build-fourth.log.gz",
+      "bytes": 77,
+      "sha256": "d843c97677b1c008918a86ffc7882458bf477e0c9a1d57e9385dcc72541a9e80"
+    },
+    {
+      "file": "build-resumed-disk-stop.json",
+      "archive": "raw/build-resumed-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "cedb9454f210de72ca65933dde8f92eca4809601538f61aa5d308f806ad574be"
+    },
+    {
+      "file": "build-resumed.log",
+      "archive": "raw/build-resumed.log.gz",
+      "bytes": 77,
+      "sha256": "0f4a261068d48bae19814d740b2028abfff834d398051f9f059cdedb0e1be63c"
+    },
+    {
+      "file": "build-seventh-disk-stop.json",
+      "archive": "raw/build-seventh-disk-stop.json.gz",
+      "bytes": 103,
+      "sha256": "0e46a0c0fee27859835e131b6968cf01a1880aa07cc04a17a877a87f6cba129c"
+    },
+    {
+      "file": "build-seventh.log",
+      "archive": "raw/build-seventh.log.gz",
+      "bytes": 77,
+      "sha256": "8b7c3e75ba7ceb68d01356e25b5e4c41619141db8d904e41ed0a4e593819fa21"
+    },
+    {
+      "file": "build-sixth-memory-stop.json",
+      "archive": "raw/build-sixth-memory-stop.json.gz",
+      "bytes": 118,
+      "sha256": "44a40e0ba7d80fb71fe2d16cc9801c05a31af41bbd83cf614e34217addddbe26"
+    },
+    {
+      "file": "build-sixth.log",
+      "archive": "raw/build-sixth.log.gz",
+      "bytes": 122,
+      "sha256": "63edb61b41cdc8109da571af1e1388b1bc7778721a5e1c0c1b1d77ab6e061b03"
+    },
+    {
+      "file": "build-source-hashes.json",
+      "archive": "raw/build-source-hashes.json.gz",
+      "bytes": 661,
+      "sha256": "915f57fd29a88379181af0dc285d18f9cf00c2017524be26a157218541bca0bb"
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "bytes": 369,
+      "sha256": "f47a1f5ff93248edbb6f4adb5d64df98b05a61e229e61f980e175c1abc4526c9"
+    },
+    {
+      "file": "edit.py",
+      "archive": "raw/edit.py.gz",
+      "bytes": 9328,
+      "sha256": "d4a4b1c50e606e4e5cd0aa17bf4fca241cf3f4445364da044a5ad68d13d25e83"
+    },
+    {
+      "file": "home/baseline.log",
+      "archive": "raw/home/baseline.log.gz",
+      "bytes": 865,
+      "sha256": "cfe4ac7760f93a35f589d89160decb5107ca1a484fe08dbc2eee351e23185167"
+    },
+    {
+      "file": "node/baseline.log",
+      "archive": "raw/node/baseline.log.gz",
+      "bytes": 5,
+      "sha256": "d117fa006ba9208500b2930ce69cbde436c647afa917cb7396a9bc9111a46dd2"
+    },
+    {
+      "file": "pickier-explicit-final.json",
+      "archive": "raw/pickier-explicit-final.json.gz",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "pickier-explicit.json",
+      "archive": "raw/pickier-explicit.json.gz",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "pickier.json",
+      "archive": "raw/pickier.json.gz",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "recovery-commit.txt",
+      "archive": "raw/recovery-commit.txt.gz",
+      "bytes": 41,
+      "sha256": "1a03877092aa6a8bfa8df49a7eb33f2f804e97d2c85d45b7d40b8fa54cd88885"
+    },
+    {
+      "file": "recovery-tree.txt",
+      "archive": "raw/recovery-tree.txt.gz",
+      "bytes": 41,
+      "sha256": "c273231eee73f2cb6282e7ed50f678aafd8265c9981915e8091b4a6637a43efc"
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "bytes": 852,
+      "sha256": "f018e094ec5da7f741cda95020850a0041c79aecba62fe10689018effcdcf7cf"
+    },
+    {
+      "file": "run-validation.py",
+      "archive": "raw/run-validation.py.gz",
+      "bytes": 1526,
+      "sha256": "bf3f44c275d257cb7ea15788423375459277c3a3cb4a028c0950bb1d594aa693"
+    },
+    {
+      "file": "source.patch",
+      "archive": "raw/source.patch.gz",
+      "bytes": 35669,
+      "sha256": "44167a87e55c50337f66ea7cbcdd34199664d463b3b8c38670c9b913c5620a0b"
+    },
+    {
+      "file": "validate-all-reports.py",
+      "archive": "raw/validate-all-reports.py.gz",
+      "bytes": 838,
+      "sha256": "c8692d379bb81c68db54d3de5ef2c793be1fbe0ced2ad61ce6e1d2a3d328c6ef"
+    }
+  ]
+}
