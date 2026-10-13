@@ -207,6 +207,10 @@ for (let index = 0; index < remoteHandles.length; index++) {
   assert.equal(properties.result.find(property => property.name === 'answer').value.value, index === 0 ? 41 : 42)
   await realmSession.post('Runtime.releaseObject', { objectId: remoteHandles[index] })
 }
+for (const contextId of ['invalid', null, 1.5]) {
+  await assert.rejects(realmSession.post('Runtime.evaluate', { expression: '42', contextId }), error => error.code === 'ERR_INSPECTOR_COMMAND' && error.message.includes('-32602'))
+}
+await assert.rejects(realmSession.post('Runtime.evaluate', { expression: '42', contextId: 2147483647 }), error => error.code === 'ERR_INSPECTOR_COMMAND')
 // Missing objectId after maps are populated still dispatches owner evaluation.
 assert.equal((await realmSession.post('Runtime.evaluate', { expression: '6 * 7', returnByValue: true })).result.value, 42)
 await realmSession.post('Runtime.disable')

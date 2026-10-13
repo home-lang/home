@@ -9,6 +9,7 @@
 #include <wtf/HashMap.h>
 #include <atomic>
 #include <limits>
+#include <cmath>
 #include "ScriptExecutionContext.h"
 #include "HomeInspectorAgents.h"
 #include "HomeInspectorRealms.h"
@@ -157,6 +158,13 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     auto params=request.getObject("params"_s);
     if(!params) return false;
     if(request.getString("method"_s)=="Runtime.releaseObjectGroup"_s) {channel.releaseRealmGroups(params->getString("objectGroup"_s));return false;}
+    for(auto key:{"contextId"_s,"executionContextId"_s}) if(auto supplied=params->getValue(key)) {
+        auto value=supplied->asDouble();
+        if(!value || !std::isfinite(*value) || std::trunc(*value)!=*value || *value<std::numeric_limits<int>::min() || *value>std::numeric_limits<int>::max()) {
+            auto error=JSON::Object::create();error->setInteger("code"_s,-32602);error->setString("message"_s,makeString(key," must be an integer"_s));
+            auto response=JSON::Object::create();response->setInteger("id"_s,*request.getInteger("id"_s));response->setObject("error"_s,WTF::move(error));channel.sendMessageToFrontend(response->toJSONString());return true;
+        }
+    }
     auto requested=params->getInteger("contextId"_s);
     if(!requested) requested=params->getInteger("executionContextId"_s);
     if(!requested) {

@@ -1,10 +1,8 @@
 const std = @import("std");
-const posix = std.posix;
+const net = std.Io.net;
 
-/// Helper to get current timestamp (Zig 0.16 compatible)
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+fn getTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toSeconds();
 }
 
 /// Cache driver types
@@ -22,10 +20,11 @@ pub const CacheEntry = struct {
     created_at: i64,
     tags: ?[]const []const u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator, value: []const u8, ttl_seconds: ?i64) !*CacheEntry {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, value: []const u8, ttl_seconds: ?i64) !*CacheEntry {
         const entry = try allocator.create(CacheEntry);
-        const now = getTimestamp();
+        const now = getTimestamp(io);
 
         entry.* = .{
             .value = try allocator.dupe(u8, value),
@@ -33,6 +32,7 @@ pub const CacheEntry = struct {
             .created_at = now,
             .tags = null,
             .allocator = allocator,
+            .io = io,
         };
 
         return entry;
@@ -51,14 +51,14 @@ pub const CacheEntry = struct {
 
     pub fn isExpired(self: *const CacheEntry) bool {
         if (self.expires_at) |expires| {
-            return getTimestamp() >= expires;
+            return getTimestamp(self.io) >= expires;
         }
         return false;
     }
 
     pub fn remainingTtl(self: *const CacheEntry) ?i64 {
         if (self.expires_at) |expires| {
-            const remaining = expires - getTimestamp();
+            const remaining = expires - getTimestamp(self.io);
             return if (remaining > 0) remaining else 0;
         }
         return null;
@@ -67,6 +67,7 @@ pub const CacheEntry = struct {
 
 /// Cache configuration
 pub const CacheConfig = struct {
+    io: std.Io,
     driver_type: CacheDriverType,
     prefix: []const u8,
     default_ttl: ?i64, // Default TTL in seconds
@@ -89,8 +90,9 @@ pub const CacheConfig = struct {
     dynamodb_region: ?[]const u8,
     dynamodb_endpoint: ?[]const u8,
 
-    pub fn memory() CacheConfig {
+    pub fn memory(io: std.Io) CacheConfig {
         return .{
+            .io = io,
             .driver_type = .memory,
             .prefix = "home",
             .default_ttl = 3600, // 1 hour
@@ -109,23 +111,23 @@ pub const CacheConfig = struct {
         };
     }
 
-    pub fn redis(host: []const u8, port: u16) CacheConfig {
-        var config = memory();
+    pub fn redis(io: std.Io, host: []const u8, port: u16) CacheConfig {
+        var config = memory(io);
         config.driver_type = .redis;
         config.redis_host = host;
         config.redis_port = port;
         return config;
     }
 
-    pub fn filesystem(directory: []const u8) CacheConfig {
-        var config = memory();
+    pub fn filesystem(io: std.Io, directory: []const u8) CacheConfig {
+        var config = memory(io);
         config.driver_type = .filesystem;
         config.fs_directory = directory;
         return config;
     }
 
-    pub fn dynamodb(table: []const u8, region: []const u8) CacheConfig {
-        var config = memory();
+    pub fn dynamodb(io: std.Io, table: []const u8, region: []const u8) CacheConfig {
+        var config = memory(io);
         config.driver_type = .dynamodb;
         config.dynamodb_table = table;
         config.dynamodb_region = region;
@@ -216,7 +218,7 @@ pub const MemoryCacheDriver = struct {
     head: ?*LRUNode, // Most recently used
     tail: ?*LRUNode, // Least recently used
     current_size: usize,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -229,7 +231,7 @@ pub const MemoryCacheDriver = struct {
             .head = null,
             .tail = null,
             .current_size = 0,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -343,8 +345,8 @@ pub const MemoryCacheDriver = struct {
 
     fn get(ptr: *anyopaque, key: []const u8) ?[]const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.cache.get(key)) |node| {
             if (node.entry.isExpired()) {
@@ -359,8 +361,8 @@ pub const MemoryCacheDriver = struct {
 
     fn set(ptr: *anyopaque, key: []const u8, value: []const u8, ttl: ?i64) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const effective_ttl = ttl orelse self.config.default_ttl;
 
@@ -368,7 +370,7 @@ pub const MemoryCacheDriver = struct {
         if (self.cache.get(key)) |existing| {
             // Update existing entry
             existing.entry.deinit();
-            existing.entry = try CacheEntry.init(self.allocator, value, effective_ttl);
+            existing.entry = try CacheEntry.init(self.allocator, self.config.io, value, effective_ttl);
             self.moveToFront(existing);
             return;
         }
@@ -381,7 +383,7 @@ pub const MemoryCacheDriver = struct {
         }
 
         // Create new entry
-        const entry = try CacheEntry.init(self.allocator, value, effective_ttl);
+        const entry = try CacheEntry.init(self.allocator, self.config.io, value, effective_ttl);
         const node = try self.allocator.create(LRUNode);
         node.* = .{
             .key = try self.allocator.dupe(u8, key),
@@ -404,8 +406,8 @@ pub const MemoryCacheDriver = struct {
 
     fn has(ptr: *anyopaque, key: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.cache.get(key)) |node| {
             return !node.entry.isExpired();
@@ -415,16 +417,16 @@ pub const MemoryCacheDriver = struct {
 
     fn del(ptr: *anyopaque, key: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         return self.delInternal(key);
     }
 
     fn clear(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         var it = self.cache.iterator();
         while (it.next()) |entry| {
@@ -440,15 +442,15 @@ pub const MemoryCacheDriver = struct {
 
     fn size(ptr: *anyopaque) usize {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
         return self.current_size;
     }
 
     fn keys(ptr: *anyopaque, pattern: ?[]const u8) []const []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         var result: std.ArrayList([]const u8) = .empty;
         var it = self.cache.iterator();
@@ -511,7 +513,7 @@ pub const FilesystemCacheDriver = struct {
     allocator: std.mem.Allocator,
     config: CacheConfig,
     directory: []const u8,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -519,7 +521,7 @@ pub const FilesystemCacheDriver = struct {
         const dir = config.fs_directory orelse "./cache";
 
         // Create cache directory
-        std.fs.cwd().makePath(dir) catch |err| {
+        std.Io.Dir.cwd().createDirPath(config.io, dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
 
@@ -528,7 +530,7 @@ pub const FilesystemCacheDriver = struct {
             .allocator = allocator,
             .config = config,
             .directory = try allocator.dupe(u8, dir),
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -565,78 +567,83 @@ pub const FilesystemCacheDriver = struct {
 
     fn get(ptr: *anyopaque, key: []const u8) ?[]const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const path = self.getCachePath(key) catch return null;
         defer self.allocator.free(path);
 
-        const file = std.fs.cwd().openFile(path, .{}) catch return null;
-        defer file.close();
+        const file = std.Io.Dir.cwd().openFile(self.config.io, path, .{}) catch return null;
+        defer file.close(self.config.io);
 
         // Read header (key_len:u32, ttl:i64, key:...)
         var header_buf: [12]u8 = undefined;
-        _ = file.preadAll(&header_buf, 0) catch return null;
+        const header_read = file.readPositionalAll(self.config.io, &header_buf, 0) catch return null;
+        if (header_read != header_buf.len) return null;
 
         const key_len = std.mem.readInt(u32, header_buf[0..4], .little);
         const expires_at = std.mem.readInt(i64, header_buf[4..12], .little);
+        if (key_len > 1024 * 1024) return null;
 
         // Check expiration
-        if (expires_at != 0 and getTimestamp() >= expires_at) {
-            std.fs.cwd().deleteFile(path) catch {};
+        if (expires_at != 0 and getTimestamp(self.config.io) >= expires_at) {
+            std.Io.Dir.cwd().deleteFile(self.config.io, path) catch {};
             return null;
         }
 
         // Read and verify key
         const stored_key = self.allocator.alloc(u8, key_len) catch return null;
         defer self.allocator.free(stored_key);
-        _ = file.preadAll(stored_key, 12) catch return null;
+        const key_read = file.readPositionalAll(self.config.io, stored_key, 12) catch return null;
+        if (key_read != stored_key.len) return null;
 
         if (!std.mem.eql(u8, stored_key, key)) {
             return null; // Hash collision
         }
 
-        // Read value - get file size and read remaining. Guard against a
-        // maliciously large key length and against u64→usize truncation on
-        // 32-bit platforms.
-        if (key_len > 1024 * 1024) return null;
-        const stat = file.stat() catch return null;
+        // Read value - get file size and read remaining. The key length was
+        // bounded before allocation above; also reject u64→usize truncation.
+        const stat = file.stat(self.config.io) catch return null;
         const file_size: usize = std.math.cast(usize, stat.size) orelse return null;
         const value_start: usize = 12 + @as(usize, key_len);
         if (file_size <= value_start) return null;
         const value_size = file_size - value_start;
         const value = self.allocator.alloc(u8, value_size) catch return null;
-        _ = file.preadAll(value, value_start) catch {
+        const value_read = file.readPositionalAll(self.config.io, value, value_start) catch {
             self.allocator.free(value);
             return null;
         };
+        if (value_read != value.len) {
+            self.allocator.free(value);
+            return null;
+        }
         return value;
     }
 
     fn set(ptr: *anyopaque, key: []const u8, value: []const u8, ttl: ?i64) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const path = try self.getCachePath(key);
         defer self.allocator.free(path);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(self.config.io, path, .{});
+        defer file.close(self.config.io);
 
         const effective_ttl = ttl orelse self.config.default_ttl;
-        const expires_at: i64 = if (effective_ttl) |t| getTimestamp() + t else 0;
+        const expires_at: i64 = if (effective_ttl) |t| getTimestamp(self.config.io) + t else 0;
 
         // Write header. Reject keys that wouldn't round-trip through u32.
         if (key.len > std.math.maxInt(u32)) return error.KeyTooLarge;
         var header_buf: [12]u8 = undefined;
         std.mem.writeInt(u32, header_buf[0..4], @intCast(key.len), .little);
         std.mem.writeInt(i64, header_buf[4..12], expires_at, .little);
-        try file.writeAll(&header_buf);
+        try file.writeStreamingAll(self.config.io, &header_buf);
 
         // Write key and value
-        try file.writeAll(key);
-        try file.writeAll(value);
+        try file.writeStreamingAll(self.config.io, key);
+        try file.writeStreamingAll(self.config.io, value);
     }
 
     fn has(ptr: *anyopaque, key: []const u8) bool {
@@ -645,43 +652,43 @@ pub const FilesystemCacheDriver = struct {
 
     fn del(ptr: *anyopaque, key: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const path = self.getCachePath(key) catch return false;
         defer self.allocator.free(path);
 
-        std.fs.cwd().deleteFile(path) catch return false;
+        std.Io.Dir.cwd().deleteFile(self.config.io, path) catch return false;
         return true;
     }
 
     fn clear(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
-        var dir = std.fs.cwd().openDir(self.directory, .{ .iterate = true }) catch return;
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(self.config.io, self.directory, .{ .iterate = true }) catch return;
+        defer dir.close(self.config.io);
 
         var it = dir.iterate();
-        while (it.next() catch null) |entry| {
+        while (it.next(self.config.io) catch null) |entry| {
             if (std.mem.endsWith(u8, entry.name, ".cache")) {
-                dir.deleteFile(entry.name) catch {};
+                dir.deleteFile(self.config.io, entry.name) catch {};
             }
         }
     }
 
     fn size(ptr: *anyopaque) usize {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         var count: usize = 0;
-        var dir = std.fs.cwd().openDir(self.directory, .{ .iterate = true }) catch return 0;
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(self.config.io, self.directory, .{ .iterate = true }) catch return 0;
+        defer dir.close(self.config.io);
 
         var it = dir.iterate();
-        while (it.next() catch null) |entry| {
+        while (it.next(self.config.io) catch null) |entry| {
             if (std.mem.endsWith(u8, entry.name, ".cache")) {
                 count += 1;
             }
@@ -708,14 +715,15 @@ pub const RedisCacheDriver = struct {
     allocator: std.mem.Allocator,
     config: CacheConfig,
     redis: Redis,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
     // Redis client (inline implementation for self-contained package)
     const Redis = struct {
         allocator: std.mem.Allocator,
-        socket: ?posix.socket_t = null,
+        io: std.Io,
+        stream: ?net.Stream = null,
         host: []const u8,
         port: u16,
         password: ?[]const u8,
@@ -724,9 +732,12 @@ pub const RedisCacheDriver = struct {
         read_pos: usize = 0,
         read_len: usize = 0,
 
-        pub fn init(allocator: std.mem.Allocator, host: []const u8, port: u16, password: ?[]const u8, database: u8) Redis {
+        const ResponseReadError = std.mem.Allocator.Error || error{ ConnectionClosed, ResponseTooLarge };
+
+        pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8, port: u16, password: ?[]const u8, database: u8) Redis {
             return .{
                 .allocator = allocator,
+                .io = io,
                 .host = host,
                 .port = port,
                 .password = password,
@@ -735,105 +746,82 @@ pub const RedisCacheDriver = struct {
         }
 
         pub fn connect(self: *Redis) anyerror!void {
-            if (self.socket != null) return;
+            if (self.stream != null) return;
 
-            // Create socket
-            self.socket = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch return error.ConnectionFailed;
-
-            // Build address
-            var addr: posix.sockaddr.in = .{
-                .family = posix.AF.INET,
-                .port = std.mem.nativeToBig(u16, self.port),
-                .addr = 0x0100007F, // 127.0.0.1
-            };
-
-            // Parse host if not localhost
-            if (!std.mem.eql(u8, self.host, "127.0.0.1") and !std.mem.eql(u8, self.host, "localhost")) {
-                var parts: [4]u8 = .{ 0, 0, 0, 0 };
-                var iter = std.mem.splitScalar(u8, self.host, '.');
-                var i: usize = 0;
-                while (iter.next()) |part| {
-                    if (i >= 4) break;
-                    parts[i] = std.fmt.parseInt(u8, part, 10) catch 0;
-                    i += 1;
-                }
-                addr.addr = @as(u32, parts[0]) | (@as(u32, parts[1]) << 8) | (@as(u32, parts[2]) << 16) | (@as(u32, parts[3]) << 24);
-            }
-
-            posix.connect(self.socket.?, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) catch {
-                posix.close(self.socket.?);
-                self.socket = null;
-                return error.ConnectionFailed;
-            };
+            self.stream = self.connectToHost() catch return error.ConnectionFailed;
+            errdefer self.disconnect();
 
             // Authenticate if needed
             if (self.password) |pw| {
-                _ = try self.command(&[_][]const u8{ "AUTH", pw });
+                const result = try self.commandConnected(&.{ "AUTH", pw });
+                defer if (result) |value| self.allocator.free(value);
+                if (result == null or !std.mem.eql(u8, result.?, "OK")) return error.AuthenticationFailed;
             }
 
             // Select database
             if (self.database > 0) {
                 var db_buf: [4]u8 = undefined;
                 const db_str = std.fmt.bufPrint(&db_buf, "{d}", .{self.database}) catch "0";
-                _ = try self.command(&[_][]const u8{ "SELECT", db_str });
+                const result = try self.commandConnected(&.{ "SELECT", db_str });
+                defer if (result) |value| self.allocator.free(value);
+                if (result == null or !std.mem.eql(u8, result.?, "OK")) return error.CommandFailed;
             }
         }
 
         pub fn disconnect(self: *Redis) void {
-            if (self.socket) |sock| {
-                posix.close(sock);
-                self.socket = null;
+            if (self.stream) |stream| {
+                stream.close(self.io);
+                self.stream = null;
             }
             self.read_pos = 0;
             self.read_len = 0;
         }
 
         pub fn command(self: *Redis, args: []const []const u8) !?[]const u8 {
-            if (self.socket == null) try self.connect();
-            const sock = self.socket orelse return error.ConnectionClosed;
-
-            // Build RESP command into fixed buffer
-            var cmd_buf: [4096]u8 = undefined;
-            var pos: usize = 0;
-
-            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
-
-            for (args) |arg| {
-                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
-                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
-                pos += arg.len;
-                cmd_buf[pos] = '\r';
-                cmd_buf[pos + 1] = '\n';
-                pos += 2;
-            }
-
-            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
-            return self.readResponse();
+            if (self.stream == null) try self.connect();
+            return self.commandConnected(args);
         }
 
         pub fn commandInt(self: *Redis, args: []const []const u8) !?i64 {
-            if (self.socket == null) try self.connect();
-            const sock = self.socket orelse return error.ConnectionClosed;
-
-            var cmd_buf: [4096]u8 = undefined;
-            var pos: usize = 0;
-
-            pos += (std.fmt.bufPrint(cmd_buf[pos..], "*{d}\r\n", .{args.len}) catch return error.ConnectionClosed).len;
-
-            for (args) |arg| {
-                pos += (std.fmt.bufPrint(cmd_buf[pos..], "${d}\r\n", .{arg.len}) catch return error.ConnectionClosed).len;
-                @memcpy(cmd_buf[pos .. pos + arg.len], arg);
-                pos += arg.len;
-                cmd_buf[pos] = '\r';
-                cmd_buf[pos + 1] = '\n';
-                pos += 2;
-            }
-
-            _ = posix.send(sock, cmd_buf[0..pos], 0) catch return error.ConnectionClosed;
+            if (self.stream == null) try self.connect();
+            try self.sendCommand(args);
             return self.readIntResponse();
         }
 
-        fn readResponse(self: *Redis) !?[]const u8 {
+        fn connectToHost(self: *Redis) !net.Stream {
+            const options: net.IpAddress.ConnectOptions = .{
+                .mode = .stream,
+                .protocol = .tcp,
+            };
+            if (net.IpAddress.parse(self.host, self.port)) |address| {
+                return address.connect(self.io, options);
+            } else |_| {}
+
+            const host_name = try net.HostName.init(self.host);
+            return host_name.connect(self.io, self.port, options);
+        }
+
+        fn commandConnected(self: *Redis, args: []const []const u8) !?[]const u8 {
+            try self.sendCommand(args);
+            return self.readResponse();
+        }
+
+        fn sendCommand(self: *Redis, args: []const []const u8) !void {
+            const stream = self.stream orelse return error.ConnectionClosed;
+            var write_buffer: [4096]u8 = undefined;
+            var stream_writer = stream.writer(self.io, &write_buffer);
+            const writer = &stream_writer.interface;
+
+            try writer.print("*{d}\r\n", .{args.len});
+            for (args) |arg| {
+                try writer.print("${d}\r\n", .{arg.len});
+                try writer.writeAll(arg);
+                try writer.writeAll("\r\n");
+            }
+            try writer.flush();
+        }
+
+        fn readResponse(self: *Redis) ResponseReadError!?[]const u8 {
             const byte = try self.readByte();
             return switch (byte) {
                 '+' => try self.readLine(), // Simple string
@@ -850,10 +838,11 @@ pub const RedisCacheDriver = struct {
                 '*' => blk: { // Array - return first element
                     const len = try self.readInteger();
                     if (len <= 0) break :blk null;
+                    const array_len = std.math.cast(usize, len) orelse return error.ResponseTooLarge;
                     const first = try self.readResponse();
                     // Skip remaining elements
                     var i: usize = 1;
-                    while (i < @as(usize, @intCast(len))) : (i += 1) {
+                    while (i < array_len) : (i += 1) {
                         if (try self.readResponse()) |v| self.allocator.free(v);
                     }
                     break :blk first;
@@ -898,9 +887,9 @@ pub const RedisCacheDriver = struct {
         }
 
         fn fillBuffer(self: *Redis) !void {
-            const sock = self.socket orelse return error.ConnectionClosed;
-            const n = posix.recv(sock, &self.read_buffer, 0) catch return error.ConnectionClosed;
-            self.read_len = n;
+            const stream = self.stream orelse return error.ConnectionClosed;
+            var buffers: [1][]u8 = .{&self.read_buffer};
+            self.read_len = stream.read(self.io, &buffers) catch return error.ConnectionClosed;
             self.read_pos = 0;
             if (self.read_len == 0) return error.ConnectionClosed;
         }
@@ -930,7 +919,7 @@ pub const RedisCacheDriver = struct {
             const len = try self.readInteger();
             if (len < 0) return null;
 
-            const data_size: usize = @intCast(len);
+            const data_size = std.math.cast(usize, len) orelse return error.ResponseTooLarge;
             var data = try self.allocator.alloc(u8, data_size);
             errdefer self.allocator.free(data);
 
@@ -956,12 +945,13 @@ pub const RedisCacheDriver = struct {
             .config = config,
             .redis = Redis.init(
                 allocator,
+                config.io,
                 config.redis_host orelse "127.0.0.1",
                 config.redis_port,
                 config.redis_password,
                 config.redis_database,
             ),
-            .mutex = .{},
+            .mutex = .init,
         };
 
         // Try to connect
@@ -990,16 +980,16 @@ pub const RedisCacheDriver = struct {
 
     fn get(ptr: *anyopaque, key: []const u8) ?[]const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         return self.redis.command(&[_][]const u8{ "GET", key }) catch null;
     }
 
     fn set(ptr: *anyopaque, key: []const u8, value: []const u8, ttl: ?i64) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (ttl) |seconds| {
             var ttl_buf: [20]u8 = undefined;
@@ -1014,8 +1004,8 @@ pub const RedisCacheDriver = struct {
 
     fn has(ptr: *anyopaque, key: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const result = self.redis.commandInt(&[_][]const u8{ "EXISTS", key }) catch return false;
         return result != null and result.? > 0;
@@ -1023,8 +1013,8 @@ pub const RedisCacheDriver = struct {
 
     fn del(ptr: *anyopaque, key: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const result = self.redis.commandInt(&[_][]const u8{ "DEL", key }) catch return false;
         return result != null and result.? > 0;
@@ -1032,8 +1022,8 @@ pub const RedisCacheDriver = struct {
 
     fn clear(ptr: *anyopaque) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const result = self.redis.command(&[_][]const u8{"FLUSHDB"}) catch return;
         if (result) |r| self.allocator.free(r);
@@ -1041,8 +1031,8 @@ pub const RedisCacheDriver = struct {
 
     fn size(ptr: *anyopaque) usize {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const result = self.redis.commandInt(&[_][]const u8{"DBSIZE"}) catch return 0;
         return if (result) |r| @intCast(@max(0, r)) else 0;
@@ -1050,8 +1040,8 @@ pub const RedisCacheDriver = struct {
 
     fn keys(ptr: *anyopaque, pattern: ?[]const u8) []const []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         const p = pattern orelse "*";
 
@@ -1251,7 +1241,7 @@ pub const Cache = struct {
 // Tests
 test "memory cache basic operations" {
     const allocator = std.testing.allocator;
-    var cache = try Cache.init(allocator, CacheConfig.memory());
+    var cache = try Cache.init(allocator, CacheConfig.memory(std.testing.io));
     defer cache.deinit();
 
     // Set and get
@@ -1271,7 +1261,7 @@ test "memory cache basic operations" {
 
 test "memory cache with ttl" {
     const allocator = std.testing.allocator;
-    var cache = try Cache.init(allocator, CacheConfig.memory());
+    var cache = try Cache.init(allocator, CacheConfig.memory(std.testing.io));
     defer cache.deinit();
 
     // Set with very short TTL (already expired)
@@ -1284,7 +1274,7 @@ test "memory cache with ttl" {
 
 test "memory cache lru eviction" {
     const allocator = std.testing.allocator;
-    var config = CacheConfig.memory();
+    var config = CacheConfig.memory(std.testing.io);
     config.max_size = 2;
 
     var cache = try Cache.init(allocator, config);
@@ -1316,7 +1306,7 @@ test "pattern matching" {
 
 test "cache increment/decrement" {
     const allocator = std.testing.allocator;
-    var cache = try Cache.init(allocator, CacheConfig.memory());
+    var cache = try Cache.init(allocator, CacheConfig.memory(std.testing.io));
     defer cache.deinit();
 
     const v1 = try cache.increment("counter", 1);

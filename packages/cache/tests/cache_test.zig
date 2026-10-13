@@ -1,13 +1,28 @@
 const std = @import("std");
 const testing = std.testing;
+const cache_pkg = @import("cache");
 const ir_cache = @import("ir_cache");
 
 // Cache system tests
 // Tests for IR caching and build caching
 
 test "cache - basic compilation" {
-    // Ensure cache system compiles
-    try testing.expect(true);
+    testing.refAllDecls(cache_pkg);
+    testing.refAllDecls(cache_pkg.Cache);
+    testing.refAllDecls(cache_pkg.MemoryCacheDriver);
+    testing.refAllDecls(cache_pkg.FilesystemCacheDriver);
+    testing.refAllDecls(cache_pkg.RedisCacheDriver);
+}
+
+test "cache - shipped memory driver" {
+    var instance = try cache_pkg.Cache.init(testing.allocator, cache_pkg.CacheConfig.memory(testing.io));
+    defer instance.deinit();
+
+    try instance.set("key", "value", null);
+    try testing.expectEqualStrings("value", instance.get("key").?);
+    try testing.expect(instance.has("key"));
+    try testing.expect(instance.del("key"));
+    try testing.expect(!instance.has("key"));
 }
 
 test "incremental cache stores and validates a complete artifact" {
