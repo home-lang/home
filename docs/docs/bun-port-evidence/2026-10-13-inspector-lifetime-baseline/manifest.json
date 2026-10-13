@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "source_commit": "928576ed5e70724ad6f24be7667d3637365842ee",
+  "executable_sha256": "1c45dafe4f1208053c42065f64acc60c93306134b7f9fbfa8d69882aa3d3b7f2",
+  "platform": "Darwin arm64",
+  "full_parity": false,
+  "pass_credit": false,
+  "limitations": [
+    "Home does not emit realm console notifications in this baseline.",
+    "Home does not report a realm created after Runtime.enable in the initial trace.",
+    "The observed-realm collection trace must be retained as investigation; no lifetime fix has landed."
+  ],
+  "files": [
+    {
+      "file": "baseline-observed-realm.log",
+      "archive": "raw/baseline-observed-realm.log.gz",
+      "sha256": "d2113b61bf2a8e14e1d57c98d775dd0993ba301fcdaa9931c5436172624424d6",
+      "bytes": 218
+    },
+    {
+      "file": "baseline.log",
+      "archive": "raw/baseline.log.gz",
+      "sha256": "847d4ebb0223735e30f32bfd329890b312a52e8bc80f47685e8685ae344620bd",
+      "bytes": 218
+    },
+    {
+      "file": "collection-reference.mjs",
+      "archive": "raw/collection-reference.mjs.gz",
+      "sha256": "a5bc5d4fb5b1d27c4f8e7d0969fef8bb1bc9c6688c003f877afb4965f857176e",
+      "bytes": 822
+    },
+    {
+      "file": "home-collection-reference.mjs.log",
+      "archive": "raw/home-collection-reference.mjs.log.gz",
+      "sha256": "a2ce02614e7624f05b83ba4f1c1b75a59e7bb7617bcd6bfb5321e3f953f43710",
+      "bytes": 42
+    },
+    {
+      "file": "home-notification-reference.mjs.log",
+      "archive": "raw/home-notification-reference.mjs.log.gz",
+      "sha256": "dbc048a16a164ef051876793a34fddfb87553883f3de70b75a0df2c73a004074",
+      "bytes": 26
+    },
+    {
+      "file": "node-collection-reference.mjs.log",
+      "archive": "raw/node-collection-reference.mjs.log.gz",
+      "sha256": "7e850563057818e85c7790f690d8de227bd763d496a932e699d94242393df0ac",
+      "bytes": 44
+    },
+    {
+      "file": "node-notification-reference.mjs.log",
+      "archive": "raw/node-notification-reference.mjs.log.gz",
+      "sha256": "0b4d942ce8559e7c7deebddc17c43f948c2e7230e68ac1baef5eac48ebf0573d",
+      "bytes": 142
+    },
+    {
+      "file": "notification-reference.mjs",
+      "archive": "raw/notification-reference.mjs.gz",
+      "sha256": "d96f5a49a50586c376d8981a19816119b7305a486a1e092eb0d4971ce400bcff",
+      "bytes": 813
+    },
+    {
+      "file": "results.json",
+      "archive": "raw/results.json.gz",
+      "sha256": "d047bad71220b84a232c7e47f5c57fd3997775a5a25e30cb6eedee6d489568cf",
+      "bytes": 351
+    },
+    {
+      "file": "run-baselines.py",
+      "archive": "raw/run-baselines.py.gz",
+      "sha256": "45696e94accc5a5a9a8e74ef3bfa0c7bf3fc882db08ab9ca96ed0c5cd110b936",
+      "bytes": 615
+    }
+  ]
+}

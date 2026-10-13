@@ -1,0 +1,5 @@
+# Inspector realm lifetime and notification baseline — 2026-10-13
+
+The published async/property/cancellation executable passes the previous increment, but these new controls expose remaining inspector gaps. Node emits the realm console event with its real context ID; Home emits no console event. The initial collection probe created a context after Runtime.enable: Node reported its identity and destruction, while Home omitted the creation event. A second probe creates the realm before enable to observe collection with a known identity. Raw traces are retained without pass credit.
+
+No runtime source changes accompany this baseline. [#888](https://github.com/home-lang/home/issues/888) retains controller roots, retirement and full backend notification/lifetime work. [#428](https://github.com/home-lang/home/issues/428) retains complete inspector acceptance; [#66](https://github.com/home-lang/home/issues/66) retains full Bun parity. The [manifest](./manifest.json) records the tested source/executable and raw artifact identities.
