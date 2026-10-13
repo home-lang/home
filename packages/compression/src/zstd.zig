@@ -146,7 +146,7 @@ pub const Zstd = struct {
         if (data.len == 0) return 1.0;
 
         // Simple heuristic based on entropy
-        var counts: [256]usize = [_]usize{0} ** 256;
+        var counts: [256]usize = @splat(0);
         for (data) |byte| {
             counts[byte] += 1;
         }
