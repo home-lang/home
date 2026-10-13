@@ -3,6 +3,7 @@
 const std = @import("std");
 const modsign = @import("modsign.zig");
 const keys = @import("keys.zig");
+const compat = @import("compat.zig");
 
 /// Sign a kernel module
 pub fn signModule(
@@ -26,7 +27,7 @@ pub fn signModule(
     // In production, this would use RSA/ECDSA signing
     // For now, use HMAC-SHA256 as a simplified signature
     try generateSignature(
-        &signature.module_hash,
+        signature.module_hash[0..signature.hash_len],
         private_key.key_data,
         signature.signature,
     );
@@ -91,10 +92,8 @@ pub fn signModuleFile(
     output_path: ?[]const u8,
 ) !void {
     // Read module file
-    const module_file = try std.fs.cwd().openFile(module_path, .{});
-    defer module_file.close();
-
-    const module_data = try module_file.readToEndAlloc(allocator, 100 * 1024 * 1024); // 100MB max
+    const io = compat.io();
+    const module_data = try std.Io.Dir.cwd().readFileAlloc(io, module_path, allocator, .limited(100 * 1024 * 1024));
     defer allocator.free(module_data);
 
     // Sign the module
@@ -107,22 +106,22 @@ pub fn signModuleFile(
 
     // Write signed module
     const out_path = output_path orelse module_path;
-    const out_file = try std.fs.cwd().createFile(out_path, .{});
-    defer out_file.close();
+    const out_file = try std.Io.Dir.cwd().createFile(io, out_path, .{});
+    defer out_file.close(io);
 
     // Write original module
-    try out_file.writeAll(module_data);
+    try out_file.writeStreamingAll(io, module_data);
 
     // Append signature
-    try out_file.writeAll(sig_bytes);
+    try out_file.writeStreamingAll(io, sig_bytes);
 
     // Write signature magic and length at end
     const magic = "~Module signature appended~\n";
-    try out_file.writeAll(magic);
+    try out_file.writeStreamingAll(io, magic);
 
     var sig_len_buf: [4]u8 = undefined;
     std.mem.writeInt(u32, &sig_len_buf, @truncate(sig_bytes.len), .little);
-    try out_file.writeAll(&sig_len_buf);
+    try out_file.writeStreamingAll(io, &sig_len_buf);
 }
 
 /// Serialize signature to binary format

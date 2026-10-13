@@ -77,7 +77,10 @@ pub fn hasSignature(data: []const u8) bool {
     const magic_start = data.len - magic.len - 4;
     const found_magic = data[magic_start..][0..magic.len];
 
-    return std.mem.eql(u8, found_magic, magic);
+    if (!std.mem.eql(u8, found_magic, magic)) return false;
+
+    const sig_len = std.mem.readInt(u32, data[data.len - 4 ..][0..4], .little);
+    return sig_len <= magic_start;
 }
 
 /// Get module size without signature
@@ -195,6 +198,10 @@ test "signature detection" {
 
     try testing.expect(hasSignature(signed));
     try testing.expectEqual(@as(usize, unsigned.len), getModuleSize(signed));
+
+    std.mem.writeInt(u32, signed[signed.len - 4 ..][0..4], std.math.maxInt(u32), .little);
+    try testing.expect(!hasSignature(signed));
+    try testing.expectEqual(signed.len, getModuleSize(signed));
 }
 
 test "module info" {

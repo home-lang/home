@@ -32,6 +32,15 @@ pub const SignatureAlgorithm = enum(u8) {
         };
     }
 
+    pub fn fromKeySize(size: usize) ?SignatureAlgorithm {
+        return switch (size) {
+            2048 / 8 => .rsa_2048_sha256,
+            4096 / 8 => .rsa_4096_sha256,
+            32 => .ecdsa_p256_sha256,
+            else => null,
+        };
+    }
+
     pub fn signatureSize(self: SignatureAlgorithm) usize {
         return switch (self) {
             .rsa_2048_sha256 => 256,
@@ -104,4 +113,7 @@ test "module signature" {
 
 test {
     _ = keys;
+    _ = sign;
+    _ = verify;
+    _ = format;
 }
