@@ -403,6 +403,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/HomeCPUProfilerState.h",
         "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
         "packages/runtime/upstream/src/jsc/bindings/HomeInspectorAgents.h",
+        "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
         "packages/runtime/upstream/src/jsc/bindings/BunCPUProfiler.cpp",
         "packages/runtime/upstream/src/js/thirdparty/ws.js",
         "packages/runtime/upstream/src/js/thirdparty/undici.js",

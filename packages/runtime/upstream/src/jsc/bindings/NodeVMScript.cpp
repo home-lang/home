@@ -11,6 +11,7 @@
 #include "JavaScriptCore/SourceCodeKey.h"
 
 #include "NodeVMScriptFetcher.h"
+#include "HomeInspectorRealms.h"
 #include "../vm/SigintWatcher.h"
 
 #include <bit>
@@ -605,9 +606,10 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInNewContext, (JSGlobalObject * globalObject, 
 
     JSValue contextOptionsArg = callFrame->argument(1);
     NodeVMContextOptions contextOptions {};
+    WTF::String inspectorName, inspectorOrigin;
     JSValue importer;
 
-    if (auto encodedException = getNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &importer)) {
+    if (auto encodedException = getNodeVMContextOptions(globalObject, vm, scope, contextOptionsArg, contextOptions, "contextCodeGeneration", &importer, &inspectorName, &inspectorOrigin)) {
         return *encodedException;
     }
 
@@ -629,6 +631,7 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInNewContext, (JSGlobalObject * globalObject, 
     // the same realm and lexical environment on later calls with this sandbox.
     targetContext->setContextifiedObject(context);
     zigGlobalObject->vmModuleContextMap()->set(vm, context, targetContext);
+    Home::registerInspectorRealm(targetContext, zigGlobalObject, WTF::move(inspectorName), WTF::move(inspectorOrigin));
 
     if (notContextified) {
         auto* specialSandbox = NodeVMSpecialSandbox::create(vm, targetContext);
