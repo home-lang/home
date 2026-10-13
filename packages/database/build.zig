@@ -51,36 +51,87 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Module for use as dependency
-    const database_module = b.createModule(.{
+    // Public modules. Every auxiliary module receives the same database root
+    // that the installed library uses, so tests cannot accidentally compile a
+    // different SQLite/libc graph than consumers.
+    const database_module = b.addModule("database", .{
         .root_source_file = b.path("src/database.zig"),
         .target = target,
         .optimize = optimize,
     });
     addSqlite(b, database_module, target, optimize);
 
-    const migrations_module = b.createModule(.{
+    const migrations_module = b.addModule("migrations", .{
         .root_source_file = b.path("src/migrations.zig"),
         .target = target,
         .optimize = optimize,
     });
     migrations_module.addImport("database", database_module);
 
-    // Tests
-    const unit_tests = b.addTest(.{
+    const mysql_module = b.addModule("mysql", .{
+        .root_source_file = b.path("src/mysql.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const postgres_module = b.addModule("postgres", .{
+        .root_source_file = b.path("src/postgres.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const redis_module = b.addModule("redis", .{
+        .root_source_file = b.path("src/redis.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const orm_module = b.addModule("orm", .{
+        .root_source_file = b.path("src/orm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    orm_module.addImport("database", database_module);
+    const typed_orm_module = b.addModule("typed_orm", .{
+        .root_source_file = b.path("src/typed_orm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    typed_orm_module.addImport("database", database_module);
+
+    const lib = b.addLibrary(.{
+        .name = "database",
+        .linkage = .static,
+        .root_module = database_module,
+    });
+    b.installArtifact(lib);
+
+    const public_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/database_test.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    unit_tests.root_module.addImport("database", database_module);
-    unit_tests.root_module.addImport("migrations", migrations_module);
+    public_tests.root_module.addImport("database", database_module);
+    public_tests.root_module.addImport("migrations", migrations_module);
+    public_tests.root_module.addImport("orm", orm_module);
+    public_tests.root_module.addImport("typed_orm", typed_orm_module);
 
-    const check_step = b.step("check", "Compile database tests without running them");
-    check_step.dependOn(&unit_tests.step);
+    const compile_tests = [_]*std.Build.Step.Compile{
+        b.addTest(.{ .root_module = database_module }),
+        b.addTest(.{ .root_module = migrations_module }),
+        b.addTest(.{ .root_module = mysql_module }),
+        b.addTest(.{ .root_module = postgres_module }),
+        b.addTest(.{ .root_module = redis_module }),
+        b.addTest(.{ .root_module = orm_module }),
+        b.addTest(.{ .root_module = typed_orm_module }),
+        public_tests,
+    };
 
-    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const check_step = b.step("check", "Compile the shipped database library and every public module test");
+    check_step.dependOn(&lib.step);
+
     const test_step = b.step("test", "Run database tests");
-    test_step.dependOn(&run_unit_tests.step);
+    for (compile_tests) |test_artifact| {
+        check_step.dependOn(&test_artifact.step);
+        test_step.dependOn(&b.addRunArtifact(test_artifact).step);
+    }
 }

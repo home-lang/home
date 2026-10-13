@@ -1,9 +1,8 @@
 const std = @import("std");
-const database = @import("database.zig");
+const database = @import("database");
 
 /// Fully Typed ORM for Home
 /// Compile-time type-safe models with zero runtime overhead
-
 /// Field metadata for compile-time reflection
 pub fn Field(comptime T: type) type {
     return struct {
@@ -51,7 +50,7 @@ pub const Nullable = struct {
 pub fn Model(comptime T: type) type {
     // Validate that T is a struct
     const type_info = @typeInfo(T);
-    if (type_info != .Struct) {
+    if (type_info != .@"struct") {
         @compileError("Model can only be implemented for struct types");
     }
 
@@ -105,10 +104,10 @@ pub fn Model(comptime T: type) type {
 
         /// Get the type of a field
         fn FieldType(comptime field_name: []const u8) type {
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields) |field| {
-                if (std.mem.eql(u8, field.name, field_name)) {
-                    return field.type;
+            const struct_info = @typeInfo(T).@"struct";
+            inline for (struct_info.field_names, struct_info.field_types) |name, FieldT| {
+                if (std.mem.eql(u8, name, field_name)) {
+                    return FieldT;
                 }
             }
             @compileError("Field '" ++ field_name ++ "' not found in " ++ @typeName(T));
@@ -133,19 +132,18 @@ pub fn Model(comptime T: type) type {
             _ = builder.into(tableName());
 
             // Build INSERT query from struct fields
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields) |field| {
+            const field_names = @typeInfo(T).@"struct".field_names;
+            inline for (field_names) |field_name| {
                 // Skip auto-increment primary keys
-                if (isPrimaryKey(field.name) and isAutoIncrement(field.name)) {
+                if (isPrimaryKey(field_name) and isAutoIncrement(field_name)) {
                     continue;
                 }
 
-                const value = @field(self.data, field.name);
+                const value = @field(self.data, field_name);
                 const value_str = try valueToString(self.allocator, value);
                 defer self.allocator.free(value_str);
 
-                _ = try builder.columns(&.{field.name});
-                _ = try builder.values(&.{value_str});
+                _ = try builder.insert(&.{field_name}, &.{value_str});
             }
 
             const sql = try builder.build();
@@ -165,24 +163,17 @@ pub fn Model(comptime T: type) type {
             _ = builder.update(tableName());
 
             // Build UPDATE SET clauses
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields) |field| {
-                if (isPrimaryKey(field.name)) {
+            const field_names = @typeInfo(T).@"struct".field_names;
+            inline for (field_names) |field_name| {
+                if (isPrimaryKey(field_name)) {
                     continue; // Don't update primary key
                 }
 
-                const value = @field(self.data, field.name);
+                const value = @field(self.data, field_name);
                 const value_str = try valueToString(self.allocator, value);
                 defer self.allocator.free(value_str);
 
-                const set_clause = try std.fmt.allocPrint(
-                    self.allocator,
-                    "{s} = {s}",
-                    .{ field.name, value_str },
-                );
-                defer self.allocator.free(set_clause);
-
-                _ = try builder.set(set_clause);
+                _ = try builder.set(field_name, value_str);
             }
 
             // Add WHERE clause for primary key
@@ -198,7 +189,7 @@ pub fn Model(comptime T: type) type {
             );
             defer self.allocator.free(where_clause);
 
-            _ = builder.where(where_clause);
+            _ = try builder.where(where_clause);
 
             const sql = try builder.build();
             defer self.allocator.free(sql);
@@ -227,7 +218,7 @@ pub fn Model(comptime T: type) type {
             );
             defer self.allocator.free(where_clause);
 
-            _ = builder.where(where_clause);
+            _ = try builder.where(where_clause);
 
             const sql = try builder.build();
             defer self.allocator.free(sql);
@@ -239,10 +230,10 @@ pub fn Model(comptime T: type) type {
 
         /// Get primary key field name at compile time
         fn getPrimaryKeyField() []const u8 {
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields) |field| {
-                if (isPrimaryKey(field.name)) {
-                    return field.name;
+            const field_names = @typeInfo(T).@"struct".field_names;
+            inline for (field_names) |field_name| {
+                if (isPrimaryKey(field_name)) {
+                    return field_name;
                 }
             }
             // Default to "id"
@@ -275,21 +266,21 @@ pub fn Model(comptime T: type) type {
         /// Convert value to SQL string
         fn valueToString(allocator: std.mem.Allocator, value: anytype) ![]const u8 {
             const ValueType = @TypeOf(value);
-            const type_info = @typeInfo(ValueType);
+            const value_type_info = @typeInfo(ValueType);
 
-            return switch (type_info) {
-                .Int => try std.fmt.allocPrint(allocator, "{d}", .{value}),
-                .Float => try std.fmt.allocPrint(allocator, "{d}", .{value}),
-                .Bool => try std.fmt.allocPrint(allocator, "{d}", .{@intFromBool(value)}),
-                .Optional => |opt| {
+            return switch (value_type_info) {
+                .int => try std.fmt.allocPrint(allocator, "{d}", .{value}),
+                .float => try std.fmt.allocPrint(allocator, "{d}", .{value}),
+                .bool => try std.fmt.allocPrint(allocator, "{d}", .{@intFromBool(value)}),
+                .optional => {
                     if (value) |v| {
                         return try valueToString(allocator, v);
                     } else {
                         return try allocator.dupe(u8, "NULL");
                     }
                 },
-                .Pointer => |ptr| {
-                    if (ptr.size == .Slice and ptr.child == u8) {
+                .pointer => |ptr| {
+                    if (ptr.size == .slice and ptr.child == u8) {
                         // String
                         return try std.fmt.allocPrint(allocator, "'{s}'", .{value});
                     }
@@ -301,28 +292,29 @@ pub fn Model(comptime T: type) type {
 
         /// Generate CREATE TABLE SQL at compile time
         pub fn createTableSQL(allocator: std.mem.Allocator) ![]const u8 {
-            var sql = std.ArrayList(u8).init(allocator);
-            const writer = sql.writer();
+            var sql: std.Io.Writer.Allocating = .init(allocator);
+            errdefer sql.deinit();
+            const writer = &sql.writer;
 
             try writer.print("CREATE TABLE IF NOT EXISTS {s} (\n", .{tableName()});
 
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields, 0..) |field, i| {
-                try writer.print("  {s} ", .{field.name});
+            const struct_info = @typeInfo(T).@"struct";
+            inline for (struct_info.field_names, struct_info.field_types, 0..) |field_name, FieldT, i| {
+                try writer.print("  {s} ", .{field_name});
 
                 // Determine SQL type from Zig type
-                const sql_type = sqlTypeForField(field.type);
+                const sql_type = sqlTypeForField(FieldT);
                 try writer.writeAll(sql_type);
 
                 // Constraints
-                if (isPrimaryKey(field.name)) {
+                if (isPrimaryKey(field_name)) {
                     try writer.writeAll(" PRIMARY KEY");
-                    if (isAutoIncrement(field.name)) {
+                    if (isAutoIncrement(field_name)) {
                         try writer.writeAll(" AUTOINCREMENT");
                     }
                 }
 
-                if (i < fields.len - 1) {
+                if (i < struct_info.field_names.len - 1) {
                     try writer.writeAll(",\n");
                 }
             }
@@ -334,21 +326,21 @@ pub fn Model(comptime T: type) type {
 
         /// Map Zig type to SQL type
         fn sqlTypeForField(comptime FieldT: type) []const u8 {
-            const type_info = @typeInfo(FieldT);
+            const field_type_info = @typeInfo(FieldT);
 
-            return switch (type_info) {
-                .Int => |int_info| {
+            return switch (field_type_info) {
+                .int => |int_info| {
                     if (int_info.bits <= 32) {
                         return "INTEGER";
                     } else {
                         return "BIGINT";
                     }
                 },
-                .Float => "REAL",
-                .Bool => "BOOLEAN",
-                .Optional => |opt| sqlTypeForField(opt.child),
-                .Pointer => |ptr| {
-                    if (ptr.size == .Slice and ptr.child == u8) {
+                .float => "REAL",
+                .bool => "BOOLEAN",
+                .optional => |opt| sqlTypeForField(opt.child),
+                .pointer => |ptr| {
+                    if (ptr.size == .slice and ptr.child == u8) {
                         return "TEXT";
                     }
                     @compileError("Unsupported pointer type");
@@ -388,11 +380,11 @@ pub fn Query(comptime T: type) type {
         pub fn select(self: *Self, comptime fields: []const []const u8) *Self {
             // Validate fields exist at compile time
             comptime {
-                const struct_fields = @typeInfo(T).Struct.fields;
+                const field_names = @typeInfo(T).@"struct".field_names;
                 for (fields) |field_name| {
                     var found = false;
-                    for (struct_fields) |struct_field| {
-                        if (std.mem.eql(u8, field_name, struct_field.name)) {
+                    for (field_names) |model_field_name| {
+                        if (std.mem.eql(u8, field_name, model_field_name)) {
                             found = true;
                             break;
                         }
@@ -411,10 +403,10 @@ pub fn Query(comptime T: type) type {
         pub fn where(self: *Self, comptime field: []const u8, operator: []const u8, value: anytype) !*Self {
             // Validate field exists at compile time
             comptime {
-                const fields = @typeInfo(T).Struct.fields;
+                const field_names = @typeInfo(T).@"struct".field_names;
                 var found = false;
-                for (fields) |f| {
-                    if (std.mem.eql(u8, field, f.name)) {
+                for (field_names) |model_field_name| {
+                    if (std.mem.eql(u8, field, model_field_name)) {
                         found = true;
                         break;
                     }
@@ -434,7 +426,7 @@ pub fn Query(comptime T: type) type {
             );
             defer self.allocator.free(clause);
 
-            _ = self.builder.where(clause);
+            _ = try self.builder.where(clause);
             return self;
         }
 
@@ -442,10 +434,10 @@ pub fn Query(comptime T: type) type {
         pub fn orderBy(self: *Self, comptime field: []const u8, direction: enum { asc, desc }) *Self {
             // Validate field exists at compile time
             comptime {
-                const fields = @typeInfo(T).Struct.fields;
+                const field_names = @typeInfo(T).@"struct".field_names;
                 var found = false;
-                for (fields) |f| {
-                    if (std.mem.eql(u8, field, f.name)) {
+                for (field_names) |model_field_name| {
+                    if (std.mem.eql(u8, field, model_field_name)) {
                         found = true;
                         break;
                     }
@@ -488,16 +480,17 @@ pub fn Query(comptime T: type) type {
 
             // Execute query
             var result = try self.connection.query(sql);
+            defer result.deinit();
 
-            var models = std.ArrayList(ModelType).init(self.allocator);
-            errdefer models.deinit();
+            var models: std.ArrayList(ModelType) = .empty;
+            errdefer models.deinit(self.allocator);
 
             while (result.next()) |row| {
                 const model = try self.rowToModel(row);
-                try models.append(model);
+                try models.append(self.allocator, model);
             }
 
-            return try models.toOwnedSlice();
+            return try models.toOwnedSlice(self.allocator);
         }
 
         /// Get first result
@@ -531,6 +524,7 @@ pub fn Query(comptime T: type) type {
             defer self.allocator.free(sql);
 
             var result = try self.connection.query(sql);
+            defer result.deinit();
 
             if (result.next()) |row| {
                 return @intCast(row.getInt(0));
@@ -549,10 +543,10 @@ pub fn Query(comptime T: type) type {
         fn rowToModel(self: *Self, row: *database.Row) !ModelType {
             var data: T = undefined;
 
-            const fields = @typeInfo(T).Struct.fields;
-            inline for (fields, 0..) |field, i| {
-                const value = try self.parseValue(field.type, row, i);
-                @field(data, field.name) = value;
+            const struct_info = @typeInfo(T).@"struct";
+            inline for (struct_info.field_names, struct_info.field_types, 0..) |field_name, FieldT, i| {
+                const value = try self.parseValue(FieldT, row, i);
+                @field(data, field_name) = value;
             }
 
             var model = ModelType.init(self.allocator, self.connection, data);
@@ -564,23 +558,21 @@ pub fn Query(comptime T: type) type {
 
         /// Parse value from row based on type
         fn parseValue(self: *Self, comptime FieldType: type, row: *database.Row, index: usize) !FieldType {
-            _ = self;
-            const type_info = @typeInfo(FieldType);
+            const field_type_info = @typeInfo(FieldType);
 
-            return switch (type_info) {
-                .Int => @intCast(row.getInt(index)),
-                .Float => @floatCast(row.getFloat(index)),
-                .Bool => row.getInt(index) != 0,
-                .Optional => |opt| {
-                    const raw = row.get(index);
-                    if (raw == null) {
+            return switch (field_type_info) {
+                .int => @intCast(row.getInt(@intCast(index))),
+                .float => @floatCast(row.getDouble(@intCast(index))),
+                .bool => row.getInt(@intCast(index)) != 0,
+                .optional => |opt| {
+                    if (row.isNull(@intCast(index))) {
                         return null;
                     }
                     return try parseValue(self, opt.child, row, index);
                 },
-                .Pointer => |ptr| {
-                    if (ptr.size == .Slice and ptr.child == u8) {
-                        return row.getText(index);
+                .pointer => |ptr| {
+                    if (ptr.size == .slice and ptr.child == u8) {
+                        return try row.getText(@intCast(index));
                     }
                     @compileError("Unsupported pointer type");
                 },
@@ -635,4 +627,8 @@ pub fn BelongsTo(comptime Child: type, comptime Parent: type, comptime foreign_k
             return try query.first();
         }
     };
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

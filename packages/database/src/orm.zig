@@ -1,9 +1,8 @@
 const std = @import("std");
-const database = @import("database.zig");
+const database = @import("database");
 
 /// ORM (Object-Relational Mapping) for Home
 /// Provides Laravel Eloquent / TypeORM-style model definitions and relationships
-
 /// Field types supported by ORM
 pub const FieldType = enum {
     integer,
@@ -36,8 +35,7 @@ pub const Field = struct {
     /// to `buf`. (Previously the function returned a slice into a
     /// stack-local buffer — a classic use-after-return bug.)
     pub fn toSQL(self: *const Field, buf: []u8) ![]const u8 {
-        var stream = std.io.fixedBufferStream(buf);
-        const writer = stream.writer();
+        var writer = std.Io.Writer.fixed(buf);
 
         try writer.print("{s} ", .{self.name});
 
@@ -77,7 +75,7 @@ pub const Field = struct {
             try writer.print(" DEFAULT {s}", .{default});
         }
 
-        return stream.getWritten();
+        return writer.buffered();
     }
 };
 
@@ -92,24 +90,23 @@ pub const Schema = struct {
         return .{
             .allocator = allocator,
             .table_name = table_name,
-            .fields = std.ArrayList(Field).init(allocator),
+            .fields = .empty,
         };
     }
 
     pub fn deinit(self: *Schema) void {
-        self.fields.deinit();
+        self.fields.deinit(self.allocator);
     }
 
     pub fn addField(self: *Schema, field: Field) !void {
-        try self.fields.append(field);
+        try self.fields.append(self.allocator, field);
     }
 
     /// Generate CREATE TABLE SQL
     pub fn toCreateSQL(self: *Schema) ![]const u8 {
-        var sql = std.ArrayList(u8).init(self.allocator);
-        defer sql.deinit();
-
-        const writer = sql.writer();
+        var sql: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer sql.deinit();
+        const writer = &sql.writer;
         try writer.print("CREATE TABLE IF NOT EXISTS {s} (\n", .{self.table_name});
 
         for (self.fields.items, 0..) |*field, i| {
@@ -133,7 +130,7 @@ pub const Schema = struct {
 
         try writer.writeAll(")");
 
-        return try self.allocator.dupe(u8, sql.items);
+        return try sql.toOwnedSlice();
     }
 };
 
@@ -218,8 +215,7 @@ pub const Model = struct {
         // Add fields
         var iter = self.data.iterator();
         while (iter.next()) |entry| {
-            _ = try builder.columns(&.{entry.key_ptr.*});
-            _ = try builder.values(&.{entry.value_ptr.*});
+            _ = try builder.insert(&.{entry.key_ptr.*}, &.{entry.value_ptr.*});
         }
 
         const sql = try builder.build();
@@ -241,13 +237,7 @@ pub const Model = struct {
         // Add SET clauses
         var iter = self.data.iterator();
         while (iter.next()) |entry| {
-            const set_clause = try std.fmt.allocPrint(
-                self.allocator,
-                "{s} = '{s}'",
-                .{ entry.key_ptr.*, entry.value_ptr.* },
-            );
-            defer self.allocator.free(set_clause);
-            _ = try builder.set(set_clause);
+            _ = try builder.set(entry.key_ptr.*, entry.value_ptr.*);
         }
 
         // Add WHERE clause for primary key
@@ -258,7 +248,7 @@ pub const Model = struct {
             .{id_str},
         );
         defer self.allocator.free(where_clause);
-        _ = builder.where(where_clause);
+        _ = try builder.where(where_clause);
 
         const sql = try builder.build();
         defer self.allocator.free(sql);
@@ -283,7 +273,7 @@ pub const Model = struct {
             .{id_str},
         );
         defer self.allocator.free(where_clause);
-        _ = builder.where(where_clause);
+        _ = try builder.where(where_clause);
 
         const sql = try builder.build();
         defer self.allocator.free(sql);
@@ -307,14 +297,13 @@ pub const Model = struct {
             .{id_str},
         );
         defer self.allocator.free(where_clause);
-        _ = builder.where(where_clause);
+        _ = try builder.where(where_clause);
 
         const sql = try builder.build();
         defer self.allocator.free(sql);
 
         // Execute query and update data
         // This would integrate with actual query execution
-        _ = sql;
     }
 
     /// Define has-one relationship
@@ -393,14 +382,13 @@ pub const ModelQuery = struct {
 
         const where_clause = try std.fmt.allocPrint(self.allocator, "id = {d}", .{id});
         defer self.allocator.free(where_clause);
-        _ = self.builder.where(where_clause);
+        _ = try self.builder.where(where_clause);
 
         const sql = try self.builder.build();
         defer self.allocator.free(sql);
 
         // Execute and return model
         // Would integrate with actual query execution
-        _ = sql;
         return null;
     }
 
@@ -413,13 +401,12 @@ pub const ModelQuery = struct {
         defer self.allocator.free(sql);
 
         // Execute and return models
-        _ = sql;
         return &[_]Model{};
     }
 
     /// Find where condition
-    pub fn where(self: *ModelQuery, condition: []const u8) *ModelQuery {
-        _ = self.builder.where(condition);
+    pub fn where(self: *ModelQuery, condition: []const u8) !*ModelQuery {
+        _ = try self.builder.where(condition);
         return self;
     }
 
@@ -447,7 +434,6 @@ pub const ModelQuery = struct {
         defer self.allocator.free(sql);
 
         // Execute and return models
-        _ = sql;
         return &[_]Model{};
     }
 
@@ -459,7 +445,6 @@ pub const ModelQuery = struct {
         defer self.allocator.free(sql);
 
         // Execute and return first model
-        _ = sql;
         return null;
     }
 
@@ -471,7 +456,6 @@ pub const ModelQuery = struct {
         defer self.allocator.free(sql);
 
         // Execute and return count
-        _ = sql;
         return 0;
     }
 
@@ -526,3 +510,7 @@ pub const Paginator = struct {
         );
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

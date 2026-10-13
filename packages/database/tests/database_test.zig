@@ -3,6 +3,51 @@ const testing = std.testing;
 const database = @import("database");
 const postgresql = database.postgresql;
 const migrations = @import("migrations");
+const orm = @import("orm");
+const typed_orm = @import("typed_orm");
+
+const TypedWidget = struct {
+    pub const table = "typed_widgets";
+
+    id: i64 = 0,
+    name: []const u8 = "",
+};
+
+test "database: public ORM declarations compile" {
+    testing.refAllDecls(orm);
+    testing.refAllDecls(typed_orm);
+}
+
+test "orm: field and schema SQL use caller-owned writers" {
+    const field = orm.Field{
+        .name = "id",
+        .field_type = .integer,
+        .primary_key = true,
+        .auto_increment = true,
+    };
+    var field_buffer: [128]u8 = undefined;
+    try testing.expectEqualStrings("id INTEGER PRIMARY KEY AUTOINCREMENT", try field.toSQL(&field_buffer));
+
+    var schema = orm.Schema.init(testing.allocator, "widgets");
+    defer schema.deinit();
+    try schema.addField(field);
+    const sql = try schema.toCreateSQL();
+    defer testing.allocator.free(sql);
+    try testing.expectEqualStrings(
+        "CREATE TABLE IF NOT EXISTS widgets (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n)",
+        sql,
+    );
+}
+
+test "typed orm: model schema generation uses allocator-explicit storage" {
+    const WidgetModel = typed_orm.Model(TypedWidget);
+    const sql = try WidgetModel.createTableSQL(testing.allocator);
+    defer testing.allocator.free(sql);
+    try testing.expectEqualStrings(
+        "CREATE TABLE IF NOT EXISTS typed_widgets (\n  id BIGINT PRIMARY KEY AUTOINCREMENT,\n  name TEXT\n)",
+        sql,
+    );
+}
 
 fn defineWidgetTable(table: *migrations.TableBuilder) anyerror!void {
     try table.id();
