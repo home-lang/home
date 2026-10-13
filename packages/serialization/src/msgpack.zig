@@ -11,6 +11,15 @@ const std = @import("std");
 pub const MessagePack = struct {
     allocator: std.mem.Allocator,
 
+    pub const Error = error{
+        EndOfStream,
+        InvalidMapKey,
+        InvalidMessagePackFormat,
+        OutOfMemory,
+        ReadFailed,
+        WriteFailed,
+    };
+
     pub const Value = union(enum) {
         nil,
         boolean: bool,
@@ -95,22 +104,22 @@ pub const MessagePack = struct {
     }
 
     /// Serialize a value to MessagePack format
-    pub fn serialize(self: *MessagePack, value: Value) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+    pub fn serialize(self: *MessagePack, value: Value) Error![]u8 {
+        var buffer: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buffer.deinit();
 
-        try self.encodeValue(buffer.writer(), value);
+        try self.encodeValue(&buffer.writer, value);
 
-        return buffer.toOwnedSlice();
+        return try buffer.toOwnedSlice();
     }
 
     /// Deserialize MessagePack data
-    pub fn deserialize(self: *MessagePack, data: []const u8) !Value {
-        var stream = std.io.fixedBufferStream(data);
-        return try self.decodeValue(stream.reader());
+    pub fn deserialize(self: *MessagePack, data: []const u8) Error!Value {
+        var reader: std.Io.Reader = .fixed(data);
+        return try self.decodeValue(&reader);
     }
 
-    fn encodeValue(self: *MessagePack, writer: anytype, value: Value) !void {
+    fn encodeValue(self: *MessagePack, writer: anytype, value: Value) Error!void {
         switch (value) {
             .nil => try writer.writeByte(NIL),
             .boolean => |b| try writer.writeByte(if (b) TRUE else FALSE),
@@ -126,8 +135,6 @@ pub const MessagePack = struct {
     }
 
     fn encodeInteger(self: *MessagePack, writer: anytype, value: i64) !void {
-        _ = self;
-
         if (value >= 0) {
             return self.encodeUnsigned(writer, @intCast(value));
         }
@@ -286,8 +293,8 @@ pub const MessagePack = struct {
         try writer.writeAll(ext.data);
     }
 
-    fn decodeValue(self: *MessagePack, reader: anytype) !Value {
-        const marker = try reader.readByte();
+    fn decodeValue(self: *MessagePack, reader: anytype) Error!Value {
+        const marker = try reader.takeByte();
 
         // Positive fixint
         if (marker <= POSITIVE_FIXINT_MAX) {
@@ -322,47 +329,47 @@ pub const MessagePack = struct {
             FALSE => Value{ .boolean = false },
             TRUE => Value{ .boolean = true },
 
-            UINT8 => Value{ .unsigned = try reader.readByte() },
-            UINT16 => Value{ .unsigned = try reader.readInt(u16, .big) },
-            UINT32 => Value{ .unsigned = try reader.readInt(u32, .big) },
-            UINT64 => Value{ .unsigned = try reader.readInt(u64, .big) },
+            UINT8 => Value{ .unsigned = try reader.takeByte() },
+            UINT16 => Value{ .unsigned = try reader.takeInt(u16, .big) },
+            UINT32 => Value{ .unsigned = try reader.takeInt(u32, .big) },
+            UINT64 => Value{ .unsigned = try reader.takeInt(u64, .big) },
 
-            INT8 => Value{ .integer = @as(i8, @bitCast(try reader.readByte())) },
-            INT16 => Value{ .integer = try reader.readInt(i16, .big) },
-            INT32 => Value{ .integer = try reader.readInt(i32, .big) },
-            INT64 => Value{ .integer = try reader.readInt(i64, .big) },
+            INT8 => Value{ .integer = @as(i8, @bitCast(try reader.takeByte())) },
+            INT16 => Value{ .integer = try reader.takeInt(i16, .big) },
+            INT32 => Value{ .integer = try reader.takeInt(i32, .big) },
+            INT64 => Value{ .integer = try reader.takeInt(i64, .big) },
 
             FLOAT32 => blk: {
-                const bits = try reader.readInt(u32, .big);
+                const bits = try reader.takeInt(u32, .big);
                 break :blk Value{ .float = @floatCast(@as(f32, @bitCast(bits))) };
             },
             FLOAT64 => blk: {
-                const bits = try reader.readInt(u64, .big);
+                const bits = try reader.takeInt(u64, .big);
                 break :blk Value{ .float = @bitCast(bits) };
             },
 
-            STR8 => try self.decodeString(reader, try reader.readByte()),
-            STR16 => try self.decodeString(reader, try reader.readInt(u16, .big)),
-            STR32 => try self.decodeString(reader, try reader.readInt(u32, .big)),
+            STR8 => try self.decodeString(reader, try reader.takeByte()),
+            STR16 => try self.decodeString(reader, try reader.takeInt(u16, .big)),
+            STR32 => try self.decodeString(reader, try reader.takeInt(u32, .big)),
 
-            BIN8 => try self.decodeBinary(reader, try reader.readByte()),
-            BIN16 => try self.decodeBinary(reader, try reader.readInt(u16, .big)),
-            BIN32 => try self.decodeBinary(reader, try reader.readInt(u32, .big)),
+            BIN8 => try self.decodeBinary(reader, try reader.takeByte()),
+            BIN16 => try self.decodeBinary(reader, try reader.takeInt(u16, .big)),
+            BIN32 => try self.decodeBinary(reader, try reader.takeInt(u32, .big)),
 
-            ARRAY16 => try self.decodeArray(reader, try reader.readInt(u16, .big)),
-            ARRAY32 => try self.decodeArray(reader, try reader.readInt(u32, .big)),
+            ARRAY16 => try self.decodeArray(reader, try reader.takeInt(u16, .big)),
+            ARRAY32 => try self.decodeArray(reader, try reader.takeInt(u32, .big)),
 
-            MAP16 => try self.decodeMap(reader, try reader.readInt(u16, .big)),
-            MAP32 => try self.decodeMap(reader, try reader.readInt(u32, .big)),
+            MAP16 => try self.decodeMap(reader, try reader.takeInt(u16, .big)),
+            MAP32 => try self.decodeMap(reader, try reader.takeInt(u32, .big)),
 
             FIXEXT1 => try self.decodeExtension(reader, 1),
             FIXEXT2 => try self.decodeExtension(reader, 2),
             FIXEXT4 => try self.decodeExtension(reader, 4),
             FIXEXT8 => try self.decodeExtension(reader, 8),
             FIXEXT16 => try self.decodeExtension(reader, 16),
-            EXT8 => try self.decodeExtension(reader, try reader.readByte()),
-            EXT16 => try self.decodeExtension(reader, try reader.readInt(u16, .big)),
-            EXT32 => try self.decodeExtension(reader, try reader.readInt(u32, .big)),
+            EXT8 => try self.decodeExtension(reader, try reader.takeByte()),
+            EXT16 => try self.decodeExtension(reader, try reader.takeInt(u16, .big)),
+            EXT32 => try self.decodeExtension(reader, try reader.takeInt(u32, .big)),
 
             else => error.InvalidMessagePackFormat,
         };
@@ -373,7 +380,7 @@ pub const MessagePack = struct {
         const data = try self.allocator.alloc(u8, length);
         errdefer self.allocator.free(data);
 
-        try reader.readNoEof(data);
+        try reader.readSliceAll(data);
 
         return Value{ .string = data };
     }
@@ -383,7 +390,7 @@ pub const MessagePack = struct {
         const data = try self.allocator.alloc(u8, length);
         errdefer self.allocator.free(data);
 
-        try reader.readNoEof(data);
+        try reader.readSliceAll(data);
 
         return Value{ .binary = data };
     }
@@ -391,10 +398,15 @@ pub const MessagePack = struct {
     fn decodeArray(self: *MessagePack, reader: anytype, len: anytype) !Value {
         const length: usize = @intCast(len);
         const array = try self.allocator.alloc(Value, length);
-        errdefer self.allocator.free(array);
+        var initialized: usize = 0;
+        errdefer {
+            for (array[0..initialized]) |*item| item.deinit(self.allocator);
+            self.allocator.free(array);
+        }
 
         for (0..length) |i| {
             array[i] = try self.decodeValue(reader);
+            initialized += 1;
         }
 
         return Value{ .array = array };
@@ -403,30 +415,49 @@ pub const MessagePack = struct {
     fn decodeMap(self: *MessagePack, reader: anytype, len: anytype) !Value {
         const length: usize = @intCast(len);
         var map = std.StringHashMap(Value).init(self.allocator);
-        errdefer map.deinit();
+        errdefer {
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                entry.value_ptr.deinit(self.allocator);
+            }
+            map.deinit();
+        }
 
         for (0..length) |_| {
-            const key_value = try self.decodeValue(reader);
+            var key_value = try self.decodeValue(reader);
             const key = switch (key_value) {
                 .string => |s| s,
-                else => return error.InvalidMapKey,
+                else => {
+                    key_value.deinit(self.allocator);
+                    return error.InvalidMapKey;
+                },
             };
+            errdefer self.allocator.free(key);
 
-            const value = try self.decodeValue(reader);
-            try map.put(key, value);
+            var value = try self.decodeValue(reader);
+            errdefer value.deinit(self.allocator);
+            const entry = try map.getOrPut(key);
+            if (entry.found_existing) {
+                self.allocator.free(key);
+                entry.value_ptr.deinit(self.allocator);
+            } else {
+                entry.key_ptr.* = key;
+            }
+            entry.value_ptr.* = value;
         }
 
         return Value{ .map = map };
     }
 
     fn decodeExtension(self: *MessagePack, reader: anytype, len: anytype) !Value {
-        const ext_type: i8 = @bitCast(try reader.readByte());
+        const ext_type: i8 = @bitCast(try reader.takeByte());
         const length: usize = @intCast(len);
 
         const data = try self.allocator.alloc(u8, length);
         errdefer self.allocator.free(data);
 
-        try reader.readNoEof(data);
+        try reader.readSliceAll(data);
 
         return Value{
             .extension = .{
@@ -492,3 +523,49 @@ pub const Builder = struct {
         return .{ .map = m };
     }
 };
+
+test "messagepack emits canonical integer and string encodings" {
+    var codec = MessagePack.init(std.testing.allocator);
+
+    const unsigned = try codec.serialize(.{ .unsigned = 128 });
+    defer std.testing.allocator.free(unsigned);
+    try std.testing.expectEqualSlices(u8, &.{ MessagePack.UINT8, 128 }, unsigned);
+
+    const integer = try codec.serialize(.{ .integer = -33 });
+    defer std.testing.allocator.free(integer);
+    try std.testing.expectEqualSlices(u8, &.{ MessagePack.INT8, 0xdf }, integer);
+
+    const string = try codec.serialize(.{ .string = "home" });
+    defer std.testing.allocator.free(string);
+    try std.testing.expectEqualSlices(u8, &.{ MessagePack.FIXSTR_PREFIX | 4, 'h', 'o', 'm', 'e' }, string);
+}
+
+test "messagepack rejects malformed containers without leaking decoded values" {
+    var codec = MessagePack.init(std.testing.allocator);
+
+    try std.testing.expectError(error.EndOfStream, codec.deserialize(&.{ MessagePack.FIXARRAY_PREFIX | 2, MessagePack.FIXSTR_PREFIX | 1, 'a' }));
+    try std.testing.expectError(error.InvalidMapKey, codec.deserialize(&.{ MessagePack.FIXMAP_PREFIX | 1, 1, MessagePack.NIL }));
+}
+
+test "messagepack duplicate map keys replace and release the earlier value" {
+    var codec = MessagePack.init(std.testing.allocator);
+    var value = try codec.deserialize(&.{
+        MessagePack.FIXMAP_PREFIX | 2,
+        MessagePack.FIXSTR_PREFIX | 1,
+        'a',
+        MessagePack.FIXSTR_PREFIX | 3,
+        'o',
+        'l',
+        'd',
+        MessagePack.FIXSTR_PREFIX | 1,
+        'a',
+        MessagePack.FIXSTR_PREFIX | 3,
+        'n',
+        'e',
+        'w',
+    });
+    defer value.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), value.map.count());
+    try std.testing.expectEqualStrings("new", value.map.get("a").?.string);
+}
