@@ -25,14 +25,14 @@ pub fn main() !void {
 
     const n1 = try variadic.printf.sprintf(
         &buf,
-        "write(%d, %p, %d) = %d",
+        "write(%d, 0x%x, %d) = %d",
         .{ @as(i32, 1), @as(usize, 0x1000), @as(usize, 13), @as(isize, 13) },
     );
     std.debug.print("  {s}\n", .{buf[0..n1]});
 
     const n2 = try variadic.printf.sprintf(
         &buf,
-        "read(%d, %p, %d) = %d",
+        "read(%d, 0x%x, %d) = %d",
         .{ @as(i32, 3), @as(usize, 0x2000), @as(usize, 4096), @as(isize, 4096) },
     );
     std.debug.print("  {s}\n", .{buf[0..n2]});

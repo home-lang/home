@@ -20,25 +20,25 @@ Comprehensive variadic function support for the Home Operating System, including
 const variadic = @import("variadic");
 
 // Basic formatting
-try variadic.printf.printf("Hello, %s!\n", .{"World"});
-try variadic.printf.printf("Number: %d\n", .{@as(i32, 42)});
+_ = try variadic.printf.printf("Hello, %s!\n", .{"World"});
+_ = try variadic.printf.printf("Number: %d\n", .{@as(i32, 42)});
 
 // Multiple arguments
-try variadic.printf.printf("%d + %d = %d\n", .{
+_ = try variadic.printf.printf("%d + %d = %d\n", .{
     @as(i32, 2),
     @as(i32, 3),
     @as(i32, 5),
 });
 
 // Different bases
-try variadic.printf.printf("Hex: %x, Oct: %o, Bin: %b\n", .{
+_ = try variadic.printf.printf("Hex: %x, Oct: %o, Bin: %b\n", .{
     @as(u32, 255),
     @as(u32, 255),
     @as(u32, 255),
 });
 
 // Floating point
-try variadic.printf.printf("Pi: %.2f\n", .{@as(f64, 3.14159)});
+_ = try variadic.printf.printf("Pi: %.2f\n", .{@as(f64, 3.14159)});
 
 // To buffer
 var buf: [256]u8 = undefined;
@@ -52,13 +52,18 @@ defer allocator.free(str);
 ### Logger
 
 ```zig
+const std = @import("std");
 const variadic = @import("variadic");
+
+const io = std.Io.Threaded.global_single_threaded.io();
+var stdout = std.Io.File.stdout().writerStreaming(io, &.{});
 
 // Create logger
 var logger = variadic.logger.Logger.init(allocator, .{
     .min_level = .Debug,
     .use_colors = true,
     .show_timestamp = true,
+    .writer = &stdout.interface,
 });
 
 // Log at different levels
@@ -185,7 +190,7 @@ pub const LoggerConfig = struct {
     use_colors: bool = true,           // Use ANSI colors
     show_timestamp: bool = true,       // Include timestamps
     show_source: bool = true,          // Include source location
-    writer: ?std.io.AnyWriter = null,  // Custom writer (default: stderr)
+    writer: ?*std.Io.Writer = null,    // Borrowed writer; null disables output
 };
 ```
 
@@ -277,7 +282,11 @@ pub const SyscallNumber = enum(usize) {
 ### Example 1: Kernel Boot Logging
 
 ```zig
-var logger = variadic.logger.Logger.init(allocator, .{});
+const io = std.Io.Threaded.global_single_threaded.io();
+var stdout = std.Io.File.stdout().writerStreaming(io, &.{});
+var logger = variadic.logger.Logger.init(allocator, .{
+    .writer = &stdout.interface,
+});
 
 try logger.info("Kernel boot started", .{});
 try logger.info("Detected %d CPU cores", .{@as(u32, 4)});
