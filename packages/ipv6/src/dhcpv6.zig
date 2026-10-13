@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const ipv6 = @import("ipv6.zig");
+const compat = @import("compat.zig");
 
 /// DHCPv6 message types
 pub const MessageType = enum(u8) {
@@ -247,7 +248,7 @@ pub const Client = struct {
             .state = .init,
             .client_duid = client_duid,
             .server_duid = null,
-            .transaction_id = [_]u8{0} ** 3,
+            .transaction_id = @splat(0),
             .ia_na = null,
             .ia_pd = null,
             .allocator = allocator,
@@ -268,36 +269,32 @@ pub const Client = struct {
     }
 
     /// Generate new transaction ID
-    pub fn newTransactionId(self: *Client) void {
-        const ms = std.time.milliTimestamp();
-        const seed: u64 = if (ms < 0) 0 else @intCast(ms);
-        var rng = std.Random.DefaultPrng.init(seed);
-        const random = rng.random();
-        random.bytes(&self.transaction_id);
+    pub fn newTransactionId(self: *Client) !void {
+        try compat.randomSecure(&self.transaction_id);
     }
 
     /// Start address acquisition
-    pub fn solicit(self: *Client) void {
+    pub fn solicit(self: *Client) !void {
         self.state = .solicit;
-        self.newTransactionId();
+        try self.newTransactionId();
     }
 
     /// Request specific address
-    pub fn request(self: *Client) void {
+    pub fn request(self: *Client) !void {
         self.state = .request;
-        self.newTransactionId();
+        try self.newTransactionId();
     }
 
     /// Renew lease
-    pub fn renew(self: *Client) void {
+    pub fn renew(self: *Client) !void {
         self.state = .renew;
-        self.newTransactionId();
+        try self.newTransactionId();
     }
 
     /// Release address
-    pub fn release(self: *Client) void {
+    pub fn release(self: *Client) !void {
         self.state = .release;
-        self.newTransactionId();
+        try self.newTransactionId();
     }
 };
 
@@ -411,10 +408,10 @@ test "DHCPv6 client state machine" {
 
     try testing.expectEqual(ClientState.init, client.state);
 
-    client.solicit();
+    try client.solicit();
     try testing.expectEqual(ClientState.solicit, client.state);
 
-    client.request();
+    try client.request();
     try testing.expectEqual(ClientState.request, client.state);
 }
 

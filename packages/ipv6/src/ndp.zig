@@ -4,6 +4,7 @@
 const std = @import("std");
 const ipv6 = @import("ipv6.zig");
 const icmpv6 = @import("icmpv6.zig");
+const compat = @import("compat.zig");
 
 /// NDP option types
 pub const OptionType = enum(u8) {
@@ -251,19 +252,19 @@ pub const NeighborEntry = struct {
             .link_layer = link_layer,
             .state = .reachable,
             .is_router = false,
-            .last_update = std.time.timestamp(),
+            .last_update = compat.timestamp(),
             .probes_sent = 0,
         };
     }
 
     pub fn markStale(self: *NeighborEntry) void {
         self.state = .stale;
-        self.last_update = std.time.timestamp();
+        self.last_update = compat.timestamp();
     }
 
     pub fn markReachable(self: *NeighborEntry) void {
         self.state = .reachable;
-        self.last_update = std.time.timestamp();
+        self.last_update = compat.timestamp();
         self.probes_sent = 0;
     }
 };
@@ -271,13 +272,13 @@ pub const NeighborEntry = struct {
 /// Neighbor cache
 pub const NeighborCache = struct {
     entries: std.AutoHashMap(ipv6.Address, NeighborEntry),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) NeighborCache {
         return .{
             .entries = std.AutoHashMap(ipv6.Address, NeighborEntry).init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .mutex = .init,
             .allocator = allocator,
         };
     }
@@ -287,23 +288,23 @@ pub const NeighborCache = struct {
     }
 
     pub fn add(self: *NeighborCache, address: ipv6.Address, link_layer: [6]u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         const entry = NeighborEntry.init(address, link_layer);
         try self.entries.put(address, entry);
     }
 
     pub fn lookup(self: *NeighborCache, address: ipv6.Address) ?NeighborEntry {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         return self.entries.get(address);
     }
 
     pub fn update(self: *NeighborCache, address: ipv6.Address, link_layer: [6]u8, is_router: bool) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         if (self.entries.getPtr(address)) |entry| {
             entry.link_layer = link_layer;
@@ -317,8 +318,8 @@ pub const NeighborCache = struct {
     }
 
     pub fn remove(self: *NeighborCache, address: ipv6.Address) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         return self.entries.remove(address);
     }

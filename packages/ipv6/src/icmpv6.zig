@@ -297,7 +297,7 @@ test "ICMPv6 echo message" {
 test "ICMPv6 destination unreachable" {
     const testing = std.testing;
 
-    const packet = [_]u8{0x60} ** 48; // Dummy IPv6 packet
+    const packet: [48]u8 = @splat(0x60); // Dummy IPv6 packet
     const msg = DestinationUnreachable.init(.no_route, &packet);
 
     try testing.expectEqual(MessageType.destination_unreachable, msg.header.getType());
@@ -307,7 +307,7 @@ test "ICMPv6 destination unreachable" {
 test "ICMPv6 packet too big" {
     const testing = std.testing;
 
-    const packet = [_]u8{0x60} ** 48;
+    const packet: [48]u8 = @splat(0x60);
     const msg = PacketTooBig.init(1280, &packet);
 
     try testing.expectEqual(MessageType.packet_too_big, msg.header.getType());
