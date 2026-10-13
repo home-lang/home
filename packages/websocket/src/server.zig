@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const ws = @import("websocket.zig");
+const compat = @import("compat.zig");
 
 /// WebSocket server implementation
 pub const Server = struct {
@@ -131,32 +132,20 @@ pub const Server = struct {
 
         const request = buf[0..bytes_read];
 
-        // Find Sec-WebSocket-Key header
-        const key_start = std.mem.indexOf(u8, request, "Sec-WebSocket-Key: ") orelse return error.InvalidHandshake;
-        const key_end = std.mem.indexOfPos(u8, request, key_start + 19, "\r\n") orelse return error.InvalidHandshake;
-        const ws_key = request[key_start + 19 .. key_end];
+        // Find Sec-WebSocket-Key header (HTTP field names are case-insensitive).
+        const ws_key = compat.httpHeaderValue(request, "Sec-WebSocket-Key") orelse return error.InvalidHandshake;
 
-        // Calculate accept key
-        const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        var accept_data: [60]u8 = undefined;
-        @memcpy(accept_data[0..ws_key.len], ws_key);
-        @memcpy(accept_data[ws_key.len .. ws_key.len + magic.len], magic);
-
-        var hash: [20]u8 = undefined;
-        std.crypto.hash.Sha1.hash(accept_data[0 .. ws_key.len + magic.len], &hash, .{});
-
-        var accept_key: [28]u8 = undefined;
-        _ = std.base64.standard.Encoder.encode(&accept_key, &hash);
+        // Calculate accept key after validating the fixed-width client nonce.
+        const accept_key = compat.websocketAccept(ws_key) catch return error.InvalidHandshake;
 
         // Send response
         const response = try std.fmt.allocPrint(client.allocator,
-            \\HTTP/1.1 101 Switching Protocols
-            \\Upgrade: websocket
-            \\Connection: Upgrade
-            \\Sec-WebSocket-Accept: {s}
-            \\
-            \\
-        , .{accept_key});
+            "HTTP/1.1 101 Switching Protocols\r\n" ++
+                "Upgrade: websocket\r\n" ++
+                "Connection: Upgrade\r\n" ++
+                "Sec-WebSocket-Accept: {s}\r\n\r\n",
+            .{accept_key},
+        );
         defer client.allocator.free(response);
 
         _ = try posix.send(client.socket, response, 0);
@@ -258,9 +247,9 @@ pub const Client = struct {
     /// Send JSON data
     pub fn sendJson(self: *Self, value: anytype) !void {
         var buf: [8192]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        try std.json.stringify(value, .{}, fbs.writer());
-        try self.send(fbs.getWritten());
+        var writer = std.Io.Writer.fixed(&buf);
+        try std.json.Stringify.value(value, .{}, &writer);
+        try self.send(writer.buffered());
     }
 
     fn sendFrame(self: *Self, data: []const u8, masked: bool, opcode: u8) !void {

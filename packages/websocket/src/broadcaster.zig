@@ -205,9 +205,9 @@ pub const Broadcaster = struct {
             if (data) |d| {
                 // Stringify the data
                 var data_buf: [4096]u8 = undefined;
-                var fbs = std.io.fixedBufferStream(&data_buf);
-                std.json.stringify(d, .{}, fbs.writer()) catch {};
-                data_str = fbs.getWritten();
+                var writer = std.Io.Writer.fixed(&data_buf);
+                std.json.Stringify.value(d, .{}, &writer) catch {};
+                data_str = writer.buffered();
             }
 
             var msg_buf: [8192]u8 = undefined;
@@ -241,12 +241,12 @@ pub const Event = struct {
     /// Create JSON payload from struct
     pub fn fromStruct(allocator: std.mem.Allocator, name: []const u8, value: anytype) !Event {
         var buf: [8192]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        try std.json.stringify(value, .{}, fbs.writer());
+        var writer = std.Io.Writer.fixed(&buf);
+        try std.json.Stringify.value(value, .{}, &writer);
 
         return Event{
             .name = name,
-            .data = try allocator.dupe(u8, fbs.getWritten()),
+            .data = try allocator.dupe(u8, writer.buffered()),
         };
     }
 };
