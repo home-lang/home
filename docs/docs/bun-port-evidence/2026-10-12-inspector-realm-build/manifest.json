@@ -1,0 +1,170 @@
+{
+  "schema": 1,
+  "runtime_main_commit": "5c00c7ef63c844e69e2ecf9920a30bde826f8871",
+  "unverified_source_commit": "b0c7b30b4f801332f29f8e830e9f4427a5cf5b6d",
+  "recovery_branch": "codex/inspector-realms-unverified",
+  "source_hashes": [
+    {
+      "file": "build-support/bundle-native-modules.ts",
+      "sha256": "d50e23e22c272aa6d7da7b5c3086f98d15a9144bee49732f54bfdf741247748a",
+      "bytes": 26445
+    },
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "b0fed4c7357cee71875089ccf430e3eb3fb12c7cfae68816839c21ab46e30acb",
+      "bytes": 70183
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "a4a9a32074a5c387ccf740957b2e68341462ad608b5f07eb981bc627750b1486",
+      "bytes": 22680
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "8120ac2e987913423c97691a7268a20e32cbd1e99214e52a1aa114368f91de24",
+      "bytes": 3932
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "4281358cc3bfd1a0b84f3449c4c89009ba3a92f1f916a451f8affc2742281332",
+      "bytes": 97605
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVMScript.cpp",
+      "sha256": "6419d4f133b757dd16bfa1d6e35fde3140ad917dfc00eca474097f23a9d8ab62",
+      "bytes": 29878
+    }
+  ],
+  "results": {
+    "initial_admission_exit": 123,
+    "second_admission_exit": 123,
+    "third_admission_exit": 123,
+    "initial_native_build_exit": 1,
+    "initial_native_steps_succeeded": 50,
+    "initial_native_steps_total": 56,
+    "errors": [
+      "JSON array Ref<Value> dereferenced as pointer in recursive remapping",
+      "JSON array Ref<Value> dereferenced as pointer in argument unwrapping"
+    ],
+    "repaired_admission_exit": 123,
+    "repaired_build_exit": 123,
+    "reported_disk_free_mb": 509,
+    "critical_floor_mb": 512,
+    "runtime_controls_executed": false,
+    "pass_credit": false
+  },
+  "findings": [
+    "Native owner and VM realm execution-context IDs now share one identity allocator, separate from scheduler context IDs. Recovery source remains excluded from main.",
+    "First admitted build reached 50/56 steps and failed only on two Ref<Value> pointer-dereference errors. Corrected JSON accessors are pushed in recovery source b0c7b30b4.",
+    "After the repairs, a normal admitted native build stopped at the disk guard (509 MB available versus 512 MB floor). Controls remain unexecuted against a completed repaired executable; no pass credit.",
+    "Cleanup removed 2517 MB plus 3861 MB of older native object duplicates, preserving the newest three of each kind, active/protected objects and SDK. Cache manifests were preserved then invalidated for normal regeneration; later resource failures remain failures."
+  ],
+  "limitations": [
+    "Shared disk exhaustion has recurred across three consecutive realm-work goal turns. More work requires stable writable build headroom; active unrelated jobs, SDKs and source are preserved.",
+    "Native realm-controller roots, lifecycle, all command/object/exception schemas, worker shutdown and full original/native/ABI proof remain incomplete. Goal is not complete."
+  ],
+  "files": [
+    {
+      "file": "HomeInspectorRealms.h",
+      "archive": "raw/HomeInspectorRealms.h.gz",
+      "sha256": "8120ac2e987913423c97691a7268a20e32cbd1e99214e52a1aa114368f91de24",
+      "bytes": 3932
+    },
+    {
+      "file": "archive.py",
+      "archive": "raw/archive.py.gz",
+      "sha256": "bcf580ae39cef7e9acd97ea0d27f5d61f261ee65be9d57d300c3409631a18ccf",
+      "bytes": 2735
+    },
+    {
+      "file": "build-final.log",
+      "archive": "raw/build-final.log.gz",
+      "sha256": "97c4e073de734dc9e9acbf2301e40f83fecbbbdd3b18b70341cd1f63a3d07fe4",
+      "bytes": 10386
+    },
+    {
+      "file": "build-native.log",
+      "archive": "raw/build-native.log.gz",
+      "sha256": "b66bba13e8240b5c8fe8bb46e8a7048896be84ad1544d65b1e851b5e9e1a0f3c",
+      "bytes": 74
+    },
+    {
+      "file": "build-repaired-retry.log",
+      "archive": "raw/build-repaired-retry.log.gz",
+      "sha256": "2e1c2b322f77cfa1bfdda523ee4dbeda5844afad5a1880067d562c97e3bd0b2c",
+      "bytes": 77
+    },
+    {
+      "file": "build-repaired.log",
+      "archive": "raw/build-repaired.log.gz",
+      "sha256": "2e754f3284b8f63084a1fb33af5898e300793c2487ab584eb71b537a1c4746bf",
+      "bytes": 254
+    },
+    {
+      "file": "build-retry.log",
+      "archive": "raw/build-retry.log.gz",
+      "sha256": "1073fd31de5d3bb864aa2b32d3de5d40bc4e3af432f41dbca7752c9e624907c2",
+      "bytes": 75
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "sha256": "155f4ab4af6c72d7899cfe3cb7b0aa6a7bcd5ad9df01f83168f0d2dffc2ee896",
+      "bytes": 75
+    },
+    {
+      "file": "getter-reference.mjs",
+      "archive": "raw/getter-reference.mjs.gz",
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef",
+      "bytes": 786
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09",
+      "bytes": 1381
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310",
+      "bytes": 1177
+    },
+    {
+      "file": "outcomes.json",
+      "archive": "raw/outcomes.json.gz",
+      "sha256": "7a2589d3ddda44bc4df52d281dc00dcee70d1db1995c1d5a38ec18296fb44975",
+      "bytes": 565
+    },
+    {
+      "file": "recovery-commit.txt",
+      "archive": "raw/recovery-commit.txt.gz",
+      "sha256": "e27d5adb42ee71bd8357497c4318413c0a673fae38a2c90db8a239eac72dc19e",
+      "bytes": 41
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02",
+      "bytes": 1168
+    },
+    {
+      "file": "repaired-source-hashes.json",
+      "archive": "raw/repaired-source-hashes.json.gz",
+      "sha256": "9463936b21d919449505ca00a000e99fea9534c955f5875d3c14b0efa2261083",
+      "bytes": 951
+    },
+    {
+      "file": "run-controls.py",
+      "archive": "raw/run-controls.py.gz",
+      "sha256": "17d4dae8ad492e110d58051600c0c1224dc15d7a2e1134e5868b1598966f0c10",
+      "bytes": 787
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "sha256": "a319c944d1a4aa75d34a817da09542d20ee02ad1f94a1937534d02838879df85",
+      "bytes": 951
+    }
+  ]
+}
