@@ -570,6 +570,10 @@ pub fn build(b: *std.Build) void {
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
     const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize, zig_test_framework);
     const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize, zig_test_framework);
+    // The public FFI module declares and calls libc symbols. Keep that link
+    // requirement on the reusable module so every consumer gets the shipped
+    // configuration instead of relying on test or executable roots to add it.
+    ffi_pkg.link_libc = true;
     const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize, zig_test_framework);
     const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize, zig_test_framework);
     const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize, zig_test_framework);
@@ -1576,7 +1580,6 @@ pub fn build(b: *std.Build) void {
     const ffi_tests = b.addTest(.{
         .root_module = ffi_pkg,
     });
-    ffi_tests.root_module.link_libc = true;
 
     const run_ffi_tests = b.addRunArtifact(ffi_tests);
 

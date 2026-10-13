@@ -11,6 +11,19 @@
 // - Header generation
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Primitive C types cannot be exported with ordinary identifiers because the
+// names would shadow Zig primitives. Escaped declarations preserve the public
+// `ffi.c_int`-style API while retaining the target's actual C ABI widths.
+const ZigCChar = c_char;
+const ZigCInt = c_int;
+const ZigCLong = c_long;
+pub const @"c_char" = ZigCChar;
+pub const @"c_int" = ZigCInt;
+pub const @"c_long" = ZigCLong;
+pub const c_float = f32;
+pub const c_double = f64;
 
 // ============================================================================
 // Core FFI Types
@@ -28,18 +41,18 @@ pub const wchar_t = u32;
 // ============================================================================
 
 pub const CallingConvention = enum {
-    C,           // Standard C calling convention
-    Stdcall,     // Windows stdcall (callee cleans stack)
-    Fastcall,    // Fastcall (arguments in registers)
-    Vectorcall,  // Vectorcall (SIMD optimization)
-    Thiscall,    // C++ member function call
-    AAPCS,       // ARM AAPCS
-    SysV,        // System V AMD64 ABI
-    Win64,       // Windows x64 calling convention
-    Inline,      // Inline assembly
-    Naked,       // No prologue/epilogue
-    Interrupt,   // Interrupt handler
-    Signal,      // Signal handler
+    C, // Standard C calling convention
+    Stdcall, // Windows stdcall (callee cleans stack)
+    Fastcall, // Fastcall (arguments in registers)
+    Vectorcall, // Vectorcall (SIMD optimization)
+    Thiscall, // C++ member function call
+    AAPCS, // ARM AAPCS
+    SysV, // System V AMD64 ABI
+    Win64, // Windows x64 calling convention
+    Inline, // Inline assembly
+    Naked, // No prologue/epilogue
+    Interrupt, // Interrupt handler
+    Signal, // Signal handler
 
     pub fn toZig(self: CallingConvention) std.builtin.CallingConvention {
         return switch (self) {
@@ -416,9 +429,12 @@ pub const CAllocator = struct {
     }
 
     fn resize(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
-        const new_ptr = CStdLib.realloc(buf.ptr, new_len) orelse return false;
-        _ = new_ptr;
-        return true;
+        // Allocator.resize cannot return a relocated pointer. libc realloc is
+        // allowed to move the allocation, so calling it here and discarding
+        // its result loses ownership of the live block. Logical shrinking can
+        // retain the existing backing allocation; growth falls back through
+        // Allocator.realloc to alloc/copy/free.
+        return new_len <= buf.len;
     }
 
     fn free(_: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
@@ -508,4 +524,19 @@ test "calling convention enum" {
     const cc = CallingConvention.C;
     const zig_cc = cc.toZig();
     try testing.expectEqual(std.builtin.CallingConvention.c, zig_cc);
+}
+
+test "FFI module owns libc linkage and safely reallocates C memory" {
+    const testing = std.testing;
+    try testing.expect(builtin.link_libc);
+
+    const allocator = CAllocator.allocator();
+    var bytes = try allocator.alloc(u8, 4);
+    defer allocator.free(bytes);
+    @memcpy(bytes, "home");
+
+    bytes = try allocator.realloc(bytes, 16);
+    try testing.expectEqualStrings("home", bytes[0..4]);
+    @memset(bytes[4..], 0x5a);
+    try testing.expectEqual(@as(u8, 0x5a), bytes[15]);
 }

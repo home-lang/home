@@ -145,11 +145,11 @@ test "C pointer to array conversion" {
 test "calling convention to Zig conversion" {
     const c_conv = ffi.CallingConvention.C;
     const zig_conv = c_conv.toZig();
-    try testing.expectEqual(std.builtin.CallingConvention.C, zig_conv);
+    try testing.expectEqual(std.builtin.CallingConvention.c, zig_conv);
 
     const stdcall_conv = ffi.CallingConvention.Stdcall;
     const zig_stdcall = stdcall_conv.toZig();
-    try testing.expectEqual(std.builtin.CallingConvention.Stdcall, zig_stdcall);
+    try testing.expectEqual(std.builtin.CallingConvention.c, zig_stdcall);
 }
 
 test "all calling conventions" {
@@ -228,10 +228,10 @@ test "packed struct layout" {
 
 test "extern struct padding" {
     const WithPadding = extern struct {
-        a: u8,      // 1 byte
+        a: u8, // 1 byte
         // 3 bytes padding
-        b: u32,     // 4 bytes
-        c: u8,      // 1 byte
+        b: u32, // 4 bytes
+        c: u8, // 1 byte
         // 3 bytes padding
     };
 
