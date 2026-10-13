@@ -1734,8 +1734,14 @@ pub const Program = struct {
     /// available for callers that explicitly request an export snapshot.
     fn collectProgramDeclarationsForChecking(self: *Program) ProgramError!declaration_graph.Graph {
         for (self.files.items) |file| {
-            if (file.redirect_target == null and file.imports.items.len != 0)
-                return self.collectProgramDeclarations();
+            if (file.redirect_target != null) continue;
+            if (file.imports.items.len != 0) return self.collectProgramDeclarations();
+            // Ambient imports need exact declaration routes even when their
+            // specifiers do not resolve to a filesystem module.
+            const compilation = file.compilation orelse continue;
+            for (compilation.module.symbols.items) |symbol| {
+                if (symbol.flags.is_import) return self.collectProgramDeclarations();
+            }
         }
         return declaration_graph.Graph.init(self.gpa);
     }
@@ -17470,6 +17476,86 @@ test "Program: global augmentation namespace aliases retain imported value signa
         const expected = [_]u32{ 2322, 2345, 2339 };
         for (c.diagnostics.items, expected) |d, code| try T.expectEqual(code, d.code);
     }
+}
+
+test "Program: ambient module aliases retain scoped values and generic types" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const app = try p.add("/main.ts",
+            \\export {};
+            \\const a: string = ApiA.convert(1);
+            \\const b: number = ApiB.convert('ok');
+            \\declare const box: ApiA.Box<number>;
+            \\const value: number = box.value;
+            \\const wrongA: number = ApiA.convert(1);
+            \\const wrongB: string = ApiB.convert('ok');
+            \\const wrongType: string = box.value;
+            \\ApiA.missing;
+        );
+        _ = try p.add("/augmentation.d.ts", "import * as A from 'tool-a'; import * as B from 'tool-b'; declare global { export import ApiA = A; export import ApiB = B; }");
+        _ = try p.add("/api.d.ts", "declare module 'tool-a' { function convert(value: number): string; interface Box<T> { value: T; } } declare module 'tool-b' { function convert(value: string): number; }");
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const compilation = p.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+        const codes = [_]u32{ 2322, 2322, 2322, 2339 };
+        for (compilation.diagnostics.items, codes) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+    }
+}
+
+test "Program: ambient routes support named imports without leaking into relative file imports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/api.d.ts", "declare module 'tool-api' { function convert(value: number): string; interface Box<T> { value: T; } }");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const named = try p.add("/named.ts", "import { convert } from 'tool-api'; import type { Box } from 'tool-api'; const text: string = convert(1); declare const box: Box<number>; const value: number = box.value; const wrong: number = convert(1); const wrongBox: string = box.value;");
+    const relative = try p.add("/relative.ts", "import { convert } from './api'; convert(1);");
+    _ = try p.add("/api.d.ts", "declare module 'tool-api' { function convert(value: number): string; interface Box<T> { value: T; } }");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const named_compilation = p.fileById(named).compilation.?;
+    try T.expectEqual(@as(usize, 2), named_compilation.diagnostics.items.len);
+    for (named_compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+    const relative_compilation = p.fileById(relative).compilation.?;
+    try T.expectEqual(@as(usize, 1), relative_compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2306), relative_compilation.diagnostics.items[0].code);
+}
+
+test "Program: class-only ambient module aliases retain constructors and instance types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const app = try p.add("/main.ts", "export {}; const item = new Api.Item('ok'); const text: string = item.value; declare const other: Api.Item; const otherText: string = other.value; const wrong: number = item.value; const otherWrong: number = other.value;");
+    _ = try p.add("/augmentation.d.ts", "import * as Module from 'class-api'; declare global { export import Api = Module; }");
+    _ = try p.add("/api.d.ts", "declare module 'class-api' { class Item { constructor(value: string); value: string; } }");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const compilation = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
 test "Program: global augmentation index excludes module locals and namespace named global" {

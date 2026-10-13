@@ -725,6 +725,7 @@ pub const ProgramExportedValueKind = enum {
 
 pub const ProgramExportedValue = struct {
     target_path: []const u8,
+    ambient_module_name: []const u8 = "",
     namespace_path: []const u8 = "",
     export_name: []const u8,
     kind: ProgramExportedValueKind,
@@ -739,6 +740,7 @@ pub const ProgramExportedValue = struct {
 
 pub const ProgramExportedType = struct {
     target_path: []const u8,
+    ambient_module_name: []const u8 = "",
     /// Dot-separated exported namespace path within `target_path`. Empty for
     /// an ordinary top-level export. Keeping this on the exact declaration
     /// graph prevents `Root.Member` from being flattened into a shallow
@@ -7231,7 +7233,7 @@ pub const Checker = struct {
             ref.name;
         const specifier = self.namespaceImportSpecifierForLocal(root_name, node) orelse return;
         const resolver = self.external_resolver orelse return;
-        const owner = resolver.resolve(specifier, self.importer_path) orelse return;
+        const owner = resolver.resolve(specifier, self.importer_path);
         var target_prefix: std.ArrayListUnmanaged(u8) = .empty;
         defer target_prefix.deinit(self.gpa);
         if (qualifiers.len != 0) {
@@ -7243,7 +7245,13 @@ pub const Checker = struct {
             try target_prefix.appendSlice(self.gpa, self.string_interner.get(ref.name));
         }
         for (self.program_exported_types) |entry| {
-            if (!std.mem.eql(u8, entry.target_path, owner.path) or entry.contextual_only or entry.projection_only) continue;
+            if (entry.contextual_only or entry.projection_only) continue;
+            if (entry.ambient_module_name.len != 0) {
+                if (!self.moduleNameMatchesSpecifier(entry.ambient_module_name, specifier)) continue;
+            } else {
+                const resolved = owner orelse continue;
+                if (!std.mem.eql(u8, entry.target_path, resolved.path)) continue;
+            }
             var suffix = entry.namespace_path;
             if (target_prefix.items.len != 0) {
                 if (std.mem.eql(u8, suffix, target_prefix.items)) {
@@ -30908,7 +30916,11 @@ pub const Checker = struct {
     }
 
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasVirtualFilenameSections()) return self.programModuleNamespaceType(self.string_interner.get(specifier), anchor);
+        if (!self.sourceHasVirtualFilenameSections()) {
+            const spec = self.string_interner.get(specifier);
+            if (try self.programAmbientModuleNamespaceType(spec, anchor)) |namespace| return namespace;
+            return self.programModuleNamespaceType(spec, anchor);
+        }
         const spec = self.string_interner.get(specifier);
         const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
@@ -59491,6 +59503,7 @@ pub const Checker = struct {
     }
 
     fn reportExternalFileIsNotAModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (self.programAmbientModuleExists(spec)) return false;
         const resolver = self.external_resolver orelse return false;
         const containing = if (self.importer_path.len > 0)
             self.importer_path
@@ -64610,6 +64623,15 @@ pub const Checker = struct {
     }
 
     fn programAmbientModuleExists(self: *Checker, spec: []const u8) bool {
+        for (self.program_exported_classes) |class| {
+            if (!class.local_only and class.ambient_module_name.len != 0 and self.moduleNameMatchesSpecifier(class.ambient_module_name, spec)) return true;
+        }
+        for (self.program_exported_values) |value| {
+            if (value.ambient_module_name.len != 0 and self.moduleNameMatchesSpecifier(value.ambient_module_name, spec)) return true;
+        }
+        for (self.program_exported_types) |entry| {
+            if (entry.ambient_module_name.len != 0 and self.moduleNameMatchesSpecifier(entry.ambient_module_name, spec)) return true;
+        }
         for (self.program_ambient_module_interface_exports) |exported| {
             if (self.moduleNameMatchesSpecifier(exported.specifier, spec)) return true;
         }
@@ -82828,6 +82850,7 @@ pub const Checker = struct {
         const leaf_text = self.string_interner.get(leaf_name);
         var matched: ?ProgramExportedType = null;
         for (self.program_exported_types) |entry| {
+            if (entry.ambient_module_name.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, leaf_text) or
                 !self.programNamespacePathMatches(namespace_path, entry.namespace_path))
             {
@@ -111192,6 +111215,11 @@ pub const Checker = struct {
         return try self.moduleInterfaceAugmentationMemberType(ctor.name, member_name, null, anchor);
     }
 
+    fn programExportRouteMatches(self: *Checker, import_node: NodeId, spec: []const u8, path: []const u8, ambient_module: []const u8) CheckError!bool {
+        if (ambient_module.len != 0) return self.moduleNameMatchesSpecifier(ambient_module, spec);
+        return self.programImportTargetsPath(import_node, spec, path);
+    }
+
     fn programExportedValueTypeForImportBinding(
         self: *Checker,
         import_node: NodeId,
@@ -111206,7 +111234,7 @@ pub const Checker = struct {
             for (self.program_exported_values) |value| {
                 if (value.namespace_path.len != 0) continue;
                 if (!std.mem.eql(u8, value.export_name, "default")) continue;
-                if (try self.programImportTargetsPath(import_node, spec, value.target_path)) return self.programExportedValueType(value);
+                if (try self.programExportRouteMatches(import_node, spec, value.target_path, value.ambient_module_name)) return self.programExportedValueType(value);
             }
         }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
@@ -111218,7 +111246,7 @@ pub const Checker = struct {
             for (self.program_exported_values) |value| {
                 if (value.namespace_path.len != 0) continue;
                 if (!std.mem.eql(u8, value.export_name, export_name)) continue;
-                if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
+                if (!try self.programExportRouteMatches(import_node, spec, value.target_path, value.ambient_module_name)) continue;
                 if (matched != null) return types.Primitive.any;
                 matched = value;
             }
@@ -111241,7 +111269,7 @@ pub const Checker = struct {
         for (self.program_exported_values) |value| {
             if (value.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, value.export_name, export_name)) continue;
-            if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
+            if (!try self.programExportRouteMatches(import_node, spec, value.target_path, value.ambient_module_name)) continue;
             if (matched != null) return types.Primitive.any;
             matched = value;
         }
@@ -111292,6 +111320,7 @@ pub const Checker = struct {
 
         var matched: ?ProgramExportedValue = null;
         for (self.program_exported_values) |value| {
+            if (value.ambient_module_name.len != 0) continue;
             if (value.namespace_path.len != 0) continue;
             if (!value.projection_only or value.declaration == null) continue;
             if (!std.mem.eql(u8, value.export_name, self.string_interner.get(member.name))) continue;
@@ -111358,6 +111387,7 @@ pub const Checker = struct {
             if (self.findVisibleNamespaceByPath(anchor, &namespace_path) != null) return null;
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
+                if (entry.ambient_module_name.len != 0) continue;
                 if (entry.namespace_path.len != 0 or entry.contextual_only or entry.projection_only) continue;
                 if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
@@ -111388,7 +111418,7 @@ pub const Checker = struct {
         for (self.program_exported_types) |entry| {
             if (entry.namespace_path.len != 0 or entry.contextual_only or entry.projection_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
-            if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
+            if (!try self.programExportRouteMatches(import_node, self.string_interner.get(specifier), entry.target_path, entry.ambient_module_name)) continue;
             return self.programDeclarationTypeReference(entry.declaration, anchor);
         }
         return null;
@@ -111559,6 +111589,7 @@ pub const Checker = struct {
         }
         var matched: ?*const ProgramClassSchema.Declaration = null;
         for (self.program_exported_types) |entry| {
+            if (entry.ambient_module_name.len != 0) continue;
             if (entry.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
             if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
@@ -111585,6 +111616,7 @@ pub const Checker = struct {
         if (import_info.exported_root != null) return null;
         var matched: ?*const ProgramClassSchema.Declaration = null;
         for (self.program_exported_types) |entry| {
+            if (entry.ambient_module_name.len != 0) continue;
             if (entry.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
             if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
@@ -111619,6 +111651,7 @@ pub const Checker = struct {
                 if (item.local != reference.name) continue;
                 var matched: ?*const ProgramClassSchema.Declaration = null;
                 for (self.program_exported_types) |entry| {
+                    if (entry.ambient_module_name.len != 0) continue;
                     if (entry.namespace_path.len != 0) continue;
                     if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(item.imported))) continue;
                     if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
@@ -112807,6 +112840,7 @@ pub const Checker = struct {
             if (self.findVisibleNamespaceByPath(type_node, &namespace_path) != null) return null;
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
+                if (entry.ambient_module_name.len != 0) continue;
                 if (entry.namespace_path.len != 0 or entry.projection_only or !entry.contextual_only) continue;
                 if (entry.declaration.position != position or
                     !std.mem.eql(u8, entry.declaration.path, self.importer_path)) continue;
@@ -112885,6 +112919,7 @@ pub const Checker = struct {
         const info = (try self.localImportModuleInfo(root_name, constraint_node)) orelse return lowered;
         if (info.exported_root != null) return lowered;
         for (self.program_exported_types) |entry| {
+            if (entry.ambient_module_name.len != 0) continue;
             if (entry.namespace_path.len != 0 or !entry.projection_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(r.name))) continue;
             if (!try self.programImportTargetsPath(info.import_node, self.string_interner.get(info.specifier), entry.target_path)) continue;
@@ -112902,7 +112937,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
             if (entry.namespace_path.len != 0 or entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
-            if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
+            if (!try self.programExportRouteMatches(import_node, self.string_interner.get(specifier), entry.target_path, entry.ambient_module_name)) continue;
             return self.programContextualExportedDeclarationType(entry.declaration, anchor);
         }
         return null;
@@ -112979,6 +113014,7 @@ pub const Checker = struct {
                     });
                 }
                 for (self.program_exported_values) |value| {
+                    if (value.ambient_module_name.len != 0) continue;
                     if (value.namespace_path.len != 0) continue;
                     if (!std.mem.eql(u8, value.target_path, path)) continue;
                     try self.appendOrReplaceObjectMember(&known_members, .{
@@ -113035,6 +113071,7 @@ pub const Checker = struct {
                         break;
                     } else {
                         for (self.program_exported_values) |value| {
+                            if (value.ambient_module_name.len != 0) continue;
                             if (value.namespace_path.len != 0) continue;
                             if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
                             member_type = (try self.programExportedValueType(value)) orelse types.Primitive.any;
@@ -113051,10 +113088,45 @@ pub const Checker = struct {
         return root_type;
     }
 
+    fn programAmbientModuleNamespaceType(self: *Checker, spec: []const u8, anchor: NodeId) CheckError!?TypeId {
+        if (!self.programAmbientModuleExists(spec)) return null;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        var owners: std.StringHashMapUnmanaged(void) = .empty;
+        defer owners.deinit(self.gpa);
+        for (self.program_exported_values) |value| {
+            if (value.ambient_module_name.len == 0 or !self.moduleNameMatchesSpecifier(value.ambient_module_name, spec)) continue;
+            const owner = try owners.getOrPut(self.gpa, value.target_path);
+            if (owner.found_existing) continue;
+            if (try self.programNamespaceValueTypeForModule(value.target_path, "", value.ambient_module_name)) |namespace| {
+                const snapshot = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(namespace));
+                defer self.gpa.free(snapshot);
+                for (snapshot) |member| try self.appendOrReplaceObjectMember(&members, member);
+            }
+        }
+        for (self.program_exported_classes) |class| {
+            if (class.local_only or class.ambient_module_name.len == 0 or !self.moduleNameMatchesSpecifier(class.ambient_module_name, spec)) continue;
+            const name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
+            try self.appendOrReplaceObjectMember(&members, .{
+                .name = self.string_interner.intern(class.exportedName()) catch return error.OutOfMemory,
+                .type = try self.syntheticProgramClassStaticType(class, name, null, anchor),
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            });
+        }
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
     fn programNamespaceValueType(self: *Checker, path: []const u8, namespace_path: []const u8) CheckError!?TypeId {
+        return self.programNamespaceValueTypeForModule(path, namespace_path, "");
+    }
+
+    fn programNamespaceValueTypeForModule(self: *Checker, path: []const u8, namespace_path: []const u8, ambient_module: []const u8) CheckError!?TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         for (self.program_exported_values) |value| {
+            if (!std.mem.eql(u8, value.ambient_module_name, ambient_module)) continue;
             if (!std.mem.eql(u8, value.target_path, path)) continue;
             if (std.mem.eql(u8, value.namespace_path, namespace_path)) {
                 try self.appendOrReplaceObjectMember(&members, .{
@@ -113066,10 +113138,11 @@ pub const Checker = struct {
                 });
                 continue;
             }
-            if (value.namespace_path.len <= namespace_path.len or
-                !std.mem.startsWith(u8, value.namespace_path, namespace_path) or
-                value.namespace_path[namespace_path.len] != '.') continue;
-            const suffix = value.namespace_path[namespace_path.len + 1 ..];
+            if (value.namespace_path.len <= namespace_path.len) continue;
+            if (namespace_path.len != 0 and
+                (!std.mem.startsWith(u8, value.namespace_path, namespace_path) or
+                    value.namespace_path[namespace_path.len] != '.')) continue;
+            const suffix = value.namespace_path[if (namespace_path.len == 0) 0 else namespace_path.len + 1..];
             const child_name = suffix[0 .. std.mem.indexOfScalar(u8, suffix, '.') orelse suffix.len];
             const child_id = self.string_interner.intern(child_name) catch return error.OutOfMemory;
             var present = false;
@@ -113078,9 +113151,9 @@ pub const Checker = struct {
                 break;
             };
             if (present) continue;
-            const child_path = try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ namespace_path, child_name });
+            const child_path = try std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", child_name });
             defer self.gpa.free(child_path);
-            const child_type = (try self.programNamespaceValueType(path, child_path)) orelse continue;
+            const child_type = (try self.programNamespaceValueTypeForModule(path, child_path, ambient_module)) orelse continue;
             try members.append(self.gpa, .{ .name = child_id, .type = child_type, .is_optional = false, .is_readonly = true, .is_method = false });
         }
         if (members.items.len == 0) return null;
@@ -113393,8 +113466,11 @@ pub const Checker = struct {
         if (self.program_generic_definitions.get(declaration)) |definition| return definition;
         const watermark = self.interner.pool.typeCount();
         const definition = try self.interner.reserveGenericDefinition();
+        errdefer {
+            self.interner.abandonGenericDefinition(definition);
+            self.rollbackProgramGenericInstancesFrom(watermark);
+        }
         try self.program_generic_definitions.put(self.gpa, declaration, definition);
-        errdefer self.rollbackProgramGenericInstancesFrom(watermark);
         const parameters = try self.gpa.alloc(TypeId, declaration.parameters.len);
         defer self.gpa.free(parameters);
         for (declaration.parameters, parameters) |parameter, *id| {
@@ -209882,6 +209958,40 @@ test "checker: source-owned class heritage retains base nominal identity" {
     const other_t = try s.checker.instantiateProgramDeclaration(&other_base, &.{}, &.{});
     try T.expect(try s.checker.checkerAssignableTo(child_t, base_t));
     try T.expect(!try s.checker.checkerAssignableTo(child_t, other_t));
+}
+
+test "checker: failed program definitions leave transferable pools and can be retried" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const unsupported: ProgramClassSchema.Expression = .unsupported;
+    var child: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 1, .name = "Child", .body = &unsupported };
+    const child_ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &child, .arguments = &.{} } };
+    var parent: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Parent", .body = &child_ref };
+    try T.expectError(error.UnsupportedProgramType, s.checker.programGenericDefinition(&parent));
+    try T.expectEqual(@as(u32, 0), s.checker.program_generic_definitions.count());
+    for (types.Primitive.first_dynamic..s.ti.pool.typeCount()) |index| {
+        if (s.ti.genericDefinition(@intCast(index))) |definition| try T.expect(definition.body != types.Primitive.none);
+    }
+
+    var destination = try interner.Interner.init(T.allocator);
+    defer destination.deinit();
+    const transfer = @import("type_transfer.zig");
+    const Names = struct {
+        fn identity(_: *anyopaque, id: u32) transfer.Error!u32 {
+            return id;
+        }
+    };
+    var context: u8 = 0;
+    var relocated = try transfer.append(&destination, &s.ti, .{ .context = &context, .string = Names.identity, .declaration = Names.identity });
+    defer relocated.deinit();
+
+    // Failed cache entries must not turn a later supported retry into unknown.
+    const number: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    child.body = &number;
+    parent.body = &child_ref;
+    const retried = try s.checker.programGenericDefinition(&parent);
+    try T.expectEqual(types.Primitive.number_t, try s.checker.resolveGenericType(s.ti.genericDefinition(retried).?.body));
+    try T.expect(!try s.checker.checkerAssignableTo(types.Primitive.string_t, types.Primitive.number_t));
 }
 
 test "checker: source-owned growing recursion expands only requested surfaces" {

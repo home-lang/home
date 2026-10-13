@@ -37,6 +37,7 @@ fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
     const name_node = switch (c.hir.kindOf(node)) {
         .interface_decl => hir.interfaceOf(&c.hir, node).name,
         .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
+        .class_decl => hir.classOf(&c.hir, node).name,
         .fn_decl => hir.fnDeclOf(&c.hir, node).name,
         .var_decl, .let_decl, .const_decl => hir.varDeclOf(&c.hir, node).name,
         else => return null,
@@ -65,7 +66,7 @@ fn appendNamespaceValueRoute(
         if (c.hir.kindOf(member) == .namespace_decl) {
             const namespace = hir.namespaceOf(&c.hir, member);
             if (c.hir.kindOf(namespace.name) != .identifier) continue;
-            const nested_path = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
+            const nested_path = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
             try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, values);
             continue;
         }
@@ -111,7 +112,7 @@ fn appendNamespaceTypeRoute(
         const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else if (ambient) raw else continue;
         if (member == hir.none_node_id) continue;
         switch (c.hir.kindOf(member)) {
-            .interface_decl, .type_alias_decl => {
+            .interface_decl, .type_alias_decl, .class_decl => {
                 const name = declarationName(c, member) orelse continue;
                 const declaration = try builder.declaration(.{ .source = source_index, .node = member });
                 const support = try supported.getOrPut(arena, declaration);
@@ -142,7 +143,7 @@ fn appendNamespaceTypeRoute(
                 const nested = hir.namespaceOf(&c.hir, member);
                 if (nested.name == hir.none_node_id or c.hir.kindOf(nested.name) != .identifier) continue;
                 const nested_name = c.interner.get(hir.identifierOf(&c.hir, nested.name).name);
-                const nested_path = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, nested_name });
+                const nested_path = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", nested_name });
                 try appendNamespaceTypeRoute(
                     gpa,
                     arena,
@@ -176,6 +177,37 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     @memset(importers, .empty);
     var values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     var types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
+    // A script may own several distinct ambient modules. Route their exact
+    // declarations with the module name, never as file-level exports. An
+    // external module's string-named declarations are augmentations instead.
+    for (sources, 0..) |source, index| {
+        const c = source.compilation;
+        if (c.root == hir.none_node_id or c.hir.kindOf(c.root) != .block_stmt) continue;
+        var external = false;
+        for (hir.blockStmts(&c.hir, c.root)) |node| {
+            if (c.hir.kindOf(node) == .import_decl or c.hir.kindOf(node) == .export_decl) external = true;
+        }
+        if (external) continue;
+        for (hir.blockStmts(&c.hir, c.root)) |node| {
+            if (c.hir.kindOf(node) != .namespace_decl) continue;
+            const namespace = hir.namespaceOf(&c.hir, node);
+            if (namespace.name == hir.none_node_id) continue;
+            const name_span = c.hir.spanOf(namespace.name);
+            if (name_span.start >= c.source.len or (c.source[name_span.start] != '"' and c.source[name_span.start] != '\'')) continue;
+            const name_id = switch (c.hir.kindOf(namespace.name)) {
+                .identifier => hir.identifierOf(&c.hir, namespace.name).name,
+                .literal_string => hir.literalStringOf(&c.hir, namespace.name).value,
+                else => continue,
+            };
+            const module_name = c.interner.get(name_id);
+            const first_value = values.items.len;
+            const first_type = types.items.len;
+            try appendNamespaceValueRoute(gpa, arena, &builder, &supported, index, source, node, source.path, "", &values);
+            try appendNamespaceTypeRoute(gpa, arena, &builder, &supported, index, source, node, source.path, "", &types);
+            for (values.items[first_value..]) |*entry| entry.ambient_module_name = module_name;
+            for (types.items[first_type..]) |*entry| entry.ambient_module_name = module_name;
+        }
+    }
     for (sources, 0..) |source, index| {
         try by_path.put(arena, source.path, index);
         const c = source.compilation;

@@ -16,6 +16,36 @@ def alias(module: str = "./tools", target: str = "Module") -> str:
 
 
 CASES = {
+    "ambient-constructor": (
+        {"node_modules/tool-api/index.d.ts": 'declare module "tool-api" { class Item { constructor(value: string); value: string; } }\n',
+         "augmentation.d.ts": alias("tool-api")},
+        "const item = new Api.Item('ok'); const value: string = item.value;\nexport {};\n",
+        "const wrong: number = item.value;\n", (3, 7, 2322),
+    ),
+    "ambient-class-type": (
+        {"node_modules/tool-api/index.d.ts": 'declare module "tool-api" { class Item { constructor(value: string); value: string; } }\n',
+         "augmentation.d.ts": alias("tool-api")},
+        "declare const item: Api.Item;\nconst value: string = item.value;\n",
+        "const wrong: number = item.value;\n", (3, 7, 2322),
+    ),
+    "ambient-function": (
+        {"node_modules/tool-api/index.d.ts": 'declare module "tool-api" { function convert(value: number): string; } declare module "other-api" { function convert(value: string): number; }\n',
+         "augmentation.d.ts": alias("tool-api")},
+        "const text: string = Api.convert(1);\nexport {};\n",
+        "const wrong: number = Api.convert(1);\n", (3, 7, 2322),
+    ),
+    "ambient-generic-type": (
+        {"node_modules/tool-api/index.d.ts": 'declare module "tool-api" { interface Box<T = number> { value: T; } }\n',
+         "augmentation.d.ts": alias("tool-api")},
+        "declare const box: Api.Box<number>;\nconst value: number = box.value;\n",
+        "const wrong: string = box.value;\n", (3, 7, 2322),
+    ),
+    "ambient-missing-member": (
+        {"node_modules/tool-api/index.d.ts": 'declare module "tool-api" { function convert(value: number): string; }\n',
+         "augmentation.d.ts": alias("tool-api")},
+        "const text: string = Api.convert(1);\nexport {};\n",
+        "Api.missing;\n", (3, 5, 2339),
+    ),
     "qualified-default-type": (
         {"tools.d.ts": "export interface Box<T = number> { value: T; }\n",
          "augmentation.d.ts": alias()},
@@ -104,23 +134,25 @@ def main() -> None:
                     directory = root / name / str(skip) / ("negative" if planted else "valid") / engine
                     directory.mkdir(parents=True)
                     for file, source in files.items():
-                        (directory / file).write_text(source)
+                        target = directory / file
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(source)
                     (directory / "globals.d.ts").write_text(globals_source)
                     (directory / "main.ts").write_text(valid + (negative if planted else ""))
                     (directory / "tsconfig.json").write_text(json.dumps({
                         "compilerOptions": {"noLib": True, "noEmit": True, "strict": True,
                                             "skipLibCheck": skip, "target": "ESNext", "module": "ESNext",
                                             "moduleResolution": "Bundler"},
-                        "files": ["globals.d.ts", "main.ts", "augmentation.d.ts"],
+                        "files": ["globals.d.ts", "main.ts", *files],
                     }, indent=2) + "\n")
-                    inputs = {p.name: digest(p) for p in directory.iterdir()}
+                    inputs = {str(p.relative_to(directory)): digest(p) for p in directory.rglob('*') if p.is_file()}
                     argv = [str(exe), "--project", "tsconfig.json", "--pretty", "false"]
                     result = subprocess.run(argv, cwd=directory, capture_output=True, text=True, timeout=45)
                     output = result.stdout + result.stderr
                     diagnostics = sorted((Path(file).name, int(line), int(column), int(code))
                         for file, line, column, code in re.findall(
                             r"([^\r\n]+?)\((\d+),(\d+)\): error TS(\d+):", output))
-                    unchanged = inputs == {p.name: digest(p) for p in directory.iterdir()}
+                    unchanged = inputs == {str(p.relative_to(directory)): digest(p) for p in directory.rglob('*') if p.is_file()}
                     passed = (result.returncode == (1 if planted else 0) and diagnostics == expected
                               and unchanged and len(re.findall(r"error TS\d+:", output)) == len(expected))
                     summary["observations"].append({

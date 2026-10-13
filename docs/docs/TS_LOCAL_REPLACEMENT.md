@@ -80,7 +80,7 @@ now cover both Git directories and worktree pointer files, while ordinary
 installed dependency/toolchain directories remain pruned. The report records
 these exceptions in `included_pruned_name_projects`.
 
-The resulting current snapshot contains **1,182 manifests with check scripts,
+The corrected-rule snapshot contains **1,182 manifests with check scripts,
 1,453 scripts, 1,391 literal compiler segments and 2,494 configs**. It retains
 92 scripts requiring review, 55 errors and 1,480 symlink directories. The
 corrected rule adds nine manifest paths under the pantry project and its
@@ -88,6 +88,15 @@ existing worktrees compared with the contemporaneous scan. Other differences
 from earlier snapshots reflect filesystem changes. The report still records
 `replacement_verified: false`; the inventory establishes coverage, not
 compiler compatibility.
+
+A further 2026-10-13 refresh contains **1,366 manifests with check scripts,
+1,678 scripts, 1,615 literal compiler segments and 2,741 configs**. It retains
+99 scripts requiring review, 55 invalid fixture manifests and 1,894 symlink
+directories. Compared with the corrected-rule snapshot, 387 manifest paths
+were added and 203 disappeared. A freshness check also found 115 changed
+manifests and four changed configs among the previously recorded paths.
+Discovery and pruning rules remain unchanged; the latest report supersedes
+the earlier path inventory, and still marks replacement unverified.
 
 ## Required evidence
 
@@ -508,3 +517,83 @@ charged footprint total, not region categorization. The same process headers
 are counted once, and auxiliary totals remain excluded. Probe deadlines,
 fail-closed behavior, memory limits, and disk floors are unchanged. Existing
 parser, stalled-probe cleanup, and all six isolated disk/scanner controls pass.
+
+The optimized augmentation candidate passes all five native comparison suites,
+289 Program tests, 50 CLI tests and eight stream checks. The real 306-file
+table replay exposed a separate fatal owner-transfer failure, so those controls
+do not qualify the real project. A diagnostic build identifies an unfinished
+generic definition in the checked owner for Node's `web-globals/fetch.d.ts`:
+lowering an unsupported `Options` declaration removes its cache entry but
+leaves its reserved definition in the type pool with no body. Importing that
+pool correctly rejects it as `InvalidTypeGraph`.
+
+Failed Program definition construction now retires its unpublished reservation
+with a complete inert `unknown` body before clearing failed caches. Cleanup
+allocates nothing, including when cache insertion fails, and retains allocated
+IDs because recursive payloads may already refer to them. A focused regression
+checks nested failure, transfer of the resulting pool, and a later supported
+retry whose result remains exactly `number`. Transfer still rejects genuinely
+unfinished definitions. The corrected Debug table replay timed out after 300
+seconds. The corrected optimized build and all five native comparison suites
+pass. Its real table replay now completes without the fatal error, with native
+TypeScript returning zero and Home returning one with **36** diagnostics.
+All 306 graph inputs remain unchanged. Peak process-tree footprint is
+**3,048 MB**, within the unchanged 3,840 MB ceiling. The global Bun alias is
+recognized, but its `build` export still has an incomplete value surface;
+optional indexed reads and other table semantics also remain unqualified.
+Full regression validation is pending after two resource-measurement stops.
+
+The next ambient-module candidate retains each string-named module's identity
+on its exact value and type declaration routes. Matching imports can resolve
+those declarations without a filesystem edge; ordinary file-module lookups
+exclude the ambient routes. Global aliases publish generic definitions from
+the selected module and construct its runtime namespace from those declarations.
+Two ambient modules in one source file retain distinct function signatures.
+Named imports retain exact return and generic member types, while a relative
+import of the declaration script still reports TS2306.
+
+All **291 Program tests**, the 16 focused native ambient observations and the
+expanded **96-observation** tracked augmentation matrix pass on the Debug
+candidate. The new cases include incorrect return types, incorrect generic
+member assignments, and missing members under both `skipLibCheck` settings.
+The remaining module suites, optimized build and real-project replay still
+need to qualify this newer candidate. The prior optimized 36-diagnostic table
+result above belongs to the reservation-cleanup candidate.
+
+Class-only ambient modules also retain their constructor values and qualified
+instance types. Classes now contribute to ambient module existence and exact
+type declaration routes. The class correction passes **292 Program tests**,
+16 extended class/nested-namespace observations, and all **112** tracked native
+augmentation observations. The optimized build passes all five native suites.
+The final source passes **4,593 checker, 209 driver, 292 Program and 50 CLI
+tests**, eight stream checks, 180 automatic-variable comparisons, 50 declaration
+contracts, 88 recursive/namespace observations and 26 diagnostic observations.
+All 73 compiler, guard and validation input hashes remained unchanged.
+
+On the unchanged 306-file table graph, the optimized class candidate completes
+without `EmitError` and no longer reports a missing Bun `build` export. Native
+TypeScript exits zero; Home exits one with **35** remaining diagnostics. No
+unexpected outputs were created or removed. Peak guarded footprint is
+**3,181 MB**, below the unchanged 3,840 MB ceiling. The table entrypoint and
+the complete `~/Code` tree remain unqualified.
+
+Upstream's supervisor now reads physical footprint and process birth identity
+through kernel helpers, avoiding the stalled VM traversal and `ps` probes
+observed during earlier validation. The existing totals-only `footprint`
+fallback remains available. Footprint parsing, process identity/detached-child
+cleanup, and stalled-probe deadline controls pass after integration.
+All six disk/scanner controls also pass with their simulated-child lock.
+
+The [augmentation and ambient-module evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-global-augmentation-controls.tar.gz)
+has SHA-256
+`576aed9e83a150b7d30b899097873045c72e0c6898e3069a3ef2c23b912a17c5`;
+all 2294 payload hashes were verified. This archive proves the stated compiler
+controls and records the still-unqualified table outcome. It does not qualify
+other entrypoints, versions, emitted outputs or the complete local project tree.
+
+An isolated `ts-images` replay adds a second real-project memory control. Its
+installed native TypeScript reference passes on a 557-file graph. The guarded
+Home run reaches **3,955 MB** and is stopped above the unchanged 3,840 MB
+ceiling, without producing a complete checker result. All graph inputs and
+9,912 staged files remain unchanged, with no unexpected outputs. This
+entrypoint remains unqualified; the limit was not raised to make it pass.
