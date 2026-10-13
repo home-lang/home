@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const syslog = @import("syslog.zig");
+const compat = @import("compat.zig");
 
 /// Authentication key for HMAC
 pub const AuthKey = struct {
@@ -9,11 +10,11 @@ pub const AuthKey = struct {
     key_id: [16]u8,
     created_at: i64,
 
-    pub fn generate() AuthKey {
+    pub fn generate() !AuthKey {
         var key: AuthKey = undefined;
-        std.crypto.random.bytes(&key.key_data);
-        std.crypto.random.bytes(&key.key_id);
-        key.created_at = std.time.timestamp();
+        try compat.randomSecure(&key.key_data);
+        try compat.randomSecure(&key.key_id);
+        key.created_at = compat.timestamp();
         return key;
     }
 
@@ -30,7 +31,7 @@ pub const AuthKey = struct {
         hasher.final(&hash);
         @memcpy(&key.key_id, hash[0..16]);
 
-        key.created_at = std.time.timestamp();
+        key.created_at = compat.timestamp();
 
         return key;
     }
@@ -180,7 +181,7 @@ pub const LogChain = struct {
 test "auth key generation" {
     const testing = std.testing;
 
-    const key = AuthKey.generate();
+    const key = try AuthKey.generate();
 
     // Key ID should be non-zero
     var all_zero = true;
@@ -196,7 +197,7 @@ test "auth key generation" {
 test "log authentication" {
     const testing = std.testing;
 
-    const key = AuthKey.generate();
+    const key = try AuthKey.generate();
 
     var message = try syslog.LogMessage.init(
         testing.allocator,
@@ -227,7 +228,7 @@ test "log chain" {
     const testing = std.testing;
 
     var chain = LogChain.init(testing.allocator);
-    const key = AuthKey.generate();
+    const key = try AuthKey.generate();
 
     var msg1 = try syslog.LogMessage.init(
         testing.allocator,

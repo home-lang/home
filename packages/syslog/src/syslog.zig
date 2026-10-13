@@ -4,14 +4,11 @@
 // encryption, access control, and rate limiting.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// Get current Unix timestamp in seconds since epoch
 fn getUnixTimestamp() i64 {
-    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
-        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
-        return ts.sec;
-    }
-    return 0;
+    return compat.timestamp();
 }
 
 pub const auth = @import("auth.zig");
@@ -237,4 +234,9 @@ test "log message" {
 
     // Priority = facility * 8 + severity = 3 * 8 + 6 = 30
     try testing.expectEqual(@as(u8, 30), msg.getPriority());
+}
+
+test {
+    _ = auth;
+    _ = encrypt;
 }
