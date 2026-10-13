@@ -95,10 +95,10 @@ const testing = std.testing;
 test "Cow borrow / own / toOwned" {
     const Boxed = struct { value: u32 };
     const VTable = struct {
-        fn copy(src: *const Boxed, _: Allocator) Boxed {
+        pub fn copy(src: *const Boxed, _: Allocator) Boxed {
             return .{ .value = src.value };
         }
-        fn deinit(_: *Boxed, _: Allocator) void {}
+        pub fn deinit(_: *Boxed, _: Allocator) void {}
     };
     const C = Cow(Boxed, VTable);
 

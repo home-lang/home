@@ -46,10 +46,10 @@ const testing = std.testing;
 
 test "ptr aggregator re-exports Cow" {
     const VTable = struct {
-        fn copy(src: *const u32, _: std.mem.Allocator) u32 {
+        pub fn copy(src: *const u32, _: std.mem.Allocator) u32 {
             return src.*;
         }
-        fn deinit(_: *u32, _: std.mem.Allocator) void {}
+        pub fn deinit(_: *u32, _: std.mem.Allocator) void {}
     };
     const C = Cow(u32, VTable);
     var x: u32 = 13;

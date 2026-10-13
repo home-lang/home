@@ -93,7 +93,7 @@ pub const CapnProto = struct {
 
         pub fn init(message: *Message, data_size: u16, pointer_count: u16) !StructBuilder {
             const total_size = (@as(usize, data_size) + @as(usize, pointer_count)) * 8;
-            const segment = try message.addSegment(total_size);
+            _ = try message.addSegment(total_size);
 
             return StructBuilder{
                 .message = message,
@@ -159,7 +159,7 @@ pub const CapnProto = struct {
             const upper: u32 = (@as(u32, pointer_count) << 16) | @as(u32, data_size);
 
             std.mem.writeInt(u32, segment[pointer_offset..][0..4], lower, .little);
-            std.mem.writeInt(u32, segment[pointer_offset + 4..][0..4], upper, .little);
+            std.mem.writeInt(u32, segment[pointer_offset + 4 ..][0..4], upper, .little);
         }
     };
 
@@ -219,7 +219,7 @@ pub const CapnProto = struct {
             if (pointer_offset + 8 > self.segment.len) return Error.OutOfBounds;
 
             const lower = std.mem.readInt(u32, self.segment[pointer_offset..][0..4], .little);
-            const upper = std.mem.readInt(u32, self.segment[pointer_offset + 4..][0..4], .little);
+            const upper = std.mem.readInt(u32, self.segment[pointer_offset + 4 ..][0..4], .little);
 
             const pointer_type: PointerType = @enumFromInt(lower & 0x3);
             const offset_words: i32 = @bitCast(lower & 0xFFFFFFFC);
@@ -261,7 +261,7 @@ pub const CapnProto = struct {
                 .inline_composite => element_count * 8, // Simplified
             };
 
-            const segment = try message.addSegment(element_bytes);
+            _ = try message.addSegment(element_bytes);
 
             return ListBuilder{
                 .message = message,
@@ -303,9 +303,10 @@ pub const CapnProto = struct {
 
     /// Serialize a message to bytes
     pub fn serialize(self: *CapnProto, message: *Message) ![]u8 {
+        if (message.segments.len == 0) return Error.InvalidSegment;
         // Calculate total size
         var total_size: usize = 8; // Header (segment count + padding)
-        for (message.segments) |segment| {
+        for (message.segments) |_| {
             total_size += 4; // Segment size (in words)
         }
         // Align header to 8 bytes
@@ -357,7 +358,7 @@ pub const CapnProto = struct {
         pos += 8; // Skip padding
 
         // Read segment sizes
-        var segment_sizes = try self.allocator.alloc(usize, segment_count);
+        const segment_sizes = try self.allocator.alloc(usize, segment_count);
         defer self.allocator.free(segment_sizes);
 
         for (segment_sizes) |*size| {
@@ -428,7 +429,7 @@ test "capnproto list builder" {
     try list.setUInt32(4, 50);
 
     // Verify
-    const segment = message.getSegment(1).?;
+    const segment = message.getSegment(0).?;
     try std.testing.expectEqual(@as(u32, 10), std.mem.readInt(u32, segment[0..4], .little));
     try std.testing.expectEqual(@as(u32, 50), std.mem.readInt(u32, segment[16..20], .little));
 }

@@ -397,3 +397,83 @@ The [declaration-parser evidence](../../bench/vs_tsgo/evidence/20261013-local-ts
 has SHA-256
 `a3939a46a1eb1a5a70a13b6bf2b2960f0474b5a3b000ccdb3d51c55f08899b30`;
 all 1,567 payload hashes were verified.
+
+## Declaration diagnostic ownership
+
+Qualified JSDoc parameter paths now participate in JavaScript signature checks
+only. TypeScript and declaration-file comments remain documentation; JavaScript
+still reports TS8032 for a missing object parent. This uses the actual file mode,
+including virtual filename sections used by conformance fixtures.
+
+An unresolved name in a syntactically valid computed type key now carries a
+semantic diagnostic classification. `skipLibCheck` suppresses that declaration
+error while retaining genuine malformed type syntax. Ambient signature
+parameters such as `arguments` and `eval` do not create runtime bindings;
+ambient variable bindings and implemented parameters retain strict-mode errors.
+
+The candidate passes **906 parser, 4,591 checker, 209 driver, 276 Program and 49
+CLI tests**, eight executable stream checks, and the existing automatic,
+declaration and recursive native CLI controls. The new
+`test-ts-declaration-diagnostics-cli.py` verifies **26 observations** with exact
+locations, codes and exit statuses under both `skipLibCheck` settings.
+The checked computed-key path still has an additional name-suggestion error
+and remains outside the passing contract. These controls do not qualify whole
+projects or the complete `~/Code` tree.
+
+On the unchanged 306-file table graph, these fixes reduce Home-only diagnostics
+from 53 to **39**. Peak process-tree footprint is **3,333 MB**, within the
+unchanged 3,840 MB limit. Native TypeScript exits zero and Home exits one;
+the project remains unqualified and its negative control has not run.
+
+The [diagnostic ownership evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-declaration-ownership-controls.tar.gz)
+has SHA-256
+`e878fce876eae483f6503fb6b508566c8bdcbdd6adffb7c3412e343ac53d2f87`;
+all 1,633 payload hashes were verified.
+
+## Global namespace value ownership
+
+Global namespace values now retain their checked graph before the declaration
+owner is published. Program imports relocate that graph instead of treating a
+namespace's empty declaration type as a missing global. Namespace declarations
+merge within and across owners; nested namespace members merge by declaration
+path, while ordinary object-valued exports retain their declared types.
+
+Functions merged with namespaces retain their call signature through the
+existing `__call` representation. Classes use their checked static object,
+including constructor signatures. Namespace graph construction reuses checked
+variable, function and class types, preventing duplicate diagnostics from
+checking those declarations again.
+
+Uninitialized class field names no longer create false global dependencies.
+Computed class keys and actual object-literal shorthand remain value references.
+A namespace containing only types reports TS2708 when used as a value. Native
+controls confirm that behavior and retain TS2649 for an empty namespace merged
+with a runtime export-assignment target. One old checker expectation was
+corrected against the native diagnostic rather than preserving its permissive
+behavior.
+
+Untyped namespace variables without initializers intentionally retain an unset
+HIR type for automatic-variable analysis. Constructing their exported `any`
+surface no longer reruns their implicit-any diagnostic. The complete 180-case
+native automatic-variable comparison includes the formerly duplicated TS7005
+cases under both strict and loose-null settings.
+
+The final candidate passes **4,592 checker, 209 driver, 283 Program and 49 CLI
+tests**, eight executable stream checks, all 180 automatic-variable comparisons,
+50 declaration contracts, 88 recursive/namespace observations and 26 diagnostic
+ownership observations. All 68 compiler and validation input hashes remained
+unchanged throughout these gates.
+
+The original isolated global namespace smoke test now passes. On the unchanged
+306-file table graph, native TypeScript still exits zero and Home still exits
+one with **39** differences. Peak process-tree footprint is **3,668 MB**, within
+the unchanged 3,840 MB limit. The planted project negative control has not run.
+Global augmentation aliases remain unqualified: a separate imported namespace
+aliased inside `declare global` is accepted by native TypeScript but produces
+TS2304 in Home. This is the declaration pattern used for the global Bun API.
+
+The [global namespace value evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-global-namespace-value-controls.tar.gz)
+has SHA-256
+`5458d945512b84a9261bb4efd1edd47d29241243221592f41e2f1afbd581e02e`;
+all 1718 payload hashes were verified. Neither this project nor the
+complete `~/Code` tree is replacement-qualified.

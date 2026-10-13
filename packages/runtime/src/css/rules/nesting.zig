@@ -36,7 +36,13 @@ pub fn NestingRule(comptime R: type) type {
 test "NestingRule generic instantiates" {
     const Inst = NestingRule(u8);
     const r = Inst{
-        .style = .{},
+        .style = .{
+            .selectors = .{},
+            .vendor_prefix = .{},
+            .declarations = .{},
+            .rules = .{},
+            .loc = css.Location.dummy(),
+        },
         .loc = css.Location.dummy(),
     };
     try std.testing.expectEqual(std.math.maxInt(u32), r.loc.source_index);
@@ -45,7 +51,13 @@ test "NestingRule generic instantiates" {
 test "NestingRule.deepClone shallow copy" {
     const Inst = NestingRule(u16);
     const r = Inst{
-        .style = .{},
+        .style = .{
+            .selectors = .{},
+            .vendor_prefix = .{},
+            .declarations = .{},
+            .rules = .{},
+            .loc = .{ .source_index = 11, .line = 12, .column = 13 },
+        },
         .loc = .{ .source_index = 11, .line = 12, .column = 13 },
     };
     const cloned = r.deepClone(std.testing.allocator);

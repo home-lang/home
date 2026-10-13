@@ -734,7 +734,13 @@ pub const Program = struct {
             .namespace_decl, .module_decl => hir_mod_ns.namespaceOf(hir, parent).name != node,
             .object_property => blk: {
                 const property = hir_mod_ns.objectPropertyOf(hir, parent);
-                break :blk property.key != node or property.is_shorthand;
+                if (property.key != node or property.is_computed) break :blk true;
+                if (!property.is_shorthand) break :blk false;
+                // Uninitialized class fields share the shorthand payload
+                // flag with object literals, but their names are declarations.
+                const container = hir.parentOf(parent);
+                break :blk container == hir_mod_ns.none_node_id or
+                    (hir.kindOf(container) != .class_decl and hir.kindOf(container) != .class_expr);
             },
             .labeled_stmt, .break_stmt, .continue_stmt => false,
             else => true,
@@ -845,6 +851,7 @@ pub const Program = struct {
         const compilation = owner.file.compilation orelse return null;
         for (owner.symbol.decls.items) |decl| {
             const kind = compilation.hir.kindOf(decl);
+            if (kind == .namespace_decl) continue;
             if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
                 const variable = hir_mod_ns.varDeclOf(&compilation.hir, decl);
                 if (boundPatternIdentifierType(compilation, variable.name, owner.symbol.name)) |binding_type| {
@@ -856,6 +863,130 @@ pub const Program = struct {
             return imported.types.ids.typeId(source_type) catch null;
         }
         return null;
+    }
+
+    fn importedNamespaceValueType(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        imported: *const source_owners.Imported,
+        owner: BoundGlobal,
+        namespace_paths: *std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void),
+        path: hir_mod_ns.StringId,
+    ) ProgramError!?ts_driver.TypeId {
+        const provider = owner.file.compilation orelse return null;
+        var merged: ?ts_driver.TypeId = null;
+        for (owner.symbol.decls.items) |decl| {
+            if (provider.hir.kindOf(decl) != .namespace_decl) continue;
+            const source_type = provider.checked_types.namespace_value_object_types.get(decl) orelse continue;
+            const value_type = imported.types.ids.typeId(source_type) catch continue;
+            merged = if (merged) |current|
+                try self.mergeNamespaceValueTypes(compilation, current, value_type, namespace_paths, path)
+            else
+                value_type;
+        }
+        return merged;
+    }
+
+    fn importedBoundGlobalValueType(imported: *const source_owners.Imported, owner: BoundGlobal) ?ts_driver.TypeId {
+        const provider = owner.file.compilation orelse return null;
+        if (owner.symbol.flags.is_class) {
+            for (owner.symbol.decls.items) |decl| {
+                if (provider.checked_types.class_static_type_by_node.get(decl)) |static_type|
+                    return imported.types.ids.typeId(static_type) catch null;
+            }
+        }
+        return importedBoundGlobalType(imported, owner);
+    }
+
+    fn namespaceHasValueDeclarations(provider: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) bool {
+        if (provider.checked_types.namespace_value_object_types.get(node)) |value_type| {
+            if (provider.type_interner.objectMembers(value_type).len != 0) return true;
+        }
+        for (hir_mod_ns.namespaceBody(&provider.hir, node)) |raw| {
+            const decl = if (provider.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&provider.hir, raw).decl else raw;
+            if (decl == hir_mod_ns.none_node_id) continue;
+            switch (provider.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr, .class_decl, .class_expr, .enum_decl, .block_stmt => return true,
+                .namespace_decl => if (namespaceHasValueDeclarations(provider, decl)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn recordNamespaceValuePaths(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        provider: *const ts_driver.Compilation,
+        node: hir_mod_ns.NodeId,
+        path: hir_mod_ns.StringId,
+        paths: *std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void),
+    ) ProgramError!void {
+        try paths.put(self.gpa, path, {});
+        for (hir_mod_ns.namespaceBody(&provider.hir, node)) |raw| {
+            const decl = if (provider.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&provider.hir, raw).decl else raw;
+            if (decl == hir_mod_ns.none_node_id or provider.hir.kindOf(decl) != .namespace_decl) continue;
+            const name_node = hir_mod_ns.namespaceOf(&provider.hir, decl).name;
+            if (provider.hir.kindOf(name_node) != .identifier) continue;
+            const name = hir_mod_ns.identifierOf(&provider.hir, name_node).name;
+            const child_text = try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ compilation.interner.get(path), provider.interner.get(name) });
+            defer self.gpa.free(child_text);
+            const child = compilation.interner.intern(child_text) catch return error.OutOfMemory;
+            try self.recordNamespaceValuePaths(compilation, provider, decl, child, paths);
+        }
+    }
+
+    fn mergeNamespaceValueTypes(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        first: ts_driver.TypeId,
+        second: ts_driver.TypeId,
+        namespace_paths: *std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void),
+        path: hir_mod_ns.StringId,
+    ) ProgramError!ts_driver.TypeId {
+        if (first == second) return first;
+        const merged = try self.mergeImportedGlobalTypes(compilation, first, second);
+        // Only nested namespace objects merge recursively. Ordinary exported
+        // variables retain their declared types even when those are objects.
+        const members = try self.gpa.dupe(@TypeOf(compilation.type_interner.objectMembers(merged)[0]), compilation.type_interner.objectMembers(merged));
+        defer self.gpa.free(members);
+        const contributions = try self.gpa.dupe(@TypeOf(members[0]), compilation.type_interner.objectMembers(second));
+        defer self.gpa.free(contributions);
+        var changed = false;
+        for (contributions) |candidate| {
+            const child_path_text = try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ compilation.interner.get(path), compilation.interner.get(candidate.name) });
+            defer self.gpa.free(child_path_text);
+            const child_path = compilation.interner.lookup(child_path_text) orelse continue;
+            if (!namespace_paths.contains(child_path)) continue;
+            for (members) |*existing| {
+                if (existing.name != candidate.name) continue;
+                const member_type = try self.mergeNamespaceValueTypes(compilation, existing.type, candidate.type, namespace_paths, child_path);
+                changed = changed or member_type != existing.type;
+                existing.type = member_type;
+                break;
+            }
+        }
+        const result = if (changed)
+            compilation.type_interner.internObjectType(members) catch return error.OutOfMemory
+        else
+            merged;
+        return result;
+    }
+
+    fn mergeNamespaceIntoGlobalValue(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        value_type: ts_driver.TypeId,
+        namespace_type: ts_driver.TypeId,
+    ) ProgramError!ts_driver.TypeId {
+        if (!compilation.type_interner.pool.flagsOf(value_type).is_signature)
+            return self.mergeImportedGlobalTypes(compilation, value_type, namespace_type);
+        var members: std.ArrayListUnmanaged(@TypeOf(compilation.type_interner.objectMembers(namespace_type)[0])) = .empty;
+        defer members.deinit(self.gpa);
+        const call_name = compilation.interner.intern("__call") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{ .name = call_name, .type = value_type, .is_optional = false, .is_readonly = true, .is_method = true });
+        try members.appendSlice(self.gpa, compilation.type_interner.objectMembers(namespace_type));
+        return compilation.type_interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn boundPatternIdentifierType(
@@ -977,22 +1108,62 @@ pub const Program = struct {
         try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
         for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
 
+        var namespace_paths: std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void) = .empty;
+        defer namespace_paths.deinit(self.gpa);
+        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (key.space != .value) continue;
+            for (owners.items) |owner| {
+                const provider = owner.file.compilation orelse continue;
+                if (result.importedFor(owner.file.owner) == null) continue;
+                for (owner.symbol.decls.items) |decl| {
+                    if (provider.hir.kindOf(decl) == .namespace_decl)
+                        try self.recordNamespaceValuePaths(compilation, provider, decl, key.name, &namespace_paths);
+                }
+            }
+        }
+
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
             if (key.space == .value) {
+                var merged_namespace: ?ts_driver.TypeId = null;
+                var binding: ?ts_driver.ProgramGlobalBinding = null;
+                var namespace_has_value = false;
                 for (owners.items) |owner| {
                     if (owner.file == file or owner.file.owner == .none) continue;
                     const imported = result.importedFor(owner.file.owner) orelse continue;
-                    const value_type = importedBoundGlobalType(imported, owner) orelse continue;
-                    try result.values.append(self.gpa, .{
+                    if (owner.symbol.flags.is_namespace_decl) {
+                        for (owner.symbol.decls.items) |decl| {
+                            const provider = owner.file.compilation.?;
+                            if (provider.hir.kindOf(decl) == .namespace_decl and namespaceHasValueDeclarations(provider, decl)) namespace_has_value = true;
+                        }
+                        if (try self.importedNamespaceValueType(compilation, imported, owner, &namespace_paths, key.name)) |value_type| {
+                            merged_namespace = if (merged_namespace) |current|
+                                try self.mergeNamespaceValueTypes(compilation, current, value_type, &namespace_paths, key.name)
+                            else
+                                value_type;
+                        }
+                    }
+                    if (binding != null) continue;
+                    const value_type = importedBoundGlobalValueType(imported, owner) orelse continue;
+                    binding = .{
                         .name = key.name,
                         .type = value_type,
                         .declared_type_name = boundGlobalDeclaredTypeName(owner),
                         .is_global_this_property = owner.symbol.flags.is_var or
                             owner.symbol.flags.is_function or owner.symbol.flags.is_class or
                             owner.symbol.flags.is_enum or owner.symbol.flags.is_namespace_decl,
-                    });
-                    break;
+                    };
                 }
+                if (merged_namespace) |value_type| {
+                    if (binding) |*base| {
+                        base.type = try self.mergeNamespaceIntoGlobalValue(compilation, base.type, value_type);
+                    } else binding = .{
+                        .name = key.name,
+                        .type = value_type,
+                        .is_global_this_property = namespace_has_value,
+                        .is_namespace_only = !namespace_has_value,
+                    };
+                }
+                if (binding) |value| try result.values.append(self.gpa, value);
                 continue;
             }
             if (key.space != .type) continue;
@@ -15818,6 +15989,62 @@ test "Program: checked JavaScript primitive array JSDoc types cross the import b
     }
 }
 
+test "Program: checked JavaScript rest JSDoc types cross the import boundary" {
+    const owner_source =
+        \\/**
+        \\ * @param {...number} values
+        \\ * @returns {string}
+        \\ */
+        \\export function scalarRest(...values) { return values.join(","); }
+        \\/**
+        \\ * @param {number[]} values
+        \\ * @returns {string}
+        \\ */
+        \\export function arrayRest(...values) { return values.join(","); }
+    ;
+    const consumer_source =
+        \\import { arrayRest, scalarRest } from "./owner.js";
+        \\scalarRest(1, "bad");
+        \\arrayRest(1, "bad");
+        \\const scalarResult: number = scalarRest(1);
+        \\const arrayResult: number = arrayRest(1);
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics[0..2]) |diagnostic| {
+            try T.expectEqual(@as(u32, 2345), diagnostic.code);
+            try T.expectEqualStrings("Argument of type 'string' is not assignable to parameter of type 'number'.", diagnostic.message);
+        }
+        for (diagnostics[2..]) |diagnostic| {
+            try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostic.message);
+        }
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
@@ -17059,4 +17286,135 @@ test "Program: recursive ambient interface lookup follows more than sixteen merg
     const result = p.fileById(consumer).compilation.?;
     try T.expectEqual(@as(usize, 1), result.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), result.diagnostics.items[0].code);
+}
+
+test "Program: global namespace values retain checked members across source owners" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/tools.d.ts", "declare namespace Tools { function convert(value: number): string; const version: number; }");
+        const app = try p.add("/main.ts", "const text: string = Tools.convert(1); const version: number = Tools.version; const wrong: number = Tools.convert(1); Tools.missing; Tools.convert('wrong');");
+        const Sink = struct {
+            fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+        };
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        switch (mode) {
+            .serial => try p.compileAll(options),
+            .parallel => try p.compileAllParallel(options, 2),
+            .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+        }
+        const c = p.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 3), c.diagnostics.items.len);
+        const expected = [_]u32{ 2322, 2339, 2345 };
+        for (c.diagnostics.items, expected) |d, code| try T.expectEqual(code, d.code);
+    }
+}
+
+test "Program: namespace value declarations merge within and across source owners" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/first.d.ts", "declare namespace Tools { const first: number; namespace Nested { const first: number; } } declare namespace Tools { const second: string; namespace Nested { const second: string; } }");
+    _ = try p.add("/second.d.ts", "declare namespace Tools { function third(value: string): boolean; namespace Nested { const third: boolean; } }");
+    const app = try p.add("/main.ts", "const first: number = Tools.first; const second: string = Tools.second; const third: boolean = globalThis.Tools.third('ok'); const nestedFirst: number = Tools.Nested.first; const nestedSecond: string = Tools.Nested.second; const nestedThird: boolean = Tools.Nested.third; const wrong: number = Tools.second; Tools.third(1);");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 2), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2345), c.diagnostics.items[1].code);
+}
+
+test "Program: namespace merging does not widen ordinary object-valued exports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/first.d.ts", "declare namespace Tools { const shared: { first: number }; namespace Nested { const first: number; } }");
+    _ = try p.add("/second.d.ts", "declare namespace Tools { const shared: { second: string }; namespace Nested { const second: string; } }");
+    const app = try p.add("/main.ts", "const first: number = Tools.shared.first; const nested: string = Tools.Nested.second; Tools.shared.second;");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2339), c.diagnostics.items[0].code);
+}
+
+test "Program: a function merged with global namespace values remains callable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/first.d.ts", "declare function format(value: string): string; declare namespace format { const first: number; }");
+    _ = try p.add("/second.d.ts", "declare namespace format { const second: string; }");
+    const app = try p.add("/main.ts", "const text: string = format('ok'); const first: number = format.first; const second: string = format.second; format(1); const wrong: number = format('ok');");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 2), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2345), c.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[1].code);
+}
+
+test "Program: a class merged with global namespace values retains its constructor" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/first.d.ts", "declare class Widget { constructor(value: string); value: string; } declare namespace Widget { const version: number; }");
+    const app = try p.add("/main.ts", "const widget = new Widget('ok'); const value: string = widget.value; const version: number = Widget.version; new Widget(1); const wrong: number = widget.value;");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 2), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2345), c.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[1].code);
+}
+
+test "Program: global reference facts distinguish class field declarations and evaluated keys" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const fields = try p.add("/fields.d.ts", "declare class Box { value: string; [key]: number; }");
+    const shorthand = try p.add("/shorthand.ts", "const object = { value };");
+    try p.prepareNameStore();
+    try p.prepareFiles(.{});
+    const field_file = p.fileById(fields);
+    var field_refs = GlobalReferenceNames.init(T.allocator, field_file);
+    defer field_refs.deinit(T.allocator);
+    try T.expect(!field_refs.names.contains(field_file.compilation.?.interner.lookup("value").?));
+    try T.expectEqual(GlobalReferenceNames.value_mask | GlobalReferenceNames.namespace_mask, field_refs.names.get(field_file.compilation.?.interner.lookup("key").?).?);
+    const shorthand_file = p.fileById(shorthand);
+    var shorthand_refs = GlobalReferenceNames.init(T.allocator, shorthand_file);
+    defer shorthand_refs.deinit(T.allocator);
+    try T.expectEqual(GlobalReferenceNames.value_mask | GlobalReferenceNames.namespace_mask, shorthand_refs.names.get(shorthand_file.compilation.?.interner.lookup("value").?).?);
+}
+
+test "Program: a global namespace containing only types cannot be used as a value" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/types.d.ts", "declare namespace Types { interface I { value: string } }");
+    const app = try p.add("/main.ts", "const value = Types;");
+    try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const c = p.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2708), c.diagnostics.items[0].code);
+    try T.expectEqualStrings("Cannot use namespace 'Types' as a value.", c.diagnostics.items[0].message);
 }

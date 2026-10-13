@@ -469,7 +469,7 @@ test "fmtPrinterError returns formatting error without a location" {
 }
 
 test "nesting expansion printer error has the Bun diagnostic" {
-    const err = PrinterErrorKind.maximum_nesting_expansion;
+    const err: PrinterErrorKind = .maximum_nesting_expansion;
     const message = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{err});
     defer std.testing.allocator.free(message);
     try std.testing.expectEqualStrings(
@@ -479,7 +479,7 @@ test "nesting expansion printer error has the Bun diagnostic" {
 }
 
 test "selector expansion minify error explains the bounded limit" {
-    const err = MinifyErrorKind.selector_expansion_limit_exceeded;
+    const err: MinifyErrorKind = .selector_expansion_limit_exceeded;
     const message = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{err});
     defer std.testing.allocator.free(message);
     try std.testing.expectEqualStrings(

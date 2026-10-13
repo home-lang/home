@@ -52,10 +52,9 @@ pub fn signatureSummary(
     allocator: std.mem.Allocator,
     sig: *const modsign.ModuleSignature,
 ) ![]u8 {
-    var list = std.ArrayList(u8).empty;
-    errdefer list.deinit(allocator);
-
-    const writer = list.writer(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    const writer = &output.writer;
 
     // Key ID (first 8 bytes in hex)
     try writer.print("{s} key:", .{sig.algorithm.name()});
@@ -63,7 +62,7 @@ pub fn signatureSummary(
         try writer.print("{x:0>2}", .{byte});
     }
 
-    return list.toOwnedSlice(allocator);
+    return output.toOwnedSlice();
 }
 
 /// Check if data has module signature appended
@@ -212,4 +211,15 @@ test "module info" {
 
     try testing.expect(!info.has_signature);
     try testing.expectEqual(@as(usize, data.len), info.module_size);
+}
+
+test "signature summary" {
+    const testing = std.testing;
+    var sig = try modsign.ModuleSignature.init(testing.allocator, .ecdsa_p256_sha256);
+    defer sig.deinit();
+    sig.key_id = @splat(0xab);
+
+    const summary = try signatureSummary(testing.allocator, &sig);
+    defer testing.allocator.free(summary);
+    try testing.expectEqualStrings("ECDSA-P256-SHA256 key:abababababababab", summary);
 }

@@ -13,7 +13,9 @@ pub const LZ4 = struct {
         OutOfMemory,
         InvalidToken,
         InvalidOffset,
+        InvalidLength,
         OutputTooSmall,
+        SizeTooLarge,
     };
 
     // LZ4 constants
@@ -74,27 +76,32 @@ pub const LZ4Compressor = struct {
             .allocator = allocator,
             .acceleration = acceleration,
             .hash_table = hash_table,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .empty,
         };
     }
 
     pub fn deinit(self: *LZ4Compressor) void {
         self.allocator.free(self.hash_table);
-        self.output.deinit();
+        self.output.deinit(self.allocator);
     }
 
     pub fn compress(self: *LZ4Compressor, input: []const u8) LZ4.Error![]u8 {
-        if (input.len == 0) {
-            return try self.output.toOwnedSlice();
-        }
+        self.output.clearRetainingCapacity();
+        @memset(self.hash_table, 0);
 
-        // Write uncompressed size as header
+        // The frame always begins with the uncompressed size, including for
+        // empty inputs. The decoder uses this header to distinguish a valid
+        // empty frame from a truncated stream.
         try self.writeU32(input.len);
+
+        if (input.len == 0) {
+            return try self.output.toOwnedSlice(self.allocator);
+        }
 
         // Compress the data
         try self.compressBlock(input);
 
-        return try self.output.toOwnedSlice();
+        return try self.output.toOwnedSlice(self.allocator);
     }
 
     fn compressBlock(self: *LZ4Compressor, input: []const u8) LZ4.Error!void {
@@ -105,8 +112,7 @@ pub const LZ4Compressor = struct {
         }
 
         var ip: usize = 0; // Input position
-        const anchor = 0; // Start of current literal run
-        var current_anchor = anchor;
+        var current_anchor: usize = 0; // Start of current literal run
 
         const input_end = input.len;
         const match_limit = input_end - LZ4.LAST_LITERALS;
@@ -118,7 +124,6 @@ pub const LZ4Compressor = struct {
 
             if (match_result) |match| {
                 // Encode literals before match
-                const literal_length = ip - current_anchor;
                 try self.encodeSequence(
                     input[current_anchor..ip],
                     match.length,
@@ -173,8 +178,9 @@ pub const LZ4Compressor = struct {
         const max_len = @min(input.len - pos, 65535 + LZ4.MIN_MATCH);
 
         while (match_len < max_len and
-               match_pos + match_len < pos and
-               input[pos + match_len] == input[match_pos + match_len]) {
+            match_pos + match_len < pos and
+            input[pos + match_len] == input[match_pos + match_len])
+        {
             match_len += 1;
         }
 
@@ -224,33 +230,33 @@ pub const LZ4Compressor = struct {
             token |= 15;
         }
 
-        try self.output.append(token);
+        try self.output.append(self.allocator, token);
 
         // Encode extra literal length if needed
         if (literal_length >= 15) {
             var remaining = literal_length - 15;
             while (remaining >= 255) {
-                try self.output.append(255);
+                try self.output.append(self.allocator, 255);
                 remaining -= 255;
             }
-            try self.output.append(@intCast(remaining));
+            try self.output.append(self.allocator, @intCast(remaining));
         }
 
         // Write literals
-        try self.output.appendSlice(literals);
+        try self.output.appendSlice(self.allocator, literals);
 
         // Write offset (little-endian)
-        try self.output.append(@intCast(offset & 0xFF));
-        try self.output.append(@intCast((offset >> 8) & 0xFF));
+        try self.output.append(self.allocator, @intCast(offset & 0xFF));
+        try self.output.append(self.allocator, @intCast((offset >> 8) & 0xFF));
 
         // Encode extra match length if needed
         if (ml >= 15) {
             var remaining = ml - 15;
             while (remaining >= 255) {
-                try self.output.append(255);
+                try self.output.append(self.allocator, 255);
                 remaining -= 255;
             }
-            try self.output.append(@intCast(remaining));
+            try self.output.append(self.allocator, @intCast(remaining));
         }
     }
 
@@ -267,20 +273,20 @@ pub const LZ4Compressor = struct {
             token = 15 << 4;
         }
 
-        try self.output.append(token);
+        try self.output.append(self.allocator, token);
 
         // Encode extra literal length if needed
         if (literal_length >= 15) {
             var remaining = literal_length - 15;
             while (remaining >= 255) {
-                try self.output.append(255);
+                try self.output.append(self.allocator, 255);
                 remaining -= 255;
             }
-            try self.output.append(@intCast(remaining));
+            try self.output.append(self.allocator, @intCast(remaining));
         }
 
         // Write literals
-        try self.output.appendSlice(literals);
+        try self.output.appendSlice(self.allocator, literals);
     }
 
     fn writeU32(self: *LZ4Compressor, value: usize) !void {
@@ -288,10 +294,10 @@ pub const LZ4Compressor = struct {
         // error so callers can abort the compression cleanly.
         if (value > std.math.maxInt(u32)) return error.SizeTooLarge;
         const val: u32 = @intCast(value);
-        try self.output.append(@intCast(val & 0xFF));
-        try self.output.append(@intCast((val >> 8) & 0xFF));
-        try self.output.append(@intCast((val >> 16) & 0xFF));
-        try self.output.append(@intCast((val >> 24) & 0xFF));
+        try self.output.append(self.allocator, @intCast(val & 0xFF));
+        try self.output.append(self.allocator, @intCast((val >> 8) & 0xFF));
+        try self.output.append(self.allocator, @intCast((val >> 16) & 0xFF));
+        try self.output.append(self.allocator, @intCast((val >> 24) & 0xFF));
     }
 };
 
@@ -303,16 +309,17 @@ pub const LZ4Decompressor = struct {
     pub fn init(allocator: std.mem.Allocator) LZ4.Error!LZ4Decompressor {
         return LZ4Decompressor{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .empty,
         };
     }
 
     pub fn deinit(self: *LZ4Decompressor) void {
-        self.output.deinit();
+        self.output.deinit(self.allocator);
     }
 
     pub fn decompress(self: *LZ4Decompressor, input: []const u8) LZ4.Error![]u8 {
         if (input.len < 4) return LZ4.Error.InvalidStream;
+        self.output.clearRetainingCapacity();
 
         // Read uncompressed size
         const uncompressed_size = self.readU32(input[0..4]);
@@ -321,7 +328,7 @@ pub const LZ4Decompressor = struct {
         // input so a maliciously large header field can't trigger a huge
         // allocation up-front; the buffer will still grow as needed.
         const max_prealloc = @min(uncompressed_size, input.len *| 256);
-        try self.output.ensureTotalCapacity(max_prealloc);
+        try self.output.ensureTotalCapacity(self.allocator, max_prealloc);
 
         // Decompress
         var ip: usize = 4; // Skip size header
@@ -334,19 +341,26 @@ pub const LZ4Decompressor = struct {
             // Decode literal length
             var literal_length: usize = @intCast(token >> 4);
             if (literal_length == 15) {
+                var terminated = false;
                 while (ip < input.len) {
                     const extra = input[ip];
                     ip += 1;
+                    if (literal_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
                     literal_length += extra;
-                    if (extra != 255) break;
+                    if (extra != 255) {
+                        terminated = true;
+                        break;
+                    }
                 }
+                if (!terminated) return LZ4.Error.InvalidStream;
             }
 
             // Copy literals
-            if (ip + literal_length > input.len) {
+            if (literal_length > input.len - ip) {
                 return LZ4.Error.InvalidStream;
             }
-            try self.output.appendSlice(input[ip..][0..literal_length]);
+            if (literal_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
+            try self.output.appendSlice(self.allocator, input[ip..][0..literal_length]);
             ip += literal_length;
 
             // Check if we're done
@@ -364,32 +378,42 @@ pub const LZ4Decompressor = struct {
             // Decode match length
             var match_length: usize = @intCast(token & LZ4.ML_MASK);
             if (match_length == 15) {
+                var terminated = false;
                 while (ip < input.len) {
                     const extra = input[ip];
                     ip += 1;
+                    if (match_length > std.math.maxInt(usize) - @as(usize, extra)) return LZ4.Error.InvalidLength;
                     match_length += extra;
-                    if (extra != 255) break;
+                    if (extra != 255) {
+                        terminated = true;
+                        break;
+                    }
                 }
+                if (!terminated) return LZ4.Error.InvalidStream;
             }
+            if (match_length > std.math.maxInt(usize) - LZ4.MIN_MATCH) return LZ4.Error.InvalidLength;
             match_length += LZ4.MIN_MATCH;
+            if (match_length > uncompressed_size -| self.output.items.len) return LZ4.Error.InvalidLength;
 
             // Copy match
             const match_pos = self.output.items.len - offset;
             for (0..match_length) |i| {
                 const byte = self.output.items[match_pos + (i % offset)];
-                try self.output.append(byte);
+                try self.output.append(self.allocator, byte);
             }
         }
 
-        return try self.output.toOwnedSlice();
+        if (self.output.items.len != uncompressed_size) return LZ4.Error.InvalidLength;
+
+        return try self.output.toOwnedSlice(self.allocator);
     }
 
     fn readU32(self: *LZ4Decompressor, bytes: []const u8) usize {
         _ = self;
         return @as(usize, bytes[0]) |
-               (@as(usize, bytes[1]) << 8) |
-               (@as(usize, bytes[2]) << 16) |
-               (@as(usize, bytes[3]) << 24);
+            (@as(usize, bytes[1]) << 8) |
+            (@as(usize, bytes[2]) << 16) |
+            (@as(usize, bytes[3]) << 24);
     }
 };
 
@@ -427,19 +451,23 @@ test "lz4 empty input" {
 test "lz4 acceleration levels" {
     const allocator = std.testing.allocator;
 
-    const input = "The quick brown fox jumps over the lazy dog. " ** 10;
+    const phrase = "The quick brown fox jumps over the lazy dog. ";
+    var input: [phrase.len * 10]u8 = undefined;
+    for (0..10) |i| {
+        @memcpy(input[i * phrase.len ..][0..phrase.len], phrase);
+    }
 
     // Test different acceleration levels
     for (1..5) |accel| {
         var lz4 = LZ4.init(allocator, @intCast(accel));
 
-        const compressed = try lz4.compress(input);
+        const compressed = try lz4.compress(&input);
         defer allocator.free(compressed);
 
         const decompressed = try lz4.decompress(compressed);
         defer allocator.free(decompressed);
 
-        try std.testing.expectEqualStrings(input, decompressed);
+        try std.testing.expectEqualStrings(&input, decompressed);
     }
 }
 
@@ -449,7 +477,7 @@ test "lz4 large data" {
     var lz4 = LZ4.init(allocator, 1);
 
     // Generate large input with patterns
-    var input = try allocator.alloc(u8, 100000);
+    const input = try allocator.alloc(u8, 100000);
     defer allocator.free(input);
 
     for (input, 0..) |*byte, i| {
@@ -470,9 +498,13 @@ test "lz4 repeated patterns" {
 
     var lz4 = LZ4.init(allocator, 1);
 
-    const input = "abcdefgh" ** 100;
+    const pattern = "abcdefgh";
+    var input: [pattern.len * 100]u8 = undefined;
+    for (0..100) |i| {
+        @memcpy(input[i * pattern.len ..][0..pattern.len], pattern);
+    }
 
-    const compressed = try lz4.compress(input);
+    const compressed = try lz4.compress(&input);
     defer allocator.free(compressed);
 
     // LZ4 should achieve good compression on repeated patterns
@@ -481,7 +513,7 @@ test "lz4 repeated patterns" {
     const decompressed = try lz4.decompress(compressed);
     defer allocator.free(decompressed);
 
-    try std.testing.expectEqualStrings(input, decompressed);
+    try std.testing.expectEqualStrings(&input, decompressed);
 }
 
 test "lz4 compress bound" {
@@ -497,13 +529,13 @@ test "lz4 compress bound" {
 
 test "lz4 incompressible data" {
     const allocator = std.testing.allocator;
-    const random = std.crypto.random;
+    var prng = std.Random.DefaultPrng.init(0x4c5a_3401);
 
     var lz4 = LZ4.init(allocator, 1);
 
     // Generate random data (incompressible)
     var input: [1000]u8 = undefined;
-    random.bytes(&input);
+    prng.random().bytes(&input);
 
     const compressed = try lz4.compress(&input);
     defer allocator.free(compressed);
@@ -512,4 +544,15 @@ test "lz4 incompressible data" {
     defer allocator.free(decompressed);
 
     try std.testing.expectEqualSlices(u8, &input, decompressed);
+}
+
+test "lz4 rejects malformed lengths and offsets" {
+    const allocator = std.testing.allocator;
+    var lz4 = LZ4.init(allocator, 1);
+
+    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 1, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 1, 0, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidOffset, lz4.decompress(&.{ 4, 0, 0, 0, 0, 0, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidLength, lz4.decompress(&.{ 4, 0, 0, 0, 0x10, 'A', 1, 0 }));
+    try std.testing.expectError(LZ4.Error.InvalidStream, lz4.decompress(&.{ 20, 0, 0, 0, 0x1f, 'A', 1, 0 }));
 }

@@ -2,6 +2,20 @@ const std = @import("std");
 const testing = std.testing;
 const database = @import("database");
 const postgresql = database.postgresql;
+const migrations = @import("migrations");
+
+fn defineWidgetTable(table: *migrations.TableBuilder) anyerror!void {
+    try table.id();
+    _ = try table.string("name", 64);
+}
+
+fn createWidgetTable(schema: *migrations.SchemaBuilder) anyerror!void {
+    try schema.createTable("widgets", defineWidgetTable);
+}
+
+fn dropWidgetTable(schema: *migrations.SchemaBuilder) anyerror!void {
+    try schema.dropTable("widgets");
+}
 
 test "database: open in-memory database" {
     const allocator = testing.allocator;
@@ -47,6 +61,43 @@ test "postgresql: decode command complete preserves insert oid" {
 
 test "postgresql: decode command complete requires zero terminator" {
     try testing.expectError(error.MalformedCommandComplete, postgresql.decodeCommandComplete("UPDATE 1"));
+}
+
+test "postgresql: format complete MD5 password response" {
+    const response = postgresql.formatMD5Password("user", "password", &.{ 1, 2, 3, 4 });
+    try testing.expectEqual(@as(usize, 36), response.len);
+    try testing.expectEqualStrings("md5a3576f1ae039b8996bc4fc2720f9c71a", response[0..35]);
+    try testing.expectEqual(@as(u8, 0), response[35]);
+}
+
+test "database: migration lifecycle owns records and uses the injected clock" {
+    var conn = try database.Connection.open(testing.allocator, ":memory:");
+    defer conn.close();
+
+    var migrator = migrations.Migrator.init(std.testing.io, testing.allocator, &conn);
+    const plan = [_]migrations.Migration{.{
+        .name = "clock'test",
+        .up = createWidgetTable,
+        .down = dropWidgetTable,
+    }};
+    try migrator.migrate(&plan);
+
+    const applied = try migrator.getApplied();
+    defer {
+        for (applied) |*record| record.deinit();
+        testing.allocator.free(applied);
+    }
+    try testing.expectEqual(@as(usize, 1), applied.len);
+    try testing.expectEqualStrings("clock'test", applied[0].name);
+    try testing.expectEqual(@as(i32, 1), applied[0].batch);
+    try testing.expect(applied[0].applied_at > 0);
+
+    var schema = migrations.SchemaBuilder.init(testing.allocator, &conn);
+    try testing.expect(try schema.hasTable("widgets"));
+    try testing.expect(try schema.hasColumn("widgets", "name"));
+
+    try migrator.rollback(&plan);
+    try testing.expect(!try schema.hasTable("widgets"));
 }
 
 test "database: create table" {

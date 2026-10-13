@@ -116,6 +116,7 @@ pub const ValidationError = error{
 
 /// Validation context for tracking state during validation
 pub const ValidationContext = struct {
+    io: std.Io,
     config: ValidationConfig,
     current_recursion_depth: usize = 0,
     token_count: usize = 0,
@@ -126,8 +127,12 @@ pub const ValidationContext = struct {
 
     pub const Phase = enum { parsing, type_checking, code_generation };
 
-    pub fn init(config: ValidationConfig) ValidationContext {
-        return .{ .config = config, .start_time = std.time.milliTimestamp() };
+    pub fn init(io: std.Io, config: ValidationConfig) ValidationContext {
+        return .{
+            .io = io,
+            .config = config,
+            .start_time = std.Io.Clock.real.now(io).toMilliseconds(),
+        };
     }
 
     pub fn enterRecursion(self: *ValidationContext) ValidationError!void {
@@ -167,13 +172,13 @@ pub const ValidationContext = struct {
             .code_generation => self.config.codegen_timeout_ms,
         };
         if (timeout_ms == 0) return;
-        const elapsed = std.time.milliTimestamp() - self.start_time;
+        const elapsed = std.Io.Clock.real.now(self.io).toMilliseconds() - self.start_time;
         if (elapsed > @as(i64, @intCast(timeout_ms))) return ValidationError.Timeout;
     }
 
     pub fn setPhase(self: *ValidationContext, phase: Phase) void {
         self.phase = phase;
-        self.start_time = std.time.milliTimestamp();
+        self.start_time = std.Io.Clock.real.now(self.io).toMilliseconds();
     }
 };
 

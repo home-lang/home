@@ -431,30 +431,7 @@ pub const PostgreSQL = struct {
     }
 
     fn sendMD5Password(self: *PostgreSQL, user: []const u8, password: []const u8, salt: []const u8) !void {
-        // MD5(MD5(password + user) + salt)
-        var hasher = std.crypto.hash.Md5.init(.{});
-
-        hasher.update(password);
-        hasher.update(user);
-
-        var inner_hash: [16]u8 = undefined;
-        hasher.final(&inner_hash);
-
-        var inner_hex: [32]u8 = undefined;
-        _ = std.fmt.bufPrint(&inner_hex, "{x}", .{std.fmt.fmtSliceHexLower(&inner_hash)}) catch unreachable;
-
-        hasher = std.crypto.hash.Md5.init(.{});
-        hasher.update(&inner_hex);
-        hasher.update(salt);
-
-        var outer_hash: [16]u8 = undefined;
-        hasher.final(&outer_hash);
-
-        var result: [35]u8 = undefined;
-        result[0..3].* = "md5".*;
-        _ = std.fmt.bufPrint(result[3..], "{x}", .{std.fmt.fmtSliceHexLower(&outer_hash)}) catch unreachable;
-        result[35 - 1] = 0;
-
+        const result = formatMD5Password(user, password, salt);
         try self.sendMessage('p', &result);
     }
 
@@ -568,6 +545,32 @@ pub const PostgreSQL = struct {
         try self.sendMessage('X', &.{});
     }
 };
+
+/// Format PostgreSQL's legacy MD5 password response, including its trailing
+/// zero byte for the PasswordMessage payload.
+pub fn formatMD5Password(user: []const u8, password: []const u8, salt: []const u8) [36]u8 {
+    var hasher = std.crypto.hash.Md5.init(.{});
+    hasher.update(password);
+    hasher.update(user);
+
+    var inner_hash: [16]u8 = undefined;
+    hasher.final(&inner_hash);
+    const inner_hex = std.fmt.bytesToHex(inner_hash, .lower);
+
+    hasher = std.crypto.hash.Md5.init(.{});
+    hasher.update(&inner_hex);
+    hasher.update(salt);
+
+    var outer_hash: [16]u8 = undefined;
+    hasher.final(&outer_hash);
+    const outer_hex = std.fmt.bytesToHex(outer_hash, .lower);
+
+    var result: [36]u8 = undefined;
+    @memcpy(result[0..3], "md5");
+    @memcpy(result[3..35], &outer_hex);
+    result[35] = 0;
+    return result;
+}
 
 /// Connection pool
 pub const ConnectionPool = struct {

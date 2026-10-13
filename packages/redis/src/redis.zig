@@ -1,6 +1,5 @@
 const std = @import("std");
-const posix = std.posix;
-const net = std.net;
+const net = std.Io.net;
 
 /// Redis error types
 pub const RedisError = error{
@@ -88,6 +87,7 @@ pub const RespValue = union(enum) {
 
 /// Redis connection configuration
 pub const RedisConfig = struct {
+    io: std.Io,
     host: []const u8 = "127.0.0.1",
     port: u16 = 6379,
     password: ?[]const u8 = null,
@@ -101,13 +101,13 @@ pub const RedisConfig = struct {
     tls: bool = false,
     pool_size: u32 = 10,
 
-    pub fn default() RedisConfig {
-        return .{};
+    pub fn default(io: std.Io) RedisConfig {
+        return .{ .io = io };
     }
 
-    pub fn fromUrl(url: []const u8) !RedisConfig {
+    pub fn fromUrl(io: std.Io, url: []const u8) !RedisConfig {
         // Parse redis://[username:password@]host[:port][/database]
-        var config = RedisConfig.default();
+        var config = RedisConfig.default(io);
 
         var remaining = url;
 
@@ -162,6 +162,7 @@ pub const Redis = struct {
     read_len: usize = 0,
 
     const Self = @This();
+    const ResponseReadError = RedisError || std.mem.Allocator.Error || error{ResponseTooLarge};
 
     pub fn init(allocator: std.mem.Allocator, config: RedisConfig) Self {
         return .{
@@ -178,36 +179,36 @@ pub const Redis = struct {
     pub fn connect(self: *Self) !void {
         if (self.stream != null) return;
 
-        const address = net.Address.resolveIp(self.config.host, self.config.port) catch {
+        self.stream = self.connectToHost() catch {
             return RedisError.ConnectionFailed;
         };
-
-        self.stream = net.tcpConnectToAddress(address) catch {
-            return RedisError.ConnectionFailed;
-        };
+        errdefer self.disconnect();
 
         // Authenticate if password is set
         if (self.config.password) |password| {
-            if (self.config.username) |username| {
-                // Redis 6+ ACL auth
-                _ = try self.command(&[_][]const u8{ "AUTH", username, password });
-            } else {
-                _ = try self.command(&[_][]const u8{ "AUTH", password });
-            }
+            var result = if (self.config.username) |username|
+                try self.commandConnected(&.{ "AUTH", username, password })
+            else
+                try self.commandConnected(&.{ "AUTH", password });
+            defer result.deinit(self.allocator);
+
+            if (!result.isOk()) return RedisError.AuthenticationFailed;
         }
 
         // Select database
         if (self.config.database > 0) {
             var db_buf: [4]u8 = undefined;
             const db_str = std.fmt.bufPrint(&db_buf, "{d}", .{self.config.database}) catch "0";
-            _ = try self.command(&[_][]const u8{ "SELECT", db_str });
+            var result = try self.commandConnected(&.{ "SELECT", db_str });
+            defer result.deinit(self.allocator);
+            if (!result.isOk()) return RedisError.CommandFailed;
         }
     }
 
     /// Disconnect from Redis
     pub fn disconnect(self: *Self) void {
         if (self.stream) |stream| {
-            stream.close();
+            stream.close(self.config.io);
             self.stream = null;
         }
         self.read_pos = 0;
@@ -232,6 +233,10 @@ pub const Redis = struct {
     /// Execute a Redis command
     pub fn command(self: *Self, args: []const []const u8) !RespValue {
         try self.ensureConnected();
+        return self.commandConnected(args);
+    }
+
+    fn commandConnected(self: *Self, args: []const []const u8) !RespValue {
         try self.sendCommand(args);
         return self.readResponse();
     }
@@ -295,12 +300,12 @@ pub const Redis = struct {
     }
 
     /// MGET key [key ...]
-    pub fn mget(self: *Self, keys: []const []const u8) ![]?[]const u8 {
-        var args = try self.allocator.alloc([]const u8, keys.len + 1);
+    pub fn mget(self: *Self, key_list: []const []const u8) ![]?[]const u8 {
+        var args = try self.allocator.alloc([]const u8, key_list.len + 1);
         defer self.allocator.free(args);
 
         args[0] = "MGET";
-        for (keys, 0..) |key, i| {
+        for (key_list, 0..) |key, i| {
             args[i + 1] = key;
         }
 
@@ -376,12 +381,12 @@ pub const Redis = struct {
     // ============ Key Commands ============
 
     /// DEL key [key ...]
-    pub fn del(self: *Self, keys: []const []const u8) !i64 {
-        var args = try self.allocator.alloc([]const u8, keys.len + 1);
+    pub fn del(self: *Self, key_list: []const []const u8) !i64 {
+        var args = try self.allocator.alloc([]const u8, key_list.len + 1);
         defer self.allocator.free(args);
 
         args[0] = "DEL";
-        for (keys, 0..) |key, i| {
+        for (key_list, 0..) |key, i| {
             args[i + 1] = key;
         }
 
@@ -390,12 +395,12 @@ pub const Redis = struct {
     }
 
     /// EXISTS key [key ...]
-    pub fn exists(self: *Self, keys: []const []const u8) !i64 {
-        var args = try self.allocator.alloc([]const u8, keys.len + 1);
+    pub fn exists(self: *Self, key_list: []const []const u8) !i64 {
+        var args = try self.allocator.alloc([]const u8, key_list.len + 1);
         defer self.allocator.free(args);
 
         args[0] = "EXISTS";
-        for (keys, 0..) |key, i| {
+        for (key_list, 0..) |key, i| {
             args[i + 1] = key;
         }
 
@@ -1073,9 +1078,24 @@ pub const Redis = struct {
         }
     }
 
+    fn connectToHost(self: *Self) !net.Stream {
+        const options: net.IpAddress.ConnectOptions = .{
+            .mode = .stream,
+            .protocol = .tcp,
+        };
+        if (net.IpAddress.parse(self.config.host, self.config.port)) |address| {
+            return address.connect(self.config.io, options);
+        } else |_| {}
+
+        const host_name = try net.HostName.init(self.config.host);
+        return host_name.connect(self.config.io, self.config.port, options);
+    }
+
     fn sendCommand(self: *Self, args: []const []const u8) !void {
         const stream = self.stream orelse return RedisError.ConnectionClosed;
-        const writer = stream.writer();
+        var write_buffer: [4096]u8 = undefined;
+        var stream_writer = stream.writer(self.config.io, &write_buffer);
+        const writer = &stream_writer.interface;
 
         // Write RESP array header
         try writer.print("*{d}\r\n", .{args.len});
@@ -1086,9 +1106,10 @@ pub const Redis = struct {
             try writer.writeAll(arg);
             try writer.writeAll("\r\n");
         }
+        try writer.flush();
     }
 
-    fn readResponse(self: *Self) !RespValue {
+    fn readResponse(self: *Self) ResponseReadError!RespValue {
         const byte = try self.readByte();
 
         return switch (byte) {
@@ -1112,7 +1133,8 @@ pub const Redis = struct {
 
     fn fillBuffer(self: *Self) !void {
         const stream = self.stream orelse return RedisError.ConnectionClosed;
-        self.read_len = stream.read(&self.read_buffer) catch return RedisError.ConnectionClosed;
+        var buffers: [1][]u8 = .{&self.read_buffer};
+        self.read_len = stream.read(self.config.io, &buffers) catch return RedisError.ConnectionClosed;
         self.read_pos = 0;
         if (self.read_len == 0) {
             return RedisError.ConnectionClosed;
@@ -1193,7 +1215,7 @@ pub const RedisPool = struct {
     config: RedisConfig,
     connections: std.ArrayList(*Redis),
     available: std.ArrayList(*Redis),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -1204,7 +1226,7 @@ pub const RedisPool = struct {
             .config = config,
             .connections = .empty,
             .available = .empty,
-            .mutex = .{},
+            .mutex = .init,
         };
 
         // Pre-create connections
@@ -1230,11 +1252,11 @@ pub const RedisPool = struct {
     }
 
     pub fn acquire(self: *Self) !*Redis {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
 
         if (self.available.items.len > 0) {
-            return self.available.pop();
+            return self.available.pop().?;
         }
 
         // Create new connection if under limit
@@ -1250,15 +1272,15 @@ pub const RedisPool = struct {
     }
 
     pub fn release(self: *Self, conn: *Redis) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.config.io);
+        defer self.mutex.unlock(self.config.io);
         self.available.append(self.allocator, conn) catch {};
     }
 };
 
 // Tests
 test "redis config from url" {
-    const config = try RedisConfig.fromUrl("redis://user:pass@localhost:6380/5");
+    const config = try RedisConfig.fromUrl(std.testing.io, "redis://user:pass@localhost:6380/5");
     try std.testing.expectEqualStrings("localhost", config.host);
     try std.testing.expectEqual(@as(u16, 6380), config.port);
     try std.testing.expectEqualStrings("pass", config.password.?);
@@ -1267,7 +1289,7 @@ test "redis config from url" {
 }
 
 test "redis config default" {
-    const config = RedisConfig.default();
+    const config = RedisConfig.default(std.testing.io);
     try std.testing.expectEqualStrings("127.0.0.1", config.host);
     try std.testing.expectEqual(@as(u16, 6379), config.port);
     try std.testing.expect(config.password == null);

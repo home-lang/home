@@ -8731,3 +8731,27 @@ test "driver: unchecked JavaScript retains tsgo plain grammar diagnostics" {
         try T.expectEqual(code, if (found) code else 0);
     }
 }
+
+test "driver: skipLibCheck suppresses unresolved computed declaration keys" {
+    const source = "export interface Brand { [missingBrand]: number; }";
+    for ([_]bool{ false, true }) |skip| {
+        var c = try compileSource(T.allocator, source, .{
+            .no_emit = true,
+            .is_declaration_file = true,
+            .skip_lib_check = skip,
+        });
+        defer {
+            c.deinit();
+            T.allocator.destroy(c);
+        }
+        if (skip) {
+            try T.expectEqual(@as(usize, 0), c.diagnostics.items.len);
+        } else {
+            var found = false;
+            for (c.diagnostics.items) |d| if (d.code == 2304) {
+                found = true;
+            };
+            try T.expect(found);
+        }
+    }
+}

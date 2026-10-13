@@ -14,7 +14,9 @@ pub const CBOR = struct {
         UnsupportedType,
         IntegerOverflow,
         InvalidIndefiniteLength,
+        InvalidNegativeValue,
         OutOfMemory,
+        WriteFailed,
     };
 
     // Major types (3-bit)
@@ -85,12 +87,12 @@ pub const CBOR = struct {
 /// CBOR encoder
 pub const CBOREncoder = struct {
     allocator: std.mem.Allocator,
-    output: std.ArrayList(u8),
+    output: std.Io.Writer.Allocating,
 
     pub fn init(allocator: std.mem.Allocator) CBOR.Error!CBOREncoder {
         return CBOREncoder{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .init(allocator),
         };
     }
 
@@ -132,12 +134,12 @@ pub const CBOREncoder = struct {
 
     fn encodeBytes(self: *CBOREncoder, bytes: []const u8) !void {
         try self.encodeTypeAndValue(.byte_string, bytes.len);
-        try self.output.appendSlice(bytes);
+        try self.output.writer.writeAll(bytes);
     }
 
     fn encodeText(self: *CBOREncoder, text: []const u8) !void {
         try self.encodeTypeAndValue(.text_string, text.len);
-        try self.output.appendSlice(text);
+        try self.output.writer.writeAll(text);
     }
 
     fn encodeArray(self: *CBOREncoder, array: []const CBOR.Value) !void {
@@ -161,62 +163,62 @@ pub const CBOREncoder = struct {
     }
 
     fn encodeBool(self: *CBOREncoder, value: bool) !void {
-        const initial_byte = if (value) 0xF5 else 0xF4; // true or false
-        try self.output.append(initial_byte);
+        const initial_byte: u8 = if (value) 0xF5 else 0xF4; // true or false
+        try self.output.writer.writeByte(initial_byte);
     }
 
     fn encodeNull(self: *CBOREncoder) !void {
-        try self.output.append(0xF6);
+        try self.output.writer.writeByte(0xF6);
     }
 
     fn encodeUndefined(self: *CBOREncoder) !void {
-        try self.output.append(0xF7);
+        try self.output.writer.writeByte(0xF7);
     }
 
     fn encodeFloat(self: *CBOREncoder, value: f64) !void {
         // Encode as float64 (CBOR uses big-endian / network byte order).
-        try self.output.append(0xFB);
+        try self.output.writer.writeByte(0xFB);
         // Use Zig's portable endian conversion instead of manual reversal
         // so this works correctly on both little- and big-endian hosts.
         const bits: u64 = @bitCast(value);
         const be = std.mem.nativeToBig(u64, bits);
         const bytes = std.mem.toBytes(be);
-        try self.output.appendSlice(&bytes);
+        try self.output.writer.writeAll(&bytes);
     }
 
     fn encodeTypeAndValue(self: *CBOREncoder, major_type: CBOR.MajorType, value: u64) !void {
-        const major_bits: u8 = @intFromEnum(major_type) << 5;
+        const major_bits: u8 = @as(u8, @intFromEnum(major_type)) << 5;
 
         if (value < 24) {
             // Single byte encoding
-            try self.output.append(major_bits | @as(u8, @intCast(value)));
+            try self.output.writer.writeByte(major_bits | @as(u8, @intCast(value)));
         } else if (value <= 0xFF) {
             // 1-byte value
-            try self.output.append(major_bits | 24);
-            try self.output.append(@intCast(value));
+            try self.output.writer.writeByte(major_bits | 24);
+            try self.output.writer.writeByte(@intCast(value));
         } else if (value <= 0xFFFF) {
             // 2-byte value
-            try self.output.append(major_bits | 25);
-            try self.output.append(@intCast((value >> 8) & 0xFF));
-            try self.output.append(@intCast(value & 0xFF));
+            try self.output.writer.writeByte(major_bits | 25);
+            try self.output.writer.writeByte(@intCast((value >> 8) & 0xFF));
+            try self.output.writer.writeByte(@intCast(value & 0xFF));
         } else if (value <= 0xFFFFFFFF) {
             // 4-byte value
-            try self.output.append(major_bits | 26);
-            try self.output.append(@intCast((value >> 24) & 0xFF));
-            try self.output.append(@intCast((value >> 16) & 0xFF));
-            try self.output.append(@intCast((value >> 8) & 0xFF));
-            try self.output.append(@intCast(value & 0xFF));
+            try self.output.writer.writeByte(major_bits | 26);
+            try self.output.writer.writeByte(@intCast((value >> 24) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 16) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 8) & 0xFF));
+            try self.output.writer.writeByte(@intCast(value & 0xFF));
         } else {
             // 8-byte value
-            try self.output.append(major_bits | 27);
-            try self.output.append(@intCast((value >> 56) & 0xFF));
-            try self.output.append(@intCast((value >> 48) & 0xFF));
-            try self.output.append(@intCast((value >> 40) & 0xFF));
-            try self.output.append(@intCast((value >> 32) & 0xFF));
-            try self.output.append(@intCast((value >> 24) & 0xFF));
-            try self.output.append(@intCast((value >> 16) & 0xFF));
-            try self.output.append(@intCast((value >> 8) & 0xFF));
-            try self.output.append(@intCast(value & 0xFF));
+            try self.output.writer.writeByte(major_bits | 27);
+            try self.output.writer.writeByte(@intCast((value >> 56) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 48) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 40) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 32) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 24) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 16) & 0xFF));
+            try self.output.writer.writeByte(@intCast((value >> 8) & 0xFF));
+            try self.output.writer.writeByte(@intCast(value & 0xFF));
         }
     }
 };
@@ -327,27 +329,27 @@ pub const CBORDecoder = struct {
         } else if (additional_info == 25) {
             if (self.pos + 2 > self.input.len) return CBOR.Error.UnexpectedEndOfInput;
             const value = (@as(u64, self.input[self.pos]) << 8) |
-                         @as(u64, self.input[self.pos + 1]);
+                @as(u64, self.input[self.pos + 1]);
             self.pos += 2;
             return value;
         } else if (additional_info == 26) {
             if (self.pos + 4 > self.input.len) return CBOR.Error.UnexpectedEndOfInput;
             const value = (@as(u64, self.input[self.pos]) << 24) |
-                         (@as(u64, self.input[self.pos + 1]) << 16) |
-                         (@as(u64, self.input[self.pos + 2]) << 8) |
-                         @as(u64, self.input[self.pos + 3]);
+                (@as(u64, self.input[self.pos + 1]) << 16) |
+                (@as(u64, self.input[self.pos + 2]) << 8) |
+                @as(u64, self.input[self.pos + 3]);
             self.pos += 4;
             return value;
         } else if (additional_info == 27) {
             if (self.pos + 8 > self.input.len) return CBOR.Error.UnexpectedEndOfInput;
             const value = (@as(u64, self.input[self.pos]) << 56) |
-                         (@as(u64, self.input[self.pos + 1]) << 48) |
-                         (@as(u64, self.input[self.pos + 2]) << 40) |
-                         (@as(u64, self.input[self.pos + 3]) << 32) |
-                         (@as(u64, self.input[self.pos + 4]) << 24) |
-                         (@as(u64, self.input[self.pos + 5]) << 16) |
-                         (@as(u64, self.input[self.pos + 6]) << 8) |
-                         @as(u64, self.input[self.pos + 7]);
+                (@as(u64, self.input[self.pos + 1]) << 48) |
+                (@as(u64, self.input[self.pos + 2]) << 40) |
+                (@as(u64, self.input[self.pos + 3]) << 32) |
+                (@as(u64, self.input[self.pos + 4]) << 24) |
+                (@as(u64, self.input[self.pos + 5]) << 16) |
+                (@as(u64, self.input[self.pos + 6]) << 8) |
+                @as(u64, self.input[self.pos + 7]);
             self.pos += 8;
             return value;
         } else {
@@ -391,8 +393,7 @@ test "cbor encode unsigned integer" {
     const encoded = try cbor.encode(value);
     defer allocator.free(encoded);
 
-    try std.testing.expectEqual(@as(usize, 1), encoded.len);
-    try std.testing.expectEqual(@as(u8, 0x18), encoded[0] >> 5); // Major type 0
+    try std.testing.expectEqualSlices(u8, &.{ 0x18, 42 }, encoded);
 }
 
 test "cbor encode and decode unsigned integer" {

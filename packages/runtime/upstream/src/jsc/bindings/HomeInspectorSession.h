@@ -138,8 +138,11 @@ public:
 };
 inline void unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value) {
     if(auto object=value.asObject()) {
-        auto exposed=object->getString("objectId"_s);auto native=channel.nativeRealmObjects.find(exposed);
-        if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
+        auto exposed=object->getString("objectId"_s);
+        if(!exposed.isEmpty()) {
+            auto native=channel.nativeRealmObjects.find(exposed);
+            if(native!=channel.nativeRealmObjects.end()) object->setString("objectId"_s,native->value);
+        }
         for(auto& entry:*object) unwrapInspectorObjects(channel,entry.value.get());
     } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) unwrapInspectorObjects(channel,array->get(i).get());
 }
@@ -158,7 +161,9 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!requested) requested=params->getInteger("executionContextId"_s);
     if(!requested) {
         auto object=params->getString("objectId"_s);
-        auto found=channel.realmObjects.find(object);if(found!=channel.realmObjects.end()) requested=found->value;
+        if(!object.isEmpty()) {
+            auto found=channel.realmObjects.find(object);if(found!=channel.realmObjects.end()) requested=found->value;
+        }
     }
     if(!requested) return false;
     if(*requested==channel.executionContext) {

@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "runtime_main_commit": "21c34f4b7d6781c2aa410789a8b9d8a8b40fb5db",
+  "tested_recovery_commit": "b0c7b30b4f801332f29f8e830e9f4427a5cf5b6d",
+  "proposed_repair_commit": "6dba78586157d8bc3f708e4270cc00850ec100c7",
+  "recovery_branch": "codex/inspector-realms-unverified",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "repair_source_hashes": [
+    {
+      "file": "build-support/bundle-native-modules.ts",
+      "sha256": "d50e23e22c272aa6d7da7b5c3086f98d15a9144bee49732f54bfdf741247748a",
+      "bytes": 26445
+    },
+    {
+      "file": "build-support/native_bindings.zig",
+      "sha256": "b0fed4c7357cee71875089ccf430e3eb3fb12c7cfae68816839c21ab46e30acb",
+      "bytes": 70183
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "a4a9a32074a5c387ccf740957b2e68341462ad608b5f07eb981bc627750b1486",
+      "bytes": 22680
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "8120ac2e987913423c97691a7268a20e32cbd1e99214e52a1aa114368f91de24",
+      "bytes": 3932
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "1f11f09d7d5b2740703a53330d4d5fce4c3969cfeeee46be6acda2266e7f1c5f",
+      "bytes": 97633
+    },
+    {
+      "file": "packages/runtime/upstream/src/jsc/bindings/NodeVMScript.cpp",
+      "sha256": "6419d4f133b757dd16bfa1d6e35fde3140ad917dfc00eca474097f23a9d8ab62",
+      "bytes": 29878
+    }
+  ],
+  "results": {
+    "debug_steps": 56,
+    "debug_peak_tree_mb": 5705,
+    "first_build_exit": 125,
+    "first_build_failure": "eight failed memory measurements",
+    "resumed_build_exit": 0,
+    "node_controls_passed": 4,
+    "home_realm_enumeration_and_targeted_evaluation_exit": 0,
+    "home_disable_reenable_metadata_exit": -6,
+    "home_remaining_controls_executed": false,
+    "repair_build_exit": 125,
+    "repair_build_failure": "eight failed memory measurements",
+    "new_main_runtime_pass_credit": false
+  },
+  "findings": [
+    "Completed Debug build proves native integration and the focused Home control reports actual before/after named realms with origins and evaluates answer through their IDs. All four ordinary Node controls pass.",
+    "The next ordinary Home metadata control aborts with Segmentation fault at address 0x5. Code inspection identifies unguarded isString on empty getIfPropertyExists metadata values. Repair adds explicit empty-value guards and is pushed at 6dba78586; repair runtime remains unverified.",
+    "Original abort and all logs are retained. No rerun of the aborting control occurred before a repaired executable; the repaired build itself stopped at the memory-probe guard. Neither failure receives pass credit.",
+    "Recovery snapshot uses a separate temporary Git index after a concurrent index lock rejection. Published recovery source bytes were verified before push; main runtime source remains unchanged."
+  ],
+  "limitations": [
+    "Metadata repair, remaining object/getter controls, realm retirement/controller roots, protocol schemas, workers and all original/native/ABI regressions remain required before landing.",
+    "The installed executable from this investigation corresponds to unverified recovery source, not current main; do not use it to credit restored main source without a normal rebuild.",
+    "Release/ASAN/all-platform and full Bun-suite proof remain incomplete. #428/#66/#885/#886 remain open."
+  ],
+  "files": [
+    {
+      "file": "HomeInspectorRealms.h",
+      "archive": "raw/HomeInspectorRealms.h.gz",
+      "bytes": 3932,
+      "sha256": "8120ac2e987913423c97691a7268a20e32cbd1e99214e52a1aa114368f91de24"
+    },
+    {
+      "file": "build-empty-metadata-repair.log",
+      "archive": "raw/build-empty-metadata-repair.log.gz",
+      "bytes": 261,
+      "sha256": "0229724524668782510f2d82b41d3bda50707676fd85ff726d0c4e926b3dac53"
+    },
+    {
+      "file": "build-resumed.log",
+      "archive": "raw/build-resumed.log.gz",
+      "bytes": 4577,
+      "sha256": "80e2de354a51653dd9afc841348ef11ca720c7a3b521794db7c3874657b962f6"
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "bytes": 258,
+      "sha256": "01b1be5ed5af384167d9868d5a67bd73e0e0e155dc604844a09b7ba8e240526b"
+    },
+    {
+      "file": "control-results.json",
+      "archive": "raw/control-results.json.gz",
+      "bytes": 486,
+      "sha256": "1433211e155f04818b197264b58cd01d376a837bbb846efb2b3798bf1cf9a528"
+    },
+    {
+      "file": "controls.log",
+      "archive": "raw/controls.log.gz",
+      "bytes": 448,
+      "sha256": "d61b7fbace92a1d081330bcaf4915cd67c1a425a123f280e99902e925c9b7cd3"
+    },
+    {
+      "file": "executable.json",
+      "archive": "raw/executable.json.gz",
+      "bytes": 105,
+      "sha256": "975c13e8ba45dfd9753e4aa7b728cf37c3b0c6823281429745afe4243ea1c87c"
+    },
+    {
+      "file": "format.log",
+      "archive": "raw/format.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "getter-reference.mjs",
+      "archive": "raw/getter-reference.mjs.gz",
+      "bytes": 786,
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef"
+    },
+    {
+      "file": "home-metadata-reference.mjs.log",
+      "archive": "raw/home-metadata-reference.mjs.log.gz",
+      "bytes": 86,
+      "sha256": "9455deb5c76a67ab2ddb8037a976e0bfe6fca92c25bb048a7af3d4625bdb7108"
+    },
+    {
+      "file": "home-reference.mjs.log",
+      "archive": "raw/home-reference.mjs.log.gz",
+      "bytes": 199,
+      "sha256": "ba1095917c3b151db7d15a5f19aa3272508239a4b2361cb01788bb4af060bd0d"
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "bytes": 1381,
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09"
+    },
+    {
+      "file": "node-getter-reference.mjs.log",
+      "archive": "raw/node-getter-reference.mjs.log.gz",
+      "bytes": 54,
+      "sha256": "6907ad4c0f62e720b0e352d1aabe14a71c655d6feeab3b3b4c4b700963171bc5"
+    },
+    {
+      "file": "node-metadata-reference.mjs.log",
+      "archive": "raw/node-metadata-reference.mjs.log.gz",
+      "bytes": 54,
+      "sha256": "fef63fa3d02e770002f80dfa53fff680379ab7973830d8fd276a69ac2cdcd5b5"
+    },
+    {
+      "file": "node-object-reference.mjs.log",
+      "archive": "raw/node-object-reference.mjs.log.gz",
+      "bytes": 44,
+      "sha256": "c6c4c8a8635d651ef45894ca563aae83ccad7f1bbfd9617df82e8462c684c2a8"
+    },
+    {
+      "file": "node-reference.mjs.log",
+      "archive": "raw/node-reference.mjs.log.gz",
+      "bytes": 463,
+      "sha256": "0c41a2e531277a3d8a3b951a76168d6fe10d2cdf61a781cf3e7dad3a6d4dd1b3"
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "bytes": 1177,
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310"
+    },
+    {
+      "file": "pickier.json",
+      "archive": "raw/pickier.json.gz",
+      "bytes": 51,
+      "sha256": "33c7e441965813024096dd5703465f35785c1b5567b4cf0de78683a749be099a"
+    },
+    {
+      "file": "recovery-repaired-commit.txt",
+      "archive": "raw/recovery-repaired-commit.txt.gz",
+      "bytes": 41,
+      "sha256": "642cf5800ef732fce2268216d36adc787f243213da8db8d06caf62ca8c5d1039"
+    },
+    {
+      "file": "reference.mjs",
+      "archive": "raw/reference.mjs.gz",
+      "bytes": 1168,
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02"
+    },
+    {
+      "file": "run-controls.py",
+      "archive": "raw/run-controls.py.gz",
+      "bytes": 781,
+      "sha256": "955d8f712303135b6f73ccbf7b04611e65c8c9322f553ab1e70045e2a8456d10"
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "bytes": 951,
+      "sha256": "9463936b21d919449505ca00a000e99fea9534c955f5875d3c14b0efa2261083"
+    }
+  ]
+}

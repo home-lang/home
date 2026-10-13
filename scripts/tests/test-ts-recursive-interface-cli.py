@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare recursive ambient-interface checking with an installed TypeScript CLI.
+"""Compare recursive ambient types and global namespace values with TypeScript.
 
 Run under scripts/run-bounded.pl. All projects are isolated, have no dependencies,
 and retain their inputs and observations when --output is supplied.
@@ -22,6 +22,52 @@ GLOBALS = "\n".join(
     )
 ) + "\ninterface TemplateStringsArray extends Array<string> { readonly raw: readonly string[]; }\n"
 CASES = {
+    "type-only-global-namespace": (
+        "declare namespace Types { interface I { value: string; } }\n",
+        "declare const item: Types.I;\n"
+        "const text: string = item.value;\n",
+        "const value = Types;\n",
+    ),
+    "namespace-objects-do-not-merge": (
+        "declare namespace Tools { const shared: { first: number }; namespace Nested { const first: number; } }\n"
+        "declare namespace Tools { const shared: { second: string }; namespace Nested { const second: string; } }\n",
+        "const first: number = Tools.shared.first;\n"
+        "const second: string = Tools.Nested.second;\n",
+        "Tools.shared.second;\n",
+    ),
+    "global-constructible-namespace-values": (
+        "declare class Widget { constructor(value: string); value: string; }\n"
+        "declare namespace Widget { const version: number; }\n",
+        "const widget = new Widget('ok'); const text: string = widget.value;\n"
+        "const version: number = Widget.version;\n",
+        "const wrong: number = widget.value;\n",
+    ),
+    "global-callable-namespace-values": (
+        "declare function format<T>(value: T): T;\n"
+        "declare namespace format { const version: number; }\n",
+        "const text: string = format('ok');\n"
+        "const version: number = format.version;\n",
+        "const wrong: number = format('wrong');\n",
+    ),
+    "global-namespace-values": (
+        "declare namespace Tools { function convert(value: number): string; const version: number; }\n",
+        "const text: string = Tools.convert(1);\n"
+        "const version: number = globalThis.Tools.version;\n",
+        "const wrong: number = Tools.convert(1);\n",
+    ),
+    "global-namespace-generic-values": (
+        "declare namespace Tools { function identity<T>(value: T): T; }\n",
+        "const text: string = Tools.identity('ok');\n"
+        "const value: number = Tools.identity(1);\n",
+        "const wrong: number = Tools.identity('wrong');\n",
+    ),
+    "merged-global-namespace-values": (
+        "declare namespace Tools { namespace Nested { const first: number; } }\n"
+        "declare namespace Tools { namespace Nested { const second: string; } }\n",
+        "const first: number = Tools.Nested.first;\n"
+        "const second: string = Tools.Nested.second;\n",
+        "const wrong: number = Tools.Nested.second;\n",
+    ),
     "recursive-generic-alias-scopes": (
         "declare namespace Left { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\n"
         "declare namespace Right { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\n",
@@ -142,7 +188,7 @@ def main() -> None:
     summary = {
         "home_sha256": digest(args.home),
         "reference_sha256": digest(args.reference),
-        "scope": "recursive ambient interface transfer, forward declaration order, merged bodies, and genuine type errors under skipLibCheck",
+        "scope": "recursive ambient types, global namespace values, generic callbacks, merged bodies, constructor signatures, and genuine type errors under skipLibCheck",
         "observations": observations,
         "failures": failures,
         "passed": False,
@@ -157,7 +203,11 @@ def main() -> None:
     for name, (declarations, valid, negative) in CASES.items():
         for planted in (False, True):
             variant = "negative" if planted else "valid"
-            expected = [("main.ts", 3, 7, 2322)] if planted else []
+            negative_diagnostic = {
+                "type-only-global-namespace": ("main.ts", 3, 15, 2708),
+                "namespace-objects-do-not-merge": ("main.ts", 3, 14, 2339),
+            }.get(name, ("main.ts", 3, 7, 2322))
+            expected = [negative_diagnostic] if planted else []
             for engine, command in compilers.items():
                 directory = root / name / variant / engine
                 directory.mkdir(parents=True, exist_ok=False)

@@ -16,6 +16,7 @@ pub const Avro = struct {
         OutOfMemory,
         InvalidUnion,
         InvalidEnum,
+        WriteFailed,
     };
 
     /// Avro primitive types
@@ -88,10 +89,7 @@ pub const Avro = struct {
         @"enum": u32,
         array: []const Value,
         map: []const MapEntry,
-        @"union": struct {
-            index: u32,
-            value: *const Value,
-        },
+        @"union": UnionValue,
         fixed: []const u8,
 
         pub const Field = struct {
@@ -103,6 +101,11 @@ pub const Avro = struct {
             key: []const u8,
             value: Value,
         };
+    };
+
+    pub const UnionValue = struct {
+        index: u32,
+        value: *const Value,
     };
 
     pub fn init(allocator: std.mem.Allocator) Avro {
@@ -131,12 +134,12 @@ pub const Avro = struct {
 /// Avro binary encoder
 pub const AvroEncoder = struct {
     allocator: std.mem.Allocator,
-    output: std.ArrayList(u8),
+    output: std.Io.Writer.Allocating,
 
     pub fn init(allocator: std.mem.Allocator) Avro.Error!AvroEncoder {
         return AvroEncoder{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .init(allocator),
         };
     }
 
@@ -174,7 +177,7 @@ pub const AvroEncoder = struct {
     }
 
     fn encodeBoolean(self: *AvroEncoder, value: bool) !void {
-        try self.output.append(if (value) 1 else 0);
+        try self.output.writer.writeByte(if (value) 1 else 0);
     }
 
     fn encodeInt(self: *AvroEncoder, value: i32) !void {
@@ -190,7 +193,7 @@ pub const AvroEncoder = struct {
         const bits: u32 = @bitCast(value);
         const le = std.mem.nativeToLittle(u32, bits);
         const bytes = std.mem.toBytes(le);
-        try self.output.appendSlice(&bytes);
+        try self.output.writer.writeAll(&bytes);
     }
 
     fn encodeDouble(self: *AvroEncoder, value: f64) !void {
@@ -198,17 +201,17 @@ pub const AvroEncoder = struct {
         const bits: u64 = @bitCast(value);
         const le = std.mem.nativeToLittle(u64, bits);
         const bytes = std.mem.toBytes(le);
-        try self.output.appendSlice(&bytes);
+        try self.output.writer.writeAll(&bytes);
     }
 
     fn encodeBytes(self: *AvroEncoder, bytes: []const u8) !void {
         try self.encodeLong(@intCast(bytes.len));
-        try self.output.appendSlice(bytes);
+        try self.output.writer.writeAll(bytes);
     }
 
     fn encodeString(self: *AvroEncoder, string: []const u8) !void {
         try self.encodeLong(@intCast(string.len));
-        try self.output.appendSlice(string);
+        try self.output.writer.writeAll(string);
     }
 
     fn encodeRecord(self: *AvroEncoder, schema: Avro.RecordSchema, fields: []const Avro.Value.Field) !void {
@@ -256,7 +259,7 @@ pub const AvroEncoder = struct {
         try self.encodeLong(0);
     }
 
-    fn encodeUnion(self: *AvroEncoder, schemas: []const Avro.Schema, union_value: struct { index: u32, value: *const Avro.Value }) !void {
+    fn encodeUnion(self: *AvroEncoder, schemas: []const Avro.Schema, union_value: Avro.UnionValue) !void {
         if (union_value.index >= schemas.len) {
             return Avro.Error.InvalidUnion;
         }
@@ -272,7 +275,7 @@ pub const AvroEncoder = struct {
         if (bytes.len != schema.size) {
             return Avro.Error.SchemaViolation;
         }
-        try self.output.appendSlice(bytes);
+        try self.output.writer.writeAll(bytes);
     }
 
     fn encodeZigZag32(self: *AvroEncoder, value: i32) !void {
@@ -288,10 +291,10 @@ pub const AvroEncoder = struct {
     fn encodeVarInt(self: *AvroEncoder, value: anytype) !void {
         var v = value;
         while (v >= 0x80) {
-            try self.output.append(@intCast((v & 0x7F) | 0x80));
+            try self.output.writer.writeByte(@intCast((v & 0x7F) | 0x80));
             v >>= 7;
         }
-        try self.output.append(@intCast(v));
+        try self.output.writer.writeByte(@intCast(v));
     }
 };
 
@@ -408,7 +411,8 @@ pub const AvroDecoder = struct {
     }
 
     fn decodeArray(self: *AvroDecoder, item_schema: Avro.Schema) Avro.Error![]const Avro.Value {
-        var items = std.ArrayList(Avro.Value).init(self.allocator);
+        var items: std.ArrayList(Avro.Value) = .empty;
+        errdefer items.deinit(self.allocator);
 
         while (true) {
             const block_count = try self.decodeLong();
@@ -423,15 +427,16 @@ pub const AvroDecoder = struct {
             const count: usize = @intCast(block_count);
             for (0..count) |_| {
                 const item = try self.decodeValue(item_schema);
-                try items.append(item);
+                try items.append(self.allocator, item);
             }
         }
 
-        return try items.toOwnedSlice();
+        return try items.toOwnedSlice(self.allocator);
     }
 
     fn decodeMap(self: *AvroDecoder, value_schema: Avro.Schema) Avro.Error![]const Avro.Value.MapEntry {
-        var entries = std.ArrayList(Avro.Value.MapEntry).init(self.allocator);
+        var entries: std.ArrayList(Avro.Value.MapEntry) = .empty;
+        errdefer entries.deinit(self.allocator);
 
         while (true) {
             const block_count = try self.decodeLong();
@@ -447,14 +452,14 @@ pub const AvroDecoder = struct {
             for (0..count) |_| {
                 const key = try self.decodeString();
                 const value = try self.decodeValue(value_schema);
-                try entries.append(Avro.Value.MapEntry{
+                try entries.append(self.allocator, Avro.Value.MapEntry{
                     .key = key,
                     .value = value,
                 });
             }
         }
 
-        return try entries.toOwnedSlice();
+        return try entries.toOwnedSlice(self.allocator);
     }
 
     fn decodeUnion(self: *AvroDecoder, schemas: []const Avro.Schema) Avro.Error!Avro.Value {
@@ -485,7 +490,7 @@ pub const AvroDecoder = struct {
             const byte = self.input[self.pos];
             self.pos += 1;
 
-            result |= @as(T, byte & 0x7F) << shift;
+            result |= @as(T, byte & 0x7F) << @intCast(shift);
 
             if ((byte & 0x80) == 0) {
                 return result;

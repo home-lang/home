@@ -1,14 +1,6 @@
 const std = @import("std");
 
-/// Zstandard (zstd) compression and decompression
-///
-/// Features:
-/// - High compression ratios
-/// - Fast decompression
-/// - Multiple compression levels
-/// - Dictionary support
-/// - Streaming compression
-/// - Frame format
+/// Zstandard-style framed compression used by Home.
 pub const Zstd = struct {
     allocator: std.mem.Allocator,
     level: CompressionLevel,
@@ -23,7 +15,7 @@ pub const Zstd = struct {
         ultra = 22,
 
         pub fn toInt(self: CompressionLevel) i32 {
-            return @intFromEnum(self);
+            return @backingInt(self);
         }
     };
 
@@ -32,11 +24,7 @@ pub const Zstd = struct {
         id: u32,
 
         pub fn init(data: []const u8) Dictionary {
-            const id = std.hash.Wyhash.hash(0, data);
-            return .{
-                .data = data,
-                .id = @truncate(id),
-            };
+            return .{ .data = data, .id = @truncate(std.hash.Wyhash.hash(0, data)) };
         }
     };
 
@@ -58,174 +46,114 @@ pub const Zstd = struct {
         };
     };
 
-    const ZSTD_MAGIC = 0x28B52FFD;
-    const ZSTD_MAGIC_SKIPPABLE_START = 0x184D2A50;
-    const ZSTD_MAGIC_SKIPPABLE_END = 0x184D2A5F;
+    const ZSTD_MAGIC: u32 = 0x28B52FFD;
+    const BLOCK_SIZE = 128 * 1024;
 
     pub fn init(allocator: std.mem.Allocator, level: CompressionLevel) Zstd {
-        return .{
-            .allocator = allocator,
-            .level = level,
-            .dictionary = null,
-        };
+        return .{ .allocator = allocator, .level = level, .dictionary = null };
     }
 
-    pub fn initWithDictionary(allocator: std.mem.Allocator, level: CompressionLevel, dict: Dictionary) Zstd {
-        return .{
-            .allocator = allocator,
-            .level = level,
-            .dictionary = dict,
-        };
+    pub fn initWithDictionary(
+        allocator: std.mem.Allocator,
+        level: CompressionLevel,
+        dictionary: Dictionary,
+    ) Zstd {
+        return .{ .allocator = allocator, .level = level, .dictionary = dictionary };
     }
 
-    /// Compress data with Zstandard
     pub fn compress(self: *Zstd, data: []const u8) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
 
-        // Write frame header
-        try self.writeFrameHeader(output.writer(), data.len);
-
-        // Compress blocks
-        const compressed_blocks = try self.compressBlocks(data);
-        defer self.allocator.free(compressed_blocks);
-
-        try output.appendSlice(compressed_blocks);
-
-        // Write checksum if enabled
-        const checksum = std.hash.XxHash64.hash(0, data);
-        try output.writer().writeInt(u32, @truncate(checksum), .little);
-
+        try self.writeFrameHeader(&output.writer, data.len);
+        const blocks = try self.compressBlocks(data);
+        defer self.allocator.free(blocks);
+        try output.writer.writeAll(blocks);
+        try output.writer.writeInt(u32, @truncate(std.hash.XxHash64.hash(0, data)), .little);
         return output.toOwnedSlice();
     }
 
-    /// Decompress Zstandard data
     pub fn decompress(self: *Zstd, data: []const u8) ![]u8 {
-        var stream = std.io.fixedBufferStream(data);
-        const reader = stream.reader();
+        var input: std.Io.Reader = .fixed(data);
+        const header = try self.readFrameHeader(&input);
+        if (header.magic_number != ZSTD_MAGIC) return error.InvalidZstdMagic;
 
-        // Read and validate frame header
-        const header = try self.readFrameHeader(reader);
-
-        if (header.magic_number != ZSTD_MAGIC) {
-            return error.InvalidZstdMagic;
+        if (header.dictionary_id) |id| {
+            const dictionary = self.dictionary orelse return error.DictionaryRequired;
+            if (dictionary.id != id) return error.DictionaryMismatch;
         }
 
-        // Decompress blocks. Validate the header/footer sizes don't
-        // exceed the input so `data.len - header_size - footer_size`
-        // can't underflow usize for a truncated / malformed frame.
-        const header_size = @as(usize, @intCast(stream.pos));
         const footer_size: usize = if (header.content_checksum) 4 else 0;
-        if (header_size + footer_size > data.len) return error.InvalidZstdFrame;
-        const compressed_size = data.len - header_size - footer_size;
-        const compressed = data[header_size .. header_size + compressed_size];
-
-        const decompressed = try self.decompressBlocks(compressed, header.content_size);
+        if (input.seek + footer_size > data.len) return error.InvalidZstdFrame;
+        const blocks_end = data.len - footer_size;
+        const decompressed = try self.decompressBlocks(data[input.seek..blocks_end], header.content_size);
         errdefer self.allocator.free(decompressed);
 
-        // Verify checksum if present. The errdefer above runs on error,
-        // so we must NOT call free() here — that would be a double-free.
         if (header.content_checksum) {
-            const stored_checksum = std.mem.readInt(u32, data[data.len - 4 ..][0..4], .little);
-            const calculated_checksum = std.hash.XxHash64.hash(0, decompressed);
-
-            if (stored_checksum != @as(u32, @truncate(calculated_checksum))) {
-                return error.ChecksumMismatch;
-            }
+            const stored = std.mem.readInt(u32, data[blocks_end..][0..4], .little);
+            const actual: u32 = @truncate(std.hash.XxHash64.hash(0, decompressed));
+            if (stored != actual) return error.ChecksumMismatch;
         }
-
         return decompressed;
     }
 
-    /// Estimate compression ratio for given data
     pub fn estimateCompressionRatio(self: *Zstd, data: []const u8) f64 {
         _ = self;
-
-        // An empty buffer has no entropy to measure — return a neutral
-        // ratio instead of dividing by zero below.
         if (data.len == 0) return 1.0;
 
-        // Simple heuristic based on entropy
-        var counts: [256]usize = [_]usize{0} ** 256;
-        for (data) |byte| {
-            counts[byte] += 1;
-        }
+        var counts: [256]usize = @splat(0);
+        for (data) |byte| counts[byte] += 1;
 
         var entropy: f64 = 0.0;
-        const data_len_f: f64 = @floatFromInt(data.len);
+        const data_len: f64 = @floatFromInt(data.len);
         for (counts) |count| {
-            if (count > 0) {
-                const prob: f64 = @as(f64, @floatFromInt(count)) / data_len_f;
-                entropy -= prob * @log2(prob);
-            }
+            if (count == 0) continue;
+            const probability = @as(f64, @floatFromInt(count)) / data_len;
+            entropy -= probability * @log2(probability);
         }
-
-        // Estimate compression ratio based on entropy
-        // Lower entropy = better compression
-        const theoretical_bits = entropy * data_len_f;
-        const estimated_ratio = theoretical_bits / (data_len_f * 8.0);
-
-        return @max(0.1, @min(1.0, estimated_ratio));
+        return @max(0.1, @min(1.0, entropy / 8.0));
     }
 
-    fn writeFrameHeader(self: *Zstd, writer: anytype, content_size: usize) !void {
-        // Write magic number
+    fn writeFrameHeader(self: *Zstd, writer: *std.Io.Writer, content_size: usize) !void {
         try writer.writeInt(u32, ZSTD_MAGIC, .little);
-
-        // Frame descriptor
-        const descriptor = FrameHeader.FrameDescriptor{
+        const descriptor: FrameHeader.FrameDescriptor = .{
             .content_checksum_flag = true,
             ._reserved = false,
             .single_segment = false,
             .unused = false,
             .dictionary_id_flag = if (self.dictionary != null) 2 else 0,
-            .content_size_flag = 2, // 8 bytes
+            .content_size_flag = 2,
         };
-
         try writer.writeByte(@bitCast(descriptor));
-
-        // Window size (if not single segment)
-        const window_descriptor = try self.calculateWindowDescriptor(content_size);
-        try writer.writeByte(window_descriptor);
-
-        // Dictionary ID (if present)
-        if (self.dictionary) |dict| {
-            try writer.writeInt(u32, dict.id, .little);
+        try writer.writeByte(try calculateWindowDescriptor(content_size));
+        if (self.dictionary) |dictionary| {
+            try writer.writeInt(u32, dictionary.id, .little);
         }
-
-        // Content size
         try writer.writeInt(u64, content_size, .little);
     }
 
-    fn readFrameHeader(self: *Zstd, reader: anytype) !FrameHeader {
+    fn readFrameHeader(self: *Zstd, reader: *std.Io.Reader) !FrameHeader {
         _ = self;
+        const magic = try reader.takeInt(u32, .little);
+        const descriptor: FrameHeader.FrameDescriptor = @bitCast(try reader.takeByte());
+        if (descriptor._reserved or descriptor.unused) return error.InvalidZstdFrame;
 
-        // Read magic number
-        const magic = try reader.readInt(u32, .little);
+        const window_size = if (descriptor.single_segment)
+            null
+        else
+            try decodeWindowSize(try reader.takeByte());
 
-        // Read frame descriptor
-        const descriptor: FrameHeader.FrameDescriptor = @bitCast(try reader.readByte());
+        const dictionary_id = if (descriptor.dictionary_id_flag == 0)
+            null
+        else
+            try reader.takeInt(u32, .little);
 
-        // Read window size
-        var window_size: ?u64 = null;
-        if (!descriptor.single_segment) {
-            const window_descriptor = try reader.readByte();
-            window_size = try decodeWindowSize(window_descriptor);
-        }
+        const content_size = if (descriptor.content_size_flag == 0)
+            null
+        else
+            try reader.takeInt(u64, .little);
 
-        // Read dictionary ID
-        var dictionary_id: ?u32 = null;
-        if (descriptor.dictionary_id_flag > 0) {
-            dictionary_id = try reader.readInt(u32, .little);
-        }
-
-        // Read content size
-        var content_size: ?u64 = null;
-        if (descriptor.content_size_flag > 0) {
-            content_size = try reader.readInt(u64, .little);
-        }
-
-        return FrameHeader{
+        return .{
             .magic_number = magic,
             .descriptor = descriptor,
             .window_size = window_size,
@@ -235,311 +163,210 @@ pub const Zstd = struct {
         };
     }
 
-    fn calculateWindowDescriptor(self: *Zstd, size: usize) !u8 {
-        _ = self;
-
-        // Find minimum window size that can hold the data
-        var window_log: u8 = 10; // Minimum: 1KB
+    fn calculateWindowDescriptor(size: usize) !u8 {
+        var window_log: u8 = 10;
         var window_size: usize = 1024;
-
         while (window_size < size and window_log < 31) {
             window_log += 1;
             window_size = @as(usize, 1) << @intCast(window_log);
         }
-
+        if (window_size < size) return error.InputTooLarge;
         return window_log;
     }
 
     fn decodeWindowSize(descriptor: u8) !u64 {
-        const window_log = descriptor;
-        if (window_log < 10 or window_log > 31) {
-            return error.InvalidWindowSize;
-        }
-
-        return @as(u64, 1) << @intCast(window_log);
+        if (descriptor < 10 or descriptor > 31) return error.InvalidWindowSize;
+        return @as(u64, 1) << @intCast(descriptor);
     }
 
     fn compressBlocks(self: *Zstd, data: []const u8) ![]u8 {
-        var compressed = std.ArrayList(u8).init(self.allocator);
-        errdefer compressed.deinit();
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
 
-        // Use simple LZ77-style compression
-        // In production, this would use the full Zstandard algorithm
-        const block_size = 128 * 1024; // 128KB blocks
         var offset: usize = 0;
-
         while (offset < data.len) {
-            const block_end = @min(offset + block_size, data.len);
+            const block_end = @min(offset +| BLOCK_SIZE, data.len);
             const block = data[offset..block_end];
+            const compressed = try self.compressBlock(block);
+            defer self.allocator.free(compressed);
+            if (compressed.len > std.math.maxInt(u29)) return error.BlockTooLarge;
 
-            // Compress block
-            const compressed_block = try self.compressBlock(block);
-            defer self.allocator.free(compressed_block);
-
-            // Write block header
-            const last_block = block_end >= data.len;
-            const block_header = (@as(u32, @intCast(compressed_block.len)) << 3) |
-                                 (@as(u32, if (last_block) 1 else 0));
-            try compressed.writer().writeInt(u32, block_header, .little);
-
-            // Write block data
-            try compressed.appendSlice(compressed_block);
-
+            const last = block_end == data.len;
+            const header = (@as(u32, @intCast(compressed.len)) << 3) | @intFromBool(last);
+            try output.writer.writeInt(u32, header, .little);
+            try output.writer.writeAll(compressed);
             offset = block_end;
+            if (last) break;
         }
-
-        return compressed.toOwnedSlice();
+        return output.toOwnedSlice();
     }
 
     fn compressBlock(self: *Zstd, block: []const u8) ![]u8 {
-        // Simplified compression using LZ77-style matching
-        // In production, this would implement full Zstandard FSE + entropy coding
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
 
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
-
-        var i: usize = 0;
-        while (i < block.len) {
-            // Look for matches in previous data
-            const match = try self.findMatch(block, i);
-
+        var index: usize = 0;
+        while (index < block.len) {
+            const match = self.findMatch(block, index);
             if (match.length >= 4) {
-                // Encode match: <distance, length>
-                try output.writer().writeByte(0xFF); // Match marker
-                try output.writer().writeInt(u16, @intCast(match.distance), .little);
-                try output.writer().writeInt(u16, @intCast(match.length), .little);
-                i += match.length;
+                try output.writer.writeByte(0xff);
+                try output.writer.writeInt(u16, @intCast(match.distance), .little);
+                try output.writer.writeInt(u16, @intCast(match.length), .little);
+                index += match.length;
             } else {
-                // Encode literal
-                try output.append(block[i]);
-                i += 1;
+                try output.writer.writeByte(block[index]);
+                index += 1;
             }
         }
-
         return output.toOwnedSlice();
     }
 
     fn decompressBlocks(self: *Zstd, data: []const u8, expected_size: ?u64) ![]u8 {
-        var decompressed = std.ArrayList(u8).init(self.allocator);
-        errdefer decompressed.deinit();
+        var input: std.Io.Reader = .fixed(data);
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
 
+        if (data.len == 0 and expected_size == 0) return output.toOwnedSlice();
+
+        var last = false;
+        while (!last) {
+            const header = try input.takeInt(u32, .little);
+            if (header & 0x6 != 0) return error.InvalidBlockHeader;
+            last = header & 1 != 0;
+            const compressed_len: usize = header >> 3;
+            const compressed = try input.take(compressed_len);
+            const block = try self.decompressBlock(compressed);
+            defer self.allocator.free(block);
+            try output.writer.writeAll(block);
+        }
+        if (input.seek != input.end) return error.TrailingBlockData;
         if (expected_size) |size| {
-            try decompressed.ensureTotalCapacity(size);
+            if (size != output.written().len) return error.SizeMismatch;
         }
-
-        var stream = std.io.fixedBufferStream(data);
-        const reader = stream.reader();
-
-        while (true) {
-            // Read block header
-            const block_header = reader.readInt(u32, .little) catch break;
-            const last_block = (block_header & 1) != 0;
-            const block_size = block_header >> 3;
-
-            // Read and decompress block
-            const compressed_block = try self.allocator.alloc(u8, block_size);
-            defer self.allocator.free(compressed_block);
-
-            try reader.readNoEof(compressed_block);
-
-            const decompressed_block = try self.decompressBlock(compressed_block);
-            defer self.allocator.free(decompressed_block);
-
-            try decompressed.appendSlice(decompressed_block);
-
-            if (last_block) break;
-        }
-
-        return decompressed.toOwnedSlice();
-    }
-
-    fn decompressBlock(self: *Zstd, block: []const u8) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
-
-        var i: usize = 0;
-        while (i < block.len) {
-            if (block[i] == 0xFF and i + 5 <= block.len) {
-                // Match: copy from previous data
-                i += 1;
-                const distance = std.mem.readInt(u16, block[i..][0..2], .little);
-                i += 2;
-                const length = std.mem.readInt(u16, block[i..][0..2], .little);
-                i += 2;
-
-                // Copy match
-                const start_pos = output.items.len - distance;
-                var j: usize = 0;
-                while (j < length) : (j += 1) {
-                    try output.append(output.items[start_pos + j]);
-                }
-            } else {
-                // Literal
-                try output.append(block[i]);
-                i += 1;
-            }
-        }
-
         return output.toOwnedSlice();
     }
 
-    const Match = struct {
-        distance: usize,
-        length: usize,
-    };
+    fn decompressBlock(self: *Zstd, block: []const u8) ![]u8 {
+        var output: std.Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
 
-    fn findMatch(self: *Zstd, data: []const u8, pos: usize) !Match {
-        _ = self;
-
-        var best_match = Match{ .distance = 0, .length = 0 };
-        const search_start = if (pos >= 32768) pos - 32768 else 0;
-
-        var i = search_start;
-        while (i < pos) : (i += 1) {
-            var length: usize = 0;
-            while (pos + length < data.len and
-                   i + length < pos and
-                   data[i + length] == data[pos + length]) {
-                length += 1;
-            }
-
-            if (length > best_match.length) {
-                best_match = .{
-                    .distance = pos - i,
-                    .length = length,
-                };
+        var index: usize = 0;
+        while (index < block.len) {
+            if (block[index] == 0xff and block.len - index >= 5) {
+                index += 1;
+                const distance = std.mem.readInt(u16, block[index..][0..2], .little);
+                const length = std.mem.readInt(u16, block[index + 2 ..][0..2], .little);
+                index += 4;
+                if (distance == 0 or distance > output.written().len or length == 0) {
+                    return error.InvalidMatch;
+                }
+                for (0..length) |_| {
+                    const written = output.written();
+                    try output.writer.writeByte(written[written.len - distance]);
+                }
+            } else {
+                try output.writer.writeByte(block[index]);
+                index += 1;
             }
         }
+        return output.toOwnedSlice();
+    }
 
-        return best_match;
+    const Match = struct { distance: usize = 0, length: usize = 0 };
+
+    fn findMatch(self: *Zstd, data: []const u8, position: usize) Match {
+        _ = self;
+        var best: Match = .{};
+        const search_start = position -| 32768;
+        var candidate = search_start;
+        while (candidate < position) : (candidate += 1) {
+            var length: usize = 0;
+            while (position + length < data.len and
+                candidate + length < position and
+                data[candidate + length] == data[position + length])
+            {
+                length += 1;
+            }
+            if (length > best.length) {
+                best = .{ .distance = position - candidate, .length = length };
+            }
+        }
+        return best;
     }
 };
 
-/// Streaming Zstandard compressor
+/// Streaming facade that emits one complete, checksummed frame on `finish`.
 pub const ZstdCompressor = struct {
     allocator: std.mem.Allocator,
-    writer: std.io.AnyWriter,
+    output: *std.Io.Writer,
     zstd: Zstd,
-    buffer: std.ArrayList(u8),
-    checksum: std.hash.XxHash64,
-    total_size: usize,
+    buffer: std.ArrayList(u8) = .empty,
+    finished: bool = false,
 
-    const BUFFER_SIZE = 128 * 1024;
-
-    pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter, level: Zstd.CompressionLevel) !ZstdCompressor {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        output: *std.Io.Writer,
+        level: Zstd.CompressionLevel,
+    ) ZstdCompressor {
         return .{
             .allocator = allocator,
-            .writer = writer,
+            .output = output,
             .zstd = Zstd.init(allocator, level),
-            .buffer = std.ArrayList(u8).init(allocator),
-            .checksum = std.hash.XxHash64.init(0),
-            .total_size = 0,
         };
     }
 
     pub fn deinit(self: *ZstdCompressor) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn write(self: *ZstdCompressor, data: []const u8) !void {
-        self.checksum.update(data);
-        self.total_size += data.len;
-
-        try self.buffer.appendSlice(data);
-
-        if (self.buffer.items.len >= BUFFER_SIZE) {
-            try self.flush();
-        }
-    }
-
-    pub fn flush(self: *ZstdCompressor) !void {
-        if (self.buffer.items.len == 0) return;
-
-        const compressed = try self.zstd.compressBlocks(self.buffer.items);
-        defer self.allocator.free(compressed);
-
-        try self.writer.writeAll(compressed);
-        self.buffer.clearRetainingCapacity();
+        if (self.finished) return error.AlreadyFinished;
+        try self.buffer.appendSlice(self.allocator, data);
     }
 
     pub fn finish(self: *ZstdCompressor) !void {
-        try self.flush();
-
-        // Write checksum
-        try self.writer.writeInt(u32, @truncate(self.checksum.final()), .little);
+        if (self.finished) return error.AlreadyFinished;
+        const compressed = try self.zstd.compress(self.buffer.items);
+        defer self.allocator.free(compressed);
+        try self.output.writeAll(compressed);
+        try self.output.flush();
+        self.finished = true;
     }
 };
 
-/// Streaming Zstandard decompressor
+/// Streaming reader facade. A frame is validated in full before bytes are
+/// exposed, so checksum or truncation errors cannot produce trusted output.
 pub const ZstdDecompressor = struct {
     allocator: std.mem.Allocator,
-    reader: std.io.AnyReader,
+    input: *std.Io.Reader,
     zstd: Zstd,
-    buffer: std.ArrayList(u8),
-    buffer_pos: usize,
-    checksum: std.hash.XxHash64,
-    finished: bool,
+    decoded: []u8 = &.{},
+    position: usize = 0,
+    loaded: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, reader: std.io.AnyReader) !ZstdDecompressor {
+    pub fn init(allocator: std.mem.Allocator, input: *std.Io.Reader) ZstdDecompressor {
         return .{
             .allocator = allocator,
-            .reader = reader,
+            .input = input,
             .zstd = Zstd.init(allocator, .balanced),
-            .buffer = std.ArrayList(u8).init(allocator),
-            .buffer_pos = 0,
-            .checksum = std.hash.XxHash64.init(0),
-            .finished = false,
         };
     }
 
     pub fn deinit(self: *ZstdDecompressor) void {
-        self.buffer.deinit();
+        if (self.loaded) self.allocator.free(self.decoded);
     }
 
     pub fn read(self: *ZstdDecompressor, output: []u8) !usize {
-        if (self.finished) return 0;
-
-        var total_read: usize = 0;
-
-        while (total_read < output.len) {
-            // Use buffered data first
-            if (self.buffer_pos < self.buffer.items.len) {
-                const available = self.buffer.items.len - self.buffer_pos;
-                const to_copy = @min(available, output.len - total_read);
-                @memcpy(output[total_read..][0..to_copy], self.buffer.items[self.buffer_pos..][0..to_copy]);
-                self.buffer_pos += to_copy;
-                total_read += to_copy;
-                continue;
-            }
-
-            // Read next block
-            const block_header = self.reader.readInt(u32, .little) catch {
-                self.finished = true;
-                break;
-            };
-
-            const last_block = (block_header & 1) != 0;
-            const block_size = block_header >> 3;
-
-            const compressed_block = try self.allocator.alloc(u8, block_size);
-            defer self.allocator.free(compressed_block);
-
-            try self.reader.readNoEof(compressed_block);
-
-            self.buffer.clearRetainingCapacity();
-            const decompressed = try self.zstd.decompressBlock(compressed_block);
-            defer self.allocator.free(decompressed);
-
-            try self.buffer.appendSlice(decompressed);
-            self.buffer_pos = 0;
-
-            if (last_block) {
-                self.finished = true;
-                break;
-            }
+        if (!self.loaded) {
+            const encoded = try self.input.allocRemaining(self.allocator, .unlimited);
+            defer self.allocator.free(encoded);
+            self.decoded = try self.zstd.decompress(encoded);
+            self.loaded = true;
         }
 
-        self.checksum.update(output[0..total_read]);
-        return total_read;
+        const count = @min(output.len, self.decoded.len - self.position);
+        @memcpy(output[0..count], self.decoded[self.position..][0..count]);
+        self.position += count;
+        return count;
     }
 };

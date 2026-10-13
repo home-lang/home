@@ -11,6 +11,16 @@ const std = @import("std");
 pub const Protobuf = struct {
     allocator: std.mem.Allocator,
 
+    pub const Error = error{
+        EndOfStream,
+        InvalidFieldNumber,
+        OutOfMemory,
+        ReadFailed,
+        UnsupportedWireType,
+        VarintOverflow,
+        WriteFailed,
+    };
+
     pub const WireType = enum(u3) {
         varint = 0,
         fixed64 = 1,
@@ -47,24 +57,23 @@ pub const Protobuf = struct {
     };
 
     pub const Message = struct {
-        fields: std.ArrayList(Field),
+        allocator: std.mem.Allocator,
+        fields: std.ArrayList(Field) = .empty,
 
         pub fn init(allocator: std.mem.Allocator) Message {
-            return .{
-                .fields = std.ArrayList(Field).init(allocator),
-            };
+            return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *Message, allocator: std.mem.Allocator) void {
             for (self.fields.items) |*field| {
                 field.deinit(allocator);
             }
-            self.fields.deinit();
-            _ = allocator;
+            self.fields.deinit(allocator);
         }
 
         pub fn addVarint(self: *Message, field_number: u32, value: u64) !void {
-            try self.fields.append(.{
+            try validateFieldNumber(field_number);
+            try self.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = .varint,
                 .value = .{ .varint = value },
@@ -72,7 +81,8 @@ pub const Protobuf = struct {
         }
 
         pub fn addFixed32(self: *Message, field_number: u32, value: u32) !void {
-            try self.fields.append(.{
+            try validateFieldNumber(field_number);
+            try self.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = .fixed32,
                 .value = .{ .fixed32 = value },
@@ -80,7 +90,8 @@ pub const Protobuf = struct {
         }
 
         pub fn addFixed64(self: *Message, field_number: u32, value: u64) !void {
-            try self.fields.append(.{
+            try validateFieldNumber(field_number);
+            try self.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = .fixed64,
                 .value = .{ .fixed64 = value },
@@ -88,10 +99,13 @@ pub const Protobuf = struct {
         }
 
         pub fn addBytes(self: *Message, allocator: std.mem.Allocator, field_number: u32, data: []const u8) !void {
-            try self.fields.append(.{
+            try validateFieldNumber(field_number);
+            const owned = try allocator.dupe(u8, data);
+            errdefer allocator.free(owned);
+            try self.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = .length_delimited,
-                .value = .{ .length_delimited = try allocator.dupe(u8, data) },
+                .value = .{ .length_delimited = owned },
             });
         }
 
@@ -100,7 +114,8 @@ pub const Protobuf = struct {
         }
 
         pub fn addMessage(self: *Message, field_number: u32, msg: Message) !void {
-            try self.fields.append(.{
+            try validateFieldNumber(field_number);
+            try self.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = .length_delimited,
                 .value = .{ .message = msg },
@@ -118,8 +133,11 @@ pub const Protobuf = struct {
 
         pub fn getBytes(self: *const Message, field_number: u32) ?[]const u8 {
             for (self.fields.items) |field| {
-                if (field.number == field_number and field.wire_type == .length_delimited) {
-                    return field.value.length_delimited;
+                if (field.number == field_number) {
+                    switch (field.value) {
+                        .length_delimited => |data| return data,
+                        else => {},
+                    }
                 }
             }
             return null;
@@ -130,29 +148,34 @@ pub const Protobuf = struct {
         return .{ .allocator = allocator };
     }
 
+    fn validateFieldNumber(field_number: u32) !void {
+        if (field_number == 0 or field_number > 0x1fff_ffff) return error.InvalidFieldNumber;
+    }
+
     /// Serialize a message to protobuf wire format
-    pub fn serialize(self: *Protobuf, message: Message) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+    pub fn serialize(self: *Protobuf, message: Message) Error![]u8 {
+        var buffer: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buffer.deinit();
 
-        try self.encodeMessage(buffer.writer(), message);
+        try self.encodeMessage(&buffer.writer, message);
 
-        return buffer.toOwnedSlice();
+        return try buffer.toOwnedSlice();
     }
 
     /// Deserialize protobuf wire format to a message
     pub fn deserialize(self: *Protobuf, data: []const u8) !Message {
-        var stream = std.io.fixedBufferStream(data);
-        return try self.decodeMessage(stream.reader());
+        var reader: std.Io.Reader = .fixed(data);
+        return try self.decodeMessage(&reader);
     }
 
-    fn encodeMessage(self: *Protobuf, writer: anytype, message: Message) !void {
+    fn encodeMessage(self: *Protobuf, writer: anytype, message: Message) Error!void {
         for (message.fields.items) |field| {
             try self.encodeField(writer, field);
         }
     }
 
-    fn encodeField(self: *Protobuf, writer: anytype, field: Field) !void {
+    fn encodeField(self: *Protobuf, writer: anytype, field: Field) Error!void {
+        try validateFieldNumber(field.number);
         // Encode tag (field number and wire type)
         const tag = (field.number << 3) | @intFromEnum(field.wire_type);
         try self.encodeVarint(writer, tag);
@@ -178,22 +201,23 @@ pub const Protobuf = struct {
         }
     }
 
-    fn decodeMessage(self: *Protobuf, reader: anytype) !Message {
+    fn decodeMessage(self: *Protobuf, reader: *std.Io.Reader) !Message {
         var message = Message.init(self.allocator);
         errdefer message.deinit(self.allocator);
 
-        while (true) {
-            const tag = self.decodeVarint(reader) catch |err| {
-                if (err == error.EndOfStream) break;
-                return err;
-            };
+        while (reader.seek < reader.end) {
+            const tag = try self.decodeVarint(reader);
 
-            const field_number: u32 = @intCast(tag >> 3);
-            const wire_type: WireType = @enumFromInt(@as(u3, @truncate(tag & 7)));
+            const field_number: u32 = std.math.cast(u32, tag >> 3) orelse return error.InvalidFieldNumber;
+            try validateFieldNumber(field_number);
+            const wire_bits = tag & 7;
+            if (wire_bits > @intFromEnum(WireType.fixed32)) return error.UnsupportedWireType;
+            const wire_type: WireType = @enumFromInt(@as(u3, @intCast(wire_bits)));
 
-            const value = try self.decodeValue(reader, wire_type);
+            var value = try self.decodeValue(reader, wire_type);
+            errdefer value.deinit(self.allocator);
 
-            try message.fields.append(.{
+            try message.fields.append(self.allocator, .{
                 .number = field_number,
                 .wire_type = wire_type,
                 .value = value,
@@ -203,16 +227,16 @@ pub const Protobuf = struct {
         return message;
     }
 
-    fn decodeValue(self: *Protobuf, reader: anytype, wire_type: WireType) !Value {
+    fn decodeValue(self: *Protobuf, reader: *std.Io.Reader, wire_type: WireType) !Value {
         return switch (wire_type) {
             .varint => .{ .varint = try self.decodeVarint(reader) },
-            .fixed32 => .{ .fixed32 = try reader.readInt(u32, .little) },
-            .fixed64 => .{ .fixed64 = try reader.readInt(u64, .little) },
+            .fixed32 => .{ .fixed32 = try reader.takeInt(u32, .little) },
+            .fixed64 => .{ .fixed64 = try reader.takeInt(u64, .little) },
             .length_delimited => blk: {
                 const len = try self.decodeVarint(reader);
                 const data = try self.allocator.alloc(u8, @intCast(len));
                 errdefer self.allocator.free(data);
-                try reader.readNoEof(data);
+                try reader.readSliceAll(data);
                 break :blk .{ .length_delimited = data };
             },
             else => error.UnsupportedWireType,
@@ -230,23 +254,17 @@ pub const Protobuf = struct {
         try writer.writeByte(@intCast(value));
     }
 
-    fn decodeVarint(self: *Protobuf, reader: anytype) !u64 {
+    fn decodeVarint(self: *Protobuf, reader: *std.Io.Reader) !u64 {
         _ = self;
 
         var result: u64 = 0;
-        var shift: u7 = 0; // u7 to avoid overflow on shift += 7
-
-        while (true) {
-            const byte = try reader.readByte();
-            if (shift >= 64) return error.VarintOverflow;
-            result |= @as(u64, byte & 0x7f) << @intCast(shift);
-
-            if (byte & 0x80 == 0) break;
-
-            shift += 7;
+        for (0..10) |index| {
+            const byte = try reader.takeByte();
+            if (index == 9 and byte > 1) return error.VarintOverflow;
+            result |= @as(u64, byte & 0x7f) << @intCast(index * 7);
+            if (byte & 0x80 == 0) return result;
         }
-
-        return result;
+        return error.VarintOverflow;
     }
 
     /// Encode signed integer using ZigZag encoding
@@ -310,10 +328,10 @@ pub const CodeGen = struct {
 
     /// Generate Zig code from message definition
     pub fn generateCode(self: *CodeGen, msg_def: MessageDef) ![]u8 {
-        var code = std.ArrayList(u8).init(self.allocator);
-        errdefer code.deinit();
+        var code: std.Io.Writer.Allocating = .init(self.allocator);
+        defer code.deinit();
 
-        const writer = code.writer();
+        const writer = &code.writer;
 
         // Generate struct definition
         try writer.print("pub const {s} = struct {{\n", .{msg_def.name});
@@ -342,7 +360,7 @@ pub const CodeGen = struct {
 
         // Generate decode method
         try writer.writeAll("    pub fn decode(data: []const u8, pb: *Protobuf) !@This() {\n");
-        try writer.writeAll("        const msg = try pb.deserialize(data);\n");
+        try writer.writeAll("        var msg = try pb.deserialize(data);\n");
         try writer.writeAll("        defer msg.deinit(pb.allocator);\n\n");
         try writer.writeAll("        return .{\n");
 
@@ -355,12 +373,12 @@ pub const CodeGen = struct {
 
         try writer.writeAll("};\n");
 
-        return code.toOwnedSlice();
+        return try code.toOwnedSlice();
     }
 
     fn zigType(self: *CodeGen, field_type: FieldType, repeated: bool, optional: bool) ![]u8 {
-        var type_str = std.ArrayList(u8).init(self.allocator);
-        errdefer type_str.deinit();
+        var type_str: std.Io.Writer.Allocating = .init(self.allocator);
+        defer type_str.deinit();
 
         const base_type = switch (field_type) {
             .int32, .sint32, .sfixed32 => "i32",
@@ -375,14 +393,14 @@ pub const CodeGen = struct {
         };
 
         if (repeated) {
-            try type_str.writer().print("[]const {s}", .{base_type});
+            try type_str.writer.print("[]const {s}", .{base_type});
         } else if (optional) {
-            try type_str.writer().print("?{s}", .{base_type});
+            try type_str.writer.print("?{s}", .{base_type});
         } else {
-            try type_str.appendSlice(base_type);
+            try type_str.writer.writeAll(base_type);
         }
 
-        return type_str.toOwnedSlice();
+        return try type_str.toOwnedSlice();
     }
 
     fn generateEncodeField(self: *CodeGen, writer: anytype, field: FieldDef) !void {
@@ -436,3 +454,52 @@ pub const CodeGen = struct {
         }
     }
 };
+
+test "protobuf emits and parses canonical wire values" {
+    var codec = Protobuf.init(std.testing.allocator);
+    var message = Protobuf.Message.init(std.testing.allocator);
+    defer message.deinit(std.testing.allocator);
+
+    try message.addVarint(1, 150);
+    try message.addFixed32(2, 0x1234_5678);
+    try message.addBytes(std.testing.allocator, 3, "hi");
+
+    const encoded = try codec.serialize(message);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, &.{
+        0x08, 0x96, 0x01,
+        0x15, 0x78, 0x56,
+        0x34, 0x12, 0x1a,
+        0x02, 'h',  'i',
+    }, encoded);
+
+    var decoded = try codec.deserialize(encoded);
+    defer decoded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 150), decoded.getVarint(1));
+    try std.testing.expectEqualStrings("hi", decoded.getBytes(3).?);
+}
+
+test "protobuf rejects invalid tags and overlong varints" {
+    var codec = Protobuf.init(std.testing.allocator);
+    var message = Protobuf.Message.init(std.testing.allocator);
+    defer message.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.InvalidFieldNumber, message.addVarint(0, 1));
+    try std.testing.expectError(error.InvalidFieldNumber, codec.deserialize(&.{0x00}));
+    try std.testing.expectError(error.UnsupportedWireType, codec.deserialize(&.{0x0e}));
+    try std.testing.expectError(error.EndOfStream, codec.deserialize(&.{0x80}));
+    try std.testing.expectError(error.VarintOverflow, codec.deserialize(&.{
+        0x08,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0x02,
+    }));
+    try std.testing.expectError(error.EndOfStream, codec.deserialize(&.{ 0x0a, 0x02, 0x01 }));
+}

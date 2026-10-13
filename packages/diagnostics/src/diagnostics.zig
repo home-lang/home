@@ -2,6 +2,10 @@ const std = @import("std");
 pub const ast = @import("ast");
 pub const errors = @import("errors.zig");
 pub const enhanced_reporter = @import("enhanced_reporter.zig");
+pub const colorizer = @import("colorizer.zig");
+pub const Colorizer = colorizer.Colorizer;
+pub const ColorScheme = colorizer.ColorScheme;
+pub const BoxDrawing = colorizer.BoxDrawing;
 
 /// Color codes for terminal output
 pub const Color = enum {

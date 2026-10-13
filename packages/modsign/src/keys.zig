@@ -193,7 +193,7 @@ pub const PublicKey = struct {
     /// Export key ID as hex string
     pub fn keyIdHex(self: *const PublicKey, allocator: std.mem.Allocator) ![]u8 {
         const hex = try allocator.alloc(u8, self.key_id.len * 2);
-        _ = try std.fmt.bufPrint(hex, "{x}", .{std.fmt.fmtSliceHexLower(&self.key_id)});
+        _ = try std.fmt.bufPrint(hex, "{x}", .{self.key_id});
         return hex;
     }
 };
@@ -258,6 +258,11 @@ test "public key derivation" {
 
     try testing.expectEqual(priv_key.algorithm, pub_key.algorithm);
     try testing.expectEqualSlices(u8, &priv_key.key_id, &pub_key.key_id);
+
+    const key_id_hex = try pub_key.keyIdHex(testing.allocator);
+    defer testing.allocator.free(key_id_hex);
+    const expected = std.fmt.bytesToHex(pub_key.key_id, .lower);
+    try testing.expectEqualSlices(u8, &expected, key_id_hex);
 }
 
 test "key pair generation" {

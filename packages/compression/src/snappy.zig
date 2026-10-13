@@ -21,12 +21,13 @@ pub const Snappy = struct {
     const MAX_HASH_TABLE_BITS: u8 = 14;
     const MAX_HASH_TABLE_SIZE: usize = 1 << MAX_HASH_TABLE_BITS;
     const MIN_MATCH: usize = 4;
-    const MAX_OFFSET: usize = 65536;
+    const MAX_OFFSET: usize = 65535;
 
     // Tag types
     const TAG_LITERAL: u8 = 0x00;
     const TAG_COPY_1_BYTE_OFFSET: u8 = 0x01;
     const TAG_COPY_2_BYTE_OFFSET: u8 = 0x02;
+    const TAG_COPY_4_BYTE_OFFSET: u8 = 0x03;
 
     /// Initialize Snappy compressor
     pub fn init(allocator: std.mem.Allocator) Snappy {
@@ -61,37 +62,40 @@ pub const Snappy = struct {
 /// Snappy stream compressor
 pub const SnappyCompressor = struct {
     allocator: std.mem.Allocator,
-    hash_table: []u16,
+    hash_table: []usize,
     output: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) Snappy.Error!SnappyCompressor {
-        const hash_table = try allocator.alloc(u16, Snappy.MAX_HASH_TABLE_SIZE);
-        @memset(hash_table, 0);
+        const hash_table = try allocator.alloc(usize, Snappy.MAX_HASH_TABLE_SIZE);
+        @memset(hash_table, std.math.maxInt(usize));
 
         return SnappyCompressor{
             .allocator = allocator,
             .hash_table = hash_table,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .empty,
         };
     }
 
     pub fn deinit(self: *SnappyCompressor) void {
         self.allocator.free(self.hash_table);
-        self.output.deinit();
+        self.output.deinit(self.allocator);
     }
 
     pub fn compress(self: *SnappyCompressor, input: []const u8) Snappy.Error![]u8 {
+        self.output.clearRetainingCapacity();
+        @memset(self.hash_table, std.math.maxInt(usize));
+
         // Write uncompressed length as varint
         try self.writeVarint(input.len);
 
         if (input.len == 0) {
-            return try self.output.toOwnedSlice();
+            return try self.output.toOwnedSlice(self.allocator);
         }
 
         // Compress the data
         try self.compressBlock(input);
 
-        return try self.output.toOwnedSlice();
+        return try self.output.toOwnedSlice(self.allocator);
     }
 
     fn compressBlock(self: *SnappyCompressor, input: []const u8) Snappy.Error!void {
@@ -146,13 +150,12 @@ pub const SnappyCompressor = struct {
         const hash = self.hashBytes(input, pos);
         const match_pos = self.hash_table[hash];
 
-        // Update hash table with current position. Use @truncate so that
-        // positions beyond u16 wrap cleanly instead of panicking — this
-        // mirrors how Snappy stores positions relative to the 16-bit
-        // offset window.
-        self.hash_table[hash] = @truncate(pos);
+        // Keep the full source position. The wire offset is still limited to
+        // 16 bits below, but truncating the hash-table position would make a
+        // later block refer to unrelated input after 64 KiB.
+        self.hash_table[hash] = pos;
 
-        if (match_pos == 0) return null;
+        if (match_pos == std.math.maxInt(usize)) return null;
         if (pos < match_pos) return null;
 
         const offset = pos - match_pos;
@@ -200,7 +203,7 @@ pub const SnappyCompressor = struct {
         if (n < 60) {
             // Short literal (6-bit length)
             const tag: u8 = @intCast((n - 1) << 2);
-            try self.output.append(tag);
+            try self.output.append(self.allocator, tag);
         } else {
             // Long literal (multi-byte length)
             var tag: u8 = 60 << 2;
@@ -208,30 +211,30 @@ pub const SnappyCompressor = struct {
             // Determine number of bytes needed for length
             if (n < 256) {
                 tag |= 0 << 2;
-                try self.output.append(tag);
-                try self.output.append(@intCast(n - 1));
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast(n - 1));
             } else if (n < 65536) {
                 tag |= 1 << 2;
-                try self.output.append(tag);
-                try self.output.append(@intCast((n - 1) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 8) & 0xFF));
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast((n - 1) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 8) & 0xFF));
             } else if (n < 16777216) {
                 tag |= 2 << 2;
-                try self.output.append(tag);
-                try self.output.append(@intCast((n - 1) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 8) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 16) & 0xFF));
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast((n - 1) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 8) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 16) & 0xFF));
             } else {
                 tag |= 3 << 2;
-                try self.output.append(tag);
-                try self.output.append(@intCast((n - 1) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 8) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 16) & 0xFF));
-                try self.output.append(@intCast(((n - 1) >> 24) & 0xFF));
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast((n - 1) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 8) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 16) & 0xFF));
+                try self.output.append(self.allocator, @intCast(((n - 1) >> 24) & 0xFF));
             }
         }
 
-        try self.output.appendSlice(literal);
+        try self.output.appendSlice(self.allocator, literal);
     }
 
     fn emitCopy(self: *SnappyCompressor, offset: usize, length: usize) Snappy.Error!void {
@@ -243,17 +246,20 @@ pub const SnappyCompressor = struct {
 
             if (offset < 2048 and copy_len <= 11) {
                 // 1-byte offset encoding (11-bit offset, 3-bit length)
+                const length_code: u8 = @intCast(copy_len - 4);
+                const offset_code: u8 = @intCast(offset >> 8);
                 const tag: u8 = Snappy.TAG_COPY_1_BYTE_OFFSET |
-                                @as(u8, @intCast((copy_len - 4) << 2)) |
-                                @as(u8, @intCast((offset >> 8) << 5));
-                try self.output.append(tag);
-                try self.output.append(@intCast(offset & 0xFF));
+                    (length_code * 4) |
+                    (offset_code * 32);
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast(offset & 0xFF));
             } else {
                 // 2-byte offset encoding (16-bit offset, 6-bit length)
-                const tag: u8 = Snappy.TAG_COPY_2_BYTE_OFFSET | @as(u8, @intCast((copy_len - 1) << 2));
-                try self.output.append(tag);
-                try self.output.append(@intCast(offset & 0xFF));
-                try self.output.append(@intCast((offset >> 8) & 0xFF));
+                const length_code: u8 = @intCast(copy_len - 1);
+                const tag: u8 = Snappy.TAG_COPY_2_BYTE_OFFSET | (length_code * 4);
+                try self.output.append(self.allocator, tag);
+                try self.output.append(self.allocator, @intCast(offset & 0xFF));
+                try self.output.append(self.allocator, @intCast((offset >> 8) & 0xFF));
             }
 
             remaining -= copy_len;
@@ -263,10 +269,10 @@ pub const SnappyCompressor = struct {
     fn writeVarint(self: *SnappyCompressor, value: usize) !void {
         var v = value;
         while (v >= 128) {
-            try self.output.append(@intCast((v & 0x7F) | 0x80));
+            try self.output.append(self.allocator, @intCast((v & 0x7F) | 0x80));
             v >>= 7;
         }
-        try self.output.append(@intCast(v));
+        try self.output.append(self.allocator, @intCast(v));
     }
 };
 
@@ -278,16 +284,17 @@ pub const SnappyDecompressor = struct {
     pub fn init(allocator: std.mem.Allocator) Snappy.Error!SnappyDecompressor {
         return SnappyDecompressor{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = .empty,
         };
     }
 
     pub fn deinit(self: *SnappyDecompressor) void {
-        self.output.deinit();
+        self.output.deinit(self.allocator);
     }
 
     pub fn decompress(self: *SnappyDecompressor, input: []const u8) Snappy.Error![]u8 {
         if (input.len == 0) return Snappy.Error.InvalidStream;
+        self.output.clearRetainingCapacity();
 
         // Read uncompressed length
         var pos: usize = 0;
@@ -296,7 +303,7 @@ pub const SnappyDecompressor = struct {
         // Pre-allocate output, capped relative to the compressed input so
         // a malicious length field can't trigger a huge allocation.
         const prealloc = @min(uncompressed_len, input.len *| 256);
-        try self.output.ensureTotalCapacity(prealloc);
+        try self.output.ensureTotalCapacity(self.allocator, prealloc);
 
         // Decompress
         while (pos < input.len) {
@@ -309,11 +316,12 @@ pub const SnappyDecompressor = struct {
                 // Literal
                 const literal_len = try self.decodeLiteralLength(input, tag, &pos);
 
-                if (pos + literal_len > input.len) {
+                if (literal_len > input.len - pos) {
                     return Snappy.Error.InvalidStream;
                 }
+                if (literal_len > uncompressed_len -| self.output.items.len) return Snappy.Error.InvalidLength;
 
-                try self.output.appendSlice(input[pos..][0..literal_len]);
+                try self.output.appendSlice(self.allocator, input[pos..][0..literal_len]);
                 pos += literal_len;
             } else if (tag_type == Snappy.TAG_COPY_1_BYTE_OFFSET) {
                 // 1-byte offset copy
@@ -323,7 +331,7 @@ pub const SnappyDecompressor = struct {
                 const offset = ((@as(usize, tag) & 0xE0) << 3) | input[pos];
                 pos += 1;
 
-                try self.emitCopy(offset, length);
+                try self.emitCopy(offset, length, uncompressed_len);
             } else if (tag_type == Snappy.TAG_COPY_2_BYTE_OFFSET) {
                 // 2-byte offset copy
                 if (pos + 1 >= input.len) return Snappy.Error.InvalidStream;
@@ -332,13 +340,23 @@ pub const SnappyDecompressor = struct {
                 const offset = @as(usize, input[pos]) | (@as(usize, input[pos + 1]) << 8);
                 pos += 2;
 
-                try self.emitCopy(offset, length);
-            } else {
-                return Snappy.Error.InvalidTag;
+                try self.emitCopy(offset, length, uncompressed_len);
+            } else if (tag_type == Snappy.TAG_COPY_4_BYTE_OFFSET) {
+                if (input.len - pos < 4) return Snappy.Error.InvalidStream;
+
+                const length = 1 + ((tag >> 2) & 0x3f);
+                const offset = std.mem.readInt(u32, input[pos..][0..4], .little);
+                pos += 4;
+
+                try self.emitCopy(offset, length, uncompressed_len);
             }
         }
 
-        return try self.output.toOwnedSlice();
+        if (self.output.items.len != uncompressed_len) {
+            return Snappy.Error.InvalidLength;
+        }
+
+        return try self.output.toOwnedSlice(self.allocator);
     }
 
     fn readVarint(self: *SnappyDecompressor, input: []const u8, pos: *usize) Snappy.Error!usize {
@@ -352,14 +370,19 @@ pub const SnappyDecompressor = struct {
             const byte = input[pos.*];
             pos.* += 1;
 
-            result |= @as(usize, byte & 0x7F) << @intCast(shift);
+            const payload = byte & 0x7f;
+            if (shift >= @bitSizeOf(usize)) return Snappy.Error.InvalidLength;
+            const shift_amount: std.math.Log2Int(usize) = @intCast(shift);
+            const payload_value: usize = payload;
+            if (payload_value > (@as(usize, std.math.maxInt(usize)) >> shift_amount)) return Snappy.Error.InvalidLength;
+            result |= payload_value << shift_amount;
 
             if ((byte & 0x80) == 0) {
                 return result;
             }
 
             shift += 7;
-            if (shift >= 64) return Snappy.Error.InvalidLength;
+            if (shift >= @bitSizeOf(usize)) return Snappy.Error.InvalidLength;
         }
 
         return Snappy.Error.InvalidStream;
@@ -385,17 +408,18 @@ pub const SnappyDecompressor = struct {
         return length + 1;
     }
 
-    fn emitCopy(self: *SnappyDecompressor, offset: usize, length: usize) Snappy.Error!void {
+    fn emitCopy(self: *SnappyDecompressor, offset: usize, length: usize, output_limit: usize) Snappy.Error!void {
         if (offset > self.output.items.len or offset == 0) {
             return Snappy.Error.InvalidOffset;
         }
+        if (length > output_limit -| self.output.items.len) return Snappy.Error.InvalidLength;
 
         const start_pos = self.output.items.len - offset;
 
         // Handle overlapping copies (when offset < length)
         for (0..length) |i| {
             const byte = self.output.items[start_pos + (i % offset)];
-            try self.output.append(byte);
+            try self.output.append(self.allocator, byte);
         }
     }
 };
@@ -437,7 +461,7 @@ test "snappy large data" {
     var snappy = Snappy.init(allocator);
 
     // Generate large input with patterns
-    var input = try allocator.alloc(u8, 100000);
+    const input = try allocator.alloc(u8, 100000);
     defer allocator.free(input);
 
     for (input, 0..) |*byte, i| {
@@ -458,9 +482,13 @@ test "snappy repeated patterns" {
 
     var snappy = Snappy.init(allocator);
 
-    const input = "abcdefgh" ** 100;
+    const pattern = "abcdefgh";
+    var input: [pattern.len * 100]u8 = undefined;
+    for (0..100) |i| {
+        @memcpy(input[i * pattern.len ..][0..pattern.len], pattern);
+    }
 
-    const compressed = try snappy.compress(input);
+    const compressed = try snappy.compress(&input);
     defer allocator.free(compressed);
 
     // Snappy should achieve good compression on repeated patterns
@@ -469,7 +497,7 @@ test "snappy repeated patterns" {
     const decompressed = try snappy.decompress(compressed);
     defer allocator.free(decompressed);
 
-    try std.testing.expectEqualStrings(input, decompressed);
+    try std.testing.expectEqualStrings(&input, decompressed);
 }
 
 test "snappy max compressed length" {
@@ -485,13 +513,13 @@ test "snappy max compressed length" {
 
 test "snappy incompressible data" {
     const allocator = std.testing.allocator;
-    const random = std.crypto.random;
+    var prng = std.Random.DefaultPrng.init(0x534e_4150);
 
     var snappy = Snappy.init(allocator);
 
     // Generate random data (incompressible)
     var input: [1000]u8 = undefined;
-    random.bytes(&input);
+    prng.random().bytes(&input);
 
     const compressed = try snappy.compress(&input);
     defer allocator.free(compressed);
@@ -535,4 +563,18 @@ test "snappy long repeated sequence" {
     defer allocator.free(decompressed);
 
     try std.testing.expectEqualStrings(input, decompressed);
+}
+
+test "snappy rejects malformed streams and supports four-byte offsets" {
+    const allocator = std.testing.allocator;
+    var snappy = Snappy.init(allocator);
+
+    try std.testing.expectError(Snappy.Error.InvalidStream, snappy.decompress(&.{}));
+    try std.testing.expectError(Snappy.Error.InvalidStream, snappy.decompress(&.{0x80}));
+    try std.testing.expectError(Snappy.Error.InvalidLength, snappy.decompress(&.{ 1, 4, 'A', 'B' }));
+    try std.testing.expectError(Snappy.Error.InvalidOffset, snappy.decompress(&.{ 4, 1, 0 }));
+
+    const decoded = try snappy.decompress(&.{ 5, 0, 'A', 15, 1, 0, 0, 0 });
+    defer allocator.free(decoded);
+    try std.testing.expectEqualStrings("AAAAA", decoded);
 }
