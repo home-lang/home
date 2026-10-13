@@ -1,11 +1,5 @@
 const std = @import("std");
-const posix = std.posix;
-
-/// Helper to get current timestamp
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
-}
+const compat = @import("compat.zig");
 
 // Re-export modules
 pub const jwt = @import("jwt.zig");
@@ -163,7 +157,7 @@ pub const Auth = struct {
     /// Generate remember token
     pub fn generateRememberToken(self: *Self) ![]const u8 {
         var bytes: [32]u8 = undefined;
-        std.crypto.random.bytes(&bytes);
+        try compat.randomSecure(&bytes);
 
         const hex_chars = "0123456789abcdef";
         var token: [64]u8 = undefined;
@@ -451,4 +445,10 @@ test "remember token" {
     const remembered = try auth_mgr.viaRemember(token.?);
     try std.testing.expect(remembered);
     try std.testing.expect(auth_mgr.check());
+}
+
+test {
+    _ = jwt;
+    _ = guards;
+    _ = hash;
 }

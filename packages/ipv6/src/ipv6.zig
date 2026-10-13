@@ -440,3 +440,10 @@ test "IPv6 header" {
     header.setTrafficClass(0xA5);
     try testing.expectEqual(@as(u8, 0xA5), header.getTrafficClass());
 }
+
+test {
+    _ = @import("routing.zig");
+    _ = @import("ndp.zig");
+    _ = @import("icmpv6.zig");
+    _ = @import("dhcpv6.zig");
+}

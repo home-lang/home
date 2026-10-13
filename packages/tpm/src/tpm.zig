@@ -140,3 +140,10 @@ test "tpm random bytes" {
     }
     try testing.expect(has_nonzero);
 }
+
+test {
+    _ = pcr;
+    _ = keys;
+    _ = attestation;
+    _ = seal;
+}

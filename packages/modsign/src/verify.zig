@@ -4,6 +4,7 @@ const std = @import("std");
 const modsign = @import("modsign.zig");
 const keys = @import("keys.zig");
 const sign = @import("sign.zig");
+const compat = @import("compat.zig");
 
 /// Verification result
 pub const VerifyResult = enum {
@@ -111,14 +112,11 @@ pub fn verifyModuleFile(
     public_key: *const keys.PublicKey,
 ) !VerifyResult {
     // Read signed module
-    const file = try std.fs.cwd().openFile(module_path, .{});
-    defer file.close();
-
-    const signed_data = try file.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    const signed_data = try std.Io.Dir.cwd().readFileAlloc(compat.io(), module_path, allocator, .limited(100 * 1024 * 1024));
     defer allocator.free(signed_data);
 
     // Extract signature
-    const result = try sign.extractSignature(allocator, signed_data);
+    var result = try sign.extractSignature(allocator, signed_data);
     defer if (result.signature) |*sig| sig.deinit();
 
     if (result.signature == null) {
@@ -174,11 +172,12 @@ pub const KeyRing = struct {
 
     /// Load keys from directory
     pub fn loadFromDirectory(self: *KeyRing, dir_path: []const u8) !void {
-        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-        defer dir.close();
+        const io = compat.io();
+        const dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
+        defer dir.close(io);
 
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(io)) |entry| {
             if (entry.kind != .file) continue;
 
             // Check for PEM key files
@@ -186,36 +185,37 @@ pub const KeyRing = struct {
             if (!std.mem.eql(u8, ext, ".pem") and !std.mem.eql(u8, ext, ".pub")) continue;
 
             // Read key file
-            const key_file = try dir.openFile(entry.name, .{});
-            defer key_file.close();
-
-            const key_data = try key_file.readToEndAlloc(self.allocator, 64 * 1024);
+            const key_data = try dir.readFileAlloc(io, entry.name, self.allocator, .limited(64 * 1024));
             defer self.allocator.free(key_data);
 
             // Parse PEM format
-            if (std.mem.indexOf(u8, key_data, "-----BEGIN PUBLIC KEY-----")) |start| {
-                if (std.mem.indexOf(u8, key_data, "-----END PUBLIC KEY-----")) |end| {
-                    const pem_content = key_data[start + 27 .. end];
+            const begin = "-----BEGIN PUBLIC KEY-----";
+            const end = "-----END PUBLIC KEY-----";
+            if (std.mem.indexOf(u8, key_data, begin)) |start| {
+                const payload_start = start + begin.len;
+                if (std.mem.indexOf(u8, key_data[payload_start..], end)) |payload_len| {
+                    const pem_content = key_data[payload_start .. payload_start + payload_len];
 
                     // Remove newlines and decode base64
-                    var decoded_buf: [4096]u8 = undefined;
-                    var decoded_len: usize = 0;
+                    var encoded = std.ArrayList(u8).empty;
+                    defer encoded.deinit(self.allocator);
 
                     for (pem_content) |c| {
                         if (c != '\n' and c != '\r' and c != ' ') {
-                            if (decoded_len < decoded_buf.len) {
-                                decoded_buf[decoded_len] = c;
-                                decoded_len += 1;
-                            }
+                            try encoded.append(self.allocator, c);
                         }
                     }
 
                     // Create public key from decoded data
-                    const key_copy = try self.allocator.dupe(u8, decoded_buf[0..decoded_len]);
+                    const decoder = std.base64.standard.Decoder;
+                    const key_copy = try self.allocator.alloc(u8, try decoder.calcSizeForSlice(encoded.items));
+                    errdefer self.allocator.free(key_copy);
+                    try decoder.decode(key_copy, encoded.items);
                     const desc = try self.allocator.dupe(u8, entry.name);
+                    errdefer self.allocator.free(desc);
 
                     var pub_key = keys.PublicKey{
-                        .algorithm = .rsa_2048_sha256,
+                        .algorithm = modsign.SignatureAlgorithm.fromKeySize(key_copy.len) orelse return error.InvalidKeySize,
                         .key_data = key_copy,
                         .key_id = undefined,
                         .description = desc,
@@ -265,10 +265,7 @@ test "verify valid signature" {
     // Verify signature
     const result = try verifySignature(module_data, &signature, &keypair.public_key);
 
-    // NOTE: This simplified implementation uses HMAC for demonstration.
-    // In production, would use actual RSA/ECDSA verification.
-    // For now, we just verify it doesn't error and returns a result.
-    try testing.expect(result == .valid or result == .invalid_signature);
+    try testing.expectEqual(VerifyResult.valid, result);
 }
 
 test "verify invalid signature" {
@@ -331,4 +328,46 @@ test "keyring operations" {
 
     const found = keyring.findKey(&keypair.public_key.key_id);
     try testing.expect(found != null);
+}
+
+test "signed module file roundtrip" {
+    const testing = std.testing;
+    const io = compat.io();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "module.ko", .data = "persisted module" });
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const suffix = try std.fmt.bufPrint(path_buffer[root_len..], "/module.ko", .{});
+    const path = path_buffer[0 .. root_len + suffix.len];
+
+    var keypair = try keys.KeyPair.generate(testing.allocator, .rsa_2048_sha256, "signer");
+    defer keypair.deinit();
+    try sign.signModuleFile(testing.allocator, path, &keypair.private_key, null);
+    try testing.expectEqual(VerifyResult.valid, try verifyModuleFile(testing.allocator, path, &keypair.public_key));
+}
+
+test "persisted public key verifies through keyring" {
+    const testing = std.testing;
+    const io = compat.io();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const suffix = try std.fmt.bufPrint(path_buffer[root_len..], "/trusted.pub", .{});
+    const key_path = path_buffer[0 .. root_len + suffix.len];
+
+    var keypair = try keys.KeyPair.generate(testing.allocator, .rsa_2048_sha256, "trusted");
+    defer keypair.deinit();
+    try keypair.public_key.savePem(key_path);
+
+    var keyring = KeyRing.init(testing.allocator);
+    defer keyring.deinit();
+    try keyring.loadFromDirectory(path_buffer[0..root_len]);
+    try testing.expectEqual(@as(usize, 1), keyring.keys.items.len);
+
+    const module_data = "module from disk";
+    var signature = try sign.signModule(testing.allocator, module_data, &keypair.private_key);
+    defer signature.deinit();
+    try testing.expectEqual(VerifyResult.valid, try verifyWithKeyRing(module_data, &signature, &keyring));
 }

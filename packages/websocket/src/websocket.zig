@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat.zig");
 
 // Re-export server and broadcaster
 pub const server = @import("server.zig");
@@ -117,7 +118,7 @@ pub const WebSocket = struct {
     fn performHandshake(self: *WebSocket, host: []const u8, path: []const u8) !void {
         // Generate WebSocket key
         var key_bytes: [16]u8 = undefined;
-        std.crypto.random.bytes(&key_bytes);
+        try compat.randomSecure(&key_bytes);
 
         var key_b64: [24]u8 = undefined;
         _ = std.base64.standard.Encoder.encode(&key_b64, &key_bytes);
@@ -139,6 +140,12 @@ pub const WebSocket = struct {
         if (std.mem.indexOf(u8, response, "101 Switching Protocols") == null) {
             return error.HandshakeFailed;
         }
+
+        const accept_value = compat.httpHeaderValue(response, "Sec-WebSocket-Accept") orelse return error.HandshakeFailed;
+        const expected_accept = try compat.websocketAccept(&key_b64);
+        if (!std.mem.eql(u8, accept_value, &expected_accept)) {
+            return error.HandshakeFailed;
+        }
     }
 
     /// Send a text message
@@ -151,7 +158,7 @@ pub const WebSocket = struct {
             .opcode = .text,
             .mask = self.is_client,
             .payload_len = text.len,
-            .masking_key = if (self.is_client) self.generateMask() else null,
+            .masking_key = if (self.is_client) try self.generateMask() else null,
             .payload = text,
         });
     }
@@ -166,7 +173,7 @@ pub const WebSocket = struct {
             .opcode = .binary,
             .mask = self.is_client,
             .payload_len = data.len,
-            .masking_key = if (self.is_client) self.generateMask() else null,
+            .masking_key = if (self.is_client) try self.generateMask() else null,
             .payload = data,
         });
     }
@@ -181,7 +188,7 @@ pub const WebSocket = struct {
             .opcode = .ping,
             .mask = self.is_client,
             .payload_len = data.len,
-            .masking_key = if (self.is_client) self.generateMask() else null,
+            .masking_key = if (self.is_client) try self.generateMask() else null,
             .payload = data,
         });
     }
@@ -219,7 +226,7 @@ pub const WebSocket = struct {
                         .opcode = .pong,
                         .mask = self.is_client,
                         .payload_len = frame_data.payload_len,
-                        .masking_key = if (self.is_client) self.generateMask() else null,
+                        .masking_key = if (self.is_client) try self.generateMask() else null,
                         .payload = frame_data.payload,
                     });
                     continue;
@@ -402,10 +409,10 @@ pub const WebSocket = struct {
         };
     }
 
-    fn generateMask(self: *WebSocket) [4]u8 {
+    fn generateMask(self: *WebSocket) ![4]u8 {
         _ = self;
         var mask: [4]u8 = undefined;
-        std.crypto.random.bytes(&mask);
+        try compat.randomSecure(&mask);
         return mask;
     }
 
@@ -421,7 +428,7 @@ pub const WebSocket = struct {
             .opcode = .close,
             .mask = self.is_client,
             .payload_len = 0,
-            .masking_key = if (self.is_client) self.generateMask() else null,
+            .masking_key = if (self.is_client) try self.generateMask() else null,
             .payload = &.{},
         });
 
@@ -442,4 +449,15 @@ test "websocket frame encoding" {
     defer msg.deinit();
 
     try std.testing.expectEqualStrings("Hello", msg.data);
+}
+
+test "client masks use fallible secure entropy" {
+    var ws = WebSocket.init(std.testing.allocator, @as(posix.socket_t, 0), true);
+    const mask = try ws.generateMask();
+    try std.testing.expectEqual(@as(usize, 4), mask.len);
+}
+
+test {
+    _ = server;
+    _ = broadcaster;
 }

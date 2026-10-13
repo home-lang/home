@@ -27,7 +27,7 @@ pub const SealedData = struct {
     }
 
     pub fn deinit(self: *SealedData) void {
-        self.expected_pcrs.deinit();
+        self.expected_pcrs.deinit(self.allocator);
         if (self.data.len > 0) {
             self.allocator.free(self.data);
         }
@@ -126,15 +126,18 @@ pub fn sealWithAuth(
     errdefer sealed.deinit();
 
     // Mix auth value into policy digest
+    const old_policy = sealed.policy_digest;
+    var new_policy: [32]u8 = undefined;
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(&sealed.policy_digest);
+    hasher.update(&old_policy);
     hasher.update(auth_value);
-    hasher.final(&sealed.policy_digest);
+    hasher.final(&new_policy);
 
-    // Re-encrypt with new policy
+    // Remove the old policy stream and apply the authorized policy stream.
     for (sealed.data, 0..) |*byte, i| {
-        byte.* ^= sealed.policy_digest[i % 32];
+        byte.* ^= old_policy[i % 32] ^ new_policy[i % 32];
     }
+    sealed.policy_digest = new_policy;
 
     return sealed;
 }

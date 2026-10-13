@@ -19,7 +19,7 @@ pub const FormatError = error{
 
 /// Validate format string against argument types at compile time
 pub fn validateFormat(comptime fmt: []const u8, comptime ArgsType: type) FormatError!void {
-    const fields = @typeInfo(ArgsType).@"struct".fields;
+    const struct_info = @typeInfo(ArgsType).@"struct";
     var arg_index: usize = 0;
     var i: usize = 0;
 
@@ -34,14 +34,14 @@ pub fn validateFormat(comptime fmt: []const u8, comptime ArgsType: type) FormatE
             const spec_len = parseSpecLen(fmt[i..]);
             const spec_char = getSpecChar(fmt[i .. i + spec_len]);
 
-            if (arg_index >= fields.len) {
+            if (arg_index >= struct_info.field_names.len) {
                 return FormatError.TooManySpecifiers;
             }
 
             // Validate type matches specifier
-            inline for (fields, 0..) |field, field_i| {
+            inline for (struct_info.field_types, 0..) |field_type, field_i| {
                 if (field_i == arg_index) {
-                    try validateTypeMatch(field.type, spec_char);
+                    try validateTypeMatch(field_type, spec_char);
                 }
             }
 
@@ -52,7 +52,7 @@ pub fn validateFormat(comptime fmt: []const u8, comptime ArgsType: type) FormatE
         }
     }
 
-    if (arg_index < fields.len) {
+    if (arg_index < struct_info.field_names.len) {
         return FormatError.TooFewSpecifiers;
     }
 }

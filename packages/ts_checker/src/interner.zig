@@ -626,7 +626,13 @@ pub const Interner = struct {
             .parameters_start = if (owned.len == 0) 0 else start,
             .parameters_len = @intCast(owned.len),
             .body = body,
+            .name = current.name,
         };
+    }
+
+    pub fn setGenericDefinitionName(self: *Interner, definition: TypeId, name: types.StringId) void {
+        std.debug.assert(self.genericDefinition(definition) != null);
+        self.pool.generic_definition_payloads.items[self.pool.payloadOf(definition)].name = name;
     }
 
     pub fn genericDefinition(self: *const Interner, id: TypeId) ?types.GenericDefinitionPayload {
@@ -1131,7 +1137,10 @@ pub const Interner = struct {
     /// present. Returns `Primitive.none` when this object type has
     /// no string indexer.
     pub fn objectStringIndex(self: *const Interner, id: TypeId) TypeId {
-        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const flags = self.pool.flagsOf(id);
+        // Compound headers carry constituent flags, but their payload is in a
+        // different column. Their surface must be resolved by the checker.
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return types.Primitive.none;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
         const payload = self.pool.object_type_payloads.items[payload_idx];
@@ -1141,7 +1150,10 @@ pub const Interner = struct {
     /// Look up the number-key index signature's value type, if
     /// present.
     pub fn objectNumberIndex(self: *const Interner, id: TypeId) TypeId {
-        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const flags = self.pool.flagsOf(id);
+        // Compound headers carry constituent flags, but their payload is in a
+        // different column. Their surface must be resolved by the checker.
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return types.Primitive.none;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
         const payload = self.pool.object_type_payloads.items[payload_idx];
@@ -1149,7 +1161,10 @@ pub const Interner = struct {
     }
 
     pub fn objectSymbolIndex(self: *const Interner, id: TypeId) TypeId {
-        if (!self.pool.flagsOf(id).is_object_type) return types.Primitive.none;
+        const flags = self.pool.flagsOf(id);
+        // Compound headers carry constituent flags, but their payload is in a
+        // different column. Their surface must be resolved by the checker.
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return types.Primitive.none;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.object_type_payloads.items.len) return types.Primitive.none;
         const payload = self.pool.object_type_payloads.items[payload_idx];
@@ -1179,7 +1194,10 @@ pub const Interner = struct {
     /// Slice of all members of an object type. Returns an empty
     /// slice if `id` isn't an object type.
     pub fn objectMembers(self: *const Interner, id: TypeId) []const types.ObjectMember {
-        if (!self.pool.flagsOf(id).is_object_type) return &.{};
+        const flags = self.pool.flagsOf(id);
+        // Compound headers carry constituent flags, but their payload is in a
+        // different column. Their surface must be resolved by the checker.
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return &.{};
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.object_type_payloads.items.len) return &.{};
         const payload = self.pool.object_type_payloads.items[payload_idx];
@@ -2016,4 +2034,22 @@ test "Interner: parallel intern stress — primitives + literals" {
     const dynamic_count = i.pool.typeCount() - Primitive.first_dynamic;
     try T.expect(dynamic_count >= 800);
     try T.expect(dynamic_count <= 1200);
+}
+
+test "Interner: compound object payloads never alias direct object storage" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const left = try i.internObjectTypeWithIndexAndSymbol(&.{.{ .name = 7, .type = Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false }}, Primitive.string_t, Primitive.number_t, Primitive.boolean_t);
+    const right = try i.internObjectTypeWithIndexAndSymbol(&.{.{ .name = 8, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false }}, Primitive.number_t, Primitive.string_t, Primitive.number_t);
+    for ([_]TypeId{ try i.internUnion(&.{ left, right }), try i.internIntersection(&.{ left, right }) }) |compound| {
+        try T.expect(i.pool.flagsOf(compound).is_union or i.pool.flagsOf(compound).is_intersection);
+        try T.expect(i.pool.payloadOf(compound) < i.pool.object_type_payloads.items.len);
+        try T.expectEqual(@as(usize, 0), i.objectMembers(compound).len);
+        try T.expectEqual(Primitive.none, i.objectStringIndex(compound));
+        try T.expectEqual(Primitive.none, i.objectNumberIndex(compound));
+        try T.expectEqual(Primitive.none, i.objectSymbolIndex(compound));
+        try T.expectEqual(@as(?TypeId, null), i.objectMember(compound, 7));
+    }
+    try T.expectEqual(Primitive.number_t, i.objectNumberIndex(left));
+    try T.expectEqual(@as(usize, 1), i.objectMembers(left).len);
 }

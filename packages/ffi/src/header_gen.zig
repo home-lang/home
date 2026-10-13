@@ -2,30 +2,26 @@
 // Automatically generate C header files from Home code for FFI
 
 const std = @import("std");
-const Basics = @import("basics");
 
 // ============================================================================
 // Header Generator
 // ============================================================================
 
 pub const HeaderGen = struct {
-    allocator: Basics.Allocator,
-    writer: std.ArrayList(u8).Writer,
+    allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
     indent_level: usize,
 
-    pub fn init(allocator: Basics.Allocator) HeaderGen {
-        var buffer = std.ArrayList(u8).init(allocator);
+    pub fn init(allocator: std.mem.Allocator) HeaderGen {
         return .{
             .allocator = allocator,
-            .writer = buffer.writer(),
-            .buffer = buffer,
+            .buffer = .empty,
             .indent_level = 0,
         };
     }
 
     pub fn deinit(self: *HeaderGen) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn toSlice(self: *HeaderGen) []const u8 {
@@ -140,19 +136,19 @@ pub const HeaderGen = struct {
 
     fn writeFunction(self: *HeaderGen, func: Function) !void {
         // Build parameter list
-        var params = std.ArrayList(u8).init(self.allocator);
-        defer params.deinit();
+        var params: std.ArrayList(u8) = .empty;
+        defer params.deinit(self.allocator);
 
         if (func.params.len == 0) {
-            try params.appendSlice("void");
+            try params.appendSlice(self.allocator, "void");
         } else {
             for (func.params, 0..) |param, i| {
-                if (i > 0) try params.appendSlice(", ");
-                try params.writer().print("{s} {s}", .{ param.c_type, param.name });
+                if (i > 0) try params.appendSlice(self.allocator, ", ");
+                try params.print(self.allocator, "{s} {s}", .{ param.c_type, param.name });
             }
 
             if (func.is_variadic) {
-                try params.appendSlice(", ...");
+                try params.appendSlice(self.allocator, ", ...");
             }
         }
 
@@ -186,19 +182,19 @@ pub const HeaderGen = struct {
     // ========================================================================
 
     fn writeLine(self: *HeaderGen, line: []const u8) !void {
-        try self.writer.writeAll(line);
-        try self.writer.writeByte('\n');
+        try self.buffer.appendSlice(self.allocator, line);
+        try self.buffer.append(self.allocator, '\n');
     }
 
     fn writeLineFmt(self: *HeaderGen, comptime fmt: []const u8, args: anytype) !void {
-        try self.writer.print(fmt, args);
-        try self.writer.writeByte('\n');
+        try self.buffer.print(self.allocator, fmt, args);
+        try self.buffer.append(self.allocator, '\n');
     }
 
     fn writeIndented(self: *HeaderGen) !void {
         var i: usize = 0;
         while (i < self.indent_level) : (i += 1) {
-            try self.writer.writeAll("    ");
+            try self.buffer.appendSlice(self.allocator, "    ");
         }
     }
 };
@@ -253,7 +249,7 @@ pub const Parameter = struct {
 // Helper Functions
 // ============================================================================
 
-pub fn generateHeader(allocator: Basics.Allocator, config: HeaderConfig) ![]const u8 {
+pub fn generateHeader(allocator: std.mem.Allocator, config: HeaderConfig) ![]const u8 {
     var gen = HeaderGen.init(allocator);
     defer gen.deinit();
 
@@ -272,7 +268,7 @@ pub const TypeMap = struct {
     pub fn toCType(comptime T: type) []const u8 {
         const info = @typeInfo(T);
         return switch (info) {
-            .Int => |int_info| switch (int_info.signedness) {
+            .int => |int_info| switch (int_info.signedness) {
                 .signed => switch (int_info.bits) {
                     8 => "int8_t",
                     16 => "int16_t",
@@ -288,14 +284,14 @@ pub const TypeMap = struct {
                     else => "uintptr_t",
                 },
             },
-            .Float => |float_info| switch (float_info.bits) {
+            .float => |float_info| switch (float_info.bits) {
                 32 => "float",
                 64 => "double",
                 else => "long double",
             },
-            .Bool => "bool",
-            .Pointer => "void*",
-            .Void => "void",
+            .bool => "bool",
+            .pointer => "void*",
+            .void => "void",
             else => "void*",
         };
     }

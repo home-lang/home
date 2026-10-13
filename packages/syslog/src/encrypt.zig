@@ -2,23 +2,24 @@
 
 const std = @import("std");
 const syslog = @import("syslog.zig");
+const compat = @import("compat.zig");
 
 /// Encryption key
 pub const EncryptionKey = struct {
     key_data: [32]u8,
     nonce_counter: std.atomic.Value(u64),
 
-    pub fn generate() EncryptionKey {
+    pub fn generate() !EncryptionKey {
         var key: EncryptionKey = undefined;
-        std.crypto.random.bytes(&key.key_data);
+        try compat.randomSecure(&key.key_data);
         key.nonce_counter = std.atomic.Value(u64).init(0);
         return key;
     }
 
-    fn nextNonce(self: *EncryptionKey) [12]u8 {
+    fn nextNonce(self: *EncryptionKey) ![12]u8 {
         const counter = self.nonce_counter.fetchAdd(1, .monotonic);
         var nonce: [12]u8 = undefined;
-        std.crypto.random.bytes(nonce[0..4]); // Random prefix
+        try compat.randomSecure(nonce[0..4]); // Random prefix
         std.mem.writeInt(u64, nonce[4..12], counter, .little);
         return nonce;
     }
@@ -58,7 +59,7 @@ pub fn encryptLog(
     message: *const syslog.LogMessage,
     key: *EncryptionKey,
 ) !EncryptedLog {
-    const nonce = key.nextNonce();
+    const nonce = try key.nextNonce();
 
     // Encrypt message content
     const encrypted = try allocator.alloc(u8, message.message.len);
@@ -68,8 +69,7 @@ pub fn encryptLog(
 
     // Build associated data (unencrypted metadata)
     var ad_buf: [512]u8 = undefined;
-    var ad_stream = std.io.fixedBufferStream(&ad_buf);
-    const ad_writer = ad_stream.writer();
+    var ad_writer = std.Io.Writer.fixed(&ad_buf);
 
     try ad_writer.writeByte(@intFromEnum(message.facility));
     try ad_writer.writeByte(@intFromEnum(message.severity));
@@ -78,7 +78,7 @@ pub fn encryptLog(
     try ad_writer.writeAll(message.getAppName());
     try ad_writer.writeInt(u32, message.process_id, .little);
 
-    const ad = ad_stream.getWritten();
+    const ad = ad_writer.buffered();
 
     // Encrypt with ChaCha20-Poly1305
     std.crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
@@ -115,8 +115,7 @@ pub fn decryptLog(
 ) !syslog.LogMessage {
     // Rebuild associated data
     var ad_buf: [512]u8 = undefined;
-    var ad_stream = std.io.fixedBufferStream(&ad_buf);
-    const ad_writer = ad_stream.writer();
+    var ad_writer = std.Io.Writer.fixed(&ad_buf);
 
     try ad_writer.writeByte(@intFromEnum(encrypted.facility));
     try ad_writer.writeByte(@intFromEnum(encrypted.severity));
@@ -125,7 +124,7 @@ pub fn decryptLog(
     try ad_writer.writeAll(encrypted.getAppName());
     try ad_writer.writeInt(u32, encrypted.process_id, .little);
 
-    const ad = ad_stream.getWritten();
+    const ad = ad_writer.buffered();
 
     // Decrypt message
     const decrypted = try allocator.alloc(u8, encrypted.encrypted_message.len);
@@ -235,7 +234,7 @@ pub fn shouldEncrypt(message: *const syslog.LogMessage) bool {
 test "encrypt and decrypt log" {
     const testing = std.testing;
 
-    var key = EncryptionKey.generate();
+    var key = try EncryptionKey.generate();
 
     var message = try syslog.LogMessage.init(
         testing.allocator,

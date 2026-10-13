@@ -365,6 +365,9 @@ pub const InstantiationPayload = struct {
 };
 
 pub const GenericDefinitionPayload = struct {
+    /// Display spelling belongs to the source string interner. Header.symbol
+    /// is a declaration identity and must never contain this StringId.
+    name: StringId = 0,
     /// Declaration-scoped type parameter IDs in type_arg_pool.
     parameters_start: u32,
     parameters_len: u32,

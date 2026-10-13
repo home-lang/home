@@ -4,14 +4,11 @@
 // preventing sensitive information leakage from crash dumps.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// Get current Unix timestamp in seconds since epoch
 fn getUnixTimestamp() i64 {
-    if (@hasDecl(std.posix, "CLOCK") and @hasDecl(std.posix, "clock_gettime")) {
-        const ts = std.posix.clock_gettime(.REALTIME) catch return 0;
-        return ts.sec;
-    }
-    return 0;
+    return compat.timestamp();
 }
 
 pub const encrypt = @import("encrypt.zig");
@@ -148,4 +145,12 @@ test "dump metadata" {
     try testing.expectEqual(@as(u32, 1234), metadata.pid);
     try testing.expectEqual(@as(u32, 11), metadata.signal);
     try testing.expectEqualStrings("test_process", metadata.getProcessName());
+}
+
+test {
+    _ = encrypt;
+    _ = keys;
+    _ = decrypt;
+    _ = format;
+    _ = capture;
 }

@@ -2176,6 +2176,8 @@ pub fn prepareSource(
         break;
     }
     for (parser.diagnostics.items) |d| {
+        if (options.skip_lib_check and is_declaration_file and
+            !ts_parser.diagnosticIsSyntacticParseError(d)) continue;
         if (has_syntactic_parse_diagnostics and
             !ts_parser.diagnosticIsSyntacticParseError(d) and
             !parserDiagnosticSurvivesParseErrors(d, source)) continue;
@@ -8012,6 +8014,37 @@ test "driver: skipLibCheck retains inherited interface shapes and application va
         if (diagnostic.code == 2840) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: skipLibCheck suppresses ambient generator grammar without suppressing parse errors" {
+    const source = "export declare function *stream(): number;";
+    var checked = try compileSource(T.allocator, source, .{ .no_emit = true, .is_declaration_file = true });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var found = false;
+    for (checked.diagnostics.items) |diagnostic| if (diagnostic.code == 1221) {
+        found = true;
+    };
+    try T.expect(found);
+    var skipped = try compileSource(T.allocator, source, .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true });
+    defer {
+        skipped.deinit();
+        T.allocator.destroy(skipped);
+    }
+    try T.expectEqual(@as(usize, 0), skipped.diagnostics.items.len);
+    try T.expect(skipped.checked_types_ready);
+    var broken = try compileSource(T.allocator, "export interface Broken { value: number", .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true });
+    defer {
+        broken.deinit();
+        T.allocator.destroy(broken);
+    }
+    var syntax_found = false;
+    for (broken.diagnostics.items) |diagnostic| if (diagnostic.code == 1005) {
+        syntax_found = true;
+    };
+    try T.expect(syntax_found);
 }
 
 test "driver: skipLibCheck suppresses declaration semantics but retains syntax diagnostics" {

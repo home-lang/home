@@ -4,6 +4,7 @@ const std = @import("std");
 const coredump = @import("coredump.zig");
 const encrypt = @import("encrypt.zig");
 const decrypt = @import("decrypt.zig");
+const compat = @import("compat.zig");
 
 /// Display dump information
 pub fn printDumpInfo(dump: *const encrypt.EncryptedDump, writer: anytype) !void {
@@ -113,11 +114,12 @@ pub fn scanDumpDirectory(
         dumps.deinit(allocator);
     }
 
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    const io = compat.io();
+    const dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .file) continue;
 
         // Check for .core or .ecore extension
@@ -134,23 +136,25 @@ pub fn scanDumpDirectory(
 
 /// Verify dump integrity
 pub fn verifyDumpIntegrity(path: []const u8) !bool {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const io = compat.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
     // Read magic
     var magic: [8]u8 = undefined;
-    _ = try file.readAll(&magic);
+    if (try file.readPositionalAll(io, &magic, 0) != magic.len) return false;
 
     return std.mem.eql(u8, &magic, "HOMECORE");
 }
 
 /// Get dump size
 pub fn getDumpSize(path: []const u8) !usize {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const io = compat.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
-    const stat = try file.stat();
-    return stat.size;
+    const stat = try file.stat(io);
+    return std.math.cast(usize, stat.size) orelse error.DumpTooLarge;
 }
 
 test "generate dump filename" {
@@ -180,4 +184,25 @@ test "dump statistics" {
     try testing.expectEqual(@as(usize, 2), stats.total_dumps);
     try testing.expectEqual(@as(usize, 1), stats.encrypted_dumps);
     try testing.expectEqual(@as(usize, 3072), stats.total_size);
+}
+
+test "scan and inspect dump files" {
+    const testing = std.testing;
+    const io = compat.io();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "one.ecore", .data = "HOMECOREpayload" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ignore.txt", .data = "not a dump" });
+
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &path_buffer);
+    const root = path_buffer[0..root_len];
+    var dumps = try scanDumpDirectory(testing.allocator, root);
+    defer {
+        for (dumps.items) |path| testing.allocator.free(path);
+        dumps.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(usize, 1), dumps.items.len);
+    try testing.expect(try verifyDumpIntegrity(dumps.items[0]));
+    try testing.expectEqual(@as(usize, 15), try getDumpSize(dumps.items[0]));
 }

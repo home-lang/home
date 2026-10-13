@@ -7,8 +7,10 @@ pub fn main() !void {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stdout = std.Io.File.stdout().writerStreaming(io, &.{});
 
-    std.debug.print("=== Logger Example ===\n\n", .{});
+    try stdout.interface.writeAll("=== Logger Example ===\n\n");
 
     // Create logger with colors and timestamps
     var logger = variadic.logger.Logger.init(allocator, .{
@@ -16,6 +18,7 @@ pub fn main() !void {
         .use_colors = true,
         .show_timestamp = true,
         .show_source = false,
+        .writer = &stdout.interface,
     });
 
     // Log at different levels
@@ -26,7 +29,7 @@ pub fn main() !void {
     try logger.fatal("Out of memory! Requested %d bytes", .{@as(usize, 1024 * 1024 * 1024)});
 
     // Simulate a request
-    std.debug.print("\nSimulating HTTP Request:\n", .{});
+    try stdout.interface.writeAll("\nSimulating HTTP Request:\n");
     const method = "GET";
     const path = "/api/users";
     const status = @as(u16, 200);
@@ -40,11 +43,12 @@ pub fn main() !void {
     });
 
     // Different log levels filtered
-    std.debug.print("\nFiltered Logging (min_level = Warn):\n", .{});
+    try stdout.interface.writeAll("\nFiltered Logging (min_level = Warn):\n");
     var filtered_logger = variadic.logger.Logger.init(allocator, .{
         .min_level = .Warn,
         .use_colors = true,
         .show_timestamp = false,
+        .writer = &stdout.interface,
     });
 
     try filtered_logger.debug("This won't appear", .{});
@@ -53,7 +57,7 @@ pub fn main() !void {
     try filtered_logger.err("This will appear too!", .{});
 
     // Structured logging
-    std.debug.print("\nStructured Logging:\n", .{});
+    try stdout.interface.writeAll("\nStructured Logging:\n");
     const user_id = @as(u64, 12345);
     const session_id = "abc-def-ghi";
     const action = "login";
@@ -65,7 +69,7 @@ pub fn main() !void {
     });
 
     // Performance logging
-    std.debug.print("\nPerformance Logging:\n", .{});
+    try stdout.interface.writeAll("\nPerformance Logging:\n");
     const query = "SELECT * FROM users";
     const rows = @as(u32, 1500);
     const query_time_ms = @as(u32, 23);
@@ -77,7 +81,7 @@ pub fn main() !void {
     });
 
     // Error with context
-    std.debug.print("\nError with Context:\n", .{});
+    try stdout.interface.writeAll("\nError with Context:\n");
     const filename = "/etc/config.json";
     const errno = @as(i32, 2); // ENOENT
 

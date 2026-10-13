@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const coredump = @import("coredump.zig");
+const compat = @import("compat.zig");
 
 /// Encryption key for core dumps
 pub const EncryptionKey = struct {
@@ -27,16 +28,16 @@ pub const EncryptionKey = struct {
         errdefer allocator.free(key_data);
 
         // Generate random key
-        std.crypto.random.bytes(key_data);
+        try compat.randomSecure(key_data);
 
         var key_id: [16]u8 = undefined;
-        std.crypto.random.bytes(&key_id);
+        try compat.randomSecure(&key_id);
 
         return .{
             .algorithm = algorithm,
             .key_data = key_data,
             .key_id = key_id,
-            .created_at = std.time.timestamp(),
+            .created_at = compat.timestamp(),
             .expires_at = 0,
             .allocator = allocator,
         };
@@ -50,7 +51,7 @@ pub const EncryptionKey = struct {
 
     pub fn isExpired(self: *const EncryptionKey) bool {
         if (self.expires_at == 0) return false;
-        return std.time.timestamp() >= self.expires_at;
+        return compat.timestamp() >= self.expires_at;
     }
 
     pub fn setExpiration(self: *EncryptionKey, days: u32) void {
@@ -60,8 +61,13 @@ pub const EncryptionKey = struct {
 
     /// Save key to file (encrypted with password)
     pub fn saveToFile(self: *const EncryptionKey, path: []const u8, password: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
-        defer file.close();
+        const io = compat.io();
+        const private_permissions: std.Io.File.Permissions = if (@bitSizeOf(std.Io.File.Permissions) == 0)
+            .default_file
+        else
+            @enumFromInt(0o600);
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{ .permissions = private_permissions });
+        defer file.close(io);
 
         // Derive key from password
         var derived_key: [32]u8 = undefined;
@@ -69,7 +75,7 @@ pub const EncryptionKey = struct {
 
         // Encrypt key data
         var nonce: [12]u8 = undefined;
-        std.crypto.random.bytes(&nonce);
+        try compat.randomSecure(&nonce);
 
         const encrypted_len = self.key_data.len + 16; // + auth tag
         const encrypted = try self.allocator.alloc(u8, encrypted_len);
@@ -78,38 +84,41 @@ pub const EncryptionKey = struct {
         try encryptData(self.key_data, encrypted, &derived_key, &nonce);
 
         // Write header
-        try file.writeAll("HOMEKEY\x00");
-        try file.writeIntLittle(u8, @intFromEnum(self.algorithm));
-        try file.writeAll(&self.key_id);
-        try file.writeIntLittle(i64, self.created_at);
-        try file.writeIntLittle(i64, self.expires_at);
-        try file.writeAll(&nonce);
-        try file.writeAll(encrypted);
+        try file.writeStreamingAll(io, "HOMEKEY\x00");
+        try file.writeStreamingAll(io, &.{@intFromEnum(self.algorithm)});
+        try file.writeStreamingAll(io, &self.key_id);
+        var encoded_int: [8]u8 = undefined;
+        std.mem.writeInt(i64, &encoded_int, self.created_at, .little);
+        try file.writeStreamingAll(io, &encoded_int);
+        std.mem.writeInt(i64, &encoded_int, self.expires_at, .little);
+        try file.writeStreamingAll(io, &encoded_int);
+        try file.writeStreamingAll(io, &nonce);
+        try file.writeStreamingAll(io, encrypted);
     }
 
     /// Load key from file
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8, password: []const u8) !EncryptionKey {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        const contents = try std.Io.Dir.cwd().readFileAlloc(compat.io(), path, allocator, .limited(1024));
+        defer allocator.free(contents);
+        var reader = std.Io.Reader.fixed(contents);
 
         // Read and verify header
-        var magic: [8]u8 = undefined;
-        _ = try file.readAll(&magic);
+        const magic = try reader.takeArray(8);
 
-        if (!std.mem.eql(u8, &magic, "HOMEKEY\x00")) {
+        if (!std.mem.eql(u8, magic, "HOMEKEY\x00")) {
             return error.InvalidKeyFile;
         }
 
-        const algorithm: coredump.EncryptionAlgorithm = @enumFromInt(try file.reader().readByte());
+        const algorithm: coredump.EncryptionAlgorithm = @enumFromInt(try reader.takeByte());
 
         var key_id: [16]u8 = undefined;
-        _ = try file.readAll(&key_id);
+        try reader.readSliceAll(&key_id);
 
-        const created_at = try file.reader().readInt(i64, .little);
-        const expires_at = try file.reader().readInt(i64, .little);
+        const created_at = try reader.takeInt(i64, .little);
+        const expires_at = try reader.takeInt(i64, .little);
 
         var nonce: [12]u8 = undefined;
-        _ = try file.readAll(&nonce);
+        try reader.readSliceAll(&nonce);
 
         // Read encrypted key
         const key_size = algorithm.keySize();
@@ -117,7 +126,7 @@ pub const EncryptionKey = struct {
         const encrypted = try allocator.alloc(u8, encrypted_len);
         defer allocator.free(encrypted);
 
-        _ = try file.readAll(encrypted);
+        try reader.readSliceAll(encrypted);
 
         // Derive decryption key
         var derived_key: [32]u8 = undefined;
@@ -285,6 +294,26 @@ test "key expiration" {
 
     key.setExpiration(30); // 30 days
     try testing.expect(!key.isExpired());
+}
+
+test "key file roundtrip" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(compat.io(), &path_buffer);
+    const path = try std.fmt.bufPrint(path_buffer[root_len..], "/key.home", .{});
+    const full_path = path_buffer[0 .. root_len + path.len];
+
+    var key = try EncryptionKey.generate(testing.allocator, .aes_256_gcm);
+    defer key.deinit();
+    try key.saveToFile(full_path, "test password");
+
+    var loaded = try EncryptionKey.loadFromFile(testing.allocator, full_path, "test password");
+    defer loaded.deinit();
+    try testing.expectEqual(key.algorithm, loaded.algorithm);
+    try testing.expectEqualSlices(u8, key.key_data, loaded.key_data);
+    try testing.expectEqualSlices(u8, &key.key_id, &loaded.key_id);
 }
 
 test "keyring operations" {

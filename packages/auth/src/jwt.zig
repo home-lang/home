@@ -1,11 +1,10 @@
 const std = @import("std");
 const hash = @import("hash.zig");
-const posix = std.posix;
+const compat = @import("compat.zig");
 
 /// Helper to get current timestamp
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return compat.timestamp();
 }
 
 /// JWT Token structure

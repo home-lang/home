@@ -3,9 +3,10 @@
 
 const Basics = @import("basics");
 const json_import = @import("comptime").json_import;
+const std = @import("std");
 
 // Example 1: Import package.json with narrow types
-const pkg = comptime json_import.PackageJson.import("package.json");
+const pkg = json_import.PackageJson.import("package.json");
 
 pub fn main() !void {
     // Hover over 'name' shows: "my-package" (literal type)
@@ -26,7 +27,7 @@ pub fn main() !void {
 }
 
 // Example 2: Import custom JSON config with narrow types
-const config = comptime blk: {
+const config = blk: {
     const Config = struct {
         app_name: []const u8,
         port: i32,
@@ -59,7 +60,7 @@ pub fn startServer() !void {
 }
 
 // Example 3: Using JSON imports in compile-time code generation
-const api_endpoints = comptime json_import.importJson("api-endpoints.json");
+const api_endpoints = json_import.importJson("api-endpoints.json");
 
 pub fn generateRoutes() !void {
     // The JSON structure is available at compile time!
@@ -74,7 +75,7 @@ pub fn generateRoutes() !void {
 }
 
 // Example 4: Type-safe database configuration
-const db_config = comptime blk: {
+const db_config = blk: {
     const DatabaseConfig = struct {
         host: []const u8,
         port: i32,
@@ -101,7 +102,7 @@ pub fn connectDatabase() !void {
 }
 
 // Example 5: Feature flags from JSON
-const features = comptime json_import.importJson("features.json");
+const features = json_import.importJson("features.json");
 
 pub fn checkFeature(comptime feature_name: []const u8) bool {
     const feature_value = features.get(feature_name);
@@ -126,7 +127,7 @@ pub fn useFeatureFlags() !void {
 }
 
 // Example 6: Internationalization strings
-const i18n = comptime json_import.importJson("locales/en.json");
+const i18n = json_import.importJson("locales/en.json");
 
 pub fn translate(comptime key: []const u8) []const u8 {
     const value = i18n.get(key);
@@ -143,14 +144,14 @@ pub fn showLocalizedText() !void {
 }
 
 // Example 7: Environment-specific configuration
-const env = comptime blk: {
+const env = blk: {
     // Select configuration based on build mode
     const build_mode = @import("builtin").mode;
 
     const env_file = switch (build_mode) {
-        .Debug => "config.development.json",
-        .ReleaseSafe => "config.staging.json",
-        .ReleaseFast => "config.production.json",
+        std.builtin.OptimizeMode.Debug => "config.development.json",
+        std.builtin.OptimizeMode.ReleaseSafe => "config.staging.json",
+        std.builtin.OptimizeMode.ReleaseFast => "config.production.json",
         else => "config.development.json",
     };
 
@@ -168,7 +169,7 @@ pub fn getEnvironmentConfig() !void {
 }
 
 // Example 8: Compile-time validation of JSON structure
-const schema = comptime blk: {
+const schema = blk: {
     // This validates the JSON structure at compile time
     const json_str =
         \\{
@@ -215,9 +216,11 @@ pub fn demonstrateLiteralTypes() !void {
     // Hover over name_literal.literal shows: "my-package"
     // Type is: stringLiteral("my-package"), not just []const u8!
     Basics.print("Name: {s}\n", .{name_literal.literal});
+    Basics.print("Version: {s}\n", .{version_literal.literal});
 
     // Hover over port_literal.literal shows: 3000
     Basics.print("Port: {d}\n", .{port_literal.literal});
+    Basics.print("Enabled: {}\n", .{enabled_literal.literal});
 
     // Compile-time equality checking with literal types
     if (comptime name_literal.equals("my-package")) {

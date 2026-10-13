@@ -54,6 +54,7 @@ pub const TemplateData = struct {
 
 /// SES client
 pub const Client = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     config: aws.Config,
     signer: aws.Signer,
@@ -61,8 +62,9 @@ pub const Client = struct {
     const Self = @This();
     const SERVICE = "ses";
 
-    pub fn init(allocator: std.mem.Allocator, config: aws.Config) Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: aws.Config) Self {
         return .{
+            .io = io,
             .allocator = allocator,
             .config = config,
             .signer = aws.Signer.init(allocator, config.credentials, config.region.toString(), SERVICE),
@@ -81,7 +83,7 @@ pub const Client = struct {
         _ = source;
 
         // Build request
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(self.io).toSeconds();
 
         // Sign the request
         var signed = try self.signer.sign(
@@ -229,7 +231,7 @@ test "ses client init" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     _ = &client;
 }
 
@@ -238,7 +240,7 @@ test "ses send email" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
 
     var result = try client.sendEmail(
         "sender@example.com",

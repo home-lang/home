@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const ipv6 = @import("ipv6.zig");
+const compat = @import("compat.zig");
 
 /// Route type
 pub const RouteType = enum {
@@ -36,13 +37,13 @@ pub const Route = struct {
             .route_type = route_type,
             .metric = metric,
             .lifetime = 0,
-            .timestamp = std.time.timestamp(),
+            .timestamp = compat.timestamp(),
         };
     }
 
     pub fn isExpired(self: *const Route) bool {
         if (self.lifetime == 0) return false;
-        const now = std.time.timestamp();
+        const now = compat.timestamp();
         return (now - self.timestamp) > self.lifetime;
     }
 
@@ -54,13 +55,13 @@ pub const Route = struct {
 /// Routing table
 pub const RoutingTable = struct {
     routes: std.ArrayList(Route),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) RoutingTable {
         return .{
             .routes = std.ArrayList(Route).empty,
-            .mutex = std.Thread.Mutex{},
+            .mutex = .init,
             .allocator = allocator,
         };
     }
@@ -71,8 +72,8 @@ pub const RoutingTable = struct {
 
     /// Add route to table
     pub fn addRoute(self: *RoutingTable, route: Route) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         try self.routes.append(self.allocator, route);
         self.sortRoutes();
@@ -80,8 +81,8 @@ pub const RoutingTable = struct {
 
     /// Remove route
     pub fn removeRoute(self: *RoutingTable, destination: ipv6.Prefix) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         for (self.routes.items, 0..) |route, i| {
             if (route.destination.address.eql(destination.address) and
@@ -97,8 +98,8 @@ pub const RoutingTable = struct {
 
     /// Lookup best matching route
     pub fn lookup(self: *RoutingTable, addr: ipv6.Address) ?Route {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         // Remove expired routes
         var i: usize = 0;
@@ -178,7 +179,7 @@ pub const RoutingHeader = packed struct {
             .hdr_ext_len = 0,
             .routing_type = @intFromEnum(routing_type),
             .segments_left = segments_left,
-            .type_specific_data = [_]u8{0} ** 4,
+            .type_specific_data = @splat(0),
         };
     }
 };
@@ -223,12 +224,12 @@ pub const PathMTU = struct {
         return .{
             .destination = destination,
             .mtu = @max(mtu, MIN_MTU),
-            .timestamp = std.time.timestamp(),
+            .timestamp = compat.timestamp(),
         };
     }
 
     pub fn isExpired(self: *const PathMTU, timeout: i64) bool {
-        const now = std.time.timestamp();
+        const now = compat.timestamp();
         return (now - self.timestamp) > timeout;
     }
 };
@@ -236,13 +237,13 @@ pub const PathMTU = struct {
 /// Path MTU cache
 pub const PathMTUCache = struct {
     entries: std.AutoHashMap(ipv6.Address, PathMTU),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     timeout: i64, // Seconds
 
     pub fn init(allocator: std.mem.Allocator, timeout: i64) PathMTUCache {
         return .{
             .entries = std.AutoHashMap(ipv6.Address, PathMTU).init(allocator),
-            .mutex = std.Thread.Mutex{},
+            .mutex = .init,
             .timeout = timeout,
         };
     }
@@ -252,16 +253,16 @@ pub const PathMTUCache = struct {
     }
 
     pub fn update(self: *PathMTUCache, destination: ipv6.Address, mtu: u32) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         const entry = PathMTU.init(destination, mtu);
         try self.entries.put(destination, entry);
     }
 
     pub fn lookup(self: *PathMTUCache, destination: ipv6.Address) ?u32 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(compat.io());
+        defer self.mutex.unlock(compat.io());
 
         if (self.entries.get(destination)) |entry| {
             if (!entry.isExpired(self.timeout)) {
@@ -408,7 +409,7 @@ test "route expiration" {
     const prefix = try ipv6.Prefix.init(try ipv6.Address.parse("2001:db8::"), 32);
     var route = Route.init(prefix, try ipv6.Address.parse("fe80::1"), 1, .indirect, 10);
     route.lifetime = 1; // 1 second
-    route.timestamp = std.time.timestamp() - 2; // 2 seconds ago
+    route.timestamp = compat.timestamp() - 2; // 2 seconds ago
 
     try table.addRoute(route);
 

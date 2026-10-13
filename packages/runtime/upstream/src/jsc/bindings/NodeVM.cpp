@@ -611,7 +611,7 @@ std::optional<JSC::EncodedJSValue> getHomeNodeVMContextOptions(JSGlobalObject* g
         }
     }
 
-    if (name && nameValue.isString()) *name = nameValue.toWTFString(globalObject);
+    if (name && nameValue && nameValue.isString()) *name = nameValue.toWTFString(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
 
     // Check origin property
@@ -623,7 +623,7 @@ std::optional<JSC::EncodedJSValue> getHomeNodeVMContextOptions(JSGlobalObject* g
         }
     }
 
-    if (origin && originValue.isString()) *origin = originValue.toWTFString(globalObject);
+    if (origin && originValue && originValue.isString()) *origin = originValue.toWTFString(globalObject);
     RETURN_IF_EXCEPTION(scope, {});
 
     // Script execution options use the Script's own callback; only context

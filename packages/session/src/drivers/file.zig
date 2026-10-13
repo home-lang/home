@@ -1,11 +1,9 @@
 const std = @import("std");
-const posix = std.posix;
 const session = @import("../session.zig");
+const compat = @import("../compat.zig");
 
-/// Helper to get current timestamp
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return compat.timestamp();
 }
 
 /// File-based session driver
@@ -23,7 +21,7 @@ pub const FileDriver = struct {
         };
 
         // Ensure directory exists
-        std.fs.makeDirAbsolute(path) catch |err| {
+        std.Io.Dir.createDirAbsolute(compat.io(), path, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
 
@@ -52,21 +50,23 @@ pub const FileDriver = struct {
         const file_path = try self.getFilePath(id);
         defer self.allocator.free(file_path);
 
-        const file = std.fs.openFileAbsolute(file_path, .{}) catch |err| {
+        const io = compat.io();
+        const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch |err| {
             if (err == error.FileNotFound) return null;
             return err;
         };
-        defer file.close();
+        defer file.close(io);
 
         // Read file contents
-        const stat = try file.stat();
+        const stat = try file.stat(io);
         if (stat.size == 0) return null;
 
-        const contents = try self.allocator.alloc(u8, stat.size);
+        const size = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+        const contents = try self.allocator.alloc(u8, size);
         defer self.allocator.free(contents);
 
-        const bytes_read = try file.preadAll(contents, 0);
-        if (bytes_read != stat.size) return error.UnexpectedEof;
+        const bytes_read = try file.readPositionalAll(io, contents, 0);
+        if (bytes_read != size) return error.UnexpectedEof;
 
         // Parse session data (simple format: key=value lines)
         var data = session.SessionData.init(self.allocator);
@@ -120,16 +120,17 @@ pub const FileDriver = struct {
         const file_path = try self.getFilePath(id);
         defer self.allocator.free(file_path);
 
-        const file = try std.fs.createFileAbsolute(file_path, .{ .truncate = true });
-        defer file.close();
+        const io = compat.io();
+        const file = try std.Io.Dir.createFileAbsolute(io, file_path, .{ .truncate = true });
+        defer file.close(io);
 
         // Write metadata
         var meta_buf: [128]u8 = undefined;
         const created = try std.fmt.bufPrint(&meta_buf, "__created_at={d}\n", .{data.created_at});
-        try file.writeAll(created);
+        try file.writeStreamingAll(io, created);
 
         const activity = try std.fmt.bufPrint(&meta_buf, "__last_activity={d}\n", .{data.last_activity});
-        try file.writeAll(activity);
+        try file.writeStreamingAll(io, activity);
 
         // Write data
         var iter = data.data.iterator();
@@ -144,7 +145,7 @@ pub const FileDriver = struct {
                 .null => try std.fmt.bufPrint(&line_buf, "{s}=n:\n", .{entry.key_ptr.*}),
             };
 
-            try file.writeAll(line);
+            try file.writeStreamingAll(io, line);
         }
     }
 
@@ -154,7 +155,7 @@ pub const FileDriver = struct {
         const file_path = try self.getFilePath(id);
         defer self.allocator.free(file_path);
 
-        std.fs.deleteFileAbsolute(file_path) catch |err| {
+        std.Io.Dir.deleteFileAbsolute(compat.io(), file_path) catch |err| {
             if (err != error.FileNotFound) return err;
         };
     }
@@ -164,24 +165,25 @@ pub const FileDriver = struct {
         const now = getTimestamp();
         const cutoff = now - max_lifetime;
 
-        var dir = std.fs.openDirAbsolute(self.path, .{ .iterate = true }) catch return;
-        defer dir.close();
+        const io = compat.io();
+        const dir = std.Io.Dir.openDirAbsolute(io, self.path, .{ .iterate = true }) catch return;
+        defer dir.close(io);
 
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(io)) |entry| {
             if (!std.mem.startsWith(u8, entry.name, "sess_")) continue;
 
             const file_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.path, entry.name });
             defer self.allocator.free(file_path);
 
-            const file = std.fs.openFileAbsolute(file_path, .{}) catch continue;
-            defer file.close();
+            const file = std.Io.Dir.openFileAbsolute(io, file_path, .{}) catch continue;
+            defer file.close(io);
 
-            const stat = file.stat() catch continue;
-            const mtime = stat.mtime.sec;
+            const stat = file.stat(io) catch continue;
+            const mtime = stat.mtime.toSeconds();
 
             if (mtime < cutoff) {
-                std.fs.deleteFileAbsolute(file_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(io, file_path) catch {};
             }
         }
     }
@@ -203,9 +205,28 @@ pub const FileDriver = struct {
 // Tests
 test "file driver init" {
     const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPath(compat.io(), &path_buffer);
+    const path = path_buffer[0..path_len];
 
-    const drv = try FileDriver.init(allocator, "/tmp/test-sessions");
+    const drv = try FileDriver.init(allocator, path);
     defer drv.deinit();
 
-    try std.testing.expectEqualStrings("/tmp/test-sessions", drv.path);
+    try std.testing.expectEqualStrings(path, drv.path);
+
+    var data = session.SessionData.init(allocator);
+    defer data.deinit();
+    const key = try allocator.dupe(u8, "user_id");
+    try data.data.put(key, .{ .int = 42 });
+
+    var driver = drv.driver();
+    try driver.write("round-trip", data);
+    var loaded = (try driver.read("round-trip")).?;
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(i64, 42), loaded.data.get("user_id").?.asInt().?);
+
+    try driver.destroy("round-trip");
+    try std.testing.expect((try driver.read("round-trip")) == null);
 }

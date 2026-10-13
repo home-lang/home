@@ -1,7 +1,6 @@
 // Home Programming Language - Kernel Build Target
 // Freestanding kernel compilation and image generation
 
-const Basics = @import("basics");
 const std = @import("std");
 
 // ============================================================================
@@ -31,10 +30,10 @@ pub const KernelBuildConfig = struct {
     };
 
     pub const OptimizeMode = enum {
-        Debug,
-        ReleaseSafe,
-        ReleaseFast,
-        ReleaseSmall,
+        debug,
+        safe,
+        fast,
+        small,
     };
 
     pub const OutputFormat = enum {
@@ -76,10 +75,10 @@ pub const MultibootHeader = struct {
     pub const TAG_MODULE_ALIGN = 6;
 
     pub fn generate(allocator: std.mem.Allocator) ![]const u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer: std.Io.Writer.Allocating = .init(allocator);
         errdefer buffer.deinit();
 
-        const writer = buffer.writer();
+        const writer = &buffer.writer;
 
         // Header
         const magic: u32 = MAGIC;
@@ -91,7 +90,7 @@ pub const MultibootHeader = struct {
         try writer.writeInt(u32, header_length, .little);
 
         // Checksum: -(magic + architecture + header_length)
-        const checksum: u32 = @bitCast(-((@as(i64, magic) + @as(i64, arch) + @as(i64, header_length))));
+        const checksum: u32 = 0 -% (magic +% arch +% header_length);
         try writer.writeInt(u32, checksum, .little);
 
         // Framebuffer tag
@@ -128,10 +127,10 @@ pub const LinkerScript = struct {
     }
 
     pub fn generate(self: *const LinkerScript, allocator: std.mem.Allocator) ![]const u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer: std.Io.Writer.Allocating = .init(allocator);
         errdefer buffer.deinit();
 
-        const writer = buffer.writer();
+        const writer = &buffer.writer;
 
         // Output format
         try writer.print("OUTPUT_FORMAT(elf64-x86-64)\n", .{});
@@ -220,120 +219,136 @@ pub const KernelBuilder = struct {
         value: ?[]const u8,
     };
 
+    fn deinitFlags(flags: *std.ArrayList([]const u8), allocator: std.mem.Allocator) void {
+        for (flags.items) |flag| allocator.free(flag);
+        flags.deinit(allocator);
+    }
+
+    fn appendFlag(flags: *std.ArrayList([]const u8), allocator: std.mem.Allocator, flag: []const u8) !void {
+        const owned = try allocator.dupe(u8, flag);
+        errdefer allocator.free(owned);
+        try flags.append(allocator, owned);
+    }
+
+    fn appendOwnedFlag(flags: *std.ArrayList([]const u8), allocator: std.mem.Allocator, flag: []u8) !void {
+        errdefer allocator.free(flag);
+        try flags.append(allocator, flag);
+    }
+
     pub fn init(allocator: std.mem.Allocator, config: KernelBuildConfig) KernelBuilder {
         return .{
             .config = config,
             .allocator = allocator,
-            .source_files = std.ArrayList([]const u8).init(allocator),
-            .include_dirs = std.ArrayList([]const u8).init(allocator),
-            .defines = std.ArrayList(Define).init(allocator),
+            .source_files = .empty,
+            .include_dirs = .empty,
+            .defines = .empty,
         };
     }
 
     pub fn deinit(self: *KernelBuilder) void {
-        self.source_files.deinit();
-        self.include_dirs.deinit();
-        self.defines.deinit();
+        self.source_files.deinit(self.allocator);
+        self.include_dirs.deinit(self.allocator);
+        self.defines.deinit(self.allocator);
     }
 
     pub fn addSourceFile(self: *KernelBuilder, path: []const u8) !void {
-        try self.source_files.append(path);
+        try self.source_files.append(self.allocator, path);
     }
 
     pub fn addIncludeDir(self: *KernelBuilder, path: []const u8) !void {
-        try self.include_dirs.append(path);
+        try self.include_dirs.append(self.allocator, path);
     }
 
     pub fn addDefine(self: *KernelBuilder, name: []const u8, value: ?[]const u8) !void {
-        try self.defines.append(.{ .name = name, .value = value });
+        try self.defines.append(self.allocator, .{ .name = name, .value = value });
     }
 
     pub fn getCompilerFlags(self: *const KernelBuilder, allocator: std.mem.Allocator) ![]const []const u8 {
-        var flags = std.ArrayList([]const u8).init(allocator);
-        errdefer flags.deinit();
+        var flags = std.ArrayList([]const u8).empty;
+        errdefer deinitFlags(&flags, allocator);
 
         // Freestanding compilation
-        try flags.append("-ffreestanding");
-        try flags.append("-nostdlib");
-        try flags.append("-nostartfiles");
-        try flags.append("-nodefaultlibs");
+        try appendFlag(&flags, allocator, "-ffreestanding");
+        try appendFlag(&flags, allocator, "-nostdlib");
+        try appendFlag(&flags, allocator, "-nostartfiles");
+        try appendFlag(&flags, allocator, "-nodefaultlibs");
 
         // Disable red zone (required for kernel)
-        try flags.append("-mno-red-zone");
+        try appendFlag(&flags, allocator, "-mno-red-zone");
 
         // Disable SSE/AVX (must save/restore in kernel)
-        try flags.append("-mno-sse");
-        try flags.append("-mno-sse2");
-        try flags.append("-mno-mmx");
-        try flags.append("-mno-3dnow");
+        try appendFlag(&flags, allocator, "-mno-sse");
+        try appendFlag(&flags, allocator, "-mno-sse2");
+        try appendFlag(&flags, allocator, "-mno-mmx");
+        try appendFlag(&flags, allocator, "-mno-3dnow");
 
         // Position independent code
-        try flags.append("-fno-pic");
-        try flags.append("-fno-pie");
+        try appendFlag(&flags, allocator, "-fno-pic");
+        try appendFlag(&flags, allocator, "-fno-pie");
 
         // Stack protection
-        try flags.append("-fno-stack-protector");
+        try appendFlag(&flags, allocator, "-fno-stack-protector");
 
         // Optimization
         switch (self.config.optimize) {
-            .Debug => try flags.append("-O0"),
-            .ReleaseSafe => try flags.append("-O2"),
-            .ReleaseFast => try flags.append("-O3"),
-            .ReleaseSmall => try flags.append("-Os"),
+            .debug => try appendFlag(&flags, allocator, "-O0"),
+            .safe => try appendFlag(&flags, allocator, "-O2"),
+            .fast => try appendFlag(&flags, allocator, "-O3"),
+            .small => try appendFlag(&flags, allocator, "-Os"),
         }
 
         // Debug symbols
         if (self.config.debug) {
-            try flags.append("-g");
+            try appendFlag(&flags, allocator, "-g");
         }
 
         // Architecture-specific
         switch (self.config.arch) {
             .x86_64 => {
-                try flags.append("-m64");
-                try flags.append("-mcmodel=kernel");
+                try appendFlag(&flags, allocator, "-m64");
+                try appendFlag(&flags, allocator, "-mcmodel=kernel");
             },
             .aarch64 => {
-                try flags.append("-march=armv8-a");
+                try appendFlag(&flags, allocator, "-march=armv8-a");
             },
             .riscv64 => {
-                try flags.append("-march=rv64gc");
+                try appendFlag(&flags, allocator, "-march=rv64gc");
             },
         }
 
         // Include directories
         for (self.include_dirs.items) |dir| {
-            try flags.append(try std.fmt.allocPrint(allocator, "-I{s}", .{dir}));
+            try appendOwnedFlag(&flags, allocator, try std.fmt.allocPrint(allocator, "-I{s}", .{dir}));
         }
 
         // Defines
         for (self.defines.items) |define| {
             if (define.value) |value| {
-                try flags.append(try std.fmt.allocPrint(allocator, "-D{s}={s}", .{ define.name, value }));
+                try appendOwnedFlag(&flags, allocator, try std.fmt.allocPrint(allocator, "-D{s}={s}", .{ define.name, value }));
             } else {
-                try flags.append(try std.fmt.allocPrint(allocator, "-D{s}", .{define.name}));
+                try appendOwnedFlag(&flags, allocator, try std.fmt.allocPrint(allocator, "-D{s}", .{define.name}));
             }
         }
 
-        return flags.toOwnedSlice();
+        return flags.toOwnedSlice(allocator);
     }
 
     pub fn getLinkerFlags(self: *const KernelBuilder, allocator: std.mem.Allocator) ![]const []const u8 {
-        var flags = std.ArrayList([]const u8).init(allocator);
-        errdefer flags.deinit();
+        var flags = std.ArrayList([]const u8).empty;
+        errdefer deinitFlags(&flags, allocator);
 
         // Freestanding linking
-        try flags.append("-nostdlib");
+        try appendFlag(&flags, allocator, "-nostdlib");
 
         // Static linking
-        try flags.append("-static");
+        try appendFlag(&flags, allocator, "-static");
 
         // Linker script
         if (self.config.linker_script) |script| {
-            try flags.append(try std.fmt.allocPrint(allocator, "-T{s}", .{script}));
+            try appendOwnedFlag(&flags, allocator, try std.fmt.allocPrint(allocator, "-T{s}", .{script}));
         }
 
-        return flags.toOwnedSlice();
+        return flags.toOwnedSlice(allocator);
     }
 
     pub fn build(self: *KernelBuilder, output_path: []const u8) !void {
@@ -441,10 +456,10 @@ pub const IsoBuilder = struct {
 
     pub fn generateDefaultGrubConfig(self: *const IsoBuilder, allocator: std.mem.Allocator) ![]const u8 {
         _ = self;
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer: std.Io.Writer.Allocating = .init(allocator);
         errdefer buffer.deinit();
 
-        const writer = buffer.writer();
+        const writer = &buffer.writer;
 
         try writer.writeAll(
             \\set timeout=0

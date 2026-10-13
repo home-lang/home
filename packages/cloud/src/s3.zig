@@ -136,6 +136,7 @@ pub const ObjectCannedACL = enum {
 
 /// S3 client
 pub const Client = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     config: aws.Config,
     signer: aws.Signer,
@@ -143,8 +144,9 @@ pub const Client = struct {
     const Self = @This();
     const SERVICE = "s3";
 
-    pub fn init(allocator: std.mem.Allocator, config: aws.Config) Self {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, config: aws.Config) Self {
         return .{
+            .io = io,
             .allocator = allocator,
             .config = config,
             .signer = aws.Signer.init(allocator, config.credentials, config.region.toString(), SERVICE),
@@ -207,7 +209,7 @@ pub const Client = struct {
         std.crypto.hash.sha2.Sha256.hash(body, &hash, .{});
 
         var etag_buf: [34]u8 = undefined;
-        _ = std.fmt.bufPrint(&etag_buf, "\"{s}\"", .{std.fmt.fmtSliceHexLower(hash[0..16])}) catch {};
+        _ = std.fmt.bufPrint(&etag_buf, "\"{x}\"", .{hash[0..16]}) catch {};
 
         return PutObjectResult{
             .etag = try self.allocator.dupe(u8, etag_buf[0..34]),
@@ -277,7 +279,7 @@ pub const Client = struct {
 
         return CopyObjectResult{
             .etag = try self.allocator.dupe(u8, "\"mock-etag\""),
-            .last_modified = std.time.timestamp(),
+            .last_modified = std.Io.Clock.real.now(self.io).toSeconds(),
             .allocator = self.allocator,
         };
     }
@@ -328,8 +330,9 @@ pub const Client = struct {
     ) ![]const u8 {
         _ = options;
 
-        var url: std.ArrayList(u8) = .empty;
-        const writer = url.writer(self.allocator);
+        var url: std.Io.Writer.Allocating = .init(self.allocator);
+        defer url.deinit();
+        const writer = &url.writer;
 
         try writer.print("https://{s}.s3.{s}.amazonaws.com/{s}?X-Amz-Expires=3600", .{
             bucket,
@@ -337,7 +340,7 @@ pub const Client = struct {
             key,
         });
 
-        return url.toOwnedSlice(self.allocator);
+        return url.toOwnedSlice();
     }
 
     /// Generate a presigned URL for PUT
@@ -349,8 +352,9 @@ pub const Client = struct {
     ) ![]const u8 {
         _ = options;
 
-        var url: std.ArrayList(u8) = .empty;
-        const writer = url.writer(self.allocator);
+        var url: std.Io.Writer.Allocating = .init(self.allocator);
+        defer url.deinit();
+        const writer = &url.writer;
 
         try writer.print("https://{s}.s3.{s}.amazonaws.com/{s}?X-Amz-Expires=3600", .{
             bucket,
@@ -358,7 +362,7 @@ pub const Client = struct {
             key,
         });
 
-        return url.toOwnedSlice(self.allocator);
+        return url.toOwnedSlice();
     }
 
     /// Start multipart upload
@@ -437,7 +441,7 @@ test "s3 client init" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     _ = &client;
 }
 
@@ -446,11 +450,33 @@ test "s3 put object" {
     const config = aws.Config.init(creds, .us_east_1);
     const allocator = std.testing.allocator;
 
-    var client = Client.init(allocator, config);
+    var client = Client.init(std.testing.io, allocator, config);
     var result = try client.putObject("my-bucket", "my-key", "Hello World");
     defer result.deinit();
 
-    try std.testing.expect(result.etag.len > 0);
+    try std.testing.expectEqualStrings("\"a591a6d40bf420404a011733cfb7b190\"", result.etag);
+}
+
+test "s3 copy object and presigned URLs use runtime io" {
+    const creds = aws.Credentials.init("key", "secret");
+    const config = aws.Config.init(creds, .us_east_1);
+    const allocator = std.testing.allocator;
+
+    var client = Client.init(std.testing.io, allocator, config);
+    var copied = try client.copyObject("source", "key", "destination", "copy");
+    defer copied.deinit();
+    try std.testing.expect(copied.last_modified > 0);
+
+    const get_url = try client.presignGetObject("my-bucket", "my-key", .{});
+    defer allocator.free(get_url);
+    try std.testing.expectEqualStrings(
+        "https://my-bucket.s3.us-east-1.amazonaws.com/my-key?X-Amz-Expires=3600",
+        get_url,
+    );
+
+    const put_url = try client.presignPutObject("my-bucket", "my-key", .{});
+    defer allocator.free(put_url);
+    try std.testing.expectEqualStrings(get_url, put_url);
 }
 
 test "storage class toString" {

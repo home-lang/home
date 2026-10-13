@@ -73,6 +73,22 @@ finds 1,087 removed and 36 added manifests; many missing paths are worktrees or
 framework copies that no longer exist. This reflects the current filesystem,
 not successful replacement or a decision to exclude projects.
 
+The latest scan corrects a coverage gap: a directory with a dependency/cache
+name is retained when it is an actual Git checkout or worktree. The old rule
+excluded the real `~/Code/pantry` repository. Seven hermetic inventory controls
+now cover both Git directories and worktree pointer files, while ordinary
+installed dependency/toolchain directories remain pruned. The report records
+these exceptions in `included_pruned_name_projects`.
+
+The resulting current snapshot contains **1,182 manifests with check scripts,
+1,453 scripts, 1,391 literal compiler segments and 2,494 configs**. It retains
+92 scripts requiring review, 55 errors and 1,480 symlink directories. The
+corrected rule adds nine manifest paths under the pantry project and its
+existing worktrees compared with the contemporaneous scan. Other differences
+from earlier snapshots reflect filesystem changes. The report still records
+`replacement_verified: false`; the inventory establishes coverage, not
+compiler compatibility.
+
 ## Required evidence
 
 For every actual compiler entrypoint, qualification must retain:
@@ -151,7 +167,7 @@ HOME_RUN_MAX_MB=3840 perl scripts/run-bounded.pl 300 \
 Its scope is declaration/JavaScript artifact selection, declaration content,
 type-error preservation, build freshness/clean and watch updates. Build-info
 encoding and byte-exact source-map mappings remain separate gates. The local
-inventory controls currently pass all six hermetic tests.
+inventory controls currently pass all seven hermetic tests.
 
 The [retained declaration-control evidence](../../bench/vs_tsgo/evidence/20261011-local-tsc-declaration-controls.tar.gz)
 contains the complete successful observations, fixture inputs/outputs, module
@@ -250,13 +266,134 @@ observations** against the installed reference. The source-owner controls cover
 a 16-owner dependency graph, failed metadata, allocation failure, invalidated
 revisions and target-address reuse.
 
-The real table project remains **unqualified**. Its reference returns zero;
-Home still exits through the memory guard (125), at a measured tree footprint
-of 3,938 MB. All 307 input hashes remain unchanged. Profiling now reaches source
-checking and shows substantial recursive generic expansion in Bun's socket
-interfaces. The storage and identity corrections do not establish replacement
-compatibility for that project or the whole local tree.
+In this retained run, the real table project remained **unqualified**. Its
+reference returned zero; Home exited through the memory guard (125), at a
+measured tree footprint of 3,938 MB. All 307 input hashes stayed unchanged during
+that run. Profiling reached source checking and showed substantial recursive
+generic expansion in Bun's socket interfaces. The storage and identity
+corrections did not establish replacement compatibility for that project or
+the whole local tree.
 
 The [retained source-owner and storage evidence](../../bench/vs_tsgo/evidence/20261012-local-tsc-owner-storage-controls.tar.gz)
 contains the failing diamond reproduction, successful module and CLI controls,
 source/image hashes, payload checksums and a redacted real-project outcome.
+
+## Qualified namespace and production-build controls
+
+Cross-file namespace generics previously lost their argument types or failed
+checked-owner transfer. Generic display names now occupy a string field in the
+owned definition, distinct from declaration IDs. Checked sources publish
+qualified namespace types with their own parameter identities, defaults and
+recursive bodies. Dependency discovery records namespace qualifiers, and
+annotation recovery recognizes namespaces supplied by other files. The
+regressions cover seven cases in both file orders through serial, parallel and
+streaming compilation, plus dependent constraints and invalid arity.
+
+Compound type payloads no longer masquerade as object columns. Their consumers
+use the proper union/intersection or resolved generic surface. Exact interface
+instantiation keys also prevent repeated rebuilding of an unchanged body and
+mapper; the socket regression uses 635 types, within its original 1,024 bound.
+Mapped variance follows bound indexed reads with the correct polarity.
+
+Production builds exposed a separate cleanup expansion: `checkClassDecl`
+generated 217,079 unoptimized LLVM instructions with repeated destructors on
+error exits. Grouping 50 temporary owners under one cleanup function reduced
+the measured candidate to 41,701 instructions. Allocation-failure controls
+cover nested overload lists and transferred maps. The corrected, fully
+optimized ReleaseFast image builds in about a minute with a measured peak
+process-tree footprint of 2,782 MB. Symbols are stripped; compiler features and
+the 3,840 MB guard ceiling remain unchanged.
+
+The current sources pass **4,589 checker, 207 driver, 273 Program and 49 CLI
+tests**, plus eight executable stream checks. The final ReleaseFast image passes
+**180 automatic-variable comparisons, 50 declaration contracts and 60 recursive
+interface observations**. Four cross-file constraint/arity diagnostics match
+the reference's full output byte for byte. CLI paths now use the command's
+working directory for primary and related diagnostics, summaries and config
+locations; owned cached spellings remain valid through watch rounds.
+
+The refreshed table check uses an isolated frozen install with 49 unchanged
+project source files and a newly hashed **306-file** dependency graph. The
+reference returns zero; Home still exits 125 after the guard observes
+**4,332 MB**. All graph hashes remain unchanged. The positive comparison fails,
+so the real-project negative control has not run. The project and the whole
+local tree remain **unqualified**.
+
+The [2026-10-13 namespace evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-qualified-namespace-controls.tar.gz)
+retains the module gates, source/image hashes, synthetic inputs, raw CLI
+observations and the redacted failed project outcome. Its SHA-256 is
+`0767a0a44663b461158e0080459b20755c1b93733da7a0a56a98164d03a3d358`;
+all 1,511 payload hashes were verified.
+
+## Lazy namespace declaration growth controls
+
+Forward function signatures exposed another source of recursive expansion:
+lowering an annotation eagerly copied unfinished namespace interfaces. Those
+annotations now retain an owned declaration reference and its exact arguments;
+member and `keyof` operations materialize the surface they need. A visible
+forward type alias also takes precedence over a built-in utility before the
+alias cache is populated. Compound flags are checked before reading an
+instantiation payload, and key walks snapshot compound member IDs across
+recursive interner writes.
+
+The socket fixture with forward `connect` and `listen` signatures previously
+exceeded its 180-second test deadline. It now checks in under a second with
+**373 types**, below the unchanged 1,024 bound. A separate missing-key control
+still reports TS2344. The current candidate passes **4,591 checker, 207 driver,
+273 Program and 49 CLI tests**, eight executable stream checks, all 180
+automatic-variable comparisons, 50 declaration contracts, 60 recursive
+interface observations and the four byte-identical constraint/arity diagnostics.
+
+The isolated table graph now completes within the existing memory ceiling:
+Home's measured peak process-tree footprint is **3,358 MB**. The reference
+returns zero, while Home returns one with **61 diagnostics**. All 306 graph
+hashes and 49 project-source hashes remain unchanged. The positive comparison
+still fails, so the real-project negative control remains pending; this result
+does not qualify replacement of table or the whole local tree.
+
+The [retained lazy-namespace evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-lazy-namespace-controls.tar.gz)
+contains the current module and CLI gates and the redacted project result.
+Its SHA-256 is
+`242d42e5329b7151151083008024ac13cdc32ca38b4b8d4f8a0dbb98189331a2`;
+all 1,508 payload hashes were verified.
+
+The change was revalidated after merging the upstream checked-JavaScript-array
+fix: **4,591 checker, 207 driver, 276 Program and 49 CLI tests**, eight stream
+checks and the same complete native CLI controls pass on the merged sources.
+The table replay still reports 61 Home diagnostics, with a measured peak of
+**3,338 MB** and unchanged inputs. The
+[merged-main revalidation archive](../../bench/vs_tsgo/evidence/20261013-local-tsc-lazy-namespace-main-revalidation.tar.gz)
+has SHA-256
+`a2ee38f18508f915c9a1f5c01f2014cddeba3cb1bface01beda64079e55563bd`;
+all 1,508 payload hashes were verified. The subsequent syslog-only upstream
+commits leave all 64 qualified compiler input hashes unchanged.
+
+## Declaration syntax and grammar controls
+
+Class modifiers now recognize keyword-named properties such as
+`readonly delete: (name: string) => void`. A line-separated optional property
+named `extends` no longer becomes an accidental conditional-type operand.
+Missing property types remain genuine parse errors: `value: ;` now reports
+TS1110 at the same position as the reference under either `skipLibCheck` setting.
+
+Ambient generator diagnostics are classified as grammar diagnostics rather
+than syntactic parse errors. The driver uses the declaration-file state that
+is already known during parsing to apply `skipLibCheck` to grammar diagnostics;
+true syntax errors remain visible. The focused driver regression checks both
+the suppressed grammar error and a retained malformed declaration.
+
+The candidate passes **902 parser, 4,591 checker, 208 driver, 276 Program and 49
+CLI tests**, eight executable stream checks and the existing complete native CLI
+controls. Eight direct declaration comparisons match the reference's output
+byte for byte; the ambient-generator skip control also passes. The retained
+diagnostic matrix includes outstanding differences outside these corrected
+contracts rather than treating the entire matrix as qualified.
+
+On the unchanged 306-file table graph, Home-only diagnostics fall from 61 to
+**53**, with a measured peak process-tree footprint of **3,448 MB**. The reference
+still returns zero and Home returns one. Replacement remains unqualified.
+
+The [declaration-parser evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-declaration-parser-controls.tar.gz)
+has SHA-256
+`a3939a46a1eb1a5a70a13b6bf2b2960f0474b5a3b000ccdb3d51c55f08899b30`;
+all 1,567 payload hashes were verified.

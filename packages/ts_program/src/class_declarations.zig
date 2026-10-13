@@ -169,6 +169,7 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
     defer members.deinit(gpa);
     var statics: std.ArrayListUnmanaged(driver.ProgramExportedClassMember) = .empty;
     defer statics.deinit(gpa);
+    var requires_schema_members = false;
     for (hir.classMembers(&c.hir, node)) |member_node| {
         switch (c.hir.kindOf(member_node)) {
             .object_property => {
@@ -210,10 +211,18 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
                     const function = hir.fnDeclOf(&c.hir, member_node);
                     if (!function.flags.is_constructor) continue;
                     const fields = try jsdoc_types.constructorAssignedFields(gpa, c, member_node);
-                    defer gpa.free(fields);
+                    defer jsdoc_types.deinitAssignedFields(gpa, fields);
                     for (fields) |field| {
                         if (hasMember(members.items, field.name)) continue;
-                        try members.append(gpa, .{ .name = field.name, .type_name = jsdoc_types.typeName(field.primitive) });
+                        requires_schema_members = requires_schema_members or field.type_expression.containers.len > 0;
+                        // The legacy name-only projection cannot represent
+                        // containers. The exact source-owned schema carries
+                        // those types; keep this fallback conservative.
+                        const type_name = if (field.type_expression.containers.len == 0)
+                            jsdoc_types.typeName(field.type_expression.primitive)
+                        else
+                            "any";
+                        try members.append(gpa, .{ .name = field.name, .type_name = type_name });
                     }
                 },
                 else => {},
@@ -248,7 +257,7 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
         // their contextual parameter types across an otherwise ordinary
         // module boundary.
         .schema = try class_schema.collect(gpa, resolver, sources, source, node),
-        .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0,
+        .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0 and !requires_schema_members,
         .members = owned_members,
         .static_members = owned_statics,
     };

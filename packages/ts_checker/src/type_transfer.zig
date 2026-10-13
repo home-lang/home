@@ -338,6 +338,7 @@ const Builder = struct {
                 if (p.body == types.Primitive.none) return error.InvalidTypeGraph;
                 const parameters = try self.mappedTypes(try self.slice(.type_arg_pool, p.parameters_start, p.parameters_len));
                 try target.completeGenericDefinition(mapped_id, parameters, try self.typeId(p.body));
+                if (p.name != 0) target.setGenericDefinitionName(mapped_id, try self.string(p.name));
                 const symbol = self.source.typeSymbol(id);
                 if (symbol != 0) target.setTypeSymbol(mapped_id, try self.node(symbol));
             },
@@ -653,6 +654,7 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     try ti.pool.type_arg_pool.appendSlice(ti.gpa, &.{ text, tuple });
     const instance = try addTestPayload(ti, .instantiation_payloads, types.InstantiationPayload{ .origin = object, .args_start = args_start, .args_len = 2 }, .{ .is_instantiation = true });
     const definition = try ti.reserveGenericDefinition();
+    ti.setGenericDefinitionName(definition, 92);
     const recursive_instance = try ti.internInstantiation(definition, &.{tuple});
     const generic_body = try ti.internObjectType(&.{
         .{ .name = 90, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false },
@@ -752,6 +754,7 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     try T.expectEqualSlices(types.TypeId, &.{ text, try relocation.typeId(graph.tuple) }, pool.type_arg_pool.items[instance.args_start .. instance.args_start + instance.args_len]);
     const definition_id = try relocation.typeId(graph.generic_definition);
     const definition = destination.genericDefinition(definition_id).?;
+    try T.expectEqual(@as(types.StringId, 192), definition.name);
     try T.expectEqual(@as(u32, 1011), destination.typeSymbol(definition_id));
     try T.expectEqualSlices(types.TypeId, &.{parameter}, pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len]);
     try T.expectEqual(try relocation.typeId(graph.generic_body), definition.body);

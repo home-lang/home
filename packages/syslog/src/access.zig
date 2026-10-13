@@ -205,7 +205,7 @@ test "log filtering" {
     var msg1 = try syslog.LogMessage.init(
         testing.allocator,
         .user,
-        .info,
+        .notice,
         "host",
         "app",
         1,
@@ -216,7 +216,7 @@ test "log filtering" {
     var msg2 = try syslog.LogMessage.init(
         testing.allocator,
         .daemon,
-        .info,
+        .notice,
         "host",
         "app",
         2,
@@ -229,4 +229,18 @@ test "log filtering" {
 
     // User cannot read daemon facility
     try testing.expect(!ac.canReadLog(2000, &msg2));
+
+    var verbose = try syslog.LogMessage.init(
+        testing.allocator,
+        .user,
+        .info,
+        "host",
+        "app",
+        3,
+        "Verbose user message",
+    );
+    defer verbose.deinit();
+
+    // User role is limited to notice and higher-priority messages.
+    try testing.expect(!ac.canReadLog(2000, &verbose));
 }

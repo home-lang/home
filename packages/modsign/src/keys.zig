@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const modsign = @import("modsign.zig");
+const compat = @import("compat.zig");
 
 /// Private key for signing modules
 pub const PrivateKey = struct {
@@ -21,7 +22,7 @@ pub const PrivateKey = struct {
         errdefer allocator.free(key_data);
 
         // Generate random key material
-        std.crypto.random.bytes(key_data);
+        try compat.randomSecure(key_data);
 
         const desc = try allocator.dupe(u8, description);
         errdefer allocator.free(desc);
@@ -50,7 +51,6 @@ pub const PrivateKey = struct {
     pub fn generateKeyId(self: *PrivateKey) void {
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
         hasher.update(self.key_data);
-        hasher.update(self.description);
         hasher.final(&self.key_id);
     }
 
@@ -76,10 +76,15 @@ pub const PrivateKey = struct {
 
     /// Save private key to file (PEM format)
     pub fn savePem(self: *const PrivateKey, file_path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(file_path, .{});
-        defer file.close();
+        const io = compat.io();
+        const private_permissions: std.Io.File.Permissions = if (@bitSizeOf(std.Io.File.Permissions) == 0)
+            .default_file
+        else
+            @enumFromInt(0o600);
+        const file = try std.Io.Dir.cwd().createFile(io, file_path, .{ .permissions = private_permissions });
+        defer file.close(io);
 
-        try file.writeAll("-----BEGIN PRIVATE KEY-----\n");
+        try file.writeStreamingAll(io, "-----BEGIN PRIVATE KEY-----\n");
 
         // Base64 encode key data
         const encoder = std.base64.standard.Encoder;
@@ -90,20 +95,17 @@ pub const PrivateKey = struct {
         var i: usize = 0;
         while (i < encoded.len) {
             const end = @min(i + 64, encoded.len);
-            try file.writeAll(encoded[i..end]);
-            try file.writeAll("\n");
+            try file.writeStreamingAll(io, encoded[i..end]);
+            try file.writeStreamingAll(io, "\n");
             i = end;
         }
 
-        try file.writeAll("-----END PRIVATE KEY-----\n");
+        try file.writeStreamingAll(io, "-----END PRIVATE KEY-----\n");
     }
 
     /// Load private key from PEM file
     pub fn loadPem(allocator: std.mem.Allocator, file_path: []const u8) !PrivateKey {
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(allocator, 1024 * 1024);
+        const content = try std.Io.Dir.cwd().readFileAlloc(compat.io(), file_path, allocator, .limited(1024 * 1024));
         defer allocator.free(content);
 
         // Extract base64 content between markers
@@ -111,9 +113,9 @@ pub const PrivateKey = struct {
         const end = "-----END PRIVATE KEY-----";
 
         const start_idx = std.mem.indexOf(u8, content, begin) orelse return error.InvalidPemFormat;
-        const end_idx = std.mem.indexOf(u8, content, end) orelse return error.InvalidPemFormat;
-
-        const b64_data = content[start_idx + begin.len .. end_idx];
+        const payload_start = start_idx + begin.len;
+        const payload_end = std.mem.indexOf(u8, content[payload_start..], end) orelse return error.InvalidPemFormat;
+        const b64_data = content[payload_start .. payload_start + payload_end];
 
         // Remove newlines
         var clean_data = std.ArrayList(u8).empty;
@@ -132,11 +134,14 @@ pub const PrivateKey = struct {
 
         try decoder.decode(key_data, clean_data.items);
 
-        // Create key (algorithm and description would be in metadata)
+        const algorithm = modsign.SignatureAlgorithm.fromKeySize(key_data.len) orelse return error.InvalidKeySize;
+
+        // Create key (description would be in metadata)
         const desc = try allocator.dupe(u8, "loaded_key");
+        errdefer allocator.free(desc);
 
         var key = PrivateKey{
-            .algorithm = .rsa_2048_sha256, // Default
+            .algorithm = algorithm,
             .key_data = key_data,
             .key_id = @splat(0),
             .description = desc,
@@ -164,10 +169,11 @@ pub const PublicKey = struct {
 
     /// Save public key to file
     pub fn savePem(self: *const PublicKey, file_path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(file_path, .{});
-        defer file.close();
+        const io = compat.io();
+        const file = try std.Io.Dir.cwd().createFile(io, file_path, .{});
+        defer file.close(io);
 
-        try file.writeAll("-----BEGIN PUBLIC KEY-----\n");
+        try file.writeStreamingAll(io, "-----BEGIN PUBLIC KEY-----\n");
 
         const encoder = std.base64.standard.Encoder;
         var buf: [1024]u8 = undefined;
@@ -176,12 +182,12 @@ pub const PublicKey = struct {
         var i: usize = 0;
         while (i < encoded.len) {
             const end = @min(i + 64, encoded.len);
-            try file.writeAll(encoded[i..end]);
-            try file.writeAll("\n");
+            try file.writeStreamingAll(io, encoded[i..end]);
+            try file.writeStreamingAll(io, "\n");
             i = end;
         }
 
-        try file.writeAll("-----END PUBLIC KEY-----\n");
+        try file.writeStreamingAll(io, "-----END PUBLIC KEY-----\n");
     }
 
     /// Export key ID as hex string
@@ -261,4 +267,24 @@ test "key pair generation" {
     defer keypair.deinit();
 
     try testing.expectEqualSlices(u8, &keypair.private_key.key_id, &keypair.public_key.key_id);
+}
+
+test "private key PEM roundtrip" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(compat.io(), &path_buffer);
+    const suffix = try std.fmt.bufPrint(path_buffer[root_len..], "/private.pem", .{});
+    const path = path_buffer[0 .. root_len + suffix.len];
+
+    var key = try PrivateKey.generate(testing.allocator, .ecdsa_p256_sha256, "persisted");
+    defer key.deinit();
+    try key.savePem(path);
+
+    var loaded = try PrivateKey.loadPem(testing.allocator, path);
+    defer loaded.deinit();
+    try testing.expectEqual(key.algorithm, loaded.algorithm);
+    try testing.expectEqualSlices(u8, key.key_data, loaded.key_data);
+    try testing.expectEqualSlices(u8, &key.key_id, &loaded.key_id);
 }

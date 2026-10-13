@@ -4,57 +4,81 @@ const std = @import("std");
 const coredump = @import("coredump.zig");
 const keys = @import("keys.zig");
 const encrypt = @import("encrypt.zig");
+const compat = @import("compat.zig");
+
+fn readExactAt(file: std.Io.File, io: std.Io, buffer: []u8, offset: u64) !void {
+    if (try file.readPositionalAll(io, buffer, offset) != buffer.len) return error.UnexpectedEof;
+}
 
 /// Load encrypted dump from file
 pub fn loadDump(allocator: std.mem.Allocator, path: []const u8) !encrypt.EncryptedDump {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const io = compat.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var offset: u64 = 0;
 
     // Read and verify header
     var magic: [8]u8 = undefined;
-    _ = try file.readAll(&magic);
+    try readExactAt(file, io, &magic, offset);
+    offset += magic.len;
 
     if (!std.mem.eql(u8, &magic, "HOMECORE")) {
         return error.InvalidDumpFile;
     }
 
     // Read version
-    const version = try file.reader().readInt(u16, .little);
+    var encoded_u16: [2]u8 = undefined;
+    try readExactAt(file, io, &encoded_u16, offset);
+    offset += encoded_u16.len;
+    const version = std.mem.readInt(u16, &encoded_u16, .little);
     if (version != 1) {
         return error.UnsupportedVersion;
     }
 
     // Read algorithm
-    const algorithm: coredump.EncryptionAlgorithm = @enumFromInt(try file.reader().readByte());
+    var algorithm_byte: [1]u8 = undefined;
+    try readExactAt(file, io, &algorithm_byte, offset);
+    offset += algorithm_byte.len;
+    const algorithm: coredump.EncryptionAlgorithm = @enumFromInt(algorithm_byte[0]);
 
     // Read key ID
     var key_id: [16]u8 = undefined;
-    _ = try file.readAll(&key_id);
+    try readExactAt(file, io, &key_id, offset);
+    offset += key_id.len;
 
     // Read nonce
     var nonce: [12]u8 = undefined;
-    _ = try file.readAll(&nonce);
+    try readExactAt(file, io, &nonce, offset);
+    offset += nonce.len;
 
     // Read auth tag
     var auth_tag: [16]u8 = undefined;
-    _ = try file.readAll(&auth_tag);
+    try readExactAt(file, io, &auth_tag, offset);
+    offset += auth_tag.len;
 
     // Read metadata
     var metadata: coredump.DumpMetadata = undefined;
     const metadata_bytes = std.mem.asBytes(&metadata);
-    _ = try file.readAll(metadata_bytes);
+    try readExactAt(file, io, metadata_bytes, offset);
+    offset += metadata_bytes.len;
 
     // Update algorithm from file
     metadata.algorithm = algorithm;
 
     // Read data length
-    const data_len = try file.reader().readInt(u64, .little);
+    var encoded_u64: [8]u8 = undefined;
+    try readExactAt(file, io, &encoded_u64, offset);
+    offset += encoded_u64.len;
+    const data_len_u64 = std.mem.readInt(u64, &encoded_u64, .little);
+    const data_len = std.math.cast(usize, data_len_u64) orelse return error.DumpTooLarge;
+    const stat = try file.stat(io);
+    if (data_len_u64 > stat.size -| offset) return error.UnexpectedEof;
 
     // Read encrypted data
     const encrypted_data = try allocator.alloc(u8, data_len);
     errdefer allocator.free(encrypted_data);
 
-    _ = try file.readAll(encrypted_data);
+    try readExactAt(file, io, encrypted_data, offset);
 
     return .{
         .metadata = metadata,
@@ -185,23 +209,24 @@ pub fn analyzeDump(allocator: std.mem.Allocator, path: []const u8, keyring: ?*co
 
 /// Extract metadata from encrypted dump
 pub fn extractMetadata(path: []const u8) !coredump.DumpMetadata {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const io = compat.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
     // Read header
     var magic: [8]u8 = undefined;
-    _ = try file.readAll(&magic);
+    if (try file.readPositionalAll(io, &magic, 0) != magic.len) return error.UnexpectedEof;
 
     if (!std.mem.eql(u8, &magic, "HOMECORE")) {
         return error.InvalidDumpFile;
     }
 
-    // Skip version (2 bytes), algorithm (1 byte), key_id (16 bytes), nonce (12 bytes), tag (16 bytes)
-    try file.seekBy(2 + 1 + 16 + 12 + 16);
-
     // Read metadata
     var metadata: coredump.DumpMetadata = undefined;
-    _ = try file.readAll(std.mem.asBytes(&metadata));
+    const metadata_offset = 8 + 2 + 1 + 16 + 12 + 16;
+    const metadata_bytes = std.mem.asBytes(&metadata);
+    if (try file.readPositionalAll(io, metadata_bytes, metadata_offset) != metadata_bytes.len)
+        return error.UnexpectedEof;
 
     return metadata;
 }
@@ -263,4 +288,29 @@ test "decrypt with keyring" {
     defer testing.allocator.free(decrypted);
 
     try testing.expectEqualStrings(data, decrypted);
+}
+
+test "encrypted dump file roundtrip" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(compat.io(), &path_buffer);
+    const suffix = try std.fmt.bufPrint(path_buffer[root_len..], "/dump.ecore", .{});
+    const path = path_buffer[0 .. root_len + suffix.len];
+
+    var key = try keys.EncryptionKey.generate(testing.allocator, .chacha20_poly1305);
+    defer key.deinit();
+    const original = "persisted crash dump";
+    const metadata = try coredump.DumpMetadata.init(42, "roundtrip", 11);
+    var encrypted = try encrypt.encryptDump(testing.allocator, original, metadata, &key);
+    defer encrypted.deinit();
+    try encrypt.saveDump(&encrypted, path);
+
+    var loaded = try loadDump(testing.allocator, path);
+    defer loaded.deinit();
+    const decrypted = try decryptDump(testing.allocator, &loaded, &key);
+    defer testing.allocator.free(decrypted);
+    try testing.expectEqualStrings(original, decrypted);
+    try testing.expectEqual(@as(u32, 42), (try extractMetadata(path)).pid);
 }

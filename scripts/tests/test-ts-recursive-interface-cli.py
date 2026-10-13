@@ -22,6 +22,55 @@ GLOBALS = "\n".join(
     )
 ) + "\ninterface TemplateStringsArray extends Array<string> { readonly raw: readonly string[]; }\n"
 CASES = {
+    "recursive-generic-alias-scopes": (
+        "declare namespace Left { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\n"
+        "declare namespace Right { type Tree<T> = T | { [key: string]: Tree<T> }; type Strings = Tree<string>; }\n",
+        "declare const left: Left.Strings; declare const bad: Right.Tree<number>;\n"
+        "const right: Right.Strings = left;\n",
+        "const wrong: Right.Tree<string> = bad;\n",
+    ),
+    "qualified-generic-self": (
+        "declare namespace Sockets { interface Link<T> { value: T; next: Sockets.Link<T>; } }\n",
+        "declare const link: Sockets.Link<number>;\n"
+        "const value: number = link.next.next.value;\n",
+        "const wrong: string = link.next.next.value;\n",
+    ),
+    "qualified-generic-defaults": (
+        "declare namespace Sockets { interface Pair<T = number, U = T> { first: T; second: U; } }\n",
+        "declare const pair: Sockets.Pair;\n"
+        "const value: number = pair.second;\n",
+        "const wrong: string = pair.second;\n",
+    ),
+    "qualified-generic-sibling-scopes": (
+        "declare namespace Left { interface Box<T> { value: T; } }\n"
+        "declare namespace Right { interface Box<T> { value: T; label: string; } }\n",
+        "declare const box: Left.Box<number>;\n"
+        "const value: number = box.value;\n",
+        "const wrong: string = box.value;\n",
+    ),
+    "forward-generic-builtin-name": (
+        "declare namespace Sockets { interface Early<T> { promise: Promise<T>; } "
+        "interface Promise<T> { value: T; } }\n",
+        "declare const early: Sockets.Early<number>;\n"
+        "const value: number = early.promise.value;\n",
+        "const wrong: string = early.promise.value;\n",
+    ),
+    "forward-generic-namespace": (
+        "declare namespace Sockets { interface Holder<T> { forward: LaterBox<T>; "
+        "change<U>(value: U): LaterBox<U>; } "
+        "interface LaterBox<T> { value: T; next?: Holder<T>; } }\n",
+        "declare const holder: Sockets.Holder<number>;\n"
+        "const value: number = holder.forward.value;\n",
+        "const wrong: string = holder.forward.value;\n",
+    ),
+    "forward-generic-method": (
+        "declare namespace Sockets { interface Holder<T> { forward: LaterBox<T>; "
+        "change<U>(value: U): LaterBox<U>; } "
+        "interface LaterBox<T> { value: T; next?: Holder<T>; } }\n",
+        "declare const holder: Sockets.Holder<number>;\n"
+        "const value: string = holder.change(\"value\").value;\n",
+        "const wrong: number = holder.change(\"value\").value;\n",
+    ),
     "self-property": (
         "interface Link { next: Link; value: number; }\n",
         "declare const link: Link;\nconst value: number = link.next.next.value;\n",

@@ -13,14 +13,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
-    // Basics dependency
-    const basics_module = b.createModule(.{
-        .root_source_file = b.path("../basics/src/basics.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    ffi_module.addImport("basics", basics_module);
+    ffi_module.link_libc = true;
 
     // ========================================================================
     // Header Generation Module
@@ -31,7 +24,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    header_gen_module.addImport("basics", basics_module);
 
     // ========================================================================
     // Tests
@@ -46,9 +38,11 @@ pub fn build(b: *std.Build) void {
     });
     ffi_tests.root_module.addImport("ffi", ffi_module);
     ffi_tests.root_module.addImport("header_gen", header_gen_module);
-    ffi_tests.root_module.link_libc = true; // Link C standard library for testing
 
     const run_ffi_tests = b.addRunArtifact(ffi_tests);
+
+    const test_compile_step = b.step("test-compile", "Compile FFI tests without running them");
+    test_compile_step.dependOn(&ffi_tests.step);
 
     const test_step = b.step("test", "Run FFI tests");
     test_step.dependOn(&run_ffi_tests.step);
@@ -67,7 +61,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     math_example.root_module.addImport("ffi", ffi_module);
-    math_example.root_module.link_libc = true;
     b.installArtifact(math_example);
 
     const run_math_example = b.addRunArtifact(math_example);
@@ -84,7 +77,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     sqlite_example.root_module.addImport("ffi", ffi_module);
-    sqlite_example.root_module.link_libc = true;
     sqlite_example.root_module.linkSystemLibrary("sqlite3", .{});
     b.installArtifact(sqlite_example);
 

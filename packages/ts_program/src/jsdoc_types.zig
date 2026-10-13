@@ -22,22 +22,42 @@ pub const Primitive = enum {
     object_t,
 };
 
+pub const Container = enum {
+    array,
+    readonly_array,
+};
+
+/// A lossless subset of JSDoc type expressions that can cross Program-owned
+/// checker pools without borrowing checker-local TypeIds. Containers are
+/// stored from outermost to innermost, so `Array<ReadonlyArray<string>>` is
+/// represented by `{ array, readonly_array }` around `string`.
+pub const TypeExpression = struct {
+    primitive: Primitive,
+    containers: []Container = &.{},
+
+    pub fn deinit(self: TypeExpression, gpa: std.mem.Allocator) void {
+        if (self.containers.len > 0) gpa.free(self.containers);
+    }
+};
+
 pub const AssignedField = struct {
     name: []const u8,
-    primitive: Primitive,
+    type_expression: TypeExpression,
 };
 
 pub const FunctionParameter = struct {
-    primitive: Primitive,
+    type_expression: TypeExpression,
     optional: bool,
 };
 
 pub const FunctionSignature = struct {
     parameters: []FunctionParameter,
-    result: Primitive,
+    result: TypeExpression,
 
     pub fn deinit(self: FunctionSignature, gpa: std.mem.Allocator) void {
+        for (self.parameters) |parameter| parameter.type_expression.deinit(gpa);
         gpa.free(self.parameters);
+        self.result.deinit(gpa);
     }
 };
 
@@ -63,12 +83,12 @@ pub fn widenedInitializerPrimitive(c: *const driver.Compilation, node: hir.NodeI
     };
 }
 
-pub fn declarationPrimitive(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?Primitive {
+pub fn declarationType(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?TypeExpression {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
     for (tags) |tag| {
-        if (tag.kind == .type_tag) return parsePrimitive(tag.type_text);
+        if (tag.kind == .type_tag) return parseTypeExpression(gpa, tag.type_text);
     }
     return null;
 }
@@ -79,11 +99,13 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
     defer gpa.free(tags);
     for (tags) |tag| if (tag.kind == .template_tag) return null;
 
-    var result: ?Primitive = null;
+    var result: ?TypeExpression = null;
+    var result_transferred = false;
+    defer if (!result_transferred) if (result) |value| value.deinit(gpa);
     for (tags) |tag| {
         if (tag.kind != .returns_tag) continue;
         if (result != null) return null;
-        result = parsePrimitive(tag.type_text) orelse return null;
+        result = try parseTypeExpression(gpa, tag.type_text) orelse return null;
     }
     const return_type = result orelse return null;
     const nodes = hir.fnParams(&c.hir, node);
@@ -92,18 +114,26 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
         if (c.hir.kindOf(parameter.name) != .identifier or parameter.flags.is_rest) return null;
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name) orelse return null;
-        _ = parsePrimitive(tag.type_text) orelse return null;
+        var parsed = try parseTypeExpression(gpa, tag.type_text) orelse return null;
+        parsed.deinit(gpa);
     }
     const parameters = try gpa.alloc(FunctionParameter, nodes.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (parameters[0..initialized]) |parameter| parameter.type_expression.deinit(gpa);
+        gpa.free(parameters);
+    }
     for (nodes, parameters) |parameter_node, *parameter_result| {
         const parameter = hir.parameterOf(&c.hir, parameter_node);
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name).?;
         parameter_result.* = .{
-            .primitive = parsePrimitive(tag.type_text).?,
+            .type_expression = (try parseTypeExpression(gpa, tag.type_text)).?,
             .optional = tag.optional or parameter.flags.is_optional or parameter.default_value != hir.none_node_id,
         };
+        initialized += 1;
     }
+    result_transferred = true;
     return .{ .parameters = parameters, .result = return_type };
 }
 
@@ -115,7 +145,10 @@ pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compil
     defer gpa.free(tags);
 
     var fields: std.ArrayListUnmanaged(AssignedField) = .empty;
-    errdefer fields.deinit(gpa);
+    errdefer {
+        for (fields.items) |field| field.type_expression.deinit(gpa);
+        fields.deinit(gpa);
+    }
     for (hir.blockStmts(&c.hir, function.body)) |statement| {
         if (c.hir.kindOf(statement) != .assignment) continue;
         const assignment = hir.assignmentOf(&c.hir, statement);
@@ -124,12 +157,18 @@ pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compil
         if (!isThisExpression(c, member.object)) continue;
         const value_name = hir.identifierOf(&c.hir, assignment.value).name;
         if (!isParameter(c, node, value_name)) continue;
-        const primitive = parameterPrimitive(tags, c.interner.get(value_name)) orelse continue;
         const field_name = c.interner.get(member.name);
         if (contains(fields.items, field_name)) continue;
-        try fields.append(gpa, .{ .name = field_name, .primitive = primitive });
+        const type_expression = try parameterType(gpa, tags, c.interner.get(value_name)) orelse continue;
+        errdefer type_expression.deinit(gpa);
+        try fields.append(gpa, .{ .name = field_name, .type_expression = type_expression });
     }
     return fields.toOwnedSlice(gpa);
+}
+
+pub fn deinitAssignedFields(gpa: std.mem.Allocator, fields: []AssignedField) void {
+    for (fields) |field| field.type_expression.deinit(gpa);
+    gpa.free(fields);
 }
 
 pub fn typeName(primitive: Primitive) []const u8 {
@@ -149,9 +188,9 @@ pub fn typeName(primitive: Primitive) []const u8 {
     };
 }
 
-fn parameterPrimitive(tags: []const jsdoc.Tag, name: []const u8) ?Primitive {
+fn parameterType(gpa: std.mem.Allocator, tags: []const jsdoc.Tag, name: []const u8) !?TypeExpression {
     for (tags) |tag| {
-        if (tag.kind == .param_tag and std.mem.eql(u8, tag.name, name)) return parsePrimitive(tag.type_text);
+        if (tag.kind == .param_tag and std.mem.eql(u8, tag.name, name)) return parseTypeExpression(gpa, tag.type_text);
     }
     return null;
 }
@@ -184,6 +223,68 @@ fn parsePrimitive(text: []const u8) ?Primitive {
     };
     inline for (entries) |entry| if (std.mem.eql(u8, name, entry[0])) return entry[1];
     return null;
+}
+
+fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpression {
+    var containers: std.ArrayListUnmanaged(Container) = .empty;
+    errdefer containers.deinit(gpa);
+    var current = std.mem.trim(u8, text, " \t\r\n");
+    while (true) {
+        if (std.mem.endsWith(u8, current, "[]")) {
+            try containers.append(gpa, .array);
+            current = std.mem.trim(u8, current[0 .. current.len - 2], " \t\r\n");
+            continue;
+        }
+        if (genericBody(current, "ReadonlyArray")) |body| {
+            try containers.append(gpa, .readonly_array);
+            current = body;
+            continue;
+        }
+        if (genericBody(current, "Array")) |body| {
+            try containers.append(gpa, .array);
+            current = body;
+            continue;
+        }
+        break;
+    }
+    const primitive = parsePrimitive(current) orelse {
+        containers.deinit(gpa);
+        return null;
+    };
+    return .{
+        .primitive = primitive,
+        .containers = if (containers.items.len == 0) &.{} else try containers.toOwnedSlice(gpa),
+    };
+}
+
+fn genericBody(text: []const u8, name: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, text, name)) return null;
+    var cursor = name.len;
+    if (cursor < text.len and text[cursor] == '.') cursor += 1;
+    if (cursor >= text.len or text[cursor] != '<' or text[text.len - 1] != '>') return null;
+    var depth: usize = 0;
+    for (text[cursor..], cursor..) |byte, index| switch (byte) {
+        '<' => depth += 1,
+        '>' => {
+            if (depth == 0) return null;
+            depth -= 1;
+            if (depth == 0 and index + 1 != text.len) return null;
+        },
+        else => {},
+    };
+    if (depth != 0) return null;
+    return std.mem.trim(u8, text[cursor + 1 .. text.len - 1], " \t\r\n");
+}
+
+test "JSDoc primitive array expressions preserve nested mutable and readonly wrappers" {
+    const parsed = (try parseTypeExpression(std.testing.allocator, "Array.<ReadonlyArray<string[]>>")).?;
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(Primitive.string_t, parsed.primitive);
+    try std.testing.expectEqualSlices(Container, &.{ .array, .readonly_array, .array }, parsed.containers);
+}
+
+test "JSDoc array expression parser rejects unsupported union leaves" {
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | number>")) == null);
 }
 
 fn isParameter(c: *const driver.Compilation, function: hir.NodeId, name: hir.StringId) bool {

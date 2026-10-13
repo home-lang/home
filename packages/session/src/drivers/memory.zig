@@ -1,11 +1,9 @@
 const std = @import("std");
-const posix = std.posix;
 const session = @import("../session.zig");
+const compat = @import("../compat.zig");
 
-/// Helper to get current timestamp
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return compat.timestamp();
 }
 
 /// In-memory session driver (for development/testing)

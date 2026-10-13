@@ -649,8 +649,10 @@ pub const Builder = struct {
         } else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
             if (variable.type_annotation == 0 and jsdoc_types.isJavaScriptPath(source.path)) {
-                if (try jsdoc_types.declarationPrimitive(self.gpa, c, key.node)) |primitive|
-                    break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
+                if (try jsdoc_types.declarationType(self.gpa, c, key.node)) |type_expression| {
+                    defer type_expression.deinit(self.gpa);
+                    break :blk try self.jsdocType(type_expression);
+                }
                 if (kind == .const_decl) {
                     if (jsdoc_types.widenedInitializerPrimitive(c, variable.init)) |primitive|
                         break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
@@ -698,14 +700,27 @@ pub const Builder = struct {
         const parameters = try self.arena.alloc(schema.Element, signature.parameters.len);
         for (signature.parameters, parameters) |parameter, *result| {
             result.* = .{
-                .type = try self.expression(.{ .primitive = schemaPrimitive(parameter.primitive) }),
+                .type = try self.jsdocType(parameter.type_expression),
                 .optional = parameter.optional,
             };
         }
         return self.expression(.{ .function = .{
             .parameters = parameters,
-            .result = try self.expression(.{ .primitive = schemaPrimitive(signature.result) }),
+            .result = try self.jsdocType(signature.result),
         } });
+    }
+
+    fn jsdocType(self: *Builder, type_expression: jsdoc_types.TypeExpression) !*const schema.Expression {
+        var result = try self.expression(.{ .primitive = schemaPrimitive(type_expression.primitive) });
+        var index = type_expression.containers.len;
+        while (index > 0) {
+            index -= 1;
+            result = try self.expression(switch (type_expression.containers[index]) {
+                .array => .{ .array = result },
+                .readonly_array => .{ .readonly_array = result },
+            });
+        }
+        return result;
     }
 
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
@@ -766,12 +781,12 @@ pub const Builder = struct {
                         const function = hir.fnDeclOf(&c.hir, member);
                         if (!function.flags.is_constructor) continue;
                         const fields = try jsdoc_types.constructorAssignedFields(self.gpa, c, member);
-                        defer self.gpa.free(fields);
+                        defer jsdoc_types.deinitAssignedFields(self.gpa, fields);
                         for (fields) |field| {
                             if (hasMember(members.items, field.name)) continue;
                             try members.append(self.arena, .{
                                 .name = field.name,
-                                .type = try self.expression(.{ .primitive = schemaPrimitive(field.primitive) }),
+                                .type = try self.jsdocType(field.type_expression),
                             });
                         }
                     },
