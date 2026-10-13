@@ -397,3 +397,35 @@ The [declaration-parser evidence](../../bench/vs_tsgo/evidence/20261013-local-ts
 has SHA-256
 `a3939a46a1eb1a5a70a13b6bf2b2960f0474b5a3b000ccdb3d51c55f08899b30`;
 all 1,567 payload hashes were verified.
+
+## Declaration diagnostic ownership
+
+Qualified JSDoc parameter paths now participate in JavaScript signature checks
+only. TypeScript and declaration-file comments remain documentation; JavaScript
+still reports TS8032 for a missing object parent. This uses the actual file mode,
+including virtual filename sections used by conformance fixtures.
+
+An unresolved name in a syntactically valid computed type key now carries a
+semantic diagnostic classification. `skipLibCheck` suppresses that declaration
+error while retaining genuine malformed type syntax. Ambient signature
+parameters such as `arguments` and `eval` do not create runtime bindings;
+ambient variable bindings and implemented parameters retain strict-mode errors.
+
+The candidate passes **906 parser, 4,591 checker, 209 driver, 276 Program and 49
+CLI tests**, eight executable stream checks, and the existing automatic,
+declaration and recursive native CLI controls. The new
+`test-ts-declaration-diagnostics-cli.py` verifies **26 observations** with exact
+locations, codes and exit statuses under both `skipLibCheck` settings.
+The checked computed-key path still has an additional name-suggestion error
+and remains outside the passing contract. These controls do not qualify whole
+projects or the complete `~/Code` tree.
+
+On the unchanged 306-file table graph, these fixes reduce Home-only diagnostics
+from 53 to **39**. Peak process-tree footprint is **3,333 MB**, within the
+unchanged 3,840 MB limit. Native TypeScript exits zero and Home exits one;
+the project remains unqualified and its negative control has not run.
+
+The [diagnostic ownership evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-declaration-ownership-controls.tar.gz)
+has SHA-256
+`e878fce876eae483f6503fb6b508566c8bdcbdd6adffb7c3412e343ac53d2f87`;
+all 1,633 payload hashes were verified.

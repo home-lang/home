@@ -1639,6 +1639,9 @@ pub const Parser = struct {
     }
 
     fn scanJSDocParamParentDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
+        // TypeScript parameter types come from syntax, so documentation-only
+        // property paths do not participate in JavaScript's JSDoc signature.
+        if (!self.isJavaScriptSyntaxAt(@intCast(start))) return;
         // Callback parameters belong to the declared callback signature, not
         // to a host function whose parameter list can be matched here.
         if (self.jsDocBlockHasTag(start, end, "callback")) return;
@@ -1694,7 +1697,7 @@ pub const Parser = struct {
                         "Qualified name '{s}' is not allowed without a leading '@param {{object}} {s}'.",
                         .{ full_name, parent_name },
                     );
-                    try self.reportCodeAtWithSpan(
+                    try self.reportGrammarCodeAtWithSpan(
                         @intCast(name.start),
                         self.lineAt(@intCast(name.start)),
                         @intCast(full_name.len),
@@ -5440,7 +5443,12 @@ pub const Parser = struct {
                     if (name_tok.kind == .private_identifier) {
                         try self.reportCodeAt(name_tok.span.start, name_tok.line, 18009, "Private identifiers cannot be used as parameters.");
                     }
-                    if (!self.suppress_strict_param_names) try self.reportInvalidStrictName(name_tok);
+                    // Ambient signature parameters do not create runtime
+                    // bindings. Variable and function declaration names still
+                    // receive the ordinary strict-mode binding checks.
+                    if (!self.suppress_strict_param_names and !self.isAmbientContextAt(name_tok.span.start)) {
+                        try self.reportInvalidStrictName(name_tok);
+                    }
                     try self.reportInvalidYieldName(name_tok, true);
                     // The tsgo binder skips contextual-identifier checks when
                     // the file already has a syntactic parse error. Preserve
@@ -14500,7 +14508,9 @@ pub const Parser = struct {
         const name_text = self.interner.get(id.name);
         const msg = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find name '{s}'.", .{name_text});
         const sp = self.hir.spanOf(node);
-        try self.reportCodeAt(sp.start, line, 2304, msg);
+        // A well-formed computed expression can have an unresolved name.
+        // This is a semantic diagnostic, not a failure to parse its syntax.
+        try self.reportGrammarCodeAt(sp.start, line, 2304, msg);
     }
 
     fn reportCannotFindNameToken(self: *Parser, tok: Token) ParseError!void {
@@ -34236,6 +34246,8 @@ test "parser: qualified JSDoc param requires object-typed parent" {
     );
     defer destroyTestSetup(s);
 
+    s.parser.setJavaScriptFile(true);
+
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     const d = s.parser.diagnostics.items[0];
@@ -34262,6 +34274,8 @@ test "parser: qualified JSDoc param parent check preserves object child for late
     );
     defer destroyTestSetup(s);
 
+    s.parser.setJavaScriptFile(true);
+
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 1), s.parser.diagnostics.items.len);
     const d = s.parser.diagnostics.items[0];
@@ -34281,6 +34295,8 @@ test "parser: qualified JSDoc callback param does not require a host parent" {
         \\ */
     );
     defer destroyTestSetup(s);
+
+    s.parser.setJavaScriptFile(true);
 
     _ = try s.parser.parseSourceFile();
     for (s.parser.diagnostics.items) |d| {
@@ -36855,4 +36871,49 @@ test "parser: class field optional and readonly modifiers survive in HIR" {
         try T.expectEqual(optional, field.is_optional);
         try T.expectEqual(readonly, field.is_readonly);
     }
+}
+
+test "parser: TypeScript JSDoc property documentation does not define a JS signature" {
+    var s = try newTestSetup(
+        \\/** @param options.socket The socket. */
+        \\export declare function connect(options: { socket: number }): void;
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: unresolved computed type key is semantic rather than a parse error" {
+    var s = try newTestSetup("export interface Brand { [missingBrand]: number; }");
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| {
+        if (d.code == 2304) {
+            found = true;
+            try T.expect(!diagnosticIsSyntacticParseError(d));
+            try T.expectEqualStrings("Cannot find name 'missingBrand'.", d.message);
+        }
+    }
+    try T.expect(found);
+}
+
+test "parser: ambient parameter names do not create strict runtime bindings" {
+    var s = try newTestSetup("export declare function compare(arguments: number): void; export declare class C { method(eval: number): void; }");
+    defer destroyTestSetup(s);
+    s.parser.setDeclarationFile(true);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: ambient variables retain strict binding diagnostics" {
+    var s = try newTestSetup("export declare const arguments: number;");
+    defer destroyTestSetup(s);
+    s.parser.setDeclarationFile(true);
+    _ = try s.parser.parseSourceFile();
+    var found = false;
+    for (s.parser.diagnostics.items) |d| if (d.code == 1215) {
+        found = true;
+    };
+    try T.expect(found);
 }
