@@ -101,3 +101,7 @@ test "module signature" {
 
     try testing.expectEqual(@as(usize, 256), sig.signature.len);
 }
+
+test {
+    _ = keys;
+}

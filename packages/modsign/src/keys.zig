@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const modsign = @import("modsign.zig");
+const compat = @import("compat.zig");
 
 /// Private key for signing modules
 pub const PrivateKey = struct {
@@ -21,7 +22,7 @@ pub const PrivateKey = struct {
         errdefer allocator.free(key_data);
 
         // Generate random key material
-        std.crypto.random.bytes(key_data);
+        try compat.randomSecure(key_data);
 
         const desc = try allocator.dupe(u8, description);
         errdefer allocator.free(desc);
