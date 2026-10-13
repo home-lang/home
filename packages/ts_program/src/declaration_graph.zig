@@ -37,10 +37,60 @@ fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
     const name_node = switch (c.hir.kindOf(node)) {
         .interface_decl => hir.interfaceOf(&c.hir, node).name,
         .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
+        .fn_decl => hir.fnDeclOf(&c.hir, node).name,
+        .var_decl, .let_decl, .const_decl => hir.varDeclOf(&c.hir, node).name,
         else => return null,
     };
     if (name_node == hir.none_node_id or c.hir.kindOf(name_node) != .identifier) return null;
     return c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+}
+
+fn appendNamespaceValueRoute(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    builder: *schemas.Builder,
+    supported: *std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool),
+    source_index: usize,
+    source: Source,
+    node: hir.NodeId,
+    target_path: []const u8,
+    namespace_path: []const u8,
+    values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
+) !void {
+    const c = source.compilation;
+    const ambient = hir.namespaceOf(&c.hir, node).is_ambient or c.is_declaration_file;
+    for (hir.namespaceBody(&c.hir, node)) |raw| {
+        const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else if (ambient) raw else continue;
+        if (member == hir.none_node_id) continue;
+        if (c.hir.kindOf(member) == .namespace_decl) {
+            const namespace = hir.namespaceOf(&c.hir, member);
+            if (c.hir.kindOf(namespace.name) != .identifier) continue;
+            const nested_path = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
+            try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, values);
+            continue;
+        }
+        switch (c.hir.kindOf(member)) {
+            .fn_decl, .var_decl, .let_decl, .const_decl => {},
+            else => continue,
+        }
+        const name = declarationName(c, member) orelse continue;
+        const declaration = try builder.declaration(.{ .source = source_index, .node = member });
+        const support = try supported.getOrPut(arena, declaration);
+        if (!support.found_existing) support.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+        var duplicate = false;
+        for (values.items) |existing| {
+            if (existing.declaration == declaration and std.mem.eql(u8, existing.target_path, target_path) and
+                std.mem.eql(u8, existing.namespace_path, namespace_path) and std.mem.eql(u8, existing.export_name, name)) duplicate = true;
+        }
+        if (!duplicate) try values.append(arena, .{
+            .target_path = target_path,
+            .namespace_path = namespace_path,
+            .export_name = name,
+            .kind = if (declaration.is_function) .function else .variable,
+            .declaration = declaration,
+            .projection_only = !support.value_ptr.*,
+        });
+    }
 }
 
 fn appendNamespaceTypeRoute(
@@ -57,8 +107,8 @@ fn appendNamespaceTypeRoute(
 ) !void {
     const c = source.compilation;
     for (hir.namespaceBody(&c.hir, namespace_node)) |raw| {
-        if (c.hir.kindOf(raw) != .export_decl) continue;
-        const member = hir.exportOf(&c.hir, raw).decl;
+        const ambient = hir.namespaceOf(&c.hir, namespace_node).is_ambient or c.is_declaration_file;
+        const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else if (ambient) raw else continue;
         if (member == hir.none_node_id) continue;
         switch (c.hir.kindOf(member)) {
             .interface_decl, .type_alias_decl => {
@@ -131,7 +181,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         const c = source.compilation;
         for (c.hir.kinds.items, 0..) |kind, node| {
             switch (kind) {
-                .fn_decl, .var_decl, .let_decl, .const_decl, .interface_decl, .type_alias_decl => try declarations.put(arena, .{ .source = index, .position = c.hir.spanOf(@intCast(node)).start }, @intCast(node)),
+                .fn_decl, .var_decl, .let_decl, .const_decl, .interface_decl, .type_alias_decl, .namespace_decl => try declarations.put(arena, .{ .source = index, .position = c.hir.spanOf(@intCast(node)).start }, @intCast(node)),
                 else => {},
             }
         }
@@ -170,10 +220,21 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         }
         const origins = try builder.query.resolve(sources[binding.source].path, binding.name);
         if (!origins.complete or origins.ambiguous) continue;
+        if (origins.namespace) |origin| {
+            if (by_path.get(origin.path)) |owner| {
+                if (declarations.get(.{ .source = owner, .position = origin.position })) |node| {
+                    if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl) {
+                        try appendNamespaceValueRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, &values);
+                        try appendNamespaceTypeRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, &types);
+                    }
+                }
+            }
+        }
         for (0..2) |space| {
             const origin = (if (space == 1) origins.value orelse origins.type_only_value else origins.type) orelse continue;
             const owner = by_path.get(origin.path) orelse continue;
             const node = declarations.get(.{ .source = owner, .position = origin.position }) orelse continue;
+            if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl) continue;
             const declaration = try builder.declaration(.{ .source = owner, .node = node });
             const entry = try supported.getOrPut(arena, declaration);
             if (!entry.found_existing) entry.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);

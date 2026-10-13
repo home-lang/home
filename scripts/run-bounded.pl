@@ -337,9 +337,10 @@ sub tree_footprint_mb {
     # keep it off the caller's stream. It still contributes nothing to the sum,
     # and a sample where NOTHING could be read returns undef and is counted as a
     # measurement failure by the caller.
+    # Keep the totals-only fallback when the kernel helper is unavailable.
     my $snapshot = defined($kernel_footprint_probe)
         ? capture_probe($kernel_footprint_probe, @pids)
-        : capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', @args);
+        : capture_probe({allow_nonzero => 1}, '/usr/bin/footprint', '--noCategories', @args);
     return undef unless defined $snapshot;
     my $total = 0;
     my $found = 0;

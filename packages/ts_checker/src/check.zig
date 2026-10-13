@@ -436,6 +436,10 @@ pub const ExternalResolver = struct {
         module_name: []const u8,
     };
     pub const VTable = struct {
+        /// Query an already-resolved owner without interpreting its path as
+        /// source-written module text. Optional for older resolver adapters.
+        moduleExportForPath: ?*const fn (*anyopaque, []const u8, []const u8) ?ModuleExport = null,
+        moduleExportNamesForPath: ?*const fn (*anyopaque, []const u8) ?[]const []const u8 = null,
         /// Resolve `specifier` from `containing_file`. Returns
         /// `null` when the specifier did not resolve.
         resolve: *const fn (
@@ -521,6 +525,16 @@ pub const ExternalResolver = struct {
     ) ?ModuleExport {
         const f = self.vtable.moduleExport orelse return null;
         return f(self.ptr, specifier, containing_file, name);
+    }
+
+    pub fn moduleExportForPath(self: ExternalResolver, path: []const u8, containing_file: []const u8, name: []const u8) ?ModuleExport {
+        if (self.vtable.moduleExportForPath) |query| return query(self.ptr, path, name);
+        return self.moduleExport(path, containing_file, name);
+    }
+
+    pub fn moduleExportNamesForPath(self: ExternalResolver, path: []const u8, containing_file: []const u8) ?[]const []const u8 {
+        if (self.vtable.moduleExportNamesForPath) |query| return query(self.ptr, path);
+        return self.moduleExportNames(path, containing_file);
     }
 
     pub fn moduleExportWithMode(
@@ -711,6 +725,7 @@ pub const ProgramExportedValueKind = enum {
 
 pub const ProgramExportedValue = struct {
     target_path: []const u8,
+    namespace_path: []const u8 = "",
     export_name: []const u8,
     kind: ProgramExportedValueKind,
     parameters: []const ProgramTypeReference = &.{},
@@ -7148,9 +7163,7 @@ pub const Checker = struct {
             // Program consumers cannot ask this checker's HIR to synthesize
             // a namespace value after its owner snapshot has been published.
             // Retain that value graph in the existing relocated side table.
-            if (!self.namespaceIsDeclareGlobalAugmentation(declaration)) {
-                _ = try self.namespaceValueObjectType(declaration);
-            }
+            _ = try self.namespaceValueObjectType(declaration);
         }
     }
 
@@ -7171,6 +7184,10 @@ pub const Checker = struct {
             else
                 continue;
             const kind = self.hir.kindOf(declaration);
+            if (kind == .import_decl) {
+                try self.publishImportEqualsNamespaceTypes(declaration, path);
+                continue;
+            }
             if (kind == .namespace_decl) {
                 try self.publishGlobalNamespaceTypes(declaration, path);
                 continue;
@@ -7199,6 +7216,51 @@ pub const Checker = struct {
             const qualified = try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}{s}{s}", .{ path, if (path.len == 0) "" else ".", self.string_interner.get(name) });
             const key = self.string_interner.intern(qualified) catch return error.OutOfMemory;
             try self.global_namespace_type_exports.put(self.gpa, key, body);
+        }
+    }
+
+    fn publishImportEqualsNamespaceTypes(self: *Checker, node: NodeId, prefix: []const u8) CheckError!void {
+        const imp = hir_mod.importOf(self.hir, node);
+        const alias_name = self.importEqualsAliasName(node) orelse return;
+        if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return;
+        const ref = hir_mod.typeRefOf(self.hir, imp.import_equals);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
+        const root_name = if (qualifiers.len != 0 and self.hir.kindOf(qualifiers[0]) == .identifier)
+            hir_mod.identifierOf(self.hir, qualifiers[0]).name
+        else
+            ref.name;
+        const specifier = self.namespaceImportSpecifierForLocal(root_name, node) orelse return;
+        const resolver = self.external_resolver orelse return;
+        const owner = resolver.resolve(specifier, self.importer_path) orelse return;
+        var target_prefix: std.ArrayListUnmanaged(u8) = .empty;
+        defer target_prefix.deinit(self.gpa);
+        if (qualifiers.len != 0) {
+            for (qualifiers[1..]) |qualifier| {
+                if (self.hir.kindOf(qualifier) != .identifier) return;
+                try target_prefix.appendSlice(self.gpa, self.string_interner.get(hir_mod.identifierOf(self.hir, qualifier).name));
+                try target_prefix.append(self.gpa, '.');
+            }
+            try target_prefix.appendSlice(self.gpa, self.string_interner.get(ref.name));
+        }
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.target_path, owner.path) or entry.contextual_only or entry.projection_only) continue;
+            var suffix = entry.namespace_path;
+            if (target_prefix.items.len != 0) {
+                if (std.mem.eql(u8, suffix, target_prefix.items)) {
+                    suffix = "";
+                } else if (suffix.len > target_prefix.items.len and std.mem.startsWith(u8, suffix, target_prefix.items) and suffix[target_prefix.items.len] == '.') {
+                    suffix = suffix[target_prefix.items.len + 1 ..];
+                } else continue;
+            }
+            const definition = self.programGenericDefinition(entry.declaration) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnsupportedProgramType => continue,
+            };
+            const qualified = try std.fmt.allocPrint(self.diag_arena.allocator(), "{s}{s}{s}.{s}{s}{s}", .{
+                prefix, if (prefix.len == 0) "" else ".", self.string_interner.get(alias_name), suffix, if (suffix.len == 0) "" else ".", entry.export_name,
+            });
+            const key = self.string_interner.intern(qualified) catch return error.OutOfMemory;
+            try self.global_namespace_type_exports.put(self.gpa, key, definition);
         }
     }
 
@@ -25746,6 +25808,20 @@ pub const Checker = struct {
         // visible in the root block we treat it as resolved.
         if (self.hir.kindOf(qs[0]) != .identifier) return false;
         const root_name = hir_mod.identifierOf(self.hir, qs[0]).name;
+        // Cross-file augmentation aliases have no local namespace HIR node.
+        // An exact retained type export proves this annotation resolved;
+        // do not erase its instantiated member types during error recovery.
+        var qualified: std.ArrayListUnmanaged(u8) = .empty;
+        defer qualified.deinit(self.gpa);
+        for (qs) |qualifier| {
+            if (self.hir.kindOf(qualifier) != .identifier) return false;
+            qualified.appendSlice(self.gpa, self.string_interner.get(hir_mod.identifierOf(self.hir, qualifier).name)) catch return true;
+            qualified.append(self.gpa, '.') catch return true;
+        }
+        qualified.appendSlice(self.gpa, self.string_interner.get(hir_mod.typeRefOf(self.hir, type_annotation).name)) catch return true;
+        if (self.string_interner.lookup(qualified.items)) |key| {
+            if (self.global_namespace_type_exports.contains(key)) return false;
+        }
         if (self.ambientGlobalNamespaceRootExists(root_name)) return false;
         if (self.findUmdNamespaceExportSection(root_name, type_annotation) != null or
             self.programHasUmdGlobalName(root_name)) return false;
@@ -83749,7 +83825,10 @@ pub const Checker = struct {
             else
                 continue;
             if (!self.namespaceExportCreatesValue(decl)) continue;
-            const name = self.declarationName(decl) orelse continue;
+            const name = if (self.hir.kindOf(decl) == .import_decl)
+                (self.importEqualsAliasName(decl) orelse continue)
+            else
+                (self.declarationName(decl) orelse continue);
             const member_t = switch (self.hir.kindOf(decl)) {
                 .var_decl, .let_decl, .const_decl => blk: {
                     const variable = hir_mod.varDeclOf(self.hir, decl);
@@ -83779,6 +83858,7 @@ pub const Checker = struct {
                 },
                 .enum_decl => try self.enumNamespaceValueType(decl, name),
                 .namespace_decl => try self.namespaceValueObjectType(decl),
+                .import_decl => try self.importEqualsNamespaceValueType(decl),
                 else => types.Primitive.any,
             };
             try members.append(self.gpa, .{
@@ -83792,6 +83872,32 @@ pub const Checker = struct {
         const ns_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         try self.namespace_value_object_types.put(self.gpa, ns_node, ns_t);
         return ns_t;
+    }
+
+    fn importEqualsNamespaceValueType(self: *Checker, node: NodeId) CheckError!TypeId {
+        const imp = hir_mod.importOf(self.hir, node);
+        if (imp.import_equals == hir_mod.none_node_id or self.hir.kindOf(imp.import_equals) != .type_ref) return types.Primitive.any;
+        const ref = hir_mod.typeRefOf(self.hir, imp.import_equals);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, imp.import_equals);
+        const root_name = if (qualifiers.len != 0 and self.hir.kindOf(qualifiers[0]) == .identifier)
+            hir_mod.identifierOf(self.hir, qualifiers[0]).name
+        else
+            ref.name;
+        const module_value = try self.moduleNamespaceTypeForLocalImport(root_name, node);
+        var value_type = module_value orelse blk: {
+            const target = self.resolveImportEqualsTargetDecl(node, imp) orelse return types.Primitive.any;
+            break :blk try self.exportedValueTypeForNamespaceMember(target, self.declarationName(target) orelse ref.name);
+        };
+        if (module_value != null and qualifiers.len != 0) {
+            for (qualifiers[1..]) |qualifier| {
+                if (self.hir.kindOf(qualifier) != .identifier) return types.Primitive.any;
+                value_type = self.interner.objectMember(value_type, hir_mod.identifierOf(self.hir, qualifier).name) orelse return types.Primitive.any;
+            }
+            value_type = self.interner.objectMember(value_type, ref.name) orelse return types.Primitive.any;
+        }
+        if (imp.default_binding != hir_mod.none_node_id) self.hir.setType(imp.default_binding, value_type);
+        self.hir.setType(node, value_type);
+        return value_type;
     }
 
     fn ambientNamespaceMergedFunctionValueType(
@@ -111098,6 +111204,7 @@ pub const Checker = struct {
             hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
         {
             for (self.program_exported_values) |value| {
+                if (value.namespace_path.len != 0) continue;
                 if (!std.mem.eql(u8, value.export_name, "default")) continue;
                 if (try self.programImportTargetsPath(import_node, spec, value.target_path)) return self.programExportedValueType(value);
             }
@@ -111109,6 +111216,7 @@ pub const Checker = struct {
             const export_name = self.string_interner.get(imported.imported);
             var matched: ?ProgramExportedValue = null;
             for (self.program_exported_values) |value| {
+                if (value.namespace_path.len != 0) continue;
                 if (!std.mem.eql(u8, value.export_name, export_name)) continue;
                 if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
                 if (matched != null) return types.Primitive.any;
@@ -111131,6 +111239,7 @@ pub const Checker = struct {
         const export_name = self.string_interner.get(name);
         var matched: ?ProgramExportedValue = null;
         for (self.program_exported_values) |value| {
+            if (value.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, value.export_name, export_name)) continue;
             if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
             if (matched != null) return types.Primitive.any;
@@ -111183,6 +111292,7 @@ pub const Checker = struct {
 
         var matched: ?ProgramExportedValue = null;
         for (self.program_exported_values) |value| {
+            if (value.namespace_path.len != 0) continue;
             if (!value.projection_only or value.declaration == null) continue;
             if (!std.mem.eql(u8, value.export_name, self.string_interner.get(member.name))) continue;
             if (!try self.programImportTargetsPath(
@@ -112853,7 +112963,7 @@ pub const Checker = struct {
             const path = self.string_interner.get(item.path);
             // Enumeration must be complete. Individual unresolved exports
             // remain `any` without erasing exact sibling members.
-            const names = resolver.moduleExportNames(path, self.importer_path) orelse {
+            const names = resolver.moduleExportNamesForPath(path, self.importer_path) orelse {
                 var known_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
                 defer known_members.deinit(self.gpa);
                 for (self.program_exported_classes) |class| {
@@ -112869,6 +112979,7 @@ pub const Checker = struct {
                     });
                 }
                 for (self.program_exported_values) |value| {
+                    if (value.namespace_path.len != 0) continue;
                     if (!std.mem.eql(u8, value.target_path, path)) continue;
                     try self.appendOrReplaceObjectMember(&known_members, .{
                         .name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory,
@@ -112893,7 +113004,7 @@ pub const Checker = struct {
                 const is_optional_default = index == names.len;
                 const name = if (is_optional_default) "default" else names[index];
                 const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
-                const info = resolver.moduleExport(path, self.importer_path, name) orelse {
+                const info = resolver.moduleExportForPath(path, self.importer_path, name) orelse {
                     if (is_optional_default) continue;
                     try members.append(self.gpa, .{ .name = member_name, .type = types.Primitive.any, .is_optional = false, .is_readonly = true, .is_method = false });
                     continue;
@@ -112912,6 +113023,8 @@ pub const Checker = struct {
                             break :blk fresh;
                         };
                     }
+                } else if (try self.programNamespaceValueType(path, name)) |namespace_type| {
+                    member_type = namespace_type;
                 } else {
                     for (self.program_exported_classes) |class| {
                         if (class.local_only) continue;
@@ -112922,6 +113035,7 @@ pub const Checker = struct {
                         break;
                     } else {
                         for (self.program_exported_values) |value| {
+                            if (value.namespace_path.len != 0) continue;
                             if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
                             member_type = (try self.programExportedValueType(value)) orelse types.Primitive.any;
                             break;
@@ -112935,6 +113049,42 @@ pub const Checker = struct {
         try self.program_module_namespace_types.ensureUnusedCapacity(self.gpa, @intCast(pending.items.len));
         for (pending.items) |item| self.program_module_namespace_types.putAssumeCapacity(item.path, item.type);
         return root_type;
+    }
+
+    fn programNamespaceValueType(self: *Checker, path: []const u8, namespace_path: []const u8) CheckError!?TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (self.program_exported_values) |value| {
+            if (!std.mem.eql(u8, value.target_path, path)) continue;
+            if (std.mem.eql(u8, value.namespace_path, namespace_path)) {
+                try self.appendOrReplaceObjectMember(&members, .{
+                    .name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory,
+                    .type = (try self.programExportedValueType(value)) orelse types.Primitive.any,
+                    .is_optional = false,
+                    .is_readonly = true,
+                    .is_method = value.kind == .function,
+                });
+                continue;
+            }
+            if (value.namespace_path.len <= namespace_path.len or
+                !std.mem.startsWith(u8, value.namespace_path, namespace_path) or
+                value.namespace_path[namespace_path.len] != '.') continue;
+            const suffix = value.namespace_path[namespace_path.len + 1 ..];
+            const child_name = suffix[0 .. std.mem.indexOfScalar(u8, suffix, '.') orelse suffix.len];
+            const child_id = self.string_interner.intern(child_name) catch return error.OutOfMemory;
+            var present = false;
+            for (members.items) |member| if (member.name == child_id) {
+                present = true;
+                break;
+            };
+            if (present) continue;
+            const child_path = try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ namespace_path, child_name });
+            defer self.gpa.free(child_path);
+            const child_type = (try self.programNamespaceValueType(path, child_path)) orelse continue;
+            try members.append(self.gpa, .{ .name = child_id, .type = child_type, .is_optional = false, .is_readonly = true, .is_method = false });
+        }
+        if (members.items.len == 0) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
     fn unavailableProgramModuleNamespace(self: *Checker, path: hir_mod.StringId) CheckError!?TypeId {
@@ -141927,6 +142077,8 @@ pub const Checker = struct {
         if (qualifiers.len == 0) {
             return self.unqualifiedImportEqualsTargetHasRuntimeValue(import_node, r.name, depth + 1);
         }
+        if (self.hir.kindOf(qualifiers[0]) == .identifier and
+            self.unqualifiedImportEqualsTargetHasRuntimeValue(import_node, hir_mod.identifierOf(self.hir, qualifiers[0]).name, depth + 1)) return true;
         const target = self.importEqualsTargetDecl(imp.import_equals) orelse return false;
         if (self.declCreatesRuntimeValue(target, depth + 1)) return true;
         return self.importEqualsMergedTargetHasRuntimeValue(imp.import_equals, depth + 1);
@@ -141971,6 +142123,12 @@ pub const Checker = struct {
             };
             for (statements) |raw| {
                 const decl = self.unwrapExportDecl(raw);
+                if (self.hir.kindOf(decl) == .import_decl) {
+                    const imp = hir_mod.importOf(self.hir, decl);
+                    if (!imp.is_type_only and imp.namespace_binding != hir_mod.none_node_id and
+                        self.hir.kindOf(imp.namespace_binding) == .identifier and
+                        hir_mod.identifierOf(self.hir, imp.namespace_binding).name == name) return true;
+                }
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name != name) continue;
                 if (self.declCreatesRuntimeValue(decl, depth + 1)) return true;

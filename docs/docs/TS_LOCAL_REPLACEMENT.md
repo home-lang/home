@@ -477,3 +477,34 @@ has SHA-256
 `5458d945512b84a9261bb4efd1edd47d29241243221592f41e2f1afbd581e02e`;
 all 1718 payload hashes were verified. Neither this project nor the
 complete `~/Code` tree is replacement-qualified.
+
+## Global augmentation aliases
+
+Program's global declaration index now includes the actual `declare global`
+scopes of external modules. It excludes ordinary module locals and namespaces
+named `global`. Augmentation providers can depend on imported declarations;
+those dependencies receive checked owners before an alias is published.
+
+Import-equals namespace aliases retain their module value signatures and their
+qualified type definitions. Exported namespace functions and variables travel
+through declaration routes with their namespace path, keeping nested exports
+separate from a module's top-level members. Entity-name import aliases also
+retain namespace meaning in the binder.
+
+The CLI resolver has separate callbacks for queries against a resolved owner
+path. Reinterpreting a canonical relative owner path as package text previously
+made namespace enumeration fail, replacing an exact shape with an open `any`
+index and accepting missing members. Owner-path queries now preserve the exact
+export table without changing source-written module resolution.
+
+The qualified annotation recovery check also recognizes an exact retained
+global namespace type export. A focused negative control proved that
+`Api.Box<number>.value` was correctly instantiated as `number`, then erased to
+`any` by the later unresolved-root check. The corrected check preserves that
+type and reports TS2322 when it is assigned to `string`.
+
+The bounded supervisor now requests `footprint --noCategories`: it needs the
+charged footprint total, not region categorization. The same process headers
+are counted once, and auxiliary totals remain excluded. Probe deadlines,
+fail-closed behavior, memory limits, and disk floors are unchanged. Existing
+parser, stalled-probe cleanup, and all six isolated disk/scanner controls pass.
