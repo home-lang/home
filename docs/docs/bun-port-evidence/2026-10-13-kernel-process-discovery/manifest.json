@@ -1,0 +1,226 @@
+{
+  "schema": 1,
+  "source_hashes": [
+    {
+      "file": "scripts/run-bounded.pl",
+      "sha256": "8c59cf348f50819e5694589155bc1dd872a797e40f292e760175b2bcf40efcb1"
+    },
+    {
+      "file": "scripts/process-snapshot.c",
+      "sha256": "582b4dbb40e600d22a459b39e717c8dc9b9642bf5cf9cc0ec3772fa764b6f6cb"
+    },
+    {
+      "file": "scripts/tests/test-run-bounded-process-snapshot.py",
+      "sha256": "93be6dda0b1f8048689f796de9832f666d13346ab887b970ec8df179b9ace81f"
+    },
+    {
+      "file": "scripts/tests/test-run-bounded-probes.py",
+      "sha256": "eadf1cb594046bb6368ec1f55185674a0d0b7afe00cc09d0a463dc8a9294e8fd"
+    }
+  ],
+  "results": {
+    "kernel_process_snapshots": 3,
+    "exec_identity_preserved": true,
+    "detached_descendant_cleanup": true,
+    "memory_ceiling_enforced": true,
+    "legacy_stalled_probe_cleanup": true,
+    "disk_controls_passed": 6,
+    "inspector_baseline_stop": 123,
+    "inspector_build_stop": 125,
+    "inspector_repair_pass_credit": false
+  },
+  "limitations": [
+    "macOS kernel process snapshot; other-platform acceptance remains incomplete.",
+    "Initial libproc prototype did not produce a complete snapshot; it is not selected. Final implementation uses the complete KERN_PROC_ALL snapshot.",
+    "Filesystem-helper proposal was unverified after its compiler timeout and removed from guard source; its draft is preserved only as investigative evidence.",
+    "Inspector recovery bb57ac090 still requires a normally rebuilt executable and runtime tests."
+  ],
+  "files": [
+    {
+      "file": "build-kernel-probe.log",
+      "archive": "raw/build-kernel-probe.log.gz",
+      "bytes": 262,
+      "sha256": "6fd0599961f57f401ec328a0d5eade1f6bba1a7bd5ef9baea77cca75d1670cdc"
+    },
+    {
+      "file": "guard-footprint-kernel-process.log",
+      "archive": "raw/guard-footprint-kernel-process.log.gz",
+      "bytes": 73,
+      "sha256": "55b77bd36a5e811641722960bf878dc7ba1e2b9cd5b8dd086d8cade29574bd6c"
+    },
+    {
+      "file": "guard-probes-kernel-process.log",
+      "archive": "raw/guard-probes-kernel-process.log.gz",
+      "bytes": 104,
+      "sha256": "7a9290a412e031d0ebe2aee743eccbe2b6906000c0067967d05737785ef16b09"
+    },
+    {
+      "file": "guard-process-disk-results/admission.log",
+      "archive": "raw/guard-process-disk-results/admission.log.gz",
+      "bytes": 81,
+      "sha256": "2acafb327a5ac6cb6d167bc7b84bbef80b6631a500ad62d161969fa6d9b0318b"
+    },
+    {
+      "file": "guard-process-disk-results/child-exit-123",
+      "archive": "raw/guard-process-disk-results/child-exit-123.gz",
+      "bytes": 19,
+      "sha256": "ea4f442eb4bd8e8cb1c9c1ddcf4ba31667e8bef64686b608158254dc8575ee7b"
+    },
+    {
+      "file": "guard-process-disk-results/positive.log",
+      "archive": "raw/guard-process-disk-results/positive.log.gz",
+      "bytes": 22,
+      "sha256": "3df6880c359375a1e9c315b740ae365afab34ee55ca2238eb2f9dd4158511daa"
+    },
+    {
+      "file": "guard-process-disk-results/results.json",
+      "archive": "raw/guard-process-disk-results/results.json.gz",
+      "bytes": 1531,
+      "sha256": "4435c6a589520c2071a686a9f5b3941237d948960da71721fc0387de805acf05"
+    },
+    {
+      "file": "guard-process-disk-results/running.log",
+      "archive": "raw/guard-process-disk-results/running.log.gz",
+      "bytes": 85,
+      "sha256": "b7e91b58cb99e6996adf9bc50cc2b0c8d3964fbaf733537584cc13fc14db1ce2"
+    },
+    {
+      "file": "guard-process-disk-results/running.pid",
+      "archive": "raw/guard-process-disk-results/running.pid.gz",
+      "bytes": 5,
+      "sha256": "2ef407e53acc91d5f63084337c35c1c7a72d74cdecf0721173dd9552265413dc"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-child-123.log",
+      "archive": "raw/guard-process-disk-results/scanner-child-123.log.gz",
+      "bytes": 191,
+      "sha256": "88e346092d72732c9a05c62ecf86ddf2cf8a30f9c2b2a29fbe9dabaae25b7430"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-child-123.tsv",
+      "archive": "raw/guard-process-disk-results/scanner-child-123.tsv.gz",
+      "bytes": 302,
+      "sha256": "1033cc66c20ae3bb6e8366844edafbb3de0c2d4c2c841e555d46c8387e30c385"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-child-123.tsv.logs/000000.log",
+      "archive": "raw/guard-process-disk-results/scanner-child-123.tsv.logs/000000.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-disk-stop.log",
+      "archive": "raw/guard-process-disk-results/scanner-disk-stop.log.gz",
+      "bytes": 191,
+      "sha256": "5b9d3246a81079b062d23736ef06f8dcc5549644e708fcf73d2ceee9e40c759c"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-disk-stop.tsv",
+      "archive": "raw/guard-process-disk-results/scanner-disk-stop.tsv.gz",
+      "bytes": 308,
+      "sha256": "04e4041dd66c64376cadb77c009c72587dc7643e73238f567f743d8d6bfea11d"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-disk-stop.tsv.logs/000000.log",
+      "archive": "raw/guard-process-disk-results/scanner-disk-stop.tsv.logs/000000.log.gz",
+      "bytes": 81,
+      "sha256": "2ae8fd3caae6af7c9bafb9dc84acf84a4a1e20edd96fee058992910a19568a1e"
+    },
+    {
+      "file": "guard-process-disk-results/scanner-fixture/control.test.js",
+      "archive": "raw/guard-process-disk-results/scanner-fixture/control.test.js.gz",
+      "bytes": 37,
+      "sha256": "7f27ecf69b3b0edf289608d48ff6eaa7473b71da2d965bc58242126d194612e7"
+    },
+    {
+      "file": "guard-process-disk-results/unmeasurable.log",
+      "archive": "raw/guard-process-disk-results/unmeasurable.log.gz",
+      "bytes": 70,
+      "sha256": "86f916174fb4579eef046b07c12ebe9b0df1a1370015adf3d81831b554944de7"
+    },
+    {
+      "file": "guard-process-disk.log",
+      "archive": "raw/guard-process-disk.log.gz",
+      "bytes": 1286,
+      "sha256": "844227e75ea17bd1e6ee4b4594a3e83c399f1416e1958cae317d38501e2abb45"
+    },
+    {
+      "file": "guard-process-parser.log",
+      "archive": "raw/guard-process-parser.log.gz",
+      "bytes": 81,
+      "sha256": "b488de8e95cef9b0d5df8c5a275ad13b4249db9697186dbdae0678df12753f9c"
+    },
+    {
+      "file": "kernel-process-snapshot-final.json",
+      "archive": "raw/kernel-process-snapshot-final.json.gz",
+      "bytes": 843,
+      "sha256": "76da7c1e03287c0f006b82642f6f000db25a29326ee600bcce4cddac7a4c4484"
+    },
+    {
+      "file": "kernel-process-snapshot-state-test.log",
+      "archive": "raw/kernel-process-snapshot-state-test.log.gz",
+      "bytes": 72,
+      "sha256": "28c69743548db45945ca47488518d4e71af9656bbc002fd2b126f9a19a167d1a"
+    },
+    {
+      "file": "kernel-process-snapshot-test.log",
+      "archive": "raw/kernel-process-snapshot-test.log.gz",
+      "bytes": 72,
+      "sha256": "28c69743548db45945ca47488518d4e71af9656bbc002fd2b126f9a19a167d1a"
+    },
+    {
+      "file": "kernel-process-snapshot.json",
+      "archive": "raw/kernel-process-snapshot.json.gz",
+      "bytes": 501,
+      "sha256": "4a037e167de388b0ad3a226a3348353b5e31a6231328809f129edbbd22f48670"
+    },
+    {
+      "file": "kernel-retry-stops.json",
+      "archive": "raw/kernel-retry-stops.json.gz",
+      "bytes": 271,
+      "sha256": "0fe6bd6fc037e027db215a849d1aa8e097da4e997aa71fce9edb3b3bae79a59c"
+    },
+    {
+      "file": "kernel-sysctl-process-snapshot.json",
+      "archive": "raw/kernel-sysctl-process-snapshot.json.gz",
+      "bytes": 924,
+      "sha256": "f752dbfeb2c2a397e8f3e43a8ffa3982bb73db024c052b3215d783b281da9aa7"
+    },
+    {
+      "file": "libproc-process-snapshot-draft.c",
+      "archive": "raw/libproc-process-snapshot-draft.c.gz",
+      "bytes": 1197,
+      "sha256": "84eef0156ea13868d1ca9f515fd4e41c642048d7d1314c4fc37c472bf61e83ae"
+    },
+    {
+      "file": "payload-baseline-resumed.log",
+      "archive": "raw/payload-baseline-resumed.log.gz",
+      "bytes": 269,
+      "sha256": "22df2d4f87a9662a29787a5a77f14f4265b84a76d794190deb3a98c8af14dcd9"
+    },
+    {
+      "file": "process-discovery-recovery.json",
+      "archive": "raw/process-discovery-recovery.json.gz",
+      "bytes": 194,
+      "sha256": "3c5401a8506e5b40dfb0d8e2e2d56aaf20c584847ba044fd9bad5098b937b07d"
+    },
+    {
+      "file": "process-snapshot-diagnostic.log",
+      "archive": "raw/process-snapshot-diagnostic.log.gz",
+      "bytes": 303,
+      "sha256": "4aa20a47267b8459a6d16ca7a43197a7be462882d4edeabe66cb8f8637ef45b4"
+    },
+    {
+      "file": "resumed-probe-diagnostic.json",
+      "archive": "raw/resumed-probe-diagnostic.json.gz",
+      "bytes": 238,
+      "sha256": "4ab380a8e116adb03695bde49db117ff9380658021d4d281ce2d86aca7d67c0a"
+    },
+    {
+      "file": "volume-free-draft.c",
+      "archive": "raw/volume-free-draft.c.gz",
+      "bytes": 666,
+      "sha256": "af05bef26f39fc7ba16983b125451ba80ecc5470ed057b41ae96ab7659b4a2b2"
+    }
+  ]
+}
