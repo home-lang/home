@@ -1,6 +1,4 @@
 const std = @import("std");
-const posix = std.posix;
-const fs = std.fs;
 
 /// Log levels
 pub const Level = enum(u8) {
@@ -120,16 +118,18 @@ pub const Handler = struct {
 /// Console handler with optional colors
 pub const ConsoleHandler = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     use_colors: bool,
     use_stderr: bool,
     min_level: Level,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .use_colors = true,
             .use_stderr = false,
             .min_level = .trace,
@@ -151,11 +151,14 @@ pub const ConsoleHandler = struct {
     fn write(ptr: *anyopaque, record: Record) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        if (@intFromEnum(record.level) < @intFromEnum(self.min_level)) {
+        if (@backingInt(record.level) < @backingInt(self.min_level)) {
             return;
         }
 
-        const writer = if (self.use_stderr) std.io.getStdErr().writer() else std.io.getStdOut().writer();
+        const file: std.Io.File = if (self.use_stderr) .stderr() else .stdout();
+        var buffer: [4096]u8 = undefined;
+        var file_writer = file.writerStreaming(self.io, &buffer);
+        const writer = &file_writer.interface;
 
         // Format: [LEVEL] timestamp message {fields}
         if (self.use_colors) {
@@ -190,6 +193,7 @@ pub const ConsoleHandler = struct {
         }
 
         try writer.writeAll("\n");
+        try writer.flush();
     }
 
     fn flush(_: *anyopaque) anyerror!void {
@@ -211,25 +215,27 @@ pub const ConsoleHandler = struct {
 /// JSON handler for structured logging
 pub const JsonHandler = struct {
     allocator: std.mem.Allocator,
-    writer: std.fs.File.Writer,
+    io: std.Io,
+    file: std.Io.File,
     min_level: Level,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, file: std.fs.File) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .writer = file.writer(),
+            .io = io,
+            .file = file,
             .min_level = .trace,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
 
-    pub fn initStdout(allocator: std.mem.Allocator) !*Self {
-        return init(allocator, std.io.getStdOut());
+    pub fn initStdout(allocator: std.mem.Allocator, io: std.Io) !*Self {
+        return init(allocator, io, .stdout());
     }
 
     pub fn deinit(self: *Self) void {
@@ -246,40 +252,45 @@ pub const JsonHandler = struct {
     fn write(ptr: *anyopaque, record: Record) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        if (@intFromEnum(record.level) < @intFromEnum(self.min_level)) {
+        if (@backingInt(record.level) < @backingInt(self.min_level)) {
             return;
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        var buffer: [4096]u8 = undefined;
+        var file_writer = self.file.writerStreaming(self.io, &buffer);
+        const writer = &file_writer.interface;
 
         const dt = timestampToDateTime(record.timestamp);
 
-        try self.writer.writeAll("{");
-        try self.writer.print("\"level\":\"{s}\",", .{record.level.toString()});
-        try self.writer.print("\"timestamp\":\"{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\",", .{
+        try writer.writeAll("{");
+        try writer.print("\"level\":\"{s}\",", .{record.level.toString()});
+        try writer.print("\"timestamp\":\"{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\",", .{
             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
         });
 
         if (record.logger_name) |name| {
-            try self.writer.print("\"logger\":\"{s}\",", .{name});
+            try writer.print("\"logger\":\"{s}\",", .{name});
         }
 
-        try self.writer.print("\"message\":\"{s}\"", .{record.message});
+        try writer.print("\"message\":\"{s}\"", .{record.message});
 
         for (record.fields) |field| {
-            try self.writer.print(",\"{s}\":", .{field.key});
-            try field.formatValue(self.writer);
+            try writer.print(",\"{s}\":", .{field.key});
+            try field.formatValue(writer);
         }
 
-        try self.writer.writeAll("}\n");
+        try writer.writeAll("}\n");
+        try writer.flush();
     }
 
     fn flush(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        // File writers are typically buffered, but std doesn't expose flush
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.file.sync(self.io);
     }
 
     fn deinitFn(ptr: *anyopaque) void {
@@ -297,32 +308,34 @@ pub const JsonHandler = struct {
 /// File handler with optional rotation
 pub const FileHandler = struct {
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    io: std.Io,
+    file: std.Io.File,
     path: []const u8,
     min_level: Level,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     max_size: ?u64 = null,
     current_size: u64 = 0,
     rotate_count: u8 = 5,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) !*Self {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = false });
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !*Self {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false });
 
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .file = file,
             .path = try allocator.dupe(u8, path),
             .min_level = .trace,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        self.file.close();
+        self.file.close(self.io);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
     }
@@ -341,14 +354,16 @@ pub const FileHandler = struct {
     fn write(ptr: *anyopaque, record: Record) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        if (@intFromEnum(record.level) < @intFromEnum(self.min_level)) {
+        if (@backingInt(record.level) < @backingInt(self.min_level)) {
             return;
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const writer = self.file.writer();
+        var buffer: [4096]u8 = undefined;
+        var file_writer = self.file.writerStreaming(self.io, &buffer);
+        const writer = &file_writer.interface;
 
         // Format log line
         const dt = timestampToDateTime(record.timestamp);
@@ -381,6 +396,7 @@ pub const FileHandler = struct {
         }
 
         try writer.writeAll("\n");
+        try writer.flush();
         line_len += 1;
 
         self.current_size += line_len;
@@ -394,7 +410,7 @@ pub const FileHandler = struct {
     }
 
     fn rotate(self: *Self) !void {
-        self.file.close();
+        self.file.close(self.io);
 
         // Rotate files: log.4 -> log.5, log.3 -> log.4, etc.
         var i: u8 = self.rotate_count;
@@ -411,19 +427,19 @@ pub const FileHandler = struct {
 
             const new_name = std.fmt.bufPrint(&new_buf, "{s}.{d}", .{ self.path, i }) catch continue;
 
-            std.fs.cwd().rename(old_name, new_name) catch {};
+            std.Io.Dir.cwd().rename(old_name, std.Io.Dir.cwd(), new_name, self.io) catch {};
         }
 
         // Create new file
-        self.file = try std.fs.cwd().createFile(self.path, .{ .truncate = true });
+        self.file = try std.Io.Dir.cwd().createFile(self.io, self.path, .{ .truncate = true });
         self.current_size = 0;
     }
 
     fn flush(ptr: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        try self.file.sync();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.file.sync(self.io);
     }
 
     fn deinitFn(ptr: *anyopaque) void {
@@ -441,8 +457,9 @@ pub const FileHandler = struct {
 /// Memory handler for testing
 pub const MemoryHandler = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     records: std.ArrayListUnmanaged(StoredRecord),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const Self = @This();
 
@@ -453,12 +470,13 @@ pub const MemoryHandler = struct {
         logger_name: ?[]const u8,
     };
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
+            .io = io,
             .records = .empty,
-            .mutex = .{},
+            .mutex = .init,
         };
         return self;
     }
@@ -480,14 +498,14 @@ pub const MemoryHandler = struct {
     }
 
     pub fn getRecords(self: *Self) []const StoredRecord {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.records.items;
     }
 
     pub fn clear(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         for (self.records.items) |rec| {
             self.allocator.free(rec.message);
             if (rec.logger_name) |n| self.allocator.free(n);
@@ -498,8 +516,8 @@ pub const MemoryHandler = struct {
     fn write(ptr: *anyopaque, record: Record) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         try self.records.append(self.allocator, .{
             .level = record.level,
@@ -526,6 +544,7 @@ pub const MemoryHandler = struct {
 /// Logger
 pub const Logger = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     name: ?[]const u8,
     handlers: std.ArrayListUnmanaged(Handler),
     min_level: Level,
@@ -533,9 +552,10 @@ pub const Logger = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, name: ?[]const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, name: ?[]const u8) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .name = name,
             .handlers = .empty,
             .min_level = .trace,
@@ -557,20 +577,15 @@ pub const Logger = struct {
         self.min_level = level;
     }
 
-    fn getTimestamp() i64 {
-        const ts = posix.clock_gettime(.REALTIME) catch return 0;
-        return ts.sec;
-    }
-
     pub fn log(self: *Self, level: Level, message: []const u8, fields: []const Field) void {
-        if (@intFromEnum(level) < @intFromEnum(self.min_level)) {
+        if (@backingInt(level) < @backingInt(self.min_level)) {
             return;
         }
 
         const record = Record{
             .level = level,
             .message = message,
-            .timestamp = getTimestamp(),
+            .timestamp = std.Io.Clock.real.now(self.io).toSeconds(),
             .fields = fields,
             .logger_name = self.name,
         };
@@ -645,7 +660,7 @@ pub const Logger = struct {
 
     /// Create a child logger
     pub fn child(self: *Self, name: []const u8) Self {
-        var c = Logger.init(self.allocator, name);
+        var c = Logger.init(self.allocator, self.io, name);
         c.parent = self;
         c.min_level = self.min_level;
         return c;
@@ -654,17 +669,17 @@ pub const Logger = struct {
 
 /// Global default logger
 var global_logger: ?*Logger = null;
-var global_mutex: std.Thread.Mutex = .{};
+var global_mutex: std.Io.Mutex = .init;
 
-pub fn getGlobalLogger() ?*Logger {
-    global_mutex.lock();
-    defer global_mutex.unlock();
+pub fn getGlobalLogger(io: std.Io) ?*Logger {
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
     return global_logger;
 }
 
-pub fn setGlobalLogger(logger: *Logger) void {
-    global_mutex.lock();
-    defer global_mutex.unlock();
+pub fn setGlobalLogger(io: std.Io, logger: *Logger) void {
+    global_mutex.lockUncancelable(io);
+    defer global_mutex.unlock(io);
     global_logger = logger;
 }
 
@@ -743,9 +758,9 @@ test "field creation" {
 test "memory handler" {
     const allocator = std.testing.allocator;
 
-    const mem_handler = try MemoryHandler.init(allocator);
+    const mem_handler = try MemoryHandler.init(allocator, std.testing.io);
 
-    var logger = Logger.init(allocator, "test");
+    var logger = Logger.init(allocator, std.testing.io, "test");
     defer logger.deinit();
 
     try logger.addHandler(mem_handler.handler());
@@ -768,9 +783,9 @@ test "memory handler" {
 test "log level filtering" {
     const allocator = std.testing.allocator;
 
-    const mem_handler = try MemoryHandler.init(allocator);
+    const mem_handler = try MemoryHandler.init(allocator, std.testing.io);
 
-    var logger = Logger.init(allocator, null);
+    var logger = Logger.init(allocator, std.testing.io, null);
     defer logger.deinit();
 
     try logger.addHandler(mem_handler.handler());
@@ -790,9 +805,9 @@ test "log level filtering" {
 test "child logger" {
     const allocator = std.testing.allocator;
 
-    const mem_handler = try MemoryHandler.init(allocator);
+    const mem_handler = try MemoryHandler.init(allocator, std.testing.io);
 
-    var parent = Logger.init(allocator, "parent");
+    var parent = Logger.init(allocator, std.testing.io, "parent");
     defer parent.deinit();
 
     try parent.addHandler(mem_handler.handler());
