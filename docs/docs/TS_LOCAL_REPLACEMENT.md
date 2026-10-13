@@ -324,3 +324,46 @@ retains the module gates, source/image hashes, synthetic inputs, raw CLI
 observations and the redacted failed project outcome. Its SHA-256 is
 `0767a0a44663b461158e0080459b20755c1b93733da7a0a56a98164d03a3d358`;
 all 1,511 payload hashes were verified.
+
+## Lazy namespace declaration growth controls
+
+Forward function signatures exposed another source of recursive expansion:
+lowering an annotation eagerly copied unfinished namespace interfaces. Those
+annotations now retain an owned declaration reference and its exact arguments;
+member and `keyof` operations materialize the surface they need. A visible
+forward type alias also takes precedence over a built-in utility before the
+alias cache is populated. Compound flags are checked before reading an
+instantiation payload, and key walks snapshot compound member IDs across
+recursive interner writes.
+
+The socket fixture with forward `connect` and `listen` signatures previously
+exceeded its 180-second test deadline. It now checks in under a second with
+**373 types**, below the unchanged 1,024 bound. A separate missing-key control
+still reports TS2344. The current candidate passes **4,591 checker, 207 driver,
+273 Program and 49 CLI tests**, eight executable stream checks, all 180
+automatic-variable comparisons, 50 declaration contracts, 60 recursive
+interface observations and the four byte-identical constraint/arity diagnostics.
+
+The isolated table graph now completes within the existing memory ceiling:
+Home's measured peak process-tree footprint is **3,358 MB**. The reference
+returns zero, while Home returns one with **61 diagnostics**. All 306 graph
+hashes and 49 project-source hashes remain unchanged. The positive comparison
+still fails, so the real-project negative control remains pending; this result
+does not qualify replacement of table or the whole local tree.
+
+The [retained lazy-namespace evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-lazy-namespace-controls.tar.gz)
+contains the current module and CLI gates and the redacted project result.
+Its SHA-256 is
+`242d42e5329b7151151083008024ac13cdc32ca38b4b8d4f8a0dbb98189331a2`;
+all 1,508 payload hashes were verified.
+
+The change was revalidated after merging the upstream checked-JavaScript-array
+fix: **4,591 checker, 207 driver, 276 Program and 49 CLI tests**, eight stream
+checks and the same complete native CLI controls pass on the merged sources.
+The table replay still reports 61 Home diagnostics, with a measured peak of
+**3,338 MB** and unchanged inputs. The
+[merged-main revalidation archive](../../bench/vs_tsgo/evidence/20261013-local-tsc-lazy-namespace-main-revalidation.tar.gz)
+has SHA-256
+`a2ee38f18508f915c9a1f5c01f2014cddeba3cb1bface01beda64079e55563bd`;
+all 1,508 payload hashes were verified. The subsequent syslog-only upstream
+commits leave all 64 qualified compiler input hashes unchanged.

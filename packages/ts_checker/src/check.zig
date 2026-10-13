@@ -73992,11 +73992,24 @@ pub const Checker = struct {
     /// Preserve in-flight interfaces and recursive container aliases by
     /// declaration identity. The pool owns the arguments and completed body;
     /// no querying mapper or provisional structural surface escapes.
+    fn unpublishedNamespaceInterface(self: *Checker, declaration: NodeId) bool {
+        if (self.hir.kindOf(declaration) != .interface_decl or
+            self.typeParamNodesOfDecl(declaration).len == 0 or
+            self.primary_checked_interfaces.contains(declaration)) return false;
+        const scope = self.nearestDeclarationScope(declaration);
+        if (scope == hir_mod.none_node_id) return false;
+        const kind = self.hir.kindOf(scope);
+        return kind == .namespace_decl or kind == .module_decl;
+    }
+
     fn ownedGenericDeclarationReference(self: *Checker, anchor: NodeId, declaration: NodeId) CheckError!?TypeId {
         const owned_alias = self.hir.kindOf(declaration) == .type_alias_decl and
             self.local_alias_definitions.contains(declaration);
+        const unpublished_interface = self.unpublishedNamespaceInterface(declaration);
         if (!self.interface_lower_in_progress.contains(declaration) and
-            !self.generic_container_aliases_active.contains(declaration) and !owned_alias) return null;
+            !self.generic_container_aliases_active.contains(declaration) and !owned_alias and !unpublished_interface) return null;
+        if (unpublished_interface and !self.interface_lower_in_progress.contains(declaration) and
+            !self.generic_interfaces_by_decl.contains(declaration)) try self.checkInterfaceDecl(declaration);
         const nodes = self.typeParamNodesOfDecl(declaration);
         if (nodes.len == 0) return null;
         const ref = hir_mod.typeRefOf(self.hir, anchor);
@@ -78818,6 +78831,18 @@ pub const Checker = struct {
         if (self.typeNodeHasArraySyntax(type_node)) {
             try self.array_origin_types.put(self.gpa, result, {});
         }
+        if (result < self.interner.pool.typeCount()) {
+            const result_flags = self.interner.pool.flagsOf(result);
+            if (result_flags.is_instantiation and !result_flags.is_union and !result_flags.is_intersection) {
+                const reference = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(result)];
+                if (self.local_alias_origins.get(reference.origin)) |declaration| {
+                    if (self.unpublishedNamespaceInterface(declaration)) {
+                        self.instantiation_defer_events +%= 1;
+                        return result;
+                    }
+                }
+            }
+        }
         return self.resolveGenericType(result);
     }
 
@@ -79407,6 +79432,13 @@ pub const Checker = struct {
                 }
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
                 if (try self.programExportedTypeForLocal(r.name, type_node)) |instance| return instance;
+                if (r.qualifier_len == 0 and !self.nameHasEnclosingTypeParameter(r.name, type_node)) {
+                    if (self.findVisibleNamedTypeDecl(type_node, r.name)) |declaration| {
+                        if (self.unpublishedNamespaceInterface(declaration)) {
+                            if (try self.ownedGenericDeclarationReference(type_node, declaration)) |reference| return reference;
+                        }
+                    }
+                }
                 if (!self.nameHasEnclosingTypeParameter(r.name, type_node)) {
                     if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
                         const params = self.typeParamNodesOfDecl(decl);
@@ -87473,8 +87505,14 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
+            const surface = try self.resolveGenericType(t);
+            if (surface != t) return self.collectKeyofObjectKeys(surface, out);
+            return false;
+        }
         if (flags.is_union) {
-            const members = self.interner.unionMembers(t);
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+            defer self.gpa.free(members);
             if (members.len == 0) return true;
             var common: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer common.deinit(self.gpa);
@@ -87503,7 +87541,9 @@ pub const Checker = struct {
             return true;
         }
         if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |member| {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(t));
+            defer self.gpa.free(members);
+            for (members) |member| {
                 _ = try self.collectKeyofObjectKeys(member, out);
             }
             return true;
@@ -87571,13 +87611,19 @@ pub const Checker = struct {
     ) CheckError!void {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_instantiation and !flags.is_union and !flags.is_intersection) {
+            const surface = try self.resolveGenericType(t);
+            if (surface != t) try self.collectKeyofBroadIndexKeys(surface, out);
+            return;
+        }
         if (flags.is_type_parameter) {
             const constraint = self.typeParameterConstraint(t) orelse return;
             if (constraint == t) return;
             return try self.collectKeyofBroadIndexKeys(constraint, out);
         }
         if (flags.is_union or flags.is_intersection) {
-            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            const members = try self.gpa.dupe(TypeId, if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t));
+            defer self.gpa.free(members);
             for (members) |member| try self.collectKeyofBroadIndexKeys(member, out);
             return;
         }
@@ -100730,6 +100776,12 @@ pub const Checker = struct {
         // name takes precedence ÃÂ¢ÃÂÃÂ its mapped body drives lowering via
         // the `generic_aliases` path.
         if (self.generic_aliases.contains(r.name)) return null;
+        if (self.findVisibleNamedTypeDecl(type_node, r.name)) |declaration| {
+            if (self.hir.kindOf(declaration) == .type_alias_decl) {
+                if (!self.alias_lower_in_progress.contains(r.name)) try self.checkTypeAliasDecl(declaration);
+                return null;
+            }
+        }
         const name = self.string_interner.get(r.name);
         const args = hir_mod.typeRefArgs(self.hir, type_node);
 
@@ -178884,7 +178936,8 @@ pub const Checker = struct {
             const payload_idx = self.interner.pool.payloadOf(t);
             if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
             const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            const operand = self.typeParameterConstraint(k.operand) orelse k.operand;
+            const raw_operand = self.typeParameterConstraint(k.operand) orelse k.operand;
+            const operand = self.resolveGenericType(raw_operand) catch return false;
             if (operand >= self.interner.pool.typeCount()) return false;
             if (!self.interner.pool.flagsOf(operand).is_object_type) return false;
             for (self.interner.objectMembers(operand)) |member| {
@@ -223797,6 +223850,60 @@ test "checker: recursive generic socket heritage has bounded declaration growth"
     std.debug.print("socket-heritage-control: types={d}\n", .{s.ti.pool.typeCount()});
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
     try T.expect(s.ti.pool.typeCount() < 1024);
+}
+
+test "checker: recursive socket forward function signatures have bounded declaration growth" {
+    const s = try newSetup(
+        \\declare module "sockets" {
+        \\function connect<T>(options: Options<T>): Promise<Socket<T>>;
+        \\function listen<T = undefined>(options: TCP<T>): Listener<T>;
+        \\type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+        \\interface Socket<T = unknown> { data: T; listener: Listener; reload(options: Pick<Options<T>, "socket">): void; upgrade<T>(options: Upgrade<T>): [Socket<T>, Socket<T>]; }
+        \\interface Upgrade<T> { socket: Handler<T>; data?: T; }
+        \\interface Listener<T = unknown> { socket: Socket<T>; reload(options: Pick<Options<T>, "socket">): void; }
+        \\interface Promise<T> { then<U>(callback: (value: T) => U): Promise<U>; }
+        \\interface BinaryTypes { buffer: string; arraybuffer: number; }
+        \\interface Handler<T = unknown, B extends keyof BinaryTypes = "buffer"> {
+        \\  open?(socket: Socket<T>): void | Promise<void>;
+        \\  close?(socket: Socket<T>, error?: string): void | Promise<void>;
+        \\  error?(socket: Socket<T>, error: string): void | Promise<void>;
+        \\  data?(socket: Socket<T>, data: BinaryTypes[B]): void | Promise<void>;
+        \\  drain?(socket: Socket<T>): void | Promise<void>;
+        \\  handshake?(socket: Socket<T>, success: boolean, error: string | null): void;
+        \\  end?(socket: Socket<T>): void | Promise<void>;
+        \\  connectError?(socket: Socket<T>, error: string): void | Promise<void>;
+        \\  timeout?(socket: Socket<T>): void | Promise<void>;
+        \\  binaryType?: keyof BinaryTypes;
+        \\}
+        \\interface Options<T = unknown> { socket: Handler<T>; data?: T; }
+        \\interface TCP<T = undefined> extends Options<T> { hostname: string; }
+        \\interface Unix<T = undefined> extends Options<T> { unix: string; }
+        \\interface FD<T = undefined> extends Options<T> { fd: number; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    std.debug.print("socket-forward-signature-control: types={d}\n", .{s.ti.pool.typeCount()});
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expect(s.ti.pool.typeCount() < 1024);
+}
+
+test "checker: unpublished namespace keyof constraints reject keys absent from the declaration" {
+    const s = try newSetup(
+        \\declare namespace Sockets {
+        \\type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+        \\function good<T>(options: Pick<Options<T>, "socket">): void;
+        \\function bad<T>(options: Pick<Options<T>, "missing">): void;
+        \\interface Options<T> { socket: T; data?: T; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2344), s.checker.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "missing") != null);
 }
 
 test "checker: automatic array mutations and loop backedges retain element types" {
