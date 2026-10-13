@@ -59,6 +59,13 @@ pub fn build(b: *std.Build) void {
     });
     addSqlite(b, database_module, target, optimize);
 
+    const migrations_module = b.createModule(.{
+        .root_source_file = b.path("src/migrations.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    migrations_module.addImport("database", database_module);
+
     // Tests
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -68,6 +75,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     unit_tests.root_module.addImport("database", database_module);
+    unit_tests.root_module.addImport("migrations", migrations_module);
+
+    const check_step = b.step("check", "Compile database tests without running them");
+    check_step.dependOn(&unit_tests.step);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run database tests");

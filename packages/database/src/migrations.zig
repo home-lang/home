@@ -1,10 +1,8 @@
 const std = @import("std");
-const database = @import("database.zig");
-const orm = @import("orm.zig");
+const database = @import("database");
 
 /// Database Migration System for Home
 /// Provides versioned schema changes with rollback support
-
 /// Migration status
 pub const MigrationStatus = enum {
     pending,
@@ -16,9 +14,14 @@ pub const MigrationStatus = enum {
 /// Migration record
 pub const MigrationRecord = struct {
     id: i64,
-    name: []const u8,
+    name: []u8,
     batch: i32,
     applied_at: i64,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *MigrationRecord) void {
+        self.allocator.free(self.name);
+    }
 };
 
 /// Schema builder for creating/modifying tables
@@ -89,7 +92,8 @@ pub const SchemaBuilder = struct {
         defer self.allocator.free(sql);
 
         var result = try self.connection.query(sql);
-        return result.next() != null;
+        defer result.deinit();
+        return try result.next() != null;
     }
 
     /// Check if column exists in table
@@ -102,8 +106,9 @@ pub const SchemaBuilder = struct {
         defer self.allocator.free(sql);
 
         var result = try self.connection.query(sql);
-        while (result.next()) |row| {
-            const col_name = row.getText(1);
+        defer result.deinit();
+        while (try result.next()) |row| {
+            const col_name = try row.getText(1);
             if (std.mem.eql(u8, col_name, column)) {
                 return true;
             }
@@ -130,6 +135,7 @@ pub const TableBuilder = struct {
     pub const ColumnDefinition = struct {
         name: []const u8,
         column_type: []const u8,
+        owns_column_type: bool = false,
         nullable: bool = false,
         default: ?[]const u8 = null,
         primary: bool = false,
@@ -155,21 +161,24 @@ pub const TableBuilder = struct {
         return .{
             .allocator = allocator,
             .table_name = table_name,
-            .columns = std.ArrayList(ColumnDefinition).init(allocator),
-            .indexes = std.ArrayList(IndexDefinition).init(allocator),
-            .foreign_keys = std.ArrayList(ForeignKeyDefinition).init(allocator),
+            .columns = .empty,
+            .indexes = .empty,
+            .foreign_keys = .empty,
         };
     }
 
     pub fn deinit(self: *TableBuilder) void {
-        self.columns.deinit();
-        self.indexes.deinit();
-        self.foreign_keys.deinit();
+        for (self.columns.items) |column| {
+            if (column.owns_column_type) self.allocator.free(column.column_type);
+        }
+        self.columns.deinit(self.allocator);
+        self.indexes.deinit(self.allocator);
+        self.foreign_keys.deinit(self.allocator);
     }
 
     /// Add auto-incrementing ID column
     pub fn id(self: *TableBuilder) !void {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = "id",
             .column_type = "INTEGER",
             .primary = true,
@@ -179,7 +188,7 @@ pub const TableBuilder = struct {
 
     /// Add integer column
     pub fn integer(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "INTEGER",
         });
@@ -188,7 +197,7 @@ pub const TableBuilder = struct {
 
     /// Add big integer column
     pub fn bigInteger(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "BIGINT",
         });
@@ -197,21 +206,24 @@ pub const TableBuilder = struct {
 
     /// Add string column
     pub fn string(self: *TableBuilder, name: []const u8, length: ?usize) !*ColumnDefinition {
+        const owns_column_type = length != null;
         const col_type = if (length) |len|
             try std.fmt.allocPrint(self.allocator, "VARCHAR({d})", .{len})
         else
             "VARCHAR(255)";
+        errdefer if (owns_column_type) self.allocator.free(col_type);
 
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = col_type,
+            .owns_column_type = owns_column_type,
         });
         return &self.columns.items[self.columns.items.len - 1];
     }
 
     /// Add text column
     pub fn text(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "TEXT",
         });
@@ -220,7 +232,7 @@ pub const TableBuilder = struct {
 
     /// Add boolean column
     pub fn boolean(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "BOOLEAN",
             .default = "0",
@@ -230,7 +242,7 @@ pub const TableBuilder = struct {
 
     /// Add float column
     pub fn float(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "FLOAT",
         });
@@ -239,7 +251,7 @@ pub const TableBuilder = struct {
 
     /// Add double column
     pub fn double(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "DOUBLE",
         });
@@ -248,7 +260,7 @@ pub const TableBuilder = struct {
 
     /// Add date column
     pub fn date(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "DATE",
         });
@@ -257,7 +269,7 @@ pub const TableBuilder = struct {
 
     /// Add datetime column
     pub fn datetime(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "DATETIME",
         });
@@ -266,7 +278,7 @@ pub const TableBuilder = struct {
 
     /// Add timestamp column
     pub fn timestamp(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "TIMESTAMP",
             .default = "CURRENT_TIMESTAMP",
@@ -276,7 +288,7 @@ pub const TableBuilder = struct {
 
     /// Add JSON column
     pub fn json(self: *TableBuilder, name: []const u8) !*ColumnDefinition {
-        try self.columns.append(.{
+        try self.columns.append(self.allocator, .{
             .name = name,
             .column_type = "JSON",
         });
@@ -297,7 +309,7 @@ pub const TableBuilder = struct {
 
     /// Add index
     pub fn index(self: *TableBuilder, columns: []const []const u8, unique: bool) !void {
-        try self.indexes.append(.{
+        try self.indexes.append(self.allocator, .{
             .columns = columns,
             .unique = unique,
         });
@@ -310,7 +322,7 @@ pub const TableBuilder = struct {
         references_table: []const u8,
         references_column: []const u8,
     ) !void {
-        try self.foreign_keys.append(.{
+        try self.foreign_keys.append(self.allocator, .{
             .column = column,
             .references_table = references_table,
             .references_column = references_column,
@@ -319,10 +331,10 @@ pub const TableBuilder = struct {
 
     /// Generate SQL for table creation/alteration
     pub fn toSQL(self: *TableBuilder, operation: TableOperation) ![]const u8 {
-        var sql = std.ArrayList(u8).init(self.allocator);
+        var sql: std.Io.Writer.Allocating = .init(self.allocator);
         defer sql.deinit();
 
-        const writer = sql.writer();
+        const writer = &sql.writer;
 
         switch (operation) {
             .create => {
@@ -401,7 +413,7 @@ pub const TableBuilder = struct {
             },
         }
 
-        return try self.allocator.dupe(u8, sql.items);
+        return sql.toOwnedSlice();
     }
 };
 
@@ -414,13 +426,15 @@ pub const Migration = struct {
 
 /// Migration manager
 pub const Migrator = struct {
+    io: std.Io,
     allocator: std.mem.Allocator,
     connection: *database.Connection,
     migrations_table: []const u8 = "migrations",
     current_batch: i32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, connection: *database.Connection) Migrator {
+    pub fn init(io: std.Io, allocator: std.mem.Allocator, connection: *database.Connection) Migrator {
         return .{
+            .io = io,
             .allocator = allocator,
             .connection = connection,
         };
@@ -442,9 +456,10 @@ pub const Migrator = struct {
         // Get current batch number
         const batch_sql = "SELECT COALESCE(MAX(batch), 0) as max_batch FROM migrations";
         var result = try self.connection.query(batch_sql);
+        defer result.deinit();
 
-        if (result.next()) |row| {
-            self.current_batch = row.getInt(0);
+        if (try result.next()) |row| {
+            self.current_batch = @intCast(row.getInt(0));
         }
     }
 
@@ -495,12 +510,17 @@ pub const Migrator = struct {
         defer self.allocator.free(sql);
 
         var result = try self.connection.query(sql);
-        var to_rollback = std.ArrayList([]const u8).init(self.allocator);
-        defer to_rollback.deinit();
+        defer result.deinit();
+        var to_rollback: std.ArrayList([]u8) = .empty;
+        defer {
+            for (to_rollback.items) |name| self.allocator.free(name);
+            to_rollback.deinit(self.allocator);
+        }
 
-        while (result.next()) |row| {
-            const name = row.getText(0);
-            try to_rollback.append(name);
+        while (try result.next()) |row| {
+            const name = try self.allocator.dupe(u8, try row.getText(0));
+            errdefer self.allocator.free(name);
+            try to_rollback.append(self.allocator, name);
         }
 
         var schema_builder = SchemaBuilder.init(self.allocator, self.connection);
@@ -545,13 +565,13 @@ pub const Migrator = struct {
 
     /// Escape single quotes in a SQL string literal to prevent injection.
     fn escapeSqlString(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-        var out = std.ArrayList(u8).init(allocator);
-        errdefer out.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
         for (value) |c| {
-            if (c == '\'') try out.append('\'');
-            try out.append(c);
+            if (c == '\'') try out.append(allocator, '\'');
+            try out.append(allocator, c);
         }
-        return out.toOwnedSlice();
+        return out.toOwnedSlice(allocator);
     }
 
     /// Check if migration is applied
@@ -567,8 +587,9 @@ pub const Migrator = struct {
         defer self.allocator.free(sql);
 
         var result = try self.connection.query(sql);
+        defer result.deinit();
 
-        if (result.next()) |row| {
+        if (try result.next()) |row| {
             return row.getInt(0) > 0;
         }
 
@@ -577,7 +598,7 @@ pub const Migrator = struct {
 
     /// Record migration as applied
     fn recordMigration(self: *Migrator, name: []const u8) !void {
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(self.io).toSeconds();
         const escaped = try escapeSqlString(self.allocator, name);
         defer self.allocator.free(escaped);
 
@@ -611,17 +632,25 @@ pub const Migrator = struct {
         const sql = "SELECT id, name, batch, applied_at FROM migrations ORDER BY id";
 
         var result = try self.connection.query(sql);
-        var migrations = std.ArrayList(MigrationRecord).init(self.allocator);
+        defer result.deinit();
+        var migrations: std.ArrayList(MigrationRecord) = .empty;
+        errdefer {
+            for (migrations.items) |*migration| migration.deinit();
+            migrations.deinit(self.allocator);
+        }
 
-        while (result.next()) |row| {
-            try migrations.append(.{
+        while (try result.next()) |row| {
+            const name = try self.allocator.dupe(u8, try row.getText(1));
+            errdefer self.allocator.free(name);
+            try migrations.append(self.allocator, .{
                 .id = row.getInt(0),
-                .name = row.getText(1),
+                .name = name,
                 .batch = @intCast(row.getInt(2)),
                 .applied_at = row.getInt(3),
+                .allocator = self.allocator,
             });
         }
 
-        return migrations.toOwnedSlice();
+        return migrations.toOwnedSlice(self.allocator);
     }
 };
