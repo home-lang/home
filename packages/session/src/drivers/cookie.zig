@@ -1,12 +1,6 @@
 const std = @import("std");
-const posix = std.posix;
 const session = @import("../session.zig");
-
-/// Helper to get current timestamp
-fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
-}
+const compat = @import("../compat.zig");
 
 /// Cookie-based session driver (encrypted client-side sessions)
 /// Note: This stores session data in cookies, encrypted with a secret key
@@ -81,9 +75,9 @@ pub const CookieDriver = struct {
         const ciphertext = decoded[12 .. decoded.len - 16];
 
         const plaintext = try self.allocator.alloc(u8, ciphertext.len);
-        errdefer self.allocator.free(plaintext);
+        defer self.allocator.free(plaintext);
 
-        std.crypto.aead.chacha20_poly1305.ChaCha20Poly1305.decrypt(
+        std.crypto.aead.chacha_poly.ChaCha20Poly1305.decrypt(
             plaintext,
             ciphertext,
             tag,
@@ -133,7 +127,6 @@ pub const CookieDriver = struct {
             try data.data.put(key_copy, value);
         }
 
-        self.allocator.free(plaintext);
         return data;
     }
 
@@ -169,14 +162,14 @@ pub const CookieDriver = struct {
 
         // Encrypt
         var nonce: [12]u8 = undefined;
-        std.crypto.random.bytes(&nonce);
+        try compat.randomSecure(&nonce);
 
-        var ciphertext = try self.allocator.alloc(u8, plaintext.len);
+        const ciphertext = try self.allocator.alloc(u8, plaintext.len);
         defer self.allocator.free(ciphertext);
 
         var tag: [16]u8 = undefined;
 
-        std.crypto.aead.chacha20_poly1305.ChaCha20Poly1305.encrypt(
+        std.crypto.aead.chacha_poly.ChaCha20Poly1305.encrypt(
             ciphertext,
             &tag,
             plaintext,
@@ -270,4 +263,11 @@ test "cookie driver encryption" {
     const value = rd.data.get("user_id");
     try std.testing.expect(value != null);
     try std.testing.expectEqual(@as(i64, 123), value.?.asInt().?);
+
+    const tampered = try allocator.dupe(u8, cookie_value.?);
+    defer allocator.free(tampered);
+    const tamper_index = tampered.len / 2;
+    tampered[tamper_index] = if (tampered[tamper_index] == 'A') 'B' else 'A';
+    try drv.setCookieData(tampered);
+    try std.testing.expect((try d.read("ignored")) == null);
 }

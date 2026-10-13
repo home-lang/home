@@ -1,10 +1,8 @@
 const std = @import("std");
-const posix = std.posix;
+const compat = @import("compat.zig");
 
-/// Helper to get current timestamp (Zig 0.17 compatible)
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return compat.timestamp();
 }
 
 // Re-export drivers
@@ -448,7 +446,7 @@ pub const Session = struct {
 
     fn generateId(self: *Self) ![]const u8 {
         var bytes: [32]u8 = undefined;
-        std.crypto.random.bytes(&bytes);
+        try compat.randomSecure(&bytes);
 
         const hex_chars = "0123456789abcdef";
         var hex: [64]u8 = undefined;
@@ -463,7 +461,7 @@ pub const Session = struct {
     fn maybeGc(self: *Self) !void {
         // Random GC based on probability
         var rand_byte: [1]u8 = undefined;
-        std.crypto.random.bytes(&rand_byte);
+        try compat.randomSecure(&rand_byte);
 
         const rand = @as(u32, rand_byte[0]) % self.config.gc_divisor;
         if (rand < self.config.gc_probability) {
@@ -491,7 +489,7 @@ pub const Csrf = struct {
 
         // Generate new token
         var bytes: [32]u8 = undefined;
-        std.crypto.random.bytes(&bytes);
+        try compat.randomSecure(&bytes);
 
         const hex_chars = "0123456789abcdef";
         var hex: [64]u8 = undefined;
@@ -599,7 +597,7 @@ test "session data operations" {
 test "csrf token generation" {
     // Test that tokens are generated correctly
     var bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    try compat.randomSecure(&bytes);
 
     // Convert to hex manually
     const hex_chars = "0123456789abcdef";
@@ -610,4 +608,10 @@ test "csrf token generation" {
     }
 
     try std.testing.expectEqual(@as(usize, 64), hex.len);
+}
+
+test {
+    _ = file;
+    _ = memory;
+    _ = cookie;
 }
