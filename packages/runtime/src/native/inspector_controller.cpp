@@ -83,7 +83,7 @@ bool inspectorObjectIsPromise(JSC::JSGlobalObject& global, const WTF::String& id
     // frontend delivery. Inspect the native value, never a user class name.
     JSC::DeferGC deferGC(global.vm());
     auto value = manager->injectedScriptFor(&global).findObjectById(id);
-    return value && JSC::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
+    return value && WTF::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
 }
 }
 

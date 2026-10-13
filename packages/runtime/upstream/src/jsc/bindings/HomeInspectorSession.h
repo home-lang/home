@@ -130,18 +130,20 @@ public:
     }
     void remapObjects(JSON::Value& value) {
         if(auto object=value.asObject()) {
+            auto type=object->getString("type"_s);
+            bool remote=type=="object"_s || type=="function"_s;
             auto native=object->getString("objectId"_s);
-            if(!native.isEmpty()) {
+            if(remote && !native.isEmpty()) {
                 if(auto* value=global.get()) if(inspectorObjectIsPromise(*value,native)) object->setString("subtype"_s,"promise"_s);
                 auto exposed=makeString("home-realm:"_s,realm,":"_s,native);
                 channel.realmObjects.set(exposed,realm);channel.nativeRealmObjects.set(exposed,native);
                 object->setString("objectId"_s,exposed);
             }
-            for(auto& entry:*object) remapObjects(entry.value.get());
+            for(auto& entry:*object) if(!remote || entry.key!="value"_s) remapObjects(entry.value.get());
         } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(array->get(i).get());
     }
 };
-inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target) {
+inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target,bool callArgument=false) {
     if(auto object=value.asObject()) {
         for(auto key:{"objectId"_s,"promiseObjectId"_s}) {
             auto exposed=object->getString(key);
@@ -154,8 +156,13 @@ inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& v
                 } else if(target!=channel.executionContext) return false;
             }
         }
-        for(auto& entry:*object) if(!unwrapInspectorObjects(channel,entry.value.get(),target)) return false;
-    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target)) return false;
+        for(auto& entry:*object) {
+            // CallArgument.value is user JSON, not a remote-object envelope.
+            if(callArgument && entry.key=="value"_s) continue;
+            bool argument=entry.key=="arguments"_s || entry.key=="value"_s;
+            if(!unwrapInspectorObjects(channel,entry.value.get(),target,argument)) return false;
+        }
+    } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) if(!unwrapInspectorObjects(channel,array->get(i).get(),target,callArgument)) return false;
     return true;
 }
 inline void inspectorWorldError(LocalInspectorChannel& channel,JSON::Object& request) {
@@ -216,9 +223,11 @@ inline void LocalInspectorChannel::disconnectRealms() {
 }
 inline void decorateInspectorObjects(JSC::JSGlobalObject& global,JSON::Value& value) {
     if(auto object=value.asObject()) {
+        auto type=object->getString("type"_s);
+        bool remote=type=="object"_s || type=="function"_s;
         auto id=object->getString("objectId"_s);
-        if(!id.isEmpty() && !id.startsWith("home-realm:"_s) && inspectorObjectIsPromise(global,id)) object->setString("subtype"_s,"promise"_s);
-        for(auto& entry:*object) decorateInspectorObjects(global,entry.value.get());
+        if(remote && !id.isEmpty() && !id.startsWith("home-realm:"_s) && inspectorObjectIsPromise(global,id)) object->setString("subtype"_s,"promise"_s);
+        for(auto& entry:*object) if(!remote || entry.key!="value"_s) decorateInspectorObjects(global,entry.value.get());
     } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) decorateInspectorObjects(global,array->get(i).get());
 }
 inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& message) {

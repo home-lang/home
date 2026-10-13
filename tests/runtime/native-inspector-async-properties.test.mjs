@@ -31,3 +31,14 @@ for(const contextId of [undefined,contexts.find(context=>context.name==='accesso
 await session.post('Runtime.releaseObjectGroup',{objectGroup:'accessor-regression'});session.disconnect();assert.equal(vm.runInContext('reads',context),0);
 console.log('owner and realm accessor-only property descriptors passed');
 }
+
+{
+const context=vm.createContext({},{name:'payload-realm'});const session=new Session();session.connect();const contexts=[];session.on('Runtime.executionContextCreated',event=>contexts.push(event.params.context));await session.post('Runtime.enable');
+const payload={objectId:'literal-payload',promiseObjectId:'literal-promise',nested:{type:'object',objectId:'nested-payload'}};
+for(const contextId of [undefined,contexts.find(context=>context.name==='payload-realm').id]) {
+ const object=(await session.post('Runtime.evaluate',{expression:'({})',contextId})).result;
+ const reply=await session.post('Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:'function(argument){return argument}',arguments:[{value:payload}],returnByValue:true});assert.deepEqual(reply.result.value,payload);
+ const byValue=await session.post('Runtime.evaluate',{expression:'('+JSON.stringify(payload)+')',contextId,returnByValue:true});assert.deepEqual(byValue.result.value,payload);
+}
+session.disconnect();assert(vm.isContext(context));console.log('literal object ID fields remain user data across inspector realms');
+}
