@@ -1,0 +1,9 @@
+# Inspector context event timing and retirement — 2026-10-13
+
+Creation notifications now reach the connected local inspector before `createContext` returns, matching Node. Disable suppresses creation events and re-enable reports existing contexts. Callback-driven disconnect/reconnect leaves the native context usable. Retirement on the owner loop removes the frontend and both exposed/native object maps before announcing destruction.
+
+The normal Debug build completed 56/56 steps. Node and Home pass the maintained timing/disable/re-enable/callback-detachment control. Earlier async/cancellation and profiler controls pass, as do seven realm controls on each runtime. Broader validation and current-main integration results are recorded in the manifest.
+
+The initial baseline interpretation is refined: the prior Home executable already delivered creation events after an event-loop turn; the implementation closes the synchronous timing gap. Collection variants show retention in Home even with no inspector session, whereas Node collects in all modes. This baseline does not establish the exact retaining root and grants no collection pass credit. Console notifications, general VM retention, controller roots, complete retirement/teardown and backend schemas remain open in [#885](https://github.com/home-lang/home/issues/885), [#888](https://github.com/home-lang/home/issues/888) and [#428](https://github.com/home-lang/home/issues/428). Full Bun parity remains [#66](https://github.com/home-lang/home/issues/66).
+
+Unchanged upstream expectation failure #886 and negative report outcomes remain retained. The [manifest](./manifest.json) records source/executable identities and raw artifact hashes; the [previous baseline](../2026-10-13-inspector-lifetime-baseline/README.md) remains immutable.
