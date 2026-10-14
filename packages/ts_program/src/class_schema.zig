@@ -47,6 +47,38 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     unreachable;
 }
 
+/// One declaration graph per bound source snapshot. Export aliases retain
+/// independent schema views while sharing exact declaration identities.
+pub const Collection = struct {
+    gpa: std.mem.Allocator,
+    graph: *schema.Schema.SharedGraph,
+    builder: Builder,
+
+    pub fn init(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Collection {
+        const graph = try gpa.create(schema.Schema.SharedGraph);
+        graph.* = .{ .arena = std.heap.ArenaAllocator.init(gpa) };
+        errdefer graph.release(gpa);
+        return .{ .gpa = gpa, .graph = graph, .builder = try Builder.init(gpa, graph.arena.allocator(), resolver, sources) };
+    }
+
+    pub fn deinit(self: *Collection) void {
+        self.builder.query.deinit();
+        self.graph.release(self.gpa);
+    }
+
+    pub fn collect(self: *Collection, source: Source, node: hir.NodeId) !*const schema.Schema {
+        for (self.builder.sources, 0..) |owner, index| {
+            if (owner.compilation != source.compilation) continue;
+            const declaration = try self.builder.declaration(.{ .source = index, .node = node });
+            const result = try self.gpa.create(schema.Schema);
+            result.* = .{ .arena = std.heap.ArenaAllocator.init(self.gpa), .declaration = declaration, .shared_graph = self.graph };
+            self.graph.references += 1;
+            return result;
+        }
+        unreachable;
+    }
+};
+
 pub const Builder = struct {
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -2269,4 +2301,34 @@ test "class schema: generic interface methods retain local type parameters" {
     try T.expect(function.parameters[0].type.parameter == &function.type_parameters[0]);
     try T.expect(function.parameters[1].type.parameter == &function.type_parameters[0]);
     try T.expect(function.result.parameter == &function.type_parameters[0]);
+}
+
+test "class schema: collection shares declarations and survives collector release" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export class Base<T> { value: T; }
+        \\export class Derived<T> extends Base<T> { label: string; }
+    }});
+    defer graph.deinit();
+    var collection = try Collection.init(T.allocator, &graph.resolver, graph.sources.items);
+    var collection_live = true;
+    defer if (collection_live) collection.deinit();
+    const source = graph.sources.items[0];
+    const base_node = source.compilation.lookupTopLevel("Base").?.decls.items[0];
+    const derived_node = source.compilation.lookupTopLevel("Derived").?.decls.items[0];
+    const base = @constCast(try collection.collect(source, base_node));
+    defer base.deinit(T.allocator);
+    const derived = @constCast(try collection.collect(source, derived_node));
+    defer derived.deinit(T.allocator);
+    const declaration_count = collection.builder.declarations.count();
+    const alias = @constCast(try collection.collect(source, base_node));
+    defer alias.deinit(T.allocator);
+    try T.expectEqual(base.declaration, alias.declaration);
+    try T.expectEqual(declaration_count, collection.builder.declarations.count());
+    try T.expectEqual(base.shared_graph, derived.shared_graph);
+    try T.expectEqual(@as(usize, 4), base.shared_graph.?.references);
+    collection.deinit();
+    collection_live = false;
+    try T.expectEqual(@as(usize, 3), base.shared_graph.?.references);
+    try T.expect(try base.isSupported(T.allocator));
+    try T.expect(try derived.isSupported(T.allocator));
 }

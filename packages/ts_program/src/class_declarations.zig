@@ -36,6 +36,8 @@ fn freeClass(gpa: std.mem.Allocator, class: driver.ProgramExportedClass) void {
 }
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) ![]const driver.ProgramExportedClass {
+    var schemas = try class_schema.Collection.init(gpa, resolver, sources);
+    defer schemas.deinit();
     var query = origins.Query.init(gpa, resolver);
     defer query.deinit();
     var by_path: std.StringHashMapUnmanaged(usize) = .empty;
@@ -70,7 +72,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         const c = source.compilation;
         if (c.root == 0 or c.hir.kindOf(c.root) != .block_stmt) continue;
         const statements = hir.blockStmts(&c.hir, c.root);
-        try collectAmbient(gpa, resolver, sources, source, statements, &out);
+        try collectAmbient(gpa, &schemas, source, statements, &out);
         for (statements) |statement| {
             if (c.hir.kindOf(statement) != .export_decl) continue;
             const ex = hir.exportOf(&c.hir, statement);
@@ -109,7 +111,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         const origin = resolved.type orelse continue;
         const owner = by_path.get(origin.path) orelse continue;
         const node = declarations.get(.{ .source = owner, .position = origin.position }) orelse continue;
-        var class = try classFacts(gpa, resolver, sources, sources[owner], node);
+        var class = try classFacts(gpa, &schemas, sources[owner], node);
         errdefer freeClass(gpa, class);
         class.target_path = sources[binding.source].path;
         class.export_name = binding.name;
@@ -134,7 +136,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             if (hir.classOf(&c.hir, node).type_params_len == 0) continue;
             const position = c.hir.spanOf(node).start;
             if (represented_classes.contains(.{ .source = source_index, .position = position })) continue;
-            var class = try classFacts(gpa, resolver, sources, source, node);
+            var class = try classFacts(gpa, &schemas, source, node);
             errdefer freeClass(gpa, class);
             class.local_only = true;
             try out.append(gpa, class);
@@ -156,7 +158,7 @@ fn unwrap(c: *const driver.Compilation, node: hir.NodeId) hir.NodeId {
     return if (c.hir.kindOf(node) == .export_decl) hir.exportOf(&c.hir, node).decl else node;
 }
 
-fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !driver.ProgramExportedClass {
+fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source: Source, node: hir.NodeId) !driver.ProgramExportedClass {
     const c = source.compilation;
     const class = hir.classOf(&c.hir, node);
     var params: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -256,7 +258,7 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
         // plain class fall back to name-only `any` methods, so callbacks lost
         // their contextual parameter types across an otherwise ordinary
         // module boundary.
-        .schema = try class_schema.collect(gpa, resolver, sources, source, node),
+        .schema = try schemas.collect(source, node),
         .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0 and !requires_schema_members,
         .members = owned_members,
         .static_members = owned_statics,
@@ -311,7 +313,7 @@ fn hasExplicitExports(c: *const driver.Compilation, statements: []const hir.Node
     return false;
 }
 
-fn collectAmbient(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, statements: []const hir.NodeId, out: *std.ArrayListUnmanaged(driver.ProgramExportedClass)) !void {
+fn collectAmbient(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source: Source, statements: []const hir.NodeId, out: *std.ArrayListUnmanaged(driver.ProgramExportedClass)) !void {
     const c = source.compilation;
     for (statements) |statement| {
         const node = unwrap(c, statement);
@@ -336,7 +338,7 @@ fn collectAmbient(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sour
                 const name = nodeName(c, hir.classOf(&c.hir, declaration).name) orelse continue;
                 if (assignment == null or !std.mem.eql(u8, assignment.?, name)) continue;
             }
-            var class = try classFacts(gpa, resolver, sources, source, declaration);
+            var class = try classFacts(gpa, schemas, source, declaration);
             errdefer freeClass(gpa, class);
             class.ambient_module_name = specifier;
             class.is_export_assignment_target = if (assignment) |name| std.mem.eql(u8, name, class.class_name) else false;
