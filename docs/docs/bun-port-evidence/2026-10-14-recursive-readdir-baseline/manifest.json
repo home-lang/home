@@ -1,0 +1,214 @@
+{
+  "schema": 1,
+  "source_commit": "26a428426d7402fbf486517c6135f32e56355610",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "state": "native validation pending",
+  "source_hashes": {
+    "packages/runtime/src/runtime/node/node_fs.zig": "ae58fa85d434169fe9f2241a68c880768053f5a1a2380435063dfd9211bc6968",
+    "tests/runtime/native-readdir-traversal.test.mjs": "c33360ab4fb16bd41e59515cb3907e5896b94b83808b9dc67dab8b00e61dac64"
+  },
+  "baseline": [
+    {
+      "name": "home",
+      "exit": 0
+    },
+    {
+      "name": "bun",
+      "exit": 0
+    },
+    {
+      "name": "node",
+      "exit": 0
+    }
+  ],
+  "builds": [
+    {
+      "log": "build-1.log",
+      "exit": 1,
+      "reason": "cached object removed while metadata still referenced it; metadata invalidated afterward"
+    },
+    {
+      "log": "build-2.log",
+      "exit": 125,
+      "reason": "memory probe deadline failures"
+    },
+    {
+      "log": "build-3.log",
+      "exit": 125,
+      "reason": "memory probe deadline failures"
+    },
+    {
+      "log": "build-4.log",
+      "state": "live queued; no result claimed"
+    }
+  ],
+  "originals": {
+    "prepared_files": 12,
+    "executed": false
+  },
+  "artifacts": [
+    {
+      "path": "baseline-guard.log",
+      "artifact": "raw/baseline-guard.log.gz",
+      "bytes": 786,
+      "sha256": "ceedf1f66a7d41dc6fadac2509a2e1d394c142fc3f9ebc1508a4b1e7d564eea8"
+    },
+    {
+      "path": "baseline-identity.json",
+      "artifact": "raw/baseline-identity.json.gz",
+      "bytes": 206,
+      "sha256": "2ef30e757abc4dd321bce735cc003ef20a3bc4a0918107a34be7e13ec66ad0c7"
+    },
+    {
+      "path": "baseline-results.json",
+      "artifact": "raw/baseline-results.json.gz",
+      "bytes": 131,
+      "sha256": "294bb80f2cbfbe3cc7b41dc2930ac73373b585e864ac78b492b7de70585aef6a"
+    },
+    {
+      "path": "build-1.log",
+      "artifact": "raw/build-1.log.gz",
+      "bytes": 5364,
+      "sha256": "f14e607d110824c2c6d796046e41fae7e0efbc666bfd18085cc2b645d1725412"
+    },
+    {
+      "path": "build-2.log",
+      "artifact": "raw/build-2.log.gz",
+      "bytes": 2701,
+      "sha256": "adb51370af32d88e6d6fe43ee9e4fa9012561324e6556ceff578c139af59fb37"
+    },
+    {
+      "path": "build-3.log",
+      "artifact": "raw/build-3.log.gz",
+      "bytes": 3191,
+      "sha256": "11a1626ec21cd08a7bbdf81aedc8bcc129cdd249d48565e2d2d7534d14a0ba49"
+    },
+    {
+      "path": "build-4.log",
+      "artifact": "raw/build-4.log.gz",
+      "bytes": 190,
+      "sha256": "11401f3515d1c12ea033ea7d3703782b0e2021066e08101e43d850808f2ce2b7"
+    },
+    {
+      "path": "bun-baseline.log",
+      "artifact": "raw/bun-baseline.log.gz",
+      "bytes": 246,
+      "sha256": "4f89b279745cfad52d3e4ca404dc48a5409d81e821366b24c5e20ceb089af7c1"
+    },
+    {
+      "path": "cache-cleanup.json",
+      "artifact": "raw/cache-cleanup.json.gz",
+      "bytes": 212,
+      "sha256": "7e12bd58f9fe9340a4e7c495ac3289e0290a8a744e8aed35f443286a887dbc83"
+    },
+    {
+      "path": "checkpoint.json",
+      "artifact": "raw/checkpoint.json.gz",
+      "bytes": 808,
+      "sha256": "4dd1716984f8fa2ea50448232c5f90cc49e8681060e3acde6fd487e99ed568b7"
+    },
+    {
+      "path": "home-baseline.log",
+      "artifact": "raw/home-baseline.log.gz",
+      "bytes": 258,
+      "sha256": "f5133c62ddf807d21f6fb0fa04d3cbf99fc93c9e2d6335aa5d0090f31fa77054"
+    },
+    {
+      "path": "issue-66-before.json",
+      "artifact": "raw/issue-66-before.json.gz",
+      "bytes": 65072,
+      "sha256": "cfca98f33865dc282ec39c9a0367a659bb3742152fd8527896acccee5b7ddf19"
+    },
+    {
+      "path": "issue-896-before.json",
+      "artifact": "raw/issue-896-before.json.gz",
+      "bytes": 2053,
+      "sha256": "6a312e1bcf884be9ddf4d424570c11472235a9809ab3d9d3b55718a7446ed46b"
+    },
+    {
+      "path": "lint.log",
+      "artifact": "raw/lint.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "measure.mjs",
+      "artifact": "raw/measure.mjs.gz",
+      "bytes": 760,
+      "sha256": "38c01f8dd9d0e46938ab9cdbed5efb5b7a2f4a7be869eccbc37d1f01c44851f1"
+    },
+    {
+      "path": "node-baseline.log",
+      "artifact": "raw/node-baseline.log.gz",
+      "bytes": 301,
+      "sha256": "767ff711a261772f60532624217ca0606b960719098b8b84914c6f15cbb526c6"
+    },
+    {
+      "path": "originals/original-identities.json",
+      "artifact": "raw/originals/original-identities.json.gz",
+      "bytes": 1402,
+      "sha256": "2d5ec7ec57b66ebf41bdc40bfd7087465bcc43d50fba946787d8c4cf6dc84940"
+    },
+    {
+      "path": "originals/run-originals.py",
+      "artifact": "raw/originals/run-originals.py.gz",
+      "bytes": 1145,
+      "sha256": "2fcafac0f6442aa5c341445d568693ba6c910966d129f87c1da71d1d7cda833a"
+    },
+    {
+      "path": "originals/selection.json",
+      "artifact": "raw/originals/selection.json.gz",
+      "bytes": 586,
+      "sha256": "e1fc5f7fb78192edff50c21103f02c0c8f0c76c5d41ef2c73f381379bae97fc4"
+    },
+    {
+      "path": "pending-66.md",
+      "artifact": "raw/pending-66.md.gz",
+      "bytes": 467,
+      "sha256": "13e3d83696abc46b0785a299285137e2c9fa9a17dc04da015e8ffb5da150174b"
+    },
+    {
+      "path": "pending-comment.md",
+      "artifact": "raw/pending-comment.md.gz",
+      "bytes": 892,
+      "sha256": "b79b7b3079f89265c10b5032a1cfa15fcd7d8cbb2430486f7c1a4e6d9da91e71"
+    },
+    {
+      "path": "process-probe-diagnostic.json",
+      "artifact": "raw/process-probe-diagnostic.json.gz",
+      "bytes": 67,
+      "sha256": "f8f59a0b658db92931132103b5612691bb7b15d804ad71e9000c209b26c0839f"
+    },
+    {
+      "path": "run-controls.py",
+      "artifact": "raw/run-controls.py.gz",
+      "bytes": 1206,
+      "sha256": "206a384103ebb957cb8aa91ffcac1cc00a1d34025efb59e5e498efd310298bcf"
+    },
+    {
+      "path": "run-measure.py",
+      "artifact": "raw/run-measure.py.gz",
+      "bytes": 687,
+      "sha256": "281df3bb8243d93a45c63e924a38316533f76b6f92825c88171ead8b6aea2922"
+    },
+    {
+      "path": "source-hashes-1.json",
+      "artifact": "raw/source-hashes-1.json.gz",
+      "bytes": 243,
+      "sha256": "3a40dce9c749250799df0da1bb0825a50644003a25bbbe323145c0ee77857c2f"
+    },
+    {
+      "path": "source-hashes-final.json",
+      "artifact": "raw/source-hashes-final.json.gz",
+      "bytes": 243,
+      "sha256": "da28d50f03f1be39f2f2d958f8a3ff1b87c1dfdeed567a3d8dbe75ab182f5a7d"
+    },
+    {
+      "path": "tree.json",
+      "artifact": "raw/tree.json.gz",
+      "bytes": 355,
+      "sha256": "74748067d5448a6eac643f4adf54ba0397c13a6b3d8ec6c644e4d5cf1f524483"
+    }
+  ]
+}
