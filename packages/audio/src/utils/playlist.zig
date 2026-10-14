@@ -62,9 +62,13 @@ pub const Playlist = struct {
 
     /// Add entry to playlist
     pub fn addEntry(self: *Self, path: []const u8, title: ?[]const u8, duration: ?i32) !void {
+        const owned_path = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned_path);
+        const owned_title = if (title) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (owned_title) |value| self.allocator.free(value);
         try self.entries.append(self.allocator, PlaylistEntry{
-            .path = try self.allocator.dupe(u8, path),
-            .title = if (title) |t| try self.allocator.dupe(u8, t) else null,
+            .path = owned_path,
+            .title = owned_title,
             .duration = duration,
             .artist = null,
             .album = null,
@@ -159,10 +163,17 @@ pub const M3uParser = struct {
 
     /// Parse from file
     pub fn parseFile(self: *Self, path: []const u8) !Playlist {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return self.parseFileWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+    /// Parse from file using the caller's I/O implementation.
+    pub fn parseFileWithIo(self: *Self, io_context: std.Io, path: []const u8) !Playlist {
+        const content = try std.Io.Dir.cwd().readFileAlloc(
+            io_context,
+            path,
+            self.allocator,
+            .limited(10 * 1024 * 1024),
+        );
         defer self.allocator.free(content);
 
         return self.parse(content);
@@ -252,10 +263,17 @@ pub const PlsParser = struct {
 
     /// Parse from file
     pub fn parseFile(self: *Self, path: []const u8) !Playlist {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return self.parseFileWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+    /// Parse from file using the caller's I/O implementation.
+    pub fn parseFileWithIo(self: *Self, io_context: std.Io, path: []const u8) !Playlist {
+        const content = try std.Io.Dir.cwd().readFileAlloc(
+            io_context,
+            path,
+            self.allocator,
+            .limited(10 * 1024 * 1024),
+        );
         defer self.allocator.free(content);
 
         return self.parse(content);
@@ -320,12 +338,17 @@ pub const M3uWriter = struct {
 
     /// Write to file
     pub fn writeFile(self: *Self, playlist: *const Playlist, path: []const u8) !void {
+        return self.writeFileWithIo(std.Io.Threaded.global_single_threaded.io(), playlist, path);
+    }
+
+    /// Write to file using the caller's I/O implementation.
+    pub fn writeFileWithIo(self: *Self, io_context: std.Io, playlist: *const Playlist, path: []const u8) !void {
         const content = try self.generate(playlist);
         defer self.allocator.free(content);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(content);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, content);
     }
 };
 
@@ -390,12 +413,17 @@ pub const PlsWriter = struct {
 
     /// Write to file
     pub fn writeFile(self: *Self, playlist: *const Playlist, path: []const u8) !void {
+        return self.writeFileWithIo(std.Io.Threaded.global_single_threaded.io(), playlist, path);
+    }
+
+    /// Write to file using the caller's I/O implementation.
+    pub fn writeFileWithIo(self: *Self, io_context: std.Io, playlist: *const Playlist, path: []const u8) !void {
         const content = try self.generate(playlist);
         defer self.allocator.free(content);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(content);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, content);
     }
 };
 
@@ -471,4 +499,36 @@ test "Playlist operations" {
     playlist.removeEntry(0);
     try std.testing.expectEqual(@as(usize, 1), playlist.count());
     try std.testing.expectEqualSlices(u8, "song2.mp3", playlist.entries.items[0].path);
+}
+
+test "playlist readers and writers use explicit std.Io" {
+    const allocator = std.testing.allocator;
+    var playlist = Playlist.init(allocator);
+    defer playlist.deinit();
+    try playlist.addEntry("song.mp3", "Test Song", 180);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const m3u_path = try std.fs.path.join(allocator, &.{ root, "list.m3u8" });
+    defer allocator.free(m3u_path);
+    const pls_path = try std.fs.path.join(allocator, &.{ root, "list.pls" });
+    defer allocator.free(pls_path);
+
+    var m3u_writer = M3uWriter.init(allocator, true);
+    try m3u_writer.writeFileWithIo(std.testing.io, &playlist, m3u_path);
+    var m3u_parser = M3uParser.init(allocator);
+    var parsed_m3u = try m3u_parser.parseFileWithIo(std.testing.io, m3u_path);
+    defer parsed_m3u.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed_m3u.count());
+    try std.testing.expectEqualStrings("Test Song", parsed_m3u.entries.items[0].title.?);
+
+    var pls_writer = PlsWriter.init(allocator);
+    try pls_writer.writeFileWithIo(std.testing.io, &playlist, pls_path);
+    var pls_parser = PlsParser.init(allocator);
+    var parsed_pls = try pls_parser.parseFileWithIo(std.testing.io, pls_path);
+    defer parsed_pls.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed_pls.count());
+    try std.testing.expectEqualStrings("song.mp3", parsed_pls.entries.items[0].path);
 }

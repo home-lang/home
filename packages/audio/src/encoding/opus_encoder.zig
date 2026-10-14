@@ -381,8 +381,8 @@ pub const OggOpusWriter = struct {
 
     /// Write to Ogg container
     pub fn write(self: *Self, samples: []const f32) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
 
         // Write Ogg headers on first call
         if (!self.header_written) {
@@ -550,4 +550,16 @@ test "OggOpusWriter init" {
 
     var writer = try OggOpusWriter.init(allocator, 48000, 2, .music_medium);
     defer writer.deinit();
+}
+
+test "OggOpusWriter uses allocator-explicit output storage" {
+    const allocator = std.testing.allocator;
+    var writer = try OggOpusWriter.init(allocator, 48000, 2, .music_medium);
+    defer writer.deinit();
+    const samples: [1920]f32 = @splat(0);
+
+    const data = try writer.write(&samples);
+    defer allocator.free(data);
+    try std.testing.expect(std.mem.startsWith(u8, data, "OggS"));
+    try std.testing.expect(writer.header_written);
 }

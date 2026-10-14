@@ -253,23 +253,34 @@ pub const MidiReader = struct {
     }
 
     fn parseTracks(self: *Self) !void {
-        var tracks_list = std.ArrayList(MidiTrack).init(self.allocator);
+        var tracks_list: std.ArrayList(MidiTrack) = .empty;
         defer tracks_list.deinit(self.allocator);
+        errdefer for (tracks_list.items) |*track| track.deinit(self.allocator);
 
-        var tempo_list = std.ArrayList(TempoEvent).init(self.allocator);
+        var tempo_list: std.ArrayList(TempoEvent) = .empty;
         defer tempo_list.deinit(self.allocator);
 
-        var time_sig_list = std.ArrayList(TimeSignature).init(self.allocator);
+        var time_sig_list: std.ArrayList(TimeSignature) = .empty;
         defer time_sig_list.deinit(self.allocator);
 
         for (0..self.num_tracks) |_| {
-            const track = try self.parseTrack(&tempo_list, &time_sig_list);
+            var track = try self.parseTrack(&tempo_list, &time_sig_list);
+            errdefer track.deinit(self.allocator);
             try tracks_list.append(self.allocator, track);
         }
 
-        self.tracks = try tracks_list.toOwnedSlice(self.allocator);
-        self.tempo_events = try tempo_list.toOwnedSlice(self.allocator);
-        self.time_signatures = try time_sig_list.toOwnedSlice(self.allocator);
+        const tracks = try tracks_list.toOwnedSlice(self.allocator);
+        errdefer {
+            for (tracks) |*track| track.deinit(self.allocator);
+            self.allocator.free(tracks);
+        }
+        const tempo_events = try tempo_list.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(tempo_events);
+        const time_signatures = try time_sig_list.toOwnedSlice(self.allocator);
+
+        self.tracks = tracks;
+        self.tempo_events = tempo_events;
+        self.time_signatures = time_signatures;
     }
 
     fn parseTrack(
@@ -283,11 +294,13 @@ pub const MidiReader = struct {
         const chunk_size = self.readU32Be() orelse return error.TruncatedData;
         const track_end = self.pos + chunk_size;
 
-        var events = std.ArrayList(MidiEvent).init(self.allocator);
+        var events: std.ArrayList(MidiEvent) = .empty;
         defer events.deinit(self.allocator);
 
         var track_name: ?[]const u8 = null;
+        errdefer if (track_name) |name| self.allocator.free(name);
         var instrument_name: ?[]const u8 = null;
+        errdefer if (instrument_name) |name| self.allocator.free(name);
 
         var running_status: u8 = 0;
         var absolute_time: u64 = 0;
@@ -345,7 +358,8 @@ pub const MidiReader = struct {
                 0xE => blk: {
                     const lsb = self.readU8() orelse break;
                     const msb = self.readU8() orelse break;
-                    const value: i14 = @as(i14, @intCast((@as(u14, msb) << 7) | lsb)) - 8192;
+                    const unsigned_value: u14 = (@as(u14, msb) << 7) | lsb;
+                    const value: i14 = @intCast(@as(i15, @intCast(unsigned_value)) - 8192);
                     break :blk .{ .pitch_bend = .{ .channel = channel, .value = value } };
                 },
                 0xF => blk: {
@@ -384,9 +398,11 @@ pub const MidiReader = struct {
                                 }
                             },
                             .track_name => {
+                                if (track_name) |name| self.allocator.free(name);
                                 track_name = try self.allocator.dupe(u8, meta_data);
                             },
                             .instrument_name => {
+                                if (instrument_name) |name| self.allocator.free(name);
                                 instrument_name = try self.allocator.dupe(u8, meta_data);
                             },
                             else => {},
@@ -506,4 +522,24 @@ test "TempoEvent bpm" {
         .microseconds_per_beat = 500000, // 120 BPM
     };
     try std.testing.expectApproxEqAbs(@as(f64, 120.0), tempo.bpm(), 0.01);
+}
+
+test "MIDI parser uses allocator-explicit temporary lists" {
+    const data = [_]u8{
+        'M',  'T',  'h', 'd',
+        0,    0,    0,   6,
+        0,    0,    0,   1,
+        0x01, 0xE0, 'M', 'T',
+        'r',  'k',  0,   0,
+        0,    8,    0,   0xE0,
+        0,    64,   0,   0xFF,
+        0x2F, 0,
+    };
+    var reader = try MidiReader.fromMemory(std.testing.allocator, &data);
+    defer reader.deinit();
+
+    try std.testing.expectEqual(MidiFormat.single_track, reader.format);
+    try std.testing.expectEqual(@as(usize, 1), reader.tracks.len);
+    try std.testing.expectEqual(@as(usize, 2), reader.tracks[0].events.len);
+    try std.testing.expectEqual(@as(i14, 0), reader.tracks[0].events[0].data.pitch_bend.value);
 }

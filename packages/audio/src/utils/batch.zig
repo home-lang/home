@@ -122,6 +122,7 @@ pub const ProgressCallback = *const fn (
 /// Batch converter
 pub const BatchConverter = struct {
     allocator: Allocator,
+    io_context: std.Io,
     options: BatchOptions,
     jobs: std.ArrayList(ConversionJob),
 
@@ -138,8 +139,13 @@ pub const BatchConverter = struct {
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: Allocator, io_context: std.Io) Self {
         return Self{
             .allocator = allocator,
+            .io_context = io_context,
             .options = .{},
             .jobs = .empty,
             .progress_callback = null,
@@ -172,9 +178,12 @@ pub const BatchConverter = struct {
     /// Add a single file to the batch
     pub fn addFile(self: *Self, input_path: []const u8) !void {
         const output_path = try self.generateOutputPath(input_path);
+        errdefer self.allocator.free(output_path);
+        const owned_input = try self.allocator.dupe(u8, input_path);
+        errdefer self.allocator.free(owned_input);
 
         try self.jobs.append(self.allocator, ConversionJob{
-            .input_path = try self.allocator.dupe(u8, input_path),
+            .input_path = owned_input,
             .output_path = output_path,
             .status = .pending,
             .progress = 0,
@@ -194,26 +203,32 @@ pub const BatchConverter = struct {
 
     /// Add all files in a directory
     pub fn addDirectory(self: *Self, dir_path: []const u8, recursive: bool) !void {
-        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-        defer dir.close();
+        var dir = try std.Io.Dir.cwd().openDir(self.io_context, dir_path, .{ .iterate = true });
+        defer dir.close(self.io_context);
 
-        var walker = try dir.walk(self.allocator);
-        defer walker.deinit();
-
-        while (try walker.next()) |entry| {
-            if (entry.kind == .file) {
-                const ext = std.fs.path.extension(entry.basename);
-                if (self.isAudioExtension(ext)) {
-                    const full_path = try std.fs.path.join(self.allocator, &.{ dir_path, entry.path });
-                    defer self.allocator.free(full_path);
-                    try self.addFile(full_path);
+        if (recursive) {
+            var walker = try dir.walk(self.allocator);
+            defer walker.deinit();
+            while (try walker.next(self.io_context)) |entry| {
+                if (entry.kind == .file) {
+                    try self.addDiscoveredFile(dir_path, entry.path, entry.basename);
                 }
             }
-
-            if (!recursive and entry.kind == .directory) {
-                continue;
+        } else {
+            var iterator = dir.iterate();
+            while (try iterator.next(self.io_context)) |entry| {
+                if (entry.kind == .file) {
+                    try self.addDiscoveredFile(dir_path, entry.name, entry.name);
+                }
             }
         }
+    }
+
+    fn addDiscoveredFile(self: *Self, dir_path: []const u8, relative_path: []const u8, basename: []const u8) !void {
+        if (!self.isAudioExtension(std.fs.path.extension(basename))) return;
+        const full_path = try std.fs.path.join(self.allocator, &.{ dir_path, relative_path });
+        defer self.allocator.free(full_path);
+        try self.addFile(full_path);
     }
 
     fn isAudioExtension(self: *Self, ext: []const u8) bool {
@@ -273,7 +288,7 @@ pub const BatchConverter = struct {
 
         // Check if output exists
         if (!self.options.overwrite_existing) {
-            if (std.fs.cwd().access(job.output_path, .{})) |_| {
+            if (std.Io.Dir.cwd().access(self.io_context, job.output_path, .{})) |_| {
                 job.status = .skipped;
                 job.error_message = try self.allocator.dupe(u8, "Output file exists");
                 self.skipped_count += 1;
@@ -427,4 +442,25 @@ test "ConversionPreset options" {
 test "OutputFormat extension" {
     try std.testing.expectEqualSlices(u8, ".mp3", OutputFormat.mp3.getExtension());
     try std.testing.expectEqualSlices(u8, ".flac", OutputFormat.flac.getExtension());
+}
+
+test "BatchConverter directory discovery uses explicit std.Io and honors recursion" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "top.wav", .data = "" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ignore.txt", .data = "" });
+    try tmp.dir.createDirPath(std.testing.io, "nested");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/inside.mp3", .data = "" });
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+
+    var converter = BatchConverter.initWithIo(allocator, std.testing.io);
+    defer converter.deinit();
+    try converter.addDirectory(root, false);
+    try std.testing.expectEqual(@as(usize, 1), converter.jobCount());
+
+    converter.clear();
+    try converter.addDirectory(root, true);
+    try std.testing.expectEqual(@as(usize, 2), converter.jobCount());
 }
