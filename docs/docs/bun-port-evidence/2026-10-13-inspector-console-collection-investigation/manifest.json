@@ -1,0 +1,464 @@
+{
+  "schema": 1,
+  "recovery_source": "b6703813007e0e3c12d3f474bfc470a11fabe4af",
+  "main_base": "0a72ebe3a0532374aa2f1566de7ddbe50eb1c67b",
+  "platform": "Darwin arm64",
+  "source_hashes": [
+    {
+      "path": "build-support/bundle-native-modules.ts",
+      "sha256": "6d4745744db8692bfe2ba6c7d794ae9115908e8843b5936840abdc71708f7fd0"
+    },
+    {
+      "path": "build-support/native_bindings.zig",
+      "sha256": "375ca9d8689de56472118dd27bd1506da8fe7bf9edd748a89db31c9418d15ab5"
+    },
+    {
+      "path": "packages/runtime/src/native/inspector_controller.cpp",
+      "sha256": "f1530e3cb811ca19f747cbd267fb47e835249cdcf37039506d8dcd8b07c78c57"
+    },
+    {
+      "path": "packages/runtime/upstream/src/jsc/bindings/ConsoleObject.cpp",
+      "sha256": "21dd551a2249342f038efc83ec5b4bde69442830c5de069cce6be87632f427d4"
+    },
+    {
+      "path": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h",
+      "sha256": "73efc0f23d86f167f833e4d150e6c082c34d2774bbff88bc91720484ace1b753"
+    },
+    {
+      "path": "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h",
+      "sha256": "200b2c5390b07ddc4f32357001f62d0bb7d4974f9faec98e6d61c98f93f6746c"
+    },
+    {
+      "path": "tests/runtime/native-inspector-console.test.mjs",
+      "sha256": "f364718e28c2246790c2480fc00ef2a37a6a8b15813a8e6a70f77498ae33710f"
+    },
+    {
+      "path": "packages/runtime/upstream/src/jsc/bindings/NodeVM.cpp",
+      "sha256": "9a766836001f0d6da6f5f1a552e2e4438a038a0a1f48de9ecce64de7d6176ca7"
+    },
+    {
+      "path": "tests/runtime/native-vm-context-collection.test.mjs",
+      "sha256": "be8b3b102b8dc8a941bc8ee7077c306316cb755dfba2e7a59302e55772f6d54a"
+    }
+  ],
+  "built_executable": {
+    "source": "b6703813007e0e3c12d3f474bfc470a11fabe4af",
+    "sha256": "ca1e8c53374c40f3d426cbb9e3911bbd9cf7c153684014ff7603bd3ade9a3e2f",
+    "steps": 56,
+    "peak_tree_mb": 5653
+  },
+  "home_acceptance": "queued",
+  "main_source_publication": false,
+  "results": {
+    "normal_debug_steps": 56,
+    "node_console_control": true,
+    "node_collection_control": true,
+    "ordinary_weakref_node_alive": false,
+    "ordinary_weakref_home_alive": false,
+    "pinned_home_multiple_contexts_alive": [
+      false,
+      true
+    ],
+    "node_multiple_contexts_alive": [
+      false,
+      false
+    ]
+  },
+  "limitations": [
+    "Revised Home console and collection acceptance is queued behind a confirmed live validation job; no Home pass credit.",
+    "Earlier missing-cache failures, build stop 130, disk admission refusal 123, copied-baseline permission failure and SDK duplicate-symbol failure remain retained.",
+    "Full console methods/schema, remote-object/controller roots, evaluated realm lifetime, retirement/teardown, full Bun suite and all-platform acceptance remain incomplete."
+  ],
+  "files": [
+    {
+      "file": "audit-originals.py",
+      "archive": "raw/audit-originals.py.gz",
+      "sha256": "31b9092b8380e78053cbcbd647fee1d7256361326892661b72b97e9ff1f9f532",
+      "bytes": 1341
+    },
+    {
+      "file": "baseline-1.log",
+      "archive": "raw/baseline-1.log.gz",
+      "sha256": "60798c90ec64b3df4b6abfa344267f3556923dcd8e411ea0ad096b38fe5ab490",
+      "bytes": 251
+    },
+    {
+      "file": "baseline-2.log",
+      "archive": "raw/baseline-2.log.gz",
+      "sha256": "0f26b9eb67e22de91d23990c8ecfd698653b8e0ff771289975fb40ea8591cb0e",
+      "bytes": 98
+    },
+    {
+      "file": "baseline-results.json",
+      "archive": "raw/baseline-results.json.gz",
+      "sha256": "60db108d7bad66c512883ef6a0c716ab74f551590455364e111a67f97cc3fc18",
+      "bytes": 483
+    },
+    {
+      "file": "baseline.log",
+      "archive": "raw/baseline.log.gz",
+      "sha256": "931c60906d239ce79b1e9fcc08b16d559d43761bf95e5f039be340a97bd156a6",
+      "bytes": 278
+    },
+    {
+      "file": "build-fresh-cache-retry.log",
+      "archive": "raw/build-fresh-cache-retry.log.gz",
+      "sha256": "1b0be88b61f5dcd5feb6e5c9644cf9014181b7c87e4d11379c0ed158c19b5179",
+      "bytes": 18586
+    },
+    {
+      "file": "build-fresh-cache.log",
+      "archive": "raw/build-fresh-cache.log.gz",
+      "sha256": "ed681e54b2d80f5d8f1a7f6c35a48a313ed33c4c8677e73362fc8bf68567e56b",
+      "bytes": 260
+    },
+    {
+      "file": "build-revision.log",
+      "archive": "raw/build-revision.log.gz",
+      "sha256": "4d07978e0df8cebf57883e86aa3c63734aded8e452cf3cb492745de741e92c3e",
+      "bytes": 4843
+    },
+    {
+      "file": "build.log",
+      "archive": "raw/build.log.gz",
+      "sha256": "dd8624ab996e1585261f89c2525c2ae801304987dd4f6e1bc5588dfbc19fce16",
+      "bytes": 2784
+    },
+    {
+      "file": "cached-structure-heap-audit.json",
+      "archive": "raw/cached-structure-heap-audit.json.gz",
+      "sha256": "c0cba3d94cdb2640b8c6c154359584e5fd02904fab402cde3e8194112b7b2f53",
+      "bytes": 320
+    },
+    {
+      "file": "cleanup.json",
+      "archive": "raw/cleanup.json.gz",
+      "sha256": "baefbd918949d2f77ec389393712e0f9c588c5c7eecf7844e4f48e08150a9f57",
+      "bytes": 2608
+    },
+    {
+      "file": "collection-control-draft.mjs",
+      "archive": "raw/collection-control-draft.mjs.gz",
+      "sha256": "be8b3b102b8dc8a941bc8ee7077c306316cb755dfba2e7a59302e55772f6d54a",
+      "bytes": 1657
+    },
+    {
+      "file": "console-header-abi.json",
+      "archive": "raw/console-header-abi.json.gz",
+      "sha256": "c9cf86c34c926dc70597aa563d73ca3052f164572be751d5c3d6cda8e96cdf4e",
+      "bytes": 190
+    },
+    {
+      "file": "console-protocol.mjs",
+      "archive": "raw/console-protocol.mjs.gz",
+      "sha256": "93c8434661ed7ce0f8f5e5694a755a60d7218c5c4dc29377cf4af3533b1b8962",
+      "bytes": 898
+    },
+    {
+      "file": "control-lint.log",
+      "archive": "raw/control-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "file": "corrupt-cache-cleanup.json",
+      "archive": "raw/corrupt-cache-cleanup.json.gz",
+      "sha256": "e665ca53c2dcb1eb7a1886f06e7c8077b5c0c06fa6dfcd85d6a1a2f665e549c2",
+      "bytes": 268
+    },
+    {
+      "file": "cross-realm-reference.mjs",
+      "archive": "raw/cross-realm-reference.mjs.gz",
+      "sha256": "100983dbb9970ae2ad15afef1bcea5a039ccc9662100b2b4cbeb61289c229cd4",
+      "bytes": 1586
+    },
+    {
+      "file": "failed-cache-build-stop.json",
+      "archive": "raw/failed-cache-build-stop.json.gz",
+      "sha256": "2f179bf4fb315574873503e6025b0ed7f48d7c3ee994807eb2d9a6b396d8155f",
+      "bytes": 403
+    },
+    {
+      "file": "failed-console-agent.cpp",
+      "archive": "raw/failed-console-agent.cpp.gz",
+      "sha256": "b8ac0219a7406be7a74858b2d0310c2938344f014338b793452f330b9a4c2e6e",
+      "bytes": 10840
+    },
+    {
+      "file": "getter-reference.mjs",
+      "archive": "raw/getter-reference.mjs.gz",
+      "sha256": "7fa754c251317682021a37e9626d645d9328c3704b998244904b6bdb60ee0aef",
+      "bytes": 786
+    },
+    {
+      "file": "heap-retention.mjs",
+      "archive": "raw/heap-retention.mjs.gz",
+      "sha256": "1ca4b61d059e943f54797dfc1ef2981685908b749438fd77b26bc574c13c7b5f",
+      "bytes": 548
+    },
+    {
+      "file": "heap-root-audit.json",
+      "archive": "raw/heap-root-audit.json.gz",
+      "sha256": "27f37d7b08d26bafaf10e04830e8ba4b4b53f49d14bc94cff99ef14e3befb360",
+      "bytes": 61175
+    },
+    {
+      "file": "heap.json",
+      "archive": "raw/heap.json.gz",
+      "sha256": "e399f7441324b3baa0392408a842535f2a4e14181bf0e29fb34228fc0130ba59",
+      "bytes": 717998
+    },
+    {
+      "file": "home-multiple-baseline.log",
+      "archive": "raw/home-multiple-baseline.log.gz",
+      "sha256": "233557f48f25f82b3f1cc2b68b4742e8f19093069a6b0a2b6e65b9b342fb87d3",
+      "bytes": 23
+    },
+    {
+      "file": "home-ordinary-weakref.log",
+      "archive": "raw/home-ordinary-weakref.log.gz",
+      "sha256": "baa7b1f93f694f5fa54eeba404ccd2aeb5360e22f5602e20176ebd7d6a5e5647",
+      "bytes": 24
+    },
+    {
+      "file": "lint.log",
+      "archive": "raw/lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "file": "metadata-reference.mjs",
+      "archive": "raw/metadata-reference.mjs.gz",
+      "sha256": "3b36a04ad08820124dd83ba63f784498f6d5e8a8360ed4cbf7631fd4258ddd09",
+      "bytes": 1381
+    },
+    {
+      "file": "multiple-baseline-audit.json",
+      "archive": "raw/multiple-baseline-audit.json.gz",
+      "sha256": "080c464c091dc0da977fc6cc2fc7461c7f7e1beedcb7fa6f9ee5ea9bd4d06584",
+      "bytes": 280
+    },
+    {
+      "file": "multiple-baseline-infrastructure-failure.json",
+      "archive": "raw/multiple-baseline-infrastructure-failure.json.gz",
+      "sha256": "23a7358681669163ac35999465f659d8a8b36ed5572fb43728e9341f180ba0b9",
+      "bytes": 217
+    },
+    {
+      "file": "multiple-baseline-permission-repaired.log",
+      "archive": "raw/multiple-baseline-permission-repaired.log.gz",
+      "sha256": "5cbbddc13f3c5970f9e7ea7e2a117c3ac4e0a61d1ce7a2252b63a8b6ad898aa8",
+      "bytes": 367
+    },
+    {
+      "file": "multiple-baseline-results.json",
+      "archive": "raw/multiple-baseline-results.json.gz",
+      "sha256": "ba1ef699f404b40f759c4209a3024a600f58f57fd33958729db125899f210fb5",
+      "bytes": 95
+    },
+    {
+      "file": "multiple-baseline.log",
+      "archive": "raw/multiple-baseline.log.gz",
+      "sha256": "d65f0cea11c3b2c8bc45651ba64763f7e942d1b82e438879b70e6b924f09d419",
+      "bytes": 1984
+    },
+    {
+      "file": "multiple-context-retention.mjs",
+      "archive": "raw/multiple-context-retention.mjs.gz",
+      "sha256": "35a0bffbff04bcdc45816a0aab454f2d3ad4257649cabc45303ae0cde6db6e6a",
+      "bytes": 455
+    },
+    {
+      "file": "node-collection-control.log",
+      "archive": "raw/node-collection-control.log.gz",
+      "sha256": "ff4e078ecfb73abc27387ac472559b65df0a8082fc265431c983baf714f8b0e7",
+      "bytes": 101
+    },
+    {
+      "file": "node-console-control.log",
+      "archive": "raw/node-console-control.log.gz",
+      "sha256": "6112cd631e70f87de33088057aab98c2396938e5f09c5415ba4f01a659128255",
+      "bytes": 165
+    },
+    {
+      "file": "node-multiple-baseline.log",
+      "archive": "raw/node-multiple-baseline.log.gz",
+      "sha256": "adea1d029e6302a4d730db9bfab21db5cdab952e83539fe2be9448c43a92baf7",
+      "bytes": 24
+    },
+    {
+      "file": "node-ordinary-weakref.log",
+      "archive": "raw/node-ordinary-weakref.log.gz",
+      "sha256": "baa7b1f93f694f5fa54eeba404ccd2aeb5360e22f5602e20176ebd7d6a5e5647",
+      "bytes": 24
+    },
+    {
+      "file": "object-reference.mjs",
+      "archive": "raw/object-reference.mjs.gz",
+      "sha256": "88f03d8753e9fe8c2d7f16993af982420196d2ff4463705959b5ebe66e1bd310",
+      "bytes": 1177
+    },
+    {
+      "file": "parameter-reference.mjs",
+      "archive": "raw/parameter-reference.mjs.gz",
+      "sha256": "bfb54616897ad2b8e0d12534fe4b6df2c4f5e4c5327ed0b99dfca0bc7813f0c1",
+      "bytes": 584
+    },
+    {
+      "file": "pinned-baseline.json",
+      "archive": "raw/pinned-baseline.json.gz",
+      "sha256": "87edb4c13cd537aaaf3667209d54f615a8b2999b62fa5506af2b77441b6621cd",
+      "bytes": 139
+    },
+    {
+      "file": "realm-reference.mjs",
+      "archive": "raw/realm-reference.mjs.gz",
+      "sha256": "e2f92c6a1289eef5dcf7e7f8e88883ff11c5ccded8fc192f1539b16f51fbdc02",
+      "bytes": 1168
+    },
+    {
+      "file": "recovery.json",
+      "archive": "raw/recovery.json.gz",
+      "sha256": "dc6280e3cf89c9ee85f0f7838e7981e22af9f44331e4b1cbbde7157a550fb426",
+      "bytes": 1464
+    },
+    {
+      "file": "revision-executable.json",
+      "archive": "raw/revision-executable.json.gz",
+      "sha256": "f8ce6465967db1dc1f253c24904fee19a0073531b63ca3dcc0d1fa75f27f7dfb",
+      "bytes": 178
+    },
+    {
+      "file": "revision-focused.log",
+      "archive": "raw/revision-focused.log.gz",
+      "sha256": "be71841fa52746bdf87a7deb64021910a22fa4be2f984cff400aab06cf5cf54e",
+      "bytes": 202
+    },
+    {
+      "file": "revision-lint.log",
+      "archive": "raw/revision-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "file": "revision-recovery.json",
+      "archive": "raw/revision-recovery.json.gz",
+      "sha256": "4021fb38a1673a1617b9512694001e3eb477c0452093825ae9e6ee61b82278f5",
+      "bytes": 1573
+    },
+    {
+      "file": "revision-source-hashes.json",
+      "archive": "raw/revision-source-hashes.json.gz",
+      "sha256": "ccb7c33dc0dd9e65bbb161f3b750212dcfd75cab4a61381ec67e96d685ddd858",
+      "bytes": 1420
+    },
+    {
+      "file": "run-baselines.py",
+      "archive": "raw/run-baselines.py.gz",
+      "sha256": "d8f7e42dcf9629724e601a94725f8160b0462277e9edef3f9502284f24a76649",
+      "bytes": 550
+    },
+    {
+      "file": "run-broad.py",
+      "archive": "raw/run-broad.py.gz",
+      "sha256": "785efdf26b1de9796115c59d9bbd0986a787225eda76a2f8e1b78daf03c64a64",
+      "bytes": 851
+    },
+    {
+      "file": "run-corpus.py",
+      "archive": "raw/run-corpus.py.gz",
+      "sha256": "4c0e297040f2b19cd12a9ec28801166a3afc72fd9eb4da9ba9e0c32cb00b8053",
+      "bytes": 1961
+    },
+    {
+      "file": "run-focused.py",
+      "archive": "raw/run-focused.py.gz",
+      "sha256": "359ae58278ffb5d80033cd7fe5b26fa09602cd2dfac8cfa59f67971eeb976cce",
+      "bytes": 1115
+    },
+    {
+      "file": "run-multiple-baseline.py",
+      "archive": "raw/run-multiple-baseline.py.gz",
+      "sha256": "c22e169cb268d8879c22e99d2aef118806212d91339565adaacbfdf7044dd166",
+      "bytes": 539
+    },
+    {
+      "file": "run-native.py",
+      "archive": "raw/run-native.py.gz",
+      "sha256": "d7066ec1672fc200aa662ebf535fab317ea6b6f553407dfa68a75019dbc0e0cb",
+      "bytes": 2031
+    },
+    {
+      "file": "run-realm-regressions.py",
+      "archive": "raw/run-realm-regressions.py.gz",
+      "sha256": "6d2f0e2f6c80e270276ce1a64596cfb5aedf1566a3838c49be558ae29d79318f",
+      "bytes": 898
+    },
+    {
+      "file": "run-revision-focused.py",
+      "archive": "raw/run-revision-focused.py.gz",
+      "sha256": "f3fb11573ee150890a2db71a4ba9b2997f0d784a3fa1d9a37af3422d0566e9e1",
+      "bytes": 1210
+    },
+    {
+      "file": "run-weakrefs.py",
+      "archive": "raw/run-weakrefs.py.gz",
+      "sha256": "4352d362bf4b403fc4fa03fe7c0479ab3f0cf8b457550b72202fd9e4d7849c61",
+      "bytes": 521
+    },
+    {
+      "file": "selection.json",
+      "archive": "raw/selection.json.gz",
+      "sha256": "e75a6ba8f95c25d24cf9dfd4eb62bc7e02b3605c9fd312c44e5c335c9dcdb8e3",
+      "bytes": 1118
+    },
+    {
+      "file": "source-hashes.json",
+      "archive": "raw/source-hashes.json.gz",
+      "sha256": "f86b3f7d1a80c2b05a5a2be19e5adc8fec126a2fb01a8590a266170750054721",
+      "bytes": 1265
+    },
+    {
+      "file": "structure-retention-hypothesis.json",
+      "archive": "raw/structure-retention-hypothesis.json.gz",
+      "sha256": "704d463eb763a56c0ff35fbf7ac3c43ecc04ad82811ac8c37b49b7730f62e6ab",
+      "bytes": 529
+    },
+    {
+      "file": "validate-all-reports.py",
+      "archive": "raw/validate-all-reports.py.gz",
+      "sha256": "c8692d379bb81c68db54d3de5ef2c793be1fbe0ced2ad61ce6e1d2a3d328c6ef",
+      "bytes": 838
+    },
+    {
+      "file": "weakref-audit.json",
+      "archive": "raw/weakref-audit.json.gz",
+      "sha256": "7c17ad99a3e57ab795ff5ee98ce92ceeddded26046a700d884eaa196a595f8fd",
+      "bytes": 403
+    },
+    {
+      "file": "weakref-job-reference.mjs",
+      "archive": "raw/weakref-job-reference.mjs.gz",
+      "sha256": "65140d1ec26e684a4420bdbf13092160ef177a4173f172dd46a51bf24492d433",
+      "bytes": 307
+    },
+    {
+      "file": "weakref-results.json",
+      "archive": "raw/weakref-results.json.gz",
+      "sha256": "ba1ef699f404b40f759c4209a3024a600f58f57fd33958729db125899f210fb5",
+      "bytes": 95
+    },
+    {
+      "file": "weakref.log",
+      "archive": "raw/weakref.log.gz",
+      "sha256": "07342707b8413d4122a1bcbd2e7d8122e9a458c8959e1f51060f9674b560d7f2",
+      "bytes": 290
+    },
+    {
+      "file": "world-direction-reference.mjs",
+      "archive": "raw/world-direction-reference.mjs.gz",
+      "sha256": "67f59439da8465d3eb070f1088bb60623e16d9642c97f254ee8344bc42600ae1",
+      "bytes": 1677
+    }
+  ]
+}

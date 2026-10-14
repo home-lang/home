@@ -1,0 +1,7 @@
+# Inspector console and VM collection investigation — 2026-10-13
+
+The normal revised Debug build completed 56/56 steps. Node controls cover owner/realm console events, native object properties, disable and independent sessions, plus dropped-context collection and announced unused-realm destruction. Home acceptance is queued behind a confirmed live shared-machine validation job, with no pass credit yet.
+
+Ordinary WeakRef targets collect in both runtimes. The pinned old Home executable retains only the last of two dropped VM contexts (`[false,true]`); Node collects both. The heap graph has a main-global -> Structure -> VM-global path, and pinned JSC initialization writes the global into its Structure. Revised source gives each VM global a fresh Structure and uses a Home console client delegating SDK behavior without public ABI changes. It remains in the recovery branch until Home validation and broader gates pass.
+
+Missing-cache failures, disk refusal, a copied-baseline permission error and a duplicate-SDK-symbol link failure are retained. The SDK-agent replacement was removed; no weakened linking rule was added. Cleanup removed inactive derived artifacts only. [The manifest](./manifest.json) records source/executable identity and raw artifact hashes. Collection and inspector acceptance remain [#885](https://github.com/home-lang/home/issues/885), [#888](https://github.com/home-lang/home/issues/888), and [#428](https://github.com/home-lang/home/issues/428); full parity remains [#66](https://github.com/home-lang/home/issues/66).
