@@ -483,7 +483,7 @@ const BitReader = struct {
             const bits_to_read = @min(count - bits_read, bits_available);
 
             const mask: u8 = @as(u8, 0xFF) >> @as(u3, @intCast(8 - bits_to_read));
-            const shift: u3 = @intCast(8 - self.bit_pos - bits_to_read);
+            const shift: u3 = @intCast(bits_available - bits_to_read);
             const bits: u32 = (self.data[self.pos] >> shift) & mask;
 
             result = (result << @intCast(bits_to_read)) | bits;
@@ -504,105 +504,105 @@ const BitReader = struct {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write ftyp box
-    try writeFtypBox(&output);
+    try writeFtypBox(allocator, &output);
 
     // Write meta box
-    try writeMetaBox(&output, img);
+    try writeMetaBox(allocator, &output, img);
 
     // Write mdat box with AV1 data
     try writeMdatBox(&output, img, allocator);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeFtypBox(output: *std.ArrayList(u8)) !void {
+fn writeFtypBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
     const ftyp_data = [_]u8{
         'a', 'v', 'i', 'f', // major_brand
-        0,    0,   0,   0, // minor_version
+        0, 0, 0, 0, // minor_version
         'a', 'v', 'i', 'f', // compatible_brand: avif
         'm', 'i', 'f', '1', // compatible_brand: mif1
         'm', 'i', 'a', 'f', // compatible_brand: miaf
     };
 
-    try writeBox(output, FTYP_BOX, &ftyp_data);
+    try writeBox(allocator, output, FTYP_BOX, &ftyp_data);
 }
 
-fn writeMetaBox(output: *std.ArrayList(u8), img: *const Image) !void {
-    var meta_content = std.ArrayList(u8).init(output.allocator);
-    defer meta_content.deinit();
+fn writeMetaBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
+    var meta_content: std.ArrayList(u8) = .empty;
+    defer meta_content.deinit(allocator);
 
     // FullBox header (version=0, flags=0)
-    try meta_content.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+    try meta_content.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
 
     // hdlr box (handler)
     const hdlr_data = [_]u8{
-        0,    0,    0,    0, // version/flags
-        0,    0,    0,    0, // pre_defined
-        'p',  'i',  'c',  't', // handler_type: pict
-        0,    0,    0,    0, // reserved
-        0,    0,    0,    0, // reserved
-        0,    0,    0,    0, // reserved
+        0, 0, 0, 0, // version/flags
+        0, 0, 0, 0, // pre_defined
+        'p', 'i', 'c', 't', // handler_type: pict
+        0, 0, 0, 0, // reserved
+        0, 0, 0, 0, // reserved
+        0, 0, 0, 0, // reserved
         0, // name (null-terminated)
     };
-    try writeBox(&meta_content, "hdlr", &hdlr_data);
+    try writeBox(allocator, &meta_content, "hdlr", &hdlr_data);
 
     // pitm box (primary item)
     const pitm_data = [_]u8{
         0, 0, 0, 0, // version/flags
         0, 1, // item_ID = 1
     };
-    try writeBox(&meta_content, PITM_BOX, &pitm_data);
+    try writeBox(allocator, &meta_content, PITM_BOX, &pitm_data);
 
     // iloc box (item location)
     // We'll write the actual offset later
     const iloc_data = [_]u8{
-        0,    0,    0,    0, // version/flags
+        0, 0, 0, 0, // version/flags
         0x44, 0, // offset_size=4, length_size=4, base_offset_size=0
-        0,    1, // item_count = 1
-        0,    1, // item_ID = 1
-        0,    0, // data_reference_index = 0
-        0,    1, // extent_count = 1
+        0, 1, // item_count = 1
+        0, 1, // item_ID = 1
+        0, 0, // data_reference_index = 0
+        0, 1, // extent_count = 1
         // extent_offset and extent_length will be patched
-        0,    0,    0,    0, // extent_offset (placeholder)
-        0,    0,    0,    0, // extent_length (placeholder)
+        0, 0, 0, 0, // extent_offset (placeholder)
+        0, 0, 0, 0, // extent_length (placeholder)
     };
-    try writeBox(&meta_content, ILOC_BOX, &iloc_data);
+    try writeBox(allocator, &meta_content, ILOC_BOX, &iloc_data);
 
     // iinf box (item info)
-    var iinf_data = std.ArrayList(u8).init(output.allocator);
-    defer iinf_data.deinit();
-    try iinf_data.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // version/flags
-    try iinf_data.appendSlice(&[_]u8{ 0, 1 }); // entry_count = 1
+    var iinf_data: std.ArrayList(u8) = .empty;
+    defer iinf_data.deinit(allocator);
+    try iinf_data.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version/flags
+    try iinf_data.appendSlice(allocator, &[_]u8{ 0, 1 }); // entry_count = 1
 
     // infe box (item info entry)
     const infe_data = [_]u8{
-        2,    0,    0,    0, // version=2, flags=0
-        0,    1, // item_ID = 1
-        0,    0, // item_protection_index = 0
-        'a',  'v',  '0',  '1', // item_type: av01
+        2, 0, 0, 0, // version=2, flags=0
+        0, 1, // item_ID = 1
+        0, 0, // item_protection_index = 0
+        'a', 'v', '0', '1', // item_type: av01
         0, // item_name (null-terminated)
     };
-    try writeBox(&iinf_data, "infe", &infe_data);
-    try writeBox(&meta_content, IINF_BOX, iinf_data.items);
+    try writeBox(allocator, &iinf_data, "infe", &infe_data);
+    try writeBox(allocator, &meta_content, IINF_BOX, iinf_data.items);
 
     // iprp box (item properties)
-    var iprp_data = std.ArrayList(u8).init(output.allocator);
-    defer iprp_data.deinit();
+    var iprp_data: std.ArrayList(u8) = .empty;
+    defer iprp_data.deinit(allocator);
 
     // ipco box (item property container)
-    var ipco_data = std.ArrayList(u8).init(output.allocator);
-    defer ipco_data.deinit();
+    var ipco_data: std.ArrayList(u8) = .empty;
+    defer ipco_data.deinit(allocator);
 
     // ispe (image spatial extents) - property 1
     var ispe_data: [12]u8 = undefined;
     ispe_data[0..4].* = .{ 0, 0, 0, 0 }; // version/flags
     std.mem.writeInt(u32, ispe_data[4..8], img.width, .big);
     std.mem.writeInt(u32, ispe_data[8..12], img.height, .big);
-    try writeBox(&ipco_data, ISPE_BOX, &ispe_data);
+    try writeBox(allocator, &ipco_data, ISPE_BOX, &ispe_data);
 
     // pixi (pixel information) - property 2
     const pixi_data = [_]u8{
@@ -610,7 +610,7 @@ fn writeMetaBox(output: *std.ArrayList(u8), img: *const Image) !void {
         3, // num_channels
         8, 8, 8, // bits_per_channel (RGB)
     };
-    try writeBox(&ipco_data, PIXI_BOX, &pixi_data);
+    try writeBox(allocator, &ipco_data, PIXI_BOX, &pixi_data);
 
     // av1C (AV1 codec configuration) - property 3
     const av1c_data = [_]u8{
@@ -619,51 +619,51 @@ fn writeMetaBox(output: *std.ArrayList(u8), img: *const Image) !void {
         0x00, // seq_tier_0=0, high_bitdepth=0, twelve_bit=0, monochrome=0, chroma_subsampling_x=0
         0x00, // chroma_subsampling_y=0, chroma_sample_position=0
     };
-    try writeBox(&ipco_data, AV1C_BOX, &av1c_data);
+    try writeBox(allocator, &ipco_data, AV1C_BOX, &av1c_data);
 
-    try writeBox(&iprp_data, IPCO_BOX, ipco_data.items);
+    try writeBox(allocator, &iprp_data, IPCO_BOX, ipco_data.items);
 
     // ipma box (item property association)
     const ipma_data = [_]u8{
-        0,    0,    0,    0, // version/flags
-        0,    1, // entry_count = 1
-        0,    1, // item_ID = 1
+        0, 0, 0, 0, // version/flags
+        0, 1, // entry_count = 1
+        0, 1, // item_ID = 1
         3, // association_count = 3
         0x01, // essential=0, property_index=1 (ispe)
         0x02, // essential=0, property_index=2 (pixi)
         0x83, // essential=1, property_index=3 (av1C)
     };
-    try writeBox(&iprp_data, IPMA_BOX, &ipma_data);
+    try writeBox(allocator, &iprp_data, IPMA_BOX, &ipma_data);
 
-    try writeBox(&meta_content, IPRP_BOX, iprp_data.items);
+    try writeBox(allocator, &meta_content, IPRP_BOX, iprp_data.items);
 
-    try writeBox(output, META_BOX, meta_content.items);
+    try writeBox(allocator, output, META_BOX, meta_content.items);
 }
 
 fn writeMdatBox(output: *std.ArrayList(u8), img: *const Image, allocator: std.mem.Allocator) !void {
     // Generate minimal AV1 bitstream
-    var av1_data = std.ArrayList(u8).init(allocator);
-    defer av1_data.deinit();
+    var av1_data: std.ArrayList(u8) = .empty;
+    defer av1_data.deinit(allocator);
 
-    try encodeAV1(&av1_data, img);
+    try encodeAV1(allocator, &av1_data, img);
 
-    try writeBox(output, MDAT_BOX, av1_data.items);
+    try writeBox(allocator, output, MDAT_BOX, av1_data.items);
 }
 
-fn encodeAV1(output: *std.ArrayList(u8), img: *const Image) !void {
+fn encodeAV1(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // Write sequence header OBU
-    try writeSequenceHeaderOBU(output, img);
+    try writeSequenceHeaderOBU(allocator, output, img);
 
     // Write frame OBU
-    try writeFrameOBU(output, img);
+    try writeFrameOBU(allocator, output, img);
 }
 
-fn writeSequenceHeaderOBU(output: *std.ArrayList(u8), img: *const Image) !void {
-    var obu_data = std.ArrayList(u8).init(output.allocator);
-    defer obu_data.deinit();
+fn writeSequenceHeaderOBU(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
+    var obu_data: std.ArrayList(u8) = .empty;
+    defer obu_data.deinit(allocator);
 
     // Simplified sequence header for still image
-    var bit_writer = BitWriter{ .output = &obu_data, .buffer = 0, .bits = 0 };
+    var bit_writer = BitWriter{ .allocator = allocator, .output = &obu_data, .buffer = 0, .bits = 0 };
 
     // seq_profile = 0 (Main profile)
     try bit_writer.writeBits(0, 3);
@@ -721,33 +721,33 @@ fn writeSequenceHeaderOBU(output: *std.ArrayList(u8), img: *const Image) !void {
     // Write OBU header + data
     // OBU header: type=1 (sequence_header), extension=0, has_size=1
     const obu_header: u8 = (1 << 3) | 0x02;
-    try output.append(obu_header);
+    try output.append(allocator, obu_header);
 
     // Write size (LEB128)
-    try writeLEB128(output, obu_data.items.len);
+    try writeLEB128(allocator, output, obu_data.items.len);
 
-    try output.appendSlice(obu_data.items);
+    try output.appendSlice(allocator, obu_data.items);
 }
 
-fn writeFrameOBU(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeFrameOBU(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     _ = img;
 
     // Minimal frame OBU for still picture
     // Full AV1 encoding would require entropy coding, transforms, etc.
     // This is a placeholder that creates a valid structure
 
-    var obu_data = std.ArrayList(u8).init(output.allocator);
-    defer obu_data.deinit();
+    var obu_data: std.ArrayList(u8) = .empty;
+    defer obu_data.deinit(allocator);
 
     // Minimal frame header (show_existing_frame = 0)
-    try obu_data.append(0);
+    try obu_data.append(allocator, 0);
 
     // OBU header: type=6 (frame), extension=0, has_size=1
     const obu_header: u8 = (6 << 3) | 0x02;
-    try output.append(obu_header);
+    try output.append(allocator, obu_header);
 
-    try writeLEB128(output, obu_data.items.len);
-    try output.appendSlice(obu_data.items);
+    try writeLEB128(allocator, output, obu_data.items.len);
+    try output.appendSlice(allocator, obu_data.items);
 }
 
 fn bitsNeeded(value: u32) u5 {
@@ -755,28 +755,29 @@ fn bitsNeeded(value: u32) u5 {
     return @intCast(32 - @clz(value));
 }
 
-fn writeLEB128(output: *std.ArrayList(u8), value: usize) !void {
+fn writeLEB128(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: usize) !void {
     var v = value;
     while (true) {
         const byte: u8 = @truncate(v & 0x7F);
         v >>= 7;
         if (v == 0) {
-            try output.append(byte);
+            try output.append(allocator, byte);
             break;
         } else {
-            try output.append(byte | 0x80);
+            try output.append(allocator, byte | 0x80);
         }
     }
 }
 
-fn writeBox(output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
+fn writeBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
     const size: u32 = @intCast(8 + data.len);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, size)));
-    try output.appendSlice(box_type);
-    try output.appendSlice(data);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, size)));
+    try output.appendSlice(allocator, box_type);
+    try output.appendSlice(allocator, data);
 }
 
 const BitWriter = struct {
+    allocator: std.mem.Allocator,
     output: *std.ArrayList(u8),
     buffer: u8,
     bits: u4,
@@ -799,7 +800,7 @@ const BitWriter = struct {
             v &= (@as(u32, 1) << shift) - 1;
 
             if (self.bits == 8) {
-                try self.output.append(self.buffer);
+                try self.output.append(self.allocator, self.buffer);
                 self.buffer = 0;
                 self.bits = 0;
             }
@@ -808,7 +809,7 @@ const BitWriter = struct {
 
     fn flush(self: *BitWriter) !void {
         if (self.bits > 0) {
-            try self.output.append(self.buffer);
+            try self.output.append(self.allocator, self.buffer);
             self.buffer = 0;
             self.bits = 0;
         }
@@ -832,10 +833,10 @@ test "AVIF brand detection" {
 
 test "Box parsing" {
     const box_data = [_]u8{
-        0,    0,    0,    16, // size = 16
-        'f',  't',  'y',  'p', // type = ftyp
-        'a',  'v',  'i',  'f', // data
-        0,    0,    0,    0,
+        0, 0, 0, 16, // size = 16
+        'f', 't', 'y', 'p', // type = ftyp
+        'a', 'v', 'i', 'f', // data
+        0,   0,   0,   0,
     };
 
     const box = parseBox(&box_data, 0);
@@ -856,16 +857,29 @@ test "BitReader" {
 
 test "LEB128 encoding" {
     const allocator = std.testing.allocator;
-    var output = std.ArrayList(u8).init(allocator);
-    defer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
 
-    try writeLEB128(&output, 127);
+    try writeLEB128(allocator, &output, 127);
     try std.testing.expectEqual(@as(usize, 1), output.items.len);
     try std.testing.expectEqual(@as(u8, 127), output.items[0]);
 
     output.clearRetainingCapacity();
-    try writeLEB128(&output, 128);
+    try writeLEB128(allocator, &output, 128);
     try std.testing.expectEqual(@as(usize, 2), output.items.len);
     try std.testing.expectEqual(@as(u8, 0x80), output.items[0]);
     try std.testing.expectEqual(@as(u8, 0x01), output.items[1]);
+}
+
+test "AVIF encoder emits file type, metadata, and media boxes" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 8, 8, .rgba8);
+    defer img.deinit();
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > 24);
+    try std.testing.expectEqualSlices(u8, FTYP_BOX, encoded[4..8]);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, META_BOX) != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, MDAT_BOX) != null);
 }
