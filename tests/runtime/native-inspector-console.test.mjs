@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import vm from 'node:vm'
 import { Session } from 'node:inspector/promises'
 const context = vm.createContext({ answer: 42 }, { name: 'console-regression-realm' })
+console.count("before-native-attachment")
+console.time("before-native-attachment-time")
+vm.runInContext('console.count("before-native-attachment"); console.time("before-native-attachment-time")', context)
 const session = new Session()
 session.connect()
 const contexts = []
@@ -11,6 +14,12 @@ session.on('Runtime.consoleAPICalled', event => events.push(event.params))
 await session.post('Runtime.enable')
 const realm = contexts.find(context => context.name === 'console-regression-realm')
 assert(realm)
+for (const contextId of [undefined, realm.id]) {
+  const start = events.length
+  await session.post('Runtime.evaluate', { contextId, expression: 'console.count("before-native-attachment"); console.timeEnd("before-native-attachment-time")' })
+  assert(events.slice(start).some(event => event.type === 'count' && event.args[0]?.value === 'before-native-attachment: 2'))
+  assert(events.slice(start).some(event => event.type === 'timeEnd' && /^before-native-attachment-time: [\d.]+\s?ms$/.test(event.args[0]?.value)))
+}
 for (const contextId of [undefined, realm.id]) {
   const start = events.length
   await session.post('Runtime.evaluate', { contextId, expression: 'console.log("home-console-marker", 42, {answer: 42}); console.warn("home-console-warning", 43)' })
