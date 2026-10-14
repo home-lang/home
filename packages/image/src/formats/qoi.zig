@@ -149,17 +149,17 @@ fn colorHash(c: Color) usize {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     const channels: u8 = if (img.format.hasAlpha()) 4 else 3;
 
     // Header
-    try output.appendSlice(QOI_MAGIC);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
-    try output.append(channels);
-    try output.append(0); // sRGB colorspace
+    try output.appendSlice(allocator, QOI_MAGIC);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
+    try output.append(allocator, channels);
+    try output.append(allocator, 0); // sRGB colorspace
 
     // Initialize state
     var index: [64]Color = @splat(Color{ .r = 0, .g = 0, .b = 0, .a = 0 });
@@ -175,19 +175,19 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
             if (colorsEqual(color, prev)) {
                 run += 1;
                 if (run == 62 or (y == img.height - 1 and x == img.width - 1)) {
-                    try output.append(QOI_OP_RUN | (run - 1));
+                    try output.append(allocator, QOI_OP_RUN | (run - 1));
                     run = 0;
                 }
             } else {
                 if (run > 0) {
-                    try output.append(QOI_OP_RUN | (run - 1));
+                    try output.append(allocator, QOI_OP_RUN | (run - 1));
                     run = 0;
                 }
 
                 const idx = colorHash(color);
 
                 if (colorsEqual(index[idx], color)) {
-                    try output.append(QOI_OP_INDEX | @as(u8, @intCast(idx)));
+                    try output.append(allocator, QOI_OP_INDEX | @as(u8, @intCast(idx)));
                 } else {
                     index[idx] = color;
 
@@ -200,17 +200,17 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
                         const db_dg = db -% dg;
 
                         if (dr >= -2 and dr <= 1 and dg >= -2 and dg <= 1 and db >= -2 and db <= 1) {
-                            try output.append(QOI_OP_DIFF | @as(u8, @bitCast(@as(i8, dr + 2) << 4 | @as(i8, dg + 2) << 2 | @as(i8, db + 2))));
+                            try output.append(allocator, QOI_OP_DIFF | @as(u8, @bitCast(@as(i8, dr + 2) << 4 | @as(i8, dg + 2) << 2 | @as(i8, db + 2))));
                         } else if (dr_dg >= -8 and dr_dg <= 7 and dg >= -32 and dg <= 31 and db_dg >= -8 and db_dg <= 7) {
-                            try output.append(QOI_OP_LUMA | @as(u8, @bitCast(@as(i8, dg + 32))));
-                            try output.append(@as(u8, @bitCast(@as(i8, dr_dg + 8) << 4 | @as(i8, db_dg + 8))));
+                            try output.append(allocator, QOI_OP_LUMA | @as(u8, @bitCast(@as(i8, dg + 32))));
+                            try output.append(allocator, @as(u8, @bitCast(@as(i8, dr_dg + 8) << 4 | @as(i8, db_dg + 8))));
                         } else {
-                            try output.append(QOI_OP_RGB);
-                            try output.appendSlice(&[_]u8{ color.r, color.g, color.b });
+                            try output.append(allocator, QOI_OP_RGB);
+                            try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b });
                         }
                     } else {
-                        try output.append(QOI_OP_RGBA);
-                        try output.appendSlice(&[_]u8{ color.r, color.g, color.b, color.a });
+                        try output.append(allocator, QOI_OP_RGBA);
+                        try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b, color.a });
                     }
                 }
 
@@ -221,13 +221,13 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 
     // Flush remaining run
     if (run > 0) {
-        try output.append(QOI_OP_RUN | (run - 1));
+        try output.append(allocator, QOI_OP_RUN | (run - 1));
     }
 
     // End marker
-    try output.appendSlice(&QOI_END_MARKER);
+    try output.appendSlice(allocator, &QOI_END_MARKER);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 fn colorsEqual(a: Color, b: Color) bool {

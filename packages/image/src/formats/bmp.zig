@@ -182,10 +182,12 @@ fn decodeUncompressed(img: *Image, pixel_data: []const u8, bit_depth: u16, row_s
 }
 
 fn decodeBitfields(img: *Image, pixel_data: []const u8, bit_depth: u16, row_stride: usize, top_down: bool, r_mask: u32, g_mask: u32, b_mask: u32, a_mask: u32) !void {
-    const r_shift = @ctz(r_mask);
-    const g_shift = @ctz(g_mask);
-    const b_shift = @ctz(b_mask);
-    const a_shift = @ctz(a_mask);
+    if (r_mask == 0 or g_mask == 0 or b_mask == 0) return error.InvalidFormat;
+
+    const r_shift: u5 = @intCast(@ctz(r_mask));
+    const g_shift: u5 = @intCast(@ctz(g_mask));
+    const b_shift: u5 = @intCast(@ctz(b_mask));
+    const a_shift: u5 = if (a_mask == 0) 0 else @intCast(@ctz(a_mask));
 
     const r_max = r_mask >> r_shift;
     const g_max = g_mask >> g_shift;
@@ -294,8 +296,8 @@ fn decodeRLE8(img: *Image, pixel_data: []const u8, top_down: bool) !void {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Determine output bit depth
     const bit_depth: u16 = switch (img.format) {
@@ -315,42 +317,42 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     const file_size: u32 = data_offset + @as(u32, @intCast(pixel_data_size));
 
     // File header (14 bytes)
-    try output.appendSlice(&BMP_SIGNATURE);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, file_size)));
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // Reserved
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, data_offset)));
+    try output.appendSlice(allocator, &BMP_SIGNATURE);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, file_size)));
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // Reserved
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, data_offset)));
 
     // DIB header (BITMAPINFOHEADER - 40 bytes)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 40))); // Header size
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(i32, @intCast(img.width))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(i32, @intCast(img.height)))); // Positive = bottom-up
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 1))); // Planes
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, bit_depth)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0))); // Compression (BI_RGB)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(pixel_data_size))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(i32, 2835))); // X pixels per meter (~72 DPI)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(i32, 2835))); // Y pixels per meter
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, if (bit_depth <= 8) 256 else 0))); // Colors used
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0))); // Important colors
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 40))); // Header size
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(i32, @intCast(img.width))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(i32, @intCast(img.height)))); // Positive = bottom-up
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 1))); // Planes
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, bit_depth)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0))); // Compression (BI_RGB)
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(pixel_data_size))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(i32, 2835))); // X pixels per meter (~72 DPI)
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(i32, 2835))); // Y pixels per meter
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, if (bit_depth <= 8) 256 else 0))); // Colors used
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0))); // Important colors
 
     // Color palette for 8-bit images
     if (bit_depth <= 8) {
         if (img.palette) |pal| {
             for (pal) |color| {
-                try output.append(color.b);
-                try output.append(color.g);
-                try output.append(color.r);
-                try output.append(0); // Reserved
+                try output.append(allocator, color.b);
+                try output.append(allocator, color.g);
+                try output.append(allocator, color.r);
+                try output.append(allocator, 0); // Reserved
             }
             // Pad to 256 colors
             for (pal.len..256) |_| {
-                try output.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+                try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
             }
         } else {
             // Generate grayscale palette
             for (0..256) |i| {
                 const v: u8 = @intCast(i);
-                try output.appendSlice(&[_]u8{ v, v, v, 0 });
+                try output.appendSlice(allocator, &[_]u8{ v, v, v, 0 });
             }
         }
     }
@@ -368,27 +370,27 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
             switch (bit_depth) {
                 8 => {
                     if (img.format == .indexed8 or img.format == .grayscale8) {
-                        try output.append(img.pixels[src_idx]);
+                        try output.append(allocator, img.pixels[src_idx]);
                     } else {
                         // Convert to grayscale
                         const color = img.getPixel(x, y) orelse Color.BLACK;
-                        try output.append(color.toGrayscale());
+                        try output.append(allocator, color.toGrayscale());
                     }
                     row_bytes += 1;
                 },
                 24 => {
                     const color = img.getPixel(x, y) orelse Color.BLACK;
-                    try output.append(color.b);
-                    try output.append(color.g);
-                    try output.append(color.r);
+                    try output.append(allocator, color.b);
+                    try output.append(allocator, color.g);
+                    try output.append(allocator, color.r);
                     row_bytes += 3;
                 },
                 32 => {
                     const color = img.getPixel(x, y) orelse Color.BLACK;
-                    try output.append(color.b);
-                    try output.append(color.g);
-                    try output.append(color.r);
-                    try output.append(color.a);
+                    try output.append(allocator, color.b);
+                    try output.append(allocator, color.g);
+                    try output.append(allocator, color.r);
+                    try output.append(allocator, color.a);
                     row_bytes += 4;
                 },
                 else => {},
@@ -397,11 +399,11 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 
         // Pad row to 4-byte boundary
         while (row_bytes % 4 != 0) : (row_bytes += 1) {
-            try output.append(0);
+            try output.append(allocator, 0);
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
