@@ -2310,7 +2310,11 @@ const ResolverRealFs = struct {
         const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
         const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
-        return cwd.realPathFileAlloc(io, path, gpa);
+        const canonical = try cwd.realPathFileAlloc(io, path, gpa);
+        defer gpa.free(canonical);
+        // FileSystem returns an ordinary slice whose allocation has exactly
+        // that length; erasing the sentinel would make callers free one byte short.
+        return gpa.dupe(u8, canonical);
     }
 };
 
@@ -5416,6 +5420,18 @@ test "tsc_main: project discovery uses effective allowJs" {
     try std.testing.expect(isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(implicit)));
     const disabled: tsconfig_mod.CompilerOptions = .{ .allow_js = false, .check_js = true };
     try std.testing.expect(!isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(disabled)));
+}
+
+test "tsc_main: resolver realpath returns an ordinary owned slice" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    var fs = ResolverRealFs.init(std.testing.allocator);
+    defer fs.deinit();
+    const canonical = try fs.fs().realpath(std.testing.allocator, root);
+    defer std.testing.allocator.free(canonical);
+    try std.testing.expectEqualStrings(root, canonical);
 }
 
 test "tsc_main: wildcard discovery honors TypeScript extension priority" {

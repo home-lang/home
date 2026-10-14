@@ -870,3 +870,24 @@ contains **6,285** verified payloads, with SHA-256
 Synthetic contracts, hashes, logs and replay scripts are included; real-project
 sources are excluded. Cleanup reclaimed **1,080,840,560 bytes** of inactive
 regenerable objects while preserving the running test binary.
+
+## Resolver realpath allocation ownership
+
+The real filesystem adapter erased the sentinel type returned by Zig's
+`realPathFileAlloc`, exposing a buffer of length N backed by an N+1 allocation.
+Resolver callers correctly freed the ordinary slice but supplied the wrong
+allocation size. The adapter now frees the sentinel allocation with its original
+type and returns an ordinary owned copy. A real-filesystem regression fails
+against the previous adapter with an allocator mismatch and passes with the fix;
+all 51 CLI tests pass.
+
+Installed-library discovery remains unpublished. Synthetic Program coverage
+passed 299 tests, but full TypeScript 7 DOM loading exposed a ReleaseFast crash,
+Debug timeouts and memory-bound stops. Samples locate substantial work in global
+owner transfer and generic-interface predecessor backpatching. These results do
+not qualify the table project or the complete local-project replacement goal.
+The discovery patch and diagnostic logs remain in the local ignored evidence
+directory for continued root-cause work.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-realpath-ownership.tar.gz` contains three verified logs, SHA-256
+`4dbb3b92c85998dc6139d06af1e116bebcdb6000abb5f2de8cc92e0f7bbfefd6`. Final CLI test guard peak: 2,124 MB.
