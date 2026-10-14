@@ -558,7 +558,7 @@ pub fn encode(allocator: std.mem.Allocator, audio_frame: *const AudioFrame) ![]u
 // ============================================================================
 
 test "FLAC detection" {
-    const flac_data = [_]u8{ 'f', 'L', 'a', 'C', 0x80, 0, 0, 34 } ++ [_]u8{0} ** 34;
+    const flac_data = [_]u8{ 'f', 'L', 'a', 'C', 0x80, 0, 0, 34 } ++ @as([34]u8, @splat(0));
     try std.testing.expect(isFlac(&flac_data));
 
     const not_flac = [_]u8{ 'R', 'I', 'F', 'F' };
@@ -575,7 +575,7 @@ test "StreamInfo getSampleFormat" {
         .channels = 1, // 2 channels (1 + 1)
         .bits_per_sample = 15, // 16 bits (15 + 1)
         .total_samples = 0,
-        .md5_signature = [_]u8{0} ** 16,
+        .md5_signature = @splat(0),
     };
 
     try std.testing.expectEqual(SampleFormat.s16le, info.getSampleFormat());

@@ -485,10 +485,10 @@ pub fn noteToName(note: u7) [3]u8 {
 // ============================================================================
 
 test "MIDI detection" {
-    const midi_data = "MThd" ++ [_]u8{0} ** 10;
+    const midi_data = "MThd" ++ @as([10]u8, @splat(0));
     try std.testing.expect(isMidi(midi_data));
 
-    const not_midi = "RIFF" ++ [_]u8{0} ** 10;
+    const not_midi = "RIFF" ++ @as([10]u8, @splat(0));
     try std.testing.expect(!isMidi(not_midi));
 }
 
