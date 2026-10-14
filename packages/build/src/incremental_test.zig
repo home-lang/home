@@ -6,14 +6,29 @@ const parallel_build = @import("parallel_build.zig");
 const ir_cache = @import("ir_cache.zig");
 const file_watcher = @import("file_watcher.zig");
 
-/// Test incremental build with cache hits
+fn testIo() std.Io {
+    return std.testing.io;
+}
+
+fn sleepMilliseconds(io: std.Io, milliseconds: i64) !void {
+    try std.Io.Clock.Duration.sleep(.{
+        .clock = .boot,
+        .raw = .fromMilliseconds(milliseconds),
+    }, io);
+}
+
+fn milliTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toMilliseconds();
+}
+
+// Test incremental build with cache hits
 test "incremental build cache hits" {
     const allocator = std.testing.allocator;
 
     // Create test directory
     const test_dir = "test-build-cache";
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().createDir(testIo(), test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testIo(), test_dir) catch {};
 
     // Create test source files
     try createTestFile(test_dir, "main.home", "fn main() { print(\"Hello\"); }");
@@ -21,11 +36,12 @@ test "incremental build cache hits" {
 
     // First build - all cache misses
     {
-        var builder = try parallel_build.ParallelBuilder.init(
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
             allocator,
             2, // 2 threads
             test_dir,
             "0.1.0-test",
+            testIo(),
         );
         defer builder.deinit();
 
@@ -38,17 +54,18 @@ test "incremental build cache hits" {
         try builder.build();
 
         const stats = builder.getCacheStats();
-        try std.testing.expectEqual(@as(usize, 0), stats.hits); // First build - no cache hits
-        try std.testing.expectEqual(@as(usize, 2), stats.entry_count);
+        try std.testing.expectEqual(@as(u64, 0), stats.cache_hits); // First build - no cache hits
+        try std.testing.expectEqual(@as(usize, 2), stats.cache_entries);
     }
 
     // Second build - should have cache hits
     {
-        var builder = try parallel_build.ParallelBuilder.init(
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
             allocator,
             2,
             test_dir,
             "0.1.0-test",
+            testIo(),
         );
         defer builder.deinit();
 
@@ -60,75 +77,82 @@ test "incremental build cache hits" {
         try builder.build();
 
         const stats = builder.getCacheStats();
-        try std.testing.expect(stats.hits > 0); // Should have cache hits
-        std.debug.print("Cache hits: {d}/{d}\n", .{ stats.hits, stats.hits + stats.misses });
+        try std.testing.expect(stats.cache_hits > 0); // Should have cache hits
+        std.debug.print("Cache hits: {d}/{d}\n", .{ stats.cache_hits, stats.cache_hits + stats.cache_misses });
     }
 }
 
-/// Test cache invalidation on file modification
+// Test cache invalidation on file modification
 test "cache invalidation on modification" {
     const allocator = std.testing.allocator;
 
     const test_dir = "test-invalidation";
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().createDir(testIo(), test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testIo(), test_dir) catch {};
 
     try createTestFile(test_dir, "module.home", "fn version() { return 1; }");
 
     // First build
-    var builder = try parallel_build.ParallelBuilder.init(
-        allocator,
-        1,
-        test_dir,
-        "0.1.0-test",
-    );
-    defer builder.deinit();
+    var initial_misses: u64 = 0;
+    {
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
+            allocator,
+            1,
+            test_dir,
+            "0.1.0-test",
+            testIo(),
+        );
+        defer builder.deinit();
 
-    try builder.addTask("module", "test-invalidation/module.home", &[_][]const u8{});
-    try builder.build();
+        try builder.addTask("module", "test-invalidation/module.home", &[_][]const u8{});
+        try builder.build();
 
-    var stats = builder.getCacheStats();
-    const initial_misses = stats.misses;
+        initial_misses = builder.getCacheStats().cache_misses;
+    }
 
     // Modify file
-    std.Thread.sleep(10 * std.time.ns_per_ms); // Ensure mtime changes
+    try sleepMilliseconds(testIo(), 10); // Ensure mtime changes
     try createTestFile(test_dir, "module.home", "fn version() { return 2; }");
 
     // Rebuild - should invalidate cache
-    var builder2 = try parallel_build.ParallelBuilder.init(
-        allocator,
-        1,
-        test_dir,
-        "0.1.0-test",
-    );
-    defer builder2.deinit();
+    {
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
+            allocator,
+            1,
+            test_dir,
+            "0.1.0-test",
+            testIo(),
+        );
+        defer builder.deinit();
 
-    try builder2.addTask("module", "test-invalidation/module.home", &[_][]const u8{});
-    try builder2.build();
+        try builder.addTask("module", "test-invalidation/module.home", &[_][]const u8{});
+        try builder.build();
 
-    stats = builder2.getCacheStats();
-    // Should have more misses due to invalidation
-    try std.testing.expect(stats.misses > initial_misses);
+        // A changed source hash must add a miss instead of reusing stale IR.
+        try std.testing.expect(builder.getCacheStats().cache_misses > initial_misses);
+    }
 }
 
-/// Test parallel compilation with caching
+// Test parallel compilation with caching
 test "parallel compilation with cache" {
     const allocator = std.testing.allocator;
 
     const test_dir = "test-parallel-cache";
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().createDir(testIo(), test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testIo(), test_dir) catch {};
 
     // Create multiple test files
     const modules = [_][]const u8{
-        "core", "utils", "helpers", "data", "io",
-        "parser", "lexer", "ast", "codegen", "optimizer",
+        "core",   "utils", "helpers", "data",    "io",
+        "parser", "lexer", "ast",     "codegen", "optimizer",
     };
 
     for (modules) |module| {
         var path_buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}.home", .{module});
-        try createTestFile(test_dir, path, "fn init() { }");
+        var source_buf: [256]u8 = undefined;
+        const source = try std.fmt.bufPrint(&source_buf, "fn {s}_init() {{ }}", .{module});
+        try createTestFile(test_dir, path, source);
     }
 
     // Build with multiple threads
@@ -153,22 +177,23 @@ test "parallel compilation with cache" {
 
     const build_stats = builder.stats;
     try std.testing.expectEqual(@as(usize, modules.len), build_stats.completed_tasks);
-    try std.testing.expect(build_stats.parallel_speedup > 1.0);
+    try std.testing.expectEqual(@as(usize, 0), build_stats.failed_tasks);
+    try std.testing.expectEqual(@as(u64, modules.len), builder.getCacheStats().cache_stores);
 
     builder.printCacheStats();
 }
 
-/// Test file watcher
+// Test file watcher
 test "file watcher detects changes" {
     const allocator = std.testing.allocator;
 
     const test_dir = "test-watcher";
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().createDir(testIo(), test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testIo(), test_dir) catch {};
 
     try createTestFile(test_dir, "watched.home", "// original");
 
-    var watcher = try file_watcher.FileWatcher.init(allocator, 50); // 50ms poll
+    var watcher = file_watcher.FileWatcher.init(allocator, 50, testIo()); // 50ms poll
     defer watcher.deinit();
 
     try watcher.watch("test-watcher/watched.home");
@@ -181,13 +206,13 @@ test "file watcher detects changes" {
     }
 
     // Wait and modify file
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    try sleepMilliseconds(testIo(), 100);
     try createTestFile(test_dir, "watched.home", "// modified");
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    try sleepMilliseconds(testIo(), 100);
 
     // Check for events
     const events = try watcher.pollEvents(allocator);
-    defer allocator.free(events);
+    defer file_watcher.deinitEvents(allocator, events);
 
     try std.testing.expect(events.len > 0);
     if (events.len > 0) {
@@ -195,13 +220,13 @@ test "file watcher detects changes" {
     }
 }
 
-/// Test smart invalidation with dependencies
+// Test smart invalidation with dependencies
 test "smart dependency invalidation" {
     const allocator = std.testing.allocator;
 
-    var cache = try ir_cache.IRCache.init(allocator, ".test-smart-cache");
+    defer std.Io.Dir.cwd().deleteTree(testIo(), ".test-smart-cache") catch {};
+    var cache = try ir_cache.IRCache.init(allocator, ".test-smart-cache", false, testIo());
     defer cache.deinit();
-    defer std.fs.cwd().deleteTree(".test-smart-cache") catch {};
 
     var invalidator = file_watcher.SmartInvalidator.init(allocator, &cache);
     defer invalidator.deinit();
@@ -214,74 +239,80 @@ test "smart dependency invalidation" {
     const events = [_]file_watcher.FileEvent{.{
         .path = "core.home",
         .event_type = .Modified,
-        .timestamp = std.time.milliTimestamp(),
+        .timestamp = milliTimestamp(testIo()),
     }};
 
     const invalidated = try invalidator.handleFileEvents(&events);
     try std.testing.expect(invalidated > 0);
 }
 
-/// Test cache statistics accuracy
+// Test cache statistics accuracy
 test "cache statistics" {
     const allocator = std.testing.allocator;
 
     const test_dir = "test-stats";
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().createDir(testIo(), test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(testIo(), test_dir) catch {};
 
     try createTestFile(test_dir, "test.home", "fn test() { }");
 
-    var builder = try parallel_build.ParallelBuilder.init(
-        allocator,
-        1,
-        test_dir,
-        "0.1.0-test",
-    );
-    defer builder.deinit();
+    var first_misses: u64 = 0;
+    {
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
+            allocator,
+            1,
+            test_dir,
+            "0.1.0-test",
+            testIo(),
+        );
+        defer builder.deinit();
 
-    try builder.addTask("test", "test-stats/test.home", &[_][]const u8{});
+        try builder.addTask("test", "test-stats/test.home", &[_][]const u8{});
+        try builder.build();
+        const stats = builder.getCacheStats();
+        first_misses = stats.cache_misses;
+        try std.testing.expectEqual(@as(u64, 0), stats.cache_hits);
+    }
 
-    // First build
-    try builder.build();
-    var stats = builder.getCacheStats();
-    const first_misses = stats.misses;
-    try std.testing.expectEqual(@as(usize, 0), stats.hits);
+    // The first builder must close and persist metadata before reopening it.
+    {
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
+            allocator,
+            1,
+            test_dir,
+            "0.1.0-test",
+            testIo(),
+        );
+        defer builder.deinit();
 
-    // Second build (cache hit)
-    var builder2 = try parallel_build.ParallelBuilder.init(
-        allocator,
-        1,
-        test_dir,
-        "0.1.0-test",
-    );
-    defer builder2.deinit();
+        try builder.addTask("test", "test-stats/test.home", &[_][]const u8{});
+        try builder.build();
 
-    try builder2.addTask("test", "test-stats/test.home", &[_][]const u8{});
-    try builder2.build();
-
-    stats = builder2.getCacheStats();
-    try std.testing.expect(stats.hits > 0);
-    try std.testing.expectEqual(first_misses, stats.misses);
+        const stats = builder.getCacheStats();
+        try std.testing.expect(stats.cache_hits > 0);
+        try std.testing.expectEqual(first_misses, stats.cache_misses);
+    }
 }
 
-/// Test cache eviction under size pressure
+// Test cache eviction under size pressure
 test "cache eviction" {
     const allocator = std.testing.allocator;
 
-    var cache = try ir_cache.IRCache.init(allocator, ".test-eviction");
+    defer std.Io.Dir.cwd().deleteTree(testIo(), ".test-eviction") catch {};
+    var cache = try ir_cache.IRCache.init(allocator, ".test-eviction", true, testIo());
     defer cache.deinit();
-    defer std.fs.cwd().deleteTree(".test-eviction") catch {};
 
     cache.max_cache_size_mb = 1; // Very small cache to force evictions
+    const payload: [64 * 1024]u8 = @splat(0xA5);
 
     // Add many entries to trigger eviction
     var i: usize = 0;
-    while (i < 100) : (i += 1) {
+    while (i < 24) : (i += 1) {
         var name_buf: [64]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buf, "module{d}", .{i});
 
         const key = ir_cache.generateCacheKey(
-            "dummy source content that is fairly long to consume cache space",
+            name,
             &[_]ir_cache.CacheHash{},
             "0.1.0",
             "",
@@ -293,15 +324,15 @@ test "cache eviction" {
             "/dev/null",
             0,
             &[_]ir_cache.CacheHash{},
-            "/dev/null",
-            "/dev/null",
+            &payload,
+            &payload,
             100,
         );
     }
 
     const stats = cache.stats;
-    try std.testing.expect(stats.evictions > 0);
-    std.debug.print("Evictions triggered: {d}\n", .{stats.evictions});
+    try std.testing.expect(stats.cache_evictions > 0);
+    std.debug.print("Evictions triggered: {d}\n", .{stats.cache_evictions});
 }
 
 // ============================================================================
@@ -309,13 +340,13 @@ test "cache eviction" {
 // ============================================================================
 
 fn createTestFile(dir: []const u8, name: []const u8, content: []const u8) !void {
-    var path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name });
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(testIo(), path, .{});
+    defer file.close(testIo());
 
-    try file.writeAll(content);
+    try file.writeStreamingAll(testIo(), content);
 }
 
 // ============================================================================
@@ -352,8 +383,9 @@ pub fn exampleBasicBuild() !void {
 /// Example: Watch mode with automatic rebuilds
 pub fn exampleWatchMode() !void {
     const allocator = std.heap.page_allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
 
-    var cache = try ir_cache.IRCache.init(allocator, ".home-cache");
+    var cache = try ir_cache.IRCache.init(allocator, ".home-cache", false, io);
     defer cache.deinit();
 
     // Dummy rebuild callback
@@ -370,6 +402,7 @@ pub fn exampleWatchMode() !void {
         allocator,
         &cache,
         rebuildCallback,
+        io,
     );
     defer incremental.deinit();
 
@@ -396,7 +429,7 @@ pub fn exampleWatchMode() !void {
     std.debug.print("Watching for changes (Ctrl+C to exit)...\n", .{});
     var i: usize = 0;
     while (i < 60) : (i += 1) { // Run for 60 seconds
-        std.Thread.sleep(1 * std.time.ns_per_s);
+        try sleepMilliseconds(io, 1000);
         _ = try incremental.checkAndRebuild();
     }
 }

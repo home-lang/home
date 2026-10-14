@@ -178,6 +178,8 @@ const WorkerContext = struct {
 /// Parallel build system for compiling multiple modules
 pub const ParallelBuilder = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
+    owned_io: ?*std.Io.Threaded,
     tasks: std.ArrayList(*BuildTask),
     num_threads: usize,
     work_deques: []WorkDeque,
@@ -187,6 +189,7 @@ pub const ParallelBuilder = struct {
     ir_cache: ir_cache.IRCache,
     cache_dir: []const u8,
     compiler_version: []const u8,
+    state_mutex: Mutex,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -194,25 +197,65 @@ pub const ParallelBuilder = struct {
         cache_dir: ?[]const u8,
         compiler_version: ?[]const u8,
     ) !ParallelBuilder {
-        const threads = num_threads orelse @max(1, std.Thread.getCpuCount() catch 4);
+        const threaded = try allocator.create(std.Io.Threaded);
+        errdefer allocator.destroy(threaded);
+        threaded.* = std.Io.Threaded.init(allocator, .{});
+        errdefer threaded.deinit();
+
+        var builder = try initWithIo(
+            allocator,
+            num_threads,
+            cache_dir,
+            compiler_version,
+            threaded.io(),
+        );
+        builder.owned_io = threaded;
+        return builder;
+    }
+
+    pub fn initWithIo(
+        allocator: std.mem.Allocator,
+        num_threads: ?usize,
+        cache_dir: ?[]const u8,
+        compiler_version: ?[]const u8,
+        io: std.Io,
+    ) !ParallelBuilder {
+        const threads = @max(1, num_threads orelse (std.Thread.getCpuCount() catch 4));
 
         const deques = try allocator.alloc(WorkDeque, threads);
+        var initialized_deques: usize = 0;
+        errdefer {
+            for (deques[0..initialized_deques]) |*deque| deque.deinit();
+            allocator.free(deques);
+        }
         for (deques) |*deque| {
             deque.* = try WorkDeque.init(allocator);
+            initialized_deques += 1;
         }
 
         const worker_util = try allocator.alloc(f64, threads);
+        errdefer allocator.free(worker_util);
         @memset(worker_util, 0.0);
 
         // Initialize IR cache
         const cache_path = cache_dir orelse ".home-cache";
         const version = compiler_version orelse "0.1.0";
 
-        const cache = try ir_cache.IRCache.init(allocator, cache_path, false, null);
+        var cache = try ir_cache.IRCache.init(allocator, cache_path, false, io);
+        errdefer cache.deinit();
+
+        var tasks = try std.ArrayList(*BuildTask).initCapacity(allocator, 64);
+        errdefer tasks.deinit(allocator);
+        const owned_cache_dir = try allocator.dupe(u8, cache_path);
+        errdefer allocator.free(owned_cache_dir);
+        const owned_version = try allocator.dupe(u8, version);
+        errdefer allocator.free(owned_version);
 
         return .{
             .allocator = allocator,
-            .tasks = try std.ArrayList(*BuildTask).initCapacity(allocator, 64),
+            .io = io,
+            .owned_io = null,
+            .tasks = tasks,
             .num_threads = threads,
             .work_deques = deques,
             .stats = .{
@@ -225,8 +268,9 @@ pub const ParallelBuilder = struct {
                 .worker_utilization = worker_util,
             },
             .ir_cache = cache,
-            .cache_dir = try allocator.dupe(u8, cache_path),
-            .compiler_version = try allocator.dupe(u8, version),
+            .cache_dir = owned_cache_dir,
+            .compiler_version = owned_version,
+            .state_mutex = .{},
         };
     }
 
@@ -251,6 +295,10 @@ pub const ParallelBuilder = struct {
         self.ir_cache.deinit();
         self.allocator.free(self.cache_dir);
         self.allocator.free(self.compiler_version);
+        if (self.owned_io) |threaded| {
+            threaded.deinit();
+            self.allocator.destroy(threaded);
+        }
     }
 
     /// Add a build task
@@ -261,15 +309,27 @@ pub const ParallelBuilder = struct {
         dependencies: []const []const u8,
     ) !void {
         const task = try self.allocator.create(BuildTask);
+        errdefer self.allocator.destroy(task);
 
         const deps_copy = try self.allocator.alloc([]const u8, dependencies.len);
+        var copied_dependencies: usize = 0;
+        errdefer {
+            for (deps_copy[0..copied_dependencies]) |dep| self.allocator.free(dep);
+            self.allocator.free(deps_copy);
+        }
         for (dependencies, 0..) |dep, i| {
             deps_copy[i] = try self.allocator.dupe(u8, dep);
+            copied_dependencies += 1;
         }
 
+        const owned_module_name = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(owned_module_name);
+        const owned_file_path = try self.allocator.dupe(u8, file_path);
+        errdefer self.allocator.free(owned_file_path);
+
         task.* = .{
-            .module_name = try self.allocator.dupe(u8, module_name),
-            .file_path = try self.allocator.dupe(u8, file_path),
+            .module_name = owned_module_name,
+            .file_path = owned_file_path,
             .dependencies = deps_copy,
             .status = .Pending,
         };
@@ -302,7 +362,10 @@ pub const ParallelBuilder = struct {
             defer self.allocator.free(ready_tasks);
 
             if (ready_tasks.len == 0) {
-                // Circular dependency detected
+                if (self.hasFailedTasks()) {
+                    self.stats.failed_tasks = self.countFailedTasks();
+                    return error.BuildFailed;
+                }
                 return error.CircularDependency;
             }
 
@@ -333,11 +396,7 @@ pub const ParallelBuilder = struct {
         }
 
         // Check for failures
-        for (self.tasks.items) |task| {
-            if (task.status == .Failed) {
-                self.stats.failed_tasks += 1;
-            }
-        }
+        self.stats.failed_tasks = self.countFailedTasks();
 
         if (self.stats.failed_tasks > 0) {
             return error.BuildFailed;
@@ -374,6 +433,8 @@ pub const ParallelBuilder = struct {
         const wave_start = getNanoTimestamp();
 
         // Spawn worker threads
+        var spawned_threads: usize = 0;
+        errdefer for (threads[0..spawned_threads]) |thread| thread.join();
         for (0..thread_count) |i| {
             contexts[i] = .{
                 .worker_id = i,
@@ -383,6 +444,7 @@ pub const ParallelBuilder = struct {
                 .work_time_ns = std.atomic.Value(u64).init(0),
             };
             threads[i] = try std.Thread.spawn(.{}, workerThread, .{&contexts[i]});
+            spawned_threads += 1;
         }
 
         // Wait for all threads to complete
@@ -426,6 +488,7 @@ pub const ParallelBuilder = struct {
             task.worker_id = worker_id;
             context.builder.buildTask(task) catch {
                 task.status = .Failed;
+                task.end_time = getMilliTimestamp();
             };
 
             const task_end = getNanoTimestamp();
@@ -442,6 +505,18 @@ pub const ParallelBuilder = struct {
             }
         }
         return false;
+    }
+
+    fn hasFailedTasks(self: *ParallelBuilder) bool {
+        return self.countFailedTasks() != 0;
+    }
+
+    fn countFailedTasks(self: *ParallelBuilder) usize {
+        var failed: usize = 0;
+        for (self.tasks.items) |task| {
+            if (task.status == .Failed) failed += 1;
+        }
+        return failed;
     }
 
     fn getReadyTasks(self: *ParallelBuilder) ![]const *BuildTask {
@@ -485,9 +560,7 @@ pub const ParallelBuilder = struct {
         }
 
         // Read source file
-        var threaded = std.Io.Threaded.init(self.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+        const io = self.io;
         const cwd = std.Io.Dir.cwd();
         const file = cwd.openFile(io, task.file_path, .{}) catch |err| {
             if (self.verbose) {
@@ -515,8 +588,7 @@ pub const ParallelBuilder = struct {
             return err;
         };
         defer self.allocator.free(source);
-        var bufs = [_][]u8{source};
-        _ = file.readStreaming(io, &bufs) catch |err| {
+        const source_len = file.readPositionalAll(io, source, 0) catch |err| {
             if (self.verbose) {
                 std.debug.print("    [31m✗ Failed to read file: {any}[0m\n", .{err});
             }
@@ -543,7 +615,7 @@ pub const ParallelBuilder = struct {
 
         // Generate cache key
         const cache_key = ir_cache.generateCacheKey(
-            source,
+            source[0..source_len],
             dep_hashes.items,
             self.compiler_version,
             "", // compile flags (empty for now)
@@ -551,8 +623,10 @@ pub const ParallelBuilder = struct {
         task.cache_key = cache_key;
 
         // Check cache (mtime validation disabled - using source hash only)
-        if (self.ir_cache.get(cache_key)) |entry| {
-            _ = entry;
+        self.state_mutex.lock();
+        const cache_hit = self.ir_cache.get(cache_key) != null;
+        self.state_mutex.unlock();
+        if (cache_hit) {
             if (self.verbose) {
                 std.debug.print("    [36m⚡ Cache hit[0m\n", .{});
             }
@@ -560,8 +634,10 @@ pub const ParallelBuilder = struct {
             task.cache_hit = true;
             task.status = .Completed;
             task.end_time = getMilliTimestamp();
+            self.state_mutex.lock();
             self.stats.completed_tasks += 1;
             self.stats.cached_tasks += 1;
+            self.state_mutex.unlock();
             return;
         }
 
@@ -588,21 +664,28 @@ pub const ParallelBuilder = struct {
         const obj_path = try std.fmt.bufPrint(&obj_path_buf, "{s}/{s}.o", .{ self.cache_dir, task.module_name });
 
         // Store in cache
-        const compile_time = task.end_time - task.start_time;
-        try self.ir_cache.put(
-            cache_key,
-            task.module_name,
-            task.file_path,
-            0, // mtime disabled - using hash-only caching
-            dep_hashes.items,
-            ir_path,
-            obj_path,
-            compile_time,
-        );
+        const completed_at = getMilliTimestamp();
+        const compile_time = completed_at - task.start_time;
+        {
+            self.state_mutex.lock();
+            defer self.state_mutex.unlock();
+            try self.ir_cache.put(
+                cache_key,
+                task.module_name,
+                task.file_path,
+                0, // mtime disabled - using hash-only caching
+                dep_hashes.items,
+                ir_path,
+                obj_path,
+                compile_time,
+            );
+        }
 
         task.status = .Completed;
-        task.end_time = getMilliTimestamp();
+        task.end_time = completed_at;
+        self.state_mutex.lock();
         self.stats.completed_tasks += 1;
+        self.state_mutex.unlock();
 
         if (self.verbose) {
             std.debug.print("    [32m✓ Compiled in {d}ms[0m\n", .{task.duration()});
@@ -627,6 +710,8 @@ pub const ParallelBuilder = struct {
 
     /// Clear the IR cache
     pub fn clearCache(self: *ParallelBuilder) !void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
         try self.ir_cache.clear();
         if (self.verbose) {
             std.debug.print("Cleared IR cache\n", .{});
@@ -635,7 +720,9 @@ pub const ParallelBuilder = struct {
 
     /// Get cache statistics
     pub fn getCacheStats(self: *ParallelBuilder) ir_cache.CacheStats {
-        return self.ir_cache.stats;
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
+        return self.ir_cache.getStats();
     }
 
     /// Print cache statistics
@@ -664,6 +751,8 @@ pub const ParallelBuilder = struct {
         for (self.tasks.items) |task| {
             if (std.mem.eql(u8, task.module_name, module_name)) {
                 if (task.cache_key) |key| {
+                    self.state_mutex.lock();
+                    defer self.state_mutex.unlock();
                     try self.ir_cache.invalidate(key);
                     if (self.verbose) {
                         std.debug.print("Invalidated cache for module: {s}\n", .{module_name});
@@ -676,6 +765,8 @@ pub const ParallelBuilder = struct {
 
     /// Enable aggressive caching mode
     pub fn setAggressiveMode(self: *ParallelBuilder, enabled: bool) void {
+        self.state_mutex.lock();
+        defer self.state_mutex.unlock();
         self.ir_cache.aggressive_mode = enabled;
         if (self.verbose) {
             std.debug.print("Aggressive caching: {s}\n", .{if (enabled) "enabled" else "disabled"});

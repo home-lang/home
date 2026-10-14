@@ -1,6 +1,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+fn milliTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toMilliseconds();
+}
+
 /// Integration test configuration
 pub const IntegrationTestConfig = struct {
     name: []const u8,
@@ -46,6 +50,7 @@ pub const TestResult = struct {
 /// Integration test runner
 pub const IntegrationTestRunner = struct {
     allocator: Allocator,
+    io: std.Io,
     tests: std.ArrayList(IntegrationTest),
     results: std.ArrayList(TestResult),
     temp_dir: ?[]const u8 = null,
@@ -57,11 +62,12 @@ pub const IntegrationTestRunner = struct {
         teardown_fn: ?*const fn (*IntegrationTestRunner) anyerror!void = null,
     };
 
-    pub fn init(allocator: Allocator) IntegrationTestRunner {
+    pub fn init(allocator: Allocator, io: std.Io) IntegrationTestRunner {
         return .{
             .allocator = allocator,
-            .tests = std.ArrayList(IntegrationTest).init(allocator),
-            .results = std.ArrayList(TestResult).init(allocator),
+            .io = io,
+            .tests = .empty,
+            .results = .empty,
         };
     }
 
@@ -69,15 +75,15 @@ pub const IntegrationTestRunner = struct {
         for (self.tests.items) |*test_case| {
             test_case.config.deinit();
         }
-        self.tests.deinit();
+        self.tests.deinit(self.allocator);
 
         for (self.results.items) |*result| {
             result.deinit(self.allocator);
         }
-        self.results.deinit();
+        self.results.deinit(self.allocator);
 
         if (self.temp_dir) |dir| {
-            std.fs.cwd().deleteTree(dir) catch {};
+            std.Io.Dir.cwd().deleteTree(self.io, dir) catch {};
             self.allocator.free(dir);
         }
     }
@@ -88,8 +94,10 @@ pub const IntegrationTestRunner = struct {
         config: IntegrationTestConfig,
         test_fn: *const fn (*IntegrationTestRunner) anyerror!void,
     ) !void {
-        try self.tests.append(.{
-            .config = config,
+        var owned_config = config;
+        errdefer owned_config.deinit();
+        try self.tests.append(self.allocator, .{
+            .config = owned_config,
             .test_fn = test_fn,
         });
     }
@@ -100,10 +108,10 @@ pub const IntegrationTestRunner = struct {
         const temp_dir = try std.fmt.allocPrint(
             self.allocator,
             "/tmp/home-integration-tests-{d}",
-            .{std.time.timestamp()},
+            .{milliTimestamp(self.io)},
         );
         self.temp_dir = temp_dir;
-        try std.fs.cwd().makePath(temp_dir);
+        try std.Io.Dir.cwd().createDirPath(self.io, temp_dir);
 
         std.debug.print("\n=== Running Integration Tests ===\n", .{});
         std.debug.print("Test directory: {s}\n\n", .{temp_dir});
@@ -116,11 +124,12 @@ pub const IntegrationTestRunner = struct {
     }
 
     fn runTest(self: *IntegrationTestRunner, test_case: IntegrationTest) !void {
-        const start = std.time.milliTimestamp();
+        const start = milliTimestamp(self.io);
 
         std.debug.print("Running: {s}...", .{test_case.config.name});
 
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(self.allocator);
         var error_msg: ?[]const u8 = null;
         var passed = false;
 
@@ -132,8 +141,8 @@ pub const IntegrationTestRunner = struct {
                     "Setup failed: {s}",
                     .{@errorName(err)},
                 );
-                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start));
-                try self.recordResult(test_case.config.name, false, duration, output.toOwnedSlice(), error_msg);
+                const duration = @as(u64, @intCast(milliTimestamp(self.io) - start));
+                try self.recordResult(test_case.config.name, false, duration, try output.toOwnedSlice(self.allocator), error_msg);
                 std.debug.print(" FAILED (setup)\n", .{});
                 return;
             };
@@ -146,8 +155,8 @@ pub const IntegrationTestRunner = struct {
                 "Test failed: {s}",
                 .{@errorName(err)},
             );
-            const duration = @as(u64, @intCast(std.time.milliTimestamp() - start));
-            try self.recordResult(test_case.config.name, false, duration, output.toOwnedSlice(), error_msg);
+            const duration = @as(u64, @intCast(milliTimestamp(self.io) - start));
+            try self.recordResult(test_case.config.name, false, duration, try output.toOwnedSlice(self.allocator), error_msg);
             std.debug.print(" FAILED\n", .{});
 
             // Run teardown even on failure
@@ -171,8 +180,8 @@ pub const IntegrationTestRunner = struct {
             };
         }
 
-        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start));
-        try self.recordResult(test_case.config.name, passed, duration, output.toOwnedSlice(), error_msg);
+        const duration = @as(u64, @intCast(milliTimestamp(self.io) - start));
+        try self.recordResult(test_case.config.name, passed, duration, try output.toOwnedSlice(self.allocator), error_msg);
 
         if (passed) {
             std.debug.print(" PASSED ({d}ms)\n", .{duration});
@@ -189,7 +198,11 @@ pub const IntegrationTestRunner = struct {
         output: []const u8,
         error_message: ?[]const u8,
     ) !void {
-        try self.results.append(.{
+        errdefer {
+            self.allocator.free(output);
+            if (error_message) |message| self.allocator.free(message);
+        }
+        try self.results.append(self.allocator, .{
             .name = name,
             .passed = passed,
             .duration_ms = duration_ms,
@@ -232,17 +245,20 @@ pub const IntegrationTestRunner = struct {
         }
     }
 
+    fn runChild(self: *IntegrationTestRunner, argv: []const []const u8) !std.process.RunResult {
+        return std.process.run(self.allocator, self.io, .{
+            .argv = argv,
+            .cwd = if (self.temp_dir) |path| .{ .path = path } else .inherit,
+        });
+    }
+
     /// Helper: Execute a command and return output
     pub fn executeCommand(self: *IntegrationTestRunner, argv: []const []const u8) ![]const u8 {
-        const result = try std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = argv,
-            .cwd = self.temp_dir,
-        });
+        const result = try self.runChild(argv);
 
         defer self.allocator.free(result.stderr);
 
-        if (result.term.Exited != 0) {
+        if (!result.term.success()) {
             self.allocator.free(result.stdout);
             return error.CommandFailed;
         }
@@ -255,43 +271,36 @@ pub const IntegrationTestRunner = struct {
         const temp_dir = self.temp_dir orelse return error.NoTempDir;
 
         const file_path = try std.fs.path.join(self.allocator, &.{ temp_dir, name });
+        errdefer self.allocator.free(file_path);
 
-        const file = try std.fs.cwd().createFile(file_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(self.io, file_path, .{});
+        defer file.close(self.io);
 
-        try file.writeAll(content);
+        try file.writeStreamingAll(self.io, content);
 
         return file_path;
     }
 
     /// Helper: Read file content
     pub fn readFile(self: *IntegrationTestRunner, path: []const u8) ![]const u8 {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        return try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+        return std.Io.Dir.cwd().readFileAlloc(self.io, path, self.allocator, .limited(10 * 1024 * 1024));
     }
 
     /// Helper: Assert file exists
     pub fn assertFileExists(self: *IntegrationTestRunner, path: []const u8) !void {
-        _ = self;
-        std.fs.cwd().access(path, .{}) catch {
+        std.Io.Dir.cwd().access(self.io, path, .{}) catch {
             return error.FileDoesNotExist;
         };
     }
 
     /// Helper: Assert command succeeds
     pub fn assertCommandSucceeds(self: *IntegrationTestRunner, argv: []const []const u8) !void {
-        const result = try std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = argv,
-            .cwd = self.temp_dir,
-        });
+        const result = try self.runChild(argv);
 
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        if (result.term.Exited != 0) {
+        if (!result.term.success()) {
             std.debug.print("Command failed: {s}\n", .{result.stderr});
             return error.CommandFailed;
         }
@@ -299,16 +308,12 @@ pub const IntegrationTestRunner = struct {
 
     /// Helper: Assert command fails
     pub fn assertCommandFails(self: *IntegrationTestRunner, argv: []const []const u8) !void {
-        const result = try std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = argv,
-            .cwd = self.temp_dir,
-        });
+        const result = try self.runChild(argv);
 
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        if (result.term.Exited == 0) {
+        if (result.term.success()) {
             return error.CommandShouldHaveFailed;
         }
     }
@@ -349,16 +354,13 @@ pub const Scenarios = struct {
         const source_path = try runner.createTempFile("main.home", source_code);
         defer runner.allocator.free(source_path);
 
-        const result = std.process.Child.run(.{
-            .allocator = runner.allocator,
-            .argv = &.{ "home", "build", source_path },
-            .cwd = runner.temp_dir,
-        }) catch return error.CompilationShouldFail;
+        const result = runner.runChild(&.{ "home", "build", source_path }) catch
+            return error.CompilationShouldFail;
 
         defer runner.allocator.free(result.stdout);
         defer runner.allocator.free(result.stderr);
 
-        if (result.term.Exited == 0) {
+        if (result.term.success()) {
             return error.ShouldHaveFailedToCompile;
         }
 
@@ -374,8 +376,23 @@ test "IntegrationTestRunner - basic" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var runner = IntegrationTestRunner.init(allocator);
+    var runner = IntegrationTestRunner.init(allocator, testing.io);
     defer runner.deinit();
 
     try testing.expect(runner.tests.items.len == 0);
+}
+
+test "IntegrationTestRunner - temporary file round trip" {
+    const testing = std.testing;
+    var runner = IntegrationTestRunner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+
+    try runner.runAll();
+    const path = try runner.createTempFile("round-trip.txt", "home");
+    defer testing.allocator.free(path);
+    try runner.assertFileExists(path);
+
+    const contents = try runner.readFile(path);
+    defer testing.allocator.free(contents);
+    try testing.expectEqualStrings("home", contents);
 }

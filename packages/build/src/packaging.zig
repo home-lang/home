@@ -5,15 +5,15 @@ const Target = cross.Target;
 
 /// Package format
 pub const PackageFormat = enum {
-    tarball,      // .tar.gz
-    zip,          // .zip
-    deb,          // Debian package
-    rpm,          // RedHat package
-    dmg,          // macOS disk image
-    msi,          // Windows installer
-    appimage,     // Linux AppImage
-    flatpak,      // Flatpak bundle
-    snap,         // Snap package
+    tarball, // .tar.gz
+    zip, // .zip
+    deb, // Debian package
+    rpm, // RedHat package
+    dmg, // macOS disk image
+    msi, // Windows installer
+    appimage, // Linux AppImage
+    flatpak, // Flatpak bundle
+    snap, // Snap package
 
     pub fn extension(self: PackageFormat) []const u8 {
         return switch (self) {
@@ -50,8 +50,9 @@ pub const PackageMetadata = struct {
     dependencies: []const []const u8 = &.{},
 
     pub fn format(self: PackageMetadata, allocator: Allocator) ![]const u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        const writer = buffer.writer();
+        var buffer: std.Io.Writer.Allocating = .init(allocator);
+        defer buffer.deinit();
+        const writer = &buffer.writer;
 
         try writer.print("Name: {s}\n", .{self.name});
         try writer.print("Version: {s}\n", .{self.version});
@@ -96,7 +97,7 @@ pub const PackageBuilder = struct {
             .target = target,
             .format = format,
             .output_dir = "dist",
-            .files = std.ArrayList(PackageFile).init(allocator),
+            .files = .empty,
         };
     }
 
@@ -105,14 +106,18 @@ pub const PackageBuilder = struct {
             self.allocator.free(file.source);
             self.allocator.free(file.destination);
         }
-        self.files.deinit();
+        self.files.deinit(self.allocator);
     }
 
     /// Add a file to the package
     pub fn addFile(self: *PackageBuilder, source: []const u8, destination: []const u8, mode: u32) !void {
-        try self.files.append(.{
-            .source = try self.allocator.dupe(u8, source),
-            .destination = try self.allocator.dupe(u8, destination),
+        const owned_source = try self.allocator.dupe(u8, source);
+        errdefer self.allocator.free(owned_source);
+        const owned_destination = try self.allocator.dupe(u8, destination);
+        errdefer self.allocator.free(owned_destination);
+        try self.files.append(self.allocator, .{
+            .source = owned_source,
+            .destination = owned_destination,
             .mode = mode,
         });
     }
@@ -397,13 +402,14 @@ pub const PackageBuilder = struct {
         };
 
         // Build file list for spec
-        var file_list = std.ArrayList(u8).init(self.allocator);
+        var file_list: std.Io.Writer.Allocating = .init(self.allocator);
         defer file_list.deinit();
+        const file_list_writer = &file_list.writer;
         for (self.files.items) |file| {
             if (std.mem.startsWith(u8, file.destination, "bin/")) {
-                try file_list.writer().print("/usr/local/{s}\n", .{file.destination});
+                try file_list_writer.print("/usr/local/{s}\n", .{file.destination});
             } else {
-                try file_list.writer().print("/usr/share/{s}/{s}\n", .{ self.metadata.name, file.destination });
+                try file_list_writer.print("/usr/share/{s}/{s}\n", .{ self.metadata.name, file.destination });
             }
         }
 
@@ -434,7 +440,7 @@ pub const PackageBuilder = struct {
                 arch_str,
                 self.metadata.description,
                 self.metadata.name,
-                file_list.items,
+                file_list.written(),
             },
         );
         defer self.allocator.free(spec_content);
@@ -656,10 +662,12 @@ pub const PackageBuilder = struct {
         defer self.allocator.free(wxs_path);
 
         // Build file components
-        var components = std.ArrayList(u8).init(self.allocator);
+        var components: std.Io.Writer.Allocating = .init(self.allocator);
         defer components.deinit();
-        var component_refs = std.ArrayList(u8).init(self.allocator);
+        const components_writer = &components.writer;
+        var component_refs: std.Io.Writer.Allocating = .init(self.allocator);
         defer component_refs.deinit();
+        const component_refs_writer = &component_refs.writer;
 
         var file_idx: u32 = 0;
         for (self.files.items) |file| {
@@ -668,14 +676,14 @@ pub const PackageBuilder = struct {
             const file_id = try std.fmt.allocPrint(self.allocator, "File{d}", .{file_idx});
             defer self.allocator.free(file_id);
 
-            try components.writer().print(
+            try components_writer.print(
                 \\            <Component Id="{s}" Guid="*">
                 \\              <File Id="{s}" Source="{s}" KeyPath="yes"/>
                 \\            </Component>
                 \\
             , .{ comp_id, file_id, file.source });
 
-            try component_refs.writer().print(
+            try component_refs_writer.print(
                 \\        <ComponentRef Id="{s}"/>
                 \\
             , .{comp_id});
@@ -716,9 +724,9 @@ pub const PackageBuilder = struct {
                 self.metadata.author,
                 product_uuid,
                 self.metadata.name,
-                component_refs.items,
+                component_refs.written(),
                 self.metadata.name,
-                components.items,
+                components.written(),
             },
         );
         defer self.allocator.free(wxs_content);
@@ -907,7 +915,7 @@ pub const PackageBuilder = struct {
         const result = try std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{ "appimagetool", "--comp", "gzip", appdir, output_path },
-            .env_map = &.{ .{ "ARCH", arch_str } },
+            .env_map = &.{.{ "ARCH", arch_str }},
         });
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
@@ -1197,24 +1205,24 @@ pub const DistributionManager = struct {
         return .{
             .allocator = allocator,
             .metadata = metadata,
-            .targets = std.ArrayList(Target).init(allocator),
-            .formats = std.ArrayList(PackageFormat).init(allocator),
+            .targets = .empty,
+            .formats = .empty,
         };
     }
 
     pub fn deinit(self: *DistributionManager) void {
-        self.targets.deinit();
-        self.formats.deinit();
+        self.targets.deinit(self.allocator);
+        self.formats.deinit(self.allocator);
     }
 
     /// Add target platform
     pub fn addTarget(self: *DistributionManager, target: Target) !void {
-        try self.targets.append(target);
+        try self.targets.append(self.allocator, target);
     }
 
     /// Add package format
     pub fn addFormat(self: *DistributionManager, format: PackageFormat) !void {
-        try self.formats.append(format);
+        try self.formats.append(self.allocator, format);
     }
 
     /// Build all target combinations
@@ -1260,6 +1268,20 @@ test "PackageBuilder - tarball" {
     );
     defer builder.deinit();
 
-    // Would add files and build in real test
-    try testing.expect(true);
+    const formatted = try metadata.format(allocator);
+    defer allocator.free(formatted);
+    try testing.expect(std.mem.indexOf(u8, formatted, "Name: test-app") != null);
+
+    try builder.addFile("zig-out/bin/home", "bin/home", 0o755);
+    try testing.expectEqual(@as(usize, 1), builder.files.items.len);
+    try testing.expectEqualStrings("zig-out/bin/home", builder.files.items[0].source);
+    try testing.expectEqualStrings("bin/home", builder.files.items[0].destination);
+    try testing.expectEqual(@as(u32, 0o755), builder.files.items[0].mode);
+
+    var distribution = DistributionManager.init(allocator, metadata);
+    defer distribution.deinit();
+    try distribution.addTarget(cross.CommonTargets.linux_x86_64);
+    try distribution.addFormat(.tarball);
+    try testing.expectEqual(@as(usize, 1), distribution.targets.items.len);
+    try testing.expectEqual(@as(usize, 1), distribution.formats.items.len);
 }

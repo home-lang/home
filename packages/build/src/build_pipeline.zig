@@ -6,6 +6,11 @@ const parallel_build = @import("parallel_build.zig");
 const lto = @import("lto.zig");
 const linker_script = @import("linker_script.zig");
 
+fn freePathList(allocator: std.mem.Allocator, paths: []const []const u8) void {
+    for (paths) |path| allocator.free(path);
+    allocator.free(paths);
+}
+
 // ============================================================================
 // Build Configuration
 // ============================================================================
@@ -57,13 +62,15 @@ pub const BuildConfig = struct {
 
 pub const BuildPipeline = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: BuildConfig,
     intermediate_dir: []const u8,
     cache_dir: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, config: BuildConfig) !BuildPipeline {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: BuildConfig) !BuildPipeline {
         return .{
             .allocator = allocator,
+            .io = io,
             .config = config,
             .intermediate_dir = ".home-build",
             .cache_dir = ".home-cache",
@@ -91,10 +98,11 @@ pub const BuildPipeline = struct {
             std.debug.print("\n=== Phase 1: Compilation ===\n", .{});
         }
         const object_files = try self.compilePhase();
-        defer self.allocator.free(object_files);
+        defer freePathList(self.allocator, object_files);
 
         // Phase 2: Link-time optimization (if enabled)
-        var optimized_files = object_files;
+        var optimized_files: ?[]const []const u8 = null;
+        defer if (optimized_files) |paths| freePathList(self.allocator, paths);
         if (self.config.lto_enabled and self.config.optimize != .debug) {
             if (self.config.verbose) {
                 std.debug.print("\n=== Phase 2: Link-Time Optimization ===\n", .{});
@@ -104,11 +112,10 @@ pub const BuildPipeline = struct {
             std.debug.print("\n=== Phase 2: Link-Time Optimization (skipped) ===\n", .{});
         }
 
-        // Phase 3: Linking with optional custom linker script
         if (self.config.verbose) {
             std.debug.print("\n=== Phase 3: Linking ===\n", .{});
         }
-        try self.linkPhase(optimized_files);
+        try self.linkPhase(optimized_files orelse object_files);
 
         if (self.config.verbose) {
             std.debug.print("\n✓ Build completed successfully: {s}\n", .{self.config.output_path});
@@ -118,11 +125,12 @@ pub const BuildPipeline = struct {
     /// Phase 1: Compile sources to IR/object files
     fn compilePhase(self: *BuildPipeline) ![]const []const u8 {
         // Initialize parallel builder
-        var builder = try parallel_build.ParallelBuilder.init(
+        var builder = try parallel_build.ParallelBuilder.initWithIo(
             self.allocator,
             null, // Auto-detect threads
             self.cache_dir,
             "0.1.0",
+            self.io,
         );
         defer builder.deinit();
 
@@ -135,7 +143,7 @@ pub const BuildPipeline = struct {
 
             // Parse dependencies from source
             const deps = try self.parseDependencies(source);
-            defer self.allocator.free(deps);
+            defer freePathList(self.allocator, deps);
 
             try builder.addTask(module_name, source, deps);
         }
@@ -148,8 +156,9 @@ pub const BuildPipeline = struct {
         }
 
         // Collect object file paths
-        var object_files = std.ArrayList([]const u8).init(self.allocator);
-        defer object_files.deinit();
+        var object_files: std.ArrayList([]const u8) = .empty;
+        defer object_files.deinit(self.allocator);
+        errdefer for (object_files.items) |path| self.allocator.free(path);
 
         for (builder.tasks.items) |task| {
             if (task.status == .Completed) {
@@ -158,11 +167,12 @@ pub const BuildPipeline = struct {
                     "{s}/{s}.o",
                     .{ self.intermediate_dir, task.module_name },
                 );
-                try object_files.append(obj_path);
+                errdefer self.allocator.free(obj_path);
+                try object_files.append(self.allocator, obj_path);
             }
         }
 
-        return try object_files.toOwnedSlice();
+        return try object_files.toOwnedSlice(self.allocator);
     }
 
     /// Phase 2: Link-time optimization
@@ -175,7 +185,7 @@ pub const BuildPipeline = struct {
         lto_config.verbose = self.config.verbose;
 
         // Initialize LTO optimizer
-        var optimizer = lto.LtoOptimizer.init(self.allocator, lto_config);
+        var optimizer = lto.LtoOptimizer.init(self.allocator, self.io, lto_config);
         defer optimizer.deinit();
 
         // Add modules
@@ -188,12 +198,13 @@ pub const BuildPipeline = struct {
             );
             defer self.allocator.free(ir_path);
 
-            const module = try lto.IrModule.init(
+            var module = try lto.IrModule.init(
                 self.allocator,
                 module_name,
                 ir_path,
                 obj_path,
             );
+            errdefer module.deinit();
 
             try optimizer.addModule(module);
         }
@@ -209,18 +220,22 @@ pub const BuildPipeline = struct {
         );
         defer self.allocator.free(optimized_dir);
 
-        std.fs.cwd().makeDir(optimized_dir) catch {};
+        std.Io.Dir.cwd().createDir(self.io, optimized_dir, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
 
         const optimized_output = try std.fmt.allocPrint(
             self.allocator,
             "{s}/optimized.o",
             .{optimized_dir},
         );
+        errdefer self.allocator.free(optimized_output);
 
         try optimizer.emitOptimized(optimized_output);
 
         // Return single optimized object file
-        var result = try self.allocator.alloc([]const u8, 1);
+        const result = try self.allocator.alloc([]const u8, 1);
         result[0] = optimized_output;
         return result;
     }
@@ -252,7 +267,7 @@ pub const BuildPipeline = struct {
             .verbose = self.config.verbose,
         };
 
-        var linker = linker_script.Linker.init(self.allocator, linker_config);
+        var linker = linker_script.Linker.init(self.allocator, self.io, linker_config);
 
         // Link
         try linker.link();
@@ -294,10 +309,13 @@ pub const BuildPipeline = struct {
             .{self.intermediate_dir},
         );
 
-        const file = try std.fs.cwd().createFile(script_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(self.io, script_path, .{});
+        defer file.close(self.io);
 
-        try script.generateGnuLd(file.writer());
+        var buffer: [4096]u8 = undefined;
+        var writer = file.writer(self.io, &buffer);
+        try script.generateGnuLd(&writer.interface);
+        try writer.interface.flush();
 
         if (self.config.verbose) {
             std.debug.print("Generated linker script: {s}\n", .{script_path});
@@ -308,14 +326,15 @@ pub const BuildPipeline = struct {
 
     /// Create intermediate directories
     fn createDirectories(self: *BuildPipeline) !void {
-        std.fs.cwd().makeDir(self.intermediate_dir) catch {};
-        std.fs.cwd().makeDir(self.cache_dir) catch {};
+        try std.Io.Dir.cwd().createDirPath(self.io, self.intermediate_dir);
+        try std.Io.Dir.cwd().createDirPath(self.io, self.cache_dir);
     }
 
     /// Parse module dependencies from source file
     fn parseDependencies(self: *BuildPipeline, source_path: []const u8) ![]const []const u8 {
         // Read source file
-        const file_content = std.fs.cwd().readFileAlloc(
+        const file_content = std.Io.Dir.cwd().readFileAlloc(
+            self.io,
             source_path,
             self.allocator,
             .limited(10 * 1024 * 1024),
@@ -323,7 +342,7 @@ pub const BuildPipeline = struct {
             if (self.config.verbose) {
                 std.debug.print("Warning: Could not read {s} for dependency parsing: {}\n", .{ source_path, err });
             }
-            return &[_][]const u8{};
+            return self.allocator.alloc([]const u8, 0);
         };
         defer self.allocator.free(file_content);
 
@@ -331,8 +350,9 @@ pub const BuildPipeline = struct {
         // Look for patterns like:
         //   import "module_name"
         //   from "module_name" import ...
-        var deps = std.ArrayList([]const u8).init(self.allocator);
-        defer deps.deinit();
+        var deps: std.ArrayList([]const u8) = .empty;
+        defer deps.deinit(self.allocator);
+        errdefer for (deps.items) |dep| self.allocator.free(dep);
 
         var line_iter = std.mem.splitScalar(u8, file_content, '\n');
         while (line_iter.next()) |line| {
@@ -344,7 +364,9 @@ pub const BuildPipeline = struct {
                 if (std.mem.indexOf(u8, trimmed, "\"")) |first_quote| {
                     if (std.mem.indexOf(u8, trimmed[first_quote + 1 ..], "\"")) |second_quote_rel| {
                         const module_name = trimmed[first_quote + 1 .. first_quote + 1 + second_quote_rel];
-                        try deps.append(try self.allocator.dupe(u8, module_name));
+                        const owned_module = try self.allocator.dupe(u8, module_name);
+                        errdefer self.allocator.free(owned_module);
+                        try deps.append(self.allocator, owned_module);
                     }
                 }
             } else if (std.mem.startsWith(u8, trimmed, "from ")) {
@@ -352,13 +374,15 @@ pub const BuildPipeline = struct {
                 if (std.mem.indexOf(u8, trimmed, "\"")) |first_quote| {
                     if (std.mem.indexOf(u8, trimmed[first_quote + 1 ..], "\"")) |second_quote_rel| {
                         const module_name = trimmed[first_quote + 1 .. first_quote + 1 + second_quote_rel];
-                        try deps.append(try self.allocator.dupe(u8, module_name));
+                        const owned_module = try self.allocator.dupe(u8, module_name);
+                        errdefer self.allocator.free(owned_module);
+                        try deps.append(self.allocator, owned_module);
                     }
                 }
             }
         }
 
-        return try deps.toOwnedSlice();
+        return try deps.toOwnedSlice(self.allocator);
     }
 };
 
@@ -489,7 +513,7 @@ test "build pipeline creation" {
     const sources = [_][]const u8{ "main.home", "utils.home" };
     const config = BuildProfile.dev(allocator, &sources, "test_output");
 
-    var pipeline = try BuildPipeline.init(allocator, config);
+    var pipeline = try BuildPipeline.init(allocator, std.testing.io, config);
     defer pipeline.deinit();
 
     try std.testing.expectEqual(std.builtin.OptimizeMode.debug, pipeline.config.optimize);
