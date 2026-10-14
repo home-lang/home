@@ -49,6 +49,18 @@ pub const AudioTrackConfig = struct {
     codec_config: ?[]const u8 = null, // esds, dOps, etc.
 };
 
+const TrackConfig = union(enum) {
+    video: VideoTrackConfig,
+    audio: AudioTrackConfig,
+
+    pub fn timescale(self: TrackConfig) u32 {
+        return switch (self) {
+            .video => |video| video.timescale,
+            .audio => |audio| if (audio.timescale != 0) audio.timescale else audio.sample_rate,
+        };
+    }
+};
+
 // ============================================================================
 // MP4 Muxer
 // ============================================================================
@@ -85,18 +97,6 @@ pub const Mp4Muxer = struct {
             composition_offset: i32,
             is_keyframe: bool,
         };
-    };
-
-    const TrackConfig = union(enum) {
-        video: VideoTrackConfig,
-        audio: AudioTrackConfig,
-
-        pub fn timescale(self: TrackConfig) u32 {
-            return switch (self) {
-                .video => |v| v.timescale,
-                .audio => |a| if (a.timescale != 0) a.timescale else a.sample_rate,
-            };
-        }
     };
 
     pub fn init(allocator: std.mem.Allocator) Self {
@@ -187,12 +187,7 @@ pub const Mp4Muxer = struct {
 
     /// Finalize and get MP4 data
     pub fn finalize(self: *Self) ![]u8 {
-        // Finalize last chunks
-        for (self.tracks.items) |*track| {
-            if (track.current_chunk_samples > 0) {
-                try track.chunk_offsets.append(self.allocator, track.current_chunk_offset);
-            }
-        }
+        try self.finalizeChunks();
 
         // Build the complete file
         var output: std.ArrayList(u8) = .empty;
@@ -209,13 +204,9 @@ pub const Mp4Muxer = struct {
         try output.appendSlice(self.allocator, "mdat");
         try writeU64Be(&output, self.allocator, self.mdat_size + 16); // 16 = header size
 
-        // Update chunk offsets (add ftyp + mdat header offset)
-        const data_offset = ftyp_size + 16; // ftyp + mdat header
-        for (self.tracks.items) |*track| {
-            for (track.chunk_offsets.items) |*offset| {
-                offset.* += data_offset;
-            }
-        }
+        // Chunk offsets already include the standard 8-byte mdat header. This
+        // file uses an extended 16-byte header, so add ftyp plus the extra 8.
+        self.adjustChunkOffsets(ftyp_size + 8);
 
         // Write mdat content
         try output.appendSlice(self.allocator, self.buffer.items);
@@ -223,6 +214,30 @@ pub const Mp4Muxer = struct {
         // Write moov
         try self.writeMoov(&output);
 
+        return output.toOwnedSlice(self.allocator);
+    }
+
+    fn finalizeChunks(self: *Self) !void {
+        for (self.tracks.items) |*track| {
+            if (track.current_chunk_samples > 0) {
+                try track.chunk_offsets.append(self.allocator, track.current_chunk_offset);
+                track.current_chunk_samples = 0;
+            }
+        }
+    }
+
+    fn adjustChunkOffsets(self: *Self, delta: usize) void {
+        for (self.tracks.items) |*track| {
+            for (track.chunk_offsets.items) |*offset| {
+                offset.* += @intCast(delta);
+            }
+        }
+    }
+
+    fn buildMoov(self: *Self) ![]u8 {
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
+        try self.writeMoov(&output);
         return output.toOwnedSlice(self.allocator);
     }
 
@@ -589,7 +604,8 @@ pub const Mp4Muxer = struct {
         try output.appendSlice(self.allocator, &codec_tag);
 
         // Reserved
-        try output.appendSlice(self.allocator, &[_]u8{0} ** 6);
+        const reserved_6: [6]u8 = @splat(0);
+        try output.appendSlice(self.allocator, &reserved_6);
 
         // Data reference index
         try writeU16Be(output, self.allocator, 1);
@@ -597,7 +613,8 @@ pub const Mp4Muxer = struct {
         // Pre-defined and reserved
         try writeU16Be(output, self.allocator, 0);
         try writeU16Be(output, self.allocator, 0);
-        try output.appendSlice(self.allocator, &[_]u8{0} ** 12);
+        const reserved_12: [12]u8 = @splat(0);
+        try output.appendSlice(self.allocator, &reserved_12);
 
         // Width and height
         try writeU16Be(output, self.allocator, config.width);
@@ -614,7 +631,8 @@ pub const Mp4Muxer = struct {
         try writeU16Be(output, self.allocator, 1);
 
         // Compressor name (32 bytes, first byte is length)
-        try output.appendSlice(self.allocator, &[_]u8{0} ** 32);
+        const compressor_name: [32]u8 = @splat(0);
+        try output.appendSlice(self.allocator, &compressor_name);
 
         // Depth
         try writeU16Be(output, self.allocator, 0x0018); // 24-bit
@@ -656,7 +674,8 @@ pub const Mp4Muxer = struct {
         try output.appendSlice(self.allocator, &codec_tag);
 
         // Reserved
-        try output.appendSlice(self.allocator, &[_]u8{0} ** 6);
+        const reserved: [6]u8 = @splat(0);
+        try output.appendSlice(self.allocator, &reserved);
 
         // Data reference index
         try writeU16Be(output, self.allocator, 1);
@@ -1083,47 +1102,47 @@ pub const FragmentedMp4Muxer = struct {
     pub fn init(allocator: std.mem.Allocator, fragment_duration: u32) Self {
         return .{
             .allocator = allocator,
-            .tracks = std.ArrayList(TrackConfig).init(allocator),
+            .tracks = .empty,
             .fragment_duration = fragment_duration,
-            .current_fragment = std.ArrayList(u8).init(allocator),
+            .current_fragment = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.tracks.deinit();
-        self.current_fragment.deinit();
+        self.tracks.deinit(self.allocator);
+        self.current_fragment.deinit(self.allocator);
     }
 
     pub fn addVideoTrack(self: *Self, config: VideoTrackConfig) !u32 {
         const track_id: u32 = @intCast(self.tracks.items.len + 1);
-        try self.tracks.append(.{ .video = config });
+        try self.tracks.append(self.allocator, .{ .video = config });
         return track_id;
     }
 
     pub fn addAudioTrack(self: *Self, config: AudioTrackConfig) !u32 {
         const track_id: u32 = @intCast(self.tracks.items.len + 1);
-        try self.tracks.append(.{ .audio = config });
+        try self.tracks.append(self.allocator, .{ .audio = config });
         return track_id;
     }
 
     /// Write initialization segment (ftyp + moov)
     pub fn writeInitSegment(self: *Self) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
 
         // Write ftyp for fragmented MP4
         try writeU32Be(&output, self.allocator, 24); // Size
-        try output.appendSlice("ftyp");
-        try output.appendSlice("iso5"); // Major brand for fMP4
+        try output.appendSlice(self.allocator, "ftyp");
+        try output.appendSlice(self.allocator, "iso5"); // Major brand for fMP4
         try writeU32Be(&output, self.allocator, 512); // Minor version
-        try output.appendSlice("iso5");
-        try output.appendSlice("iso6");
-        try output.appendSlice("mp41");
+        try output.appendSlice(self.allocator, "iso5");
+        try output.appendSlice(self.allocator, "iso6");
+        try output.appendSlice(self.allocator, "mp41");
 
         // Write moov with mvex (movie extends)
         const moov_start = output.items.len;
         try writeU32Be(&output, self.allocator, 0); // Placeholder
-        try output.appendSlice("moov");
+        try output.appendSlice(self.allocator, "moov");
 
         // mvhd
         try self.writeMvhd(&output);
@@ -1137,7 +1156,7 @@ pub const FragmentedMp4Muxer = struct {
         // mvex (movie extends)
         const mvex_start = output.items.len;
         try writeU32Be(&output, self.allocator, 0);
-        try output.appendSlice("mvex");
+        try output.appendSlice(self.allocator, "mvex");
 
         // trex for each track
         for (0..self.tracks.items.len) |i| {
@@ -1153,39 +1172,39 @@ pub const FragmentedMp4Muxer = struct {
         const moov_size: u32 = @intCast(output.items.len - moov_start);
         std.mem.writeInt(u32, output.items[moov_start..][0..4], moov_size, .big);
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.allocator);
     }
 
     /// Write media fragment (moof + mdat)
     pub fn writeFragment(self: *Self, track_id: u32, samples: []const Sample) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
 
         // moof (movie fragment)
         const moof_start = output.items.len;
         try writeU32Be(&output, self.allocator, 0);
-        try output.appendSlice("moof");
+        try output.appendSlice(self.allocator, "moof");
 
         // mfhd (movie fragment header)
         try writeU32Be(&output, self.allocator, 16);
-        try output.appendSlice("mfhd");
+        try output.appendSlice(self.allocator, "mfhd");
         try writeU32Be(&output, self.allocator, 0); // Version/flags
         try writeU32Be(&output, self.allocator, self.sequence_number);
 
         // traf (track fragment)
         const traf_start = output.items.len;
         try writeU32Be(&output, self.allocator, 0);
-        try output.appendSlice("traf");
+        try output.appendSlice(self.allocator, "traf");
 
         // tfhd (track fragment header)
         try writeU32Be(&output, self.allocator, 24);
-        try output.appendSlice("tfhd");
+        try output.appendSlice(self.allocator, "tfhd");
         try writeU32Be(&output, self.allocator, 0x020000); // default-base-is-moof
         try writeU32Be(&output, self.allocator, track_id);
 
         // tfdt (track fragment decode time)
         try writeU32Be(&output, self.allocator, 20);
-        try output.appendSlice("tfdt");
+        try output.appendSlice(self.allocator, "tfdt");
         try writeU32Be(&output, self.allocator, 0x01000000); // Version 1
         try writeU64Be(&output, self.allocator, 0); // Base media decode time
 
@@ -1206,20 +1225,20 @@ pub const FragmentedMp4Muxer = struct {
             mdat_size += @intCast(sample.data.len);
         }
         try writeU32Be(&output, self.allocator, mdat_size);
-        try output.appendSlice("mdat");
+        try output.appendSlice(self.allocator, "mdat");
 
         for (samples) |sample| {
-            try output.appendSlice(sample.data);
+            try output.appendSlice(self.allocator, sample.data);
         }
 
         self.sequence_number += 1;
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.allocator);
     }
 
     fn writeMvhd(self: *Self, output: *std.ArrayList(u8)) !void {
         try writeU32Be(output, self.allocator, 108);
-        try output.appendSlice("mvhd");
+        try output.appendSlice(self.allocator, "mvhd");
         try writeU32Be(output, self.allocator, 0); // Version 0
         try writeU32Be(output, self.allocator, 0); // Creation time
         try writeU32Be(output, self.allocator, 0); // Modification time
@@ -1248,7 +1267,7 @@ pub const FragmentedMp4Muxer = struct {
     fn writeTrak(self: *Self, output: *std.ArrayList(u8), track: TrackConfig, track_id: u32) !void {
         const trak_start = output.items.len;
         try writeU32Be(output, self.allocator, 0);
-        try output.appendSlice("trak");
+        try output.appendSlice(self.allocator, "trak");
 
         // tkhd
         try self.writeTkhd(output, track, track_id);
@@ -1262,7 +1281,7 @@ pub const FragmentedMp4Muxer = struct {
 
     fn writeTkhd(self: *Self, output: *std.ArrayList(u8), track: TrackConfig, track_id: u32) !void {
         try writeU32Be(output, self.allocator, 92);
-        try output.appendSlice("tkhd");
+        try output.appendSlice(self.allocator, "tkhd");
         try writeU32Be(output, self.allocator, 0x00000007); // Enabled, in movie, in preview
         try writeU32Be(output, self.allocator, 0); // Creation time
         try writeU32Be(output, self.allocator, 0); // Modification time
@@ -1301,15 +1320,14 @@ pub const FragmentedMp4Muxer = struct {
     }
 
     fn writeMdia(self: *Self, output: *std.ArrayList(u8), track: TrackConfig) !void {
-        _ = self;
         _ = track;
         const mdia_start = output.items.len;
         try writeU32Be(output, self.allocator, 0);
-        try output.appendSlice("mdia");
+        try output.appendSlice(self.allocator, "mdia");
 
         // Simplified - just placeholder
         try writeU32Be(output, self.allocator, 32);
-        try output.appendSlice("mdhd");
+        try output.appendSlice(self.allocator, "mdhd");
         try writeU32Be(output, self.allocator, 0);
         try writeU32Be(output, self.allocator, 0);
         try writeU32Be(output, self.allocator, 0);
@@ -1323,7 +1341,7 @@ pub const FragmentedMp4Muxer = struct {
 
     fn writeTrex(self: *Self, output: *std.ArrayList(u8), track_id: u32) !void {
         try writeU32Be(output, self.allocator, 32);
-        try output.appendSlice("trex");
+        try output.appendSlice(self.allocator, "trex");
         try writeU32Be(output, self.allocator, 0); // Version/flags
         try writeU32Be(output, self.allocator, track_id);
         try writeU32Be(output, self.allocator, 1); // Default sample description index
@@ -1336,7 +1354,7 @@ pub const FragmentedMp4Muxer = struct {
         const flags: u32 = 0x00000F01; // data-offset, duration, size, flags, composition-offset
         const trun_start = output.items.len;
         try writeU32Be(output, self.allocator, 0);
-        try output.appendSlice("trun");
+        try output.appendSlice(self.allocator, "trun");
         try writeU32Be(output, self.allocator, flags);
         try writeU32Be(output, self.allocator, @intCast(samples.len));
 
@@ -1361,18 +1379,6 @@ pub const FragmentedMp4Muxer = struct {
         std.mem.writeInt(u32, output.items[data_offset_pos..][0..4], data_offset, .big);
     }
 };
-
-fn writeI32Be(output: *std.ArrayList(u8), allocator: std.mem.Allocator, val: i32) !void {
-    var buf: [4]u8 = undefined;
-    std.mem.writeInt(i32, &buf, val, .big);
-    try output.appendSlice(allocator, &buf);
-}
-
-fn writeU64Be(output: *std.ArrayList(u8), allocator: std.mem.Allocator, val: u64) !void {
-    var buf: [8]u8 = undefined;
-    std.mem.writeInt(u64, &buf, val, .big);
-    try output.appendSlice(allocator, &buf);
-}
 
 // ============================================================================
 // Fast-Start MP4 (moov before mdat)
@@ -1408,26 +1414,47 @@ pub const FastStartMp4Muxer = struct {
 
     /// Finalize with moov-before-mdat layout for fast start
     pub fn finalize(self: *Self) ![]u8 {
-        // First, generate moov
-        const moov_data = try self.inner.buildMoov();
-        defer self.inner.allocator.free(moov_data);
+        try self.inner.finalizeChunks();
+
+        // Build once to determine the moov size, then adjust the chunk offsets
+        // to their final absolute positions and rebuild with those offsets.
+        var moov_data: ?[]u8 = try self.inner.buildMoov();
+        defer if (moov_data) |data| self.inner.allocator.free(data);
+        const ftyp_size = self.inner.calculateFtypSize();
+        const mdat_size = self.inner.mdat_size + 8;
+        const mdat_header_size: usize = if (mdat_size > std.math.maxInt(u32)) 16 else 8;
+        self.inner.adjustChunkOffsets(ftyp_size + moov_data.?.len + mdat_header_size - 8);
+
+        const provisional_moov_size = moov_data.?.len;
+        self.inner.allocator.free(moov_data.?);
+        moov_data = null;
+        moov_data = try self.inner.buildMoov();
+        if (moov_data.?.len != provisional_moov_size) {
+            if (moov_data.?.len > provisional_moov_size) {
+                self.inner.adjustChunkOffsets(moov_data.?.len - provisional_moov_size);
+            } else {
+                for (self.inner.tracks.items) |*track| {
+                    for (track.chunk_offsets.items) |*offset| {
+                        offset.* -= @intCast(provisional_moov_size - moov_data.?.len);
+                    }
+                }
+            }
+            self.inner.allocator.free(moov_data.?);
+            moov_data = null;
+            moov_data = try self.inner.buildMoov();
+        }
 
         // Build output: ftyp + moov + mdat
-        var output = std.ArrayList(u8).init(self.inner.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.inner.allocator);
 
         // Write ftyp
-        try writeU32Be(&output, self.inner.allocator, 24);
-        try output.appendSlice(self.inner.allocator, "ftyp");
-        try output.appendSlice(self.inner.allocator, &self.inner.brand);
-        try writeU32Be(&output, self.inner.allocator, self.inner.minor_version);
-        try output.appendSlice(self.inner.allocator, &self.inner.brand);
+        try self.inner.writeFtyp(&output);
 
         // Write moov FIRST (fast-start)
-        try output.appendSlice(self.inner.allocator, moov_data);
+        try output.appendSlice(self.inner.allocator, moov_data.?);
 
         // Write mdat
-        const mdat_size: u64 = self.inner.mdat_size + 8;
         if (mdat_size > std.math.maxInt(u32)) {
             // Extended size
             try writeU32Be(&output, self.inner.allocator, 1);
@@ -1443,6 +1470,61 @@ pub const FastStartMp4Muxer = struct {
         const mdat_end = mdat_start + self.inner.mdat_size;
         try output.appendSlice(self.inner.allocator, self.inner.buffer.items[mdat_start..mdat_end]);
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.inner.allocator);
     }
 };
+
+test "FragmentedMp4Muxer writes initialization and media segments" {
+    var muxer = FragmentedMp4Muxer.init(std.testing.allocator, 3000);
+    defer muxer.deinit();
+
+    const track_id = try muxer.addVideoTrack(.{
+        .width = 640,
+        .height = 360,
+        .codec = .h264,
+    });
+
+    const init_segment = try muxer.writeInitSegment();
+    defer std.testing.allocator.free(init_segment);
+    try std.testing.expectEqualSlices(u8, "ftyp", init_segment[4..8]);
+    try std.testing.expect(std.mem.indexOf(u8, init_segment, "mvex") != null);
+
+    const samples = [_]Sample{.{
+        .data = "frame",
+        .duration = 3000,
+        .pts = 0,
+        .dts = 0,
+        .is_keyframe = true,
+        .composition_offset = 0,
+    }};
+    const fragment = try muxer.writeFragment(track_id, &samples);
+    defer std.testing.allocator.free(fragment);
+    try std.testing.expectEqualSlices(u8, "moof", fragment[4..8]);
+    try std.testing.expect(std.mem.indexOf(u8, fragment, "mdat") != null);
+    try std.testing.expectEqual(@as(u32, 2), muxer.sequence_number);
+}
+
+test "FastStartMp4Muxer writes moov before mdat" {
+    var muxer = FastStartMp4Muxer.init(std.testing.allocator);
+    defer muxer.deinit();
+
+    const track_id = try muxer.addAudioTrack(.{
+        .sample_rate = 48000,
+        .channels = 2,
+        .codec = .aac,
+    });
+    try muxer.writeSample(track_id, .{
+        .data = "audio",
+        .duration = 1024,
+        .pts = 0,
+        .dts = 0,
+        .is_keyframe = true,
+        .composition_offset = 0,
+    });
+
+    const output = try muxer.finalize();
+    defer std.testing.allocator.free(output);
+    const moov_offset = std.mem.indexOf(u8, output, "moov") orelse return error.MissingMoov;
+    const mdat_offset = std.mem.indexOf(u8, output, "mdat") orelse return error.MissingMdat;
+    try std.testing.expect(moov_offset < mdat_offset);
+}

@@ -103,10 +103,7 @@ pub const Afd = struct {
         }
 
         /// Get the active area rectangle (normalized 0.0-1.0)
-        pub fn getActiveArea(self: Data, coded_width: u32, coded_height: u32) ActiveArea {
-            const w: f32 = @floatFromInt(coded_width);
-            const h: f32 = @floatFromInt(coded_height);
-
+        pub fn getActiveArea(self: Data) ActiveArea {
             return switch (self.active_format) {
                 // Letterbox - reduce height
                 .box_16x9_top => .{

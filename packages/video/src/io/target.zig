@@ -157,7 +157,7 @@ pub const Target = struct {
 
     /// Write zeros (padding)
     pub fn writeZeros(self: *Self, count: usize) !void {
-        const zeros = [_]u8{0} ** 64;
+        const zeros: [64]u8 = @splat(0);
         var remaining = count;
         while (remaining > 0) {
             const to_write = @min(remaining, zeros.len);

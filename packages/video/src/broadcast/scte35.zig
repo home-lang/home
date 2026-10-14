@@ -281,20 +281,28 @@ pub const Scte35Parser = struct {
 
         // Parse command based on type
         section.splice_command = try self.parseCommand(r, section.splice_command_type);
+        errdefer self.deinitCommand(&section.splice_command);
 
         section.descriptor_loop_length = try r.readInt(u16, .big);
 
         // Parse descriptors
-        var descriptors = std.ArrayList(Scte35.SpliceDescriptor).init(self.allocator);
+        var descriptors: std.ArrayList(Scte35.SpliceDescriptor) = .empty;
+        errdefer {
+            for (descriptors.items) |*desc| self.deinitDescriptor(desc);
+            descriptors.deinit(self.allocator);
+        }
         var bytes_read: u16 = 0;
         while (bytes_read < section.descriptor_loop_length) {
-            const desc = try self.parseDescriptor(r);
-            try descriptors.append(desc);
+            var desc = try self.parseDescriptor(r);
+            descriptors.append(self.allocator, desc) catch |err| {
+                self.deinitDescriptor(&desc);
+                return err;
+            };
             bytes_read += 2 + desc.length; // tag + length + data
         }
-        section.descriptors = try descriptors.toOwnedSlice();
 
         section.crc_32 = try r.readInt(u32, .big);
+        section.descriptors = try descriptors.toOwnedSlice(self.allocator);
 
         return section;
     }
@@ -471,15 +479,16 @@ pub const Scte35Parser = struct {
     fn parsePrivateCommand(self: *Scte35Parser, r: anytype) !Scte35.PrivateCommand {
         const identifier = try r.readInt(u32, .big);
         // Read remaining bytes as private data
-        var bytes = std.ArrayList(u8).init(self.allocator);
+        var bytes: std.ArrayList(u8) = .empty;
+        errdefer bytes.deinit(self.allocator);
         while (true) {
             const byte = r.readByte() catch break;
-            try bytes.append(byte);
+            try bytes.append(self.allocator, byte);
         }
 
         return .{
             .identifier = identifier,
-            .private_bytes = try bytes.toOwnedSlice(),
+            .private_bytes = try bytes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -502,7 +511,8 @@ pub const Scte35Parser = struct {
             .dtmf_descriptor => blk: {
                 const preroll = try r.readByte();
                 const dtmf_count = @as(u8, @truncate(preroll & 0x07));
-                var chars = try self.allocator.alloc(u8, dtmf_count);
+                const chars = try self.allocator.alloc(u8, dtmf_count);
+                errdefer self.allocator.free(chars);
                 _ = try r.readAll(chars);
                 break :blk Scte35.DescriptorData{
                     .dtmf_descriptor = .{
@@ -521,7 +531,8 @@ pub const Scte35Parser = struct {
             },
             .audio_descriptor => blk: {
                 const audio_count = try r.readByte();
-                var components = try self.allocator.alloc(Scte35.AudioComponent, audio_count);
+                const components = try self.allocator.alloc(Scte35.AudioComponent, audio_count);
+                errdefer self.allocator.free(components);
                 for (0..audio_count) |i| {
                     components[i].component_tag = try r.readByte();
                     _ = try r.readAll(&components[i].iso_code);
@@ -598,7 +609,8 @@ pub const Scte35Parser = struct {
 
         if (!desc.program_segmentation_flag) {
             desc.component_count = try r.readByte();
-            var components = try self.allocator.alloc(Scte35.SegmentationComponent, desc.component_count);
+            const components = try self.allocator.alloc(Scte35.SegmentationComponent, desc.component_count);
+            errdefer self.allocator.free(components);
             for (0..desc.component_count) |i| {
                 components[i].component_tag = try r.readByte();
                 const pts_bytes = try r.readInt(u64, .big);
@@ -609,6 +621,7 @@ pub const Scte35Parser = struct {
             desc.component_count = 0;
             desc.components = &[_]Scte35.SegmentationComponent{};
         }
+        errdefer if (desc.components.len > 0) self.allocator.free(desc.components);
 
         if (desc.segmentation_duration_flag) {
             desc.segmentation_duration = try r.readInt(u40, .big);
@@ -619,7 +632,8 @@ pub const Scte35Parser = struct {
         desc.segmentation_upid_type = try r.readByte();
         desc.segmentation_upid_length = try r.readByte();
 
-        var upid = try self.allocator.alloc(u8, desc.segmentation_upid_length);
+        const upid = try self.allocator.alloc(u8, desc.segmentation_upid_length);
+        errdefer self.allocator.free(upid);
         _ = try r.readAll(upid);
         desc.segmentation_upid = upid;
 
@@ -643,8 +657,8 @@ pub const Scte35Parser = struct {
         return desc;
     }
 
-    pub fn deinit(self: *Scte35Parser, section: *Scte35.SpliceInfoSection) void {
-        switch (section.splice_command) {
+    fn deinitCommand(self: *Scte35Parser, command: *Scte35.SpliceCommand) void {
+        switch (command.*) {
             .splice_insert => |*insert| {
                 if (insert.components.len > 0) {
                     self.allocator.free(insert.components);
@@ -656,33 +670,48 @@ pub const Scte35Parser = struct {
                         self.allocator.free(event.components);
                     }
                 }
-                self.allocator.free(schedule.events);
+                if (schedule.events.len > 0) {
+                    self.allocator.free(schedule.events);
+                }
             },
             .private_command => |*cmd| {
-                self.allocator.free(cmd.private_bytes);
+                if (cmd.private_bytes.len > 0) {
+                    self.allocator.free(cmd.private_bytes);
+                }
             },
             else => {},
         }
+    }
 
-        for (section.descriptors) |*desc| {
-            switch (desc.data) {
-                .segmentation_descriptor => |*seg| {
-                    if (seg.components.len > 0) {
-                        self.allocator.free(seg.components);
-                    }
-                    if (seg.segmentation_upid.len > 0) {
-                        self.allocator.free(seg.segmentation_upid);
-                    }
-                },
-                .dtmf_descriptor => |*dtmf| {
+    fn deinitDescriptor(self: *Scte35Parser, descriptor: *Scte35.SpliceDescriptor) void {
+        switch (descriptor.data) {
+            .segmentation_descriptor => |*seg| {
+                if (seg.components.len > 0) {
+                    self.allocator.free(seg.components);
+                }
+                if (seg.segmentation_upid.len > 0) {
+                    self.allocator.free(seg.segmentation_upid);
+                }
+            },
+            .dtmf_descriptor => |*dtmf| {
+                if (dtmf.dtmf_chars.len > 0) {
                     self.allocator.free(dtmf.dtmf_chars);
-                },
-                .audio_descriptor => |*audio| {
+                }
+            },
+            .audio_descriptor => |*audio| {
+                if (audio.components.len > 0) {
                     self.allocator.free(audio.components);
-                },
-                else => {},
-            }
+                }
+            },
+            else => {},
         }
-        self.allocator.free(section.descriptors);
+    }
+
+    pub fn deinit(self: *Scte35Parser, section: *Scte35.SpliceInfoSection) void {
+        self.deinitCommand(&section.splice_command);
+        for (section.descriptors) |*desc| self.deinitDescriptor(desc);
+        if (section.descriptors.len > 0) {
+            self.allocator.free(section.descriptors);
+        }
     }
 };
