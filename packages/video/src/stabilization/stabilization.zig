@@ -102,7 +102,8 @@ pub const FeatureDetector = struct {
     }
 
     pub fn detectFeatures(self: *const FeatureDetector, frame: []const u8) ![]FeaturePoint {
-        var features = std.ArrayList(FeaturePoint).init(self.allocator);
+        var features: std.ArrayList(FeaturePoint) = .empty;
+        errdefer features.deinit(self.allocator);
 
         // Calculate gradients
         const grad_x = try self.calculateGradientX(frame);
@@ -148,14 +149,14 @@ pub const FeatureDetector = struct {
                 }
 
                 if (!too_close) {
-                    try features.append(point);
+                    try features.append(self.allocator, point);
                     if (features.items.len >= self.max_features) break;
                 }
             }
             if (features.items.len >= self.max_features) break;
         }
 
-        return features.toOwnedSlice();
+        return features.toOwnedSlice(self.allocator);
     }
 
     fn calculateGradientX(self: *const FeatureDetector, frame: []const u8) ![]f32 {
@@ -406,17 +407,17 @@ pub const TransformSmoother = struct {
     pub fn init(allocator: Allocator, smoother_type: SmootherType) TransformSmoother {
         return .{
             .type = smoother_type,
-            .history = std.ArrayList(Transform).init(allocator),
+            .history = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *TransformSmoother) void {
-        self.history.deinit();
+        self.history.deinit(self.allocator);
     }
 
     pub fn addTransform(self: *TransformSmoother, transform: Transform) !Transform {
-        try self.history.append(transform);
+        try self.history.append(self.allocator, transform);
 
         // Keep only recent history
         if (self.history.items.len > self.window_size) {

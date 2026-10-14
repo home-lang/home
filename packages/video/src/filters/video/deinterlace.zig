@@ -649,9 +649,9 @@ test "FieldSeparator initialization" {
 }
 
 test "DeinterlaceMethod enum" {
-    try std.testing.expectEqual(@as(usize, 5), @typeInfo(DeinterlaceMethod).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 5), @typeInfo(DeinterlaceMethod).@"enum".field_names.len);
 }
 
 test "FieldOrder enum" {
-    try std.testing.expectEqual(@as(usize, 3), @typeInfo(FieldOrder).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 3), @typeInfo(FieldOrder).@"enum".field_names.len);
 }

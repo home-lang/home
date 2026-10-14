@@ -61,12 +61,12 @@ pub const CorruptionHandler = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .corruption_regions = std.ArrayList(CorruptionRegion).init(allocator),
+            .corruption_regions = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.corruption_regions.deinit();
+        self.corruption_regions.deinit(self.allocator);
     }
 
     /// Set recovery mode
@@ -76,7 +76,7 @@ pub const CorruptionHandler = struct {
 
     /// Report a detected corruption
     pub fn reportCorruption(self: *Self, start: u64, end: u64, error_type: CorruptionType, severity: Severity) !void {
-        try self.corruption_regions.append(.{
+        try self.corruption_regions.append(self.allocator, .{
             .start_offset = start,
             .end_offset = end,
             .error_type = error_type,
@@ -142,7 +142,7 @@ pub const CorruptionHandler = struct {
             &[_]u8{ 0x00, 0x00, 0x01 }, // Short NAL start code
             &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 }, // EBML/WebM header
             &[_]u8{ 0x00, 0x00, 0x01, 0xBA }, // MPEG-PS pack header
-            &[_]u8{ 0x47 }, // MPEG-TS sync byte (would need context)
+            &[_]u8{0x47}, // MPEG-TS sync byte (would need context)
         };
 
         var search_offset = offset;
@@ -179,12 +179,12 @@ pub const VfrHandler = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .frame_times = std.ArrayList(u64).init(allocator),
+            .frame_times = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.frame_times.deinit();
+        self.frame_times.deinit(self.allocator);
     }
 
     /// Record a frame timestamp
@@ -199,7 +199,7 @@ pub const VfrHandler = struct {
             }
         }
 
-        try self.frame_times.append(timestamp_us);
+        try self.frame_times.append(self.allocator, timestamp_us);
         self.invalidateAnalysis();
     }
 
@@ -217,12 +217,12 @@ pub const VfrHandler = struct {
         // Calculate durations
         var total_duration: u128 = 0;
         var duration_variance: u128 = 0;
-        var durations = std.ArrayList(u64).init(self.allocator);
-        defer durations.deinit();
+        var durations: std.ArrayList(u64) = .empty;
+        defer durations.deinit(self.allocator);
 
         for (1..self.frame_times.items.len) |i| {
             const duration = self.frame_times.items[i] -| self.frame_times.items[i - 1];
-            try durations.append(duration);
+            try durations.append(self.allocator, duration);
             total_duration += duration;
         }
 
@@ -247,13 +247,13 @@ pub const VfrHandler = struct {
         // Calculate detected frame rate
         const fps_num: u32 = 1000000;
         const fps_den: u32 = @intCast(avg_duration);
-        const detected_fps = types.Rational{ .num = fps_num, .den = fps_den };
+        const detected_fps = types.Rational{ .num = fps_num, .denom = fps_den };
 
         return .{
             .is_vfr = self.is_vfr.?,
             .frame_count = @intCast(self.frame_times.items.len),
-            .min_fps = types.Rational{ .num = 1000000, .den = @intCast(self.max_frame_duration) },
-            .max_fps = types.Rational{ .num = 1000000, .den = @intCast(self.min_frame_duration) },
+            .min_fps = types.Rational{ .num = 1000000, .denom = @intCast(self.max_frame_duration) },
+            .max_fps = types.Rational{ .num = 1000000, .denom = @intCast(self.min_frame_duration) },
             .average_fps = detected_fps,
             .variance_us = @intCast(@as(u64, @truncate(duration_variance))),
         };
@@ -262,9 +262,9 @@ pub const VfrHandler = struct {
     pub const VfrAnalysis = struct {
         is_vfr: bool = false,
         frame_count: u32 = 0,
-        min_fps: types.Rational = .{ .num = 0, .den = 1 },
-        max_fps: types.Rational = .{ .num = 0, .den = 1 },
-        average_fps: types.Rational = .{ .num = 0, .den = 1 },
+        min_fps: types.Rational = .{ .num = 0, .denom = 1 },
+        max_fps: types.Rational = .{ .num = 0, .denom = 1 },
+        average_fps: types.Rational = .{ .num = 0, .denom = 1 },
         variance_us: u64 = 0,
     };
 
@@ -277,7 +277,7 @@ pub const VfrHandler = struct {
     pub fn getCfrTimestamp(self: *const Self, frame_index: u64) ?u64 {
         if (self.target_cfr) |fps| {
             // timestamp = frame_index * (1,000,000 / fps)
-            const frame_duration_us = @divFloor(@as(u64, 1000000) * fps.den, fps.num);
+            const frame_duration_us = @divFloor(@as(u64, 1000000) * @as(u64, @intCast(fps.denom)), @as(u64, @intCast(fps.num)));
             return frame_index * frame_duration_us;
         }
         return null;
@@ -462,12 +462,12 @@ pub const TimecodeDiscontinuityHandler = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .discontinuities = std.ArrayList(Discontinuity).init(allocator),
+            .discontinuities = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.discontinuities.deinit();
+        self.discontinuities.deinit(self.allocator);
     }
 
     /// Set tolerance for discontinuity detection
@@ -515,7 +515,7 @@ pub const TimecodeDiscontinuityHandler = struct {
                 .type = disc_type,
             };
 
-            try self.discontinuities.append(disc);
+            try self.discontinuities.append(self.allocator, disc);
             return disc;
         }
 

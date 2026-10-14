@@ -123,7 +123,7 @@ pub const BoxType = enum(u32) {
 
     pub fn fromBytes(bytes: [4]u8) BoxType {
         const value = std.mem.readInt(u32, &bytes, .big);
-        return std.meta.intToEnum(BoxType, value) catch .unknown;
+        return std.enums.fromInt(BoxType, value) orelse .unknown;
     }
 
     pub fn toBytes(self: BoxType) [4]u8 {
