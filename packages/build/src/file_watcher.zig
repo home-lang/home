@@ -4,6 +4,10 @@
 const std = @import("std");
 const ir_cache = @import("ir_cache.zig");
 
+fn milliTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toMilliseconds();
+}
+
 /// File change event
 pub const FileEvent = struct {
     path: []const u8,
@@ -18,27 +22,34 @@ pub const FileEvent = struct {
     };
 };
 
+pub fn deinitEvents(allocator: std.mem.Allocator, events: []FileEvent) void {
+    for (events) |event| allocator.free(event.path);
+    allocator.free(events);
+}
+
 /// File watcher for monitoring source file changes
 pub const FileWatcher = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     watched_files: std.StringHashMap(FileInfo),
     event_queue: std.ArrayList(FileEvent),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     running: std.atomic.Value(bool),
     poll_interval_ms: u64,
 
     const FileInfo = struct {
         path: []const u8,
-        last_mtime: i128,
+        last_mtime: i96,
         size: u64,
     };
 
-    pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64) !FileWatcher {
+    pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64, io: std.Io) FileWatcher {
         return .{
             .allocator = allocator,
+            .io = io,
             .watched_files = std.StringHashMap(FileInfo).init(allocator),
-            .event_queue = std.ArrayList(FileEvent).init(allocator),
-            .mutex = .{},
+            .event_queue = .empty,
+            .mutex = .init,
             .running = std.atomic.Value(bool).init(false),
             .poll_interval_ms = poll_interval_ms,
         };
@@ -56,32 +67,44 @@ pub const FileWatcher = struct {
         for (self.event_queue.items) |event| {
             self.allocator.free(event.path);
         }
-        self.event_queue.deinit();
+        self.event_queue.deinit(self.allocator);
+    }
+
+    fn lock(self: *FileWatcher) void {
+        self.mutex.lockUncancelable(self.io);
+    }
+
+    fn unlock(self: *FileWatcher) void {
+        self.mutex.unlock(self.io);
     }
 
     /// Watch a file for changes
     pub fn watch(self: *FileWatcher, path: []const u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
 
         // Get initial file info
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const stat = try file.stat();
+        const stat = try std.Io.Dir.cwd().statFile(self.io, path, .{});
         const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+        const result = try self.watched_files.getOrPut(path_copy);
+        if (result.found_existing) {
+            self.allocator.free(path_copy);
+        } else {
+            result.key_ptr.* = path_copy;
+        }
 
-        try self.watched_files.put(path_copy, .{
-            .path = path_copy,
-            .last_mtime = stat.mtime,
+        result.value_ptr.* = .{
+            .path = result.key_ptr.*,
+            .last_mtime = stat.mtime.nanoseconds,
             .size = stat.size,
-        });
+        };
     }
 
     /// Unwatch a file
     pub fn unwatch(self: *FileWatcher, path: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
 
         if (self.watched_files.fetchRemove(path)) |kv| {
             self.allocator.free(kv.value.path);
@@ -91,6 +114,7 @@ pub const FileWatcher = struct {
     /// Start watching files in background thread
     pub fn start(self: *FileWatcher) !std.Thread {
         self.running.store(true, .seq_cst);
+        errdefer self.running.store(false, .seq_cst);
         return try std.Thread.spawn(.{}, watcherThread, .{self});
     }
 
@@ -106,59 +130,70 @@ pub const FileWatcher = struct {
                 std.debug.print("File watcher error: {any}\n", .{err});
             };
 
-            std.Thread.sleep(self.poll_interval_ms * std.time.ns_per_ms);
+            std.Io.Clock.Duration.sleep(.{
+                .clock = .boot,
+                .raw = .fromMilliseconds(@intCast(@min(self.poll_interval_ms, std.math.maxInt(i64)))),
+            }, self.io) catch {};
         }
     }
 
     /// Check all watched files for changes
     fn checkForChanges(self: *FileWatcher) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
 
         var it = self.watched_files.iterator();
         while (it.next()) |entry| {
             const info = entry.value_ptr;
 
             // Try to stat the file
-            const file = std.fs.cwd().openFile(info.path, .{}) catch |err| {
+            const stat = std.Io.Dir.cwd().statFile(self.io, info.path, .{}) catch |err| {
                 if (err == error.FileNotFound) {
                     // File was deleted
                     try self.queueEvent(.{
                         .path = try self.allocator.dupe(u8, info.path),
                         .event_type = .Deleted,
-                        .timestamp = std.time.milliTimestamp(),
+                        .timestamp = milliTimestamp(self.io),
                     });
                 }
                 continue;
             };
-            defer file.close();
-
-            const stat = file.stat() catch continue;
 
             // Check if modified
-            if (stat.mtime != info.last_mtime or stat.size != info.size) {
+            if (stat.mtime.nanoseconds != info.last_mtime or stat.size != info.size) {
                 try self.queueEvent(.{
                     .path = try self.allocator.dupe(u8, info.path),
                     .event_type = .Modified,
-                    .timestamp = std.time.milliTimestamp(),
+                    .timestamp = milliTimestamp(self.io),
                 });
 
-                info.last_mtime = stat.mtime;
+                info.last_mtime = stat.mtime.nanoseconds;
                 info.size = stat.size;
             }
         }
     }
 
     fn queueEvent(self: *FileWatcher, event: FileEvent) !void {
-        try self.event_queue.append(event);
+        errdefer self.allocator.free(event.path);
+        try self.event_queue.append(self.allocator, event);
     }
 
     /// Get pending file events
     pub fn pollEvents(self: *FileWatcher, allocator: std.mem.Allocator) ![]FileEvent {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
 
-        const events = try allocator.dupe(FileEvent, self.event_queue.items);
+        const events = try allocator.alloc(FileEvent, self.event_queue.items.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (events[0..initialized]) |event| allocator.free(event.path);
+            allocator.free(events);
+        }
+        for (self.event_queue.items, events) |queued, *event| {
+            event.* = queued;
+            event.path = try allocator.dupe(u8, queued.path);
+            initialized += 1;
+        }
 
         // Clear processed events
         for (self.event_queue.items) |event| {
@@ -171,8 +206,8 @@ pub const FileWatcher = struct {
 
     /// Check if any files have pending changes
     pub fn hasPendingChanges(self: *FileWatcher) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.lock();
+        defer self.unlock();
         return self.event_queue.items.len > 0;
     }
 };
@@ -198,20 +233,28 @@ pub const SmartInvalidator = struct {
             for (entry.value_ptr.items) |dep| {
                 self.allocator.free(dep);
             }
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.dependency_graph.deinit();
     }
 
     /// Record that module depends on other modules
     pub fn recordDependency(self: *SmartInvalidator, module: []const u8, depends_on: []const u8) !void {
-        const result = try self.dependency_graph.getOrPut(module);
+        const owned_module = try self.allocator.dupe(u8, module);
+        const result = self.dependency_graph.getOrPut(owned_module) catch |err| {
+            self.allocator.free(owned_module);
+            return err;
+        };
         if (!result.found_existing) {
-            result.key_ptr.* = try self.allocator.dupe(u8, module);
-            result.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            result.key_ptr.* = owned_module;
+            result.value_ptr.* = .empty;
+        } else {
+            self.allocator.free(owned_module);
         }
 
-        try result.value_ptr.append(try self.allocator.dupe(u8, depends_on));
+        const owned_dependency = try self.allocator.dupe(u8, depends_on);
+        errdefer self.allocator.free(owned_dependency);
+        try result.value_ptr.append(self.allocator, owned_dependency);
     }
 
     /// Invalidate a module and all modules that depend on it (transitive)
@@ -222,7 +265,7 @@ pub const SmartInvalidator = struct {
     ) !void {
         // Avoid infinite recursion with circular dependencies
         if (visited.contains(module)) return;
-        try visited.put(try self.allocator.dupe(u8, module), {});
+        try visited.put(module, {});
 
         // Find all modules that depend on this module
         var it = self.dependency_graph.iterator();
@@ -277,10 +320,11 @@ pub const IncrementalBuilder = struct {
         allocator: std.mem.Allocator,
         cache: *ir_cache.IRCache,
         rebuild_callback: *const fn ([]const []const u8) anyerror!void,
+        io: std.Io,
     ) !IncrementalBuilder {
         return .{
             .allocator = allocator,
-            .watcher = try FileWatcher.init(allocator, 1000), // Poll every 1s
+            .watcher = FileWatcher.init(allocator, 1000, io), // Poll every 1s
             .invalidator = SmartInvalidator.init(allocator, cache),
             .rebuild_callback = rebuild_callback,
         };
@@ -315,7 +359,7 @@ pub const IncrementalBuilder = struct {
         }
 
         const events = try self.watcher.pollEvents(self.allocator);
-        defer self.allocator.free(events);
+        defer deinitEvents(self.allocator, events);
 
         if (events.len == 0) {
             return false;
@@ -327,12 +371,12 @@ pub const IncrementalBuilder = struct {
         std.debug.print("Invalidated {d} modules\n", .{invalidated});
 
         // Extract changed modules
-        var changed_modules = std.ArrayList([]const u8).init(self.allocator);
-        defer changed_modules.deinit();
+        var changed_modules: std.ArrayList([]const u8) = .empty;
+        defer changed_modules.deinit(self.allocator);
 
         for (events) |event| {
             const module_name = std.fs.path.stem(event.path);
-            try changed_modules.append(module_name);
+            try changed_modules.append(self.allocator, module_name);
         }
 
         // Trigger rebuild
@@ -349,17 +393,39 @@ pub const IncrementalBuilder = struct {
 test "file watcher creation" {
     const allocator = std.testing.allocator;
 
-    var watcher = try FileWatcher.init(allocator, 100);
+    var watcher = FileWatcher.init(allocator, 100, std.testing.io);
     defer watcher.deinit();
 
     try std.testing.expect(!watcher.running.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 0), watcher.watched_files.count());
 }
 
+test "polling events transfers owned paths" {
+    const allocator = std.testing.allocator;
+
+    var watcher = FileWatcher.init(allocator, 100, std.testing.io);
+    defer watcher.deinit();
+
+    try watcher.queueEvent(.{
+        .path = try allocator.dupe(u8, "module.home"),
+        .event_type = .Modified,
+        .timestamp = 42,
+    });
+
+    const events = try watcher.pollEvents(allocator);
+    defer deinitEvents(allocator, events);
+
+    try std.testing.expectEqual(@as(usize, 1), events.len);
+    try std.testing.expectEqualStrings("module.home", events[0].path);
+    try std.testing.expectEqual(FileEvent.EventType.Modified, events[0].event_type);
+    try std.testing.expect(!watcher.hasPendingChanges());
+}
+
 test "smart invalidator dependency tracking" {
     const allocator = std.testing.allocator;
 
-    var cache = try ir_cache.IRCache.init(allocator, ".test-cache");
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, ".test-cache") catch {};
+    var cache = try ir_cache.IRCache.init(allocator, ".test-cache", false, std.testing.io);
     defer cache.deinit();
 
     var invalidator = SmartInvalidator.init(allocator, &cache);

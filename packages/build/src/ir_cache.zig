@@ -511,54 +511,26 @@ pub const IRCache = struct {
         const file = try Io.Dir.cwd().createFile(io_val, self.metadata_file, .{});
         defer file.close(io_val);
 
-        // Serialize entries to JSON
-        const entry_count = self.entries.count();
-        var entries_json_array = try self.allocator.alloc(EntryJson, entry_count);
-        defer self.allocator.free(entries_json_array);
-
-        var idx: usize = 0;
-        var entry_iter = self.entries.iterator();
-        while (entry_iter.next()) |kv| : (idx += 1) {
-            const entry = kv.value_ptr.*;
-
-            // Convert cache hash to hex string
-            var key_buf: [64]u8 = undefined;
-            const key_hex = hashToHex(entry.key, &key_buf);
-
-            // Convert dependency hashes to hex strings
-            const deps_hex = try self.allocator.alloc([]const u8, entry.dependencies.len);
-            for (entry.dependencies, 0..) |dep_hash, dep_idx| {
-                const dep_buf = try self.allocator.alloc(u8, 64);
-                const dep_hex = hashToHex(dep_hash, dep_buf);
-                deps_hex[dep_idx] = try self.allocator.dupe(u8, dep_hex);
-            }
-
-            entries_json_array[idx] = EntryJson{
-                .key = try self.allocator.dupe(u8, key_hex),
-                .module_name = entry.module_name,
-                .source_path = entry.source_path,
-                .source_mtime = entry.source_mtime,
-                .dependencies = deps_hex,
-                .ir_path = entry.ir_path,
-                .object_path = entry.object_path,
-                .created_at = entry.created_at,
-                .last_accessed = entry.last_accessed,
-                .hit_count = entry.hit_count,
-                .compile_time_ms = entry.compile_time_ms,
-            };
-        }
-
         // Write JSON to file using simple manual JSON serialization
         // Format: { "version": 1, "entries": [...], "stats": {...} }
 
         try file.writeStreamingAll(io_val, "{");
         try file.writeStreamingAll(io_val, "\n  \"version\": 1,\n  \"entries\": [\n");
 
-        // Write entries
-        for (entries_json_array, 0..) |entry, i| {
+        // Write entries directly from the cache. Hash strings are formatted into
+        // stack buffers so saving metadata does not create a second owned copy
+        // of every key and dependency.
+        const entry_count = self.entries.count();
+        var entry_iter = self.entries.iterator();
+        var i: usize = 0;
+        while (entry_iter.next()) |kv| : (i += 1) {
+            const entry = kv.value_ptr.*;
+            var key_buf: [64]u8 = undefined;
+            const key_hex = hashToHex(entry.key, &key_buf);
+
             try file.writeStreamingAll(io_val, "    {\n");
 
-            const key_line = try std.fmt.allocPrint(self.allocator, "      \"key\": \"{s}\",\n", .{entry.key});
+            const key_line = try std.fmt.allocPrint(self.allocator, "      \"key\": \"{s}\",\n", .{key_hex});
             defer self.allocator.free(key_line);
             try file.writeStreamingAll(io_val, key_line);
 
@@ -575,8 +547,10 @@ pub const IRCache = struct {
             try file.writeStreamingAll(io_val, mtime_line);
 
             try file.writeStreamingAll(io_val, "      \"dependencies\": [");
-            for (entry.dependencies, 0..) |dep, j| {
-                const dep_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{dep});
+            for (entry.dependencies, 0..) |dependency, j| {
+                var dependency_buf: [64]u8 = undefined;
+                const dependency_hex = hashToHex(dependency, &dependency_buf);
+                const dep_str = try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{dependency_hex});
                 defer self.allocator.free(dep_str);
                 try file.writeStreamingAll(io_val, dep_str);
                 if (j < entry.dependencies.len - 1) try file.writeStreamingAll(io_val, ", ");
@@ -608,7 +582,7 @@ pub const IRCache = struct {
             try file.writeStreamingAll(io_val, compile_line);
 
             try file.writeStreamingAll(io_val, "    }");
-            if (i < entries_json_array.len - 1) try file.writeStreamingAll(io_val, ",");
+            if (i < entry_count - 1) try file.writeStreamingAll(io_val, ",");
             try file.writeStreamingAll(io_val, "\n");
         }
 
@@ -709,9 +683,9 @@ test "cache operations" {
     defer threaded.deinit();
     const io = threaded.io();
 
+    defer Io.Dir.cwd().deleteTree(io, ".test_cache") catch {};
     var cache = try IRCache.init(allocator, ".test_cache", true, io);
     defer cache.deinit();
-    defer Io.Dir.cwd().deleteTree(io, ".test_cache") catch {};
 
     const source = "test source";
     const deps = [_]CacheHash{};
