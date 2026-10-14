@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "source_commit": "85a079965fd938cf38d16f6e25b07857cb9c4206",
+  "steps": 56,
+  "executable_sha256": "0b0227d3ff018dcd8c838c4eac7b15360711ad9322745c1b30c8e182320ff5e9",
+  "same_as_validated_executable": true,
+  "peak_tree_mb": 301,
+  "files": [
+    {
+      "file": "completed-integration.json",
+      "archive": "raw/completed-integration.json.gz",
+      "sha256": "50f5d7d82fbadf0a44c15d8dd630ee9ee01d885b3ffeddf6cf53219ce9fc4de1",
+      "bytes": 235
+    },
+    {
+      "file": "build-main-integration.log",
+      "archive": "raw/build-main-integration.log.gz",
+      "sha256": "ee88dd56e1006d131c91393d57ca8f0f4d961e8ceb717490d662b8409a7ae467",
+      "bytes": 4743
+    },
+    {
+      "file": "main-tested-tree-audit.json",
+      "archive": "raw/main-tested-tree-audit.json.gz",
+      "sha256": "11b6471191938c57af2f6beda6977749de1a30890dbbc0126d6a131caf776bb7",
+      "bytes": 282
+    }
+  ]
+}
