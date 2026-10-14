@@ -322,6 +322,6 @@ test "Crossfader fadeIn" {
 }
 
 test "CrossfadeDetector init" {
-    var detector = CrossfadeDetector.init(44100, 2);
+    const detector = CrossfadeDetector.init(44100, 2);
     try std.testing.expect(detector.window_size > 0);
 }

@@ -52,10 +52,10 @@ pub const ParametricBand = struct {
             .q = q,
             .filter_type = filter_type,
             .enabled = true,
-            .x1 = [_]f64{0} ** 8,
-            .x2 = [_]f64{0} ** 8,
-            .y1 = [_]f64{0} ** 8,
-            .y2 = [_]f64{0} ** 8,
+            .x1 = @splat(0),
+            .x2 = @splat(0),
+            .y1 = @splat(0),
+            .y2 = @splat(0),
             .coeffs = .{ .b0 = 1, .b1 = 0, .b2 = 0, .a1 = 0, .a2 = 0 },
         };
         band.computeCoefficients(44100);
@@ -180,10 +180,10 @@ pub const ParametricBand = struct {
 
     /// Reset filter state
     pub fn reset(self: *Self) void {
-        self.x1 = [_]f64{0} ** 8;
-        self.x2 = [_]f64{0} ** 8;
-        self.y1 = [_]f64{0} ** 8;
-        self.y2 = [_]f64{0} ** 8;
+        self.x1 = @splat(0);
+        self.x2 = @splat(0);
+        self.y1 = @splat(0);
+        self.y2 = @splat(0);
     }
 };
 

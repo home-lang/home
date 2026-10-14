@@ -106,7 +106,7 @@ pub const LoudnessMeter = struct {
         const short_term_buffer = try allocator.alloc(f64, short_term_samples);
         errdefer allocator.free(short_term_buffer);
 
-        var self = Self{
+        const self = Self{
             .allocator = allocator,
             .sample_rate = sample_rate,
             .channels = channels,
@@ -114,7 +114,7 @@ pub const LoudnessMeter = struct {
             .hs_z2 = hs_z2,
             .hp_z1 = hp_z1,
             .hp_z2 = hp_z2,
-            .block_loudness = .{},
+            .block_loudness = .empty,
             .momentary_buffer = momentary_buffer,
             .momentary_pos = 0,
             .momentary_samples = momentary_samples,
@@ -287,7 +287,7 @@ pub const LoudnessMeter = struct {
 
         // Sort loudness values
         const items = self.block_loudness.items;
-        var sorted = self.allocator.dupe(f32, items) catch return 0;
+        const sorted = self.allocator.dupe(f32, items) catch return 0;
         defer self.allocator.free(sorted);
 
         std.mem.sort(f32, sorted, {}, std.sort.asc(f32));

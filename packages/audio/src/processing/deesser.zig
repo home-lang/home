@@ -82,18 +82,18 @@ pub const Deesser = struct {
             .deesser_type = .cut,
             .attack_coeff = 0,
             .release_coeff = 0,
-            .hp_x1 = [_]f64{0} ** 8,
-            .hp_x2 = [_]f64{0} ** 8,
-            .hp_y1 = [_]f64{0} ** 8,
-            .hp_y2 = [_]f64{0} ** 8,
+            .hp_x1 = @splat(0),
+            .hp_x2 = @splat(0),
+            .hp_y1 = @splat(0),
+            .hp_y2 = @splat(0),
             .hp_coeffs = .{ .b0 = 1, .b1 = 0, .b2 = 0, .a1 = 0, .a2 = 0 },
-            .bp_x1 = [_]f64{0} ** 8,
-            .bp_x2 = [_]f64{0} ** 8,
-            .bp_y1 = [_]f64{0} ** 8,
-            .bp_y2 = [_]f64{0} ** 8,
+            .bp_x1 = @splat(0),
+            .bp_x2 = @splat(0),
+            .bp_y1 = @splat(0),
+            .bp_y2 = @splat(0),
             .bp_coeffs = .{ .b0 = 1, .b1 = 0, .b2 = 0, .a1 = 0, .a2 = 0 },
-            .envelope = [_]f32{0} ** 8,
-            .gain_reduction = [_]f32{1} ** 8,
+            .envelope = @splat(0),
+            .gain_reduction = @splat(1),
         };
         deesser.updateCoefficients();
         return deesser;
@@ -285,16 +285,16 @@ pub const Deesser = struct {
 
     /// Reset state
     pub fn reset(self: *Self) void {
-        self.hp_x1 = [_]f64{0} ** 8;
-        self.hp_x2 = [_]f64{0} ** 8;
-        self.hp_y1 = [_]f64{0} ** 8;
-        self.hp_y2 = [_]f64{0} ** 8;
-        self.bp_x1 = [_]f64{0} ** 8;
-        self.bp_x2 = [_]f64{0} ** 8;
-        self.bp_y1 = [_]f64{0} ** 8;
-        self.bp_y2 = [_]f64{0} ** 8;
-        self.envelope = [_]f32{0} ** 8;
-        self.gain_reduction = [_]f32{1} ** 8;
+        self.hp_x1 = @splat(0);
+        self.hp_x2 = @splat(0);
+        self.hp_y1 = @splat(0);
+        self.hp_y2 = @splat(0);
+        self.bp_x1 = @splat(0);
+        self.bp_x2 = @splat(0);
+        self.bp_y1 = @splat(0);
+        self.bp_y2 = @splat(0);
+        self.envelope = @splat(0);
+        self.gain_reduction = @splat(1);
     }
 };
 

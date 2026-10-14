@@ -414,7 +414,7 @@ pub const Phaser = struct {
 test "Tremolo basic" {
     var tremolo = Tremolo.init(44100, 5.0, 0.5);
 
-    const input = [_]f32{1.0} ** 100;
+    const input: [100]f32 = @splat(1.0);
     var output: [100]f32 = undefined;
 
     tremolo.process(&input, &output);
@@ -443,7 +443,7 @@ test "Vibrato init" {
 test "RingModulator basic" {
     var ring_mod = RingModulator.init(44100, 440.0, 0.5);
 
-    const input = [_]f32{1.0} ** 100;
+    const input: [100]f32 = @splat(1.0);
     var output: [100]f32 = undefined;
 
     ring_mod.process(&input, &output);
