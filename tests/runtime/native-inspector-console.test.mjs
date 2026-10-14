@@ -39,6 +39,18 @@ for (const contextId of [undefined, realm.id]) {
   assert.equal(properties.result.find(property => property.name === 'answer').value.value, 42)
   await session.post('Runtime.releaseObject', { objectId: object.objectId })
 }
+const retainedHandle = await session.post('Runtime.evaluate', { contextId: realm.id, expression: '({answer: 47})', objectGroup: 'keep-across-console-clear' })
+await session.post('Console.clearMessages')
+const retainedProperties = await session.post('Runtime.getProperties', { objectId: retainedHandle.result.objectId, ownProperties: true })
+assert.equal(retainedProperties.result.find(property => property.name === 'answer').value.value, 47)
+await session.post('Runtime.releaseObjectGroup', { objectGroup: 'keep-across-console-clear' })
+const pendingTarget = await session.post('Runtime.evaluate', { contextId: realm.id, expression: '({})', objectGroup: 'pending-console-clear' })
+const pendingResult = session.post('Runtime.callFunctionOn', { objectId: pendingTarget.result.objectId, functionDeclaration: 'function() { return new Promise(resolve => { globalThis.finishConsolePending = resolve }) }', awaitPromise: true, returnByValue: true })
+await session.post('Runtime.releaseObjectGroup', { objectGroup: 'pending-console-clear' })
+await session.post('Console.clearMessages')
+vm.runInContext('finishConsolePending(48); finishConsolePending = undefined', context)
+assert.equal((await pendingResult).result.value, 48)
+await session.post('Runtime.releaseObjectGroup', { objectGroup: 'pending-console-clear' })
 // Counter and timer notifications carry the actual native operation result.
 // Retain this realm through the final command so collection is not the oracle.
 for (const contextId of [undefined, realm.id]) {
