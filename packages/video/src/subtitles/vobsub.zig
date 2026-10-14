@@ -79,12 +79,12 @@ pub const VobSubIdx = struct {
     pub fn init(allocator: std.mem.Allocator) VobSubIdx {
         return .{
             .allocator = allocator,
-            .timestamps = std.ArrayList(u64).init(allocator),
+            .timestamps = .empty,
         };
     }
 
     pub fn deinit(self: *VobSubIdx) void {
-        self.timestamps.deinit();
+        self.timestamps.deinit(self.allocator);
     }
 
     pub fn parse(self: *VobSubIdx, data: []const u8) !void {
@@ -105,7 +105,6 @@ pub const VobSubIdx = struct {
     }
 
     fn parseSize(self: *VobSubIdx, line: []const u8) !void {
-        _ = self;
         var parts = std.mem.splitScalar(u8, std.mem.trim(u8, line, " "), 'x');
         if (parts.next()) |width_str| {
             const width = try std.fmt.parseInt(u16, std.mem.trim(u8, width_str, " "), 10);
@@ -145,7 +144,7 @@ pub const VobSubIdx = struct {
         if (parts.next()) |ms| millis = try std.fmt.parseInt(u64, std.mem.trim(u8, ms, " "), 10);
 
         const timestamp_us = (hours * 3600 + minutes * 60 + seconds) * 1_000_000 + millis * 1000;
-        try self.timestamps.append(timestamp_us);
+        try self.timestamps.append(self.allocator, timestamp_us);
     }
 };
 
@@ -226,8 +225,9 @@ pub const VobSubParser = struct {
         var seq = VobSub.ControlSequence{
             .date = (@as(u16, data[offset]) << 8) | data[offset + 1],
             .next = (@as(u16, data[offset + 2]) << 8) | data[offset + 3],
-            .commands = std.ArrayList(VobSub.Command).init(self.allocator),
+            .commands = .empty,
         };
+        errdefer seq.commands.deinit(self.allocator);
 
         var cmd_offset = offset + 4;
 
@@ -236,16 +236,16 @@ pub const VobSubParser = struct {
             cmd_offset += 1;
 
             switch (cmd_byte) {
-                0x00 => try seq.commands.append(.{ .force_display = {} }),
-                0x01 => try seq.commands.append(.{ .start_display = {} }),
-                0x02 => try seq.commands.append(.{ .stop_display = {} }),
+                0x00 => try seq.commands.append(self.allocator, .{ .force_display = {} }),
+                0x01 => try seq.commands.append(self.allocator, .{ .start_display = {} }),
+                0x02 => try seq.commands.append(self.allocator, .{ .stop_display = {} }),
                 0x03 => {
                     // Set palette
                     if (cmd_offset + 2 > data.len) break;
                     const palette_data = (@as(u16, data[cmd_offset]) << 8) | data[cmd_offset + 1];
                     cmd_offset += 2;
 
-                    try seq.commands.append(.{
+                    try seq.commands.append(self.allocator, .{
                         .set_palette = [4]u8{
                             @truncate(palette_data >> 12),
                             @truncate((palette_data >> 8) & 0x0F),
@@ -260,7 +260,7 @@ pub const VobSubParser = struct {
                     const alpha_data = (@as(u16, data[cmd_offset]) << 8) | data[cmd_offset + 1];
                     cmd_offset += 2;
 
-                    try seq.commands.append(.{
+                    try seq.commands.append(self.allocator, .{
                         .set_alpha = [4]u8{
                             @truncate(alpha_data >> 12),
                             @truncate((alpha_data >> 8) & 0x0F),
@@ -279,7 +279,7 @@ pub const VobSubParser = struct {
                     const y_end = (@as(u16, data[cmd_offset + 4] & 0x0F) << 8) | data[cmd_offset + 5];
                     cmd_offset += 6;
 
-                    try seq.commands.append(.{
+                    try seq.commands.append(self.allocator, .{
                         .set_display_area = .{
                             .x_start = x_start,
                             .x_end = x_end,
@@ -295,7 +295,7 @@ pub const VobSubParser = struct {
                     const bottom = (@as(u16, data[cmd_offset + 2]) << 8) | data[cmd_offset + 3];
                     cmd_offset += 4;
 
-                    try seq.commands.append(.{
+                    try seq.commands.append(self.allocator, .{
                         .set_pixel_data_address = .{
                             .top_field_offset = top,
                             .bottom_field_offset = bottom,
@@ -303,7 +303,7 @@ pub const VobSubParser = struct {
                     });
                 },
                 0xFF => {
-                    try seq.commands.append(.{ .end_of_control = {} });
+                    try seq.commands.append(self.allocator, .{ .end_of_control = {} });
                     break;
                 },
                 else => {
@@ -318,7 +318,7 @@ pub const VobSubParser = struct {
     /// Decode RLE subtitle data to indexed pixels
     pub fn decodeRle(self: *VobSubParser, data: []const u8, width: u16, height: u16) ![]u8 {
         const pixel_count = @as(usize, width) * height;
-        var pixels = try self.allocator.alloc(u8, pixel_count);
+        const pixels = try self.allocator.alloc(u8, pixel_count);
         @memset(pixels, 0);
 
         var pixel_idx: usize = 0;
@@ -399,8 +399,8 @@ pub const VobSubDecoder = struct {
 
     pub fn decodeSubtitle(self: *VobSubDecoder, packet: VobSub.SubPacket) !VobSub.SubImage {
         // Parse control sequence to get display area, palette, alpha
-        const control_seq = try self.parser.parseControlSequence(packet.data, packet.control_offset);
-        defer control_seq.commands.deinit();
+        var control_seq = try self.parser.parseControlSequence(packet.data, packet.control_offset);
+        defer control_seq.commands.deinit(self.allocator);
 
         var image = VobSub.SubImage{
             .pts = packet.pts,

@@ -17,9 +17,9 @@ pub const Timeline = struct {
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, frame_rate: types.Rational) Timeline {
         return .{
             .allocator = allocator,
-            .video_tracks = std.ArrayList(Track).init(allocator),
-            .audio_tracks = std.ArrayList(Track).init(allocator),
-            .subtitle_tracks = std.ArrayList(Track).init(allocator),
+            .video_tracks = .empty,
+            .audio_tracks = .empty,
+            .subtitle_tracks = .empty,
             .frame_rate = frame_rate,
             .duration_us = 0,
             .width = width,
@@ -31,20 +31,20 @@ pub const Timeline = struct {
         for (self.video_tracks.items) |*track| track.deinit();
         for (self.audio_tracks.items) |*track| track.deinit();
         for (self.subtitle_tracks.items) |*track| track.deinit();
-        self.video_tracks.deinit();
-        self.audio_tracks.deinit();
-        self.subtitle_tracks.deinit();
+        self.video_tracks.deinit(self.allocator);
+        self.audio_tracks.deinit(self.allocator);
+        self.subtitle_tracks.deinit(self.allocator);
     }
 
     pub fn addVideoTrack(self: *Timeline, name: []const u8) !*Track {
-        var track = Track.init(self.allocator, .video, name);
-        try self.video_tracks.append(track);
+        const track = Track.init(self.allocator, .video, name);
+        try self.video_tracks.append(self.allocator, track);
         return &self.video_tracks.items[self.video_tracks.items.len - 1];
     }
 
     pub fn addAudioTrack(self: *Timeline, name: []const u8) !*Track {
-        var track = Track.init(self.allocator, .audio, name);
-        try self.audio_tracks.append(track);
+        const track = Track.init(self.allocator, .audio, name);
+        try self.audio_tracks.append(self.allocator, track);
         return &self.audio_tracks.items[self.audio_tracks.items.len - 1];
     }
 
@@ -91,7 +91,7 @@ pub const Track = struct {
             .allocator = allocator,
             .track_type = track_type,
             .name = name,
-            .clips = std.ArrayList(Clip).init(allocator),
+            .clips = .empty,
             .enabled = true,
             .muted = false,
             .opacity = 1.0,
@@ -101,7 +101,7 @@ pub const Track = struct {
 
     pub fn deinit(self: *Track) void {
         for (self.clips.items) |*clip| clip.deinit();
-        self.clips.deinit();
+        self.clips.deinit(self.allocator);
     }
 
     pub fn insertClip(self: *Track, clip: Clip, position_us: u64) !void {
@@ -116,7 +116,7 @@ pub const Track = struct {
             insert_idx = i + 1;
         }
 
-        try self.clips.insert(insert_idx, new_clip);
+        try self.clips.insert(self.allocator, insert_idx, new_clip);
     }
 
     pub fn overwriteClip(self: *Track, clip: Clip, position_us: u64) !void {
@@ -138,7 +138,7 @@ pub const Track = struct {
         var new_clip = clip;
         new_clip.timeline_in = position_us;
         new_clip.timeline_out = clip_end;
-        try self.clips.append(new_clip);
+        try self.clips.append(self.allocator, new_clip);
     }
 
     pub fn rippleDelete(self: *Track, clip_index: usize) !void {
@@ -169,7 +169,7 @@ pub const Track = struct {
         const new_source_in = clip.source_in + offset_in_clip;
 
         // Create second half
-        var second_half = Clip{
+        const second_half = Clip{
             .allocator = self.allocator,
             .source_path = clip.source_path,
             .source_in = new_source_in,
@@ -186,7 +186,7 @@ pub const Track = struct {
         clip.source_out = new_source_in;
         clip.timeline_out = split_time_us;
 
-        try self.clips.insert(clip_index + 1, second_half);
+        try self.clips.insert(self.allocator, clip_index + 1, second_half);
     }
 
     pub fn getDuration(self: *const Track) u64 {
@@ -296,8 +296,9 @@ pub const TimelineRenderer = struct {
 /// EDL (Edit Decision List) export
 pub const EdlExporter = struct {
     pub fn exportEdl(timeline: *const Timeline, allocator: std.mem.Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        const writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         try writer.writeAll("TITLE: Timeline Export\n");
         try writer.writeAll("FCM: NON-DROP FRAME\n\n");
@@ -318,7 +319,7 @@ pub const EdlExporter = struct {
             }
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     fn writeTimecode(writer: anytype, time_us: u64) !void {
@@ -333,9 +334,9 @@ pub const EdlExporter = struct {
 /// Final Cut Pro XML export (FCPXML 1.11)
 pub const FcpXmlExporter = struct {
     pub fn exportFcpXml(timeline: *const Timeline, allocator: std.mem.Allocator, options: FcpXmlOptions) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        errdefer output.deinit();
-        const writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         // XML declaration
         try writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -475,7 +476,7 @@ pub const FcpXmlExporter = struct {
         try writer.writeAll("  </library>\n");
         try writer.writeAll("</fcpxml>\n");
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     pub const FcpXmlOptions = struct {
@@ -500,9 +501,9 @@ pub const FcpXmlExporter = struct {
 
     /// Export to Adobe Premiere Pro XML format
     pub fn exportPremiereXml(timeline: *const Timeline, allocator: std.mem.Allocator, options: PremiereXmlOptions) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        errdefer output.deinit();
-        const writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         try writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         try writer.writeAll("<xmeml version=\"5\">\n");
@@ -575,7 +576,7 @@ pub const FcpXmlExporter = struct {
         try writer.writeAll("  </project>\n");
         try writer.writeAll("</xmeml>\n");
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     pub const PremiereXmlOptions = struct {
@@ -606,10 +607,10 @@ pub const TimelineProject = struct {
 
     pub fn save(self: *const TimelineProject, allocator: std.mem.Allocator) ![]u8 {
         // Serialize timeline project to JSON
-        var output = std.ArrayList(u8).init(allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
 
-        const writer = output.writer();
+        const writer = output.writer(allocator);
 
         try writer.writeAll("{");
 
@@ -651,7 +652,7 @@ pub const TimelineProject = struct {
         try writer.writeAll("}"); // End timeline
         try writer.writeAll("}"); // End project
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     fn serializeTrack(writer: anytype, track: *const Track) !void {
@@ -717,21 +718,21 @@ pub const TimelineProject = struct {
         const video_tracks_arr = (timeline_obj.get("video_tracks") orelse return error.InvalidJson).array;
         for (video_tracks_arr.items) |track_val| {
             const track = try deserializeTrack(allocator, track_val.object);
-            try timeline.video_tracks.append(track);
+            try timeline.video_tracks.append(allocator, track);
         }
 
         // Load audio tracks
         const audio_tracks_arr = (timeline_obj.get("audio_tracks") orelse return error.InvalidJson).array;
         for (audio_tracks_arr.items) |track_val| {
             const track = try deserializeTrack(allocator, track_val.object);
-            try timeline.audio_tracks.append(track);
+            try timeline.audio_tracks.append(allocator, track);
         }
 
         // Load subtitle tracks
         const subtitle_tracks_arr = (timeline_obj.get("subtitle_tracks") orelse return error.InvalidJson).array;
         for (subtitle_tracks_arr.items) |track_val| {
             const track = try deserializeTrack(allocator, track_val.object);
-            try timeline.subtitle_tracks.append(track);
+            try timeline.subtitle_tracks.append(allocator, track);
         }
 
         return TimelineProject{
@@ -786,7 +787,7 @@ pub const TimelineProject = struct {
                 .transition_out = null,
             };
 
-            try track.clips.append(clip);
+            try track.clips.append(allocator, clip);
         }
 
         return track;
