@@ -286,7 +286,7 @@ pub const AiffReader = struct {
         if (size < min_size) return AudioError.InvalidHeader;
 
         self.header.channels = std.mem.readInt(i16, self.data[self.pos..][0..2], .big);
-        self.header.num_frames = std.mem.readInt(u32, self.data[self.pos + 2 ..][0..6], .big);
+        self.header.num_frames = std.mem.readInt(u32, self.data[self.pos + 2 ..][0..4], .big);
         self.header.bits_per_sample = std.mem.readInt(i16, self.data[self.pos + 6 ..][0..2], .big);
 
         // Sample rate is 80-bit extended precision
@@ -304,7 +304,7 @@ pub const AiffReader = struct {
         if (size < 8) return AudioError.InvalidHeader;
 
         self.header.block_offset = std.mem.readInt(u32, self.data[self.pos..][0..4], .big);
-        self.header.block_size = std.mem.readInt(u32, self.data[self.pos + 4 ..][0..8], .big);
+        self.header.block_size = std.mem.readInt(u32, self.data[self.pos + 4 ..][0..4], .big);
 
         self.pos += 8;
         self.header.data_offset = self.pos + self.header.block_offset;
@@ -606,4 +606,21 @@ test "AIFF writer uses explicit std.Io" {
     const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(data);
     try std.testing.expect(isAiff(data));
+}
+
+test "AIFF round-trip parses fixed-width COMM and SSND fields" {
+    const allocator = std.testing.allocator;
+    var original = try AudioFrame.init(allocator, 8, .s16be, 2, 44100);
+    defer original.deinit();
+    original.setSampleF32(0, 0, 0.25);
+
+    const encoded = try encode(allocator, &original);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(original.num_samples, decoded.num_samples);
+    try std.testing.expectEqual(original.channels, decoded.channels);
+    try std.testing.expectEqual(original.sample_rate, decoded.sample_rate);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), decoded.getSampleF32(0, 0), 0.001);
 }

@@ -253,6 +253,7 @@ pub const VorbisCommentHeader = struct {
 
         if (pos + vendor_len > data.len) return AudioError.TruncatedData;
         const vendor = try allocator.dupe(u8, data[pos..][0..vendor_len]);
+        errdefer allocator.free(vendor);
         pos += vendor_len;
 
         // Comment count
@@ -260,13 +261,13 @@ pub const VorbisCommentHeader = struct {
         const comment_count = std.mem.readInt(u32, data[pos..][0..4], .little);
         pos += 4;
 
-        var comments = std.ArrayList(Comment).init(allocator);
+        var comments: std.ArrayList(Comment) = .empty;
         errdefer {
             for (comments.items) |c| {
                 allocator.free(c.field);
                 allocator.free(c.value);
             }
-            comments.deinit();
+            comments.deinit(allocator);
         }
 
         for (0..comment_count) |_| {
@@ -282,8 +283,10 @@ pub const VorbisCommentHeader = struct {
             // Find '=' separator
             if (std.mem.indexOf(u8, comment_data, "=")) |eq_pos| {
                 const field = try allocator.dupe(u8, comment_data[0..eq_pos]);
+                errdefer allocator.free(field);
                 const value = try allocator.dupe(u8, comment_data[eq_pos + 1 ..]);
-                try comments.append(.{ .field = field, .value = value });
+                errdefer allocator.free(value);
+                try comments.append(allocator, .{ .field = field, .value = value });
             }
         }
 
@@ -300,7 +303,7 @@ pub const VorbisCommentHeader = struct {
             self.allocator.free(c.field);
             self.allocator.free(c.value);
         }
-        self.comments.deinit();
+        self.comments.deinit(self.allocator);
     }
 
     /// Get a field value (case-insensitive)
@@ -633,4 +636,14 @@ test "OGG page parsing" {
     const page = try OggPage.parse(&page_data);
     try std.testing.expect(page.isFirstPage());
     try std.testing.expect(!page.isLastPage());
+}
+
+test "Vorbis comment headers use allocator-explicit storage" {
+    const data = [_]u8{3} ++ "vorbis" ++ [_]u8{ 4, 0, 0, 0 } ++ "home" ++
+        [_]u8{ 1, 0, 0, 0, 10, 0, 0, 0 } ++ "TITLE=Song";
+    var comments = try VorbisCommentHeader.parse(std.testing.allocator, data);
+    defer comments.deinit();
+
+    try std.testing.expectEqualStrings("home", comments.vendor);
+    try std.testing.expectEqualStrings("Song", comments.get("title").?);
 }

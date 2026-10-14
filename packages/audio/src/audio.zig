@@ -753,7 +753,7 @@ test "ChannelLayout" {
     try std.testing.expectEqual(@as(u8, 6), ChannelLayout.surround_51.channelCount());
 }
 
-test "Audio save uses explicit std.Io" {
+test "Audio file round-trip uses explicit std.Io" {
     const allocator = std.testing.allocator;
     var original = Audio{
         .frames = .empty,
@@ -781,9 +781,15 @@ test "Audio save uses explicit std.Io" {
     defer allocator.free(path);
 
     try original.saveAsWithIo(std.testing.io, path, .wav);
-    const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
-    defer allocator.free(data);
-    try std.testing.expect(wav.isWav(data));
+
+    var loaded = try Audio.loadWithIo(allocator, std.testing.io, path);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(u32, 44100), loaded.sample_rate);
+    try std.testing.expectEqual(@as(u8, 2), loaded.channels);
+    try std.testing.expectEqual(@as(usize, 1), loaded.frames.items.len);
+    try std.testing.expectEqual(@as(u64, 16), loaded.frames.items[0].num_samples);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), loaded.frames.items[0].getSampleF32(0, 0), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.5), loaded.frames.items[0].getSampleF32(0, 1), 0.001);
 }
 
 // Import tests from all new modules

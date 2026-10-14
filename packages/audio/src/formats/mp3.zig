@@ -258,7 +258,7 @@ pub const Id3Tag = struct {
     }
 
     /// Parse ID3v2 header
-    pub fn parseV2Header(data: []const u8) !?struct { version: Id3Version, size: usize } {
+    pub fn parseV2Header(data: []const u8) ?struct { version: Id3Version, size: usize } {
         if (data.len < 10) return null;
         if (!std.mem.eql(u8, data[0..3], "ID3")) return null;
 
@@ -557,4 +557,12 @@ test "MP3 detection" {
 
     const not_mp3 = [_]u8{ 'R', 'I', 'F', 'F' };
     try std.testing.expect(!isMp3(&not_mp3));
+}
+
+test "ID3v2 header parsing is infallible" {
+    const data = [_]u8{ 'I', 'D', '3', 4, 0, 0, 0, 0, 0, 5 };
+    const header = Id3Tag.parseV2Header(&data).?;
+    try std.testing.expectEqual(Id3Version.v2_4, header.version);
+    try std.testing.expectEqual(@as(usize, 15), header.size);
+    try std.testing.expect(Id3Tag.parseV2Header("not an id3 tag") == null);
 }
