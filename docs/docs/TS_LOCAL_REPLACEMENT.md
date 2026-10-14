@@ -891,3 +891,23 @@ directory for continued root-cause work.
 
 Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-realpath-ownership.tar.gz` contains three verified logs, SHA-256
 `4dbb3b92c85998dc6139d06af1e116bebcdb6000abb5f2de8cc92e0f7bbfefd6`. Final CLI test guard peak: 2,124 MB.
+
+## Interface recheck predecessor cycles
+
+A diagnostic DOM replay proved a two-node predecessor cycle while rechecking
+`BaseAudioContext`: an earlier declaration was linked back to a later sibling
+that already pointed to it. Predecessor insertion now follows source order, and
+an earlier recheck preserves the latest same-scope declaration marker. Generic
+and nongeneric regressions verify acyclic chains and retained merged members.
+The reduced case fails before the fix; all **4,601 checker tests** pass afterward.
+The final isolated run peaks at **2,151 MB** under the unchanged 3,840 MB guard.
+
+Full installed-library loading remains unqualified: the stripped DOM replay still
+crashes, and its traced Debug counterpart times out after 180 seconds. Discovery
+remains unpublished while that separate blocker is investigated. One validation
+run stopped at the 512 MB disk floor; cleanup removed **1,849,107,248 bytes** of
+inactive generated cache objects after checking process and open-file references.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-interface-recheck-cycle.tar.gz` contains eight
+verified payloads, SHA-256
+`d6506c2b30611fed8a8aae6b80b5a0ac032c7652907732b88f9835fd62df2f87`.
