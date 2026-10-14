@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const test_framework_module = test_framework_dep.module("test_framework");
+    const test_framework_module = test_framework_dep.module("zig_test_framework");
 
     // Main video library module
     const video_module = b.addModule("video", .{
@@ -24,6 +24,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     video_module.addImport("regex", regex_module);
+
+    const lib = b.addLibrary(.{
+        .name = "video",
+        .linkage = .static,
+        .root_module = video_module,
+    });
+    b.installArtifact(lib);
 
     // Unit tests with dependencies
     const unit_tests = b.addTest(.{
@@ -67,6 +74,12 @@ pub fn build(b: *std.Build) void {
     conformance_tests.root_module.addImport("video", video_module);
     conformance_tests.root_module.addImport("test_framework", test_framework_module);
 
+    const check_step = b.step("check", "Compile the shipped video library and all tests");
+    check_step.dependOn(&lib.step);
+    check_step.dependOn(&unit_tests.step);
+    check_step.dependOn(&integration_tests.step);
+    check_step.dependOn(&conformance_tests.step);
+
     const run_conformance_tests = b.addRunArtifact(conformance_tests);
     const conformance_step = b.step("test-conformance", "Run conformance tests");
     conformance_step.dependOn(&run_conformance_tests.step);
@@ -76,7 +89,4 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(&run_unit_tests.step);
     all_tests_step.dependOn(&run_integration_tests.step);
     all_tests_step.dependOn(&run_conformance_tests.step);
-
-    // Export module for use as dependency
-    _ = video_module;
 }

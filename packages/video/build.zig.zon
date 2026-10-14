@@ -1,14 +1,15 @@
 .{
-    .name = "video",
+    .fingerprint = 0x7cc7da2c413bb804,
+    .name = .video,
     .version = "0.1.0",
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
         .regex = .{
-            .path = "../../zig-regex",
+            .path = "../../../zig-regex",
         },
         .test_framework = .{
-            .path = "../../zig-test-framework",
+            .path = "../../../zig-test-framework",
         },
     },
 
