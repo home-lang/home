@@ -4953,6 +4953,15 @@ pub const NodeFS = struct {
     };
 
     fn readdirDisplayParent(args: Arguments.Readdir, relative: []const u8) ReaddirDisplayParent {
+        const root_bytes = args.path.slice();
+        // ASCII UTF-8 needs no transcoding. Keep the common traversal path
+        // allocation-light while the general path preserves all code units.
+        if (args.encoding == .utf8 and args.path != .buffer and
+            root_bytes.len + 1 + relative.len + 1 < bun.MAX_PATH_BYTES and
+            bun.strings.isAllASCII(root_bytes) and bun.strings.isAllASCII(relative))
+        {
+            return .{ .path = bun.String.cloneUTF8(bun.path.join(&.{ root_bytes, relative }, .auto)) };
+        }
         const encoded = if (args.encoding == .buffer) bun.String.empty else jsc.WebCore.encoding.toBunString(relative, args.encoding);
         defer encoded.deref();
         if (args.encoding == .buffer or args.path == .buffer) {
