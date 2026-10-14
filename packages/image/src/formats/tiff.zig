@@ -552,9 +552,9 @@ const BitReader = struct {
             const bits_available: u4 = @intCast(8 - @as(u4, self.bit_pos));
             const bits_to_read = @min(count - bits_read, bits_available);
 
-            const shift = 8 - self.bit_pos - bits_to_read;
+            const shift: u3 = @intCast(bits_available - bits_to_read);
             const mask: u8 = @as(u8, 0xFF) >> @as(u3, @intCast(8 - bits_to_read));
-            const bits: u16 = (self.data[self.pos] >> @as(u3, @intCast(shift))) & mask;
+            const bits: u16 = (self.data[self.pos] >> shift) & mask;
 
             result = (result << @intCast(bits_to_read)) | bits;
             bits_read += bits_to_read;
@@ -723,4 +723,15 @@ test "IFD entry parsing" {
     try std.testing.expectEqual(@as(u16, TAG_IMAGE_WIDTH), entry.tag);
     try std.testing.expectEqual(@as(u16, TYPE_SHORT), entry.field_type);
     try std.testing.expectEqual(@as(u32, 1), entry.count);
+}
+
+test "TIFF LZW bit reader handles full and cross-byte widths" {
+    const data = [_]u8{ 0b1010_1100, 0b1111_0000 };
+    var full_byte = BitReader{ .data = &data, .pos = 0, .bit_pos = 0 };
+    try std.testing.expectEqual(@as(u16, 0b1010_1100), try full_byte.readBits(8));
+    try std.testing.expectEqual(@as(u16, 0b1111), try full_byte.readBits(4));
+
+    var crossing = BitReader{ .data = &data, .pos = 0, .bit_pos = 0 };
+    try std.testing.expectEqual(@as(u16, 0b10101), try crossing.readBits(5));
+    try std.testing.expectEqual(@as(u16, 0b1001111), try crossing.readBits(7));
 }

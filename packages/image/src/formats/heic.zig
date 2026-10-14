@@ -482,9 +482,12 @@ const BitReader = struct {
             result = (result << @intCast(bits_to_read)) | bits;
             bits_read += bits_to_read;
 
-            self.bit_pos += @as(u3, @intCast(bits_to_read));
-            if (self.bit_pos == 0) {
+            const new_bit_pos = @as(u4, self.bit_pos) + @as(u4, @intCast(bits_to_read));
+            if (new_bit_pos == 8) {
+                self.bit_pos = 0;
                 self.pos += 1;
+            } else {
+                self.bit_pos = @intCast(new_bit_pos);
             }
         }
 
@@ -723,6 +726,11 @@ test "BitReader exp-golomb" {
     try std.testing.expectEqual(@as(u32, 0), try reader.readUE());
     try std.testing.expectEqual(@as(u32, 1), try reader.readUE());
     try std.testing.expectEqual(@as(u32, 2), try reader.readUE());
+
+    var full_byte = BitReader{ .data = &data, .pos = 0, .bit_pos = 0 };
+    try std.testing.expectEqual(@as(u32, data[0]), try full_byte.readBits(8));
+    try std.testing.expectEqual(@as(usize, 1), full_byte.pos);
+    try std.testing.expectEqual(@as(u3, 0), full_byte.bit_pos);
 }
 
 test "HEIC encoder emits file type, metadata, and media boxes" {
