@@ -85,6 +85,7 @@ pub const MediaType = enum {
 pub const VideoCodec = enum {
     h264,
     hevc,
+    vp6,
     vp8,
     vp9,
     av1,
@@ -103,6 +104,7 @@ pub const VideoCodec = enum {
         return switch (self) {
             .h264 => "H.264/AVC",
             .hevc => "H.265/HEVC",
+            .vp6 => "VP6",
             .vp8 => "VP8",
             .vp9 => "VP9",
             .av1 => "AV1",
@@ -123,6 +125,7 @@ pub const VideoCodec = enum {
         return switch (self) {
             .h264 => .{ 'a', 'v', 'c', '1' },
             .hevc => .{ 'h', 'v', 'c', '1' },
+            .vp6 => .{ 'V', 'P', '6', 'F' },
             .vp8 => .{ 'V', 'P', '8', '0' },
             .vp9 => .{ 'v', 'p', '0', '9' },
             .av1 => .{ 'a', 'v', '0', '1' },

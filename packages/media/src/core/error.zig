@@ -347,7 +347,7 @@ pub fn Result(comptime T: type) type {
             return self == .err;
         }
 
-        pub fn map(self: Self, comptime func: fn (T) anytype) Result(@TypeOf(func(undefined))) {
+        pub fn map(self: Self, comptime func: anytype) Result(@TypeOf(func(@as(T, undefined)))) {
             return switch (self) {
                 .ok => |value| .{ .ok = func(value) },
                 .err => |e| .{ .err = e },
@@ -378,4 +378,24 @@ test "Error category" {
 test "Recoverable errors" {
     try std.testing.expect(isRecoverable(MediaError.ResourceBusy));
     try std.testing.expect(!isRecoverable(MediaError.UnsupportedFormat));
+}
+
+test "Result map transforms values and preserves errors" {
+    const increment = struct {
+        fn call(value: u8) u16 {
+            return value + 1;
+        }
+    }.call;
+
+    const mapped = (Result(u8){ .ok = 41 }).map(increment);
+    switch (mapped) {
+        .ok => |value| try std.testing.expectEqual(@as(u16, 42), value),
+        .err => |e| return e,
+    }
+
+    const failed = (Result(u8){ .err = MediaError.InvalidArgument }).map(increment);
+    switch (failed) {
+        .ok => return error.TestUnexpectedResult,
+        .err => |e| try std.testing.expectEqual(MediaError.InvalidArgument, e),
+    }
 }

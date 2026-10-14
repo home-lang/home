@@ -278,8 +278,8 @@ pub const Pipeline = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .video_filters = std.ArrayList(FilterConfig).init(allocator),
-            .audio_filters = std.ArrayList(FilterConfig).init(allocator),
+            .video_filters = .empty,
+            .audio_filters = .empty,
             .metadata = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -287,8 +287,8 @@ pub const Pipeline = struct {
     pub fn deinit(self: *Self) void {
         if (self.input_path) |p| self.allocator.free(p);
         if (self.output_path) |p| self.allocator.free(p);
-        self.video_filters.deinit();
-        self.audio_filters.deinit();
+        self.video_filters.deinit(self.allocator);
+        self.audio_filters.deinit(self.allocator);
 
         var it = self.metadata.iterator();
         while (it.next()) |entry| {
@@ -404,117 +404,117 @@ pub const Pipeline = struct {
 
     /// Scale/resize video
     pub fn resize(self: *Self, width: u32, height: u32) !*Self {
-        try self.video_filters.append(.{ .scale = .{ .width = width, .height = height, .maintain_aspect = false } });
+        try self.video_filters.append(self.allocator, .{ .scale = .{ .width = width, .height = height, .maintain_aspect = false } });
         return self;
     }
 
     /// Scale video maintaining aspect ratio
     pub fn scale(self: *Self, width: u32) !*Self {
-        try self.video_filters.append(.{ .scale = .{ .width = width, .maintain_aspect = true } });
+        try self.video_filters.append(self.allocator, .{ .scale = .{ .width = width, .maintain_aspect = true } });
         return self;
     }
 
     /// Scale with specific algorithm
     pub fn scaleWith(self: *Self, width: ?u32, height: ?u32, algorithm: ScaleAlgorithm) !*Self {
-        try self.video_filters.append(.{ .scale = .{ .width = width, .height = height, .algorithm = algorithm } });
+        try self.video_filters.append(self.allocator, .{ .scale = .{ .width = width, .height = height, .algorithm = algorithm } });
         return self;
     }
 
     /// Crop video
     pub fn crop(self: *Self, x: u32, y: u32, width: u32, height: u32) !*Self {
-        try self.video_filters.append(.{ .crop = .{ .x = x, .y = y, .width = width, .height = height } });
+        try self.video_filters.append(self.allocator, .{ .crop = .{ .x = x, .y = y, .width = width, .height = height } });
         return self;
     }
 
     /// Rotate video
     pub fn rotate(self: *Self, degrees: f32) !*Self {
-        try self.video_filters.append(.{ .rotate = .{ .degrees = degrees } });
+        try self.video_filters.append(self.allocator, .{ .rotate = .{ .degrees = degrees } });
         return self;
     }
 
     /// Flip horizontally
     pub fn flipH(self: *Self) !*Self {
-        try self.video_filters.append(.{ .flip_h = {} });
+        try self.video_filters.append(self.allocator, .{ .flip_h = {} });
         return self;
     }
 
     /// Flip vertically
     pub fn flipV(self: *Self) !*Self {
-        try self.video_filters.append(.{ .flip_v = {} });
+        try self.video_filters.append(self.allocator, .{ .flip_v = {} });
         return self;
     }
 
     /// Apply blur
     pub fn blur(self: *Self, sigma: f32) !*Self {
-        try self.video_filters.append(.{ .blur = .{ .sigma = sigma } });
+        try self.video_filters.append(self.allocator, .{ .blur = .{ .sigma = sigma } });
         return self;
     }
 
     /// Apply sharpening
     pub fn sharpen(self: *Self, amount: f32) !*Self {
-        try self.video_filters.append(.{ .sharpen = .{ .amount = amount } });
+        try self.video_filters.append(self.allocator, .{ .sharpen = .{ .amount = amount } });
         return self;
     }
 
     /// Convert to grayscale
     pub fn grayscale(self: *Self) !*Self {
-        try self.video_filters.append(.{ .grayscale = {} });
+        try self.video_filters.append(self.allocator, .{ .grayscale = {} });
         return self;
     }
 
     /// Adjust brightness (-1.0 to 1.0)
     pub fn brightness(self: *Self, factor: f32) !*Self {
-        try self.video_filters.append(.{ .brightness = factor });
+        try self.video_filters.append(self.allocator, .{ .brightness = factor });
         return self;
     }
 
     /// Adjust contrast (0.0 to 2.0, 1.0 = no change)
     pub fn contrast(self: *Self, factor: f32) !*Self {
-        try self.video_filters.append(.{ .contrast = factor });
+        try self.video_filters.append(self.allocator, .{ .contrast = factor });
         return self;
     }
 
     /// Adjust saturation (0.0 to 2.0, 1.0 = no change)
     pub fn saturation(self: *Self, factor: f32) !*Self {
-        try self.video_filters.append(.{ .saturation = factor });
+        try self.video_filters.append(self.allocator, .{ .saturation = factor });
         return self;
     }
 
     /// Adjust hue (-180 to 180 degrees)
     pub fn hue(self: *Self, degrees: f32) !*Self {
-        try self.video_filters.append(.{ .hue = degrees });
+        try self.video_filters.append(self.allocator, .{ .hue = degrees });
         return self;
     }
 
     /// Apply denoise filter
     pub fn denoise(self: *Self) !*Self {
-        try self.video_filters.append(.{ .denoise = .{} });
+        try self.video_filters.append(self.allocator, .{ .denoise = .{} });
         return self;
     }
 
     /// Deinterlace video
     pub fn deinterlace(self: *Self) !*Self {
-        try self.video_filters.append(.{ .deinterlace = .{} });
+        try self.video_filters.append(self.allocator, .{ .deinterlace = .{} });
         return self;
     }
 
     /// Add image overlay
     pub fn overlay(self: *Self, image_path: []const u8, x: i32, y: i32) !*Self {
         const path_copy = try self.allocator.dupe(u8, image_path);
-        try self.video_filters.append(.{ .overlay = .{ .path = path_copy, .x = x, .y = y } });
+        try self.video_filters.append(self.allocator, .{ .overlay = .{ .path = path_copy, .x = x, .y = y } });
         return self;
     }
 
     /// Add text overlay
     pub fn text(self: *Self, txt: []const u8, x: i32, y: i32) !*Self {
         const text_copy = try self.allocator.dupe(u8, txt);
-        try self.video_filters.append(.{ .text = .{ .text = text_copy, .x = x, .y = y } });
+        try self.video_filters.append(self.allocator, .{ .text = .{ .text = text_copy, .x = x, .y = y } });
         return self;
     }
 
     /// Add fade effect
-    pub fn fade(self: *Self, fade_type: FadeType, start: f64, dur: f64) !*Self {
-        try self.video_filters.append(.{ .fade = .{ .fade_type = fade_type, .start_time = start, .duration = dur } });
+    pub fn fade(self: *Self, fade_type: FadeType, start_seconds: f64, dur: f64) !*Self {
+        try self.video_filters.append(self.allocator, .{ .fade = .{ .fade_type = fade_type, .start_time = start_seconds, .duration = dur } });
         return self;
     }
 
@@ -524,55 +524,55 @@ pub const Pipeline = struct {
 
     /// Adjust volume (0.0 to 2.0, 1.0 = no change)
     pub fn volume(self: *Self, factor: f32) !*Self {
-        try self.audio_filters.append(.{ .volume = factor });
+        try self.audio_filters.append(self.allocator, .{ .volume = factor });
         return self;
     }
 
     /// Normalize audio to target loudness
     pub fn normalize(self: *Self) !*Self {
-        try self.audio_filters.append(.{ .normalize = .{} });
+        try self.audio_filters.append(self.allocator, .{ .normalize = .{} });
         return self;
     }
 
     /// Apply loudness normalization (EBU R128)
     pub fn loudnorm(self: *Self) !*Self {
-        try self.audio_filters.append(.{ .loudnorm = .{} });
+        try self.audio_filters.append(self.allocator, .{ .loudnorm = .{} });
         return self;
     }
 
     /// Apply compressor
     pub fn compressor(self: *Self, threshold: f32, ratio: f32) !*Self {
-        try self.audio_filters.append(.{ .compressor = .{ .threshold = threshold, .ratio = ratio } });
+        try self.audio_filters.append(self.allocator, .{ .compressor = .{ .threshold = threshold, .ratio = ratio } });
         return self;
     }
 
     /// Apply reverb
     pub fn reverb(self: *Self, room_size: f32, damping: f32) !*Self {
-        try self.audio_filters.append(.{ .reverb = .{ .room_size = room_size, .damping = damping } });
+        try self.audio_filters.append(self.allocator, .{ .reverb = .{ .room_size = room_size, .damping = damping } });
         return self;
     }
 
     /// Adjust pitch (semitones: -12 to +12)
     pub fn pitch(self: *Self, semitones: f32) !*Self {
-        try self.audio_filters.append(.{ .pitch = semitones });
+        try self.audio_filters.append(self.allocator, .{ .pitch = semitones });
         return self;
     }
 
     /// Adjust tempo without changing pitch (0.5 to 2.0)
     pub fn tempo(self: *Self, factor: f32) !*Self {
-        try self.audio_filters.append(.{ .tempo = factor });
+        try self.audio_filters.append(self.allocator, .{ .tempo = factor });
         return self;
     }
 
     /// Add audio fade in
     pub fn fadeIn(self: *Self, dur: f64) !*Self {
-        try self.audio_filters.append(.{ .fade_in = dur });
+        try self.audio_filters.append(self.allocator, .{ .fade_in = dur });
         return self;
     }
 
     /// Add audio fade out
     pub fn fadeOut(self: *Self, dur: f64) !*Self {
-        try self.audio_filters.append(.{ .fade_out = dur });
+        try self.audio_filters.append(self.allocator, .{ .fade_out = dur });
         return self;
     }
 
@@ -880,8 +880,10 @@ test "Pipeline filters" {
     _ = try pipeline.resize(1920, 1080);
     _ = try pipeline.blur(1.5);
     _ = try pipeline.grayscale();
+    _ = try pipeline.volume(0.75);
 
     try std.testing.expectEqual(@as(usize, 3), pipeline.video_filters.items.len);
+    try std.testing.expectEqual(@as(usize, 1), pipeline.audio_filters.items.len);
 }
 
 test "Pipeline time operations" {

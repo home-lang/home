@@ -104,8 +104,8 @@ pub const MediaStream = struct {
         return .{
             .allocator = allocator,
             .info = .{ .stream_type = stream_type },
-            .packets = std.ArrayList(Packet).init(allocator),
-            .frames = std.ArrayList(Frame).init(allocator),
+            .packets = .empty,
+            .frames = .empty,
         };
     }
 
@@ -113,20 +113,20 @@ pub const MediaStream = struct {
         for (self.packets.items) |*packet| {
             packet.deinit(self.allocator);
         }
-        self.packets.deinit();
+        self.packets.deinit(self.allocator);
 
         for (self.frames.items) |*frame| {
             frame.deinit(self.allocator);
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     pub fn addPacket(self: *Self, packet: Packet) !void {
-        try self.packets.append(packet);
+        try self.packets.append(self.allocator, packet);
     }
 
     pub fn addFrame(self: *Self, frame: Frame) !void {
-        try self.frames.append(frame);
+        try self.frames.append(self.allocator, frame);
     }
 };
 
@@ -156,7 +156,7 @@ pub const Packet = struct {
     }
 
     pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
-        var new = Self{
+        const new = Self{
             .data = try allocator.alloc(u8, self.data.len),
             .pts = self.pts,
             .dts = self.dts,
@@ -358,7 +358,7 @@ pub const StreamSource = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .streams = std.ArrayList(MediaStream).init(allocator),
+            .streams = .empty,
         };
     }
 
@@ -366,7 +366,7 @@ pub const StreamSource = struct {
         for (self.streams.items) |*stream| {
             stream.deinit();
         }
-        self.streams.deinit();
+        self.streams.deinit(self.allocator);
 
         if (self.path) |p| {
             self.allocator.free(p);
@@ -412,7 +412,7 @@ pub const StreamSink = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .streams = std.ArrayList(MediaStream).init(allocator),
+            .streams = .empty,
         };
     }
 
@@ -420,7 +420,7 @@ pub const StreamSink = struct {
         for (self.streams.items) |*stream| {
             stream.deinit();
         }
-        self.streams.deinit();
+        self.streams.deinit(self.allocator);
 
         if (self.path) |p| {
             self.allocator.free(p);
@@ -439,7 +439,7 @@ pub const StreamSink = struct {
     pub fn addStream(self: *Self, stream_type: StreamType) !*MediaStream {
         var stream = MediaStream.init(self.allocator, stream_type);
         stream.info.index = @intCast(self.streams.items.len);
-        try self.streams.append(stream);
+        try self.streams.append(self.allocator, stream);
         return &self.streams.items[self.streams.items.len - 1];
     }
 
@@ -479,4 +479,19 @@ test "MediaStream creation" {
     defer stream.deinit();
 
     try std.testing.expectEqual(StreamType.video, stream.info.stream_type);
+
+    var packet = try Packet.init(allocator, 4);
+    stream.addPacket(packet) catch |e| {
+        packet.deinit(allocator);
+        return e;
+    };
+
+    var frame = try Frame.initVideo(allocator, 2, 2, .rgba);
+    stream.addFrame(frame) catch |e| {
+        frame.deinit(allocator);
+        return e;
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), stream.packets.items.len);
+    try std.testing.expectEqual(@as(usize, 1), stream.frames.items.len);
 }

@@ -280,6 +280,8 @@ pub const Registry = struct {
         },
     };
 
+    const supported_formats = video_formats ++ audio_formats ++ image_formats;
+
     const video_codecs = [_]VideoCodecInfo{
         .{
             .codec = .h264,
@@ -299,6 +301,13 @@ pub const Registry = struct {
             .codec = .vp8,
             .name = "vp8",
             .long_name = "VP8",
+            .supported_pixel_formats = &.{"yuv420p"},
+        },
+        .{
+            .codec = .vp6,
+            .name = "vp6",
+            .long_name = "On2 VP6",
+            .can_encode = false,
             .supported_pixel_formats = &.{"yuv420p"},
         },
         .{
@@ -457,22 +466,7 @@ pub const Registry = struct {
 
     /// Get all supported container formats
     pub fn getSupportedFormats() []const FormatInfo {
-        // Combine all format arrays
-        var all: [video_formats.len + audio_formats.len + image_formats.len]FormatInfo = undefined;
-        var i: usize = 0;
-        for (video_formats) |f| {
-            all[i] = f;
-            i += 1;
-        }
-        for (audio_formats) |f| {
-            all[i] = f;
-            i += 1;
-        }
-        for (image_formats) |f| {
-            all[i] = f;
-            i += 1;
-        }
-        return &all;
+        return &supported_formats;
     }
 
     /// Get all supported video codecs
@@ -503,6 +497,10 @@ test "Registry codec lookup" {
     try std.testing.expect(h264_info != null);
     try std.testing.expectEqualStrings("h264", h264_info.?.name);
 
+    const vp6_info = Registry.getVideoCodecInfo(.vp6);
+    try std.testing.expect(vp6_info != null);
+    try std.testing.expect(!vp6_info.?.can_encode);
+
     const aac_info = Registry.getAudioCodecInfo(.aac);
     try std.testing.expect(aac_info != null);
     try std.testing.expectEqualStrings("aac", aac_info.?.name);
@@ -511,5 +509,15 @@ test "Registry codec lookup" {
 test "Registry codec compatibility" {
     try std.testing.expect(Registry.isCodecSupported(.mp4, .h264, .aac));
     try std.testing.expect(Registry.isCodecSupported(.webm, .vp9, .opus));
+    try std.testing.expect(Registry.isCodecSupported(.flv, .vp6, .mp3));
     try std.testing.expect(!Registry.isCodecSupported(.webm, .h264, null));
+}
+
+test "Registry supported formats have static storage" {
+    const formats = Registry.getSupportedFormats();
+    const formats_again = Registry.getSupportedFormats();
+
+    try std.testing.expect(formats.len > 0);
+    try std.testing.expectEqual(formats.ptr, formats_again.ptr);
+    try std.testing.expectEqual(ContainerFormat.mp4, formats[0].format);
 }
