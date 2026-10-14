@@ -114,7 +114,7 @@ const LzwDecoder = struct {
         return code;
     }
 
-    fn outputCode(self: *LzwDecoder, code: u16, output: *std.ArrayList(u8)) !void {
+    fn outputCode(self: *LzwDecoder, allocator: std.mem.Allocator, code: u16, output: *std.ArrayList(u8)) !void {
         if (code >= 4096) return;
 
         // Build output string (in reverse order first)
@@ -132,7 +132,7 @@ const LzwDecoder = struct {
         // Output in correct order
         while (stack_pos > 0) {
             stack_pos -= 1;
-            try output.append(stack[stack_pos]);
+            try output.append(allocator, stack[stack_pos]);
         }
     }
 
@@ -145,7 +145,7 @@ const LzwDecoder = struct {
         return self.table[current].suffix;
     }
 
-    pub fn decode(self: *LzwDecoder, output: *std.ArrayList(u8)) !void {
+    pub fn decode(self: *LzwDecoder, allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
         var prev_code: ?u16 = null;
 
         while (true) {
@@ -162,13 +162,13 @@ const LzwDecoder = struct {
             }
 
             if (prev_code == null) {
-                try self.outputCode(code, output);
+                try self.outputCode(allocator, code, output);
                 prev_code = code;
                 continue;
             }
 
             if (code < self.next_code) {
-                try self.outputCode(code, output);
+                try self.outputCode(allocator, code, output);
 
                 // Add new code to table
                 if (self.next_code < 4096) {
@@ -192,7 +192,7 @@ const LzwDecoder = struct {
                     self.next_code += 1;
                 }
 
-                try self.outputCode(self.next_code - 1, output);
+                try self.outputCode(allocator, self.next_code - 1, output);
             }
 
             prev_code = code;
@@ -231,7 +231,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     const color_resolution = ((packed_byte >> 4) & 0x07) + 1;
     _ = color_resolution;
     const global_color_table_size: usize = if (has_global_color_table)
-        @as(usize, 1) << @as(u3, @intCast((packed_byte & 0x07) + 1))
+        @as(usize, 1) << @as(u4, @intCast((packed_byte & 0x07) + 1))
     else
         0;
 
@@ -242,9 +242,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     defer if (global_palette) |p| allocator.free(p);
 
     if (has_global_color_table) {
+        if (global_color_table_size > (data.len - pos) / 3) return error.TruncatedData;
         global_palette = try allocator.alloc(Color, global_color_table_size);
         for (0..global_color_table_size) |i| {
-            if (pos + 2 >= data.len) break;
             global_palette.?[i] = Color{
                 .r = data[pos],
                 .g = data[pos + 1],
@@ -263,12 +263,12 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     @memset(img.pixels, 0);
 
     // Animation frames storage
-    var frames = std.ArrayList(Image.Frame).init(allocator);
+    var frames: std.ArrayList(Image.Frame) = .empty;
     defer {
         for (frames.items) |frame| {
             allocator.free(frame.pixels);
         }
-        frames.deinit();
+        frames.deinit(allocator);
     }
 
     // Graphics control extension data
@@ -333,7 +333,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                 const has_local_color_table = (img_packed & 0x80) != 0;
                 const is_interlaced = (img_packed & 0x40) != 0;
                 const local_color_table_size: usize = if (has_local_color_table)
-                    @as(usize, 1) << @as(u3, @intCast((img_packed & 0x07) + 1))
+                    @as(usize, 1) << @as(u4, @intCast((img_packed & 0x07) + 1))
                 else
                     0;
 
@@ -342,9 +342,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                 defer if (local_palette) |p| allocator.free(p);
 
                 if (has_local_color_table) {
+                    if (local_color_table_size > (data.len - pos) / 3) return error.TruncatedData;
                     local_palette = try allocator.alloc(Color, local_color_table_size);
                     for (0..local_color_table_size) |i| {
-                        if (pos + 2 >= data.len) break;
                         local_palette.?[i] = Color{
                             .r = data[pos],
                             .g = data[pos + 1],
@@ -365,8 +365,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                 pos += 1;
 
                 // Collect sub-blocks
-                var lzw_data = std.ArrayList(u8).init(allocator);
-                defer lzw_data.deinit();
+                var lzw_data: std.ArrayList(u8) = .empty;
+                defer lzw_data.deinit(allocator);
 
                 while (pos < data.len) {
                     const block_size = data[pos];
@@ -374,16 +374,16 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                     if (block_size == 0) break;
 
                     if (pos + block_size > data.len) break;
-                    try lzw_data.appendSlice(data[pos..][0..block_size]);
+                    try lzw_data.appendSlice(allocator, data[pos..][0..block_size]);
                     pos += block_size;
                 }
 
                 // Decode LZW
-                var decoded_pixels = std.ArrayList(u8).init(allocator);
-                defer decoded_pixels.deinit();
+                var decoded_pixels: std.ArrayList(u8) = .empty;
+                defer decoded_pixels.deinit(allocator);
 
                 var decoder = LzwDecoder.init(lzw_data.items, lzw_min_code_size);
-                try decoder.decode(&decoded_pixels);
+                try decoder.decode(allocator, &decoded_pixels);
 
                 // Apply pixels to image
                 applyFrame(&img, decoded_pixels.items, palette, img_left, img_top, img_width, img_height, transparent_index, is_interlaced, disposal_method);
@@ -393,7 +393,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                     const frame_pixels = try allocator.alloc(u8, img.pixels.len);
                     @memcpy(frame_pixels, img.pixels);
 
-                    try frames.append(Image.Frame{
+                    frames.append(allocator, Image.Frame{
                         .pixels = frame_pixels,
                         .delay_ms = @as(u32, delay_time) * 10, // GIF delays are in centiseconds
                         .x_offset = img_left,
@@ -405,7 +405,10 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                             _ => .none,
                         },
                         .blend_op = .source,
-                    });
+                    }) catch |err| {
+                        allocator.free(frame_pixels);
+                        return err;
+                    };
                 }
 
                 // Reset for next frame
@@ -419,7 +422,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Store animation frames if we have multiple
     if (frames.items.len > 1) {
-        img.frames = try frames.toOwnedSlice();
+        img.frames = try frames.toOwnedSlice(allocator);
     }
 
     return img;
@@ -499,23 +502,23 @@ fn applyFrame(img: *Image, pixels: []const u8, palette: []const Color, left: u16
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Header
-    try output.appendSlice(GIF89A_SIGNATURE);
+    try output.appendSlice(allocator, GIF89A_SIGNATURE);
 
     // Logical screen descriptor
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
 
     // Packed byte: Global color table flag, color resolution, sort flag, size
     const color_table_size: u8 = 7; // 256 colors
     const packed_flags: u8 = 0x80 | (color_table_size << 4) | color_table_size;
-    try output.append(packed_flags);
+    try output.append(allocator, packed_flags);
 
-    try output.append(0); // Background color index
-    try output.append(0); // Pixel aspect ratio
+    try output.append(allocator, 0); // Background color index
+    try output.append(allocator, 0); // Pixel aspect ratio
 
     // Generate palette (color quantization)
     var palette: [256]Color = undefined;
@@ -523,13 +526,13 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 
     // Write global color table
     for (palette) |color| {
-        try output.append(color.r);
-        try output.append(color.g);
-        try output.append(color.b);
+        try output.append(allocator, color.r);
+        try output.append(allocator, color.g);
+        try output.append(allocator, color.b);
     }
 
     // Graphics control extension (for transparency)
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0x21, // Extension introducer
         0xF9, // Graphics control label
         0x04, // Block size
@@ -540,16 +543,16 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     });
 
     // Image descriptor
-    try output.append(0x2C); // Image separator
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Left
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Top
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
-    try output.append(0x00); // No local color table, not interlaced
+    try output.append(allocator, 0x2C); // Image separator
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Left
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Top
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
+    try output.append(allocator, 0x00); // No local color table, not interlaced
 
     // LZW minimum code size
     const min_code_size: u8 = 8;
-    try output.append(min_code_size);
+    try output.append(allocator, min_code_size);
 
     // Convert image to indexed
     var indexed = try allocator.alloc(u8, @as(usize, img.width) * @as(usize, img.height));
@@ -565,26 +568,26 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     }
 
     // LZW encode
-    var lzw_output = std.ArrayList(u8).init(allocator);
-    defer lzw_output.deinit();
-    try lzwEncode(&lzw_output, indexed, min_code_size);
+    var lzw_output: std.ArrayList(u8) = .empty;
+    defer lzw_output.deinit(allocator);
+    try lzwEncode(allocator, &lzw_output, indexed, min_code_size);
 
     // Write sub-blocks
     var pos: usize = 0;
     while (pos < lzw_output.items.len) {
         const remaining = lzw_output.items.len - pos;
         const block_size: u8 = @intCast(@min(remaining, 255));
-        try output.append(block_size);
-        try output.appendSlice(lzw_output.items[pos..][0..block_size]);
+        try output.append(allocator, block_size);
+        try output.appendSlice(allocator, lzw_output.items[pos..][0..block_size]);
         pos += block_size;
     }
 
-    try output.append(0x00); // Block terminator
+    try output.append(allocator, 0x00); // Block terminator
 
     // Trailer
-    try output.append(0x3B);
+    try output.append(allocator, 0x3B);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 fn generatePalette(img: *const Image, palette: *[256]Color) void {
@@ -688,7 +691,7 @@ fn findClosestPaletteIndex(color: Color, palette: *const [256]Color) u8 {
     return best_idx;
 }
 
-fn lzwEncode(output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !void {
+fn lzwEncode(allocator: std.mem.Allocator, output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !void {
     const clear_code = @as(u16, 1) << @intCast(min_code_size);
     const end_code = clear_code + 1;
 
@@ -701,7 +704,7 @@ fn lzwEncode(output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !v
     bits_in_buffer += code_size;
 
     while (bits_in_buffer >= 8) {
-        try output.append(@intCast(bit_buffer & 0xFF));
+        try output.append(allocator, @intCast(bit_buffer & 0xFF));
         bit_buffer >>= 8;
         bits_in_buffer -= 8;
     }
@@ -712,7 +715,7 @@ fn lzwEncode(output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !v
         bits_in_buffer += code_size;
 
         while (bits_in_buffer >= 8) {
-            try output.append(@intCast(bit_buffer & 0xFF));
+            try output.append(allocator, @intCast(bit_buffer & 0xFF));
             bit_buffer >>= 8;
             bits_in_buffer -= 8;
         }
@@ -723,7 +726,7 @@ fn lzwEncode(output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !v
     bits_in_buffer += code_size;
 
     while (bits_in_buffer > 0) {
-        try output.append(@intCast(bit_buffer & 0xFF));
+        try output.append(allocator, @intCast(bit_buffer & 0xFF));
         bit_buffer >>= 8;
         if (bits_in_buffer >= 8) {
             bits_in_buffer -= 8;
@@ -746,4 +749,22 @@ test "LZW decoder initialization" {
     const decoder = LzwDecoder.init(&data, 2);
     try std.testing.expectEqual(@as(u16, 4), decoder.clear_code);
     try std.testing.expectEqual(@as(u16, 5), decoder.end_code);
+}
+
+test "GIF encoder round trips basic palette colors" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }
