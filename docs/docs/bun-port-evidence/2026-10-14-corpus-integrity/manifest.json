@@ -1,0 +1,220 @@
+{
+  "schema": 1,
+  "source_commit": "a8be1de85f7a2dd613fba0bf82ecb9b59eeabb78",
+  "native_walker_source": "26a428426d7402fbf486517c6135f32e56355610",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "source_hashes": {
+    "packages/runtime/test/HOME_FIXTURE_REVISIONS.json": "0fb84633ff5e891814fa88ea6aa6e83711393957f33540cca6e1ab6275ad93bb",
+    "packages/runtime/test/test/cli/init/init.test.ts": "ebb549705b0158082b7cc3ee870473778e135490fa744eafc85707cc21589363",
+    "scripts/audit-bun-corpus-integrity.py": "2a878118e92eb2921400f9218212b1b8aaf94649bfcc7136563bbdf4a24e2bc5",
+    "scripts/tests/test-bun-corpus-integrity.py": "6f0995be3bc51248b579c83a48de45be24aca400cde318fa5df720e794ccee72",
+    "tests/runtime/fixtures/https-localhost/README.md": "a68577266c6e92150edcd974c393fb832d02908c41195b07001072eccdd2c264",
+    "tests/runtime/fixtures/https-localhost/openssl_localhost.crt": "70295d5b03007fec6e20465409902450a68d52aaf4e117dc63a56ae78287e0dd",
+    "tests/runtime/fixtures/https-localhost/openssl_localhost.key": "900d54fcb3a413c88215d4ce4beab6616da5fb5dc031782595c986b9685c82a5",
+    "tests/runtime/fixtures/https-localhost/openssl_localhost_ca.pem": "e13eea7bc0957a5970a4d087cd8531634f05a733772fb8470318362aae4b050b",
+    "tests/runtime/fixtures/init-existing-entry.ts": "600c61b2886048a3df110bb5e0d517b30fc80a5e3bde74991f3bbd83b9b5701b",
+    "tests/runtime/native-fetch-connection-timing.test.mjs": "88d6e8e9cb89c023eea1a35b8dc91176d0749e4cffde0d4c960e7169f3a1d11a",
+    "tests/runtime/native-https-alpn-callback.test.mjs": "6e4d72a169bace20447100cafc860440731dd1a78e1f0c3e79b3e69bf0264926",
+    "tests/runtime/native-https-alpn-storage.test.mjs": "f404d9461fce617dfd4c03d4e2312a389e52ed734c527ac865ac29a9d01f21d0",
+    "tests/runtime/native-init-existing-entry.test.mjs": "f147507764287f7e2e614f335d61245236579155bf13662a0badb06d449d5648"
+  },
+  "corpus": {
+    "pin": "4982b91e3702094330f3be3883354c52b8c01323",
+    "entries": 12996,
+    "bytes": 61339647,
+    "errors": [],
+    "manifest_missing": [],
+    "manifest_extra": [],
+    "removed_expectations": [
+      "test/cli/install/bunx.test.ts [ FAIL ] # should handle package that requires node 24: @angular/cli@latest needs a newer Node.js than Bun reports (24.3.0), unskip after the Node.js version bump",
+      "test/js/node/http2/node-http2.test.js [ FAIL ] # legacy-parser expectations under reconciliation",
+      "test/js/node/http2/h2-conformance.test.ts [ FAIL ] # under reconciliation with the rewritten engine (CONTINUATION flood + RST rate-limit cases)",
+      "test/js/node/http2/node-http2-invalid-padding.test.ts [ FAIL ] # legacy-parser expectations under reconciliation"
+    ],
+    "fixture_revisions": [
+      {
+        "path": "js/node/http/fixtures/openssl_localhost.crt",
+        "upstream_blob": "ffef6e4b865e20e8669b3d4b9eda1c76ad94ed0c",
+        "maintained_blob": "94acf2549df365c64d8eae5ac19a6e654504992d",
+        "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+        "issue": "https://github.com/home-lang/home/issues/710",
+        "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+        "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+        "sha256": "70295d5b03007fec6e20465409902450a68d52aaf4e117dc63a56ae78287e0dd"
+      },
+      {
+        "path": "js/node/http/fixtures/openssl_localhost.key",
+        "upstream_blob": "d293a804bcb5ffadf9955198506c380eb285974d",
+        "maintained_blob": "8f8bb23d10df01b724c42d9773cd96568095cd02",
+        "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+        "issue": "https://github.com/home-lang/home/issues/710",
+        "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+        "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+        "sha256": "900d54fcb3a413c88215d4ce4beab6616da5fb5dc031782595c986b9685c82a5"
+      },
+      {
+        "path": "js/node/http/fixtures/openssl_localhost_ca.pem",
+        "upstream_blob": "d4668a606943a23b0ca91fe386ffbe306237bafa",
+        "maintained_blob": "5349ce57409ceb4ef11940ac18affc5164e89448",
+        "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+        "issue": "https://github.com/home-lang/home/issues/710",
+        "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+        "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+        "sha256": "e13eea7bc0957a5970a4d087cd8531634f05a733772fb8470318362aae4b050b"
+      }
+    ],
+    "valid": true
+  },
+  "verifier_controls": {
+    "tests": 6,
+    "exit": 0
+  },
+  "pickier_exit": 0,
+  "native_build": {
+    "attempt": 6,
+    "exit": 0,
+    "steps": "56/56",
+    "peak_tree_mb": 5697
+  },
+  "execution": "owned controls, post-walker benchmark and twelve originals queued; no pass credit assigned",
+  "artifacts": [
+    {
+      "path": "audit-final.log",
+      "artifact": "raw/audit-final.log.gz",
+      "bytes": 2667,
+      "sha256": "f2d2c784d95e9526c01b3247debab3dfd08b279bbf5868a07d94383f38f939b3"
+    },
+    {
+      "path": "audit.log",
+      "artifact": "raw/audit.log.gz",
+      "bytes": 2667,
+      "sha256": "f2d2c784d95e9526c01b3247debab3dfd08b279bbf5868a07d94383f38f939b3"
+    },
+    {
+      "path": "certificate-profile.json",
+      "artifact": "raw/certificate-profile.json.gz",
+      "bytes": 414,
+      "sha256": "a720785ecb9e56e85411c90629cb571616807715351089423ffc89ab05cd4f29"
+    },
+    {
+      "path": "cli-init-init.test.ts.diff",
+      "artifact": "raw/cli-init-init.test.ts.diff.gz",
+      "bytes": 1223,
+      "sha256": "b98b7fc246d88b26c256753971e64fb61b8c2d11d2c61297079731a413801bc9"
+    },
+    {
+      "path": "controls-guard.log",
+      "artifact": "raw/controls-guard.log.gz",
+      "bytes": 268,
+      "sha256": "97637b5a72d01f02d72c74ae86c993da1b8442b7b33279cab473dac640bc62d0"
+    },
+    {
+      "path": "expectations.txt.diff",
+      "artifact": "raw/expectations.txt.diff.gz",
+      "bytes": 1500,
+      "sha256": "94a45ae89497859e7c91e0e6886eb30863ab5f7572763d55d474a044948fd092"
+    },
+    {
+      "path": "final.json",
+      "artifact": "raw/final.json.gz",
+      "bytes": 2667,
+      "sha256": "f2d2c784d95e9526c01b3247debab3dfd08b279bbf5868a07d94383f38f939b3"
+    },
+    {
+      "path": "issue-710-before.json",
+      "artifact": "raw/issue-710-before.json.gz",
+      "bytes": 1528,
+      "sha256": "739716bfd01cc7db6925fd7727816e753dc0f160a36fa062e9ffb5f726ce1508"
+    },
+    {
+      "path": "issue-710-comments.json",
+      "artifact": "raw/issue-710-comments.json.gz",
+      "bytes": 1423,
+      "sha256": "5d92d0f7e1593696705c584e6200463435fe38eab8ba2164f75e338b3d9f0c9d"
+    },
+    {
+      "path": "lint-final.log",
+      "artifact": "raw/lint-final.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "lint.log",
+      "artifact": "raw/lint.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "owned-cert.log",
+      "artifact": "raw/owned-cert.log.gz",
+      "bytes": 65,
+      "sha256": "0a4eb07c4b73eec91060ea60fe33f7ac15aa3c1d1127d395b2ec5f00615d0ce6"
+    },
+    {
+      "path": "pinned-cert.log",
+      "artifact": "raw/pinned-cert.log.gz",
+      "bytes": 240,
+      "sha256": "da619364eb683cb2be92f828a556a37549ff30bc31b29f6446a4b228529450fc"
+    },
+    {
+      "path": "result.json",
+      "artifact": "raw/result.json.gz",
+      "bytes": 1423,
+      "sha256": "0cd69c8a60ccb5cacfe724d0e50e598dfe438fbd57541981c21f4b1834bfbcd0"
+    },
+    {
+      "path": "run-controls.py",
+      "artifact": "raw/run-controls.py.gz",
+      "bytes": 1469,
+      "sha256": "14707b8939d3f678c2e86fd1a8a55946fcd8e54ea90b6ae3a0a6f36bbf420720"
+    },
+    {
+      "path": "upstream-openssl_localhost.crt.json",
+      "artifact": "raw/upstream-openssl_localhost.crt.json.gz",
+      "bytes": 2869,
+      "sha256": "e7330497c95f2eec0c637c72d8ef38414486d0b8c7639d3c7b6036e1ff7b9a25"
+    },
+    {
+      "path": "upstream-openssl_localhost.key.json",
+      "artifact": "raw/upstream-openssl_localhost.key.json.gz",
+      "bytes": 3493,
+      "sha256": "af0de024e16551836091b837a9cb64d56352721a73a59dfc86eba3962da4e967"
+    },
+    {
+      "path": "upstream-openssl_localhost_ca.pem.json",
+      "artifact": "raw/upstream-openssl_localhost_ca.pem.json.gz",
+      "bytes": 2796,
+      "sha256": "7f0b5cea72c945a319f6b51a96fb446b2a731eb20c0b60409dbe848619ccd642"
+    },
+    {
+      "path": "verifier-controls-final.log",
+      "artifact": "raw/verifier-controls-final.log.gz",
+      "bytes": 644,
+      "sha256": "196d6ab7af3c63d76f28cd304d55be42d2746503910a0804b5253c22f2b3406b"
+    },
+    {
+      "path": "verifier-controls.log",
+      "artifact": "raw/verifier-controls.log.gz",
+      "bytes": 2454,
+      "sha256": "acb46f9e66721df8fdb38d3fe5725c5d265e82db76ac717352588bf5ba73fc64"
+    },
+    {
+      "path": "readdir/build-4.log",
+      "artifact": "raw/readdir/build-4.log.gz",
+      "bytes": 2055,
+      "sha256": "258451f96c6d1c94ffadf8dcdb23946e513065da91175039b978cffccc453782"
+    },
+    {
+      "path": "readdir/build-5.log",
+      "artifact": "raw/readdir/build-5.log.gz",
+      "bytes": 70,
+      "sha256": "86f916174fb4579eef046b07c12ebe9b0df1a1370015adf3d81831b554944de7"
+    },
+    {
+      "path": "readdir/build-6.log",
+      "artifact": "raw/readdir/build-6.log.gz",
+      "bytes": 6529,
+      "sha256": "a277568a502a48a45c70087ee4963dd1d6e07a18597c33830dfa2ca83c67eb5a"
+    }
+  ]
+}

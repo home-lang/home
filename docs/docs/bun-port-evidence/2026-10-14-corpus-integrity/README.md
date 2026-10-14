@@ -1,0 +1,13 @@
+# Full corpus integrity and native build checkpoint
+
+Source `a8be1de85f7a2dd613fba0bf82ecb9b59eeabb78` introduces a reproducible audit of all 12,996 pinned Git-tree entries, checking regular bytes, symlink targets, executable modes, manifest completeness/duplicates and the removal-only expectation policy. The audit passes. Six real-Git-tree controls reject changed assertions/fixture bytes, symlink targets, executable modes, added exclusions, altered pinned references and inventory gaps; an assertion file cannot be declared as fixture maintenance. Pickier and diff checks pass.
+
+The audit identified an added Home init regression inside the pinned CLI original. The original is now byte-identical to Bun; the same entry-preservation assertions and fixture moved to an owned maintained control. Its new Home execution result is pending. Owned HTTPS controls now have independent fixture paths and portable URL-to-path conversion.
+
+Three TLS fixtures retain the adopted #710 renewal from Bun commit `15c936cd93878f44724c79869753b85e8b9b2f2c`, with exact pinned/adopted blob identities and SHA-256 values declared in `packages/runtime/test/HOME_FIXTURE_REVISIONS.json`. All three were independently checked against GitHub’s content API. OpenSSL verifies the renewed chain, hostname/IP coverage and matching private/public key. The old pinned leaf expired August 25, 2026; its verification failure is retained, and the upstream Git pin preserves its bytes. This is transparent upstream fixture maintenance with unchanged trust assertions, not disabled validation. Four upstream failure exclusions remain removed to run additional coverage; no exclusions were added.
+
+The recursive walker source `26a428426` finally compiled in native build attempt six: 56/56 steps succeeded, peak measured tree footprint 5,697 MB. Attempt four was stopped by repeated memory-probe deadlines, and attempt five was refused before launch because disk space could not be measured. All logs are retained. Owned execution controls, post-change timings and twelve unchanged pinned filesystem/directory originals are queued under the existing guards; no execution pass credit is assigned at this checkpoint.
+
+[#66](https://github.com/home-lang/home/issues/66) remains the full feature/suite/all-platform objective. [#896](https://github.com/home-lang/home/issues/896) retains recursive traversal performance and descriptor acceptance. [#710](https://github.com/home-lang/home/issues/710) remains the resolved upstream renewal provenance. Neither the full inventory audit nor compilation proves runtime suite acceptance.
+
+Raw artifacts use deterministic gzip; manifest hashes are of uncompressed bytes and committed Git blobs are audited independently before publication.
