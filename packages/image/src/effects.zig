@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Noise Generation
@@ -97,10 +98,10 @@ fn dot2(gx: f32, gy: f32, x: f32, y: f32) f32 {
 }
 
 const grad2 = [_][2]f32{
-    .{ 1, 1 },   .{ -1, 1 },  .{ 1, -1 },  .{ -1, -1 },
-    .{ 1, 0 },   .{ -1, 0 },  .{ 0, 1 },   .{ 0, -1 },
-    .{ 1, 1 },   .{ -1, 1 },  .{ 1, -1 },  .{ -1, -1 },
-    .{ 1, 0 },   .{ -1, 0 },  .{ 0, 1 },   .{ 0, -1 },
+    .{ 1, 1 }, .{ -1, 1 }, .{ 1, -1 }, .{ -1, -1 },
+    .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 },  .{ 0, -1 },
+    .{ 1, 1 }, .{ -1, 1 }, .{ 1, -1 }, .{ -1, -1 },
+    .{ 1, 0 }, .{ -1, 0 }, .{ 0, 1 },  .{ 0, -1 },
 };
 
 pub fn simplexNoise(xin: f32, yin: f32) f32 {
@@ -115,18 +116,18 @@ pub fn simplexNoise(xin: f32, yin: f32) f32 {
     const x0 = xin - (i - t);
     const y0 = yin - (j - t);
 
-    var i1: f32 = 0;
-    var j1: f32 = 0;
+    var i_offset: f32 = 0;
+    var j_offset: f32 = 0;
     if (x0 > y0) {
-        i1 = 1;
-        j1 = 0;
+        i_offset = 1;
+        j_offset = 0;
     } else {
-        i1 = 0;
-        j1 = 1;
+        i_offset = 0;
+        j_offset = 1;
     }
 
-    const x1 = x0 - i1 + G2;
-    const y1 = y0 - j1 + G2;
+    const x1 = x0 - i_offset + G2;
+    const y1 = y0 - j_offset + G2;
     const x2 = x0 - 1.0 + 2.0 * G2;
     const y2 = y0 - 1.0 + 2.0 * G2;
 
@@ -134,7 +135,7 @@ pub fn simplexNoise(xin: f32, yin: f32) f32 {
     const jj: usize = @intFromFloat(@mod(j, 256));
 
     const gi0 = perm[ii +% perm[jj]] % 12;
-    const gi1 = perm[ii +% @as(usize, @intFromFloat(i1)) +% perm[jj +% @as(usize, @intFromFloat(j1))]] % 12;
+    const gi1 = perm[ii +% @as(usize, @intFromFloat(i_offset)) +% perm[jj +% @as(usize, @intFromFloat(j_offset))]] % 12;
     const gi2 = perm[ii +% 1 +% perm[jj +% 1]] % 12;
 
     var n0: f32 = 0;
@@ -291,7 +292,7 @@ fn sampleGradient(stops: []const GradientStop, t: f32) Color {
     if (stops.len == 0) return Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
     if (stops.len == 1) return stops[0].color;
 
-    var clamped_t = std.math.clamp(t, 0, 1);
+    const clamped_t = std.math.clamp(t, 0, 1);
 
     // Find the two stops to interpolate between
     var i: usize = 0;

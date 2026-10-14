@@ -52,16 +52,14 @@ pub fn performELA(allocator: std.mem.Allocator, img: *const Image, options: ELAO
     // Real implementation would use actual JPEG encoding/decoding
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            const pixel = img.getPixel(@intCast(x), @intCast(y));
-
             // Simulate compression error (simplified)
             const block_x = x / 8;
             const block_y = y / 8;
             const block_hash = block_x *% 31 +% block_y *% 17;
 
             // Simulate different compression levels for different blocks
-            const error = @as(u8, @intCast(block_hash % 50));
-            const diff = @min(255, error * options.scale_factor);
+            const compression_error = @as(u8, @intCast(block_hash % 50));
+            const diff = @min(255, compression_error * options.scale_factor);
             max_diff = @max(max_diff, @as(u8, @intCast(@min(255, diff))));
 
             // Create ELA visualization
@@ -76,7 +74,7 @@ pub fn performELA(allocator: std.mem.Allocator, img: *const Image, options: ELAO
     }
 
     // Find suspicious regions using connected components
-    var visited = try allocator.alloc(bool, img.width * img.height);
+    const visited = try allocator.alloc(bool, img.width * img.height);
     defer allocator.free(visited);
     @memset(visited, false);
 
@@ -232,7 +230,7 @@ pub fn detectCopyMove(allocator: std.mem.Allocator, img: *const Image, options: 
 
     // Compare blocks to find similar ones
     for (blocks.items, 0..) |block1, i| {
-        for (blocks.items[i + 1 ..], i + 1..) |block2, j| {
+        for (blocks.items[i + 1 ..]) |block2| {
             const distance_x = if (block1.x > block2.x) block1.x - block2.x else block2.x - block1.x;
             const distance_y = if (block1.y > block2.y) block1.y - block2.y else block2.y - block1.y;
             const distance = @as(f32, @floatFromInt(distance_x * distance_x + distance_y * distance_y));
