@@ -30,17 +30,17 @@ pub const DtsFullDecoder = struct {
             .allocator = allocator,
             .sample_rate = 48000,
             .channels = 6,
-            .subband_samples = [_][512]f32{[_]f32{0.0} ** 512} ** 8,
-            .pcm_samples = [_][512]f32{[_]f32{0.0} ** 512} ** 8,
-            .qmf_history = [_][512]f32{[_]f32{0.0} ** 512} ** 8,
-            .prediction_mode = [_]u8{0} ** 8,
-            .prediction_vq_index = [_]u8{0} ** 8,
-            .bit_allocation = [_][512]u8{[_]u8{0} ** 512} ** 8,
-            .transition_mode = [_][512]u8{[_]u8{0} ** 512} ** 8,
-            .scale_factors = [_][512]f32{[_]f32{1.0} ** 512} ** 8,
-            .joint_intensity_index = [_]u8{0} ** 8,
-            .qmf_filter_history = [_][1024]f32{[_]f32{0.0} ** 1024} ** 8,
-            .qmf_coefficients = [_]f32{0.0} ** 512,
+            .subband_samples = @splat(@splat(0.0)),
+            .pcm_samples = @splat(@splat(0.0)),
+            .qmf_history = @splat(@splat(0.0)),
+            .prediction_mode = @splat(0),
+            .prediction_vq_index = @splat(0),
+            .bit_allocation = @splat(@splat(0)),
+            .transition_mode = @splat(@splat(0)),
+            .scale_factors = @splat(@splat(1.0)),
+            .joint_intensity_index = @splat(0),
+            .qmf_filter_history = @splat(@splat(0.0)),
+            .qmf_coefficients = @splat(0.0),
         };
 
         // Initialize QMF prototype filter coefficients
@@ -196,9 +196,7 @@ pub const DtsFullDecoder = struct {
                 else
                     0.0;
 
-                self.qmf_filter_history[channel][0] += subband_sample * @cos(
-                    std.math.pi * (@as(f32, @floatFromInt(k)) + 0.5) / @as(f32, @floatFromInt(M))
-                );
+                self.qmf_filter_history[channel][0] += subband_sample * @cos(std.math.pi * (@as(f32, @floatFromInt(k)) + 0.5) / @as(f32, @floatFromInt(M)));
             }
 
             // Apply synthesis filter

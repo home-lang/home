@@ -31,8 +31,10 @@ pub fn calculatePsnr(
 ) !PsnrResult {
     if (reference.len != distorted.len) return error.SizeMismatch;
 
-    const pixels = width * height;
+    const pixels = std.math.mul(usize, width, height) catch return error.InvalidDimensions;
     const chroma_pixels = pixels / 4; // Assuming 4:2:0
+    const expected_size = std.math.add(usize, pixels, chroma_pixels * 2) catch return error.InvalidDimensions;
+    if (reference.len < expected_size) return error.InvalidFrameSize;
 
     const max_value = (@as(f64, 1) * @as(f64, @floatFromInt(@as(u32, 1) << @intCast(bit_depth)))) - 1.0;
 
@@ -97,8 +99,10 @@ pub fn calculateSsim(
 ) !SsimResult {
     if (reference.len != distorted.len) return error.SizeMismatch;
 
-    const pixels = width * height;
+    const pixels = std.math.mul(usize, width, height) catch return error.InvalidDimensions;
     const chroma_pixels = pixels / 4;
+    const expected_size = std.math.add(usize, pixels, chroma_pixels * 2) catch return error.InvalidDimensions;
+    if (reference.len < expected_size) return error.InvalidFrameSize;
 
     // Calculate SSIM for Y plane
     const ssim_y = try calculateSsimPlane(
@@ -157,7 +161,7 @@ fn calculateSsimPlane(
     var count: u32 = 0;
 
     // Create Gaussian kernel weights (simplified - uniform for now)
-    var weights = try allocator.alloc(f64, window_size * window_size);
+    const weights = try allocator.alloc(f64, window_size * window_size);
     defer allocator.free(weights);
     const weight_val = 1.0 / @as(f64, @floatFromInt(window_size * window_size));
     for (weights) |*w| {
@@ -422,8 +426,8 @@ pub const QualityLevel = enum {
 test "PSNR identical frames" {
     const testing = std.testing;
 
-    var frame1 = [_]u8{100} ** 256;
-    var frame2 = [_]u8{100} ** 256;
+    var frame1: [384]u8 = @splat(100);
+    var frame2: [384]u8 = @splat(100);
 
     const result = try calculatePsnr(&frame1, &frame2, 16, 16, 8);
 
@@ -433,8 +437,8 @@ test "PSNR identical frames" {
 test "PSNR different frames" {
     const testing = std.testing;
 
-    var frame1 = [_]u8{100} ** 256;
-    var frame2 = [_]u8{110} ** 256;
+    var frame1: [384]u8 = @splat(100);
+    var frame2: [384]u8 = @splat(110);
 
     const result = try calculatePsnr(&frame1, &frame2, 16, 16, 8);
 
@@ -445,8 +449,8 @@ test "PSNR different frames" {
 test "SSIM identical frames" {
     const testing = std.testing;
 
-    var frame1 = [_]u8{100} ** 256;
-    var frame2 = [_]u8{100} ** 256;
+    var frame1: [384]u8 = @splat(100);
+    var frame2: [384]u8 = @splat(100);
 
     const result = try calculateSsim(&frame1, &frame2, 16, 16, testing.allocator);
 

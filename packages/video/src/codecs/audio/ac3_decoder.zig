@@ -41,20 +41,20 @@ pub const Ac3FullDecoder = struct {
             .sample_rate = 48000,
             .channels = 2,
             .frame_size = 0,
-            .block_switch = [_]bool{false} ** 5,
-            .dither_flag = [_]bool{false} ** 5,
-            .dba_mode = [_]u2{0} ** 5,
-            .snr_offset = [_]u8{0} ** 5,
-            .fast_gain = [_]u8{0} ** 5,
+            .block_switch = @splat(false),
+            .dither_flag = @splat(false),
+            .dba_mode = @splat(0),
+            .snr_offset = @splat(0),
+            .fast_gain = @splat(0),
             .coupling_in_use = false,
             .coupling_channels = 0,
             .coupling_begin_freq = 0,
             .coupling_end_freq = 0,
-            .exponents = [_][256]u8{[_]u8{0} ** 256} ** 6,
-            .mantissas = [_][256]i16{[_]i16{0} ** 256} ** 6,
-            .coefficients = [_][256]f32{[_]f32{0.0} ** 256} ** 6,
-            .output_samples = [_][256]f32{[_]f32{0.0} ** 256} ** 6,
-            .previous_samples = [_][256]f32{[_]f32{0.0} ** 256} ** 6,
+            .exponents = @splat(@splat(0)),
+            .mantissas = @splat(@splat(0)),
+            .coefficients = @splat(@splat(0.0)),
+            .output_samples = @splat(@splat(0.0)),
+            .previous_samples = @splat(@splat(0.0)),
         };
     }
 
@@ -105,8 +105,6 @@ pub const Ac3FullDecoder = struct {
     }
 
     fn decodeAudioBlock(self: *Ac3FullDecoder, reader: *BitstreamReader, block: u8, acmod: u8, lfeon: bool) !void {
-        _ = block;
-
         // Decode block switch flags
         const num_channels = self.getNumChannels(acmod, lfeon);
 
@@ -140,7 +138,7 @@ pub const Ac3FullDecoder = struct {
 
         // Bit allocation
         for (0..num_channels) |ch| {
-            try self.decodeBitAllocation(reader, ch);
+            try decodeBitAllocation(reader, ch);
         }
 
         // Decode mantissas
@@ -182,7 +180,7 @@ pub const Ac3FullDecoder = struct {
         const num_exp_groups: usize = switch (exp_strategy) {
             1 => 25, // D15
             2 => 13, // D25
-            3 => 7,  // D45
+            3 => 7, // D45
             else => 25,
         };
 
@@ -205,7 +203,7 @@ pub const Ac3FullDecoder = struct {
         }
     }
 
-    fn decodeBitAllocation(self: *Ac3FullDecoder, reader: *BitstreamReader, channel: usize) !void {
+    fn decodeBitAllocation(reader: *BitstreamReader, channel: usize) !void {
         _ = reader;
         _ = channel;
         // Simplified bit allocation
@@ -258,8 +256,8 @@ pub const Ac3FullDecoder = struct {
             var sum: f32 = 0.0;
             for (0..N / 2) |k| {
                 const arg = (std.math.pi / @as(f32, @floatFromInt(N))) *
-                           (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 4.0) *
-                           (@as(f32, @floatFromInt(k)) + 0.5);
+                    (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 4.0) *
+                    (@as(f32, @floatFromInt(k)) + 0.5);
                 sum += self.coefficients[channel][k] * @cos(arg);
             }
             temp[n] = sum;
@@ -280,7 +278,7 @@ pub const Ac3FullDecoder = struct {
         }
 
         // Save second half for next block overlap
-        @memcpy(self.previous_samples[channel][0..N / 2], temp[N / 2..N]);
+        @memcpy(self.previous_samples[channel][0 .. N / 2], temp[N / 2 .. N]);
     }
 
     fn getWindow(self: *Ac3FullDecoder, n: usize, N: usize) f32 {
