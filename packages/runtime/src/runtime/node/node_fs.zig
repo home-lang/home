@@ -4985,7 +4985,6 @@ pub const NodeFS = struct {
     fn readdirWithEntries(
         args: Arguments.Readdir,
         fd: bun.FD,
-        basename: [:0]const u8,
         comptime ExpectedType: type,
         entries: *std.array_list.Managed(ExpectedType),
     ) Maybe(void) {
@@ -5531,7 +5530,7 @@ pub const NodeFS = struct {
         defer fd.close();
 
         var entries = std.array_list.Managed(ExpectedType).init(bun.default_allocator);
-        return switch (readdirWithEntries(args, fd, path, ExpectedType, &entries)) {
+        return switch (readdirWithEntries(args, fd, ExpectedType, &entries)) {
             .err => |err| return .{
                 .err = err,
             },
