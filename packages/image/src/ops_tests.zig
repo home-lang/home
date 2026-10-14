@@ -10,5 +10,4 @@ test {
     _ = @import("steganography.zig");
     _ = @import("vector.zig");
     _ = @import("format_utils.zig");
-    _ = @import("utils.zig");
 }

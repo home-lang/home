@@ -848,13 +848,34 @@ test "image utilities validate dimensions and clean up owned tiles" {
     try std.testing.expectEqual(@as(u32, 3), highlighted.width);
     try std.testing.expectEqual(Color.RED, highlighted.getPixel(2, 0).?);
 
-    var batch = BatchResult{
-        .processed = 0,
-        .failed = 0,
-        .skipped = 0,
-        .errors = .empty,
-        .allocator = allocator,
-    };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "input");
+    try tmp.dir.createDirPath(std.testing.io, "output");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "source.qoi" });
+    defer allocator.free(input_path);
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "source.qoi" });
+    defer allocator.free(output_path);
+
+    try source.saveAsWithIo(std.testing.io, input_path, .qoi);
+    const input_paths = [_][]const u8{input_path};
+    var batch = try processBatch(&input_paths, .{
+        .operations = &.{},
+        .output_dir = output_dir,
+        .output_format = .qoi,
+    }, allocator);
     defer batch.deinit();
+    try std.testing.expectEqual(@as(usize, 1), batch.processed);
+    try std.testing.expectEqual(@as(usize, 0), batch.failed);
     try std.testing.expectEqual(@as(usize, 0), batch.errors.items.len);
+
+    var batch_output = try Image.loadWithIo(allocator, std.testing.io, output_path);
+    defer batch_output.deinit();
+    try std.testing.expect(imagesEqual(&source, &batch_output));
 }
