@@ -150,6 +150,38 @@ void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
     deliverInspectorConsoleMessage(*global,event->toJSONString());
 }
 
+void inspectorConsoleArguments(JSC::JSGlobalObject& global,JSC::MessageType type,JSC::MessageLevel level,WTF::Ref<Inspector::ScriptArguments>&& arguments) {
+    if(!inspectorHasConsoleListeners(global)) return;
+    Inspector::ConsoleMessage message(JSC::MessageSource::ConsoleAPI,type,level,""_s,WTF::move(arguments),&global);
+    inspectorConsoleMessage(message);
+}
+class HomeInspectorVMConsoleClient final : public JSC::ConsoleClient {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(HomeInspectorVMConsoleClient);
+public:
+    explicit HomeInspectorVMConsoleClient(JSC::ConsoleClient* client):delegate(client) { }
+    void messageWithTypeAndLevel(JSC::MessageType type,JSC::MessageLevel level,JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final {
+        inspectorConsoleArguments(*global,type,level,arguments.copyRef());
+        if(auto* client=delegate.get()) client->messageWithTypeAndLevel(type,level,global,WTF::move(arguments));
+    }
+    void count(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->count(global,label); }
+    void countReset(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->countReset(global,label); }
+    void profile(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->profile(global,label); }
+    void profileEnd(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->profileEnd(global,label); }
+    void takeHeapSnapshot(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->takeHeapSnapshot(global,label); }
+    void time(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->time(global,label); }
+    void timeEnd(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->timeEnd(global,label); }
+    void timeLog(JSC::JSGlobalObject* global,const WTF::String& label,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->timeLog(global,label,WTF::move(arguments)); }
+    void timeStamp(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->timeStamp(global,WTF::move(arguments)); }
+    void record(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->record(global,WTF::move(arguments)); }
+    void recordEnd(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->recordEnd(global,WTF::move(arguments)); }
+    void screenshot(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->screenshot(global,WTF::move(arguments)); }
+private:
+    WTF::WeakPtr<JSC::ConsoleClient> delegate;
+};
+std::unique_ptr<JSC::ConsoleClient> createInspectorRealmConsoleClient(JSC::JSGlobalObject& global) {
+    return std::make_unique<HomeInspectorVMConsoleClient>(global.consoleClient().get());
+}
+
 }
 
 namespace Inspector {
@@ -472,6 +504,3 @@ void JSGlobalObjectInspectorController::createLazyAgents()
 } // namespace Inspector
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
-
-// Build the complete pinned console agent alongside its owning controller.
-#include "inspector_console_agent.cpp"

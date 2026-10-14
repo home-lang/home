@@ -56,6 +56,7 @@ void ConsoleObject::messageWithTypeAndLevel(MessageType type, MessageLevel level
         return;
     }
 
+    Home::inspectorConsoleArguments(*globalObject,type,level,arguments.copyRef());
     Bun__ConsoleObject__messageWithTypeAndLevel(this->m_client, static_cast<uint32_t>(type), static_cast<uint32_t>(level), globalObject, jsArgs, count);
 }
 void ConsoleObject::count(JSGlobalObject* globalObject, const String& label)

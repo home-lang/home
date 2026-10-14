@@ -1,5 +1,7 @@
 #pragma once
 #include <JavaScriptCore/JSGlobalObject.h>
+#include <JavaScriptCore/ConsoleClient.h>
+#include <JavaScriptCore/ScriptArguments.h>
 #include <JavaScriptCore/ThrowScope.h>
 #include <optional>
 #include <JavaScriptCore/WeakInlines.h>
@@ -15,10 +17,13 @@ namespace Inspector { class ConsoleMessage; }
 namespace Home {
 bool inspectorHasConsoleListeners(JSC::JSGlobalObject&);
 void inspectorConsoleMessage(Inspector::ConsoleMessage&);
+void inspectorConsoleArguments(JSC::JSGlobalObject&, JSC::MessageType, JSC::MessageLevel, WTF::Ref<Inspector::ScriptArguments>&&);
+std::unique_ptr<JSC::ConsoleClient> createInspectorRealmConsoleClient(JSC::JSGlobalObject&);
 void deliverInspectorConsoleMessage(JSC::JSGlobalObject&, const WTF::String&);
 bool inspectorObjectIsPromise(JSC::JSGlobalObject&, const WTF::String&);
 struct InspectorRealm {
     JSC::Weak<JSC::JSGlobalObject> global;
+    std::unique_ptr<JSC::ConsoleClient> consoleClient;
     JSC::JSGlobalObject* owner;
     int id;
     WTF::String name, origin;
@@ -55,6 +60,8 @@ inline void registerInspectorRealm(JSC::JSGlobalObject* realm, JSC::JSGlobalObje
     if (name.isNull()) name = makeString("VM Context "_s, id);
     realm->setName(name);
     auto record = std::make_unique<InspectorRealm>(realm, owner, id, WTF::move(name), WTF::move(origin));
+    record->consoleClient=createInspectorRealmConsoleClient(*realm);
+    realm->setConsoleClient(record->consoleClient.get());
     auto* value = record.get();
     inspectorRealms()[realm] = WTF::move(record);
     {std::lock_guard lock(inspectorRetirementLock());inspectorRetirementRoutes()[realm]={ownerContext,id};}

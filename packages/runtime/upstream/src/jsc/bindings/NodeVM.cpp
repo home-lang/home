@@ -889,7 +889,11 @@ template<typename, JSC::SubspaceAccess mode> JSC::GCClient::IsoSubspace* NodeVMG
 
 NodeVMGlobalObject* NodeVMGlobalObject::create(JSC::VM& vm, JSC::Structure* structure, NodeVMContextOptions options, JSValue importer)
 {
-    auto* cell = new (NotNull, JSC::allocateCell<NodeVMGlobalObject>(vm)) NodeVMGlobalObject(vm, structure, options, importer);
+    // JSGlobalObject::finishCreation sets the structure's realm to this global.
+    // The parent's cached structure is a template, not an instance structure:
+    // mutating it retains the last VM realm through the parent global.
+    auto* instanceStructure = createStructure(vm, structure->storedPrototype());
+    auto* cell = new (NotNull, JSC::allocateCell<NodeVMGlobalObject>(vm)) NodeVMGlobalObject(vm, instanceStructure, options, importer);
     cell->finishCreation(vm);
     return cell;
 }

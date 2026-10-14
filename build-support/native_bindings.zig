@@ -106,7 +106,6 @@ pub fn globalGcObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
 pub fn inspectorControllerObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_inspector_controller_object) |object| return object;
     const files = b.addWriteFiles();
-    _ = files.addCopyFile(b.path("packages/runtime/src/native/inspector_console_agent.cpp"), "inspector_console_agent.cpp");
     _ = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h"), "HomeInspectorRealms.h");
     const source = files.addCopyFile(b.path("packages/runtime/src/native/inspector_controller.cpp"), "inspector_controller.cpp");
     const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
