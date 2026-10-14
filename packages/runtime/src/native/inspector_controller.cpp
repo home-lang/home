@@ -73,6 +73,25 @@ namespace Home {
 // controller ABI. Entries are non-owning and retire with their controller.
 static std::mutex inspectorManagerLock;
 static auto* inspectorManagers = new std::unordered_map<JSC::JSGlobalObject*, Inspector::InjectedScriptManager*>;
+// Read the SDK's canonical records rather than maintaining parallel counters
+// or timers in the protocol bridge. The subclass does not change SDK layouts.
+class HomeInspectorConsoleAgent final : public Inspector::InspectorConsoleAgent {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(HomeInspectorConsoleAgent);
+public:
+    explicit HomeInspectorConsoleAgent(Inspector::AgentContext& context)
+        : Inspector::InspectorConsoleAgent(context) { }
+    WTF::String lastMessage() const { return m_consoleMessages.isEmpty() ? WTF::String() : m_consoleMessages.last()->message(); }
+    bool hasCounter(const WTF::String& label) const { return m_counts.contains(label); }
+    bool hasTimer(const WTF::String& label) const { return m_times.contains(label); }
+};
+static thread_local auto* inspectorConsoleAgents = new std::unordered_map<JSC::JSGlobalObject*, HomeInspectorConsoleAgent*>;
+static HomeInspectorConsoleAgent* consoleAgentFor(JSC::JSGlobalObject& global) {
+    // Console state exists before a frontend attaches and survives Runtime.disable.
+    (void)global.inspectorController();
+    auto found = inspectorConsoleAgents->find(&global);
+    return found == inspectorConsoleAgents->end() ? nullptr : found->second;
+}
+
 static void registerInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
     std::lock_guard lock(inspectorManagerLock); (*inspectorManagers)[&global] = &manager;
 }
@@ -90,7 +109,7 @@ bool inspectorObjectIsPromise(JSC::JSGlobalObject& global, const WTF::String& id
     auto value = manager->injectedScriptFor(&global).findObjectById(id);
     return value && WTF::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
 }
-void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
+static void inspectorConsoleMessageWithType(Inspector::ConsoleMessage& message, const WTF::String& overrideType) {
     auto* global = message.globalObject();
     if (!global || message.source() != JSC::MessageSource::ConsoleAPI || !inspectorHasConsoleListeners(*global)) return;
     Inspector::InjectedScriptManager* manager;
@@ -119,7 +138,7 @@ void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
         default:break;
         }
     }
-    params->setString("type"_s,type);
+    params->setString("type"_s,overrideType.isEmpty() ? type : overrideType);
     params->setDouble("timestamp"_s,message.timestamp().secondsSinceEpoch().value()*1000);
     auto args=JSON::Array::create();
     auto script=manager->injectedScriptFor(global);
@@ -130,6 +149,12 @@ void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
         }
     } else {
         auto argument=JSON::Object::create();argument->setString("type"_s,"string"_s);argument->setString("value"_s,message.message());args->pushObject(WTF::move(argument));
+    }
+    if (!args->length() && (message.type() == JSC::MessageType::EndGroup || message.type() == JSC::MessageType::Clear)) {
+        auto argument = JSON::Object::create();
+        argument->setString("type"_s, "string"_s);
+        argument->setString("value"_s, message.type() == JSC::MessageType::Clear ? "console.clear"_s : "console.groupEnd"_s);
+        args->pushObject(WTF::move(argument));
     }
     params->setArray("args"_s,WTF::move(args));
     auto nativeStack=Inspector::createScriptCallStackForConsole(global);
@@ -150,6 +175,42 @@ void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
     deliverInspectorConsoleMessage(*global,event->toJSONString());
 }
 
+void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
+    inspectorConsoleMessageWithType(message, ""_s);
+}
+static void emitConsoleRecord(JSC::JSGlobalObject& global, const WTF::String& type, const WTF::String& text, Inspector::ScriptArguments* extra = nullptr) {
+    if (!inspectorHasConsoleListeners(global) || text.isNull()) return;
+    WTF::Vector<JSC::Strong<JSC::Unknown>> values;
+    values.append(JSC::Strong<JSC::Unknown>(global.vm(), JSC::jsString(global.vm(), text)));
+    if (extra) for (size_t i = 0; i < extra->argumentCount(); ++i)
+        values.append(JSC::Strong<JSC::Unknown>(global.vm(), extra->argumentAt(i)));
+    auto arguments = Inspector::ScriptArguments::create(&global, WTF::move(values));
+    Inspector::ConsoleMessage message(JSC::MessageSource::ConsoleAPI, JSC::MessageType::Log, JSC::MessageLevel::Log, text, WTF::move(arguments), &global);
+    inspectorConsoleMessageWithType(message, type);
+}
+void inspectorConsoleCount(JSC::JSGlobalObject& global, const WTF::String& label, bool reset) {
+    auto* agent = consoleAgentFor(global);
+    if (!agent) return;
+    bool exists = agent->hasCounter(label);
+    if (reset) agent->countReset(&global, label); else agent->count(&global, label);
+    if (reset && exists) return;
+    emitConsoleRecord(global, reset ? "warning"_s : "count"_s, agent->lastMessage());
+}
+void inspectorConsoleTime(JSC::JSGlobalObject& global, const WTF::String& label) {
+    auto* agent = consoleAgentFor(global);
+    if (!agent) return;
+    bool exists = agent->hasTimer(label);
+    agent->startTiming(&global, label);
+    if (exists) emitConsoleRecord(global, "warning"_s, agent->lastMessage());
+}
+void inspectorConsoleTiming(JSC::JSGlobalObject& global, const WTF::String& label, Inspector::ScriptArguments* arguments) {
+    auto* agent = consoleAgentFor(global);
+    if (!agent) return;
+    bool exists = agent->hasTimer(label);
+    if (arguments) agent->logTiming(&global, label, arguments->copyRef()); else agent->stopTiming(&global, label);
+    emitConsoleRecord(global, exists ? (arguments ? "log"_s : "timeEnd"_s) : "warning"_s, agent->lastMessage(), exists ? arguments : nullptr);
+}
+
 void inspectorConsoleArguments(JSC::JSGlobalObject& global,JSC::MessageType type,JSC::MessageLevel level,WTF::Ref<Inspector::ScriptArguments>&& arguments) {
     if(!inspectorHasConsoleListeners(global)) return;
     Inspector::ConsoleMessage message(JSC::MessageSource::ConsoleAPI,type,level,""_s,WTF::move(arguments),&global);
@@ -163,14 +224,14 @@ public:
         inspectorConsoleArguments(*global,type,level,arguments.copyRef());
         if(auto* client=delegate.get()) client->messageWithTypeAndLevel(type,level,global,WTF::move(arguments));
     }
-    void count(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->count(global,label); }
-    void countReset(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->countReset(global,label); }
+    void count(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleCount(*global,label,false); }
+    void countReset(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleCount(*global,label,true); }
     void profile(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->profile(global,label); }
     void profileEnd(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->profileEnd(global,label); }
     void takeHeapSnapshot(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->takeHeapSnapshot(global,label); }
-    void time(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->time(global,label); }
-    void timeEnd(JSC::JSGlobalObject* global,const WTF::String& label) final { if(auto* client=delegate.get()) client->timeEnd(global,label); }
-    void timeLog(JSC::JSGlobalObject* global,const WTF::String& label,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->timeLog(global,label,WTF::move(arguments)); }
+    void time(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleTime(*global,label); }
+    void timeEnd(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleTiming(*global,label,nullptr); }
+    void timeLog(JSC::JSGlobalObject* global,const WTF::String& label,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { inspectorConsoleTiming(*global,label,arguments.ptr()); }
     void timeStamp(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->timeStamp(global,WTF::move(arguments)); }
     void record(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->record(global,WTF::move(arguments)); }
     void recordEnd(JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final { if(auto* client=delegate.get()) client->recordEnd(global,WTF::move(arguments)); }
@@ -201,7 +262,8 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
-    auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
+    auto consoleAgent = makeUniqueRef<Home::HomeInspectorConsoleAgent>(context);
+    (*Home::inspectorConsoleAgents)[&m_globalObject] = consoleAgent.ptr();
     m_consoleAgent = consoleAgent.ptr();
     m_agents.append(WTF::move(consoleAgent));
 
@@ -221,7 +283,8 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     Home::registerInspectorManager(m_globalObject, m_injectedScriptManager.get());
     auto context = jsAgentContext();
 
-    auto consoleAgent = makeUniqueRef<InspectorConsoleAgent>(context);
+    auto consoleAgent = makeUniqueRef<Home::HomeInspectorConsoleAgent>(context);
+    (*Home::inspectorConsoleAgents)[&m_globalObject] = consoleAgent.ptr();
     m_consoleAgent = consoleAgent.ptr();
     m_agents.append(WTF::move(consoleAgent));
 
@@ -232,6 +295,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
 
 JSGlobalObjectInspectorController::~JSGlobalObjectInspectorController()
 {
+    Home::inspectorConsoleAgents->erase(&m_globalObject);
     Home::retireInspectorManager(m_globalObject, m_injectedScriptManager.get());
     // Non-owning checked agent references must be released before the agent
     // registry members are destroyed (C++ destroys m_agents before these).

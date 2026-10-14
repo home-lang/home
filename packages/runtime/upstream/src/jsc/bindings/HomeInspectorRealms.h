@@ -17,6 +17,9 @@ namespace Inspector { class ConsoleMessage; }
 namespace Home {
 bool inspectorHasConsoleListeners(JSC::JSGlobalObject&);
 void inspectorConsoleMessage(Inspector::ConsoleMessage&);
+void inspectorConsoleCount(JSC::JSGlobalObject&, const WTF::String&, bool reset);
+void inspectorConsoleTime(JSC::JSGlobalObject&, const WTF::String&);
+void inspectorConsoleTiming(JSC::JSGlobalObject&, const WTF::String&, Inspector::ScriptArguments*);
 void inspectorConsoleArguments(JSC::JSGlobalObject&, JSC::MessageType, JSC::MessageLevel, WTF::Ref<Inspector::ScriptArguments>&&);
 std::unique_ptr<JSC::ConsoleClient> createInspectorRealmConsoleClient(JSC::JSGlobalObject&);
 void deliverInspectorConsoleMessage(JSC::JSGlobalObject&, const WTF::String&);

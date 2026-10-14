@@ -29,6 +29,23 @@ for (const contextId of [undefined, realm.id]) {
   assert.equal(properties.result.find(property => property.name === 'answer').value.value, 42)
   await session.post('Runtime.releaseObject', { objectId: object.objectId })
 }
+// Counter and timer notifications carry the actual native operation result.
+// Retain this realm through the final command so collection is not the oracle.
+for (const contextId of [undefined, realm.id]) {
+  const start = events.length
+  await session.post('Runtime.evaluate', { contextId, expression: 'console.count("native-method-count"); console.count("native-method-count"); console.countReset("native-method-count"); console.count("native-method-count"); console.time("native-method-time"); console.timeLog("native-method-time", {answer: 46}); console.timeEnd("native-method-time"); console.groupEnd()' })
+  const emitted = events.slice(start)
+  assert.deepEqual(emitted.filter(event => event.type === 'count').map(event => event.args[0].value), ['native-method-count: 1', 'native-method-count: 2', 'native-method-count: 1'])
+  const timing = emitted.find(event => event.type === 'log' && /^native-method-time: [\d.]+\s?ms$/.test(event.args[0]?.value))
+  assert(timing)
+  const properties = await session.post('Runtime.getProperties', { objectId: timing.args[1].objectId, ownProperties: true })
+  assert.equal(properties.result.find(property => property.name === 'answer').value.value, 46)
+  assert(emitted.some(event => event.type === 'timeEnd' && /^native-method-time: [\d.]+\s?ms$/.test(event.args[0]?.value)))
+  assert(emitted.some(event => event.type === 'endGroup' && event.args[0]?.value === 'console.groupEnd'))
+  await session.post('Runtime.evaluate', { contextId, expression: 'console.clear()' })
+  assert(events.slice(start).some(event => event.type === 'clear' && event.args[0]?.value === 'console.clear'))
+  await session.post('Runtime.releaseObjectGroup', { objectGroup: 'console' })
+}
 await session.post('Runtime.disable')
 const previous = events.length
 vm.runInContext('console.log("disabled-console-marker")', context)
