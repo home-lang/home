@@ -17,6 +17,14 @@ function createWeakContexts() {
 const weak = createWeakContexts()
 await collect()
 assert.deepEqual(weak.map(reference => reference.deref() !== undefined), [false, false])
+const timerContext = (() => {
+  const context = vm.createContext({ answer: 42 })
+  vm.runInContext('console.count("unobserved"); console.time("unobserved"); console.timeLog("unobserved", {answer}); console.timeEnd("unobserved")', context)
+  return new WeakRef(context)
+})()
+await collect()
+assert.equal(timerContext.deref(), undefined)
+
 const session = new Session()
 session.connect()
 const contexts = []

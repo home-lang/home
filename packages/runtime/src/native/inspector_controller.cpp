@@ -204,6 +204,9 @@ void inspectorConsoleTime(JSC::JSGlobalObject& global, const WTF::String& label)
     if (exists) emitConsoleRecord(global, "warning"_s, agent->lastMessage());
 }
 void inspectorConsoleTiming(JSC::JSGlobalObject& global, const WTF::String& label, Inspector::ScriptArguments* arguments) {
+    // timeLog changes no timer state. Match the native client's inspection
+    // policy before storing ScriptArguments, which strongly retain the realm.
+    if (arguments && !global.inspectorController().developerExtrasEnabled()) return;
     auto* agent = consoleAgentFor(global);
     if (!agent) return;
     bool exists = agent->hasTimer(label);
