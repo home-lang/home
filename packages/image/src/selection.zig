@@ -141,7 +141,7 @@ pub const Selection = struct {
     }
 
     pub fn toImage(self: *const Selection, allocator: std.mem.Allocator) !Image {
-        var img = try Image.create(allocator, self.width, self.height, .rgba);
+        var img = try Image.init(allocator, self.width, self.height, .rgba8);
         for (0..self.height) |y| {
             for (0..self.width) |x| {
                 const v = self.getValue(@intCast(x), @intCast(y));
@@ -199,57 +199,58 @@ pub const MagicWandOptions = struct {
 
 pub fn magicWand(allocator: std.mem.Allocator, img: *const Image, start_x: u32, start_y: u32, options: MagicWandOptions) !Selection {
     var selection = try Selection.init(allocator, img.width, img.height);
+    errdefer selection.deinit();
 
     if (start_x >= img.width or start_y >= img.height) return selection;
 
-    const target_color = img.getPixel(start_x, start_y);
+    const target_color = img.getPixel(start_x, start_y) orelse return selection;
 
     if (options.contiguous) {
         // Flood fill from start point
-        var stack = std.ArrayList(struct { x: u32, y: u32 }).init(allocator);
-        defer stack.deinit();
+        var stack: std.ArrayList(struct { x: u32, y: u32 }) = .empty;
+        defer stack.deinit(allocator);
 
         var visited = try allocator.alloc(bool, img.width * img.height);
         defer allocator.free(visited);
         @memset(visited, false);
 
-        try stack.append(.{ .x = start_x, .y = start_y });
+        try stack.append(allocator, .{ .x = start_x, .y = start_y });
 
         while (stack.items.len > 0) {
-            const pos = stack.pop();
+            const pos = stack.pop().?;
             const idx = pos.y * img.width + pos.x;
 
             if (visited[idx]) continue;
             visited[idx] = true;
 
-            const color = img.getPixel(pos.x, pos.y);
+            const color = img.getPixel(pos.x, pos.y) orelse continue;
             const diff = colorDifference(target_color, color);
 
             if (diff <= options.tolerance) {
                 const alpha = if (options.anti_alias)
-                    @as(u8, @intFromFloat(255.0 * (1.0 - @as(f32, @floatFromInt(diff)) / @as(f32, @floatFromInt(options.tolerance + 1)))))
+                    @as(u8, @intFromFloat(255.0 * (1.0 - @as(f32, @floatFromInt(diff)) / @as(f32, @floatFromInt(@as(u16, options.tolerance) + 1)))))
                 else
                     @as(u8, 255);
 
                 selection.setValue(pos.x, pos.y, alpha);
 
                 // Add neighbors
-                if (pos.x > 0) try stack.append(.{ .x = pos.x - 1, .y = pos.y });
-                if (pos.x < img.width - 1) try stack.append(.{ .x = pos.x + 1, .y = pos.y });
-                if (pos.y > 0) try stack.append(.{ .x = pos.x, .y = pos.y - 1 });
-                if (pos.y < img.height - 1) try stack.append(.{ .x = pos.x, .y = pos.y + 1 });
+                if (pos.x > 0) try stack.append(allocator, .{ .x = pos.x - 1, .y = pos.y });
+                if (pos.x < img.width - 1) try stack.append(allocator, .{ .x = pos.x + 1, .y = pos.y });
+                if (pos.y > 0) try stack.append(allocator, .{ .x = pos.x, .y = pos.y - 1 });
+                if (pos.y < img.height - 1) try stack.append(allocator, .{ .x = pos.x, .y = pos.y + 1 });
             }
         }
     } else {
         // Select all pixels matching color
         for (0..img.height) |y| {
             for (0..img.width) |x| {
-                const color = img.getPixel(@intCast(x), @intCast(y));
+                const color = img.getPixel(@intCast(x), @intCast(y)) orelse continue;
                 const diff = colorDifference(target_color, color);
 
                 if (diff <= options.tolerance) {
                     const alpha = if (options.anti_alias)
-                        @as(u8, @intFromFloat(255.0 * (1.0 - @as(f32, @floatFromInt(diff)) / @as(f32, @floatFromInt(options.tolerance + 1)))))
+                        @as(u8, @intFromFloat(255.0 * (1.0 - @as(f32, @floatFromInt(diff)) / @as(f32, @floatFromInt(@as(u16, options.tolerance) + 1)))))
                     else
                         @as(u8, 255);
 
@@ -379,6 +380,7 @@ pub const LassoPoint = struct {
 
 pub fn lassoSelect(allocator: std.mem.Allocator, width: u32, height: u32, points: []const LassoPoint, anti_alias: bool) !Selection {
     var selection = try Selection.init(allocator, width, height);
+    errdefer selection.deinit();
 
     if (points.len < 3) return selection;
 
@@ -387,8 +389,8 @@ pub fn lassoSelect(allocator: std.mem.Allocator, width: u32, height: u32, points
         const fy = @as(f32, @floatFromInt(y)) + 0.5;
 
         // Find intersections with polygon edges
-        var intersections = std.ArrayList(f32).init(allocator);
-        defer intersections.deinit();
+        var intersections: std.ArrayList(f32) = .empty;
+        defer intersections.deinit(allocator);
 
         for (0..points.len) |i| {
             const p1 = points[i];
@@ -398,7 +400,7 @@ pub fn lassoSelect(allocator: std.mem.Allocator, width: u32, height: u32, points
             if ((p1.y <= fy and p2.y > fy) or (p2.y <= fy and p1.y > fy)) {
                 const t = (fy - p1.y) / (p2.y - p1.y);
                 const x = p1.x + t * (p2.x - p1.x);
-                try intersections.append(x);
+                try intersections.append(allocator, x);
             }
         }
 
@@ -752,10 +754,10 @@ pub fn applySelectionMask(img: *Image, selection: *const Selection) void {
 pub fn extractSelection(allocator: std.mem.Allocator, img: *const Image, selection: *const Selection) !Image {
     const bounds = selection.bounds;
     if (bounds.isEmpty()) {
-        return Image.create(allocator, 1, 1, .rgba);
+        return Image.init(allocator, 1, 1, .rgba8);
     }
 
-    var result = try Image.create(allocator, bounds.width, bounds.height, .rgba);
+    var result = try Image.init(allocator, bounds.width, bounds.height, .rgba8);
 
     for (0..bounds.height) |y| {
         for (0..bounds.width) |x| {
@@ -807,4 +809,46 @@ pub fn drawMarchingAnts(img: *Image, selection: *const Selection, frame: u32, co
             }
         }
     }
+}
+
+test "Magic wand selects only its contiguous color region" {
+    var img = try Image.init(std.testing.allocator, 4, 2, .rgba8);
+    defer img.deinit();
+
+    for (0..img.height) |y| {
+        for (0..img.width) |x| {
+            img.setPixel(@intCast(x), @intCast(y), if (x < 2) Color.RED else Color.BLUE);
+        }
+    }
+
+    var selection = try magicWand(std.testing.allocator, &img, 0, 0, .{
+        .tolerance = 0,
+        .anti_alias = false,
+    });
+    defer selection.deinit();
+
+    try std.testing.expectEqual(@as(u8, 255), selection.getValue(1, 1));
+    try std.testing.expectEqual(@as(u8, 0), selection.getValue(2, 1));
+    try std.testing.expectEqual(@as(u32, 2), selection.bounds.width);
+
+    var mask = try selection.toImage(std.testing.allocator);
+    defer mask.deinit();
+    try std.testing.expectEqual(Color.WHITE, mask.getPixel(1, 1).?);
+    try std.testing.expectEqual(Color.BLACK, mask.getPixel(2, 1).?);
+}
+
+test "Lasso selection fills the polygon interior" {
+    const points = [_]LassoPoint{
+        .{ .x = 1, .y = 1 },
+        .{ .x = 4, .y = 1 },
+        .{ .x = 4, .y = 4 },
+        .{ .x = 1, .y = 4 },
+    };
+    var selection = try lassoSelect(std.testing.allocator, 6, 6, &points, false);
+    defer selection.deinit();
+
+    try std.testing.expectEqual(@as(u8, 255), selection.getValue(2, 2));
+    try std.testing.expectEqual(@as(u8, 0), selection.getValue(0, 0));
+    try std.testing.expectEqual(@as(u32, 1), selection.bounds.x);
+    try std.testing.expectEqual(@as(u32, 1), selection.bounds.y);
 }

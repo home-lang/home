@@ -625,15 +625,15 @@ pub fn floodFill(img: *Image, start_x: u32, start_y: u32, fill_color: Color, all
     if (start_x >= img.width or start_y >= img.height) return;
 
     const target_color = img.getPixel(start_x, start_y) orelse return;
-    if (target_color.eql(fill_color)) return;
+    if (std.meta.eql(target_color, fill_color)) return;
 
-    var stack = std.ArrayList([2]u32).init(allocator);
-    defer stack.deinit();
+    var stack: std.ArrayList([2]u32) = .empty;
+    defer stack.deinit(allocator);
 
-    try stack.append(.{ start_x, start_y });
+    try stack.append(allocator, .{ start_x, start_y });
 
     while (stack.items.len > 0) {
-        const pos = stack.pop();
+        const pos = stack.pop().?;
         var x = pos[0];
         const y = pos[1];
 
@@ -652,7 +652,7 @@ pub fn floodFill(img: *Image, start_x: u32, start_y: u32, fill_color: Color, all
             if (y > 0) {
                 if (colorMatch(img.getPixel(x, y - 1), target_color)) {
                     if (!span_above) {
-                        try stack.append(.{ x, y - 1 });
+                        try stack.append(allocator, .{ x, y - 1 });
                         span_above = true;
                     }
                 } else {
@@ -664,7 +664,7 @@ pub fn floodFill(img: *Image, start_x: u32, start_y: u32, fill_color: Color, all
             if (y < img.height - 1) {
                 if (colorMatch(img.getPixel(x, y + 1), target_color)) {
                     if (!span_below) {
-                        try stack.append(.{ x, y + 1 });
+                        try stack.append(allocator, .{ x, y + 1 });
                         span_below = true;
                     }
                 } else {
@@ -791,4 +791,17 @@ test "Filled rectangle" {
     const pixel = img.getPixel(15, 15);
     try std.testing.expect(pixel != null);
     try std.testing.expectEqual(@as(u8, 255), pixel.?.b);
+}
+
+test "Flood fill stops at a color boundary" {
+    var img = try Image.init(std.testing.allocator, 5, 3, .rgba8);
+    defer img.deinit();
+
+    rectFilled(&img, 0, 0, img.width, img.height, Color.WHITE);
+    line(&img, 2, 0, 2, 2, Color.BLACK);
+    try floodFill(&img, 0, 0, Color.RED, std.testing.allocator);
+
+    try std.testing.expectEqual(Color.RED, img.getPixel(1, 1).?);
+    try std.testing.expectEqual(Color.BLACK, img.getPixel(2, 1).?);
+    try std.testing.expectEqual(Color.WHITE, img.getPixel(3, 1).?);
 }

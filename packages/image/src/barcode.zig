@@ -52,7 +52,7 @@ pub const QRCode = struct {
 
     pub fn toImage(self: *const QRCode, allocator: std.mem.Allocator, module_size: u32, quiet_zone: u32) !Image {
         const img_size = (self.size + quiet_zone * 2) * module_size;
-        var img = try Image.init(allocator, img_size, img_size, .rgba);
+        var img = try Image.init(allocator, img_size, img_size, .rgba8);
 
         // Fill white
         for (0..img_size) |y| {
@@ -134,24 +134,24 @@ pub fn generateBarcode(allocator: std.mem.Allocator, data: []const u8, barcode_t
 
 fn generateCode128(allocator: std.mem.Allocator, data: []const u8, bar_width: u32, height: u32) !Image {
     // Simplified Code 128 - real implementation would properly encode
-    var pattern = std.ArrayList(bool).init(allocator);
-    defer pattern.deinit();
+    var pattern: std.ArrayList(bool) = .empty;
+    defer pattern.deinit(allocator);
 
     // Start code
-    try pattern.appendSlice(&[_]bool{ true, true, false, true, false, false, true, true, false, false, false });
+    try pattern.appendSlice(allocator, &[_]bool{ true, true, false, true, false, false, true, true, false, false, false });
 
     // Data (simplified)
     for (data) |byte| {
         for (0..7) |i| {
-            try pattern.append((byte & (@as(u8, 1) << @intCast(i))) != 0);
+            try pattern.append(allocator, (byte & (@as(u8, 1) << @intCast(i))) != 0);
         }
     }
 
     // Stop code
-    try pattern.appendSlice(&[_]bool{ true, true, false, false, true, false, true, true, false, false, true, true });
+    try pattern.appendSlice(allocator, &[_]bool{ true, true, false, false, true, false, true, true, false, false, true, true });
 
-    const width = pattern.items.len * bar_width;
-    var img = try Image.init(allocator, width, height, .rgba);
+    const width = pattern.items.len * @as(usize, bar_width);
+    var img = try Image.init(allocator, @intCast(width), height, .rgba8);
 
     for (0..height) |y| {
         for (0..width) |x| {
@@ -177,4 +177,27 @@ fn generateUPCA(allocator: std.mem.Allocator, data: []const u8, bar_width: u32, 
 
 fn generateInterleaved2of5(allocator: std.mem.Allocator, data: []const u8, bar_width: u32, height: u32) !Image {
     return generateCode128(allocator, data, bar_width, height); // Simplified
+}
+
+test "Code 128 renders its complete pattern" {
+    var img = try generateBarcode(std.testing.allocator, "A", .code128, 2, 8);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 60), img.width);
+    try std.testing.expectEqual(@as(u32, 8), img.height);
+    try std.testing.expectEqual(image.PixelFormat.rgba8, img.format);
+    try std.testing.expectEqual(Color.BLACK, img.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.WHITE, img.getPixel(4, 0).?);
+}
+
+test "QR code renders with a quiet zone" {
+    var qr = try QRCode.generate(std.testing.allocator, "home", .medium);
+    defer qr.deinit();
+
+    var img = try qr.toImage(std.testing.allocator, 2, 1);
+    defer img.deinit();
+
+    try std.testing.expectEqual(@as(u32, 46), img.width);
+    try std.testing.expectEqual(Color.WHITE, img.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLACK, img.getPixel(2, 2).?);
 }
