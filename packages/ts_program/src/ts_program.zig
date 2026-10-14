@@ -5853,6 +5853,55 @@ test "Program: imported class heritage retains base nominal identity" {
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
 }
 
+test "Program: imported inherited callable types retain members and infer results" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner =
+        \\export interface Request { index: string; page?: number; }
+        \\export interface Driver<T> { value: T; search: (request: Request) => T; }
+        \\export interface Options<T> extends Omit<Request, "index"> { index: string; driver: Driver<T>; ranking?: string; }
+        \\export interface Table<T> { driver: Driver<T>; }
+    ;
+    const factory =
+        \\import type {Options, Table} from './owner';
+        \\export declare function create<T>(options: Options<T>): Table<T>;
+    ;
+    const consumer =
+        \\import {create} from './factory';
+        \\import type {Driver, Table} from './owner';
+        \\declare const driver: Driver<{id: number}>;
+        \\const table = create({driver, index: 'items', page: 1, ranking: 'ok'});
+        \\const good: Table<{id: number}> = table;
+        \\const id: number = table.driver.value.id;
+        \\const explicit: Table<{id: number}> = create<{id: number}>({driver, index: 'items'});
+        \\create({driver, index: 'items', page: 'bad'});
+        \\create({driver, index: 'items', ranking: 1});
+        \\const wrong: string = table.driver.value.id;
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/factory.ts", factory);
+    try vfs.addFile("/consumer.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", owner);
+    _ = try program.add("/factory.ts", factory);
+    const consumer_id = try program.add("/consumer.ts", consumer);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(consumer_id).compilation.?;
+    if (compilation.diagnostics.items.len != 3) for (compilation.diagnostics.items) |diagnostic| {
+        std.debug.print("Imported inherited callable TS{d}: {s}\n", .{diagnostic.code, diagnostic.message});
+    };
+    try T.expectEqual(@as(usize, 3), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
 test "Program: local generic interface names do not rebind owner signatures" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
