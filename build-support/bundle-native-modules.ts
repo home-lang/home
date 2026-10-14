@@ -134,7 +134,13 @@ async function main() {
   ] as const).map(([sources, unifiedName, outputName]) => {
     const owned = sources.map(([relativeSource, abiHeader]) => {
       const source = path.join(homeSource, relativeSource)
-      return { source, basename: path.basename(source), body: read(source), abiHeader, replacements: 0 }
+      const basename = path.basename(source)
+      // Private Home helpers join the owned Path translation unit without
+      // replacing an unrelated external object or changing SDK headers.
+      const body = basename === 'Path.cpp'
+        ? `${read(path.join(homeSource, '../../src/native/PathUnicode.cpp'))}\n${read(source)}`
+        : read(source)
+      return { source, basename, body, abiHeader, replacements: 0 }
     })
     const unifiedPath = path.join(externalBuild, 'unified', unifiedName)
     const unified = read(unifiedPath).replace(/^[ \t]*#include "([^"\r\n]+)"[ \t]*\r?$/gm, (_, relative) => {

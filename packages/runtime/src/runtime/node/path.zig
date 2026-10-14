@@ -17,13 +17,92 @@ const stack_fallback_size_small = switch (Environment.os) {
 /// https://github.com/ziglang/zig/blob/776cd673f206099012d789fd5d05d49dd72b9faa/src/resinator/rc.zig#L266
 ///
 /// Compares ASCII values case-insensitively, non-ASCII values are compared directly
-fn eqlIgnoreCaseT(comptime T: type, a: []const T, b: []const T) bool {
-    if (T != u16) return bun.strings.eqlCaseInsensitiveASCII(a, b, true);
-    if (a.len != b.len) return false;
-    for (a, b) |left, right| {
-        if (toLowerT(T, left) != toLowerT(T, right)) return false;
-    }
+extern fn HomePath__lowercase(input: *const bun.String, output: *bun.String) void;
+
+fn lowercasePath(comptime T: type, path: []const T) bun.String {
+    var input = if (T == u16) bun.String.cloneUTF16(path) else bun.String.cloneUTF8(path);
+    defer input.deref();
+    var output: bun.String = undefined;
+    HomePath__lowercase(&input, &output);
+    return output;
+}
+
+fn isAsciiPath(comptime T: type, path: []const T) bool {
+    for (path) |unit| if (unit >= 128) return false;
     return true;
+}
+
+fn eqlIgnoreCaseT(comptime T: type, a: []const T, b: []const T) bool {
+    if (isAsciiPath(T, a) and isAsciiPath(T, b)) {
+        if (a.len != b.len) return false;
+        for (a, b) |left, right| {
+            if (toLowerT(T, left) != toLowerT(T, right)) return false;
+        }
+        return true;
+    }
+    var left = lowercasePath(T, a);
+    defer left.deref();
+    var right = lowercasePath(T, b);
+    defer right.deref();
+    if (left.length() != right.length()) return false;
+    for (0..left.length()) |i| if (left.charAt(i) != right.charAt(i)) return false;
+    return true;
+}
+
+fn lowercasePathSlice(comptime T: type, path: []const T) []const T {
+    var lowered = lowercasePath(T, path);
+    defer lowered.deref();
+    if (T == u8) return bun.handleOom(lowered.toOwnedSlice(bun.default_allocator));
+    const result = bun.handleOom(bun.default_allocator.alloc(u16, lowered.length()));
+    for (result, 0..) |*unit, i| unit.* = lowered.charAt(i);
+    return result;
+}
+
+// Node compares original components when Unicode lowercase expands the path.
+// Component slices keep offsets in the original string and preserve spelling.
+fn relativeWindowsExpandedT(comptime T: type, from: [:0]const T, to: [:0]const T, buf: []T) MaybeSlice(T) {
+    const allocator = bun.default_allocator;
+    const from_parts = bun.handleOom(allocator.alloc([]const T, std.mem.count(T, from, comptime L(T, "\\")) + 1));
+    defer allocator.free(from_parts);
+    const to_parts = bun.handleOom(allocator.alloc([]const T, std.mem.count(T, to, comptime L(T, "\\")) + 1));
+    defer allocator.free(to_parts);
+    var from_count: usize = 0;
+    var from_split = std.mem.splitScalar(T, from, CHAR_BACKWARD_SLASH);
+    while (from_split.next()) |part| {
+        from_parts[from_count] = part;
+        from_count += 1;
+    }
+    var to_count: usize = 0;
+    var to_split = std.mem.splitScalar(T, to, CHAR_BACKWARD_SLASH);
+    while (to_split.next()) |part| {
+        to_parts[to_count] = part;
+        to_count += 1;
+    }
+    if (from_count > 0 and from_parts[from_count - 1].len == 0) from_count -= 1;
+    if (to_count > 0 and to_parts[to_count - 1].len == 0) to_count -= 1;
+    var common: usize = 0;
+    while (common < @min(from_count, to_count) and eqlIgnoreCaseT(T, from_parts[common], to_parts[common])) : (common += 1) {}
+    if (common == 0) return .{ .result = to };
+    var size: usize = 0;
+    for (common..from_count) |_| {
+        if (size > 0) {
+            buf[size] = CHAR_BACKWARD_SLASH;
+            size += 1;
+        }
+        buf[size] = CHAR_DOT;
+        buf[size + 1] = CHAR_DOT;
+        size += 2;
+    }
+    for (to_parts[common..to_count]) |part| {
+        if (size > 0) {
+            buf[size] = CHAR_BACKWARD_SLASH;
+            size += 1;
+        }
+        bun.copy(T, buf[size .. size + part.len], part);
+        size += part.len;
+    }
+    buf[size] = 0;
+    return .{ .result = buf[0..size :0] };
 }
 
 /// Taken from Zig 0.11.0 zig/src/resinator/rc.zig
@@ -2158,13 +2237,17 @@ pub fn relativeWindowsT(comptime T: type, from: []const T, to: []const T, buf: [
         .err => |e| return MaybeSlice(T){ .err = e },
     };
 
-    if (std.mem.eql(T, fromOrig, toOrig) or
-        eqlIgnoreCaseT(T, fromOrig, toOrig))
-    {
-        return MaybeSlice(T){ .result = &.{} };
-    }
+    if (std.mem.eql(T, fromOrig, toOrig)) return .{ .result = &.{} };
 
     const toOrigLen = toOrig.len;
+    const ascii = isAsciiPath(T, fromOrig) and isAsciiPath(T, toOrig);
+    const from_lower = if (ascii) fromOrig else lowercasePathSlice(T, fromOrig);
+    defer if (!ascii) bun.default_allocator.free(from_lower);
+    const to_lower = if (ascii) toOrig else lowercasePathSlice(T, toOrig);
+    defer if (!ascii) bun.default_allocator.free(to_lower);
+    if (if (ascii) eqlIgnoreCaseT(T, from_lower, to_lower) else std.mem.eql(T, from_lower, to_lower)) return .{ .result = &.{} };
+    if (from_lower.len != fromOrig.len or to_lower.len != toOrig.len)
+        return relativeWindowsExpandedT(T, fromOrig, toOrig, buf3);
 
     // Trim leading backslashes
     var fromStart: usize = 0;
@@ -2212,8 +2295,8 @@ pub fn relativeWindowsT(comptime T: type, from: []const T, to: []const T, buf: [
     {
         var i: usize = 0;
         while (i < smallestLength) : (i += 1) {
-            const fromByte = fromOrig[fromStart + i];
-            if (toLowerT(T, fromByte) != toLowerT(T, toOrig[toStart + i])) {
+            const fromByte = from_lower[fromStart + i];
+            if (toLowerT(T, fromByte) != toLowerT(T, to_lower[toStart + i])) {
                 break;
             } else if (fromByte == CHAR_BACKWARD_SLASH) {
                 lastCommonSep = i;
@@ -2367,7 +2450,7 @@ pub fn relative(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*
     );
     const allocator = sfa.get();
 
-    if (fromZigStr.is16Bit() or toZigStr.is16Bit()) {
+    if (isWindows or fromZigStr.is16Bit() or toZigStr.is16Bit()) {
         const from16 = pathSlice16(allocator, fromZigStr);
         defer if (!fromZigStr.is16Bit()) allocator.free(from16);
         const to16 = pathSlice16(allocator, toZigStr);

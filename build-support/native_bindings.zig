@@ -515,6 +515,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/IPC.cpp",
         "packages/runtime/upstream/src/jsc/bindings/Path.cpp",
+        "packages/runtime/src/native/PathUnicode.cpp",
         "packages/runtime/upstream/src/jsc/bindings/Path.h",
         "packages/runtime/upstream/src/jsc/bindings/NodeValidator.cpp",
         "packages/runtime/upstream/src/jsc/bindings/NodeValidator.h",
