@@ -153,7 +153,7 @@ pub const OpusEncoder = struct {
             .application = quality.getApplication(),
             .bandwidth = if (quality.getApplication() == .voip) .wideband else .fullband,
             .frame_size = .ms_20,
-            .output = .{},
+            .output = .empty,
             .prev_samples = try allocator.alloc(f32, MAX_FRAME_SIZE * @as(usize, channels)),
             .lpc_coeffs = try allocator.alloc(f32, LPC_ORDER),
             .frame_count = 0,
