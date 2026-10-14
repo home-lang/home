@@ -1,0 +1,11 @@
+# Recursive mkdir callback results
+
+This checkpoint contributes to #893 and #66. The public node:fs mkdir wrapper previously discarded the native first-created path, causing two unchanged fs-mkdir.test.ts cases to fail. It now forwards (null, firstPathCreated) when a recursive operation creates a directory, and one error argument otherwise. The callback receiver remains undefined, matching the reference wrapper, while execution remains in the actual native FSREQCALLBACK scope. Promise mkdir preserves the native return independently.
+
+Source `ef0bec731` passed the 56-step native build, 26 unchanged pinned originals and three focused commands. Reports contain 47 passing registered cases and 19 passing process checks, with 0 failed cases, 0 failed files, 0 skips, 0 TODOs, no filtering and no retries. The original recursive callback failures are retained. The five-row ordinary mkdir diagnostic matches Node v26.10.0 exactly. Native directory lifetime/identity and async-storage/request-scope controls passed, as did Pickier on both changed files and the whitespace check.
+
+The mkdir-specific exception diagnostic does not establish parity: with a keep-alive timer, both runtimes invoke the callback once with the correct path/arguments/receiver, but only Home reports the thrown marker through uncaughtException. The initial Node diagnostic exited without output and the attempted full-match assertion failed. Both results remain recorded. Repeated directory callback throws and queued closed reads also produce different complete traces. These observations receive no pass credit, and #893/#878 remain open. No exception was suppressed to manufacture a matching trace.
+
+The manifest records source/executable hashes, every original Git-object and native launch identity, baseline failures, unresolved comparisons, and 265 deterministic gzip artifacts. Native directory streams already existed in the checkpoint; the historical placeholder description is not current behavior. All tests used the unchanged 3,840 MB guard, with compilation at 8,192 MB and existing admission thresholds/deadlines.
+
+This selected evidence does not establish complete filesystem, Bun-suite, other-platform or independent-build acceptance.
