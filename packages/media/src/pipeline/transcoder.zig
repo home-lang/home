@@ -91,7 +91,7 @@ pub const TranscoderStats = struct {
     end_time_ns: i128 = 0,
 
     pub fn duration_ms(self: *const TranscoderStats) u64 {
-        if (self.end_time_ns == 0 or self.start_time_ns == 0) return 0;
+        if (self.end_time_ns <= self.start_time_ns) return 0;
         return @intCast(@divFloor(self.end_time_ns - self.start_time_ns, 1_000_000));
     }
 

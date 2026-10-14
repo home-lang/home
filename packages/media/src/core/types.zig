@@ -223,26 +223,26 @@ pub const ContainerFormat = enum {
     unknown,
 
     pub fn fromExtension(ext: []const u8) ContainerFormat {
-        if (std.mem.eql(u8, ext, ".mp4") or std.mem.eql(u8, ext, ".m4v")) return .mp4;
-        if (std.mem.eql(u8, ext, ".mov")) return .mov;
-        if (std.mem.eql(u8, ext, ".mkv") or std.mem.eql(u8, ext, ".mka")) return .mkv;
-        if (std.mem.eql(u8, ext, ".webm")) return .webm;
-        if (std.mem.eql(u8, ext, ".avi")) return .avi;
-        if (std.mem.eql(u8, ext, ".flv")) return .flv;
-        if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".mts")) return .ts;
-        if (std.mem.eql(u8, ext, ".m2ts")) return .m2ts;
-        if (std.mem.eql(u8, ext, ".ogg") or std.mem.eql(u8, ext, ".ogv")) return .ogg;
-        if (std.mem.eql(u8, ext, ".wav")) return .wav;
-        if (std.mem.eql(u8, ext, ".mp3")) return .mp3;
-        if (std.mem.eql(u8, ext, ".flac")) return .flac;
-        if (std.mem.eql(u8, ext, ".aac") or std.mem.eql(u8, ext, ".m4a")) return .aac;
-        if (std.mem.eql(u8, ext, ".mxf")) return .mxf;
-        if (std.mem.eql(u8, ext, ".gif")) return .gif;
-        if (std.mem.eql(u8, ext, ".png")) return .png;
-        if (std.mem.eql(u8, ext, ".jpg") or std.mem.eql(u8, ext, ".jpeg")) return .jpeg;
-        if (std.mem.eql(u8, ext, ".webp")) return .webp;
-        if (std.mem.eql(u8, ext, ".avif")) return .avif;
-        if (std.mem.eql(u8, ext, ".heic") or std.mem.eql(u8, ext, ".heif")) return .heic;
+        if (std.ascii.eqlIgnoreCase(ext, ".mp4") or std.ascii.eqlIgnoreCase(ext, ".m4v")) return .mp4;
+        if (std.ascii.eqlIgnoreCase(ext, ".mov")) return .mov;
+        if (std.ascii.eqlIgnoreCase(ext, ".mkv") or std.ascii.eqlIgnoreCase(ext, ".mka")) return .mkv;
+        if (std.ascii.eqlIgnoreCase(ext, ".webm")) return .webm;
+        if (std.ascii.eqlIgnoreCase(ext, ".avi")) return .avi;
+        if (std.ascii.eqlIgnoreCase(ext, ".flv")) return .flv;
+        if (std.ascii.eqlIgnoreCase(ext, ".ts") or std.ascii.eqlIgnoreCase(ext, ".mts")) return .ts;
+        if (std.ascii.eqlIgnoreCase(ext, ".m2ts")) return .m2ts;
+        if (std.ascii.eqlIgnoreCase(ext, ".ogg") or std.ascii.eqlIgnoreCase(ext, ".ogv")) return .ogg;
+        if (std.ascii.eqlIgnoreCase(ext, ".wav")) return .wav;
+        if (std.ascii.eqlIgnoreCase(ext, ".mp3")) return .mp3;
+        if (std.ascii.eqlIgnoreCase(ext, ".flac")) return .flac;
+        if (std.ascii.eqlIgnoreCase(ext, ".aac") or std.ascii.eqlIgnoreCase(ext, ".m4a")) return .aac;
+        if (std.ascii.eqlIgnoreCase(ext, ".mxf")) return .mxf;
+        if (std.ascii.eqlIgnoreCase(ext, ".gif")) return .gif;
+        if (std.ascii.eqlIgnoreCase(ext, ".png")) return .png;
+        if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return .jpeg;
+        if (std.ascii.eqlIgnoreCase(ext, ".webp")) return .webp;
+        if (std.ascii.eqlIgnoreCase(ext, ".avif")) return .avif;
+        if (std.ascii.eqlIgnoreCase(ext, ".heic") or std.ascii.eqlIgnoreCase(ext, ".heif")) return .heic;
         return .unknown;
     }
 

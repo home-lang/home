@@ -398,8 +398,12 @@ pub const Pipeline = struct {
 
     /// Apply quality preset
     pub fn quality(self: *Self, q: QualityPreset) *Self {
-        self.video_options = q.videoSettings();
-        self.audio_options = q.audioSettings();
+        const video = q.videoSettings();
+        const audio = q.audioSettings();
+        self.video_options.crf = video.crf;
+        self.video_options.preset = video.preset;
+        self.audio_options.bitrate = audio.bitrate;
+        if (q == .lossless) self.audio_options.codec = audio.codec;
         return self;
     }
 
