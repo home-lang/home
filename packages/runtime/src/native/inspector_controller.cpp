@@ -111,6 +111,7 @@ public:
         }
         return result;
     }
+    bool hasMessages() const { return !m_consoleMessages.isEmpty(); }
     bool hasCounter(const WTF::String& label) const { return m_counts.contains(label); }
     bool hasTimer(const WTF::String& label) const { return m_times.contains(label); }
 };
@@ -260,6 +261,28 @@ void clearInspectorConsoleHistory(JSC::JSGlobalObject& global) {
         agent->protocolRecords.clear();
     }
 }
+void retireIdleInspectorRealm(JSC::JSGlobalObject& global, const std::vector<WTF::String>& objectIds, bool pending) {
+    if (!isInspectorConsoleRealm(global) || pending) return;
+    auto& controller = global.inspectorController();
+    if (auto* debugger = controller.debugger(); debugger && debugger->isPaused()) return;
+    auto* agent = consoleAgentFor(global);
+    if (!agent || agent->hasMessages()) return;
+    Inspector::InjectedScriptManager* manager;
+    { std::lock_guard lock(inspectorManagerLock); auto found = inspectorManagers->find(&global);
+      if (found == inspectorManagers->end()) return; manager = found->second; }
+    JSC::Strong<JSC::JSGlobalObject> protect(global.vm(), &global);
+    JSC::DeferGC deferGC(global.vm());
+    // Released IDs remain in the channel's routing map until realm retirement.
+    // Query the actual SDK object table, preserving every still-bound value.
+    for (auto& id : objectIds) {
+        auto script = manager->injectedScriptForObjectId(id);
+        if (script.hasNoValue()) continue;
+        auto value = script.findObjectById(id);
+        if (value && !value.isUndefined()) return;
+    }
+    manager->discardInjectedScripts();
+}
+
 void inspectorConsoleCount(JSC::JSGlobalObject& global, const WTF::String& label, bool reset) {
     auto* agent = consoleAgentFor(global);
     if (!agent) return;
@@ -409,7 +432,10 @@ void JSGlobalObjectInspectorController::connectFrontend(FrontendChannel& fronten
 
     // Keep the JSGlobalObject and VM alive while we are debugging it.
     m_strongVM = &m_globalObject.vm();
-    m_strongGlobalObject.set(m_globalObject.vm(), &m_globalObject);
+    // A local VM realm follows program and remote-object reachability. The
+    // standalone owner keeps the SDK's strong lifetime policy.
+    if (!Home::isInspectorConsoleRealm(m_globalObject))
+        m_strongGlobalObject.set(m_globalObject.vm(), &m_globalObject);
 
     // FIXME: change this to notify agents which frontend has connected (by id).
     m_agents.didCreateFrontendAndBackend();
@@ -429,6 +455,7 @@ void JSGlobalObjectInspectorController::disconnectFrontend(FrontendChannel& fron
     if (!disconnectedLastFrontend)
         return;
     m_agents.willDestroyFrontendAndBackend(DisconnectReason::InspectorDestroyed);
+    m_injectedScriptManager->disconnect();
     m_isAutomaticInspection = false;
     m_pauseAfterInitialization = false;
 

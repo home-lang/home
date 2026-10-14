@@ -21,6 +21,7 @@ bool inspectorHasConsoleSessions(JSC::JSGlobalObject&);
 bool isInspectorConsoleRealm(JSC::JSGlobalObject&);
 std::vector<WTF::String> inspectorConsoleHistory(JSC::JSGlobalObject&);
 void clearInspectorConsoleHistory(JSC::JSGlobalObject&);
+void retireIdleInspectorRealm(JSC::JSGlobalObject&, const std::vector<WTF::String>&, bool pending);
 void inspectorConsoleMessage(Inspector::ConsoleMessage&);
 void inspectorConsoleCount(JSC::JSGlobalObject&, const WTF::String&, bool reset);
 void inspectorConsoleTime(JSC::JSGlobalObject&, const WTF::String&);

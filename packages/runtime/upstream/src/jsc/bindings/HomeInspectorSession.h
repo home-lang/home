@@ -31,6 +31,7 @@ public:
     std::vector<WTF::String> messages;
     std::unordered_map<int, int> responseIds;
     std::unordered_map<int, WTF::String> responseMethods;
+    std::unordered_map<int, int> responseRealms;
     std::unordered_set<int> accessorPropertyRequests;
     WTF::HashMap<WTF::String, int> realmObjects;
     WTF::HashMap<WTF::String, WTF::String> nativeRealmObjects;
@@ -240,6 +241,7 @@ inline bool dispatchInspectorRealm(LocalInspectorChannel& channel,JSON::Object& 
     if(!unwrapInspectorObjects(channel,*params,selected->id)) {
         inspectorWorldError(channel,request);return true;
     }
+    channel.responseRealms[*request.getInteger("id"_s)] = selected->id;
     controller.dispatchMessageFromFrontend(request.toJSONString());
     return true;
 }
@@ -318,6 +320,7 @@ inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& mess
             }
             object->setInteger("id"_s, found->second);
             responseIds.erase(found);
+            responseRealms.erase(*id);
             accessorPropertyRequests.erase(*id);
             routed = object->toJSONString();
         }
@@ -382,6 +385,7 @@ inline void LocalInspectorChannel::disconnect(bool deliverPendingErrors) {
     messages.clear();
     responseIds.clear();
     responseMethods.clear();
+    responseRealms.clear();
     accessorPropertyRequests.clear();
     realmObjects.clear();
     nativeRealmObjects.clear();
@@ -441,8 +445,22 @@ inline bool LocalInspectorChannel::dispatchAdapter(JSON::Object& request) {
     if (method == "Console.clearMessages"_s || method == "Runtime.discardConsoleEntries"_s) {
         clearInspectorConsoleHistory(*global);
         // Clear native buffers in live owned realms, allowing their real roots to retire.
-        for (auto& entry : inspectorRealms()) if (entry.second->owner == global && entry.second->global)
-            clearInspectorConsoleHistory(*entry.second->global.get());
+        for (auto& entry : inspectorRealms()) if (entry.second->owner == global && entry.second->global) {
+            auto* source = entry.second->global.get();
+            clearInspectorConsoleHistory(*source);
+            std::vector<WTF::String> ids;
+            bool pending = false;
+            std::vector<std::shared_ptr<LocalInspectorChannel>> channels;
+            { std::lock_guard lock(localInspectorLock()); auto found = localInspectorChannels().find(global); if (found != localInspectorChannels().end()) channels = found->second; }
+            for (auto& channel : channels) {
+                for (auto& object : channel->realmObjects) if (object.value == entry.second->id) {
+                    auto native = channel->nativeRealmObjects.find(object.key);
+                    if (native != channel->nativeRealmObjects.end()) ids.push_back(native->value);
+                }
+                for (auto& request : channel->responseRealms) if (request.second == entry.second->id) pending = true;
+            }
+            retireIdleInspectorRealm(*source, ids, pending);
+        }
         respond(JSON::Object::create());
         return true;
     }
