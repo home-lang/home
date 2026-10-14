@@ -1113,9 +1113,9 @@ pub const FileSystemFlags = enum(c_int) {
             // internal bun.O representation. Convert them here so downstream
             // code that operates on bun.O flags works correctly.
             if (comptime bun.Environment.isWindows) {
-                return @as(FileSystemFlags, @enumFromInt(bun.windows.libuv.O.toBunO(flags)));
+                return @as(FileSystemFlags, @fromBackingInt(@intCast(bun.windows.libuv.O.toBunO(flags))));
             }
-            return @as(FileSystemFlags, @enumFromInt(flags));
+            return @as(FileSystemFlags, @fromBackingInt(@intCast(flags)));
         }
 
         if (val.isUndefinedOrNull()) {
@@ -1135,7 +1135,7 @@ pub const FileSystemFlags = enum(c_int) {
             // The longest valid flag string is 3 bytes ("as+", "wx+", ...).
             if (str.len >= 1 and str.len <= 3) {
                 if (map.getWithEql(str, jsc.ZigString.eqlComptime)) |flags| {
-                    return @enumFromInt(flags);
+                    return @fromBackingInt(@intCast(flags));
                 }
             }
         }
@@ -1149,10 +1149,10 @@ pub const FileSystemFlags = enum(c_int) {
         // Allow only int32 or null/undefined values.
         if (!value.isNumber()) {
             if (value.isUndefinedOrNull()) {
-                return @enumFromInt(switch (kind) {
+                return @fromBackingInt(@intCast(switch (kind) {
                     .access => 0, // F_OK
                     .copy_file => 0, // constexpr int kDefaultCopyMode = 0;
-                });
+                }));
             }
             return global.ERR(.INVALID_ARG_TYPE, "mode must be int32 or null/undefined", .{}).throw();
         }
@@ -1162,18 +1162,18 @@ pub const FileSystemFlags = enum(c_int) {
             if (int < min or int > max) {
                 return global.ERR(.OUT_OF_RANGE, comptime std.fmt.comptimePrint("mode is out of range: >= {d} and <= {d}", .{ min, max }), .{}).throw();
             }
-            return @enumFromInt(int);
+            return @fromBackingInt(@intCast(int));
         } else {
             const float = value.asNumber();
             if (std.math.isNan(float) or std.math.isInf(float) or float < min or float > max) {
                 return global.ERR(.OUT_OF_RANGE, comptime std.fmt.comptimePrint("mode is out of range: >= {d} and <= {d}", .{ min, max }), .{}).throw();
             }
-            return @enumFromInt(@as(i32, @intFromFloat(float)));
+            return @fromBackingInt(@intCast(@as(i32, @intFromFloat(float))));
         }
     }
 
     pub fn asInt(flags: FileSystemFlags) tag_type {
-        return @intFromEnum(flags);
+        return @backingInt(flags);
     }
 };
 
@@ -1199,17 +1199,53 @@ pub const FileSystemFlags = enum(c_int) {
 pub const Dirent = struct {
     name: bun.String,
     path: bun.String,
+    buffer_name: ?[]u8 = null,
+    buffer_parent: ?*BufferParent = null,
+    original_parent: jsc.JSValue = .zero,
     // not publicly exposed
     kind: Kind,
 
     pub const Kind = std.Io.File.Kind;
+
+    /// One native owner per opened directory. Conversion happens only on the
+    /// JS thread, where siblings share the resulting Buffer identity.
+    pub const BufferParent = struct {
+        refs: usize = 1,
+        bytes: []u8,
+        value: jsc.Strong.Optional = .empty,
+
+        pub fn create(bytes: []const u8) *BufferParent {
+            return bun.new(BufferParent, .{ .bytes = bun.handleOom(bun.default_allocator.dupe(u8, bytes)) });
+        }
+
+        pub fn ref(this: *BufferParent) void {
+            this.refs += 1;
+        }
+
+        pub fn deref(this: *BufferParent) void {
+            this.refs -= 1;
+            if (this.refs == 0) {
+                this.value.deinit();
+                bun.default_allocator.free(this.bytes);
+                bun.destroy(this);
+            }
+        }
+
+        pub fn toJS(this: *BufferParent, global: *jsc.JSGlobalObject) jsc.JSValue {
+            if (this.value.get()) |value| return value;
+            const bytes = bun.handleOom(bun.default_allocator.dupe(u8, this.bytes));
+            const value = jsc.MarkedArrayBuffer.fromBytes(bytes, bun.default_allocator, .Uint8Array).toNodeBuffer(global);
+            this.value = .create(value, global);
+            return value;
+        }
+    };
 
     extern fn Bun__JSDirentObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
     pub const getConstructor = Bun__JSDirentObjectConstructor;
 
     extern fn Bun__Dirent__toJS(*jsc.JSGlobalObject, i32, *bun.String, *bun.String, cached_previous_path_jsvalue: ?*?*jsc.JSString) jsc.JSValue;
     pub fn toJS(this: *Dirent, globalObject: *jsc.JSGlobalObject, cached_previous_path_jsvalue: ?*?*jsc.JSString) bun.JSError!jsc.JSValue {
-        return bun.jsc.fromJSHostCall(globalObject, @src(), Bun__Dirent__toJS, .{
+        const result = try bun.jsc.fromJSHostCall(globalObject, @src(), Bun__Dirent__toJS, .{
             globalObject,
             switch (this.kind) {
                 .file => bun.windows.libuv.UV_DIRENT_FILE,
@@ -1224,8 +1260,29 @@ pub const Dirent = struct {
             },
             &this.name,
             &this.path,
-            cached_previous_path_jsvalue,
+            // Buffer overrides discard the constructor's string parent. Do
+            // not leave that discarded JSString in the shared raw cache.
+            if (this.buffer_parent != null or this.original_parent != .zero) null else cached_previous_path_jsvalue,
         });
+        if (this.buffer_name != null or this.buffer_parent != null or this.original_parent != .zero) {
+            var rooted = jsc.Strong.create(result, globalObject);
+            defer rooted.deinit();
+            if (this.buffer_name) |bytes| {
+                this.buffer_name = null;
+                result.put(globalObject, "name", jsc.MarkedArrayBuffer.fromBytes(bytes, bun.default_allocator, .Uint8Array).toNodeBuffer(globalObject));
+            }
+            const parent = if (this.original_parent != .zero)
+                this.original_parent
+            else if (this.buffer_parent) |buffer|
+                buffer.toJS(globalObject)
+            else
+                .zero;
+            if (parent != .zero) {
+                result.put(globalObject, "parentPath", parent);
+                result.put(globalObject, "path", parent);
+            }
+        }
+        return result;
     }
 
     pub fn toJSNewlyCreated(this: *Dirent, globalObject: *jsc.JSGlobalObject, previous_jsstring: ?*?*jsc.JSString) bun.JSError!jsc.JSValue {
@@ -1237,6 +1294,8 @@ pub const Dirent = struct {
     pub fn deref(this: *const Dirent) void {
         this.name.deref();
         this.path.deref();
+        if (this.buffer_name) |bytes| bun.default_allocator.free(bytes);
+        if (this.buffer_parent) |parent| parent.deref();
     }
 };
 

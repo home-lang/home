@@ -2426,13 +2426,8 @@ pub const Arguments = struct {
         }
 
         pub fn tag(this: *const Readdir) Return.Readdir.Tag {
-            return switch (this.encoding) {
-                .buffer => .buffers,
-                else => if (this.with_file_types)
-                    .with_file_types
-                else
-                    .files,
-            };
+            if (this.with_file_types) return .with_file_types;
+            return if (this.encoding == .buffer) .buffers else .files;
         }
 
         pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Readdir {
@@ -3642,9 +3637,15 @@ const Return = struct {
             switch (this) {
                 .with_file_types => {
                     defer bun.default_allocator.free(this.with_file_types);
+                    var consumed: usize = 0;
+                    defer for (this.with_file_types[consumed..]) |*item| item.deref();
                     var array = try jsc.JSValue.createEmptyArray(globalObject, this.with_file_types.len);
+                    var array_root = jsc.Strong.create(array, globalObject);
+                    defer array_root.deinit();
                     var previous_jsstring: ?*jsc.JSString = null;
                     for (this.with_file_types, 0..) |*item, i| {
+                        // toJSNewlyCreated releases this entry even on failure.
+                        consumed = i + 1;
                         const res = try item.toJSNewlyCreated(globalObject, &previous_jsstring);
                         try array.putIndex(globalObject, @truncate(i), res);
                     }
@@ -4917,6 +4918,70 @@ pub const NodeFS = struct {
         };
     }
 
+    fn readdirRootString(path: PathLike) bun.String {
+        switch (path) {
+            .slice_with_underlying_string, .threadsafe_string => |value| {
+                if (!value.underlying.isEmpty()) {
+                    value.underlying.ref();
+                    return value.underlying;
+                }
+            },
+            else => {},
+        }
+        return bun.String.cloneUTF8(path.slice());
+    }
+
+    const ReaddirDisplayParent = struct {
+        path: bun.String,
+        buffer: ?*jsc.Node.Dirent.BufferParent = null,
+    };
+
+    fn readdirDisplayParent(args: Arguments.Readdir, relative: []const u8) ReaddirDisplayParent {
+        const encoded = if (args.encoding == .buffer) bun.String.empty else jsc.WebCore.encoding.toBunString(relative, args.encoding);
+        defer encoded.deref();
+        if (args.encoding == .buffer or args.path == .buffer) {
+            const converted = encoded.toUTF8(bun.default_allocator);
+            defer converted.deinit();
+            const bytes = if (args.encoding == .buffer) relative else converted.slice();
+            const root = args.path.slice();
+            var joined = std.array_list.Managed(u8).init(bun.default_allocator);
+            defer joined.deinit();
+            bun.handleOom(joined.appendSlice(root));
+            if (root.len == 0 or (root[root.len - 1] != '/' and (!Environment.isWindows or root[root.len - 1] != '\\'))) {
+                bun.handleOom(joined.append(if (Environment.isWindows) '\\' else '/'));
+            }
+            bun.handleOom(joined.appendSlice(bytes));
+            return .{ .path = bun.String.cloneUTF8(joined.items), .buffer = jsc.Node.Dirent.BufferParent.create(joined.items) };
+        }
+        const root = readdirRootString(args.path);
+        defer root.deref();
+        // Keep UTF-16 code units intact, including lone surrogates produced by
+        // utf16le/ucs2 filename decoding. Filesystem traversal still uses bytes.
+        var joined = std.array_list.Managed(u16).init(bun.default_allocator);
+        defer joined.deinit();
+        for (0..root.length()) |i| bun.handleOom(joined.append(root.charAt(i)));
+        bun.handleOom(joined.append(if (Environment.isWindows) '\\' else '/'));
+        for (0..encoded.length()) |i| bun.handleOom(joined.append(encoded.charAt(i)));
+        const normalized = bun.handleOom(bun.default_allocator.alloc(u16, joined.items.len + 2));
+        defer bun.default_allocator.free(normalized);
+        return .{ .path = bun.String.cloneUTF16(bun.path.normalizeBufT(u16, joined.items, normalized, .auto)) };
+    }
+
+    fn makeReaddirDirent(args: Arguments.Readdir, name: []const u8, path: bun.String, kind: jsc.Node.Dirent.Kind, parent: ?*jsc.Node.Dirent.BufferParent, is_root: bool) jsc.Node.Dirent {
+        path.ref();
+        if (parent) |value| value.ref();
+        return .{
+            .name = if (args.encoding == .buffer) bun.String.empty else jsc.WebCore.encoding.toBunString(name, args.encoding),
+            .buffer_name = if (args.encoding == .buffer) bun.handleOom(bun.default_allocator.dupe(u8, name)) else null,
+            .path = path,
+            .buffer_parent = parent,
+            // Buffer path arguments are protected by the async arguments until
+            // all results have been materialized on the JS thread.
+            .original_parent = if (is_root and args.path == .buffer) args.path.buffer.buffer.value else .zero,
+            .kind = kind,
+        };
+    }
+
     fn readdirWithEntries(
         args: Arguments.Readdir,
         fd: bun.FD,
@@ -4927,9 +4992,7 @@ pub const NodeFS = struct {
         const is_u16 = comptime Environment.isWindows and (ExpectedType == bun.String or ExpectedType == bun.jsc.Node.Dirent);
 
         var dirent_path: bun.String = bun.String.dead;
-        defer {
-            dirent_path.deref();
-        }
+        defer dirent_path.deref();
 
         var iterator = DirIterator.iterate(fd, comptime if (is_u16) .u16 else .u8);
         var entry = iterator.next();
@@ -4968,14 +5031,13 @@ pub const NodeFS = struct {
         }) |current| : (entry = iterator.next()) {
             if (ExpectedType == jsc.Node.Dirent) {
                 if (dirent_path.isEmpty()) {
-                    dirent_path = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(basename)), basename), args.encoding);
+                    dirent_path = readdirRootString(args.path);
                 }
             }
             if (comptime !is_u16) {
                 const utf8_name = current.name.slice();
                 switch (ExpectedType) {
                     jsc.Node.Dirent => {
-                        dirent_path.ref();
                         // On filesystems that return DT_UNKNOWN (e.g. FUSE, bind mounts),
                         // fall back to lstat to determine the real file kind.
                         const kind = if (current.kind == .unknown)
@@ -4985,11 +5047,7 @@ pub const NodeFS = struct {
                             }
                         else
                             current.kind;
-                        entries.append(.{
-                            .name = jsc.WebCore.encoding.toBunString(utf8_name, args.encoding),
-                            .path = dirent_path,
-                            .kind = kind,
-                        }) catch |err| bun.handleOom(err);
+                        entries.append(makeReaddirDirent(args, utf8_name, dirent_path, kind, null, true)) catch |err| bun.handleOom(err);
                     },
                     Buffer => {
                         bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(utf8_name, bun.default_allocator))));
@@ -5003,12 +5061,18 @@ pub const NodeFS = struct {
                 const utf16_name = current.name.slice();
                 switch (ExpectedType) {
                     jsc.Node.Dirent => {
-                        dirent_path.ref();
-                        entries.append(.{
-                            .name = bun.String.cloneUTF16(utf16_name),
-                            .path = dirent_path,
-                            .kind = current.kind,
-                        }) catch |err| bun.handleOom(err);
+                        if (args.encoding == .utf8) {
+                            dirent_path.ref();
+                            entries.append(.{
+                                .name = bun.String.cloneUTF16(utf16_name),
+                                .path = dirent_path,
+                                .original_parent = if (args.path == .buffer) args.path.buffer.buffer.value else .zero,
+                                .kind = current.kind,
+                            }) catch |err| bun.handleOom(err);
+                        } else {
+                            const name = bun.strings.fromWPath(re_encoding_buffer.?, utf16_name);
+                            entries.append(makeReaddirDirent(args, name, dirent_path, current.kind, null, true)) catch |err| bun.handleOom(err);
+                        }
                     },
                     bun.String => switch (args.encoding) {
                         .buffer => unreachable,
@@ -5098,8 +5162,10 @@ pub const NodeFS = struct {
         var iterator = DirIterator.iterate(fd, .u8);
         var entry = iterator.next();
         var dirent_path_prev: bun.String = bun.String.empty;
+        var buffer_parent: ?*jsc.Node.Dirent.BufferParent = null;
         defer {
             dirent_path_prev.deref();
+            if (buffer_parent) |parent| parent.deref();
         }
 
         while (switch (entry) {
@@ -5184,22 +5250,17 @@ pub const NodeFS = struct {
             switch (comptime ExpectedType) {
                 bun.jsc.Node.Dirent => {
                     if (dirent_path_prev.isEmpty()) {
-                        const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
-                        dirent_path_prev = bun.String.cloneUTF8(path_u8);
+                        const parent = if (is_root_dir) ReaddirDisplayParent{ .path = readdirRootString(args.path) } else readdirDisplayParent(args, basename);
+                        dirent_path_prev = parent.path;
+                        buffer_parent = parent.buffer;
                     }
-                    dirent_path_prev.ref();
-
-                    entries.append(.{
-                        .name = bun.String.cloneUTF8(utf8_name),
-                        .path = dirent_path_prev,
-                        .kind = effective_kind,
-                    }) catch |err| bun.handleOom(err);
+                    entries.append(makeReaddirDirent(args, utf8_name, dirent_path_prev, effective_kind, buffer_parent, is_root_dir)) catch |err| bun.handleOom(err);
                 },
                 Buffer => {
                     bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(name_to_copy, bun.default_allocator))));
                 },
                 bun.String => {
-                    bun.handleOom(entries.append(bun.String.cloneUTF8(name_to_copy)));
+                    bun.handleOom(entries.append(jsc.WebCore.encoding.toBunString(name_to_copy, args.encoding)));
                 },
                 else => bun.outOfMemory(),
             }
@@ -5281,8 +5342,10 @@ pub const NodeFS = struct {
             var iterator = DirIterator.iterate(fd, .u8);
             var entry = iterator.next();
             var dirent_path_prev: bun.String = bun.String.dead;
+            var buffer_parent: ?*jsc.Node.Dirent.BufferParent = null;
             defer {
                 dirent_path_prev.deref();
+                if (buffer_parent) |parent| parent.deref();
             }
 
             while (switch (entry) {
@@ -5359,15 +5422,11 @@ pub const NodeFS = struct {
                 switch (comptime ExpectedType) {
                     bun.jsc.Node.Dirent => {
                         if (dirent_path_prev.isEmpty()) {
-                            const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
-                            dirent_path_prev = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);
+                            const parent = if (is_root_dir) ReaddirDisplayParent{ .path = readdirRootString(args.path) } else readdirDisplayParent(args, basename);
+                            dirent_path_prev = parent.path;
+                            buffer_parent = parent.buffer;
                         }
-                        dirent_path_prev.ref();
-                        entries.append(.{
-                            .name = jsc.WebCore.encoding.toBunString(utf8_name, args.encoding),
-                            .path = dirent_path_prev,
-                            .kind = effective_kind,
-                        }) catch |err| bun.handleOom(err);
+                        entries.append(makeReaddirDirent(args, utf8_name, dirent_path_prev, effective_kind, buffer_parent, is_root_dir)) catch |err| bun.handleOom(err);
                     },
                     Buffer => {
                         bun.handleOom(entries.append(bun.handleOom(Buffer.fromString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(name_to_copy)), name_to_copy), bun.default_allocator))));
