@@ -1,0 +1,263 @@
+{
+  "schema": 1,
+  "source_commit": "889a44b6a8b2cbd09dcf0ae5b5d5786859540848",
+  "status": "unverified implementation; queued retry",
+  "source_identity": {
+    "commit": "889a44b6a8b2cbd09dcf0ae5b5d5786859540848",
+    "files": {
+      "packages/runtime/src/native/inspector_controller.cpp": "ec03c5e251bf1afae22868beaf77347b1b8d696f0eb21c8b10816c9a1846c08b",
+      "packages/runtime/upstream/src/jsc/bindings/ConsoleObject.cpp": "20b1a7b224793d3a3b24ca56e0be0a2559372120260ebefd0549056f68d26612",
+      "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h": "086add898045f2f9565a7e94e3fc6dae19891f3f0c445c4e9162d376a982b62c",
+      "tests/runtime/native-inspector-console.test.mjs": "7c0cc961558d13f7aaee5040124c9d6a0bed99375e46a88e6fceeeef7e51ce7c",
+      "scripts/run-bounded.pl": "1006e8e5b1624787aa5857e3d0d1fdf861b638e95b1a9bf34d76ceabcbb3f1bd"
+    }
+  },
+  "files": [
+    {
+      "file": "apply-methods.py",
+      "archive": "raw/apply-methods.py.gz",
+      "bytes": 6999,
+      "sha256": "1cb7aeeeb9cc359e2db353e7796d5382ba98cd3a4f6ec9dcf1e89b467e5e6912"
+    },
+    {
+      "file": "baseline-identity.json",
+      "archive": "raw/baseline-identity.json.gz",
+      "bytes": 708,
+      "sha256": "0bfa749e0547c8cbe2539cd958643ad5cf53d8742705ab8f86e6b6a16d1e3f00"
+    },
+    {
+      "file": "build-methods-regenerated.log",
+      "archive": "raw/build-methods-regenerated.log.gz",
+      "bytes": 274,
+      "sha256": "b6267f94da56458056b536a1f838bbdbe0ade8e61291fb9838ff221b3c8f0828"
+    },
+    {
+      "file": "build-methods-regenerated2.log",
+      "archive": "raw/build-methods-regenerated2.log.gz",
+      "bytes": 63,
+      "sha256": "c3c47aaaf9715ee5e82380d3e6ac915e2fc9fdc8fa923ab15c8ddb0a49d65fd0"
+    },
+    {
+      "file": "build-methods-retry.log",
+      "archive": "raw/build-methods-retry.log.gz",
+      "bytes": 75,
+      "sha256": "1fdaa65254e9f26f6778446ac1b19372801d47cf7b72d6c154a64a5822d1f1a5"
+    },
+    {
+      "file": "build-methods-retry2.log",
+      "archive": "raw/build-methods-retry2.log.gz",
+      "bytes": 75,
+      "sha256": "de32b1cc8ef91e306ba082414f8c947356615e5ef93876e496d56c37a1eb8009"
+    },
+    {
+      "file": "build-methods-retry3.log",
+      "archive": "raw/build-methods-retry3.log.gz",
+      "bytes": 75,
+      "sha256": "5e2de987c6847d9fd98df0164704c3dbcc0672441e0e3196428c0d40f1b2466c"
+    },
+    {
+      "file": "build-methods-retry4.log",
+      "archive": "raw/build-methods-retry4.log.gz",
+      "bytes": 77,
+      "sha256": "517182b2744bf88f8a4744b21d570e64be0f82d1376bff23b847db907c5609dc"
+    },
+    {
+      "file": "build-methods-retry5.log",
+      "archive": "raw/build-methods-retry5.log.gz",
+      "bytes": 3245,
+      "sha256": "75b41b08871acfa21e3b97eb04a1b0a8d2f5f0e110180caca148039ade19bbe7"
+    },
+    {
+      "file": "build-methods.log",
+      "archive": "raw/build-methods.log.gz",
+      "bytes": 4912,
+      "sha256": "d9317a26148ec5246df0a4db7cbac913d5d17f3ec56739e23cedaf8599b29e3a"
+    },
+    {
+      "file": "cache-candidates.json",
+      "archive": "raw/cache-candidates.json.gz",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "file": "cache-cleanup.json",
+      "archive": "raw/cache-cleanup.json.gz",
+      "bytes": 194,
+      "sha256": "29b9a261f97d6f1616142c41c4430fc4d0dfbe6ce0c44c5a0da98a116e3d427a"
+    },
+    {
+      "file": "cache-invalidation.json",
+      "archive": "raw/cache-invalidation.json.gz",
+      "bytes": 273,
+      "sha256": "d483d0ec0b910318cc0cfd49419670a4533d2c440a36e777a3247afb8d47d453"
+    },
+    {
+      "file": "current-source-identity.json",
+      "archive": "raw/current-source-identity.json.gz",
+      "bytes": 701,
+      "sha256": "b1f7666cc0199a31d4fae4694ac8ea3800a2c49e03ea6d0e7870793378682ae2"
+    },
+    {
+      "file": "download-cache-cleanup.json",
+      "archive": "raw/download-cache-cleanup.json.gz",
+      "bytes": 147,
+      "sha256": "86288315bde4272b36da55e6915ea6d2f2b5bc25e8ea2ceb37825500d7abba51"
+    },
+    {
+      "file": "duplicate-executable-cleanup.json",
+      "archive": "raw/duplicate-executable-cleanup.json.gz",
+      "bytes": 586,
+      "sha256": "ec2aa2c81110fea7b523408c8a0db5de320261a52db69206da8a0bd201a44a0d"
+    },
+    {
+      "file": "executable-cache-cleanup.json",
+      "archive": "raw/executable-cache-cleanup.json.gz",
+      "bytes": 226,
+      "sha256": "98964a57263162e423fcb3aea75a9d554acc73029ec48459e352302a9adbe1bc"
+    },
+    {
+      "file": "guard-parser-controls.log",
+      "archive": "raw/guard-parser-controls.log.gz",
+      "bytes": 81,
+      "sha256": "b488de8e95cef9b0d5df8c5a275ad13b4249db9697186dbdae0678df12753f9c"
+    },
+    {
+      "file": "guard-probe-controls.log",
+      "archive": "raw/guard-probe-controls.log.gz",
+      "bytes": 104,
+      "sha256": "eb55300aeebc0c6f61ccb69af141de4e79c4fbdd87f47a8195b67a521a7690de"
+    },
+    {
+      "file": "home-lifetime.log",
+      "archive": "raw/home-lifetime.log.gz",
+      "bytes": 931,
+      "sha256": "350425dfbceaaa38a3a90e0d8024d35feda7fb617a13f37a1e3f41d812c4b245"
+    },
+    {
+      "file": "home-probe.json",
+      "archive": "raw/home-probe.json.gz",
+      "bytes": 44665,
+      "sha256": "369b2692fbfb558d7d13c1346500032a99c0b662bbc155009d7353bf928d2812"
+    },
+    {
+      "file": "home-probe.log",
+      "archive": "raw/home-probe.log.gz",
+      "bytes": 23203,
+      "sha256": "51f69f35ff7ae5e30cf165c73f774c78211ecfd2ea8f8412d9e3525f9ddeb544"
+    },
+    {
+      "file": "initial-home-probe.log",
+      "archive": "raw/initial-home-probe.log.gz",
+      "bytes": 2289,
+      "sha256": "6fbee59a25d3dc22363931d28ca6ca869ffbfcb09d8ca584012e9a74e6806525"
+    },
+    {
+      "file": "initial-node-probe.json",
+      "archive": "raw/initial-node-probe.json.gz",
+      "bytes": 73002,
+      "sha256": "92ee57177b5fe029be714eb1d8cb053aa911a364666811399509e114065c99eb"
+    },
+    {
+      "file": "initial-node-probe.log",
+      "archive": "raw/initial-node-probe.log.gz",
+      "bytes": 37795,
+      "sha256": "87f249a3ddd001cb104c4d2dfd41785340852ddc74d41a82463aa60354121d0f"
+    },
+    {
+      "file": "lifetime-probe.mjs",
+      "archive": "raw/lifetime-probe.mjs.gz",
+      "bytes": 1710,
+      "sha256": "f3f32bede9088d35f1564013b0134b407e72502af87d162f2ce4fcd149103c59"
+    },
+    {
+      "file": "lint.log",
+      "archive": "raw/lint.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "method-source-hashes.json",
+      "archive": "raw/method-source-hashes.json.gz",
+      "bytes": 522,
+      "sha256": "bd01e11c7fe01a2c5b92dee9ea2f36d38547a1280d8c69e76fa6f5c4d547e95f"
+    },
+    {
+      "file": "node-lifetime.log",
+      "archive": "raw/node-lifetime.log.gz",
+      "bytes": 1126,
+      "sha256": "99671d6e517fa760403cfac9d0fe1a5d7c19acb393d5af0e5821f1f37b9683d9"
+    },
+    {
+      "file": "node-probe.json",
+      "archive": "raw/node-probe.json.gz",
+      "bytes": 73003,
+      "sha256": "85ac9458c83fa98a9cf6cbd679179c3250ccbaffcc3260f0a20eaadc0ccc0988"
+    },
+    {
+      "file": "node-probe.log",
+      "archive": "raw/node-probe.log.gz",
+      "bytes": 37796,
+      "sha256": "96f5ea05cd99eea794b241f623dc75a126b332976f43ef1d495dc5edecd3e5a3"
+    },
+    {
+      "file": "obsolete-native-cache-cleanup.json",
+      "archive": "raw/obsolete-native-cache-cleanup.json.gz",
+      "bytes": 8451,
+      "sha256": "ac63616c0617ad253a464d720a70d89dc4b76f2ad0b59b5b183375424d6ed590"
+    },
+    {
+      "file": "package-cache-cleanup.json",
+      "archive": "raw/package-cache-cleanup.json.gz",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "file": "package-cache-cleanup2.json",
+      "archive": "raw/package-cache-cleanup2.json.gz",
+      "bytes": 336,
+      "sha256": "2fe2d1785c22a71de8efbcaf1cadc3c8ba9e82013db0be6ac888782b76a186b2"
+    },
+    {
+      "file": "probe-summary.json",
+      "archive": "raw/probe-summary.json.gz",
+      "bytes": 141,
+      "sha256": "f664b21621d4f184b1e4ea31678427a1be8cd72bff8bcefc749a3efe2eeaf294"
+    },
+    {
+      "file": "probe.mjs",
+      "archive": "raw/probe.mjs.gz",
+      "bytes": 1844,
+      "sha256": "4f92de2a6568aef408187563b8df7f663ea3968bd3fcfd6e80e1092e3753f275"
+    },
+    {
+      "file": "references.json",
+      "archive": "raw/references.json.gz",
+      "bytes": 559,
+      "sha256": "8c80cfc2e1e3382fa406d7fbdfc0d2b280a2fd12b09c577edf543e559699e2f8"
+    },
+    {
+      "file": "run-focused.py",
+      "archive": "raw/run-focused.py.gz",
+      "bytes": 1136,
+      "sha256": "cc0f45051f0ad5664e572b61970e032c27fd8ee255fe9b72f5c4bf5cee64b3ba"
+    },
+    {
+      "file": "temporary-package-cache-cleanup.json",
+      "archive": "raw/temporary-package-cache-cleanup.json.gz",
+      "bytes": 808,
+      "sha256": "e6873ea4bfa0159a8f04b8fdeed4843ef72a5aab009a3b0c046bfe958e08c5f9"
+    },
+    {
+      "file": "zombie-footprint-reference.json",
+      "archive": "raw/zombie-footprint-reference.json.gz",
+      "bytes": 1605,
+      "sha256": "3c3fe3d9b699aed4f9e19a77a41b28088a77c86c4d291920f0b4280d2fd029cf"
+    }
+  ],
+  "limitations": [
+    "No production method acceptance result yet. Failed compile, disk admission/critical floor, stale cache and memory-measurement failures retained without pass credit.",
+    "Current diagnostic build log is live and excluded from immutable archive.",
+    "Only stalled-probe and footprint parser controls have passed; no full guard validation or runtime pass claim.",
+    "Source is on the recovery branch pending validation; verified main checkpoint remains unchanged."
+  ]
+}
