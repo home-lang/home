@@ -350,20 +350,20 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 }
 
 pub fn encodePPM(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Header
-    try output.appendSlice("P6\n");
+    try output.appendSlice(allocator, "P6\n");
 
     var buf: [32]u8 = undefined;
-    var len = std.fmt.formatIntBuf(&buf, img.width, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append(' ');
-    len = std.fmt.formatIntBuf(&buf, img.height, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append('\n');
-    try output.appendSlice("255\n");
+    var len = std.fmt.printInt(&buf, img.width, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, ' ');
+    len = std.fmt.printInt(&buf, img.height, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, '\n');
+    try output.appendSlice(allocator, "255\n");
 
     // Pixel data
     var y: u32 = 0;
@@ -371,53 +371,53 @@ pub fn encodePPM(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
-            try output.appendSlice(&[_]u8{ c.r, c.g, c.b });
+            try output.appendSlice(allocator, &[_]u8{ c.r, c.g, c.b });
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 pub fn encodePGM(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
-    try output.appendSlice("P5\n");
+    try output.appendSlice(allocator, "P5\n");
 
     var buf: [32]u8 = undefined;
-    var len = std.fmt.formatIntBuf(&buf, img.width, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append(' ');
-    len = std.fmt.formatIntBuf(&buf, img.height, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append('\n');
-    try output.appendSlice("255\n");
+    var len = std.fmt.printInt(&buf, img.width, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, ' ');
+    len = std.fmt.printInt(&buf, img.height, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, '\n');
+    try output.appendSlice(allocator, "255\n");
 
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
-            try output.append(c.toGrayscale());
+            try output.append(allocator, c.toGrayscale());
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 pub fn encodePBM(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
-    try output.appendSlice("P4\n");
+    try output.appendSlice(allocator, "P4\n");
 
     var buf: [32]u8 = undefined;
-    var len = std.fmt.formatIntBuf(&buf, img.width, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append(' ');
-    len = std.fmt.formatIntBuf(&buf, img.height, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append('\n');
+    var len = std.fmt.printInt(&buf, img.width, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, ' ');
+    len = std.fmt.printInt(&buf, img.height, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, '\n');
 
     const row_bytes = (img.width + 7) / 8;
 
@@ -439,11 +439,11 @@ pub fn encodePBM(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
                 if (bit == 0) break;
                 bit -= 1;
             }
-            try output.append(byte);
+            try output.append(allocator, byte);
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -478,4 +478,51 @@ test "PPM with comments" {
     defer img.deinit();
 
     try std.testing.expectEqual(@as(u32, 2), img.width);
+}
+
+test "PPM encoder round trips RGB pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encodePPM(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
+}
+
+test "PGM encoder round trips grayscale samples" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.WHITE);
+
+    const encoded = try encodePGM(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    const red_gray = Color.RED.toGrayscale();
+    try std.testing.expectEqual(Color{ .r = red_gray, .g = red_gray, .b = red_gray, .a = 255 }, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.WHITE, decoded.getPixel(1, 0).?);
+}
+
+test "PBM encoder round trips packed rows" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 9, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.WHITE);
+    img.setPixel(8, 0, Color.WHITE);
+
+    const encoded = try encodePBM(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(Color.WHITE, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLACK, decoded.getPixel(1, 0).?);
+    try std.testing.expectEqual(Color.WHITE, decoded.getPixel(8, 0).?);
 }
