@@ -328,14 +328,14 @@ test "DsdRate conversions" {
 }
 
 test "DSF detection" {
-    const dsf_magic = "DSD " ++ [_]u8{0} ** 20;
+    const dsf_magic = "DSD " ++ @as([20]u8, @splat(0));
     try std.testing.expect(isDsf(dsf_magic));
 
-    const not_dsf = "RIFF" ++ [_]u8{0} ** 20;
+    const not_dsf = "RIFF" ++ @as([20]u8, @splat(0));
     try std.testing.expect(!isDsf(not_dsf));
 }
 
 test "DSDIFF detection" {
-    const dsdiff_magic = "FRM8" ++ [_]u8{0} ** 4 ++ "DSD ";
+    const dsdiff_magic = "FRM8" ++ @as([4]u8, @splat(0)) ++ "DSD ";
     try std.testing.expect(isDsdiff(dsdiff_magic));
 }

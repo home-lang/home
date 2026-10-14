@@ -73,8 +73,8 @@ pub const SilenceDetector = struct {
             .min_silence_samples = 0,
             .min_sound_samples = 0,
             .hold_samples = 0,
-            .silence_regions = .{},
-            .audio_segments = .{},
+            .silence_regions = .empty,
+            .audio_segments = .empty,
         };
         detector.updateConfig();
         return detector;

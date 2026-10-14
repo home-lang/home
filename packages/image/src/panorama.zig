@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Feature Detection and Matching
@@ -48,7 +49,7 @@ pub fn detectFeatures(allocator: std.mem.Allocator, img: *const Image, options: 
     }
 
     // Compute Harris corners
-    var corners = try computeHarrisCorners(allocator, gray, img.width, img.height, options);
+    const corners = try computeHarrisCorners(allocator, gray, img.width, img.height, options);
     defer allocator.free(corners);
 
     // Extract features from corners
@@ -489,6 +490,4 @@ fn blendImage(canvas: *Image, img: *const Image, H: *const Homography, offset_x:
             }
         }
     }
-
-    _ = options;
 }

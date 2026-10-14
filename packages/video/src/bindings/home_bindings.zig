@@ -86,6 +86,7 @@ pub const Video = struct {
 
         // Detect format from magic bytes
         const format = detectFormat(header_buf[0..bytes_read]);
+        _ = format;
 
         // Get file size for duration estimation
         const stat = try file.stat();
@@ -100,12 +101,11 @@ pub const Video = struct {
             .duration_us = 0,
             .frame_rate = .{ .num = 30, .den = 1 },
             .pixel_format = .yuv420p,
-            .operations = std.ArrayList(Operation).init(allocator),
-            .audio_tracks = std.ArrayList(AudioTrack).init(allocator),
-            .subtitle_tracks = std.ArrayList(SubtitleTrack).init(allocator),
+            .operations = .empty,
+            .audio_tracks = .empty,
+            .subtitle_tracks = .empty,
             .metadata = null,
         };
-        _ = format;
     }
 
     /// Load video from memory buffer
@@ -123,9 +123,9 @@ pub const Video = struct {
             .duration_us = 0,
             .frame_rate = .{ .num = 30, .den = 1 },
             .pixel_format = .yuv420p,
-            .operations = std.ArrayList(Operation).init(allocator),
-            .audio_tracks = std.ArrayList(AudioTrack).init(allocator),
-            .subtitle_tracks = std.ArrayList(SubtitleTrack).init(allocator),
+            .operations = .empty,
+            .audio_tracks = .empty,
+            .subtitle_tracks = .empty,
             .metadata = null,
         };
     }
@@ -143,9 +143,9 @@ pub const Video = struct {
             .duration_us = 0,
             .frame_rate = .{ .num = @intFromFloat(fps * 1000), .den = 1000 },
             .pixel_format = .rgb24,
-            .operations = std.ArrayList(Operation).init(allocator),
-            .audio_tracks = std.ArrayList(AudioTrack).init(allocator),
-            .subtitle_tracks = std.ArrayList(SubtitleTrack).init(allocator),
+            .operations = .empty,
+            .audio_tracks = .empty,
+            .subtitle_tracks = .empty,
             .metadata = null,
         };
     }
@@ -153,9 +153,9 @@ pub const Video = struct {
     pub fn deinit(self: *Self) void {
         if (self.source_path) |path| self.allocator.free(path);
         if (self.source_data) |data| self.allocator.free(data);
-        self.operations.deinit();
-        self.audio_tracks.deinit();
-        self.subtitle_tracks.deinit();
+        self.operations.deinit(self.allocator);
+        self.audio_tracks.deinit(self.allocator);
+        self.subtitle_tracks.deinit(self.allocator);
     }
 
     // ========================================================================
@@ -190,27 +190,27 @@ pub const Video = struct {
         }
 
         // Create encoding buffer
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(self.allocator);
 
         // Write format-specific header
         switch (format) {
             .mp4 => {
                 // Write minimal MP4 ftyp box
-                try buffer.appendSlice(&[_]u8{ 0, 0, 0, 0x14 }); // Size
-                try buffer.appendSlice("ftyp"); // Type
-                try buffer.appendSlice("mp42"); // Major brand
-                try buffer.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // Minor version
-                try buffer.appendSlice("mp42"); // Compatible brand
+                try buffer.appendSlice(self.allocator, &[_]u8{ 0, 0, 0, 0x14 }); // Size
+                try buffer.appendSlice(self.allocator, "ftyp"); // Type
+                try buffer.appendSlice(self.allocator, "mp42"); // Major brand
+                try buffer.appendSlice(self.allocator, &[_]u8{ 0, 0, 0, 0 }); // Minor version
+                try buffer.appendSlice(self.allocator, "mp42"); // Compatible brand
             },
             .webm => {
                 // Write EBML header
-                try buffer.appendSlice(&[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 });
+                try buffer.appendSlice(self.allocator, &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 });
             },
             else => {},
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(self.allocator);
     }
 
     // ========================================================================
@@ -220,42 +220,42 @@ pub const Video = struct {
     /// Resize video
     /// Home API: video.resize(width: u32, height: u32) -> Video
     pub fn resize(self: *Self, width: u32, height: u32) *Self {
-        self.operations.append(.{ .resize = .{ .width = width, .height = height } }) catch {};
+        self.operations.append(self.allocator, .{ .resize = .{ .width = width, .height = height } }) catch {};
         return self;
     }
 
     /// Crop video region
     /// Home API: video.crop(x: u32, y: u32, w: u32, h: u32) -> Video
     pub fn crop(self: *Self, x: u32, y: u32, w: u32, h: u32) *Self {
-        self.operations.append(.{ .crop = .{ .x = x, .y = y, .w = w, .h = h } }) catch {};
+        self.operations.append(self.allocator, .{ .crop = .{ .x = x, .y = y, .w = w, .h = h } }) catch {};
         return self;
     }
 
     /// Trim video by timestamp
     /// Home API: video.trim(start: f64, end: f64) -> Video
     pub fn trim(self: *Self, start: f64, end: f64) *Self {
-        self.operations.append(.{ .trim = .{ .start = start, .end = end } }) catch {};
+        self.operations.append(self.allocator, .{ .trim = .{ .start = start, .end = end } }) catch {};
         return self;
     }
 
     /// Rotate video
     /// Home API: video.rotate(degrees: i32) -> Video
     pub fn rotate(self: *Self, degrees: i32) *Self {
-        self.operations.append(.{ .rotate = degrees }) catch {};
+        self.operations.append(self.allocator, .{ .rotate = degrees }) catch {};
         return self;
     }
 
     /// Flip video horizontally
     /// Home API: video.flip_horizontal() -> Video
     pub fn flipHorizontal(self: *Self) *Self {
-        self.operations.append(.{ .flip_horizontal = {} }) catch {};
+        self.operations.append(self.allocator, .{ .flip_horizontal = {} }) catch {};
         return self;
     }
 
     /// Flip video vertically
     /// Home API: video.flip_vertical() -> Video
     pub fn flipVertical(self: *Self) *Self {
-        self.operations.append(.{ .flip_vertical = {} }) catch {};
+        self.operations.append(self.allocator, .{ .flip_vertical = {} }) catch {};
         return self;
     }
 
@@ -266,28 +266,28 @@ pub const Video = struct {
     /// Adjust brightness
     /// Home API: video.brightness(value: f32) -> Video
     pub fn brightness(self: *Self, value: f32) *Self {
-        self.operations.append(.{ .brightness = value }) catch {};
+        self.operations.append(self.allocator, .{ .brightness = value }) catch {};
         return self;
     }
 
     /// Adjust contrast
     /// Home API: video.contrast(value: f32) -> Video
     pub fn contrast(self: *Self, value: f32) *Self {
-        self.operations.append(.{ .contrast = value }) catch {};
+        self.operations.append(self.allocator, .{ .contrast = value }) catch {};
         return self;
     }
 
     /// Adjust saturation
     /// Home API: video.saturation(value: f32) -> Video
     pub fn saturation(self: *Self, value: f32) *Self {
-        self.operations.append(.{ .saturation = value }) catch {};
+        self.operations.append(self.allocator, .{ .saturation = value }) catch {};
         return self;
     }
 
     /// Convert to grayscale
     /// Home API: video.grayscale() -> Video
     pub fn grayscale(self: *Self) *Self {
-        self.operations.append(.{ .grayscale = {} }) catch {};
+        self.operations.append(self.allocator, .{ .grayscale = {} }) catch {};
         return self;
     }
 
@@ -298,21 +298,21 @@ pub const Video = struct {
     /// Adjust playback speed
     /// Home API: video.speed(factor: f32) -> Video
     pub fn speed(self: *Self, factor: f32) *Self {
-        self.operations.append(.{ .speed = factor }) catch {};
+        self.operations.append(self.allocator, .{ .speed = factor }) catch {};
         return self;
     }
 
     /// Add fade in effect
     /// Home API: video.fade_in(duration: f64) -> Video
     pub fn fadeIn(self: *Self, duration_seconds: f64) *Self {
-        self.operations.append(.{ .fade_in = duration_seconds }) catch {};
+        self.operations.append(self.allocator, .{ .fade_in = duration_seconds }) catch {};
         return self;
     }
 
     /// Add fade out effect
     /// Home API: video.fade_out(duration: f64) -> Video
     pub fn fadeOut(self: *Self, duration_seconds: f64) *Self {
-        self.operations.append(.{ .fade_out = duration_seconds }) catch {};
+        self.operations.append(self.allocator, .{ .fade_out = duration_seconds }) catch {};
         return self;
     }
 
@@ -323,14 +323,14 @@ pub const Video = struct {
     /// Apply blur filter
     /// Home API: video.blur(radius: f32) -> Video
     pub fn blur(self: *Self, radius: f32) *Self {
-        self.operations.append(.{ .blur = radius }) catch {};
+        self.operations.append(self.allocator, .{ .blur = radius }) catch {};
         return self;
     }
 
     /// Apply sharpen filter
     /// Home API: video.sharpen(amount: f32) -> Video
     pub fn sharpen(self: *Self, amount: f32) *Self {
-        self.operations.append(.{ .sharpen = amount }) catch {};
+        self.operations.append(self.allocator, .{ .sharpen = amount }) catch {};
         return self;
     }
 
@@ -341,7 +341,7 @@ pub const Video = struct {
     /// Add audio track to video
     /// Home API: video.add_audio(audio: Audio) -> Video
     pub fn addAudio(self: *Self, audio: *Audio) *Self {
-        self.audio_tracks.append(.{
+        self.audio_tracks.append(self.allocator, .{
             .source = .{ .audio = audio },
             .start_time = 0,
             .volume = 1.0,
@@ -352,7 +352,7 @@ pub const Video = struct {
     /// Add audio from file path
     /// Home API: video.add_audio_file(path: string) -> Video
     pub fn addAudioFile(self: *Self, path: []const u8) *Self {
-        self.audio_tracks.append(.{
+        self.audio_tracks.append(self.allocator, .{
             .source = .{ .file = path },
             .start_time = 0,
             .volume = 1.0,
@@ -381,6 +381,7 @@ pub const Video = struct {
     /// Export video as image sequence
     /// Home API: video.to_images(output_pattern: string)
     pub fn toImages(self: *Self, output_pattern: []const u8) !void {
+        _ = self;
         _ = output_pattern;
         // Export frames as images
     }
@@ -416,9 +417,9 @@ pub const Video = struct {
     /// Home API: video.thumbnails(count: u32) -> [Image]
     pub fn thumbnails(self: *Self, count: u32) ![]VideoFrame {
         var frames = try self.allocator.alloc(VideoFrame, count);
-        const duration = @as(f64, @floatFromInt(self.duration_us)) / 1000000.0;
+        const duration_seconds = @as(f64, @floatFromInt(self.duration_us)) / 1000000.0;
         for (0..count) |i| {
-            const timestamp = duration * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(count));
+            const timestamp = duration_seconds * @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(count));
             frames[i] = try self.getFrame(timestamp);
         }
         return frames;
@@ -472,9 +473,9 @@ pub const Video = struct {
                     const end_us = @as(u64, @intFromFloat(t.end * 1000000));
                     self.duration_us = end_us - start_us;
                 },
-                .brightness => |_| {},
-                .contrast => |_| {},
-                .saturation => |_| {},
+                .brightness => {},
+                .contrast => {},
+                .saturation => {},
                 .grayscale => {},
                 else => {},
             }
@@ -588,7 +589,7 @@ pub const Audio = struct {
             .duration_us = 0,
             .source_path = null,
             .source_data = null,
-            .operations = std.ArrayList(Operation).init(allocator),
+            .operations = .empty,
         };
     }
 
@@ -603,7 +604,7 @@ pub const Audio = struct {
             .duration_us = 0,
             .source_path = try allocator.dupe(u8, path),
             .source_data = null,
-            .operations = std.ArrayList(Operation).init(allocator),
+            .operations = .empty,
         };
     }
 
@@ -618,19 +619,20 @@ pub const Audio = struct {
             .duration_us = 0,
             .source_path = null,
             .source_data = try allocator.dupe(u8, data),
-            .operations = std.ArrayList(Operation).init(allocator),
+            .operations = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
         if (self.source_path) |path| self.allocator.free(path);
         if (self.source_data) |data| self.allocator.free(data);
-        self.operations.deinit();
+        self.operations.deinit(self.allocator);
     }
 
     /// Save audio to file
     /// Home API: audio.save(path: string)
     pub fn save(self: *Self, path: []const u8) !void {
+        _ = self;
         _ = path;
         // Apply operations and save
     }
@@ -639,77 +641,77 @@ pub const Audio = struct {
     /// Home API: audio.encode(format: AudioFormat) -> [u8]
     pub fn encode(self: *Self, format: video.AudioFormat) ![]u8 {
         _ = format;
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        return buffer.toOwnedSlice();
+        var buffer: std.ArrayList(u8) = .empty;
+        return buffer.toOwnedSlice(self.allocator);
     }
 
     /// Resample audio
     /// Home API: audio.resample(sample_rate: u32) -> Audio
     pub fn resample(self: *Self, sample_rate: u32) *Self {
-        self.operations.append(.{ .resample = sample_rate }) catch {};
+        self.operations.append(self.allocator, .{ .resample = sample_rate }) catch {};
         return self;
     }
 
     /// Convert to mono
     /// Home API: audio.to_mono() -> Audio
     pub fn toMono(self: *Self) *Self {
-        self.operations.append(.{ .to_mono = {} }) catch {};
+        self.operations.append(self.allocator, .{ .to_mono = {} }) catch {};
         return self;
     }
 
     /// Convert to stereo
     /// Home API: audio.to_stereo() -> Audio
     pub fn toStereo(self: *Self) *Self {
-        self.operations.append(.{ .to_stereo = {} }) catch {};
+        self.operations.append(self.allocator, .{ .to_stereo = {} }) catch {};
         return self;
     }
 
     /// Trim audio
     /// Home API: audio.trim(start: f64, end: f64) -> Audio
     pub fn trim(self: *Self, start: f64, end: f64) *Self {
-        self.operations.append(.{ .trim = .{ .start = start, .end = end } }) catch {};
+        self.operations.append(self.allocator, .{ .trim = .{ .start = start, .end = end } }) catch {};
         return self;
     }
 
     /// Normalize audio
     /// Home API: audio.normalize() -> Audio
     pub fn normalize(self: *Self) *Self {
-        self.operations.append(.{ .normalize = {} }) catch {};
+        self.operations.append(self.allocator, .{ .normalize = {} }) catch {};
         return self;
     }
 
     /// Adjust volume in dB
     /// Home API: audio.adjust_volume(db: f64) -> Audio
     pub fn adjustVolume(self: *Self, db: f64) *Self {
-        self.operations.append(.{ .volume = db }) catch {};
+        self.operations.append(self.allocator, .{ .volume = db }) catch {};
         return self;
     }
 
     /// Add fade in
     /// Home API: audio.fade_in(duration: f64) -> Audio
     pub fn fadeIn(self: *Self, duration_seconds: f64) *Self {
-        self.operations.append(.{ .fade_in = duration_seconds }) catch {};
+        self.operations.append(self.allocator, .{ .fade_in = duration_seconds }) catch {};
         return self;
     }
 
     /// Add fade out
     /// Home API: audio.fade_out(duration: f64) -> Audio
     pub fn fadeOut(self: *Self, duration_seconds: f64) *Self {
-        self.operations.append(.{ .fade_out = duration_seconds }) catch {};
+        self.operations.append(self.allocator, .{ .fade_out = duration_seconds }) catch {};
         return self;
     }
 
     /// Adjust speed with pitch preservation
     /// Home API: audio.speed(factor: f32) -> Audio
     pub fn speed(self: *Self, factor: f32) *Self {
-        self.operations.append(.{ .speed = factor }) catch {};
+        self.operations.append(self.allocator, .{ .speed = factor }) catch {};
         return self;
     }
 
     /// Reverse audio
     /// Home API: audio.reverse() -> Audio
     pub fn reverse(self: *Self) *Self {
-        self.operations.append(.{ .reverse = {} }) catch {};
+        self.operations.append(self.allocator, .{ .reverse = {} }) catch {};
         return self;
     }
 
@@ -794,13 +796,13 @@ pub const Subtitle = struct {
     pub fn init(allocator: std.mem.Allocator, format: Format) Subtitle {
         return .{
             .allocator = allocator,
-            .cues = std.ArrayList(Cue).init(allocator),
+            .cues = .empty,
             .format = format,
         };
     }
 
     pub fn deinit(self: *Subtitle) void {
-        self.cues.deinit();
+        self.cues.deinit(self.allocator);
     }
 
     /// Load subtitles from file
@@ -815,14 +817,14 @@ pub const Subtitle = struct {
 
         return Subtitle{
             .allocator = allocator,
-            .cues = std.ArrayList(Cue).init(allocator),
+            .cues = .empty,
             .format = format,
         };
     }
 
     /// Add a cue
     pub fn addCue(self: *Subtitle, start: f64, end: f64, text: []const u8) !void {
-        try self.cues.append(.{
+        try self.cues.append(self.allocator, .{
             .start_time = start,
             .end_time = end,
             .text = text,
@@ -831,6 +833,7 @@ pub const Subtitle = struct {
 
     /// Save subtitles to file
     pub fn save(self: *const Subtitle, path: []const u8) !void {
+        _ = self;
         _ = path;
         // Write subtitle file
     }
@@ -854,8 +857,8 @@ pub const GifOptions = struct {
 /// Home API: video.to_gif(options: GifOptions) -> [u8]
 pub fn videoToGif(video_obj: *Video, options: GifOptions) ![]u8 {
     _ = options;
-    var buffer = std.ArrayList(u8).init(video_obj.allocator);
-    return buffer.toOwnedSlice();
+    var buffer: std.ArrayList(u8) = .empty;
+    return buffer.toOwnedSlice(video_obj.allocator);
 }
 
 /// Convert GIF to video
@@ -891,9 +894,9 @@ test "Video binding - basic operations" {
         .duration_us = 60_000_000,
         .frame_rate = .{ .num = 30, .den = 1 },
         .pixel_format = .yuv420p,
-        .operations = std.ArrayList(Video.Operation).init(allocator),
-        .audio_tracks = std.ArrayList(Video.AudioTrack).init(allocator),
-        .subtitle_tracks = std.ArrayList(Video.SubtitleTrack).init(allocator),
+        .operations = .empty,
+        .audio_tracks = .empty,
+        .subtitle_tracks = .empty,
         .metadata = null,
     };
     defer video_obj.deinit();

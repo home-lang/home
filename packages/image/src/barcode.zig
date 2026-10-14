@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // QR Code Generation
@@ -137,7 +138,7 @@ fn generateCode128(allocator: std.mem.Allocator, data: []const u8, bar_width: u3
     defer pattern.deinit();
 
     // Start code
-    try pattern.appendSlice(&[_]bool{true, true, false, true, false, false, true, true, false, false, false});
+    try pattern.appendSlice(&[_]bool{ true, true, false, true, false, false, true, true, false, false, false });
 
     // Data (simplified)
     for (data) |byte| {
@@ -147,7 +148,7 @@ fn generateCode128(allocator: std.mem.Allocator, data: []const u8, bar_width: u3
     }
 
     // Stop code
-    try pattern.appendSlice(&[_]bool{true, true, false, false, true, false, true, true, false, false, true, true});
+    try pattern.appendSlice(&[_]bool{ true, true, false, false, true, false, true, true, false, false, true, true });
 
     const width = pattern.items.len * bar_width;
     var img = try Image.init(allocator, width, height, .rgba);

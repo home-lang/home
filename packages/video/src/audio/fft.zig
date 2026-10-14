@@ -80,12 +80,12 @@ pub fn fft(allocator: std.mem.Allocator, input: []const f32) ![]Complex {
         while (i < n) : (i += len) {
             var w = Complex.init(1.0, 0.0);
 
-            for (0..len / 2) |j| {
-                const u = x[i + j];
-                const v = w.mul(x[i + j + len / 2]);
+            for (0..len / 2) |offset| {
+                const u = x[i + offset];
+                const v = w.mul(x[i + offset + len / 2]);
 
-                x[i + j] = u.add(v);
-                x[i + j + len / 2] = u.sub(v);
+                x[i + offset] = u.add(v);
+                x[i + offset + len / 2] = u.sub(v);
 
                 w = w.mul(wlen);
             }
@@ -138,12 +138,12 @@ pub fn ifft(allocator: std.mem.Allocator, input: []const Complex) ![]Complex {
         while (i < n) : (i += len) {
             var w = Complex.init(1.0, 0.0);
 
-            for (0..len / 2) |j| {
-                const u = x[i + j];
-                const v = w.mul(x[i + j + len / 2]);
+            for (0..len / 2) |offset| {
+                const u = x[i + offset];
+                const v = w.mul(x[i + offset + len / 2]);
 
-                x[i + j] = u.add(v);
-                x[i + j + len / 2] = u.sub(v);
+                x[i + offset] = u.add(v);
+                x[i + offset + len / 2] = u.sub(v);
 
                 w = w.mul(wlen);
             }
@@ -227,14 +227,14 @@ pub const STFT = struct {
             self.allocator.free(frames);
         }
 
-        var window_buffer = try self.allocator.alloc(f32, self.window_size);
+        const window_buffer = try self.allocator.alloc(f32, self.window_size);
         defer self.allocator.free(window_buffer);
 
         for (0..num_frames) |frame_idx| {
             const start = frame_idx * self.hop_size;
 
             // Extract window
-            @memcpy(window_buffer, signal[start..start + self.window_size]);
+            @memcpy(window_buffer, signal[start .. start + self.window_size]);
 
             // Apply window function
             applyWindow(window_buffer, self.window_func);

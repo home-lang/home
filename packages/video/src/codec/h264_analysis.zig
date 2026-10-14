@@ -635,7 +635,7 @@ pub const SpsParser = struct {
 
 /// H.264 PPS parser
 pub const PpsParser = struct {
-    allocator: std.mem.Allocator;
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) PpsParser {
         return .{ .allocator = allocator };
@@ -701,7 +701,7 @@ pub const PpsParser = struct {
 
 /// H.264 slice header parser
 pub const SliceHeaderParser = struct {
-    allocator: std.mem.Allocator;
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) SliceHeaderParser {
         return .{ .allocator = allocator };

@@ -133,7 +133,7 @@ fn decodeDIB(allocator: std.mem.Allocator, data: []const u8, entry: IconDirEntry
     if (pixel_offset >= data.len or pixel_offset + 1 > data.len) return error.TruncatedData;
 
     // Parse color table if needed
-    var color_table: [256]Color = [_]Color{Color{ .r = 0, .g = 0, .b = 0, .a = 255 }} ** 256;
+    var color_table: [256]Color = @splat(Color{ .r = 0, .g = 0, .b = 0, .a = 255 });
     if (bit_count <= 8) {
         const table_data = data[header_size..][0..color_table_size];
         var i: usize = 0;

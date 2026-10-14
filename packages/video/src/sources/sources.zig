@@ -368,7 +368,7 @@ pub const ToneGeneratorSource = struct {
 
         // Set timestamp
         const timestamp_us = @as(u64, @intFromFloat(@as(f64, @floatFromInt(self.samples_generated)) /
-                                                     @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
+            @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
         audio_frame.pts = types.Timestamp.fromMicroseconds(timestamp_us);
 
         self.samples_generated += samples_to_generate;
@@ -460,7 +460,7 @@ pub const SilenceSource = struct {
         // Frame is already zero-initialized, so silence is automatic
         // Just set timestamp
         const timestamp_us = @as(u64, @intFromFloat(@as(f64, @floatFromInt(self.samples_generated)) /
-                                                     @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
+            @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
         audio_frame.pts = types.Timestamp.fromMicroseconds(timestamp_us);
 
         self.samples_generated += samples_to_generate;
@@ -656,7 +656,6 @@ pub const RawAudioSource = struct {
 
         // Copy sample data from source buffer
         const start_idx = self.current_sample * self.channels;
-        const sample_count_total = frames_to_read * self.channels;
 
         for (0..frames_to_read) |frame_idx| {
             for (0..self.channels) |ch| {
@@ -668,7 +667,7 @@ pub const RawAudioSource = struct {
 
         // Set timestamp
         const timestamp_us = @as(u64, @intFromFloat(@as(f64, @floatFromInt(self.current_sample)) /
-                                                     @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
+            @as(f64, @floatFromInt(self.sample_rate)) * 1_000_000.0));
         audio_frame.pts = types.Timestamp.fromMicroseconds(timestamp_us);
 
         self.current_sample += frames_to_read;

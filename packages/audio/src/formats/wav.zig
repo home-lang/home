@@ -486,7 +486,7 @@ test "WAV header parsing" {
         0,   0,   0,   0, // Data size
     };
 
-    var reader = try WavReader.fromMemory(std.testing.allocator, &wav_data);
+    const reader = try WavReader.fromMemory(std.testing.allocator, &wav_data);
     try std.testing.expectEqual(@as(u16, 2), reader.header.channels);
     try std.testing.expectEqual(@as(u32, 44100), reader.header.sample_rate);
     try std.testing.expectEqual(@as(u16, 16), reader.header.bits_per_sample);

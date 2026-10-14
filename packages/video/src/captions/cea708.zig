@@ -237,7 +237,8 @@ pub const Window = struct {
     }
 
     pub fn getText(self: *const Window, allocator: Allocator) ![]const u8 {
-        var output = std.ArrayList(u8).init(allocator);
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
 
         for (0..self.row_count + 1) |r| {
             var has_content = false;
@@ -251,20 +252,17 @@ pub const Window = struct {
             if (has_content) {
                 for (0..self.column_count + 1) |c| {
                     const char = self.buffer[r][c].char;
-                    if (char < 128) {
-                        try output.append(@intCast(char));
-                    } else {
-                        // Simplified: convert to '?'
-                        try output.append('?');
-                    }
+                    var encoded: [4]u8 = undefined;
+                    const encoded_len = try std.unicode.utf8Encode(@intCast(char), &encoded);
+                    try output.appendSlice(allocator, encoded[0..encoded_len]);
                 }
                 if (r < self.row_count) {
-                    try output.append('\n');
+                    try output.append(allocator, '\n');
                 }
             }
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 };
 
@@ -324,16 +322,19 @@ pub const Cea708Decoder = struct {
 
     /// Decode a CEA-708 caption channel packet
     pub fn decodePacket(self: *Cea708Decoder, data: []const u8) ![]CaptionEvent {
-        if (data.len < 3) return &[_]CaptionEvent{};
-
-        var events = std.ArrayList(CaptionEvent).init(self.allocator);
+        var events: std.ArrayList(CaptionEvent) = .empty;
+        errdefer {
+            freeEventText(self.allocator, events.items);
+            events.deinit(self.allocator);
+        }
+        if (data.len < 3) return events.toOwnedSlice(self.allocator);
 
         // Parse service block header
         const service_number = @as(ServiceNumber, @truncate(data[0] & 0x07));
         const block_size = @as(u8, @truncate(data[1] & 0x1F));
 
         if (block_size == 0 or data.len < 2 + block_size) {
-            return events.toOwnedSlice();
+            return events.toOwnedSlice(self.allocator);
         }
 
         self.current_service = service_number;
@@ -375,11 +376,23 @@ pub const Cea708Decoder = struct {
             }
         }
 
-        return events.toOwnedSlice();
+        return events.toOwnedSlice(self.allocator);
+    }
+
+    pub fn deinitEvents(self: *Cea708Decoder, events: []CaptionEvent) void {
+        freeEventText(self.allocator, events);
+        self.allocator.free(events);
+    }
+
+    fn freeEventText(allocator: Allocator, events: []const CaptionEvent) void {
+        for (events) |event| switch (event) {
+            .window_shown => |shown| allocator.free(shown.text),
+            .window_updated => |updated| allocator.free(updated.text),
+            .window_hidden, .service_reset => {},
+        };
     }
 
     fn handleC0Code(self: *Cea708Decoder, service: *Service, code: u8, events: *std.ArrayList(CaptionEvent)) !void {
-        _ = self;
         const window = service.getCurrentWindow();
 
         switch (code) {
@@ -392,7 +405,8 @@ pub const Cea708Decoder = struct {
         // Generate event if window is visible
         if (window.visible) {
             const text = try window.getText(self.allocator);
-            try events.append(.{ .window_updated = .{ .window_id = window.id, .text = text } });
+            errdefer self.allocator.free(text);
+            try events.append(self.allocator, .{ .window_updated = .{ .window_id = window.id, .text = text } });
         }
     }
 
@@ -431,7 +445,8 @@ pub const Cea708Decoder = struct {
                     if (bitmap & (@as(u8, 1) << @intCast(i)) != 0) {
                         service.windows[i].visible = true;
                         const text = try service.windows[i].getText(self.allocator);
-                        try events.append(.{ .window_shown = .{
+                        errdefer self.allocator.free(text);
+                        try events.append(self.allocator, .{ .window_shown = .{
                             .window_id = @intCast(i),
                             .text = text,
                         } });
@@ -445,7 +460,7 @@ pub const Cea708Decoder = struct {
                 for (0..8) |i| {
                     if (bitmap & (@as(u8, 1) << @intCast(i)) != 0) {
                         service.windows[i].visible = false;
-                        try events.append(.{ .window_hidden = .{ .window_id = @intCast(i) } });
+                        try events.append(self.allocator, .{ .window_hidden = .{ .window_id = @intCast(i) } });
                     }
                 }
             },
@@ -473,7 +488,7 @@ pub const Cea708Decoder = struct {
             },
             CMD_RESET => {
                 service.reset();
-                try events.append(.service_reset);
+                try events.append(self.allocator, .service_reset);
             },
             CMD_SET_PEN_ATTRIBUTES => {
                 if (pos + 1 >= data.len) return pos;
@@ -644,7 +659,7 @@ test "CEA-708 window init" {
 test "CEA-708 service init" {
     const testing = std.testing;
 
-    var service = Service.init(1);
+    const service = Service.init(1);
     try testing.expectEqual(@as(ServiceNumber, 1), service.number);
     try testing.expectEqual(@as(u3, 0), service.current_window);
 }

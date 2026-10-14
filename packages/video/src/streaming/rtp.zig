@@ -44,7 +44,7 @@ pub const RtpHeader = struct {
     sequence_number: u16,
     timestamp: u32,
     ssrc: u32,
-    csrc: [15]u32 = [_]u32{0} ** 15, // Contributing sources
+    csrc: [15]u32 = @splat(0), // Contributing sources
 
     pub fn encode(self: *const RtpHeader, out: []u8) !usize {
         if (out.len < RTP_HEADER_MIN_SIZE) return error.BufferTooSmall;
@@ -72,7 +72,7 @@ pub const RtpHeader = struct {
         // CSRC list
         for (0..self.csrc_count) |i| {
             if (offset + 4 > out.len) return error.BufferTooSmall;
-            std.mem.writeInt(u32, out[offset .. offset + 4], self.csrc[i], .big);
+            std.mem.writeInt(u32, out[offset..][0..4], self.csrc[i], .big);
             offset += 4;
         }
 
@@ -114,7 +114,7 @@ pub const RtpHeader = struct {
         var offset: usize = 12;
         for (0..header.csrc_count) |i| {
             if (offset + 4 > data.len) return error.InvalidPacket;
-            header.csrc[i] = std.mem.readInt(u32, data[offset .. offset + 4], .big);
+            header.csrc[i] = std.mem.readInt(u32, data[offset..][0..4], .big);
             offset += 4;
         }
 
@@ -215,6 +215,35 @@ pub const RtspMethod = enum {
     set_parameter,
     announce,
     record,
+
+    pub fn parse(value: []const u8) ?RtspMethod {
+        if (std.ascii.eqlIgnoreCase(value, "OPTIONS")) return .options;
+        if (std.ascii.eqlIgnoreCase(value, "DESCRIBE")) return .describe;
+        if (std.ascii.eqlIgnoreCase(value, "SETUP")) return .setup;
+        if (std.ascii.eqlIgnoreCase(value, "PLAY")) return .play;
+        if (std.ascii.eqlIgnoreCase(value, "PAUSE")) return .pause;
+        if (std.ascii.eqlIgnoreCase(value, "TEARDOWN")) return .teardown;
+        if (std.ascii.eqlIgnoreCase(value, "GET_PARAMETER")) return .get_parameter;
+        if (std.ascii.eqlIgnoreCase(value, "SET_PARAMETER")) return .set_parameter;
+        if (std.ascii.eqlIgnoreCase(value, "ANNOUNCE")) return .announce;
+        if (std.ascii.eqlIgnoreCase(value, "RECORD")) return .record;
+        return null;
+    }
+
+    pub fn wireName(self: RtspMethod) []const u8 {
+        return switch (self) {
+            .options => "OPTIONS",
+            .describe => "DESCRIBE",
+            .setup => "SETUP",
+            .play => "PLAY",
+            .pause => "PAUSE",
+            .teardown => "TEARDOWN",
+            .get_parameter => "GET_PARAMETER",
+            .set_parameter => "SET_PARAMETER",
+            .announce => "ANNOUNCE",
+            .record => "RECORD",
+        };
+    }
 };
 
 pub const RtspRequest = struct {
@@ -243,12 +272,13 @@ pub const RtspRequest = struct {
     }
 
     pub fn serialize(self: *const RtspRequest, allocator: Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        var writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         // Request line
         try writer.print("{s} {s} {s}\r\n", .{
-            @tagName(self.method),
+            self.method.wireName(),
             self.url,
             self.version,
         });
@@ -267,7 +297,7 @@ pub const RtspRequest = struct {
             try writer.writeAll(body);
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     pub fn parse(data: []const u8, allocator: Allocator) !RtspRequest {
@@ -280,8 +310,11 @@ pub const RtspRequest = struct {
         const method_str = parts.next() orelse return error.InvalidRequest;
         const url = parts.next() orelse return error.InvalidRequest;
         const version = parts.next() orelse return error.InvalidRequest;
+        if (!std.mem.eql(u8, std.mem.trim(u8, version, "\r"), "RTSP/1.0")) {
+            return error.UnsupportedVersion;
+        }
 
-        const method = std.meta.stringToEnum(RtspMethod, method_str) orelse return error.InvalidMethod;
+        const method = RtspMethod.parse(method_str) orelse return error.InvalidMethod;
 
         var request = RtspRequest.init(allocator, method, url);
 
@@ -327,8 +360,9 @@ pub const RtspResponse = struct {
     }
 
     pub fn serialize(self: *const RtspResponse, allocator: Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        var writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         // Status line
         try writer.print("{s} {d} {s}\r\n", .{
@@ -351,7 +385,7 @@ pub const RtspResponse = struct {
             try writer.writeAll(body);
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     pub fn parse(data: []const u8, allocator: Allocator) !RtspResponse {
@@ -438,7 +472,7 @@ pub const SdpSession = struct {
     pub fn init(allocator: Allocator) SdpSession {
         return .{
             .attributes = std.StringHashMap([]const u8).init(allocator),
-            .media = std.ArrayList(SdpMedia).init(allocator),
+            .media = .empty,
             .allocator = allocator,
         };
     }
@@ -448,11 +482,12 @@ pub const SdpSession = struct {
         for (self.media.items) |*media| {
             media.deinit();
         }
-        self.media.deinit();
+        self.media.deinit(self.allocator);
     }
 
     pub fn parse(data: []const u8, allocator: Allocator) !SdpSession {
         var session = SdpSession.init(allocator);
+        errdefer session.deinit();
         var lines = std.mem.splitScalar(u8, data, '\n');
 
         var current_media: ?*SdpMedia = null;
@@ -519,21 +554,29 @@ pub const SdpSession = struct {
                     const port = try std.fmt.parseInt(u16, port_str, 10);
                     const protocol = parts.next() orelse return error.InvalidSdp;
 
-                    var formats = std.ArrayList([]const u8).init(allocator);
+                    var formats: std.ArrayList([]const u8) = .empty;
+                    defer formats.deinit(allocator);
+                    errdefer for (formats.items) |fmt| allocator.free(fmt);
                     while (parts.next()) |fmt| {
-                        try formats.append(try allocator.dupe(u8, fmt));
+                        const owned_format = try allocator.dupe(u8, fmt);
+                        errdefer allocator.free(owned_format);
+                        try formats.append(allocator, owned_format);
                     }
 
+                    const owned_formats = try formats.toOwnedSlice(allocator);
                     var media = SdpMedia{
                         .media_type = media_type,
                         .port = port,
                         .protocol = protocol,
-                        .formats = try formats.toOwnedSlice(),
+                        .formats = owned_formats,
                         .attributes = std.StringHashMap([]const u8).init(allocator),
                         .allocator = allocator,
                     };
+                    var media_owned_by_session = false;
+                    errdefer if (!media_owned_by_session) media.deinit();
 
-                    try session.media.append(media);
+                    try session.media.append(allocator, media);
+                    media_owned_by_session = true;
                     current_media = &session.media.items[session.media.items.len - 1];
                 },
                 else => {},

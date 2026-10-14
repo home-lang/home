@@ -166,8 +166,8 @@ pub const AacFullEncoder = struct {
             var sum: f32 = 0.0;
             for (0..2 * N) |n| {
                 const arg = (std.math.pi / @as(f32, @floatFromInt(N))) *
-                           (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 2.0) *
-                           (@as(f32, @floatFromInt(k)) + 0.5);
+                    (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 2.0) *
+                    (@as(f32, @floatFromInt(k)) + 0.5);
                 sum += windowed[n] * @cos(arg);
             }
             self.mdct_coeffs[channel][k] = sum;
@@ -266,7 +266,7 @@ pub const AacFullEncoder = struct {
 
         // Estimate size (scalefactors + quantized data)
         const estimated_size = 1024 + (self.channels * 512);
-        var buffer = try self.allocator.alloc(u8, estimated_size);
+        const buffer = try self.allocator.alloc(u8, estimated_size);
         @memset(buffer, 0);
 
         var bit_offset: usize = 0;

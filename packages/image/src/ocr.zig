@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Text Region Detection (Edge-Based, No ML)
@@ -44,15 +45,15 @@ pub fn detectTextRegions(allocator: std.mem.Allocator, img: *const Image, option
     }
 
     // Edge detection (Sobel)
-    var edges = try detectEdges(allocator, gray, img.width, img.height, options.edge_threshold);
+    const edges = try detectEdges(allocator, gray, img.width, img.height, options.edge_threshold);
     defer allocator.free(edges);
 
     // Stroke Width Transform
-    var swt = try strokeWidthTransform(allocator, edges, gray, img.width, img.height);
+    const swt = try strokeWidthTransform(allocator, edges, gray, img.width, img.height);
     defer allocator.free(swt);
 
     // Connected component analysis
-    var components = try findConnectedComponents(allocator, swt, img.width, img.height);
+    const components = try findConnectedComponents(allocator, swt, img.width, img.height);
     defer {
         for (components) |*c| {
             allocator.free(c.pixels);
@@ -223,7 +224,6 @@ fn strokeWidthTransform(allocator: std.mem.Allocator, edges: []const u8, gray: [
         }
     }
 
-    _ = gray;
     return swt;
 }
 
@@ -275,8 +275,8 @@ fn findConnectedComponents(allocator: std.mem.Allocator, swt: []const f32, width
                 // Check 8-connected neighbors
                 const neighbors = [_][2]i32{
                     .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 },
-                    .{ -1, 0 },             .{ 1, 0 },
-                    .{ -1, 1 },  .{ 0, 1 },  .{ 1, 1 },
+                    .{ -1, 0 },  .{ 1, 0 },  .{ -1, 1 },
+                    .{ 0, 1 },   .{ 1, 1 },
                 };
 
                 for (neighbors) |n| {
@@ -370,7 +370,7 @@ pub fn detectLines(allocator: std.mem.Allocator, img: *const Image, threshold: u
     }
 
     // Edge detection
-    var edges = try detectEdges(allocator, gray, img.width, img.height, 50);
+    const edges = try detectEdges(allocator, gray, img.width, img.height, 50);
     defer allocator.free(edges);
 
     // Hough transform

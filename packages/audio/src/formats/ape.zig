@@ -280,9 +280,9 @@ test "ApeCompression values" {
 }
 
 test "APE detection" {
-    const ape_magic = "MAC " ++ [_]u8{0} ** 20;
+    const ape_magic = "MAC " ++ @as([20]u8, @splat(0));
     try std.testing.expect(isApe(ape_magic));
 
-    const not_ape = "RIFF" ++ [_]u8{0} ** 20;
+    const not_ape = "RIFF" ++ @as([20]u8, @splat(0));
     try std.testing.expect(!isApe(not_ape));
 }

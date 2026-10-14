@@ -120,7 +120,7 @@ pub const VorbisParser = struct {
         offset += 4;
 
         // Parse comments
-        var comments = try self.allocator.alloc(Vorbis.Comment, comment_count);
+        const comments = try self.allocator.alloc(Vorbis.Comment, comment_count);
         errdefer self.allocator.free(comments);
 
         for (comments) |*comment| {

@@ -100,7 +100,7 @@ pub const Hdr10PlusMetadata = struct {
 
     // Bezier curve for tone mapping
     num_bezier_curve_anchors: u8 = 0,
-    bezier_curve_anchors: [15]u16 = [_]u16{0} ** 15,
+    bezier_curve_anchors: [15]u16 = @splat(0),
     knee_point_x: u16 = 0,
     knee_point_y: u16 = 0,
 

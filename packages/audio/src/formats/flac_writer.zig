@@ -96,7 +96,7 @@ pub const FlacWriter = struct {
 
         var writer = Self{
             .allocator = allocator,
-            .buffer = .{},
+            .buffer = .empty,
             .channels = channels,
             .sample_rate = sample_rate,
             .bits_per_sample = bits_per_sample,

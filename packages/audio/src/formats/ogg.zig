@@ -613,7 +613,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !AudioFrame {
 // ============================================================================
 
 test "OGG detection" {
-    const ogg_data = [_]u8{ 'O', 'g', 'g', 'S', 0, 0x02 } ++ [_]u8{0} ** 22;
+    const ogg_data = [_]u8{ 'O', 'g', 'g', 'S', 0, 0x02 } ++ @as([22]u8, @splat(0));
     try std.testing.expect(isOgg(&ogg_data));
 
     const not_ogg = [_]u8{ 'R', 'I', 'F', 'F' };

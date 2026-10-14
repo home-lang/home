@@ -517,7 +517,7 @@ fn parseByteRange(s: []const u8) ?Segment.ByteRange {
 
 /// Check if content is an HLS playlist
 pub fn isHls(data: []const u8) bool {
-    const trimmed = std.mem.trimLeft(u8, data, " \t\r\n");
+    const trimmed = std.mem.trimStart(u8, data, " \t\r\n");
     return std.mem.startsWith(u8, trimmed, "#EXTM3U");
 }
 

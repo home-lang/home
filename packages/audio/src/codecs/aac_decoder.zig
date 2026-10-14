@@ -163,7 +163,7 @@ pub const AacDecoder = struct {
             .sample_rate = sample_rate,
             .channels = channels,
             .profile = profile,
-            .channel_elements = [_]?ChannelElement{null} ** MAX_CHANNELS,
+            .channel_elements = @splat(null),
             .sine_window_long = undefined,
             .sine_window_short = undefined,
             .kbd_window_long = undefined,
@@ -427,7 +427,7 @@ test "IMDCT 1024" {
     var decoder = try AacDecoder.init(allocator, 44100, 2, .aac_lc);
     defer decoder.deinit();
 
-    var spectrum: [FRAME_LEN_LONG]f32 = [_]f32{0} ** FRAME_LEN_LONG;
+    var spectrum: [FRAME_LEN_LONG]f32 = @splat(0);
     var time_data: [FRAME_LEN_LONG]f32 = undefined;
 
     spectrum[0] = 1.0; // DC component

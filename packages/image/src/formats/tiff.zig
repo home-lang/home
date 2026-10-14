@@ -458,7 +458,7 @@ fn decompressLZW(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
 
     // String table
     var table: [4096][]u8 = undefined;
-    var table_alloc: [4096]bool = .{false} ** 4096;
+    var table_alloc: [4096]bool = @splat(false);
     defer {
         for (&table, 0..) |*entry, idx| {
             if (table_alloc[idx]) {

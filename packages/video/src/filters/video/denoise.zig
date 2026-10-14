@@ -627,5 +627,5 @@ test "DenoiseFilter with radius" {
 }
 
 test "DenoiseMethod enum" {
-    try std.testing.expectEqual(@as(usize, 5), @typeInfo(DenoiseMethod).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 5), @typeInfo(DenoiseMethod).@"enum".field_names.len);
 }

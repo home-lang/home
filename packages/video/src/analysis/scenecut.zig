@@ -44,7 +44,7 @@ pub const ScenecutDetector = struct {
     pub fn init(allocator: Allocator, options: ScenecutOptions) ScenecutDetector {
         return .{
             .options = options,
-            .history = std.ArrayList(f32).init(allocator),
+            .history = .empty,
             .allocator = allocator,
         };
     }
@@ -56,7 +56,7 @@ pub const ScenecutDetector = struct {
         if (self.previous_edges) |edges| {
             self.allocator.free(edges);
         }
-        self.history.deinit();
+        self.history.deinit(self.allocator);
     }
 
     pub fn processFrame(
@@ -115,7 +115,7 @@ pub const ScenecutDetector = struct {
             }
 
             // Add to history
-            try self.history.append(histogram_diff);
+            try self.history.append(self.allocator, histogram_diff);
             if (self.history.items.len > 100) {
                 _ = self.history.orderedRemove(0);
             }
@@ -204,7 +204,7 @@ pub const ScenecutDetector = struct {
 // ============================================================================
 
 pub const Histogram = struct {
-    bins: [256]u32 = [_]u32{0} ** 256,
+    bins: [256]u32 = @splat(0),
     total_pixels: u32 = 0,
 
     pub fn fromFrame(luma: []const u8) Histogram {
@@ -538,13 +538,13 @@ pub const SceneAnalyzer = struct {
 
     pub fn init(allocator: Allocator) SceneAnalyzer {
         return .{
-            .scenes = std.ArrayList(Scene).init(allocator),
+            .scenes = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *SceneAnalyzer) void {
-        self.scenes.deinit();
+        self.scenes.deinit(self.allocator);
     }
 
     pub fn onSceneCut(self: *SceneAnalyzer, frame_number: u32, brightness: f32, motion: f32) !void {
@@ -554,7 +554,7 @@ pub const SceneAnalyzer = struct {
             const avg_brightness = @as(f32, @floatCast(self.brightness_sum / @as(f64, @floatFromInt(duration))));
             const avg_motion = @as(f32, @floatCast(self.motion_sum / @as(f64, @floatFromInt(duration))));
 
-            try self.scenes.append(.{
+            try self.scenes.append(self.allocator, .{
                 .start_frame = self.current_scene_start,
                 .end_frame = frame_number - 1,
                 .duration_frames = duration,
@@ -566,8 +566,8 @@ pub const SceneAnalyzer = struct {
 
         // Start new scene
         self.current_scene_start = frame_number;
-        self.brightness_sum = 0;
-        self.motion_sum = 0;
+        self.brightness_sum = brightness;
+        self.motion_sum = motion;
         self.shot_count = 1;
     }
 
@@ -589,7 +589,7 @@ pub const SceneAnalyzer = struct {
             else
                 0;
 
-            try self.scenes.append(.{
+            try self.scenes.append(self.allocator, .{
                 .start_frame = self.current_scene_start,
                 .end_frame = final_frame,
                 .duration_frames = duration,
@@ -612,8 +612,8 @@ pub const SceneAnalyzer = struct {
 test "Histogram comparison" {
     const testing = std.testing;
 
-    var frame1 = [_]u8{100} ** 256;
-    var frame2 = [_]u8{100} ** 256;
+    var frame1: [256]u8 = @splat(100);
+    var frame2: [256]u8 = @splat(100);
 
     const hist1 = Histogram.fromFrame(&frame1);
     const hist2 = Histogram.fromFrame(&frame2);
@@ -628,8 +628,8 @@ test "Scene cut detection" {
     var detector = ScenecutDetector.init(testing.allocator, .{ .min_scene_length_frames = 2 });
     defer detector.deinit();
 
-    var frame1 = [_]u8{100} ** 256;
-    var frame2 = [_]u8{200} ** 256;
+    var frame1: [256]u8 = @splat(100);
+    var frame2: [256]u8 = @splat(200);
 
     // First frame
     _ = try detector.processFrame(&frame1, 16, 16);
@@ -646,8 +646,8 @@ test "Motion vector calculation" {
 
     const analyzer = MotionAnalyzer{};
 
-    var frame1 = [_]u8{100} ** (64 * 64);
-    var frame2 = [_]u8{100} ** (64 * 64);
+    var frame1: [64 * 64]u8 = @splat(100);
+    var frame2: [64 * 64]u8 = @splat(100);
 
     const vectors = try analyzer.analyzeMotion(&frame1, &frame2, 64, 64, testing.allocator);
     defer testing.allocator.free(vectors);

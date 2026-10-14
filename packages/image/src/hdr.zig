@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // HDR Image (32-bit float per channel)
@@ -71,7 +72,7 @@ pub const HDRImage = struct {
     }
 
     pub fn clone(self: *const HDRImage) !HDRImage {
-        var result = try HDRImage.init(self.allocator, self.width, self.height);
+        const result = try HDRImage.init(self.allocator, self.width, self.height);
         @memcpy(result.data, self.data);
         return result;
     }
@@ -719,7 +720,7 @@ pub const HDRToSDROptions = struct {
 };
 
 pub fn convertHDRToSDR(allocator: std.mem.Allocator, hdr: *const HDRImage, options: HDRToSDROptions) !Image {
-    var tone_options = ToneMapOptions{
+    const tone_options = ToneMapOptions{
         .exposure = options.exposure,
         .gamma = options.gamma,
         .saturation = options.color_saturation,

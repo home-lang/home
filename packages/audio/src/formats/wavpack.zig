@@ -247,10 +247,10 @@ test "WavPackFlags bytes per sample" {
 }
 
 test "WavPack detection" {
-    const wvpk_magic = "wvpk" ++ [_]u8{0} ** 20;
+    const wvpk_magic = "wvpk" ++ @as([20]u8, @splat(0));
     try std.testing.expect(isWavPack(wvpk_magic));
 
-    const not_wvpk = "RIFF" ++ [_]u8{0} ** 20;
+    const not_wvpk = "RIFF" ++ @as([20]u8, @splat(0));
     try std.testing.expect(!isWavPack(not_wvpk));
 }
 

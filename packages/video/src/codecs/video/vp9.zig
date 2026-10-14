@@ -166,7 +166,7 @@ pub const SuperframeIndex = struct {
     pub fn init() SuperframeIndex {
         return .{
             .frame_count = 0,
-            .frame_sizes = [_]u32{0} ** 8,
+            .frame_sizes = @splat(0),
             .total_size = 0,
         };
     }
@@ -274,8 +274,8 @@ pub const FrameParser = struct {
         header.intra_only = false;
         header.reset_frame_context = 0;
         header.refresh_frame_flags = 0;
-        header.ref_frame_idx = [_]u3{0} ** 3;
-        header.ref_frame_sign_bias = [_]bool{false} ** 4;
+        header.ref_frame_idx = @splat(0);
+        header.ref_frame_sign_bias = @splat(false);
         header.allow_high_precision_mv = false;
         header.interpolation_filter = .eighttap;
         header.delta_q_y_dc = 0;
@@ -727,7 +727,7 @@ test "Superframe iterator" {
 
 test "Frame parser initialization" {
     const frame_data = [_]u8{ 0x82, 0x00, 0x00, 0x00 };
-    var parser = FrameParser.init(&frame_data);
+    const parser = FrameParser.init(&frame_data);
     try std.testing.expectEqual(@as(usize, 0), parser.pos);
     try std.testing.expectEqual(@as(u4, 0), parser.bit_pos);
 }

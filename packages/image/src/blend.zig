@@ -70,7 +70,7 @@ pub fn blend(base: Color, overlay_color: Color, mode: BlendMode, opacity: f32) C
         .r = @intFromFloat(@as(f32, @floatFromInt(base.r)) * (1 - op) + @as(f32, @floatFromInt(blended.r)) * op),
         .g = @intFromFloat(@as(f32, @floatFromInt(base.g)) * (1 - op) + @as(f32, @floatFromInt(blended.g)) * op),
         .b = @intFromFloat(@as(f32, @floatFromInt(base.b)) * (1 - op) + @as(f32, @floatFromInt(blended.b)) * op),
-        .a = @max(base.a, @intFromFloat(@as(f32, @floatFromInt(overlay_color.a)) * op)),
+        .a = @max(base.a, @as(u8, @intFromFloat(@as(f32, @floatFromInt(overlay_color.a)) * op))),
     };
 }
 

@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Sprite Definition
@@ -203,14 +204,14 @@ pub const TextureAtlas = struct {
         std.mem.sort(usize, indices, SpriteSortContext{ .sprites = self.sprites.items }, SpriteSortContext.lessThan);
 
         // Pack based on algorithm
-        const packed = switch (options.algorithm) {
+        const did_pack = switch (options.algorithm) {
             .shelf => try self.packShelf(indices, options),
             .maxrects => try self.packMaxRects(indices, options),
             .guillotine => try self.packGuillotine(indices, options),
             .skyline => try self.packSkyline(indices, options),
         };
 
-        if (!packed) return false;
+        if (!did_pack) return false;
 
         // Adjust to power of two if needed
         if (options.power_of_two) {
@@ -877,7 +878,7 @@ pub const SpriteAnimation = struct {
         const total = self.getTotalDuration();
         if (total == 0) return &self.frames.items[0];
 
-        var t = if (self.loop) time_ms % total else @min(time_ms, total);
+        const t = if (self.loop) time_ms % total else @min(time_ms, total);
         var elapsed: u32 = 0;
 
         for (self.frames.items) |*frame| {

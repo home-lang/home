@@ -228,7 +228,7 @@ pub const Sps = struct {
             .offset_for_non_ref_pic = 0,
             .offset_for_top_to_bottom_field = 0,
             .num_ref_frames_in_pic_order_cnt_cycle = 0,
-            .offset_for_ref_frame = [_]i32{0} ** 256,
+            .offset_for_ref_frame = @splat(0),
             .max_num_ref_frames = 0,
             .gaps_in_frame_num_value_allowed_flag = false,
             .pic_width_in_mbs = 0,
@@ -775,7 +775,7 @@ pub const H264NalIterator = struct {
                     if (self.data[nal_end] == 0 and
                         self.data[nal_end + 1] == 0 and
                         (self.data[nal_end + 2] == 1 or
-                        (self.data[nal_end + 2] == 0 and self.data[nal_end + 3] == 1)))
+                            (self.data[nal_end + 2] == 0 and self.data[nal_end + 3] == 1)))
                     {
                         break;
                     }

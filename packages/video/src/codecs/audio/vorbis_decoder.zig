@@ -36,19 +36,19 @@ pub const VorbisFullDecoder = struct {
             .sample_rate = 44100,
             .channels = 2,
             .identification = undefined,
-            .floor_curves = [_][256]f32{[_]f32{0.0} ** 256} ** 2,
-            .residue_vectors = [_][4096]f32{[_]f32{0.0} ** 4096} ** 8,
-            .mdct_output = [_][4096]f32{[_]f32{0.0} ** 4096} ** 8,
-            .previous_window = [_][4096]f32{[_]f32{0.0} ** 4096} ** 8,
-            .codebook_entries = [_]u16{0} ** 16,
-            .codebook_dimensions = [_]u8{0} ** 16,
-            .codebook_vectors = [_][256]f32{[_]f32{0.0} ** 256} ** 16,
+            .floor_curves = @splat(@splat(0.0)),
+            .residue_vectors = @splat(@splat(0.0)),
+            .mdct_output = @splat(@splat(0.0)),
+            .previous_window = @splat(@splat(0.0)),
+            .codebook_entries = @splat(0),
+            .codebook_dimensions = @splat(0),
+            .codebook_vectors = @splat(@splat(0.0)),
             .floor_multiplier = 1,
-            .floor_values = [_]u16{0} ** 256,
-            .floor_step2_flag = [_]bool{false} ** 256,
+            .floor_values = @splat(0),
+            .floor_step2_flag = @splat(false),
             .mode_count = 1,
-            .mode_blockflag = [_]bool{false} ** 64,
-            .mode_mapping = [_]u8{0} ** 64,
+            .mode_blockflag = @splat(false),
+            .mode_mapping = @splat(0),
         };
     }
 
@@ -207,8 +207,6 @@ pub const VorbisFullDecoder = struct {
     }
 
     fn parseMapping(self: *VorbisFullDecoder, reader: *BitstreamReader) !void {
-        _ = self;
-
         const mapping_type = try reader.readBits(16);
         if (mapping_type != 0) return error.UnsupportedMapping;
 
@@ -308,7 +306,7 @@ pub const VorbisFullDecoder = struct {
 
         if (!nonzero) {
             // Unused floor
-            @memset(self.floor_curves[channel][0..blocksize / 2], 0.0);
+            @memset(self.floor_curves[channel][0 .. blocksize / 2], 0.0);
             return;
         }
 
@@ -373,8 +371,8 @@ pub const VorbisFullDecoder = struct {
 
             for (0..N2) |k| {
                 const arg = (std.math.pi / @as(f32, @floatFromInt(N))) *
-                           (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 4.0) *
-                           (@as(f32, @floatFromInt(k)) + 0.5);
+                    (@as(f32, @floatFromInt(n)) + 0.5 + @as(f32, @floatFromInt(N)) / 4.0) *
+                    (@as(f32, @floatFromInt(k)) + 0.5);
 
                 sum += self.residue_vectors[channel][k] * @cos(arg);
             }

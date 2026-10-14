@@ -57,6 +57,7 @@ pub const MediaError = error{
     ResourceExhausted,
     BufferTooSmall,
     AllocationFailed,
+    Timeout,
 
     // Hardware errors
     HardwareError,
@@ -105,6 +106,7 @@ pub const ErrorCode = enum(i32) {
     resource_exhausted = -61,
     buffer_too_small = -62,
     allocation_failed = -63,
+    timeout = -64,
     hardware_error = -70,
     device_not_found = -71,
     device_not_supported = -72,
@@ -147,6 +149,7 @@ pub const ErrorCode = enum(i32) {
             .resource_exhausted => MediaError.ResourceExhausted,
             .buffer_too_small => MediaError.BufferTooSmall,
             .allocation_failed => MediaError.AllocationFailed,
+            .timeout => MediaError.Timeout,
             .hardware_error => MediaError.HardwareError,
             .device_not_found => MediaError.DeviceNotFound,
             .device_not_supported => MediaError.DeviceNotSupported,
@@ -191,6 +194,7 @@ pub const ErrorCode = enum(i32) {
             MediaError.ResourceExhausted => .resource_exhausted,
             MediaError.BufferTooSmall => .buffer_too_small,
             MediaError.AllocationFailed => .allocation_failed,
+            MediaError.Timeout => .timeout,
             MediaError.HardwareError => .hardware_error,
             MediaError.DeviceNotFound => .device_not_found,
             MediaError.DeviceNotSupported => .device_not_supported,
@@ -249,7 +253,7 @@ pub const ErrorCategory = enum {
             MediaError.DecodeError, MediaError.EncodeError, MediaError.CodecNotFound, MediaError.CodecInitFailed, MediaError.CodecConfigError => .codec,
             MediaError.FilterError, MediaError.FilterNotFound, MediaError.FilterConfigError, MediaError.FilterChainError => .filter,
             MediaError.PipelineError, MediaError.PipelineNotReady, MediaError.PipelineAlreadyRunning, MediaError.InputNotSet, MediaError.OutputNotSet => .pipeline,
-            MediaError.ResourceBusy, MediaError.ResourceExhausted, MediaError.BufferTooSmall, MediaError.AllocationFailed => .resource,
+            MediaError.ResourceBusy, MediaError.ResourceExhausted, MediaError.BufferTooSmall, MediaError.AllocationFailed, MediaError.Timeout => .resource,
             MediaError.HardwareError, MediaError.DeviceNotFound, MediaError.DeviceNotSupported => .hardware,
         };
     }
@@ -265,6 +269,7 @@ pub fn isRecoverable(err: MediaError) bool {
         MediaError.ResourceBusy,
         MediaError.BufferTooSmall,
         MediaError.EndOfStream,
+        MediaError.Timeout,
         => true,
         else => false,
     };
@@ -309,6 +314,7 @@ pub fn getUserMessage(err: MediaError) []const u8 {
         MediaError.ResourceExhausted => "Resource exhausted",
         MediaError.BufferTooSmall => "Buffer too small",
         MediaError.AllocationFailed => "Memory allocation failed",
+        MediaError.Timeout => "Operation timed out",
         MediaError.HardwareError => "Hardware error",
         MediaError.DeviceNotFound => "Device not found",
         MediaError.DeviceNotSupported => "Device not supported",
@@ -347,7 +353,7 @@ pub fn Result(comptime T: type) type {
             return self == .err;
         }
 
-        pub fn map(self: Self, comptime func: fn (T) anytype) Result(@TypeOf(func(undefined))) {
+        pub fn map(self: Self, comptime func: anytype) Result(@TypeOf(func(@as(T, undefined)))) {
             return switch (self) {
                 .ok => |value| .{ .ok = func(value) },
                 .err => |e| .{ .err = e },
@@ -378,4 +384,24 @@ test "Error category" {
 test "Recoverable errors" {
     try std.testing.expect(isRecoverable(MediaError.ResourceBusy));
     try std.testing.expect(!isRecoverable(MediaError.UnsupportedFormat));
+}
+
+test "Result map transforms values and preserves errors" {
+    const increment = struct {
+        fn call(value: u8) u16 {
+            return value + 1;
+        }
+    }.call;
+
+    const mapped = (Result(u8){ .ok = 41 }).map(increment);
+    switch (mapped) {
+        .ok => |value| try std.testing.expectEqual(@as(u16, 42), value),
+        .err => |e| return e,
+    }
+
+    const failed = (Result(u8){ .err = MediaError.InvalidArgument }).map(increment);
+    switch (failed) {
+        .ok => return error.TestUnexpectedResult,
+        .err => |e| try std.testing.expectEqual(MediaError.InvalidArgument, e),
+    }
 }

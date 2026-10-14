@@ -109,7 +109,7 @@ pub const Chromagram = struct {
     const Self = @This();
 
     pub fn init() Self {
-        return Self{ .bins = [_]f32{0} ** 12 };
+        return Self{ .bins = @splat(0) };
     }
 
     pub fn clear(self: *Self) void {

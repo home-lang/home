@@ -332,7 +332,7 @@ pub fn analyzeLoudnessRange(
     }
 
     // Sort values for percentile calculation
-    var sorted = try allocator.dupe(f32, loudness_values);
+    const sorted = try allocator.dupe(f32, loudness_values);
     defer allocator.free(sorted);
     std.mem.sort(f32, sorted, {}, std.sort.asc(f32));
 
@@ -363,7 +363,7 @@ pub fn analyzeLoudnessRange(
 // ============================================================================
 
 pub const Histogram = struct {
-    bins: [256]u32 = [_]u32{0} ** 256,
+    bins: [256]u32 = @splat(0),
     total_pixels: u32 = 0,
 
     pub fn fromFrame(frame_data: []const u8, width: u32, height: u32) Histogram {
@@ -448,7 +448,7 @@ pub const Histogram = struct {
 test "Black frame detection - black frame" {
     const testing = std.testing;
 
-    var frame = [_]u8{10} ** 256;
+    var frame: [256]u8 = @splat(10);
 
     const result = detectBlackFrame(&frame, 16, 16, .{});
     try testing.expect(result.is_black);
@@ -458,7 +458,7 @@ test "Black frame detection - black frame" {
 test "Black frame detection - normal frame" {
     const testing = std.testing;
 
-    var frame = [_]u8{128} ** 256;
+    var frame: [256]u8 = @splat(128);
 
     const result = detectBlackFrame(&frame, 16, 16, .{});
     try testing.expect(!result.is_black);
@@ -470,7 +470,7 @@ test "Freeze frame detection" {
     var detector = FreezeFrameDetector.init(testing.allocator, .{ .min_duration_frames = 3 });
     defer detector.deinit();
 
-    var frame = [_]u8{100} ** 256;
+    var frame: [256]u8 = @splat(100);
 
     // Process same frame 5 times
     for (0..5) |_| {
@@ -491,7 +491,7 @@ test "Silence detection" {
     var detector = SilenceDetector.init(48000, .{ .min_duration_ms = 100 });
 
     // Generate silent samples
-    var samples = [_]f32{0.0001} ** 5000;
+    var samples: [5000]f32 = @splat(0.0001);
 
     _ = detector.processSamples(&samples);
 
@@ -505,7 +505,7 @@ test "Silence detection" {
 test "Histogram calculation" {
     const testing = std.testing;
 
-    var frame = [_]u8{0} ** 256;
+    var frame: [256]u8 = @splat(0);
     for (&frame, 0..) |*pixel, i| {
         pixel.* = @intCast(i);
     }

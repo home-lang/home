@@ -191,7 +191,6 @@ pub const Timecode = struct {
 
         const total_minutes = @as(u64, self.hours) * 60 + self.minutes;
         const ten_min_blocks = total_minutes / 10;
-        const remaining_mins = total_minutes % 10;
 
         // Frames dropped = 2 per minute, except every 10th minute
         const dropped = drop_frames * (total_minutes - ten_min_blocks);
@@ -285,7 +284,7 @@ pub const Timecode = struct {
 /// LTC bit pattern structure
 pub const LtcFrame = struct {
     // User bits (32 bits total, 4 per group)
-    user_bits: [8]u4 = [_]u4{0} ** 8,
+    user_bits: [8]u4 = @splat(0),
 
     // Timecode
     timecode: Timecode = .{
@@ -305,7 +304,7 @@ pub const LtcFrame = struct {
 
     /// Encode to 80-bit LTC word
     pub fn encode(self: *const LtcFrame) [10]u8 {
-        var data: [10]u8 = [_]u8{0} ** 10;
+        var data: [10]u8 = @splat(0);
 
         // Byte 0: Frame units (4 bits) + user bits 1
         data[0] = (self.timecode.frames % 10) | (@as(u8, self.user_bits[0]) << 4);

@@ -75,7 +75,7 @@ pub const GifReader = struct {
             .offset = 0,
             .header = undefined,
             .global_color_table = null,
-            .frames = std.ArrayList(Gif.Frame).init(allocator),
+            .frames = .empty,
             .loop_count = 0,
         };
 
@@ -93,7 +93,7 @@ pub const GifReader = struct {
             }
             self.allocator.free(frame.indices);
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     fn parseHeader(self: *GifReader) !void {
@@ -110,11 +110,11 @@ pub const GifReader = struct {
         self.header.width = std.mem.readInt(u16, self.data[self.offset..][0..2], .little);
         self.header.height = std.mem.readInt(u16, self.data[self.offset + 2 ..][0..2], .little);
 
-        const packed = self.data[self.offset + 4];
-        self.header.global_color_table = (packed & 0x80) != 0;
-        self.header.color_resolution = @truncate((packed >> 4) & 0x07);
-        self.header.sort_flag = (packed & 0x08) != 0;
-        const gct_size_code: u3 = @truncate(packed & 0x07);
+        const packed_fields = self.data[self.offset + 4];
+        self.header.global_color_table = (packed_fields & 0x80) != 0;
+        self.header.color_resolution = @truncate((packed_fields >> 4) & 0x07);
+        self.header.sort_flag = (packed_fields & 0x08) != 0;
+        const gct_size_code: u3 = @truncate(packed_fields & 0x07);
         self.header.global_color_table_size = @as(u8, 1) << (@as(u8, gct_size_code) + 1);
 
         self.header.background_color_index = self.data[self.offset + 5];
@@ -207,11 +207,11 @@ pub const GifReader = struct {
         frame.width = std.mem.readInt(u16, self.data[self.offset + 4 ..][0..2], .little);
         frame.height = std.mem.readInt(u16, self.data[self.offset + 6 ..][0..2], .little);
 
-        const packed = self.data[self.offset + 8];
-        frame.local_color_table = (packed & 0x80) != 0;
-        frame.interlaced = (packed & 0x40) != 0;
-        frame.sort_flag = (packed & 0x20) != 0;
-        const lct_size_code: u3 = @truncate(packed & 0x07);
+        const packed_fields = self.data[self.offset + 8];
+        frame.local_color_table = (packed_fields & 0x80) != 0;
+        frame.interlaced = (packed_fields & 0x40) != 0;
+        frame.sort_flag = (packed_fields & 0x20) != 0;
+        const lct_size_code: u3 = @truncate(packed_fields & 0x07);
         frame.local_color_table_size = @as(u8, 1) << (@as(u8, lct_size_code) + 1);
 
         self.offset += 9;
@@ -220,6 +220,7 @@ pub const GifReader = struct {
         if (frame.local_color_table) {
             const table_size = @as(usize, frame.local_color_table_size) * 3;
             frame.color_table = try self.allocator.alloc(u8, table_size);
+            errdefer self.allocator.free(frame.color_table.?);
             @memcpy(frame.color_table.?, self.data[self.offset .. self.offset + table_size]);
             self.offset += table_size;
         } else {
@@ -238,20 +239,125 @@ pub const GifReader = struct {
 
         // Decompress image data
         frame.indices = try self.decompressLzw(lzw_min_code_size, frame.width, frame.height);
+        errdefer self.allocator.free(frame.indices);
 
-        try self.frames.append(frame);
+        try self.frames.append(self.allocator, frame);
     }
 
     fn decompressLzw(self: *GifReader, min_code_size: u8, width: u16, height: u16) ![]u8 {
-        const output_size = @as(usize, width) * @as(usize, height);
+        if (min_code_size < 2 or min_code_size > 8) return error.InvalidLzwCodeSize;
+
+        var compressed: std.ArrayList(u8) = .empty;
+        defer compressed.deinit(self.allocator);
+
+        while (true) {
+            if (self.offset >= self.data.len) return error.TruncatedGifData;
+            const block_size = self.data[self.offset];
+            self.offset += 1;
+            if (block_size == 0) break;
+
+            const block_end = std.math.add(usize, self.offset, block_size) catch
+                return error.TruncatedGifData;
+            if (block_end > self.data.len) return error.TruncatedGifData;
+            try compressed.appendSlice(self.allocator, self.data[self.offset..block_end]);
+            self.offset = block_end;
+        }
+
+        const output_size = std.math.mul(usize, width, height) catch
+            return error.InvalidImageDimensions;
         const output = try self.allocator.alloc(u8, output_size);
+        errdefer self.allocator.free(output);
 
-        // Simplified LZW decompression (would need full implementation)
-        // For now, skip the data blocks
-        try self.skipDataSubBlocks();
+        const clear_code: u16 = @as(u16, 1) << @intCast(min_code_size);
+        const end_code = clear_code + 1;
+        var next_code = end_code + 1;
+        var code_size: u8 = min_code_size + 1;
 
-        // Fill with placeholder data
-        @memset(output, 0);
+        var prefixes: [4096]u16 = undefined;
+        var suffixes: [4096]u8 = undefined;
+        var stack: [4096]u8 = undefined;
+        for (0..clear_code) |code| suffixes[code] = @intCast(code);
+
+        var byte_index: usize = 0;
+        var bit_buffer: u32 = 0;
+        var bits_in_buffer: u8 = 0;
+        var output_index: usize = 0;
+        var previous_code: ?u16 = null;
+        var first_byte: u8 = 0;
+        var saw_end_code = false;
+
+        while (true) {
+            while (bits_in_buffer < code_size) {
+                if (byte_index >= compressed.items.len) return error.TruncatedLzwData;
+                bit_buffer |= @as(u32, compressed.items[byte_index]) << @intCast(bits_in_buffer);
+                bits_in_buffer += 8;
+                byte_index += 1;
+            }
+
+            const code_mask = (@as(u32, 1) << @intCast(code_size)) - 1;
+            const code: u16 = @intCast(bit_buffer & code_mask);
+            bit_buffer >>= @intCast(code_size);
+            bits_in_buffer -= code_size;
+
+            if (code == clear_code) {
+                next_code = end_code + 1;
+                code_size = min_code_size + 1;
+                previous_code = null;
+                continue;
+            }
+            if (code == end_code) {
+                saw_end_code = true;
+                break;
+            }
+            if (code > next_code or (code == next_code and previous_code == null)) {
+                return error.InvalidLzwCode;
+            }
+
+            const input_code = code;
+            var expanded_code = code;
+            var stack_len: usize = 0;
+
+            if (expanded_code == next_code) {
+                stack[stack_len] = first_byte;
+                stack_len += 1;
+                expanded_code = previous_code.?;
+            }
+
+            while (expanded_code >= clear_code) {
+                if (expanded_code >= next_code or stack_len >= stack.len) {
+                    return error.InvalidLzwCode;
+                }
+                stack[stack_len] = suffixes[expanded_code];
+                stack_len += 1;
+                expanded_code = prefixes[expanded_code];
+            }
+
+            first_byte = @intCast(expanded_code);
+            if (stack_len >= stack.len) return error.InvalidLzwCode;
+            stack[stack_len] = first_byte;
+            stack_len += 1;
+
+            if (output_index + stack_len > output.len) return error.InvalidLzwOutput;
+            while (stack_len > 0) {
+                stack_len -= 1;
+                output[output_index] = stack[stack_len];
+                output_index += 1;
+            }
+
+            if (previous_code) |previous| {
+                if (next_code < 4096) {
+                    prefixes[next_code] = previous;
+                    suffixes[next_code] = first_byte;
+                    next_code += 1;
+                    if (next_code == (@as(u16, 1) << @intCast(code_size)) and code_size < 12) {
+                        code_size += 1;
+                    }
+                }
+            }
+            previous_code = input_code;
+        }
+
+        if (!saw_end_code or output_index != output.len) return error.InvalidLzwOutput;
 
         return output;
     }
@@ -287,7 +393,7 @@ pub const GifWriter = struct {
             .allocator = allocator,
             .width = width,
             .height = height,
-            .frames = std.ArrayList(FrameData).init(allocator),
+            .frames = .empty,
             .global_palette = null,
             .loop_count = 0,
         };
@@ -300,7 +406,7 @@ pub const GifWriter = struct {
                 self.allocator.free(pal);
             }
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
         if (self.global_palette) |pal| {
             self.allocator.free(pal);
         }
@@ -327,17 +433,20 @@ pub const GifWriter = struct {
             indices[i] = quantizer.findNearestColor(r, g, b);
         }
 
-        try self.frames.append(.{
+        const owned_palette = try self.allocator.dupe(u8, palette);
+        errdefer self.allocator.free(owned_palette);
+        try self.frames.append(self.allocator, .{
             .indices = indices,
-            .palette = try self.allocator.dupe(u8, palette),
+            .palette = owned_palette,
             .delay_centiseconds = delay_centiseconds,
             .disposal_method = .restore_background,
         });
     }
 
     pub fn write(self: *GifWriter) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        const writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
+        const writer = output.writer(self.allocator);
 
         // Header
         try writer.writeAll("GIF89a");
@@ -346,8 +455,8 @@ pub const GifWriter = struct {
         try writer.writeInt(u16, self.width, .little);
         try writer.writeInt(u16, self.height, .little);
 
-        const packed: u8 = 0xF7; // Global color table, 256 colors
-        try writer.writeByte(packed);
+        const packed_fields: u8 = 0xF7; // Global color table, 256 colors
+        try writer.writeByte(packed_fields);
         try writer.writeByte(0); // Background color
         try writer.writeByte(0); // Pixel aspect ratio
 
@@ -383,7 +492,7 @@ pub const GifWriter = struct {
         // Trailer
         try writer.writeByte(0x3B);
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.allocator);
     }
 
     fn writeFrame(self: *GifWriter, writer: anytype, frame: *const FrameData) !void {
@@ -407,8 +516,8 @@ pub const GifWriter = struct {
         // Use local color table if frame has palette
         if (frame.palette != null) {
             const palette_size_code: u8 = 7; // 256 colors = 2^(7+1)
-            const packed: u8 = 0x80 | palette_size_code; // Local color table flag
-            try writer.writeByte(packed);
+            const packed_fields: u8 = 0x80 | palette_size_code; // Local color table flag
+            try writer.writeByte(packed_fields);
 
             // Write local color table
             if (frame.palette) |pal| {
@@ -465,9 +574,8 @@ pub const GifWriter = struct {
         }
 
         fn encode(self: *LzwEncoder, data: []const u8) ![]u8 {
-            // Simplified LZW: just write clear code, data, and end code
-            var output = std.ArrayList(u8).init(self.allocator);
-            errdefer output.deinit();
+            var output: std.ArrayList(u8) = .empty;
+            errdefer output.deinit(self.allocator);
 
             const clear_code: u16 = @as(u16, 1) << @intCast(self.min_code_size);
             const end_code: u16 = clear_code + 1;
@@ -480,14 +588,24 @@ pub const GifWriter = struct {
             // Write clear code
             try self.writeCode(&output, &bit_buffer, &bits_in_buffer, clear_code, code_size);
 
-            // Write data codes
+            var has_previous = false;
             for (data) |byte| {
                 try self.writeCode(&output, &bit_buffer, &bits_in_buffer, byte, code_size);
 
-                next_code += 1;
-                if (next_code >= (@as(u16, 1) << @intCast(code_size)) and code_size < 12) {
-                    code_size += 1;
+                if (has_previous) {
+                    next_code += 1;
+                    if (next_code == (@as(u16, 1) << @intCast(code_size)) and code_size < 12) {
+                        code_size += 1;
+                    }
+                    if (next_code == 4096) {
+                        try self.writeCode(&output, &bit_buffer, &bits_in_buffer, clear_code, code_size);
+                        next_code = end_code + 1;
+                        code_size = self.min_code_size + 1;
+                        has_previous = false;
+                        continue;
+                    }
                 }
+                has_previous = true;
             }
 
             // Write end code
@@ -495,10 +613,10 @@ pub const GifWriter = struct {
 
             // Flush remaining bits
             if (bits_in_buffer > 0) {
-                try output.append(@truncate(bit_buffer));
+                try output.append(self.allocator, @truncate(bit_buffer));
             }
 
-            return output.toOwnedSlice();
+            return output.toOwnedSlice(self.allocator);
         }
 
         fn writeCode(
@@ -509,15 +627,13 @@ pub const GifWriter = struct {
             code: u16,
             code_size: u8,
         ) !void {
-            _ = self;
-
             // Add code to bit buffer
             bit_buffer.* |= @as(u32, code) << @intCast(bits_in_buffer.*);
             bits_in_buffer.* += code_size;
 
             // Output bytes
             while (bits_in_buffer.* >= 8) {
-                try output.append(@truncate(bit_buffer.*));
+                try output.append(self.allocator, @truncate(bit_buffer.*));
                 bit_buffer.* >>= 8;
                 bits_in_buffer.* -= 8;
             }
@@ -530,6 +646,45 @@ pub fn isGif(data: []const u8) bool {
     if (data.len < 6) return false;
     return std.mem.eql(u8, data[0..3], "GIF") and
         (std.mem.eql(u8, data[3..6], "87a") or std.mem.eql(u8, data[3..6], "89a"));
+}
+
+test "GIF LZW encoder and decoder preserve indexed pixels" {
+    const allocator = std.testing.allocator;
+    const indices = [_]u8{
+        0, 1, 2, 3,
+        3, 2, 1, 0,
+        0, 0, 1, 1,
+        2, 2, 3, 3,
+    };
+
+    var encoder = GifWriter.LzwEncoder.init(2);
+    encoder.allocator = allocator;
+    const compressed = try encoder.encode(&indices);
+    defer allocator.free(compressed);
+    try std.testing.expect(compressed.len <= 255);
+
+    const sub_blocks = try allocator.alloc(u8, compressed.len + 2);
+    defer allocator.free(sub_blocks);
+    sub_blocks[0] = @intCast(compressed.len);
+    @memcpy(sub_blocks[1 .. compressed.len + 1], compressed);
+    sub_blocks[sub_blocks.len - 1] = 0;
+
+    var reader = GifReader{
+        .allocator = allocator,
+        .data = sub_blocks,
+        .offset = 0,
+        .header = undefined,
+        .global_color_table = null,
+        .frames = .empty,
+        .loop_count = 0,
+    };
+    defer reader.frames.deinit(allocator);
+
+    const decoded = try reader.decompressLzw(2, 4, 4);
+    defer allocator.free(decoded);
+
+    try std.testing.expectEqualSlices(u8, &indices, decoded);
+    try std.testing.expectEqual(sub_blocks.len, reader.offset);
 }
 
 /// Color quantization using median cut algorithm
@@ -545,6 +700,7 @@ pub const MedianCutQuantizer = struct {
     };
 
     const ColorBox = struct {
+        allocator: std.mem.Allocator,
         colors: std.ArrayList(Color),
         min_r: u8,
         max_r: u8,
@@ -555,7 +711,8 @@ pub const MedianCutQuantizer = struct {
 
         fn init(allocator: std.mem.Allocator) ColorBox {
             return .{
-                .colors = std.ArrayList(Color).init(allocator),
+                .allocator = allocator,
+                .colors = .empty,
                 .min_r = 255,
                 .max_r = 0,
                 .min_g = 255,
@@ -566,11 +723,11 @@ pub const MedianCutQuantizer = struct {
         }
 
         fn deinit(self: *ColorBox) void {
-            self.colors.deinit();
+            self.colors.deinit(self.allocator);
         }
 
         fn addColor(self: *ColorBox, c: Color) !void {
-            try self.colors.append(c);
+            try self.colors.append(self.allocator, c);
             if (c.r < self.min_r) self.min_r = c.r;
             if (c.r > self.max_r) self.max_r = c.r;
             if (c.g < self.min_g) self.min_g = c.g;
@@ -616,7 +773,9 @@ pub const MedianCutQuantizer = struct {
 
             // Create two new boxes
             var box1 = ColorBox.init(allocator);
+            errdefer box1.deinit();
             var box2 = ColorBox.init(allocator);
+            errdefer box2.deinit();
 
             for (self.colors.items, 0..) |c, i| {
                 if (i < median_idx) {
@@ -682,13 +841,14 @@ pub const MedianCutQuantizer = struct {
         }
 
         // Start with one box
-        var boxes = std.ArrayList(ColorBox).init(self.allocator);
+        var boxes: std.ArrayList(ColorBox) = .empty;
         defer {
             for (boxes.items) |*box| box.deinit();
-            boxes.deinit();
+            boxes.deinit(self.allocator);
         }
 
-        try boxes.append(initial_box);
+        try boxes.append(self.allocator, initial_box);
+        initial_box.colors = .empty;
 
         // Split boxes until we have desired number of colors
         while (boxes.items.len < max_colors) {
@@ -707,14 +867,13 @@ pub const MedianCutQuantizer = struct {
             if (largest_size <= 1) break;
 
             // Split the largest box
-            const box_to_split = boxes.orderedRemove(largest_idx);
+            try boxes.ensureUnusedCapacity(self.allocator, 2);
+            var box_to_split = boxes.orderedRemove(largest_idx);
+            defer box_to_split.deinit();
             const split_result = try box_to_split.split(self.allocator);
 
-            // Note: box_to_split will be deinitialized by boxes.deinit
-            // so we don't need to deinit it here
-
-            try boxes.append(split_result[0]);
-            try boxes.append(split_result[1]);
+            boxes.appendAssumeCapacity(split_result[0]);
+            boxes.appendAssumeCapacity(split_result[1]);
         }
 
         // Generate palette from boxes

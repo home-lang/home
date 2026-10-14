@@ -41,10 +41,10 @@ pub const StereoWidener = struct {
             .crossover_enabled = false,
             .crossover_freq = 200,
             .sample_rate = sample_rate,
-            .lp_x1 = [_]f64{0} ** 2,
-            .lp_x2 = [_]f64{0} ** 2,
-            .lp_y1 = [_]f64{0} ** 2,
-            .lp_y2 = [_]f64{0} ** 2,
+            .lp_x1 = @splat(0),
+            .lp_x2 = @splat(0),
+            .lp_y1 = @splat(0),
+            .lp_y2 = @splat(0),
             .lp_coeffs = .{ .b0 = 1, .b1 = 0, .b2 = 0, .a1 = 0, .a2 = 0 },
         };
         widener.updateCrossover();
@@ -150,10 +150,10 @@ pub const StereoWidener = struct {
 
     /// Reset filter state
     pub fn reset(self: *Self) void {
-        self.lp_x1 = [_]f64{0} ** 2;
-        self.lp_x2 = [_]f64{0} ** 2;
-        self.lp_y1 = [_]f64{0} ** 2;
-        self.lp_y2 = [_]f64{0} ** 2;
+        self.lp_x1 = @splat(0);
+        self.lp_x2 = @splat(0);
+        self.lp_y1 = @splat(0);
+        self.lp_y2 = @splat(0);
     }
 };
 

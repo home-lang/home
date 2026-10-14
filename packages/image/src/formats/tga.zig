@@ -324,7 +324,7 @@ fn encodeRLE(output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, 
                 try writePixel(output, start_color, is_grayscale, has_alpha);
             } else {
                 // Check for raw run
-                var raw_start = start_x;
+                const raw_start = start_x;
                 var raw_len: u32 = 1;
 
                 while (x < img.width and raw_len < 128) {

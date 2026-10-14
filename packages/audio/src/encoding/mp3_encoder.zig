@@ -130,7 +130,7 @@ pub const Mp3Encoder = struct {
             .channels = channels,
             .bitrate = bitrate,
             .quality = quality,
-            .output = .{},
+            .output = .empty,
             .mdct_buffer = try allocator.alloc(f32, GRANULE_SIZE * 2),
             .prev_block = try allocator.alloc(f32, GRANULE_SIZE),
             .energy_history = try allocator.alloc(f32, 32),
@@ -327,7 +327,7 @@ pub const Id3v2Writer = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .frames = .{},
+            .frames = .empty,
         };
     }
 

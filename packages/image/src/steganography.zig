@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // LSB (Least Significant Bit) Steganography
@@ -326,14 +327,15 @@ pub const WatermarkDetectionOptions = struct {
 
 /// Detects invisible watermarks in an image
 pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options: WatermarkDetectionOptions) !WatermarkResult {
+    if (options.block_size < 2) return error.InvalidBlockSize;
+
     var locations = std.ArrayList(WatermarkLocation).init(allocator);
     defer locations.deinit();
 
     var strength_map = try Image.init(allocator, img.width, img.height, .rgba);
+    errdefer strength_map.deinit();
 
     var max_strength: f32 = 0.0;
-    var total_strength: f32 = 0.0;
-    var block_count: u32 = 0;
 
     // Analyze blocks for watermark patterns
     var y: u32 = 0;
@@ -353,8 +355,6 @@ pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options:
             }
 
             max_strength = @max(max_strength, strength);
-            total_strength += strength;
-            block_count += 1;
 
             if (strength > options.threshold) {
                 try locations.append(WatermarkLocation{
@@ -384,7 +384,6 @@ pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options:
         }
     }
 
-    const avg_strength = total_strength / @as(f32, @floatFromInt(block_count));
     const detected = max_strength > options.threshold * 2.0;
     const confidence = @min(1.0, max_strength / 0.5);
 
@@ -400,7 +399,7 @@ pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options:
 fn analyzeSpatialWatermark(img: *const Image, x: u32, y: u32, block_size: u32) f32 {
     // Detect patterns in LSBs that might indicate watermarks
     var lsb_entropy: f32 = 0.0;
-    var bit_counts = [_]u32{0} ** 256;
+    var bit_counts: [256]u32 = @splat(0);
 
     for (0..block_size) |dy| {
         for (0..block_size) |dx| {

@@ -420,7 +420,7 @@ test "Vorbis IMDCT" {
     var decoder = try VorbisDecoder.init(allocator, 2, 44100, 256, 2048);
     defer decoder.deinit();
 
-    var spectrum: [256]f32 = [_]f32{0} ** 256;
+    var spectrum: [256]f32 = @splat(0);
     var time_data: [256]f32 = undefined;
 
     spectrum[0] = 1.0;

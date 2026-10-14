@@ -431,7 +431,7 @@ pub const TextOptions = struct {
     line_height: f32 = 1.2,
     letter_spacing: f32 = 0,
     word_spacing: f32 = 0,
-    align: TextAlign = .left,
+    @"align": TextAlign = .left,
     baseline: Baseline = .alphabetic,
 };
 
@@ -599,7 +599,7 @@ fn blendColor(dst: Color, src: Color, alpha: f32) Color {
 }
 
 /// Render text using 8x8 bitmap font (fallback)
-fn renderBitmapText(image: *Image, text: []const u8, x: i32, y: i32, options: TextOptions) {
+fn renderBitmapText(image: *Image, text: []const u8, x: i32, y: i32, options: TextOptions) void {
     const scale: u32 = @max(1, @as(u32, @intFromFloat(options.size / 8.0)));
     var cursor_x = x;
 

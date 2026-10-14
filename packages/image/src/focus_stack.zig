@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Focus Stacking
@@ -322,7 +323,7 @@ fn mergeDepthMap(allocator: std.mem.Allocator, images: []*const Image, options: 
     var result = try mergeMaxContrast(allocator, images, options);
 
     // Apply smoothing to reduce artifacts
-    var smoothed = try smoothImage(allocator, &result.merged_image, options.blur_radius);
+    const smoothed = try smoothImage(allocator, &result.merged_image, options.blur_radius);
     result.merged_image.deinit();
     result.merged_image = smoothed;
 

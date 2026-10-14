@@ -104,8 +104,8 @@ pub const MediaStream = struct {
         return .{
             .allocator = allocator,
             .info = .{ .stream_type = stream_type },
-            .packets = std.ArrayList(Packet).init(allocator),
-            .frames = std.ArrayList(Frame).init(allocator),
+            .packets = .empty,
+            .frames = .empty,
         };
     }
 
@@ -113,20 +113,20 @@ pub const MediaStream = struct {
         for (self.packets.items) |*packet| {
             packet.deinit(self.allocator);
         }
-        self.packets.deinit();
+        self.packets.deinit(self.allocator);
 
         for (self.frames.items) |*frame| {
-            frame.deinit(self.allocator);
+            frame.deinit();
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     pub fn addPacket(self: *Self, packet: Packet) !void {
-        try self.packets.append(packet);
+        try self.packets.append(self.allocator, packet);
     }
 
     pub fn addFrame(self: *Self, frame: Frame) !void {
-        try self.frames.append(frame);
+        try self.frames.append(self.allocator, frame);
     }
 };
 
@@ -156,7 +156,7 @@ pub const Packet = struct {
     }
 
     pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
-        var new = Self{
+        const new = Self{
             .data = try allocator.alloc(u8, self.data.len),
             .pts = self.pts,
             .dts = self.dts,
@@ -205,7 +205,12 @@ pub const Frame = struct {
     pub fn initVideo(allocator: std.mem.Allocator, width: u32, height: u32, format: FrameFormat) !Self {
         const plane_count = format.planeCount();
         const data = try allocator.alloc([]u8, plane_count);
+        errdefer allocator.free(data);
         const linesize = try allocator.alloc(u32, plane_count);
+        errdefer allocator.free(linesize);
+
+        var allocated_planes: usize = 0;
+        errdefer for (data[0..allocated_planes]) |plane| allocator.free(plane);
 
         // Calculate plane sizes and allocate
         for (0..plane_count) |i| {
@@ -214,6 +219,7 @@ pub const Frame = struct {
             const bytes_per_pixel = format.bytesPerPixel(i);
             linesize[i] = plane_width * bytes_per_pixel;
             data[i] = try allocator.alloc(u8, linesize[i] * plane_height);
+            allocated_planes += 1;
         }
 
         return .{
@@ -229,14 +235,19 @@ pub const Frame = struct {
     pub fn initAudio(allocator: std.mem.Allocator, num_samples: u32, channels: u8, format: FrameFormat) !Self {
         const plane_count = if (format.isPlanar()) channels else 1;
         const data = try allocator.alloc([]u8, plane_count);
+        errdefer allocator.free(data);
         const linesize = try allocator.alloc(u32, plane_count);
+        errdefer allocator.free(linesize);
 
         const bytes_per_sample = format.bytesPerSample();
         const samples_per_plane = if (format.isPlanar()) num_samples else num_samples * channels;
 
+        var allocated_planes: usize = 0;
+        errdefer for (data[0..allocated_planes]) |plane| allocator.free(plane);
         for (0..plane_count) |i| {
             linesize[i] = samples_per_plane * bytes_per_sample;
             data[i] = try allocator.alloc(u8, linesize[i]);
+            allocated_planes += 1;
         }
 
         return .{
@@ -249,12 +260,12 @@ pub const Frame = struct {
         };
     }
 
-    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Self) void {
         for (self.data) |plane| {
-            allocator.free(plane);
+            self.allocator.free(plane);
         }
-        allocator.free(self.data);
-        allocator.free(self.linesize);
+        self.allocator.free(self.data);
+        self.allocator.free(self.linesize);
     }
 };
 
@@ -358,7 +369,7 @@ pub const StreamSource = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .streams = std.ArrayList(MediaStream).init(allocator),
+            .streams = .empty,
         };
     }
 
@@ -366,7 +377,7 @@ pub const StreamSource = struct {
         for (self.streams.items) |*stream| {
             stream.deinit();
         }
-        self.streams.deinit();
+        self.streams.deinit(self.allocator);
 
         if (self.path) |p| {
             self.allocator.free(p);
@@ -412,7 +423,7 @@ pub const StreamSink = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .streams = std.ArrayList(MediaStream).init(allocator),
+            .streams = .empty,
         };
     }
 
@@ -420,7 +431,7 @@ pub const StreamSink = struct {
         for (self.streams.items) |*stream| {
             stream.deinit();
         }
-        self.streams.deinit();
+        self.streams.deinit(self.allocator);
 
         if (self.path) |p| {
             self.allocator.free(p);
@@ -439,7 +450,7 @@ pub const StreamSink = struct {
     pub fn addStream(self: *Self, stream_type: StreamType) !*MediaStream {
         var stream = MediaStream.init(self.allocator, stream_type);
         stream.info.index = @intCast(self.streams.items.len);
-        try self.streams.append(stream);
+        try self.streams.append(self.allocator, stream);
         return &self.streams.items[self.streams.items.len - 1];
     }
 
@@ -473,10 +484,40 @@ test "FrameFormat properties" {
     try std.testing.expect(!FrameFormat.rgba.isPlanar());
 }
 
+fn initVideoFrameForAllocationFailureTest(allocator: std.mem.Allocator) !void {
+    var frame = try Frame.initVideo(allocator, 4, 4, .yuv420p);
+    frame.deinit();
+}
+
+fn initAudioFrameForAllocationFailureTest(allocator: std.mem.Allocator) !void {
+    var frame = try Frame.initAudio(allocator, 128, 2, .fltp);
+    frame.deinit();
+}
+
+test "Frame initialization releases partial allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, initVideoFrameForAllocationFailureTest, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, initAudioFrameForAllocationFailureTest, .{});
+}
+
 test "MediaStream creation" {
     const allocator = std.testing.allocator;
     var stream = MediaStream.init(allocator, .video);
     defer stream.deinit();
 
     try std.testing.expectEqual(StreamType.video, stream.info.stream_type);
+
+    var packet = try Packet.init(allocator, 4);
+    stream.addPacket(packet) catch |e| {
+        packet.deinit(allocator);
+        return e;
+    };
+
+    var frame = try Frame.initVideo(allocator, 2, 2, .rgba);
+    stream.addFrame(frame) catch |e| {
+        frame.deinit();
+        return e;
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), stream.packets.items.len);
+    try std.testing.expectEqual(@as(usize, 1), stream.frames.items.len);
 }

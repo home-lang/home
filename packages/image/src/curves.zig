@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Histogram
@@ -15,10 +16,10 @@ pub const Histogram = struct {
 
     pub fn init() Histogram {
         return Histogram{
-            .red = [_]u32{0} ** 256,
-            .green = [_]u32{0} ** 256,
-            .blue = [_]u32{0} ** 256,
-            .luminosity = [_]u32{0} ** 256,
+            .red = @splat(0),
+            .green = @splat(0),
+            .blue = @splat(0),
+            .luminosity = @splat(0),
             .total_pixels = 0,
         };
     }
@@ -539,7 +540,7 @@ pub const ChannelMixer = struct {
                 const g = @as(f32, @floatFromInt(color.g));
                 const b = @as(f32, @floatFromInt(color.b));
 
-                var out_r = r * self.red_red + g * self.red_green + b * self.red_blue + self.red_constant * 255;
+                const out_r = r * self.red_red + g * self.red_green + b * self.red_blue + self.red_constant * 255;
                 var out_g = r * self.green_red + g * self.green_green + b * self.green_blue + self.green_constant * 255;
                 var out_b = r * self.blue_red + g * self.blue_green + b * self.blue_blue + self.blue_constant * 255;
 

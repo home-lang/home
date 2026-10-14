@@ -55,7 +55,7 @@ pub const OnsetDetector = struct {
             .prev_flux = 0,
             .samples_since_onset = 0,
             .min_interval_samples = @intFromFloat(50.0 * @as(f32, @floatFromInt(sample_rate)) / 1000.0),
-            .onsets = .{},
+            .onsets = .empty,
         };
     }
 
@@ -190,7 +190,7 @@ pub const TempoEstimator = struct {
 
         // Histogram-based tempo estimation
         const num_bins = 100;
-        var histogram = [_]u32{0} ** num_bins;
+        var histogram: [num_bins]u32 = @splat(0);
 
         for (intervals) |interval| {
             // Try different multiples (half-time, normal, double-time)
@@ -391,11 +391,11 @@ test "OnsetDetector process" {
     defer detector.deinit();
 
     // Process a loud frame
-    var loud = [_]f32{0.8} ** 512;
+    var loud: [512]f32 = @splat(0.8);
     _ = try detector.processFrame(&loud, 0);
 
     // Process a quiet frame
-    var quiet = [_]f32{0.01} ** 512;
+    var quiet: [512]f32 = @splat(0.01);
     _ = try detector.processFrame(&quiet, 512);
 }
 

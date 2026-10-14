@@ -71,7 +71,7 @@ pub const AudioRecorder = struct {
             .state = .stopped,
             .callback = null,
             .user_data = null,
-            .buffer = .{},
+            .buffer = .empty,
             .max_duration_samples = null,
             .samples_recorded = 0,
             .peak_level = 0,
@@ -317,11 +317,11 @@ test "VoiceActivityDetector" {
     vad.setThreshold(-30);
 
     // Loud signal
-    const loud = [_]f32{0.5} ** 100;
+    const loud: [100]f32 = @splat(0.5);
     try std.testing.expect(vad.process(&loud));
 
     // Quiet signal
-    const quiet = [_]f32{0.001} ** 100;
+    const quiet: [100]f32 = @splat(0.001);
     // Still active due to hold time
     try std.testing.expect(vad.process(&quiet));
 }

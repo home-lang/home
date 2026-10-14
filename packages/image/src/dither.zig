@@ -174,7 +174,7 @@ pub fn dither(image: *Image, config: DitherConfig, allocator: std.mem.Allocator)
         .ordered_8x8, .bayer_8x8 => applyOrderedDither(image, 8, config),
         .random => applyRandomDither(image, config),
         .threshold => applyThresholdDither(image, config),
-        .halftone => try applyHalftone(image, config, allocator),
+        .halftone => applyHalftone(image, config),
     }
 }
 
@@ -373,9 +373,7 @@ fn applyThresholdDither(image: *Image, config: DitherConfig) void {
 }
 
 /// Apply halftone dithering (circular dots)
-fn applyHalftone(image: *Image, config: DitherConfig, allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
+fn applyHalftone(image: *Image, config: DitherConfig) void {
     const bytes_per_pixel: u32 = switch (image.format) {
         .grayscale => 1,
         .grayscale_alpha => 2,
@@ -386,6 +384,7 @@ fn applyHalftone(image: *Image, config: DitherConfig, allocator: std.mem.Allocat
 
     const cell_size: u32 = 4;
     const half_cell: f32 = @as(f32, @floatFromInt(cell_size)) / 2.0;
+    const strength = std.math.clamp(config.strength, 0.0, 1.0);
 
     var y: u32 = 0;
     while (y < image.height) : (y += 1) {
@@ -425,7 +424,7 @@ fn applyHalftone(image: *Image, config: DitherConfig, allocator: std.mem.Allocat
             }
 
             const avg = sum / @as(f32, @floatFromInt(count));
-            const radius = (1.0 - avg / 255.0) * half_cell * 1.5;
+            const radius = (1.0 - avg / 255.0) * half_cell * 1.5 * strength;
 
             // Set pixel based on whether it's inside the dot
             const inside = dist < radius;

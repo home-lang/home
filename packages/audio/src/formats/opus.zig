@@ -292,7 +292,7 @@ pub const OpusPacketInfo = struct {
             .stereo = stereo,
             .frame_count_code = frame_count_code,
             .frame_count = 0,
-            .frame_sizes = [_]u16{0} ** 48,
+            .frame_sizes = @splat(0),
             .payload_size = 0,
         };
 

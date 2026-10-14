@@ -9,11 +9,11 @@ const Allocator = std.mem.Allocator;
 // ============================================================================
 
 pub const Id3v1Tag = struct {
-    title: [30]u8 = [_]u8{0} ** 30,
-    artist: [30]u8 = [_]u8{0} ** 30,
-    album: [30]u8 = [_]u8{0} ** 30,
-    year: [4]u8 = [_]u8{0} ** 4,
-    comment: [30]u8 = [_]u8{0} ** 30,
+    title: [30]u8 = @splat(0),
+    artist: [30]u8 = @splat(0),
+    album: [30]u8 = @splat(0),
+    year: [4]u8 = @splat(0),
+    comment: [30]u8 = @splat(0),
     track: ?u8 = null, // ID3v1.1
     genre: u8 = 255,
 
@@ -375,26 +375,26 @@ pub const FrameId = struct {
 // ============================================================================
 
 const ID3V1_GENRES = [_][]const u8{
-    "Blues",        "Classic Rock",   "Country",        "Dance",
-    "Disco",        "Funk",           "Grunge",         "Hip-Hop",
-    "Jazz",         "Metal",          "New Age",        "Oldies",
-    "Other",        "Pop",            "R&B",            "Rap",
-    "Reggae",       "Rock",           "Techno",         "Industrial",
-    "Alternative",  "Ska",            "Death Metal",    "Pranks",
-    "Soundtrack",   "Euro-Techno",    "Ambient",        "Trip-Hop",
-    "Vocal",        "Jazz+Funk",      "Fusion",         "Trance",
-    "Classical",    "Instrumental",   "Acid",           "House",
-    "Game",         "Sound Clip",     "Gospel",         "Noise",
-    "AlternRock",   "Bass",           "Soul",           "Punk",
-    "Space",        "Meditative",     "Instrumental Pop", "Instrumental Rock",
-    "Ethnic",       "Gothic",         "Darkwave",       "Techno-Industrial",
-    "Electronic",   "Pop-Folk",       "Eurodance",      "Dream",
-    "Southern Rock", "Comedy",        "Cult",           "Gangsta",
-    "Top 40",       "Christian Rap",  "Pop/Funk",       "Jungle",
-    "Native American", "Cabaret",     "New Wave",       "Psychedelic",
-    "Rave",         "Showtunes",      "Trailer",        "Lo-Fi",
-    "Tribal",       "Acid Punk",      "Acid Jazz",      "Polka",
-    "Retro",        "Musical",        "Rock & Roll",    "Hard Rock",
+    "Blues",           "Classic Rock",  "Country",          "Dance",
+    "Disco",           "Funk",          "Grunge",           "Hip-Hop",
+    "Jazz",            "Metal",         "New Age",          "Oldies",
+    "Other",           "Pop",           "R&B",              "Rap",
+    "Reggae",          "Rock",          "Techno",           "Industrial",
+    "Alternative",     "Ska",           "Death Metal",      "Pranks",
+    "Soundtrack",      "Euro-Techno",   "Ambient",          "Trip-Hop",
+    "Vocal",           "Jazz+Funk",     "Fusion",           "Trance",
+    "Classical",       "Instrumental",  "Acid",             "House",
+    "Game",            "Sound Clip",    "Gospel",           "Noise",
+    "AlternRock",      "Bass",          "Soul",             "Punk",
+    "Space",           "Meditative",    "Instrumental Pop", "Instrumental Rock",
+    "Ethnic",          "Gothic",        "Darkwave",         "Techno-Industrial",
+    "Electronic",      "Pop-Folk",      "Eurodance",        "Dream",
+    "Southern Rock",   "Comedy",        "Cult",             "Gangsta",
+    "Top 40",          "Christian Rap", "Pop/Funk",         "Jungle",
+    "Native American", "Cabaret",       "New Wave",         "Psychedelic",
+    "Rave",            "Showtunes",     "Trailer",          "Lo-Fi",
+    "Tribal",          "Acid Punk",     "Acid Jazz",        "Polka",
+    "Retro",           "Musical",       "Rock & Roll",      "Hard Rock",
 };
 
 // ============================================================================

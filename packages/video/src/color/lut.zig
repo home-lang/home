@@ -26,12 +26,14 @@ pub const ColorSpace = enum {
     unknown,
 };
 
+pub const Rgb = struct { r: f32, g: f32, b: f32 };
+
 // ============================================================================
 // 1D LUT
 // ============================================================================
 
 pub const Lut1D = struct {
-    title: [256]u8 = [_]u8{0} ** 256,
+    title: [256]u8 = @splat(0),
     title_len: u8 = 0,
 
     size: u32, // Number of entries
@@ -65,7 +67,7 @@ pub const Lut1D = struct {
     }
 
     /// Apply 1D LUT to a single RGB value (0.0-1.0 range)
-    pub fn apply(self: *const Lut1D, r: f32, g: f32, b: f32) struct { r: f32, g: f32, b: f32 } {
+    pub fn apply(self: *const Lut1D, r: f32, g: f32, b: f32) Rgb {
         return .{
             .r = self.interpolate1D(self.red, r, 0),
             .g = self.interpolate1D(self.green, g, 1),
@@ -97,7 +99,7 @@ pub const Lut1D = struct {
 // ============================================================================
 
 pub const Lut3D = struct {
-    title: [256]u8 = [_]u8{0} ** 256,
+    title: [256]u8 = @splat(0),
     title_len: u8 = 0,
 
     size: u32, // Size per dimension (e.g., 33 for 33x33x33)
@@ -140,7 +142,7 @@ pub const Lut3D = struct {
     }
 
     /// Apply 3D LUT with trilinear interpolation
-    pub fn apply(self: *const Lut3D, r: f32, g: f32, b: f32) struct { r: f32, g: f32, b: f32 } {
+    pub fn apply(self: *const Lut3D, r: f32, g: f32, b: f32) Rgb {
         // Normalize to domain
         const rn = (r - self.domain_min[0]) / (self.domain_max[0] - self.domain_min[0]);
         const gn = (g - self.domain_min[1]) / (self.domain_max[1] - self.domain_min[1]);
@@ -191,7 +193,7 @@ pub const Lut3D = struct {
     }
 
     /// Apply with tetrahedral interpolation (higher quality)
-    pub fn applyTetrahedral(self: *const Lut3D, r: f32, g: f32, b: f32) struct { r: f32, g: f32, b: f32 } {
+    pub fn applyTetrahedral(self: *const Lut3D, r: f32, g: f32, b: f32) Rgb {
         // Normalize to domain
         const rn = (r - self.domain_min[0]) / (self.domain_max[0] - self.domain_min[0]);
         const gn = (g - self.domain_min[1]) / (self.domain_max[1] - self.domain_min[1]);
@@ -290,7 +292,7 @@ pub fn parseCube(data: []const u8, allocator: Allocator) !union(enum) {
 } {
     var lines = std.mem.splitScalar(u8, data, '\n');
 
-    var title: [256]u8 = [_]u8{0} ** 256;
+    var title: [256]u8 = @splat(0);
     var title_len: u8 = 0;
     var lut_size: u32 = 0;
     var lut_1d_size: u32 = 0;
@@ -298,8 +300,8 @@ pub fn parseCube(data: []const u8, allocator: Allocator) !union(enum) {
     var domain_max: [3]f32 = .{ 1.0, 1.0, 1.0 };
     var is_3d = false;
 
-    var data_values = std.ArrayList(f32).init(allocator);
-    defer data_values.deinit();
+    var data_values: std.ArrayList(f32) = .empty;
+    defer data_values.deinit(allocator);
 
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -341,7 +343,7 @@ pub fn parseCube(data: []const u8, allocator: Allocator) !union(enum) {
             while (parts.next()) |part| : (count += 1) {
                 if (count >= 3) break;
                 const val = std.fmt.parseFloat(f32, std.mem.trim(u8, part, " \t")) catch continue;
-                try data_values.append(val);
+                try data_values.append(allocator, val);
             }
         }
     }
@@ -410,10 +412,10 @@ pub fn parse3dl(data: []const u8, allocator: Allocator) !Lut3D {
     // Second line contains shaper LUT info (we skip it)
     _ = lines.next();
 
-    var data_values = std.ArrayList(f32).init(allocator);
-    defer data_values.deinit();
+    var data_values: std.ArrayList(f32) = .empty;
+    defer data_values.deinit(allocator);
 
-    var max_value: f32 = 4095.0; // 12-bit default
+    const max_value: f32 = 4095.0; // 12-bit default
 
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -422,7 +424,7 @@ pub fn parse3dl(data: []const u8, allocator: Allocator) !Lut3D {
         var parts = std.mem.tokenizeScalar(u8, trimmed, ' ');
         while (parts.next()) |part| {
             const val = std.fmt.parseInt(u32, std.mem.trim(u8, part, " \t"), 10) catch continue;
-            try data_values.append(@as(f32, @floatFromInt(val)) / max_value);
+            try data_values.append(allocator, @as(f32, @floatFromInt(val)) / max_value);
         }
     }
 
@@ -457,8 +459,8 @@ pub fn parseCsp(data: []const u8, allocator: Allocator) !Lut3D {
     var size: u32 = 0;
     var in_3d_section = false;
 
-    var data_values = std.ArrayList(f32).init(allocator);
-    defer data_values.deinit();
+    var data_values: std.ArrayList(f32) = .empty;
+    defer data_values.deinit(allocator);
 
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -481,7 +483,7 @@ pub fn parseCsp(data: []const u8, allocator: Allocator) !Lut3D {
             var parts = std.mem.tokenizeScalar(u8, trimmed, ' ');
             while (parts.next()) |part| {
                 const val = std.fmt.parseFloat(f32, std.mem.trim(u8, part, " \t")) catch continue;
-                try data_values.append(val);
+                try data_values.append(allocator, val);
             }
         }
     }
@@ -605,9 +607,12 @@ pub const LutGenerator = struct {
 
     /// Create identity 1D LUT
     pub fn createIdentity1D(size: u32, allocator: Allocator) !Lut1D {
-        var red = try allocator.alloc(f32, size);
-        var green = try allocator.alloc(f32, size);
-        var blue = try allocator.alloc(f32, size);
+        const red = try allocator.alloc(f32, size);
+        errdefer allocator.free(red);
+        const green = try allocator.alloc(f32, size);
+        errdefer allocator.free(green);
+        const blue = try allocator.alloc(f32, size);
+        errdefer allocator.free(blue);
 
         const size_f = @as(f32, @floatFromInt(size - 1));
         for (0..size) |i| {
@@ -637,7 +642,7 @@ pub const LutGenerator = struct {
 
         for (0..size) |i| {
             const normalized = @as(f32, @floatFromInt(i)) / size_f;
-            const corrected = std.math.pow(normalized, inv_gamma);
+            const corrected = std.math.pow(f32, normalized, inv_gamma);
             red[i] = corrected;
             green[i] = corrected;
             blue[i] = corrected;
@@ -686,8 +691,9 @@ pub const LutGenerator = struct {
 pub const LutWriter = struct {
     /// Write 3D LUT to .cube format
     pub fn writeCube3D(lut: *const Lut3D, allocator: Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        var writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         // Header
         if (lut.title_len > 0) {
@@ -716,13 +722,14 @@ pub const LutWriter = struct {
             });
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 
     /// Write 1D LUT to .cube format
     pub fn writeCube1D(lut: *const Lut1D, allocator: Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
-        var writer = output.writer();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
+        const writer = output.writer(allocator);
 
         // Header
         if (lut.title_len > 0) {
@@ -749,7 +756,7 @@ pub const LutWriter = struct {
             });
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 };
 
@@ -782,7 +789,7 @@ test "Parse .cube 3D LUT" {
         .lut_1d => |*l| @constCast(l).deinit(),
     };
 
-    try testing.expectEqual(result, .lut_3d);
+    try testing.expect(result == .lut_3d);
     const lut = result.lut_3d;
     try testing.expectEqual(@as(u32, 2), lut.size);
     try testing.expect(std.mem.eql(u8, lut.getTitle(), "Test LUT"));

@@ -73,7 +73,7 @@ pub const GopInfo = struct {
     /// Number of frames in this GOP
     frame_count: u32,
     /// GOP structure pattern (e.g., "IBBPBBP")
-    structure: [32]u8 = [_]u8{0} ** 32,
+    structure: [32]u8 = @splat(0),
     structure_len: u8 = 0,
     /// Closed GOP flag (no references outside)
     closed: bool = true,
@@ -111,19 +111,19 @@ pub const FrameIndex = struct {
 
     pub fn init(allocator: Allocator) FrameIndex {
         return .{
-            .frames = std.ArrayList(FrameIndexEntry).init(allocator),
-            .gops = std.ArrayList(GopInfo).init(allocator),
+            .frames = .empty,
+            .gops = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *FrameIndex) void {
-        self.frames.deinit();
-        self.gops.deinit();
+        self.frames.deinit(self.allocator);
+        self.gops.deinit(self.allocator);
     }
 
     pub fn addFrame(self: *FrameIndex, entry: FrameIndexEntry) !void {
-        try self.frames.append(entry);
+        try self.frames.append(self.allocator, entry);
         self.total_frames += 1;
         if (entry.isKeyframe()) {
             self.total_keyframes += 1;
@@ -134,7 +134,7 @@ pub const FrameIndex = struct {
     }
 
     pub fn addGop(self: *FrameIndex, gop: GopInfo) !void {
-        try self.gops.append(gop);
+        try self.gops.append(self.allocator, gop);
     }
 
     /// Find the nearest keyframe at or before given PTS
@@ -190,16 +190,17 @@ pub const FrameIndex = struct {
         target_frame: u64,
         allocator: Allocator,
     ) ![]const *const FrameIndexEntry {
-        var deps = std.ArrayList(*const FrameIndexEntry).init(allocator);
+        var deps: std.ArrayList(*const FrameIndexEntry) = .empty;
+        errdefer deps.deinit(allocator);
 
         // Find nearest keyframe
-        const target = self.findFrameByDisplayOrder(target_frame) orelse return deps.toOwnedSlice();
-        const keyframe = self.findNearestKeyframe(target.pts) orelse return deps.toOwnedSlice();
+        const target = self.findFrameByDisplayOrder(target_frame) orelse return deps.toOwnedSlice(allocator);
+        const keyframe = self.findNearestKeyframe(target.pts) orelse return deps.toOwnedSlice(allocator);
 
         // Add all frames from keyframe to target in decode order
         for (self.frames.items) |*frame| {
             if (frame.dts >= keyframe.dts and frame.dts <= target.dts) {
-                try deps.append(frame);
+                try deps.append(allocator, frame);
             }
         }
 
@@ -210,7 +211,7 @@ pub const FrameIndex = struct {
             }
         }.lessThan);
 
-        return deps.toOwnedSlice();
+        return deps.toOwnedSlice(allocator);
     }
 
     /// Get average GOP size
@@ -638,7 +639,7 @@ pub const FrameSeeker = struct {
 
         // Find target frame
         var target_frame = keyframe.*;
-        var closest_diff: i64 = std.math.maxInt(i64);
+        var closest_diff: u64 = std.math.maxInt(u64);
 
         for (self.index.frames.items) |frame| {
             const diff = @abs(frame.pts - target_pts);

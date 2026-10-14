@@ -107,7 +107,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     }
 
     // Allocate HDR buffer
-    var hdr_data = try allocator.alloc(RGBE, @as(usize, width) * height);
+    const hdr_data = try allocator.alloc(RGBE, @as(usize, width) * height);
     defer allocator.free(hdr_data);
 
     // Decode scanlines

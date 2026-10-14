@@ -407,7 +407,7 @@ pub fn gaussianBlur(image: *Image, radius: u32, allocator: std.mem.Allocator) !v
     while (y < image.height) : (y += 1) {
         var x: u32 = 0;
         while (x < image.width) : (x += 1) {
-            var sums = [_]f32{0} ** 4;
+            var sums: [4]f32 = @splat(0);
 
             for (0..size) |k| {
                 const px_i = @as(i32, @intCast(x)) + @as(i32, @intCast(k)) - @as(i32, @intCast(radius));
@@ -431,7 +431,7 @@ pub fn gaussianBlur(image: *Image, radius: u32, allocator: std.mem.Allocator) !v
     while (y < image.height) : (y += 1) {
         var x: u32 = 0;
         while (x < image.width) : (x += 1) {
-            var sums = [_]f32{0} ** 4;
+            var sums: [4]f32 = @splat(0);
 
             for (0..size) |k| {
                 const py_i = @as(i32, @intCast(y)) + @as(i32, @intCast(k)) - @as(i32, @intCast(radius));
@@ -725,7 +725,7 @@ pub fn boxBlur(image: *Image, radius: u32, allocator: std.mem.Allocator) !void {
     while (y < image.height - radius) : (y += 1) {
         var x: u32 = radius;
         while (x < image.width - radius) : (x += 1) {
-            var sums = [_]u32{0} ** 4;
+            var sums: [4]u32 = @splat(0);
 
             for (0..(2 * radius + 1)) |ky| {
                 for (0..(2 * radius + 1)) |kx| {
@@ -761,7 +761,7 @@ pub fn motionBlur(image: *Image, angle: f32, length: u32, allocator: std.mem.All
     while (y < image.height) : (y += 1) {
         var x: u32 = 0;
         while (x < image.width) : (x += 1) {
-            var sums = [_]f32{0} ** 4;
+            var sums: [4]f32 = @splat(0);
             var count: f32 = 0;
 
             for (0..length) |i| {
@@ -806,7 +806,7 @@ pub fn radialBlur(image: *Image, strength: f32, allocator: std.mem.Allocator) !v
             const dx = @as(f32, @floatFromInt(x)) - center_x;
             const dy = @as(f32, @floatFromInt(y)) - center_y;
 
-            var sums = [_]f32{0} ** 4;
+            var sums: [4]f32 = @splat(0);
             var count: f32 = 0;
 
             for (0..samples) |i| {

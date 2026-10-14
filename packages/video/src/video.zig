@@ -519,7 +519,7 @@ pub const SeekFrameType = seeking.FrameType;
 pub const AvcFrameParser = seeking.AvcFrameParser;
 pub const HevcFrameParser = seeking.HevcFrameParser;
 pub const Mpeg2FrameParser = seeking.Mpeg2FrameParser;
-pub const Vp9FrameParser = seeking.Vp9FrameParser;
+pub const Vp9SeekFrameParser = seeking.Vp9FrameParser;
 pub const Av1FrameParser = seeking.Av1FrameParser;
 
 // ============================================================================

@@ -415,7 +415,7 @@ pub const AacReader = struct {
 
     /// Create reader from memory buffer
     pub fn fromMemory(allocator: std.mem.Allocator, data: []const u8) !Self {
-        var parser = try AdtsParser.init(data);
+        const parser = try AdtsParser.init(data);
 
         return Self{
             .data = data,

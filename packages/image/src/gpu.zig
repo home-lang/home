@@ -424,7 +424,7 @@ pub const GPUOps = struct {
     /// GPU-accelerated histogram
     pub fn computeHistogram(self: *GPUOps, image: *const Image) [3][256]u32 {
         _ = self;
-        var hist = [3][256]u32{ [_]u32{0} ** 256, [_]u32{0} ** 256, [_]u32{0} ** 256 };
+        var hist: [3][256]u32 = @splat(@as([256]u32, @splat(0)));
 
         var y: u32 = 0;
         while (y < image.height) : (y += 1) {
