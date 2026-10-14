@@ -34,7 +34,7 @@ pub const MediaType = enum {
     fn isVideoExtension(ext: []const u8) bool {
         const video_exts = [_][]const u8{
             ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v",
-            ".ts", ".mts", ".m2ts", ".vob", ".ogv", ".3gp", ".3g2", ".mxf",
+            ".ts",  ".mts", ".m2ts", ".vob", ".ogv", ".3gp", ".3g2", ".mxf",
         };
         for (video_exts) |e| {
             if (std.ascii.eqlIgnoreCase(ext, e)) return true;
@@ -44,9 +44,9 @@ pub const MediaType = enum {
 
     fn isAudioExtension(ext: []const u8) bool {
         const audio_exts = [_][]const u8{
-            ".mp3", ".wav", ".flac", ".aac", ".ogg", ".opus", ".m4a", ".wma",
-            ".aiff", ".aif", ".ape", ".tta", ".wv", ".dsd", ".dsf", ".dff",
-            ".mid", ".midi", ".caf", ".mka",
+            ".mp3",  ".wav",  ".flac", ".aac", ".ogg", ".opus", ".m4a", ".wma",
+            ".aiff", ".aif",  ".ape",  ".tta", ".wv",  ".dsd",  ".dsf", ".dff",
+            ".mid",  ".midi", ".caf",  ".mka",
         };
         for (audio_exts) |e| {
             if (std.ascii.eqlIgnoreCase(ext, e)) return true;
@@ -56,10 +56,10 @@ pub const MediaType = enum {
 
     fn isImageExtension(ext: []const u8) bool {
         const image_exts = [_][]const u8{
-            ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif",
-            ".avif", ".heic", ".heif", ".jp2", ".j2k", ".jpx", ".svg", ".ico",
-            ".tga", ".ppm", ".pgm", ".pbm", ".qoi", ".hdr", ".dds", ".psd",
-            ".exr", ".jxl", ".flif", ".raw", ".dng", ".cr2", ".nef", ".arw",
+            ".png",  ".jpg",  ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif",
+            ".avif", ".heic", ".heif", ".jp2",  ".j2k", ".jpx", ".svg",  ".ico",
+            ".tga",  ".ppm",  ".pgm",  ".pbm",  ".qoi", ".hdr", ".dds",  ".psd",
+            ".exr",  ".jxl",  ".flif", ".raw",  ".dng", ".cr2", ".nef",  ".arw",
         };
         for (image_exts) |e| {
             if (std.ascii.eqlIgnoreCase(ext, e)) return true;
@@ -98,6 +98,7 @@ pub const VideoCodec = enum {
     theora,
     wmv,
     copy, // Stream copy (no re-encoding)
+    none, // Disable the video stream
     unknown,
 
     pub fn displayName(self: VideoCodec) []const u8 {
@@ -117,6 +118,7 @@ pub const VideoCodec = enum {
             .theora => "Theora",
             .wmv => "Windows Media Video",
             .copy => "Copy (no encode)",
+            .none => "None",
             .unknown => "Unknown",
         };
     }
@@ -151,12 +153,16 @@ pub const AudioCodec = enum {
     flac,
     vorbis,
     pcm,
+    pcm_s16le,
+    pcm_s24le,
+    pcm_f32le,
     ac3,
     eac3,
     dts,
     alac,
     wma,
     copy, // Stream copy (no re-encoding)
+    none, // Disable the audio stream
     unknown,
 
     pub fn displayName(self: AudioCodec) []const u8 {
@@ -167,19 +173,23 @@ pub const AudioCodec = enum {
             .flac => "FLAC",
             .vorbis => "Vorbis",
             .pcm => "PCM",
+            .pcm_s16le => "PCM signed 16-bit little-endian",
+            .pcm_s24le => "PCM signed 24-bit little-endian",
+            .pcm_f32le => "PCM 32-bit float little-endian",
             .ac3 => "AC-3/Dolby Digital",
             .eac3 => "E-AC-3/Dolby Digital Plus",
             .dts => "DTS",
             .alac => "Apple Lossless",
             .wma => "Windows Media Audio",
             .copy => "Copy (no encode)",
+            .none => "None",
             .unknown => "Unknown",
         };
     }
 
     pub fn isLossless(self: AudioCodec) bool {
         return switch (self) {
-            .flac, .pcm, .alac => true,
+            .flac, .pcm, .pcm_s16le, .pcm_s24le, .pcm_f32le, .alac => true,
             else => false,
         };
     }
@@ -270,8 +280,20 @@ pub const ContainerFormat = enum {
 
     pub fn supportsAudio(self: ContainerFormat) bool {
         return switch (self) {
-            .mp4, .mov, .mkv, .webm, .avi, .flv, .ts, .m2ts, .ogg, .mxf,
-            .wav, .mp3, .flac, .aac,
+            .mp4,
+            .mov,
+            .mkv,
+            .webm,
+            .avi,
+            .flv,
+            .ts,
+            .m2ts,
+            .ogg,
+            .mxf,
+            .wav,
+            .mp3,
+            .flac,
+            .aac,
             => true,
             else => false,
         };
@@ -306,6 +328,22 @@ pub const Rational = struct {
     pub fn toFloat(self: Rational) f64 {
         if (self.den == 0) return 0;
         return @as(f64, @floatFromInt(self.num)) / @as(f64, @floatFromInt(self.den));
+    }
+
+    pub fn toF64(self: Rational) f64 {
+        return self.toFloat();
+    }
+
+    pub fn fps24() Rational {
+        return .{ .num = 24_000, .den = 1_001 };
+    }
+
+    pub fn fps30() Rational {
+        return .{ .num = 30_000, .den = 1_001 };
+    }
+
+    pub fn fps60() Rational {
+        return .{ .num = 60_000, .den = 1_001 };
     }
 
     pub fn reduce(self: Rational) Rational {
@@ -343,6 +381,10 @@ pub const Timestamp = struct {
         return .{ .us = ms * 1000 };
     }
 
+    pub fn fromMicroseconds(us: i64) Timestamp {
+        return .{ .us = us };
+    }
+
     pub fn toSeconds(self: Timestamp) f64 {
         return @as(f64, @floatFromInt(self.us)) / 1_000_000.0;
     }
@@ -358,6 +400,18 @@ pub const Timestamp = struct {
     pub fn sub(self: Timestamp, other: Timestamp) Timestamp {
         return .{ .us = self.us - other.us };
     }
+
+    pub fn subtract(self: Timestamp, other: Timestamp) Timestamp {
+        return self.sub(other);
+    }
+
+    pub fn lessThan(self: Timestamp, other: Timestamp) bool {
+        return self.us < other.us;
+    }
+
+    pub fn equals(self: Timestamp, other: Timestamp) bool {
+        return self.us == other.us;
+    }
 };
 
 /// Duration in microseconds
@@ -365,6 +419,10 @@ pub const Duration = struct {
     us: u64,
 
     pub const ZERO = Duration{ .us = 0 };
+
+    pub fn zero() Duration {
+        return ZERO;
+    }
 
     pub fn fromSeconds(seconds: f64) Duration {
         return .{ .us = @intFromFloat(seconds * 1_000_000.0) };
@@ -562,6 +620,7 @@ pub const QualityPreset = enum {
     low,
     medium,
     high,
+    ultra,
     very_high,
     lossless,
 
@@ -570,6 +629,7 @@ pub const QualityPreset = enum {
             .low => .{ .crf = 28, .preset = .veryfast },
             .medium => .{ .crf = 23, .preset = .medium },
             .high => .{ .crf = 18, .preset = .slow },
+            .ultra => .{ .crf = 15, .preset = .slower },
             .very_high => .{ .crf = 15, .preset = .slower },
             .lossless => .{ .crf = 0, .preset = .veryslow },
         };
@@ -580,6 +640,7 @@ pub const QualityPreset = enum {
             .low => .{ .bitrate = 96 },
             .medium => .{ .bitrate = 128 },
             .high => .{ .bitrate = 192 },
+            .ultra => .{ .bitrate = 320 },
             .very_high => .{ .bitrate = 320 },
             .lossless => .{ .codec = .flac },
         };

@@ -335,9 +335,14 @@ pub const Pipeline = struct {
     }
 
     /// Set video quality (CRF: 0-51, lower = better)
-    pub fn videoQuality(self: *Self, crf: u8) *Self {
-        self.video_options.crf = crf;
+    pub fn videoQuality(self: *Self, value: u8) *Self {
+        self.video_options.crf = value;
         return self;
+    }
+
+    /// Alias for `videoQuality`, matching the public Home binding.
+    pub fn crf(self: *Self, value: u8) *Self {
+        return self.videoQuality(value);
     }
 
     /// Set encoding preset
@@ -586,6 +591,11 @@ pub const Pipeline = struct {
         return self;
     }
 
+    /// Alias for `start`, matching media-tool seek terminology.
+    pub fn seek(self: *Self, seconds: f64) *Self {
+        return self.start(seconds);
+    }
+
     /// Set duration (seconds)
     pub fn duration(self: *Self, seconds: f64) *Self {
         self.duration_limit = seconds;
@@ -596,6 +606,11 @@ pub const Pipeline = struct {
     pub fn end(self: *Self, seconds: f64) *Self {
         self.end_time = seconds;
         return self;
+    }
+
+    /// Alias for `end`, matching the public Home binding.
+    pub fn to(self: *Self, seconds: f64) *Self {
+        return self.end(seconds);
     }
 
     /// Set speed factor (0.5 = half speed, 2.0 = double speed)

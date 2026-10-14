@@ -64,7 +64,7 @@ pub const TranscoderConfig = struct {
 // Transcoder State
 // ============================================================================
 
-const TranscoderState = enum {
+pub const TranscoderState = enum {
     idle,
     initializing,
     decoding,
@@ -351,18 +351,18 @@ pub const BatchTranscoder = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .jobs = std.ArrayList(TranscoderConfig).init(allocator),
-            .results = std.ArrayList(BatchResult).init(allocator),
+            .jobs = .empty,
+            .results = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.jobs.deinit();
-        self.results.deinit();
+        self.jobs.deinit(self.allocator);
+        self.results.deinit(self.allocator);
     }
 
     pub fn addJob(self: *Self, config: TranscoderConfig) !void {
-        try self.jobs.append(config);
+        try self.jobs.append(self.allocator, config);
     }
 
     pub fn setMaxParallel(self: *Self, count: u32) void {
@@ -382,13 +382,13 @@ pub const BatchTranscoder = struct {
 
             transcoder.run() catch |e| {
                 result.error_code = e;
-                try self.results.append(result);
+                try self.results.append(self.allocator, result);
                 continue;
             };
 
             result.success = true;
             result.stats = transcoder.getStats();
-            try self.results.append(result);
+            try self.results.append(self.allocator, result);
         }
     }
 
