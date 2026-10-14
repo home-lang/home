@@ -546,11 +546,13 @@ pub const LinkerConfig = struct {
 
 pub const Linker = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: LinkerConfig,
 
-    pub fn init(allocator: std.mem.Allocator, config: LinkerConfig) Linker {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: LinkerConfig) Linker {
         return .{
             .allocator = allocator,
+            .io = io,
             .config = config,
         };
     }
@@ -625,15 +627,16 @@ pub const Linker = struct {
         }
 
         if (self.config.verbose) {
-            std.debug.print("Linking: {s}\n", .{argv});
+            std.debug.print("Linking:", .{});
+            for (argv) |arg| std.debug.print(" {s}", .{arg});
+            std.debug.print("\n", .{});
         }
 
-        var child = std.process.Child.init(argv, self.allocator);
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
+        var child = try std.process.spawn(self.io, .{ .argv = argv });
+        defer child.kill(self.io);
 
-        const term = try child.spawnAndWait();
-        if (term.Exited != 0) {
+        const term = try child.wait(self.io);
+        if (!term.success()) {
             return error.LinkFailed;
         }
     }
@@ -698,7 +701,7 @@ test "linker command owns every argument" {
     const objects = [_][]const u8{"-Lobject-name.o"};
     const paths = [_][]const u8{"vendor/lib"};
     const libraries = [_][]const u8{"home"};
-    var linker = Linker.init(allocator, .{
+    var linker = Linker.init(allocator, std.testing.io, .{
         .type_ = .Lld,
         .output_path = "out.bin",
         .object_files = &objects,

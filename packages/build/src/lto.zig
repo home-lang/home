@@ -4,6 +4,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const max_ir_size = 10 * 1024 * 1024;
+
+fn milliTimestamp(io: std.Io) i64 {
+    return std.Io.Clock.real.now(io).toMilliseconds();
+}
+
+fn freeStringList(allocator: std.mem.Allocator, strings: []const []const u8) void {
+    for (strings) |string| allocator.free(string);
+    allocator.free(strings);
+}
+
 // ============================================================================
 // LTO Configuration
 // ============================================================================
@@ -193,13 +204,15 @@ pub const IrGlobal = struct {
 
 pub const LtoOptimizer = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: LtoConfig,
     modules: std.ArrayList(IrModule),
     stats: LtoStats,
 
-    pub fn init(allocator: std.mem.Allocator, config: LtoConfig) LtoOptimizer {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: LtoConfig) LtoOptimizer {
         return .{
             .allocator = allocator,
+            .io = io,
             .config = config,
             .modules = .empty,
             .stats = .{},
@@ -218,9 +231,21 @@ pub const LtoOptimizer = struct {
         try self.modules.append(self.allocator, module);
     }
 
+    fn readModule(self: *LtoOptimizer, path: []const u8) std.mem.Allocator.Error!?[]u8 {
+        return std.Io.Dir.cwd().readFileAlloc(
+            self.io,
+            path,
+            self.allocator,
+            .limited(max_ir_size),
+        ) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => null,
+        };
+    }
+
     /// Run LTO optimization pipeline
     pub fn optimize(self: *LtoOptimizer) !void {
-        const start = std.time.milliTimestamp();
+        const start = milliTimestamp(self.io);
 
         if (self.config.verbose) {
             std.debug.print("Starting LTO optimization on {d} modules...\n", .{self.modules.items.len});
@@ -262,7 +287,7 @@ pub const LtoOptimizer = struct {
             try self.optimizeGlobals();
         }
 
-        const end = std.time.milliTimestamp();
+        const end = milliTimestamp(self.io);
         self.stats.total_time_ms = end - start;
 
         if (self.config.verbose) {
@@ -282,9 +307,7 @@ pub const LtoOptimizer = struct {
             self.stats.modules_analyzed += 1;
 
             // Read IR file to get size
-            const file = std.fs.cwd().openFile(module.ir_path, .{}) catch continue;
-            defer file.close();
-            const stat = file.stat() catch continue;
+            const stat = std.Io.Dir.cwd().statFile(self.io, module.ir_path, .{}) catch continue;
             module.ir_size = stat.size;
         }
     }
@@ -292,10 +315,7 @@ pub const LtoOptimizer = struct {
     /// Parse IR module to extract functions and globals
     fn parseModuleIR(self: *LtoOptimizer, module: *IrModule) !void {
         // Read the IR file
-        const file = std.fs.cwd().openFile(module.ir_path, .{}) catch return;
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return;
+        const content = try self.readModule(module.ir_path) orelse return;
         defer self.allocator.free(content);
 
         // Simple IR parsing - look for function and global declarations
@@ -343,6 +363,7 @@ pub const LtoOptimizer = struct {
         const func_name = func_name_tok[1..]; // Strip '@'
 
         var func = try IrFunction.init(self.allocator, func_name, func_name);
+        errdefer func.deinit(self.allocator);
         func.visibility = .Public;
         func.size = 100; // Estimate
         func.inline_cost = 150;
@@ -366,6 +387,7 @@ pub const LtoOptimizer = struct {
         const func_name = func_name_tok[1..]; // Strip '@'
 
         var func = try IrFunction.init(self.allocator, func_name, func_name);
+        errdefer func.deinit(self.allocator);
         func.visibility = .Extern;
 
         try module.imports.append(self.allocator, func);
@@ -416,7 +438,7 @@ pub const LtoOptimizer = struct {
         // Parse each module's IR to find function calls
         for (self.modules.items) |*module| {
             const calls = try self.findFunctionCalls(module);
-            defer self.allocator.free(calls);
+            defer freeStringList(self.allocator, calls);
 
             edges += calls.len;
 
@@ -438,14 +460,13 @@ pub const LtoOptimizer = struct {
 
     /// Find function calls in a module's IR
     fn findFunctionCalls(self: *LtoOptimizer, module: *IrModule) ![][]const u8 {
-        const file = std.fs.cwd().openFile(module.ir_path, .{}) catch return &[_][]const u8{};
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return &[_][]const u8{};
+        const content = try self.readModule(module.ir_path) orelse
+            return self.allocator.alloc([]const u8, 0);
         defer self.allocator.free(content);
 
         var calls = std.ArrayList([]const u8).empty;
         defer calls.deinit(self.allocator);
+        errdefer for (calls.items) |call| self.allocator.free(call);
 
         // Parse IR looking for call instructions: "call <type> @function_name(...)"
         var line_iter = std.mem.splitScalar(u8, content, '\n');
@@ -496,10 +517,7 @@ pub const LtoOptimizer = struct {
         var devirtualized: usize = 0;
 
         // Read the module IR
-        const file = std.fs.cwd().openFile(module.ir_path, .{}) catch return 0;
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return 0;
+        const content = try self.readModule(module.ir_path) orelse return 0;
         defer self.allocator.free(content);
 
         // Build a map of function pointers to their single target (if known)
@@ -555,10 +573,7 @@ pub const LtoOptimizer = struct {
         var specialized: usize = 0;
 
         // Read the module IR
-        const file = std.fs.cwd().openFile(module.ir_path, .{}) catch return 0;
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return 0;
+        const content = try self.readModule(module.ir_path) orelse return 0;
         defer self.allocator.free(content);
 
         // Track function calls with constant arguments
@@ -637,10 +652,7 @@ pub const LtoOptimizer = struct {
         var inlined_count: usize = 0;
 
         // Read the module IR to find function body
-        const file = std.fs.cwd().openFile(module.ir_path, .{}) catch return 0;
-        defer file.close();
-
-        const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch return 0;
+        const content = try self.readModule(module.ir_path) orelse return 0;
         defer self.allocator.free(content);
 
         // Extract function body
@@ -718,7 +730,7 @@ pub const LtoOptimizer = struct {
                     if (reachable.contains(func.name)) {
                         // Mark called functions as reachable
                         const calls = try self.findFunctionCalls(module);
-                        defer self.allocator.free(calls);
+                        defer freeStringList(self.allocator, calls);
 
                         for (calls) |callee_name| {
                             if (!reachable.contains(callee_name)) {
@@ -777,10 +789,7 @@ pub const LtoOptimizer = struct {
 
         // Propagate constants across module boundaries
         for (self.modules.items) |*module| {
-            const file = std.fs.cwd().openFile(module.ir_path, .{}) catch continue;
-            defer file.close();
-
-            const content = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch continue;
+            const content = try self.readModule(module.ir_path) orelse continue;
             defer self.allocator.free(content);
 
             // Count loads from constant globals
@@ -858,10 +867,12 @@ pub const LtoOptimizer = struct {
 
     /// Generate optimized output
     pub fn emitOptimized(self: *LtoOptimizer, output_path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(output_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(self.io, output_path, .{});
+        defer file.close(self.io);
 
-        const writer = file.writer();
+        var buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(self.io, &buffer);
+        const writer = &file_writer.interface;
 
         // Write optimized IR/object file
         try writer.writeAll("; Optimized LTO output\n");
@@ -903,6 +914,7 @@ pub const LtoOptimizer = struct {
                 try writer.writeAll("}\n\n");
             }
         }
+        try writer.flush();
 
         if (self.config.verbose) {
             std.debug.print("Wrote optimized output to: {s}\n", .{output_path});
@@ -1219,7 +1231,7 @@ test "LTO optimizer pipeline" {
         .verbose = false,
     };
 
-    var optimizer = LtoOptimizer.init(allocator, config);
+    var optimizer = LtoOptimizer.init(allocator, std.testing.io, config);
     defer optimizer.deinit();
 
     const module = try IrModule.init(allocator, "test", "/dev/null", "/dev/null");
