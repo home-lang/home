@@ -56,6 +56,19 @@ pub fn build(b: *std.Build) void {
     const format_test_step = b.step("test-formats", "Run format-specific tests");
     format_test_step.dependOn(&run_format_tests.step);
 
+    // Metadata tests
+    const metadata_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/metadata_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    check_step.dependOn(&metadata_tests.step);
+    const run_metadata_tests = b.addRunArtifact(metadata_tests);
+    const metadata_test_step = b.step("test-metadata", "Run metadata parser and writer tests");
+    metadata_test_step.dependOn(&run_metadata_tests.step);
+
     // Operations tests
     const ops_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -124,6 +137,7 @@ pub fn build(b: *std.Build) void {
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(test_step);
     all_tests_step.dependOn(format_test_step);
+    all_tests_step.dependOn(metadata_test_step);
     all_tests_step.dependOn(ops_test_step);
 }
 

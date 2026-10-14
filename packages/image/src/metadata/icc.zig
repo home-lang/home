@@ -253,8 +253,10 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ICCProfile {
         const tag_offset = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
         const tag_size = std.mem.readInt(u32, data[pos + 8 ..][0..4], .big);
 
-        if (tag_offset + tag_size <= data.len) {
-            const tag_data = data[tag_offset..][0..tag_size];
+        const tag_offset_usize: usize = tag_offset;
+        const tag_size_usize: usize = tag_size;
+        if (tag_offset_usize <= data.len and tag_size_usize <= data.len - tag_offset_usize) {
+            const tag_data = data[tag_offset_usize..][0..tag_size_usize];
 
             try parseTag(allocator, tag_sig, tag_data, &profile);
         }
@@ -311,7 +313,11 @@ fn parseTag(allocator: std.mem.Allocator, sig: u32, data: []const u8, profile: *
         else => {
             // Store raw data for unknown tags
             const tag_copy = try allocator.dupe(u8, data);
-            try profile.tags.put(sig, tag_copy);
+            const previous = profile.tags.fetchPut(sig, tag_copy) catch |err| {
+                allocator.free(tag_copy);
+                return err;
+            };
+            if (previous) |entry| allocator.free(entry.value);
         },
     }
 }
@@ -409,36 +415,36 @@ fn parseTRCGamma(data: []const u8, tag_type: TagType) f64 {
 // ============================================================================
 
 pub fn createSRGBProfile(allocator: std.mem.Allocator) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // We'll build a minimal sRGB profile
-    var tags = std.ArrayList(TagEntry).init(allocator);
-    defer tags.deinit();
+    var tags: std.ArrayList(TagEntry) = .empty;
+    defer tags.deinit(allocator);
 
-    var tag_data = std.ArrayList(u8).init(allocator);
-    defer tag_data.deinit();
+    var tag_data: std.ArrayList(u8) = .empty;
+    defer tag_data.deinit(allocator);
 
     // Description tag
     const desc = "sRGB IEC61966-2.1";
-    try addTextTag(&tags, &tag_data, .profile_description, desc);
+    try addTextTag(allocator, &tags, &tag_data, .profile_description, desc);
 
     // Copyright
     const copyright = "Public Domain";
-    try addTextTag(&tags, &tag_data, .copyright, copyright);
+    try addTextTag(allocator, &tags, &tag_data, .copyright, copyright);
 
     // White point (D50)
-    try addXYZTag(&tags, &tag_data, .media_white_point, .{ .x = 0.9642, .y = 1.0, .z = 0.8249 });
+    try addXYZTag(allocator, &tags, &tag_data, .media_white_point, .{ .x = 0.9642, .y = 1.0, .z = 0.8249 });
 
     // Colorants (sRGB primaries in XYZ)
-    try addXYZTag(&tags, &tag_data, .red_colorant, .{ .x = 0.4358, .y = 0.2224, .z = 0.0139 });
-    try addXYZTag(&tags, &tag_data, .green_colorant, .{ .x = 0.3853, .y = 0.7170, .z = 0.0971 });
-    try addXYZTag(&tags, &tag_data, .blue_colorant, .{ .x = 0.1430, .y = 0.0606, .z = 0.7139 });
+    try addXYZTag(allocator, &tags, &tag_data, .red_colorant, .{ .x = 0.4358, .y = 0.2224, .z = 0.0139 });
+    try addXYZTag(allocator, &tags, &tag_data, .green_colorant, .{ .x = 0.3853, .y = 0.7170, .z = 0.0971 });
+    try addXYZTag(allocator, &tags, &tag_data, .blue_colorant, .{ .x = 0.1430, .y = 0.0606, .z = 0.7139 });
 
     // TRC (gamma 2.2 approximation)
-    try addGammaTag(&tags, &tag_data, .red_trc, 2.2);
-    try addGammaTag(&tags, &tag_data, .green_trc, 2.2);
-    try addGammaTag(&tags, &tag_data, .blue_trc, 2.2);
+    try addGammaTag(allocator, &tags, &tag_data, .red_trc, 2.2);
+    try addGammaTag(allocator, &tags, &tag_data, .green_trc, 2.2);
+    try addGammaTag(allocator, &tags, &tag_data, .blue_trc, 2.2);
 
     // Calculate sizes
     const header_size: usize = 128;
@@ -447,62 +453,62 @@ pub fn createSRGBProfile(allocator: std.mem.Allocator) ![]u8 {
     const total_size = data_offset + tag_data.items.len;
 
     // Write header
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(total_size)))); // Size
-    try output.appendNTimes(0, 4); // Preferred CMM
-    try output.appendSlice(&[_]u8{ 0x02, 0x40, 0x00, 0x00 }); // Version 2.4
-    try output.appendSlice(&std.mem.toBytes(@as(u32, @intFromEnum(ProfileClass.display_device)))); // Class
-    try output.appendSlice(&std.mem.toBytes(@as(u32, @intFromEnum(ColorSpace.rgb)))); // Color space
-    try output.appendSlice(&std.mem.toBytes(@as(u32, @intFromEnum(ColorSpace.xyz)))); // PCS
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(total_size)))); // Size
+    try output.appendNTimes(allocator, 0, 4); // Preferred CMM
+    try output.appendSlice(allocator, &[_]u8{ 0x02, 0x40, 0x00, 0x00 }); // Version 2.4
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(ProfileClass.display_device)))); // Class
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(ColorSpace.rgb)))); // Color space
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(ColorSpace.xyz)))); // PCS
 
     // Date/time (zeros)
-    try output.appendNTimes(0, 12);
+    try output.appendNTimes(allocator, 0, 12);
 
     // Signature 'acsp'
-    try output.appendSlice(ICC_MAGIC);
+    try output.appendSlice(allocator, ICC_MAGIC);
 
     // Platform (zeros)
-    try output.appendNTimes(0, 4);
+    try output.appendNTimes(allocator, 0, 4);
 
     // Flags
-    try output.appendNTimes(0, 4);
+    try output.appendNTimes(allocator, 0, 4);
 
     // Device manufacturer/model
-    try output.appendNTimes(0, 8);
+    try output.appendNTimes(allocator, 0, 8);
 
     // Device attributes
-    try output.appendNTimes(0, 8);
+    try output.appendNTimes(allocator, 0, 8);
 
     // Rendering intent (perceptual)
-    try output.appendNTimes(0, 4);
+    try output.appendNTimes(allocator, 0, 4);
 
     // Illuminant (D50)
-    try output.appendSlice(&floatToS15Fixed16(0.9642));
-    try output.appendSlice(&floatToS15Fixed16(1.0));
-    try output.appendSlice(&floatToS15Fixed16(0.8249));
+    try output.appendSlice(allocator, &floatToS15Fixed16(0.9642));
+    try output.appendSlice(allocator, &floatToS15Fixed16(1.0));
+    try output.appendSlice(allocator, &floatToS15Fixed16(0.8249));
 
     // Creator
-    try output.appendNTimes(0, 4);
+    try output.appendNTimes(allocator, 0, 4);
 
     // Profile ID (zeros for now)
-    try output.appendNTimes(0, 16);
+    try output.appendNTimes(allocator, 0, 16);
 
     // Reserved
-    try output.appendNTimes(0, 28);
+    try output.appendNTimes(allocator, 0, 28);
 
     // Tag count
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(tags.items.len))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(tags.items.len))));
 
     // Tag table
     for (tags.items) |tag| {
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(tag.sig))));
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(data_offset + tag.offset))));
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(tag.size))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(tag.sig))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(data_offset + tag.offset))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(tag.size))));
     }
 
     // Tag data
-    try output.appendSlice(tag_data.items);
+    try output.appendSlice(allocator, tag_data.items);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 const TagEntry = struct {
@@ -511,69 +517,69 @@ const TagEntry = struct {
     size: usize,
 };
 
-fn addTextTag(tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, text: []const u8) !void {
+fn addTextTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, text: []const u8) !void {
     const start = data.items.len;
 
     // Type signature 'desc'
-    try data.appendSlice("desc");
+    try data.appendSlice(allocator, "desc");
     // Reserved
-    try data.appendNTimes(0, 4);
+    try data.appendNTimes(allocator, 0, 4);
     // Count (including null)
-    try data.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(text.len + 1))));
+    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(text.len + 1))));
     // Text
-    try data.appendSlice(text);
-    try data.append(0);
+    try data.appendSlice(allocator, text);
+    try data.append(allocator, 0);
 
     // Pad to 4-byte boundary
     while (data.items.len % 4 != 0) {
-        try data.append(0);
+        try data.append(allocator, 0);
     }
 
-    try tags.append(TagEntry{
+    try tags.append(allocator, TagEntry{
         .sig = sig,
         .offset = start,
         .size = data.items.len - start,
     });
 }
 
-fn addXYZTag(tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, xyz: XYZNumber) !void {
+fn addXYZTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, xyz: XYZNumber) !void {
     const start = data.items.len;
 
     // Type signature 'XYZ '
-    try data.appendSlice("XYZ ");
+    try data.appendSlice(allocator, "XYZ ");
     // Reserved
-    try data.appendNTimes(0, 4);
+    try data.appendNTimes(allocator, 0, 4);
     // XYZ values
-    try data.appendSlice(&floatToS15Fixed16(xyz.x));
-    try data.appendSlice(&floatToS15Fixed16(xyz.y));
-    try data.appendSlice(&floatToS15Fixed16(xyz.z));
+    try data.appendSlice(allocator, &floatToS15Fixed16(xyz.x));
+    try data.appendSlice(allocator, &floatToS15Fixed16(xyz.y));
+    try data.appendSlice(allocator, &floatToS15Fixed16(xyz.z));
 
-    try tags.append(TagEntry{
+    try tags.append(allocator, TagEntry{
         .sig = sig,
         .offset = start,
         .size = data.items.len - start,
     });
 }
 
-fn addGammaTag(tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, gamma: f64) !void {
+fn addGammaTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, gamma: f64) !void {
     const start = data.items.len;
 
     // Type signature 'curv'
-    try data.appendSlice("curv");
+    try data.appendSlice(allocator, "curv");
     // Reserved
-    try data.appendNTimes(0, 4);
+    try data.appendNTimes(allocator, 0, 4);
     // Count = 1 (single gamma value)
-    try data.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, 1)));
+    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, 1)));
     // Gamma as u8Fixed8Number
     const gamma_fixed: u16 = @intFromFloat(@round(gamma * 256.0));
-    try data.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, gamma_fixed)));
+    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, gamma_fixed)));
 
     // Pad to 4-byte boundary
     while (data.items.len % 4 != 0) {
-        try data.append(0);
+        try data.append(allocator, 0);
     }
 
-    try tags.append(TagEntry{
+    try tags.append(allocator, TagEntry{
         .sig = sig,
         .offset = start,
         .size = data.items.len - start,
@@ -625,4 +631,22 @@ test "XYZ from s15Fixed16" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.9642), xyz.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), xyz.y, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 0.8249), xyz.z, 0.001);
+}
+
+test "generated sRGB profile parses with exact signatures" {
+    const allocator = std.testing.allocator;
+    const encoded = try createSRGBProfile(allocator);
+    defer allocator.free(encoded);
+
+    var profile = try parse(allocator, encoded);
+    defer profile.deinit();
+
+    try std.testing.expectEqual(@as(u32, @intCast(encoded.len)), profile.size);
+    try std.testing.expectEqual(ProfileClass.display_device, profile.profile_class);
+    try std.testing.expectEqual(ColorSpace.rgb, profile.color_space);
+    try std.testing.expectEqual(ColorSpace.xyz, profile.pcs);
+    try std.testing.expectEqualStrings("sRGB IEC61966-2.1", profile.description.?);
+    try std.testing.expectEqualStrings("Public Domain", profile.copyright.?);
+    try std.testing.expect(profile.isSRGB());
+    try std.testing.expectApproxEqAbs(@as(f64, 2.2), profile.red_gamma, 0.01);
 }

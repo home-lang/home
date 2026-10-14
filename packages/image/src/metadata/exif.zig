@@ -309,6 +309,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ExifData {
     }
 
     // Determine byte order
+    if (offset + 4 > data.len) return exif;
     const is_little_endian = std.mem.eql(u8, data[offset..][0..4], &TIFF_LITTLE_ENDIAN);
     const is_big_endian = std.mem.eql(u8, data[offset..][0..4], &TIFF_BIG_ENDIAN);
 
@@ -322,7 +323,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ExifData {
     // Read IFD0 offset
     if (offset + 4 > data.len) return exif;
     const ifd0_offset = readU32(data[offset..][0..4], is_little_endian);
-    offset = tiff_start + ifd0_offset;
+    offset = std.math.add(usize, tiff_start, ifd0_offset) catch return exif;
 
     // Parse IFD0
     try parseIFD(allocator, data, tiff_start, &offset, is_little_endian, &exif, false);
@@ -330,7 +331,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ExifData {
     return exif;
 }
 
-fn parseIFD(allocator: std.mem.Allocator, data: []const u8, tiff_start: usize, offset: *usize, little_endian: bool, exif: *ExifData, is_gps: bool) !void {
+fn parseIFD(allocator: std.mem.Allocator, data: []const u8, tiff_start: usize, offset: *usize, little_endian: bool, exif: *ExifData, is_gps: bool) std.mem.Allocator.Error!void {
     if (offset.* + 2 > data.len) return;
 
     const num_entries = readU16(data[offset.*..][0..2], little_endian);
@@ -343,15 +344,21 @@ fn parseIFD(allocator: std.mem.Allocator, data: []const u8, tiff_start: usize, o
         const count = readU32(data[offset.* + 4 ..][0..4], little_endian);
         const value_offset_raw = data[offset.* + 8 ..][0..4];
 
-        const value_size = field_type.size() * count;
+        const value_size = std.math.mul(usize, field_type.size(), count) catch {
+            offset.* += 12;
+            continue;
+        };
         var value_data: []const u8 = undefined;
 
         if (value_size <= 4) {
             value_data = value_offset_raw[0..@min(4, value_size)];
         } else {
             const value_offset = readU32(value_offset_raw, little_endian);
-            const abs_offset = tiff_start + value_offset;
-            if (abs_offset + value_size <= data.len) {
+            const abs_offset = std.math.add(usize, tiff_start, value_offset) catch {
+                offset.* += 12;
+                continue;
+            };
+            if (abs_offset <= data.len and value_size <= data.len - abs_offset) {
                 value_data = data[abs_offset..][0..value_size];
             } else {
                 offset.* += 12;
@@ -372,7 +379,7 @@ fn parseIFD(allocator: std.mem.Allocator, data: []const u8, tiff_start: usize, o
     }
 }
 
-fn parseExifTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData, data: []const u8, tiff_start: usize) !void {
+fn parseExifTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData, data: []const u8, tiff_start: usize) std.mem.Allocator.Error!void {
     switch (tag) {
         .make => {
             exif.make = try allocator.dupe(u8, trimNull(value_data));
@@ -467,13 +474,13 @@ fn parseExifTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, c
         .exif_ifd_pointer => {
             // Parse EXIF sub-IFD
             const sub_offset = readU32(value_data[0..4], little_endian);
-            var new_offset = tiff_start + sub_offset;
+            var new_offset = std.math.add(usize, tiff_start, sub_offset) catch return;
             try parseIFD(allocator, data, tiff_start, &new_offset, little_endian, exif, false);
         },
         .gps_info_ifd_pointer => {
             // Parse GPS IFD
             const gps_offset = readU32(value_data[0..4], little_endian);
-            var new_offset = tiff_start + gps_offset;
+            var new_offset = std.math.add(usize, tiff_start, gps_offset) catch return;
             try parseIFD(allocator, data, tiff_start, &new_offset, little_endian, exif, true);
         },
         else => {
@@ -482,7 +489,7 @@ fn parseExifTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, c
     }
 }
 
-fn parseGPSTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData) !void {
+fn parseGPSTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData) std.mem.Allocator.Error!void {
     _ = field_type;
     _ = count;
 
@@ -534,59 +541,65 @@ fn parseGPSTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, co
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // EXIF header
-    try output.appendSlice(EXIF_HEADER);
+    try output.appendSlice(allocator, EXIF_HEADER);
 
     // TIFF header (little endian)
-    try output.appendSlice(&TIFF_LITTLE_ENDIAN);
+    try output.appendSlice(allocator, &TIFF_LITTLE_ENDIAN);
 
     // IFD0 offset (8 bytes from TIFF start)
-    try output.appendSlice(&[_]u8{ 0x08, 0x00, 0x00, 0x00 });
+    try output.appendSlice(allocator, &[_]u8{ 0x08, 0x00, 0x00, 0x00 });
 
     // Build IFD0 entries
-    var entries = std.ArrayList([12]u8).init(allocator);
-    defer entries.deinit();
+    var entries: std.ArrayList([12]u8) = .empty;
+    defer entries.deinit(allocator);
 
-    var extra_data = std.ArrayList(u8).init(allocator);
-    defer extra_data.deinit();
+    var extra_data: std.ArrayList(u8) = .empty;
+    defer extra_data.deinit(allocator);
+
+    var num_entries: u16 = 0;
+    if (exif.make != null) num_entries += 1;
+    if (exif.model != null) num_entries += 1;
+    if (exif.software != null) num_entries += 1;
+    if (exif.orientation != 0) num_entries += 1;
+    const extra_data_offset: u32 = 8 + 2 + @as(u32, num_entries) * 12 + 4;
 
     // Add entries for non-null fields
     if (exif.make) |make| {
-        try addStringEntry(&entries, &extra_data, .make, make);
+        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .make, make);
     }
     if (exif.model) |model| {
-        try addStringEntry(&entries, &extra_data, .model, model);
+        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .model, model);
     }
     if (exif.software) |software| {
-        try addStringEntry(&entries, &extra_data, .software, software);
+        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .software, software);
     }
 
     // Orientation
     if (exif.orientation != 0) {
-        try addShortEntry(&entries, .orientation, exif.orientation);
+        try addShortEntry(allocator, &entries, .orientation, exif.orientation);
     }
 
     // Write IFD0
-    const num_entries: u16 = @intCast(entries.items.len);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, num_entries)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, num_entries)));
 
     for (entries.items) |entry| {
-        try output.appendSlice(&entry);
+        try output.appendSlice(allocator, &entry);
     }
 
     // Next IFD offset (0 = no more)
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
 
     // Extra data
-    try output.appendSlice(extra_data.items);
+    try output.appendSlice(allocator, extra_data.items);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn addStringEntry(entries: *std.ArrayList([12]u8), extra_data: *std.ArrayList(u8), tag: Tag, value: []const u8) !void {
+fn addStringEntry(allocator: std.mem.Allocator, entries: *std.ArrayList([12]u8), extra_data: *std.ArrayList(u8), extra_data_offset: u32, tag: Tag, value: []const u8) !void {
     var entry: [12]u8 = undefined;
 
     // Tag
@@ -602,16 +615,16 @@ fn addStringEntry(entries: *std.ArrayList([12]u8), extra_data: *std.ArrayList(u8
         @memcpy(entry[8..][0..@min(4, value.len)], value[0..@min(4, value.len)]);
     } else {
         // Value offset
-        const offset: u32 = @intCast(8 + entries.items.len * 12 + 4 + extra_data.items.len);
+        const offset = std.math.add(u32, extra_data_offset, @intCast(extra_data.items.len)) catch return error.MetadataTooLarge;
         std.mem.writeInt(u32, entry[8..12], offset, .little);
-        try extra_data.appendSlice(value);
-        try extra_data.append(0); // Null terminator
+        try extra_data.appendSlice(allocator, value);
+        try extra_data.append(allocator, 0); // Null terminator
     }
 
-    try entries.append(entry);
+    try entries.append(allocator, entry);
 }
 
-fn addShortEntry(entries: *std.ArrayList([12]u8), tag: Tag, value: u16) !void {
+fn addShortEntry(allocator: std.mem.Allocator, entries: *std.ArrayList([12]u8), tag: Tag, value: u16) !void {
     var entry: [12]u8 = undefined;
 
     // Tag
@@ -625,7 +638,7 @@ fn addShortEntry(entries: *std.ArrayList([12]u8), tag: Tag, value: u16) !void {
     entry[10] = 0;
     entry[11] = 0;
 
-    try entries.append(entry);
+    try entries.append(allocator, entry);
 }
 
 // ============================================================================
@@ -696,4 +709,24 @@ test "GPS coordinate to decimal" {
         .ref = 'N',
     };
     try std.testing.expectApproxEqAbs(@as(f64, 40.4463), coord.toDecimal(), 0.001);
+}
+
+test "EXIF encoder round trips strings and orientation" {
+    const allocator = std.testing.allocator;
+    var source = ExifData.init(allocator);
+    defer source.deinit();
+    source.make = try allocator.dupe(u8, "Home Camera Company");
+    source.model = try allocator.dupe(u8, "Home Model 18");
+    source.software = try allocator.dupe(u8, "Home Image");
+    source.orientation = 6;
+
+    const encoded = try encode(allocator, &source);
+    defer allocator.free(encoded);
+    var decoded = try parse(allocator, encoded);
+    defer decoded.deinit();
+
+    try std.testing.expectEqualStrings(source.make.?, decoded.make.?);
+    try std.testing.expectEqualStrings(source.model.?, decoded.model.?);
+    try std.testing.expectEqualStrings(source.software.?, decoded.software.?);
+    try std.testing.expectEqual(@as(u16, 6), decoded.orientation);
 }
