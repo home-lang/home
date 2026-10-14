@@ -2483,6 +2483,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .strict_null_checks = strict_null_checks,
             .strict_property_initialization = strict_property_initialization,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
+            .exact_optional_property_types = co.exact_optional_property_types orelse false,
             .isolated_modules = co.isolated_modules orelse false,
             .verbatim_module_syntax = co.verbatim_module_syntax orelse false,
             .allow_synthetic_default_imports = co.allow_synthetic_default_imports orelse true,
@@ -8615,6 +8616,40 @@ test "driver: @module: esnext does not emit TS5107" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 5107);
+    }
+}
+
+test "driver: config exactOptionalPropertyTypes preserves indexed read and write semantics" {
+    for ([_]bool{ false, true }) |enabled| {
+        var arena = std.heap.ArenaAllocator.init(T.allocator);
+        defer arena.deinit();
+        const json = try std.fmt.allocPrint(
+            T.allocator,
+            "{{\"compilerOptions\":{{\"strict\":true,\"exactOptionalPropertyTypes\":{s}}}}}",
+            .{if (enabled) "true" else "false"},
+        );
+        defer T.allocator.free(json);
+        const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), json);
+        var options = optionsFromConfig(&cfg);
+        options.no_emit = true;
+        const compilation = try compileSource(T.allocator,
+            \\interface Options { value?: number }
+            \\declare let options: Options;
+            \\type Value = Options["value"];
+            \\declare let value: Value;
+            \\declare function accept(value: Value): void;
+            \\accept(undefined);
+            \\options["value"] = undefined;
+            \\options["value"] = value;
+        , options);
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        try T.expectEqual(@as(usize, if (enabled) 2 else 0), compilation.diagnostics.items.len);
+        for (compilation.diagnostics.items) |diagnostic| {
+            try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        }
     }
 }
 

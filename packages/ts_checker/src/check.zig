@@ -18569,13 +18569,15 @@ pub const Checker = struct {
     fn directNamedMemberValueType(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         var first = types.Primitive.none;
         var signature_count: usize = 0;
+        var optional = false;
         for (self.interner.objectMembers(obj_t)) |member| {
             if (member.name != name) continue;
             if (first == types.Primitive.none) first = member.type;
             if (self.interner.isSignature(member.type)) signature_count += 1;
+            optional = optional or member.is_optional;
         }
         if (first == types.Primitive.none) return null;
-        if (signature_count <= 1) return first;
+        if (signature_count <= 1) return try self.indexedMemberReadType(first, optional);
 
         const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -18590,7 +18592,15 @@ pub const Checker = struct {
                 .is_method = true,
             });
         }
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const overloaded = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        return try self.indexedMemberReadType(overloaded, optional);
+    }
+
+    fn indexedMemberReadType(self: *Checker, value_type: TypeId, optional: bool) CheckError!TypeId {
+        if (optional and self.strict_flags.strict_null_checks and
+            (!self.checking_element_write_target or !self.strict_flags.exact_optional_property_types))
+            return self.unionWithUndefined(value_type);
+        return value_type;
     }
 
     fn sameSectionBodylessFunctionValueType(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
@@ -87423,6 +87433,12 @@ pub const Checker = struct {
                 2 => false,
                 else => src_readonly,
             };
+            // Homomorphic identity mappings copy the declared property type.
+            // Optional reads add undefined later; copying that widening here
+            // loses the write type and the provenance of optionality.
+            if (self.mappedTypeHasIdentityTemplate(m)) {
+                if (source_member) |member| value_t = member.type;
+            }
             value_t = try self.mappedPropertyValueWithOptionality(value_t, is_optional, src_optional);
             try built.append(self.gpa, .{
                 .name = effective_name,
@@ -168176,6 +168192,13 @@ pub const Checker = struct {
                     else
                         template);
                 const source_member = self.mappedSourceMemberInfo(source_obj, key);
+                if (self.indexedAccessPayloadOrNull(m.template)) |identity| {
+                    if (identity.index == raw_key_tp and
+                        (try self.substituteType(identity.object, subs)) == source_obj)
+                    {
+                        if (source_member) |member| value_t = member.type;
+                    }
+                }
                 const is_optional = switch (m.optional) {
                     .add => true,
                     .remove => false,
@@ -179025,7 +179048,9 @@ pub const Checker = struct {
                 else
                     null) orelse
                 return null;
-            const member_t = try self.substituteThisTypeParametersInReturn(raw_member_t, obj);
+            const substituted = try self.substituteThisTypeParametersInReturn(raw_member_t, obj);
+            const optional = if (self.interner.objectMemberInfo(obj, key)) |member| member.is_optional else false;
+            const member_t = try self.indexedMemberReadType(substituted, optional);
             try vals.append(self.gpa, member_t);
         }
         if (vals.items.len == 1) return vals.items[0];
@@ -185664,6 +185689,18 @@ pub const Checker = struct {
             indexed.key_tp
         else
             types.Primitive.none;
+        if (self.indexedAccessPayloadOrNull(m.template)) |identity| {
+            if (identity.index == key_parameter) {
+                if (self.mappedSourceMemberInfo(identity.object, key_name)) |member| {
+                    const optional = switch (m.optional) {
+                        .add => true,
+                        .remove => false,
+                        .none => member.is_optional,
+                    };
+                    return try self.mappedPropertyValueWithOptionality(member.type, optional, member.is_optional);
+                }
+            }
+        }
         if (key_parameter != types.Primitive.none) {
             const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
             var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -186976,7 +187013,7 @@ pub const Checker = struct {
                 self.propertyNameFromKeyNode(property.key);
             const name = property_name orelse continue;
             const key_lit = self.interner.internStringLiteral(name) catch return error.OutOfMemory;
-            const target_t = try self.lowerMappedPropertyValue(
+            var target_t = try self.lowerMappedPropertyValue(
                 type_node,
                 mapped,
                 key_param.name,
@@ -186984,6 +187021,18 @@ pub const Checker = struct {
                 name,
                 props.len,
             );
+            if (self.mappedTypeHasIdentityTemplate(mapped)) {
+                const source_node = hir_mod.keyofTypeOf(self.hir, mapped.constraint).operand;
+                const source_t = try self.lowererLowerWithTypeParams(source_node);
+                if (self.mappedSourceMemberInfo(source_t, name)) |member| {
+                    const optional = switch (mapped.optional) {
+                        1 => true,
+                        2 => false,
+                        else => member.is_optional,
+                    };
+                    target_t = try self.mappedPropertyValueWithOptionality(member.type, optional, member.is_optional);
+                }
+            }
             const raw_value_t = if (self.hir.typeOf(property.value) != types.Primitive.none)
                 self.hir.typeOf(property.value)
             else
@@ -234479,6 +234528,22 @@ test "checker: mapped required members strip implicit undefined only in non-exac
     try T.expectEqual(@as(usize, 0), checkerCountCode(exact, TsCodes.type_not_assignable));
 }
 
+test "checker: exact identity mapped types remove optional reads and retain declared undefined" {
+    const s = try newSetup(
+        \\type Source = { implicit?: number; explicit?: number | undefined };
+        \\type Required = { [K in keyof Source]-?: Source[K] };
+        \\declare function implicit(value: Required["implicit"]): void;
+        \\declare function explicit(value: Required["explicit"]): void;
+        \\implicit(undefined);
+        \\explicit(undefined);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .exact_optional_property_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.argument_type_mismatch, s.checker.diagnostics.items[0].code);
+}
+
 test "checker: Mutable<T> -readonly strips readonly from source" {
     const s = try newSetup(
         \\type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -240231,6 +240296,37 @@ test "checker: primitive constraint classification stays shallow" {
     try T.expect(s.checker.constraintMaybePrefersLiteralInference(conditional_t, 0));
     try T.expect(!s.checker.constraintMaybePrefersLiteralInference(any_object_conditional_t, 0));
     try T.expect(!s.checker.typeParameterConstraintPrefersLiteralInference(parameter_t));
+}
+
+test "checker: optional indexed reads preserve undefined without widening write targets" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    const optional_name = try s.sint.intern("optional");
+    const required_name = try s.sint.intern("required");
+    const optional_key = try s.ti.internStringLiteral(optional_name);
+    const required_key = try s.ti.internStringLiteral(required_name);
+    const object = try s.ti.internObjectType(&.{
+        .{ .name = optional_name, .type = types.Primitive.number_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = required_name, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const optional_access = try s.ti.internIndexedAccess(object, optional_key);
+    const required_access = try s.ti.internIndexedAccess(object, required_key);
+    const expected = try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.undefined_t });
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForArgument(optional_access, 0)).?);
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForInfer(optional_access, 0)).?);
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForGenericDefault(optional_access, 0)).?);
+    try T.expectEqual(types.Primitive.number_t, (try s.checker.resolveExactIndexedAccessForArgument(required_access, 0)).?);
+    const keys = try s.ti.internUnion(&.{ optional_key, required_key });
+    try T.expectEqual(expected, (try s.checker.resolveObjectIndexedAccessType(object, keys)).?);
+    s.checker.checking_element_write_target = true;
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForArgument(optional_access, 0)).?);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .exact_optional_property_types = true });
+    try T.expectEqual(types.Primitive.number_t, (try s.checker.resolveExactIndexedAccessForArgument(optional_access, 0)).?);
+    s.checker.checking_element_write_target = false;
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForArgument(optional_access, 0)).?);
+    s.checker.setStrictFlags(.{});
+    try T.expectEqual(types.Primitive.number_t, (try s.checker.resolveExactIndexedAccessForArgument(optional_access, 0)).?);
 }
 
 test "checker: exact indexed access requires every union member" {

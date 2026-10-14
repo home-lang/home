@@ -597,3 +597,41 @@ Home run reaches **3,955 MB** and is stopped above the unchanged 3,840 MB
 ceiling, without producing a complete checker result. All graph inputs and
 9,912 staged files remain unchanged, with no unexpected outputs. This
 entrypoint remains unqualified; the limit was not raised to make it pass.
+
+## Optional indexed access and mapped property types
+
+Optional indexed reads now retain `undefined` under strict null checking. Exact
+member recovery, inference/default recovery and general indexed lookup use the
+property's optional metadata. Optional writes retain legacy `undefined`
+acceptance unless `exactOptionalPropertyTypes` is enabled. The driver now
+propagates that option from tsconfig into checker flags; it was previously
+omitted. Homomorphic identity mappings retain declared property types, keeping
+optional read widening separate from write types and preserving explicitly
+declared `undefined` when removing the optional modifier.
+
+The corrected candidate passes **4,595 checker, 210 driver, 292 Program and 50
+CLI tests**, plus all eight stream checks. Debug and stripped ReleaseFast pass
+all 48 tracked optional indexed-access observations. The additional Debug
+controls match all 48 basic observations and all 30 mapped isolation
+observations. The broader 78-observation control retains three known generic
+inference differences already present in the published baseline. Additional
+generic isolation controls expose return-checking and inferred-result
+mismatches; these remain replacement blockers.
+
+ReleaseFast also passes 26 diagnostic ownership observations, 112 global
+augmentation observations, 180 automatic-variable comparisons, 50 declaration
+observations and 88 recursive-interface observations. Its guarded build peaks
+at 2,855 MB. The unchanged 306-file table graph still passes native TypeScript
+and fails Home, but Home-only diagnostics decrease from **35 to 32**: three
+optional-filter argument errors disappear and no new diagnostic appears. All
+graph inputs remain unchanged, with no unexpected output files; the replay
+peaks at **3,214 MB**. The table entrypoint remains unqualified.
+
+The [optional indexed-access evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-optional-indexed-controls.tar.gz)
+has SHA-256 `1f513b92313e7070f7ea0842151257f7b610f6cae170a0562d5ee4f7f69d5b1b`;
+all 2,596 payload hashes were verified. Memory-pressure interruptions, disk-floor
+stops, lock-wait expiries and the corrected mapped-write diagnostic regression
+are retained alongside final passing gates. The 3,840 MB memory limit and disk
+floors are unchanged. These results do not qualify the remaining generic
+semantics, ts-images memory failure, other projects, compiler versions,
+wrappers, emission, watch/build commands or TypeScript API clients.
