@@ -619,9 +619,9 @@ pub fn scaleBilinear(
 /// Compute histogram for RGBA image (separate R, G, B histograms)
 pub fn computeHistogram(data: []const u8) struct { r: [256]u32, g: [256]u32, b: [256]u32 } {
     var hist: struct { r: [256]u32, g: [256]u32, b: [256]u32 } = .{
-        .r = [_]u32{0} ** 256,
-        .g = [_]u32{0} ** 256,
-        .b = [_]u32{0} ** 256,
+        .r = @splat(0),
+        .g = @splat(0),
+        .b = @splat(0),
     };
 
     var i: usize = 0;

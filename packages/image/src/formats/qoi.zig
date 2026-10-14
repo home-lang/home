@@ -60,7 +60,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     errdefer img.deinit();
 
     // Initialize index array
-    var index: [64]Color = .{Color{ .r = 0, .g = 0, .b = 0, .a = 0 }} ** 64;
+    var index: [64]Color = @splat(Color{ .r = 0, .g = 0, .b = 0, .a = 0 });
 
     var prev = Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
     var pos: usize = 14;
@@ -162,7 +162,7 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     try output.append(0); // sRGB colorspace
 
     // Initialize state
-    var index: [64]Color = .{Color{ .r = 0, .g = 0, .b = 0, .a = 0 }} ** 64;
+    var index: [64]Color = @splat(Color{ .r = 0, .g = 0, .b = 0, .a = 0 });
     var prev = Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
     var run: u8 = 0;
 

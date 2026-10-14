@@ -721,7 +721,7 @@ pub const Image = struct {
         if (self.format != .rgba8) return;
 
         const num_pixels = @as(usize, self.width) * @as(usize, self.height);
-        var gray_temp = try self.allocator.alloc(u8, num_pixels);
+        const gray_temp = try self.allocator.alloc(u8, num_pixels);
         defer self.allocator.free(gray_temp);
 
         simd_ops.rgbaToGrayscale(self.pixels, gray_temp);
@@ -845,7 +845,7 @@ pub const Image = struct {
     /// Get color histogram
     pub fn histogram(self: *const Self) struct { r: [256]u32, g: [256]u32, b: [256]u32 } {
         if (self.format != .rgba8) {
-            return .{ .r = [_]u32{0} ** 256, .g = [_]u32{0} ** 256, .b = [_]u32{0} ** 256 };
+            return .{ .r = @splat(0), .g = @splat(0), .b = @splat(0) };
         }
         return simd_ops.computeHistogram(self.pixels);
     }

@@ -456,7 +456,7 @@ pub fn copyParallel(src: *const Image, dst: *Image) !void {
 /// Compute histogram in parallel
 pub fn computeHistogramParallel(img: *const Image) !struct { r: [256]u32, g: [256]u32, b: [256]u32 } {
     if (img.format != .rgba8) {
-        return .{ .r = [_]u32{0} ** 256, .g = [_]u32{0} ** 256, .b = [_]u32{0} ** 256 };
+        return .{ .r = @splat(0), .g = @splat(0), .b = @splat(0) };
     }
 
     const num_threads = std.Thread.getCpuCount() catch 4;
@@ -472,9 +472,9 @@ pub fn computeHistogramParallel(img: *const Image) !struct { r: [256]u32, g: [25
     defer std.heap.page_allocator.free(partial_hists);
 
     for (partial_hists) |*h| {
-        h.r = [_]u32{0} ** 256;
-        h.g = [_]u32{0} ** 256;
-        h.b = [_]u32{0} ** 256;
+        h.r = @splat(0);
+        h.g = @splat(0);
+        h.b = @splat(0);
     }
 
     const Context = struct {
@@ -531,9 +531,9 @@ pub fn computeHistogramParallel(img: *const Image) !struct { r: [256]u32, g: [25
 
     // Merge partial histograms
     var result: struct { r: [256]u32, g: [256]u32, b: [256]u32 } = .{
-        .r = [_]u32{0} ** 256,
-        .g = [_]u32{0} ** 256,
-        .b = [_]u32{0} ** 256,
+        .r = @splat(0),
+        .g = @splat(0),
+        .b = @splat(0),
     };
 
     for (partial_hists) |h| {
