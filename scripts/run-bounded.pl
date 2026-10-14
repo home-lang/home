@@ -152,7 +152,7 @@ sub capture_probe {
             my $done = waitpid($probe, WNOHANG);
             if ($done == $probe) {
                 my $status = $?;
-                return $output if $status == 0 || ($allow_nonzero && !($status & 127));
+                if ($status == 0 || ($allow_nonzero && !($status & 127))) { $probe_failure = undef; return $output }
                 $probe_failure = "probe exited with status $status: $command[0]";
                 return undef;
             }
@@ -333,7 +333,7 @@ sub process_footprint_mb {
 # which the caller treats as a failure to be counted -- never as zero.
 sub tree_footprint_mb {
     my (@pids) = @_;
-    return undef unless @pids;
+    if (!@pids) { $probe_failure ||= "empty process tree"; return undef }
     my @args = map { ('-p', $_) } @pids;
     # A pid that exits between the ps snapshot and this call makes footprint
     # print to stderr; that is expected churn in a live tree, not a problem, so
@@ -353,6 +353,7 @@ sub tree_footprint_mb {
         $total += $mb;
         $found++;
     }
+    $probe_failure = "no process footprint records" unless $found;
     return $found ? $total : undef;
 }
 
