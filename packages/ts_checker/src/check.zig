@@ -4359,6 +4359,7 @@ pub const CheckedTypes = struct {
     this_type_markers: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     no_infer_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    implicit_index_excluded_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     index_param_names: std.AutoHashMapUnmanaged(TypeId, IndexParamNames) = .empty,
     generator_type_info: std.AutoHashMapUnmanaged(TypeId, GeneratorTypeInfo) = .empty,
     tuple_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
@@ -5430,6 +5431,7 @@ pub const Checker = struct {
     /// signatures are stored as value-type slots on object payloads,
     /// so this side table preserves mutability for assignment checks.
     readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void),
+    implicit_index_excluded_types: std.AutoHashMapUnmanaged(TypeId, void),
     /// Object TypeId ÃÂ¢ÃÂÃÂ the user-declared index-signature parameter
     /// names (`key` in `[key: string]: T`). The interner payload only
     /// stores the indexer's *value* type, not the declared parameter
@@ -6150,6 +6152,7 @@ pub const Checker = struct {
             .program_qualified_interface_decl = .empty,
             .no_infer_types = .empty,
             .readonly_index_types = .empty,
+            .implicit_index_excluded_types = .empty,
             .index_param_names = .empty,
             .pattern_index_signatures = .empty,
             .interface_lower_in_progress = .empty,
@@ -6537,7 +6540,7 @@ pub const Checker = struct {
             while (inferred_variance.next()) |entry| {
                 try self.inferred_variance.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
             }
-            inline for (.{ "readonly_index_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
+            inline for (.{ "readonly_index_types", "implicit_index_excluded_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
                 var entries = @field(source, name).iterator();
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, {});
             }
@@ -6546,6 +6549,7 @@ pub const Checker = struct {
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
+        self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
         if (self.global_namespace_type_exports.count() != 0) {
             self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
             self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
@@ -6625,6 +6629,8 @@ pub const Checker = struct {
     }
 
     pub fn deinit(self: *Checker) void {
+        if (self.engine.implicit_index_excluded_types == &self.implicit_index_excluded_types)
+            self.engine.implicit_index_excluded_types = null;
         for (self.narrow_scopes.items) |*scope| {
             var s = scope.*;
             s.deinit(self.gpa);
@@ -6912,6 +6918,7 @@ pub const Checker = struct {
         self.program_qualified_interface_decl.deinit(self.gpa);
         self.no_infer_types.deinit(self.gpa);
         self.readonly_index_types.deinit(self.gpa);
+        self.implicit_index_excluded_types.deinit(self.gpa);
         self.index_param_names.deinit(self.gpa);
         var pis_it = self.pattern_index_signatures.valueIterator();
         while (pis_it.next()) |items| self.gpa.free(items.*);
@@ -7027,6 +7034,7 @@ pub const Checker = struct {
         }
         destination.* = prepared;
         self.engine.setRestSignatures(&destination.rest_signatures);
+        self.engine.implicit_index_excluded_types = &destination.implicit_index_excluded_types;
     }
 
     /// Check a complete source file. The HIR root must be a
@@ -34290,7 +34298,7 @@ pub const Checker = struct {
             .{"map"},       .{"filter"},   .{"forEach"},
             .{"some"},      .{"every"},    .{"find"},
             .{"findIndex"}, .{"findLast"}, .{"findLastIndex"},
-            .{"flatMap"},   .{"sort"},
+            .{"flatMap"},   .{"sort"},     .{"toSorted"},
         });
         return element_first.has(method);
     }
@@ -34354,7 +34362,7 @@ pub const Checker = struct {
         const m = hir_mod.memberOf(self.hir, call.callee);
         if (m.object == hir_mod.none_node_id) return null;
         const method = self.string_interner.get(m.name);
-        const is_sort = std.mem.eql(u8, method, "sort");
+        const is_sort = std.mem.eql(u8, method, "sort") or std.mem.eql(u8, method, "toSorted");
         if (is_sort and param_index > 1) return null;
         if (!is_sort and param_index > 2) return null;
         if (!isArrayCallbackMethodName(method)) return null;
@@ -34368,6 +34376,7 @@ pub const Checker = struct {
             recv_t = self.program_contextual_member_projections.get(m.object) orelse recv_t;
         }
         if (!self.arrayCallbackReceiverIsArrayLike(recv_t)) return null;
+        if (try self.arrayCopyMethodExcluded(recv_t, m.name)) return null;
         const elem_t = try self.contextualArrayElementType(recv_t);
         if (elem_t == types.Primitive.none) return null;
         if (is_sort or param_index == 0) return elem_t;
@@ -45378,6 +45387,8 @@ pub const Checker = struct {
         }
 
         var instance_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.instance_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+        try self.implicit_index_excluded_types.put(self.gpa, instance_t, {});
+        self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
         var static_ctor_sig = ctor_sig;
         var inherited_ctor_sig: ?TypeId = null;
@@ -57049,6 +57060,9 @@ pub const Checker = struct {
             // (`D<number>`) back to its declaring class (`D`).
             // Mirrors `memberFunctionsWithPrivateOverloads.ts(46,12)`
             // / `memberFunctionsWithPublicPrivateOverloads.ts(62,12)`.
+            if (self.implicit_index_excluded_types.contains(t)) {
+                try self.implicit_index_excluded_types.put(self.gpa, new_obj, {});
+            }
             if (self.class_name_by_instance.get(t)) |cname| {
                 try self.class_name_by_instance.put(self.gpa, new_obj, cname);
             }
@@ -68119,6 +68133,8 @@ pub const Checker = struct {
                 iface_t = refreshed;
             }
         }
+        try self.implicit_index_excluded_types.put(self.gpa, iface_t, {});
+        self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
         if (has_readonly_index) try self.readonly_index_types.put(self.gpa, iface_t, {});
         try self.registerIndexParamNames(iface_t, index_names);
         try self.registerPatternIndexSignatures(iface_t, pattern_indexes.items);
@@ -68296,6 +68312,7 @@ pub const Checker = struct {
                     self.interner.objectNumberIndex(final_t),
                 );
             }
+            try self.implicit_index_excluded_types.put(self.gpa, final_t, {});
             if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
             try self.putTypeName(id.name, final_t);
             for (extends) |extends_node| {
@@ -95899,6 +95916,7 @@ pub const Checker = struct {
         }
         const target_index = self.interner.objectStringIndex(target_t);
         if (target_index == types.Primitive.none) return null;
+        if (self.implicit_index_excluded_types.contains(source_t) and !self.typeIsAny(target_index)) return false;
         const target_number_index = self.interner.objectNumberIndex(target_t);
         if (target_number_index != types.Primitive.none and !self.typeIsAny(target_number_index)) return false;
         const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
@@ -107020,6 +107038,13 @@ pub const Checker = struct {
     }
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (obj_t != types.Primitive.none and obj_t == self.lib_cache.object_global and
+            std.mem.eql(u8, self.string_interner.get(name), "entries"))
+        {
+            try self.recordGenericSignatureParams(self.lib_cache.object_entries_signature, &.{self.lib_cache.object_entries_parameter});
+            try self.markTupleOrigin(self.lib_cache.object_entries_tuple);
+            try self.markTupleOrigin(self.lib_cache.object_entries_fallback_tuple);
+        }
         const expanded_object = try self.resolveGenericType(obj_t);
         if (expanded_object != obj_t) return self.lookupObjectMember(expanded_object, name);
         if (obj_t < self.interner.pool.typeCount() and
@@ -113517,6 +113542,10 @@ pub const Checker = struct {
         }
         const expression = declaration.body orelse return error.UnsupportedProgramType;
         const body = try self.lowerProgramExpression(expression, declaration, parameters);
+        if (declaration.is_class or declaration.is_interface) {
+            try self.implicit_index_excluded_types.put(self.gpa, body, {});
+            self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
+        }
         self.interner.completeGenericDefinition(definition, parameters, body) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidTypeGraph => return error.UnsupportedProgramType,
@@ -131927,6 +131956,22 @@ pub const Checker = struct {
                 try self.arrayLiteralAssignableToTarget(arg, param_t)) continue;
             if (self.engine.isAssignableTo(arg_t, param_t) catch false) continue;
 
+            if (self.hir.kindOf(arg) == .object_literal) {
+                const before = self.diagnostics.items.len;
+                defer self.diagnostics.shrinkRetainingCapacity(before);
+                const property_target = try self.subtractUndefined(param_t);
+                if (try self.tryReportObjectLiteralPropertyMismatchForCall(arg, property_target) and
+                    self.diagnostics.items.len > before)
+                {
+                    const property_error = self.diagnostics.items[before];
+                    return .{ .node = property_error.node, .entry = .{
+                        .code = property_error.code,
+                        .message = property_error.message,
+                        .children = property_error.chain,
+                    } };
+                }
+            }
+
             const raw_display_param_t = if (fixed_pos >= min_required and
                 self.typeIncludesUndefined(param_t) and
                 !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos)))
@@ -132900,6 +132945,13 @@ pub const Checker = struct {
         name: hir_mod.StringId,
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!void {
+        if (self.typeHasStringPrimitivePart(t)) {
+            const proto = lib.stringProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, &self.rest_signatures) catch return error.OutOfMemory;
+            for (self.interner.objectMembers(proto)) |member| {
+                if (member.name == name) try self.collectCallSignatures(member.type, out);
+            }
+            return;
+        }
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
         if (try self.refreshedGenericAliasObjectMember(t, name)) |member_t| {
@@ -133318,8 +133370,7 @@ pub const Checker = struct {
                 .message = msg,
             });
         } else {
-            const report_node = if (args.len > 0) args[0] else call_node;
-            try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
+            try self.reportNoOverloadMatchesWithLastOverload(call_node, args, arg_types, sigs.items[sigs.items.len - 1]);
         }
         var ret = self.interner.signatureReturn(sigs.items[0]) orelse types.Primitive.any;
         ret = try self.instantiateMemberThisReturn(callee, ret);
@@ -142619,6 +142670,7 @@ pub const Checker = struct {
 
     fn libGatedPropertyMember(self: *Checker, receiver_t: TypeId, member_name: hir_mod.StringId) ?[]const u8 {
         const name = self.string_interner.get(member_name);
+        if (std.mem.eql(u8, name, "toSorted") and self.arrayCallbackReceiverIsArrayLike(receiver_t)) return "es2023";
         if (self.typeHasStringPrimitivePart(receiver_t)) {
             if (std.mem.eql(u8, name, "includes")) return "es2015";
         }
@@ -142631,6 +142683,23 @@ pub const Checker = struct {
         return null;
     }
 
+    fn arrayCopyMethodExcluded(self: *Checker, receiver: TypeId, name: hir_mod.StringId) CheckError!bool {
+        if (!std.mem.eql(u8, self.string_interner.get(name), "toSorted") or
+            !self.arrayCallbackReceiverIsArrayLike(receiver)) return false;
+        if (self.interner.objectMember(receiver, name) != null) return false;
+        const element = try self.contextualArrayElementType(receiver);
+        if (try self.lookupDeclaredArrayMember(element, name) != null) return false;
+        if (!self.configured_no_lib) {
+            if (self.configured_libs) |libs| {
+                for (libs) |selected| {
+                    if (std.ascii.eqlIgnoreCase(selected, "es2023.array") or
+                        std.ascii.eqlIgnoreCase(selected, "esnext.array")) return false;
+                }
+            }
+        }
+        return self.effectiveLibraryExcludes("es2023");
+    }
+
     fn reportLibGatedPropertyAccess(self: *Checker, node: hir_mod.NodeId, receiver_t: TypeId, member_name: hir_mod.StringId) CheckError!bool {
         const member = hir_mod.memberOf(self.hir, node);
         const receiver_is_atomics = self.hir.kindOf(member.object) == .identifier and
@@ -142639,10 +142708,21 @@ pub const Checker = struct {
             "es2024"
         else
             self.libGatedPropertyMember(receiver_t, member_name) orelse return false;
-        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
-        if (has_lib_directive) {
-            if (!self.sourceLibDirectiveExcludes(required)) return false;
-        } else if (!self.sourceTargetExcludesLib(required)) return false;
+        if (std.mem.eql(u8, required, "es2023") and
+            std.mem.eql(u8, self.string_interner.get(member_name), "toSorted"))
+        {
+            if (!try self.arrayCopyMethodExcluded(receiver_t, member_name)) return false;
+            const flags = self.interner.pool.flagsOf(receiver_t);
+            if (flags.is_union or self.typeIsReadonlyArrayLike(receiver_t)) {
+                try self.reportPropertyDoesNotExistOnType(node, member_name, receiver_t);
+                return true;
+            }
+        } else {
+            const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
+            if (has_lib_directive) {
+                if (!self.sourceLibDirectiveExcludes(required)) return false;
+            } else if (!self.sourceTargetExcludesLib(required)) return false;
+        }
 
         const prop_name = self.string_interner.get(member_name);
         const receiver_name = if (receiver_is_atomics)
@@ -164651,6 +164731,17 @@ pub const Checker = struct {
             if (p_str != types.Primitive.none and a_str != types.Primitive.none) {
                 try self.inferFromPair(p_str, a_str, subs);
             }
+            if (p_str != types.Primitive.none and a_str == types.Primitive.none and a_num == types.Primitive.none and
+                !self.implicit_index_excluded_types.contains(arg_t)) {
+                const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(arg_t));
+                defer self.gpa.free(members);
+                for (members) |member| {
+                    if (self.syntheticSignatureMemberName(member.name)) continue;
+                    const name = self.string_interner.get(member.name);
+                    if (std.mem.startsWith(u8, name, "Symbol.") or std.mem.startsWith(u8, name, "[computed:")) continue;
+                    try self.inferFromCovariantPair(p_str, member.type, subs);
+                }
+            }
             if (p_num != types.Primitive.none and a_num == types.Primitive.none and a_str != types.Primitive.none) {
                 try self.inferFromPairPreserveLiteral(p_num, a_str, subs);
             }
@@ -169180,6 +169271,9 @@ pub const Checker = struct {
             // privacy checks (TS2341) can map an instantiated generic
             // (`D<number>`) back to its declaring class (`D`).
             // Mirrors `memberFunctionsWithPublicPrivateOverloads.ts(62,12)`.
+            if (self.implicit_index_excluded_types.contains(t)) {
+                try self.implicit_index_excluded_types.put(self.gpa, new_obj, {});
+            }
             if (self.class_name_by_instance.get(t)) |cname| {
                 try self.class_name_by_instance.put(self.gpa, new_obj, cname);
             }
@@ -292013,4 +292107,27 @@ test "checker: namespace value snapshots do not repeat uninitialized declaration
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, 7005));
+}
+
+test "checker: implicit dictionary inference preserves anonymous and declared object origins" {
+    const s = try newSetup(
+        \\declare function values<T>(input: { [key: string]: T }): T;
+        \\const anonymous = values({ a: 1, b: "text" });
+        \\const wrong: boolean = anonymous;
+        \\interface Data { a: number; }
+        \\declare const data: Data;
+        \\values(data);
+        \\type Alias = { a: number };
+        \\declare const alias: Alias;
+        \\const numberValue: number = values(alias);
+        \\interface Dictionary { [key: string]: number; a: number; }
+        \\declare const dictionary: Dictionary;
+        \\const indexedValue: number = values(dictionary);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }

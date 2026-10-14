@@ -9,4 +9,5 @@ test {
     _ = @import("dither.zig");
     _ = @import("steganography.zig");
     _ = @import("vector.zig");
+    _ = @import("format_utils.zig");
 }

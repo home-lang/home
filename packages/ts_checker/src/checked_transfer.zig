@@ -154,6 +154,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .string_named_export_types,
         .unknown_empty_object_types,
         .readonly_index_types,
+        .implicit_index_excluded_types,
         .tuple_origin_types,
         .array_origin_types,
         .normalized_object_literal_unions,

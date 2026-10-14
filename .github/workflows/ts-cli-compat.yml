@@ -95,6 +95,14 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-optional-object-contracts"
+      - name: Compare library array and dictionary contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-library-array-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-library-array-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,5 +116,6 @@ jobs:
             ${{ runner.temp }}/home-ts-generic-indexed-contracts
             ${{ runner.temp }}/home-ts-imported-generic-contracts
             ${{ runner.temp }}/home-ts-optional-object-contracts
+            ${{ runner.temp }}/home-ts-library-array-contracts
           if-no-files-found: ignore
           retention-days: 14

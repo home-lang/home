@@ -82,6 +82,19 @@ pub fn build(b: *std.Build) void {
     const ops_test_step = b.step("test-ops", "Run operations tests");
     ops_test_step.dependOn(&run_ops_tests.step);
 
+    // File I/O and batch-processing tests
+    const io_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/io_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    check_step.dependOn(&io_tests.step);
+    const run_io_tests = b.addRunArtifact(io_tests);
+    const io_test_step = b.step("test-io", "Run file I/O and batch-processing tests");
+    io_test_step.dependOn(&run_io_tests.step);
+
     // Benchmark executable
     const bench = b.addExecutable(.{
         .name = "image-bench",
@@ -139,6 +152,7 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(format_test_step);
     all_tests_step.dependOn(metadata_test_step);
     all_tests_step.dependOn(ops_test_step);
+    all_tests_step.dependOn(io_test_step);
 }
 
 /// Package configuration for use as a dependency

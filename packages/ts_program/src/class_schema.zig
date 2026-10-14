@@ -578,7 +578,7 @@ pub const Builder = struct {
         const c = source.compilation;
         const kind = c.hir.kindOf(key.node);
         const def = try self.arena.create(schema.Declaration);
-        def.* = .{ .path = source.path, .position = c.hir.spanOf(key.node).start, .name = "", .is_class = kind == .class_decl or kind == .class_expr, .is_function = kind == .fn_decl };
+        def.* = .{ .path = source.path, .position = c.hir.spanOf(key.node).start, .name = "", .is_class = kind == .class_decl or kind == .class_expr, .is_function = kind == .fn_decl, .is_interface = kind == .interface_decl };
         try self.declarations.put(self.arena, key, def);
         const info: struct { name: hir.NodeId, params: []const hir.NodeId } = switch (kind) {
             .class_decl, .class_expr => blk: {

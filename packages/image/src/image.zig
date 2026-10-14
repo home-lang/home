@@ -439,7 +439,8 @@ pub const Image = struct {
     // ========================================================================
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, format: PixelFormat) !Self {
-        const size = @as(usize, width) * @as(usize, height) * format.bytesPerPixel();
+        const pixel_count = std.math.mul(usize, width, height) catch return error.ImageTooLarge;
+        const size = std.math.mul(usize, pixel_count, format.bytesPerPixel()) catch return error.ImageTooLarge;
         const pixels = try allocator.alloc(u8, size);
         @memset(pixels, 0);
 
@@ -468,6 +469,7 @@ pub const Image = struct {
 
     pub fn clone(self: *const Self) !Self {
         const new_pixels = try self.allocator.alloc(u8, self.pixels.len);
+        errdefer self.allocator.free(new_pixels);
         @memcpy(new_pixels, self.pixels);
 
         var new_palette: ?[]Color = null;
@@ -491,10 +493,16 @@ pub const Image = struct {
     // ========================================================================
 
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return loadWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const data = try file.readToEndAlloc(allocator, 1024 * 1024 * 256); // 256MB max
+    pub fn loadWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !Self {
+        const data = try std.Io.Dir.cwd().readFileAlloc(
+            io_context,
+            path,
+            allocator,
+            .limited(1024 * 1024 * 256),
+        );
         defer allocator.free(data);
 
         return loadFromMemory(allocator, data);
@@ -530,20 +538,28 @@ pub const Image = struct {
     }
 
     pub fn save(self: *const Self, path: []const u8) !void {
+        return self.saveWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    pub fn saveWithIo(self: *const Self, io_context: std.Io, path: []const u8) !void {
         // Determine format from extension
         const ext = std.fs.path.extension(path);
         const format = ImageFormat.fromExtension(ext);
 
-        try self.saveAs(path, format);
+        try self.saveAsWithIo(io_context, path, format);
     }
 
     pub fn saveAs(self: *const Self, path: []const u8, format: ImageFormat) !void {
+        return self.saveAsWithIo(std.Io.Threaded.global_single_threaded.io(), path, format);
+    }
+
+    pub fn saveAsWithIo(self: *const Self, io_context: std.Io, path: []const u8, format: ImageFormat) !void {
         const data = try self.encode(format);
         defer self.allocator.free(data);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(data);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, data);
     }
 
     pub fn encode(self: *const Self, format: ImageFormat) ![]u8 {
@@ -1280,4 +1296,31 @@ test "Format detection from magic bytes" {
 
     const bmp_magic = [_]u8{ 'B', 'M', 0, 0 };
     try std.testing.expectEqual(ImageFormat.bmp, ImageFormat.fromMagicBytes(&bmp_magic));
+}
+
+test "Image file APIs use caller-provided I/O" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "roundtrip.qoi" });
+    defer allocator.free(path);
+
+    var source = try Image.init(allocator, 2, 1, .rgba8);
+    defer source.deinit();
+    source.setPixel(0, 0, Color.RED);
+    source.setPixel(1, 0, Color.BLUE);
+    try source.saveAsWithIo(std.testing.io, path, .qoi);
+
+    var decoded = try Image.loadWithIo(allocator, std.testing.io, path);
+    defer decoded.deinit();
+    try std.testing.expectEqual(source.width, decoded.width);
+    try std.testing.expectEqual(source.height, decoded.height);
+    try std.testing.expectEqualSlices(u8, source.pixels, decoded.pixels);
+
+    try std.testing.expectError(
+        error.ImageTooLarge,
+        Image.init(allocator, std.math.maxInt(u32), std.math.maxInt(u32), .rgba8),
+    );
 }

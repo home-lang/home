@@ -33,6 +33,7 @@ pub fn createDiff(
 ) !Image {
     const width = @max(image1.width, image2.width);
     const height = @max(image1.height, image2.height);
+    try validateImageAllocation(width, height, .rgba8);
 
     switch (options.mode) {
         .absolute => {
@@ -68,7 +69,16 @@ pub fn createDiff(
             return result;
         },
         .highlighted => {
-            var result = try image1.clone();
+            try validateImageAllocation(width, height, .rgba8);
+            var result = try Image.init(allocator, width, height, .rgba8);
+
+            var base_y: u32 = 0;
+            while (base_y < image1.height) : (base_y += 1) {
+                var base_x: u32 = 0;
+                while (base_x < image1.width) : (base_x += 1) {
+                    if (image1.getPixel(base_x, base_y)) |color| result.setPixel(base_x, base_y, color);
+                }
+            }
 
             var y: u32 = 0;
             while (y < height) : (y += 1) {
@@ -94,7 +104,10 @@ pub fn createDiff(
             return result;
         },
         .side_by_side => {
-            var result = try Image.init(allocator, width * 2 + 10, height, .rgba8);
+            const doubled_width = std.math.mul(u32, width, 2) catch return error.ImageTooLarge;
+            const result_width = std.math.add(u32, doubled_width, 10) catch return error.ImageTooLarge;
+            try validateImageAllocation(result_width, height, .rgba8);
+            var result = try Image.init(allocator, result_width, height, .rgba8);
 
             // Fill with separator color
             var y: u32 = 0;
@@ -221,8 +234,10 @@ pub fn processBatch(
         .processed = 0,
         .failed = 0,
         .skipped = 0,
-        .errors = std.ArrayList(BatchError).init(allocator),
+        .errors = .empty,
+        .allocator = allocator,
     };
+    errdefer result.deinit();
 
     for (input_paths, 0..) |path, i| {
         if (options.on_progress) |callback| {
@@ -231,7 +246,7 @@ pub fn processBatch(
 
         processOne(path, options, allocator) catch |err| {
             result.failed += 1;
-            try result.errors.append(BatchError{
+            try result.errors.append(allocator, BatchError{
                 .path = path,
                 .err = err,
             });
@@ -294,9 +309,10 @@ pub const BatchResult = struct {
     failed: usize,
     skipped: usize,
     errors: std.ArrayList(BatchError),
+    allocator: std.mem.Allocator,
 
     pub fn deinit(self: *BatchResult) void {
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
     }
 };
 
@@ -320,8 +336,8 @@ pub const ImagePool = struct {
     pub fn init(allocator: std.mem.Allocator, buffer_size: usize, max_buffers: usize) ImagePool {
         return ImagePool{
             .allocator = allocator,
-            .buffers = std.ArrayList([]u8).init(allocator),
-            .free_list = std.ArrayList(usize).init(allocator),
+            .buffers = .empty,
+            .free_list = .empty,
             .buffer_size = buffer_size,
             .max_buffers = max_buffers,
         };
@@ -331,23 +347,26 @@ pub const ImagePool = struct {
         for (self.buffers.items) |buffer| {
             self.allocator.free(buffer);
         }
-        self.buffers.deinit();
-        self.free_list.deinit();
+        self.buffers.deinit(self.allocator);
+        self.free_list.deinit(self.allocator);
     }
 
     /// Acquire a buffer from the pool
     pub fn acquire(self: *ImagePool) ![]u8 {
         if (self.free_list.items.len > 0) {
-            const idx = self.free_list.pop();
+            const idx = self.free_list.pop().?;
             return self.buffers.items[idx];
         }
 
         if (self.buffers.items.len >= self.max_buffers) {
             return error.PoolExhausted;
         }
+        if (self.buffer_size == 0) return error.InvalidBufferSize;
 
+        try self.free_list.ensureTotalCapacity(self.allocator, self.buffers.items.len + 1);
         const buffer = try self.allocator.alloc(u8, self.buffer_size);
-        try self.buffers.append(buffer);
+        errdefer self.allocator.free(buffer);
+        try self.buffers.append(self.allocator, buffer);
         return buffer;
     }
 
@@ -355,7 +374,10 @@ pub const ImagePool = struct {
     pub fn release(self: *ImagePool, buffer: []u8) void {
         for (self.buffers.items, 0..) |buf, i| {
             if (buf.ptr == buffer.ptr) {
-                self.free_list.append(i) catch {};
+                for (self.free_list.items) |free_index| {
+                    if (free_index == i) return;
+                }
+                self.free_list.appendAssumeCapacity(i);
                 return;
             }
         }
@@ -363,7 +385,8 @@ pub const ImagePool = struct {
 
     /// Create an image using pool memory
     pub fn createImage(self: *ImagePool, width: u32, height: u32) !PooledImage {
-        const required_size = @as(usize, width) * height * 4;
+        const pixel_count = std.math.mul(usize, width, height) catch return error.ImageTooLarge;
+        const required_size = std.math.mul(usize, pixel_count, 4) catch return error.ImageTooLarge;
         if (required_size > self.buffer_size) {
             return error.ImageTooLarge;
         }
@@ -387,12 +410,16 @@ pub const PooledImage = struct {
     pool: *ImagePool,
 
     pub fn release(self: *PooledImage) void {
+        if (self.pixels.len == 0) return;
         self.pool.release(self.pixels.ptr[0..self.pool.buffer_size]);
+        self.pixels = &.{};
+        self.width = 0;
+        self.height = 0;
     }
 
     pub fn getPixel(self: *const PooledImage, x: u32, y: u32) ?Color {
         if (x >= self.width or y >= self.height) return null;
-        const idx = (y * self.width + x) * 4;
+        const idx = (@as(usize, y) * self.width + x) * 4;
         return Color{
             .r = self.pixels[idx],
             .g = self.pixels[idx + 1],
@@ -403,7 +430,7 @@ pub const PooledImage = struct {
 
     pub fn setPixel(self: *PooledImage, x: u32, y: u32, color: Color) void {
         if (x >= self.width or y >= self.height) return;
-        const idx = (y * self.width + x) * 4;
+        const idx = (@as(usize, y) * self.width + x) * 4;
         self.pixels[idx] = color.r;
         self.pixels[idx + 1] = color.g;
         self.pixels[idx + 2] = color.b;
@@ -589,19 +616,21 @@ pub fn createThumbnail(
     max_height: u32,
     allocator: std.mem.Allocator,
 ) !Image {
+    if (image.width == 0 or image.height == 0) return error.InvalidImageDimensions;
+    if (max_width == 0 or max_height == 0) return error.InvalidThumbnailDimensions;
     const aspect = @as(f32, @floatFromInt(image.width)) / @as(f32, @floatFromInt(image.height));
     var new_width = max_width;
     var new_height = max_height;
 
     if (@as(f32, @floatFromInt(max_width)) / aspect > @as(f32, @floatFromInt(max_height))) {
-        new_width = @intFromFloat(@as(f32, @floatFromInt(max_height)) * aspect);
+        new_width = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(max_height)) * aspect)));
     } else {
-        new_height = @intFromFloat(@as(f32, @floatFromInt(max_width)) / aspect);
+        new_height = @max(1, @as(u32, @intFromFloat(@as(f32, @floatFromInt(max_width)) / aspect)));
     }
 
-    var result = try image.clone();
+    var result = try cloneImageWithAllocator(image, allocator);
+    errdefer result.deinit();
     try result.resizeBilinear(new_width, new_height);
-    _ = allocator;
 
     return result;
 }
@@ -613,8 +642,10 @@ pub fn tileImage(
     rows: u32,
     allocator: std.mem.Allocator,
 ) !Image {
-    const result_width = image.width * cols;
-    const result_height = image.height * rows;
+    if (cols == 0 or rows == 0) return error.InvalidGrid;
+    const result_width = std.math.mul(u32, image.width, cols) catch return error.ImageTooLarge;
+    const result_height = std.math.mul(u32, image.height, rows) catch return error.ImageTooLarge;
+    try validateImageAllocation(result_width, result_height, image.format);
 
     var result = try Image.init(allocator, result_width, result_height, image.format);
 
@@ -647,23 +678,30 @@ pub fn splitIntoTiles(
     tile_height: u32,
     allocator: std.mem.Allocator,
 ) ![]Image {
-    const cols = (image.width + tile_width - 1) / tile_width;
-    const rows = (image.height + tile_height - 1) / tile_height;
-    const num_tiles = cols * rows;
+    if (tile_width == 0 or tile_height == 0) return error.InvalidTileDimensions;
+    const cols = image.width / tile_width + @intFromBool(image.width % tile_width != 0);
+    const rows = image.height / tile_height + @intFromBool(image.height % tile_height != 0);
+    const num_tiles = std.math.mul(usize, cols, rows) catch return error.TooManyTiles;
 
-    var tiles = try allocator.alloc(Image, num_tiles);
+    const tiles = try allocator.alloc(Image, num_tiles);
+    var initialized: usize = 0;
+    errdefer {
+        for (tiles[0..initialized]) |*tile| tile.deinit();
+        allocator.free(tiles);
+    }
 
     var row: u32 = 0;
     while (row < rows) : (row += 1) {
         var col: u32 = 0;
         while (col < cols) : (col += 1) {
-            const tile_idx = row * cols + col;
+            const tile_idx: usize = @intCast(row * cols + col);
             const src_x = col * tile_width;
             const src_y = row * tile_height;
             const actual_width = @min(tile_width, image.width - src_x);
             const actual_height = @min(tile_height, image.height - src_y);
 
             tiles[tile_idx] = try Image.init(allocator, actual_width, actual_height, image.format);
+            initialized += 1;
 
             var y: u32 = 0;
             while (y < actual_height) : (y += 1) {
@@ -688,6 +726,8 @@ pub fn padImage(
     pad_color: Color,
     allocator: std.mem.Allocator,
 ) !Image {
+    if (target_width < image.width or target_height < image.height) return error.TargetTooSmall;
+    try validateImageAllocation(target_width, target_height, image.format);
     var result = try Image.init(allocator, target_width, target_height, image.format);
 
     // Fill with pad color
@@ -716,6 +756,23 @@ pub fn padImage(
     return result;
 }
 
+fn cloneImageWithAllocator(image: *const Image, allocator: std.mem.Allocator) !Image {
+    try validateImageAllocation(image.width, image.height, image.format);
+    var result = try Image.init(allocator, image.width, image.height, image.format);
+    errdefer result.deinit();
+    @memcpy(result.pixels, image.pixels);
+
+    if (image.palette) |palette| {
+        result.palette = try allocator.dupe(Color, palette);
+    }
+    return result;
+}
+
+fn validateImageAllocation(width: u32, height: u32, format: @import("image.zig").PixelFormat) !void {
+    const pixels = std.math.mul(usize, width, height) catch return error.ImageTooLarge;
+    _ = std.math.mul(usize, pixels, format.bytesPerPixel()) catch return error.ImageTooLarge;
+}
+
 // ============================================================================
 // Arena Allocator Helper
 // ============================================================================
@@ -734,4 +791,91 @@ pub fn withArena(
     defer arena.deinit();
 
     try operation(arena.allocator());
+}
+
+test "image pool releases buffers exactly once" {
+    const allocator = std.testing.allocator;
+    var pool = ImagePool.init(allocator, 16, 1);
+    defer pool.deinit();
+
+    var pooled = try pool.createImage(1, 1);
+    pooled.setPixel(0, 0, Color.RED);
+    try std.testing.expectEqual(Color.RED, pooled.getPixel(0, 0).?);
+    try std.testing.expectError(error.ImageTooLarge, pool.createImage(std.math.maxInt(u32), std.math.maxInt(u32)));
+
+    pooled.release();
+    pooled.release();
+    try std.testing.expectEqual(@as(?Color, null), pooled.getPixel(0, 0));
+    const buffer = try pool.acquire();
+    defer pool.release(buffer);
+    try std.testing.expectError(error.PoolExhausted, pool.acquire());
+}
+
+test "image utilities validate dimensions and clean up owned tiles" {
+    const allocator = std.testing.allocator;
+    var source = try Image.init(allocator, 2, 1, .rgba8);
+    defer source.deinit();
+    source.setPixel(0, 0, Color.RED);
+    source.setPixel(1, 0, Color.BLUE);
+
+    var thumbnail = try createThumbnail(&source, 1, 1, allocator);
+    defer thumbnail.deinit();
+    try std.testing.expectEqual(@as(u32, 1), thumbnail.width);
+    try std.testing.expectEqual(@as(u32, 1), thumbnail.height);
+    try std.testing.expectError(error.InvalidThumbnailDimensions, createThumbnail(&source, 0, 1, allocator));
+
+    var tiled = try tileImage(&source, 2, 1, allocator);
+    defer tiled.deinit();
+    try std.testing.expectEqual(@as(u32, 4), tiled.width);
+    try std.testing.expectError(error.InvalidGrid, tileImage(&source, 0, 1, allocator));
+
+    const tiles = try splitIntoTiles(&source, 1, 1, allocator);
+    defer {
+        for (tiles) |*tile| tile.deinit();
+        allocator.free(tiles);
+    }
+    try std.testing.expectEqual(@as(usize, 2), tiles.len);
+    try std.testing.expectEqual(Color.RED, tiles[0].getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, tiles[1].getPixel(0, 0).?);
+    try std.testing.expectError(error.InvalidTileDimensions, splitIntoTiles(&source, 0, 1, allocator));
+    try std.testing.expectError(error.TargetTooSmall, padImage(&source, 1, 1, Color.BLACK, allocator));
+
+    var larger = try Image.init(allocator, 3, 1, .rgba8);
+    defer larger.deinit();
+    larger.setPixel(2, 0, Color.WHITE);
+    var highlighted = try createDiff(&source, &larger, .{ .mode = .highlighted }, allocator);
+    defer highlighted.deinit();
+    try std.testing.expectEqual(@as(u32, 3), highlighted.width);
+    try std.testing.expectEqual(Color.RED, highlighted.getPixel(2, 0).?);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "input");
+    try tmp.dir.createDirPath(std.testing.io, "output");
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const input_dir = try std.fs.path.join(allocator, &.{ root, "input" });
+    defer allocator.free(input_dir);
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    defer allocator.free(output_dir);
+    const input_path = try std.fs.path.join(allocator, &.{ input_dir, "source.qoi" });
+    defer allocator.free(input_path);
+    const output_path = try std.fs.path.join(allocator, &.{ output_dir, "source.qoi" });
+    defer allocator.free(output_path);
+
+    try source.saveAsWithIo(std.testing.io, input_path, .qoi);
+    const input_paths = [_][]const u8{input_path};
+    var batch = try processBatch(&input_paths, .{
+        .operations = &.{},
+        .output_dir = output_dir,
+        .output_format = .qoi,
+    }, allocator);
+    defer batch.deinit();
+    try std.testing.expectEqual(@as(usize, 1), batch.processed);
+    try std.testing.expectEqual(@as(usize, 0), batch.failed);
+    try std.testing.expectEqual(@as(usize, 0), batch.errors.items.len);
+
+    var batch_output = try Image.loadWithIo(allocator, std.testing.io, output_path);
+    defer batch_output.deinit();
+    try std.testing.expect(imagesEqual(&source, &batch_output));
 }

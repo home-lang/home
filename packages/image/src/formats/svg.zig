@@ -105,6 +105,13 @@ const ShapeType = union(enum) {
 // SVG Parser
 // ============================================================================
 
+const ViewBox = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
 const SvgParser = struct {
     data: []const u8,
     pos: usize,
@@ -116,7 +123,7 @@ const SvgParser = struct {
 
     width: f32,
     height: f32,
-    view_box: ?struct { x: f32, y: f32, w: f32, h: f32 },
+    view_box: ?ViewBox,
 
     fn init(allocator: std.mem.Allocator, data: []const u8) SvgParser {
         return .{
@@ -196,7 +203,7 @@ const SvgParser = struct {
         try self.parseElements();
     }
 
-    fn parseElements(self: *SvgParser) !void {
+    fn parseElements(self: *SvgParser) std.mem.Allocator.Error!void {
         while (self.pos < self.data.len) {
             self.skipWhitespace();
 
@@ -221,7 +228,7 @@ const SvgParser = struct {
         }
     }
 
-    fn parseElement(self: *SvgParser) !void {
+    fn parseElement(self: *SvgParser) std.mem.Allocator.Error!void {
         self.pos += 1; // Skip '<'
         self.skipWhitespace();
 
@@ -541,7 +548,7 @@ const SvgParser = struct {
         });
     }
 
-    fn parseGroup(self: *SvgParser) !void {
+    fn parseGroup(self: *SvgParser) std.mem.Allocator.Error!void {
         // Skip group attributes for now
         self.skipElement();
 
@@ -687,17 +694,17 @@ fn parseHexDigit(c: u8) u8 {
     return 0;
 }
 
-fn parseViewBox(value: []const u8) ?struct { x: f32, y: f32, w: f32, h: f32 } {
+fn parseViewBox(value: []const u8) ?ViewBox {
     var parts: [4]f32 = .{ 0, 0, 0, 0 };
     var part_idx: usize = 0;
     var start: usize = 0;
     var i: usize = 0;
 
     while (i <= value.len and part_idx < 4) {
-        const is_sep = i == value.len or value[i] == ' ' or value[i] == ',' or value[i] == '\t';
+        const is_sep = i == value.len or value[i] == ' ' or value[i] == ',' or value[i] == '\t' or value[i] == '\r' or value[i] == '\n';
         if (is_sep) {
             if (i > start) {
-                parts[part_idx] = std.fmt.parseFloat(f32, value[start..i]) catch 0;
+                parts[part_idx] = std.fmt.parseFloat(f32, value[start..i]) catch return null;
                 part_idx += 1;
             }
             start = i + 1;
@@ -705,7 +712,12 @@ fn parseViewBox(value: []const u8) ?struct { x: f32, y: f32, w: f32, h: f32 } {
         i += 1;
     }
 
-    if (part_idx < 4) return null;
+    while (i < value.len and (value[i] == ' ' or value[i] == ',' or value[i] == '\t' or value[i] == '\r' or value[i] == '\n')) : (i += 1) {}
+    if (part_idx < 4 or !std.math.isFinite(parts[0]) or !std.math.isFinite(parts[1]) or
+        !std.math.isFinite(parts[2]) or !std.math.isFinite(parts[3]) or parts[2] <= 0 or parts[3] <= 0 or i < value.len)
+    {
+        return null;
+    }
     return .{ .x = parts[0], .y = parts[1], .w = parts[2], .h = parts[3] };
 }
 
@@ -1454,6 +1466,17 @@ test "Length parsing" {
     try std.testing.expectEqual(@as(f32, 100), parseLength("100"));
     try std.testing.expectEqual(@as(f32, 100), parseLength("100px"));
     try std.testing.expectApproxEqAbs(@as(f32, 96), parseLength("1in"), 0.1);
+}
+
+test "viewBox parsing has one stable type and rejects malformed dimensions" {
+    const view_box = parseViewBox("1 2 30 40").?;
+    try std.testing.expectEqual(@as(f32, 1), view_box.x);
+    try std.testing.expectEqual(@as(f32, 2), view_box.y);
+    try std.testing.expectEqual(@as(f32, 30), view_box.w);
+    try std.testing.expectEqual(@as(f32, 40), view_box.h);
+    try std.testing.expectEqual(@as(?ViewBox, null), parseViewBox("x 2 30 40"));
+    try std.testing.expectEqual(@as(?ViewBox, null), parseViewBox("0 0 0 40"));
+    try std.testing.expectEqual(@as(?ViewBox, null), parseViewBox("0 0 30 40 50"));
 }
 
 test "Transform operations" {
