@@ -88,12 +88,12 @@ const HuffmanTable = struct {
 
     pub fn init() HuffmanTable {
         return HuffmanTable{
-            .bits = [_]u8{0} ** 17,
-            .values = [_]u8{0} ** 256,
+            .bits = @splat(0),
+            .values = @splat(0),
             .num_values = 0,
-            .maxcode = [_]i32{0} ** 18,
-            .mincode = [_]i32{0} ** 17,
-            .valptr = [_]i32{0} ** 17,
+            .maxcode = @splat(0),
+            .mincode = @splat(0),
+            .valptr = @splat(0),
         };
     }
 
@@ -155,7 +155,7 @@ const JpegDecoder = struct {
             .width = 0,
             .height = 0,
             .num_components = 0,
-            .components = [_]Component{Component{
+            .components = @splat(Component{
                 .id = 0,
                 .h_sample = 1,
                 .v_sample = 1,
@@ -163,10 +163,10 @@ const JpegDecoder = struct {
                 .dc_table = 0,
                 .ac_table = 0,
                 .dc_pred = 0,
-            }} ** 4,
-            .quant_tables = [_][64]u16{[_]u16{16} ** 64} ** 4,
-            .dc_tables = [_]HuffmanTable{HuffmanTable.init()} ** 4,
-            .ac_tables = [_]HuffmanTable{HuffmanTable.init()} ** 4,
+            }),
+            .quant_tables = @splat(@as([64]u16, @splat(16))),
+            .dc_tables = @splat(HuffmanTable.init()),
+            .ac_tables = @splat(HuffmanTable.init()),
             .restart_interval = 0,
             .progressive = false,
             .allocator = allocator,
@@ -405,7 +405,7 @@ const JpegDecoder = struct {
     }
 
     fn decodeMCU(self: *JpegDecoder, component: *Component) ![64]i32 {
-        var block = [_]i32{0} ** 64;
+        var block: [64]i32 = @splat(0);
 
         // Decode DC coefficient
         const dc_table = &self.dc_tables[component.dc_table];

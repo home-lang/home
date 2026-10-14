@@ -32,11 +32,11 @@ pub fn calculateStats(image: *const Image, allocator: std.mem.Allocator) !ImageS
     const num_pixels = @as(u64, image.width) * @as(u64, image.height);
 
     // Initialize histograms
-    var r_hist = [_]u32{0} ** 256;
-    var g_hist = [_]u32{0} ** 256;
-    var b_hist = [_]u32{0} ** 256;
-    var a_hist = [_]u32{0} ** 256;
-    var l_hist = [_]u32{0} ** 256;
+    var r_hist: [256]u32 = @splat(0);
+    var g_hist: [256]u32 = @splat(0);
+    var b_hist: [256]u32 = @splat(0);
+    var a_hist: [256]u32 = @splat(0);
+    var l_hist: [256]u32 = @splat(0);
 
     // Accumulators for mean
     var r_sum: u64 = 0;
