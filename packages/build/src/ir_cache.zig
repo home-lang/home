@@ -194,10 +194,13 @@ pub const IRCache = struct {
         }
 
         const metadata_path = try fs.path.join(allocator, &[_][]const u8{ cache_dir, METADATA_FILE });
+        errdefer allocator.free(metadata_path);
+        const owned_cache_dir = try allocator.dupe(u8, cache_dir);
+        errdefer allocator.free(owned_cache_dir);
 
         var cache = IRCache{
             .allocator = allocator,
-            .cache_dir = try allocator.dupe(u8, cache_dir),
+            .cache_dir = owned_cache_dir,
             .metadata_file = metadata_path,
             .entries = std.AutoHashMap(CacheHash, CacheEntry).init(allocator),
             .stats = CacheStats{},
@@ -224,11 +227,7 @@ pub const IRCache = struct {
 
         var it = self.entries.iterator();
         while (it.next()) |entry| {
-            self.allocator.free(entry.value_ptr.module_name);
-            self.allocator.free(entry.value_ptr.source_path);
-            self.allocator.free(entry.value_ptr.dependencies);
-            self.allocator.free(entry.value_ptr.ir_path);
-            self.allocator.free(entry.value_ptr.object_path);
+            self.freeEntry(entry.value_ptr.*);
         }
         self.entries.deinit();
 
@@ -238,7 +237,10 @@ pub const IRCache = struct {
 
     /// Check if cached IR exists and is valid
     pub fn get(self: *IRCache, key: CacheHash) ?*const CacheEntry {
-        const entry = self.entries.getPtr(key) orelse return null;
+        const entry = self.entries.getPtr(key) orelse {
+            self.stats.cache_misses += 1;
+            return null;
+        };
 
         // Check if cached files still exist
         const ir_exists = self.fileExists(entry.ir_path);
@@ -246,7 +248,9 @@ pub const IRCache = struct {
 
         if (!ir_exists or !obj_exists) {
             // Cache entry invalid - remove it
-            _ = self.entries.remove(key);
+            const removed = self.entries.fetchRemove(key).?;
+            self.freeEntry(removed.value);
+            self.stats.cache_misses += 1;
             return null;
         }
 
@@ -270,6 +274,9 @@ pub const IRCache = struct {
         object_content: []const u8,
         compile_time_ms: i64,
     ) !void {
+        var entry_transferred = false;
+        var files_committed = false;
+
         // Generate cache file paths
         var hash_buf: [64]u8 = undefined;
         const hash_hex = hashToHex(key, &hash_buf);
@@ -277,10 +284,27 @@ pub const IRCache = struct {
         const ir_filename = try std.fmt.allocPrint(self.allocator, "{s}.ir", .{hash_hex});
         defer self.allocator.free(ir_filename);
         const ir_path = try fs.path.join(self.allocator, &[_][]const u8{ self.cache_dir, ir_filename });
+        errdefer if (!entry_transferred) self.allocator.free(ir_path);
 
         const obj_filename = try std.fmt.allocPrint(self.allocator, "{s}.o", .{hash_hex});
         defer self.allocator.free(obj_filename);
         const obj_path = try fs.path.join(self.allocator, &[_][]const u8{ self.cache_dir, obj_filename });
+        errdefer if (!entry_transferred) self.allocator.free(obj_path);
+
+        const owned_module_name = try self.allocator.dupe(u8, module_name);
+        errdefer if (!entry_transferred) self.allocator.free(owned_module_name);
+        const owned_source_path = try self.allocator.dupe(u8, source_path);
+        errdefer if (!entry_transferred) self.allocator.free(owned_source_path);
+        const owned_dependencies = try self.allocator.dupe(CacheHash, dependencies);
+        errdefer if (!entry_transferred) self.allocator.free(owned_dependencies);
+        errdefer {
+            if (!files_committed) {
+                if (self.io) |io_val| {
+                    Io.Dir.cwd().deleteFile(io_val, ir_path) catch {};
+                    Io.Dir.cwd().deleteFile(io_val, obj_path) catch {};
+                }
+            }
+        }
 
         // Write IR to cache
         try self.writeFile(ir_path, ir_content);
@@ -291,10 +315,10 @@ pub const IRCache = struct {
         // Store metadata
         const entry = CacheEntry{
             .key = key,
-            .module_name = try self.allocator.dupe(u8, module_name),
-            .source_path = try self.allocator.dupe(u8, source_path),
+            .module_name = owned_module_name,
+            .source_path = owned_source_path,
             .source_mtime = source_mtime,
-            .dependencies = try self.allocator.dupe(CacheHash, dependencies),
+            .dependencies = owned_dependencies,
             .ir_path = ir_path,
             .object_path = obj_path,
             .created_at = getTimestamp(),
@@ -303,7 +327,11 @@ pub const IRCache = struct {
             .compile_time_ms = compile_time_ms,
         };
 
-        try self.entries.put(key, entry);
+        const result = try self.entries.getOrPut(key);
+        if (result.found_existing) self.freeEntry(result.value_ptr.*);
+        result.value_ptr.* = entry;
+        entry_transferred = true;
+        files_committed = true;
         self.stats.cache_stores += 1;
 
         // Check cache size and evict if needed
@@ -331,12 +359,7 @@ pub const IRCache = struct {
                 Io.Dir.cwd().deleteFile(io_val, entry.value.object_path) catch {};
             }
 
-            // Free memory
-            self.allocator.free(entry.value.module_name);
-            self.allocator.free(entry.value.source_path);
-            self.allocator.free(entry.value.dependencies);
-            self.allocator.free(entry.value.ir_path);
-            self.allocator.free(entry.value.object_path);
+            self.freeEntry(entry.value);
 
             self.stats.cache_invalidations += 1;
         }
@@ -351,11 +374,7 @@ pub const IRCache = struct {
                 Io.Dir.cwd().deleteFile(io_val, entry.value_ptr.object_path) catch {};
             }
 
-            self.allocator.free(entry.value_ptr.module_name);
-            self.allocator.free(entry.value_ptr.source_path);
-            self.allocator.free(entry.value_ptr.dependencies);
-            self.allocator.free(entry.value_ptr.ir_path);
-            self.allocator.free(entry.value_ptr.object_path);
+            self.freeEntry(entry.value_ptr.*);
         }
 
         self.entries.clearRetainingCapacity();
@@ -393,7 +412,7 @@ pub const IRCache = struct {
         std.mem.sort(CacheEntry, entries_list.items, {}, lessThanByAccess);
 
         // Evict oldest 25%
-        const evict_count = entries_list.items.len / 4;
+        const evict_count = @max(1, entries_list.items.len / 4);
         for (entries_list.items[0..evict_count]) |entry| {
             try self.invalidate(entry.key);
         }
@@ -403,6 +422,14 @@ pub const IRCache = struct {
 
     fn lessThanByAccess(_: void, a: CacheEntry, b: CacheEntry) bool {
         return a.last_accessed < b.last_accessed;
+    }
+
+    fn freeEntry(self: *IRCache, entry: CacheEntry) void {
+        self.allocator.free(entry.module_name);
+        self.allocator.free(entry.source_path);
+        self.allocator.free(entry.dependencies);
+        self.allocator.free(entry.ir_path);
+        self.allocator.free(entry.object_path);
     }
 
     fn calculateCacheSize(self: *IRCache) usize {
@@ -468,34 +495,45 @@ pub const IRCache = struct {
             _ = std.fmt.hexToBytes(&cache_hash, entry_json.key) catch continue;
 
             // Parse dependency hashes
-            var dependencies = try self.allocator.alloc(CacheHash, entry_json.dependencies.len);
-            var dep_count: usize = 0;
+            var dependencies: std.ArrayList(CacheHash) = .empty;
+            defer dependencies.deinit(self.allocator);
             for (entry_json.dependencies) |dep_hex| {
                 var dep_hash: CacheHash = undefined;
                 if (std.fmt.hexToBytes(&dep_hash, dep_hex)) |_| {
-                    dependencies[dep_count] = dep_hash;
-                    dep_count += 1;
+                    try dependencies.append(self.allocator, dep_hash);
                 } else |_| {}
             }
-            const final_dependencies = dependencies[0..dep_count];
+
+            var entry_transferred = false;
+            const owned_module_name = try self.allocator.dupe(u8, entry_json.module_name);
+            errdefer if (!entry_transferred) self.allocator.free(owned_module_name);
+            const owned_source_path = try self.allocator.dupe(u8, entry_json.source_path);
+            errdefer if (!entry_transferred) self.allocator.free(owned_source_path);
+            const owned_dependencies = try dependencies.toOwnedSlice(self.allocator);
+            errdefer if (!entry_transferred) self.allocator.free(owned_dependencies);
+            const owned_ir_path = try self.allocator.dupe(u8, entry_json.ir_path);
+            errdefer if (!entry_transferred) self.allocator.free(owned_ir_path);
+            const owned_object_path = try self.allocator.dupe(u8, entry_json.object_path);
+            errdefer if (!entry_transferred) self.allocator.free(owned_object_path);
 
             const entry = CacheEntry{
                 .key = cache_hash,
-                .module_name = try self.allocator.dupe(u8, entry_json.module_name),
-                .source_path = try self.allocator.dupe(u8, entry_json.source_path),
+                .module_name = owned_module_name,
+                .source_path = owned_source_path,
                 .source_mtime = entry_json.source_mtime,
-                .dependencies = try self.allocator.dupe(CacheHash, final_dependencies),
-                .ir_path = try self.allocator.dupe(u8, entry_json.ir_path),
-                .object_path = try self.allocator.dupe(u8, entry_json.object_path),
+                .dependencies = owned_dependencies,
+                .ir_path = owned_ir_path,
+                .object_path = owned_object_path,
                 .created_at = entry_json.created_at,
                 .last_accessed = entry_json.last_accessed,
                 .hit_count = @intCast(entry_json.hit_count),
                 .compile_time_ms = entry_json.compile_time_ms,
             };
 
-            self.allocator.free(dependencies);
-
-            try self.entries.put(cache_hash, entry);
+            const result = try self.entries.getOrPut(cache_hash);
+            if (result.found_existing) self.freeEntry(result.value_ptr.*);
+            result.value_ptr.* = entry;
+            entry_transferred = true;
         }
 
         // Restore stats
@@ -693,6 +731,7 @@ test "cache operations" {
 
     // Cache miss initially
     try std.testing.expect(cache.get(key) == null);
+    try std.testing.expectEqual(@as(u64, 1), cache.stats.cache_misses);
 
     // Store in cache
     try cache.put(
@@ -710,4 +749,20 @@ test "cache operations" {
     const entry = cache.get(key);
     try std.testing.expect(entry != null);
     try std.testing.expectEqualStrings("test_module", entry.?.module_name);
+
+    // Replacing a content key must release the old entry and preserve one map slot.
+    try cache.put(
+        key,
+        "updated_module",
+        "updated.zig",
+        1,
+        &deps,
+        "updated IR",
+        "updated object",
+        50,
+    );
+    const replacement = cache.get(key).?;
+    try std.testing.expectEqualStrings("updated_module", replacement.module_name);
+    try std.testing.expectEqual(@as(usize, 1), cache.entries.count());
+    try std.testing.expectEqual(@as(u64, 2), cache.stats.cache_stores);
 }
