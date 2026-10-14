@@ -71,7 +71,7 @@ pub const HDRImage = struct {
     }
 
     pub fn clone(self: *const HDRImage) !HDRImage {
-        var result = try HDRImage.init(self.allocator, self.width, self.height);
+        const result = try HDRImage.init(self.allocator, self.width, self.height);
         @memcpy(result.data, self.data);
         return result;
     }
@@ -719,7 +719,7 @@ pub const HDRToSDROptions = struct {
 };
 
 pub fn convertHDRToSDR(allocator: std.mem.Allocator, hdr: *const HDRImage, options: HDRToSDROptions) !Image {
-    var tone_options = ToneMapOptions{
+    const tone_options = ToneMapOptions{
         .exposure = options.exposure,
         .gamma = options.gamma,
         .saturation = options.color_saturation,

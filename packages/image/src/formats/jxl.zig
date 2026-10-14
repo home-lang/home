@@ -65,7 +65,7 @@ fn decodeContainer(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     while (pos + 8 <= data.len) {
         // Read box header
-        var box_size = std.mem.readInt(u32, data[pos..][0..4], .big);
+        const box_size = std.mem.readInt(u32, data[pos..][0..4], .big);
         const box_type = data[pos + 4 ..][0..4];
         pos += 8;
 

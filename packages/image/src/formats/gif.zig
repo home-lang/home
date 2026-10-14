@@ -743,7 +743,7 @@ test "GIF signature" {
 
 test "LZW decoder initialization" {
     const data = [_]u8{ 0x04, 0x01, 0x00 };
-    var decoder = LzwDecoder.init(&data, 2);
+    const decoder = LzwDecoder.init(&data, 2);
     try std.testing.expectEqual(@as(u16, 4), decoder.clear_code);
     try std.testing.expectEqual(@as(u16, 5), decoder.end_code);
 }
