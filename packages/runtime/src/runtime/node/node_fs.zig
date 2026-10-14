@@ -5028,6 +5028,18 @@ pub const NodeFS = struct {
         return .success;
     }
 
+    /// Iterator names contain no native separators or dot entries, and the
+    /// queued basename is already relative. The caller checks capacity.
+    fn appendReaddirBasename(buf: *bun.PathBuffer, basename: []const u8, name: []const u8) [:0]const u8 {
+        const length = basename.len + 1 + name.len;
+        bun.assert(length < buf.len);
+        @memcpy(buf[0..basename.len], basename);
+        buf[basename.len] = if (Environment.isWindows) '\\' else '/';
+        @memcpy(buf[basename.len + 1 ..][0..name.len], name);
+        buf[length] = 0;
+        return buf[0..length :0];
+    }
+
     pub fn readdirWithEntriesRecursiveAsync(
         buf: *bun.PathBuffer,
         args: Arguments.Readdir,
@@ -5122,8 +5134,7 @@ pub const NodeFS = struct {
                     break :brk @ptrCast(utf8_name);
                 }
 
-                const path_parts = [_]string{ basename, utf8_name };
-                break :brk bun.path.joinZBuf(buf, &path_parts, .auto);
+                break :brk appendReaddirBasename(buf, basename, utf8_name);
             };
 
             // Track effective kind - may be resolved from .unknown via stat
@@ -5172,9 +5183,8 @@ pub const NodeFS = struct {
 
             switch (comptime ExpectedType) {
                 bun.jsc.Node.Dirent => {
-                    const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
-                    if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
-                        dirent_path_prev.deref();
+                    if (dirent_path_prev.isEmpty()) {
+                        const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
                         dirent_path_prev = bun.String.cloneUTF8(path_u8);
                     }
                     dirent_path_prev.ref();
@@ -5296,8 +5306,7 @@ pub const NodeFS = struct {
                         break :brk utf8_name;
                     }
 
-                    const path_parts = [_]string{ basename, utf8_name };
-                    break :brk bun.path.joinZBuf(buf, &path_parts, .auto);
+                    break :brk appendReaddirBasename(buf, basename, utf8_name);
                 };
 
                 // Track effective kind - may be resolved from .unknown via stat
@@ -5313,7 +5322,12 @@ pub const NodeFS = struct {
                         .directory,
                         => {
                             if (current.name.len + 1 + name_to_copy.len > bun.MAX_PATH_BYTES) break :enqueue;
-                            stack.writeItem(bun.dupeZ(basename_allocator, u8, name_to_copy) catch break :enqueue) catch break :enqueue;
+                            const queued = bun.dupeZ(basename_allocator, u8, name_to_copy) catch
+                                return .{ .err = Syscall.Error.fromCode(.NOMEM, .scandir) };
+                            stack.writeItem(queued) catch {
+                                basename_allocator.free(queued);
+                                return .{ .err = Syscall.Error.fromCode(.NOMEM, .scandir) };
+                            };
                         },
                         // Some filesystems (e.g., Docker bind mounts, FUSE, NFS) return
                         // DT_UNKNOWN for d_type. Use lstatat to determine the actual type.
@@ -5327,7 +5341,12 @@ pub const NodeFS = struct {
                                     const real_kind = bun.sys.kindFromMode(@intCast(st.mode));
                                     effective_kind = real_kind;
                                     if (real_kind == .directory or real_kind == .sym_link) {
-                                        stack.writeItem(bun.dupeZ(basename_allocator, u8, name_to_copy) catch break :enqueue) catch break :enqueue;
+                                        const queued = bun.dupeZ(basename_allocator, u8, name_to_copy) catch
+                                            return .{ .err = Syscall.Error.fromCode(.NOMEM, .scandir) };
+                                        stack.writeItem(queued) catch {
+                                            basename_allocator.free(queued);
+                                            return .{ .err = Syscall.Error.fromCode(.NOMEM, .scandir) };
+                                        };
                                     }
                                 },
                                 .err => {}, // Skip entries we can't stat
@@ -5339,9 +5358,8 @@ pub const NodeFS = struct {
 
                 switch (comptime ExpectedType) {
                     bun.jsc.Node.Dirent => {
-                        const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
-                        if (dirent_path_prev.isEmpty() or !bun.strings.eql(dirent_path_prev.byteSlice(), path_u8)) {
-                            dirent_path_prev.deref();
+                        if (dirent_path_prev.isEmpty()) {
+                            const path_u8 = bun.path.dirname(bun.path.join(&[_]string{ root_basename, name_to_copy }, .auto), .auto);
                             dirent_path_prev = jsc.WebCore.encoding.toBunString(strings.withoutNTPrefix(std.meta.Child(@TypeOf(path_u8)), path_u8), args.encoding);
                         }
                         dirent_path_prev.ref();
