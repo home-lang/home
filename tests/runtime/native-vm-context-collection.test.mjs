@@ -18,20 +18,34 @@ const weak = createWeakContexts()
 await collect()
 assert.deepEqual(weak.map(reference => reference.deref() !== undefined), [false, false])
 const timerContext = (() => {
-  const context = vm.createContext({ answer: 42 })
+  const context = vm.createContext({ answer: 42 }, { name: 'buffered-timer-context' })
   vm.runInContext('console.count("unobserved"); console.time("unobserved"); console.timeLog("unobserved", {answer}); console.timeEnd("unobserved")', context)
   return new WeakRef(context)
 })()
 await collect()
-assert.equal(timerContext.deref(), undefined)
+assert.notEqual(timerContext.deref(), undefined)
 
 const session = new Session()
 session.connect()
 const contexts = []
 const destroyed = []
+const consoleEvents = []
+session.on('Runtime.consoleAPICalled', event => consoleEvents.push(event.params))
 session.on('Runtime.executionContextCreated', event => contexts.push(event.params.context))
 session.on('Runtime.executionContextDestroyed', event => destroyed.push(event.params.executionContextId))
 await session.post('Runtime.enable')
+const buffered = contexts.find(context => context.name === 'buffered-timer-context')
+assert(buffered)
+const timerLog = consoleEvents.find(event => event.executionContextId === buffered.id && event.type === 'log' && /^unobserved: [\d.]+\s?ms$/.test(event.args[0]?.value))
+assert(timerLog)
+const properties = await session.post('Runtime.getProperties', { objectId: timerLog.args[1].objectId, ownProperties: true })
+assert.equal(properties.result.find(property => property.name === 'answer').value.value, 42)
+await session.post('Runtime.evaluate', { contextId: buffered.id, expression: 'console.clear()' })
+await session.post('Runtime.releaseObjectGroup', { objectGroup: 'console' })
+await session.post('Console.clearMessages')
+await collect()
+assert.equal(timerContext.deref(), undefined)
+
 const announced = (() => {
   const context = vm.createContext({}, { name: 'collect-announced' })
   return new WeakRef(context)

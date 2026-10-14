@@ -80,7 +80,37 @@ class HomeInspectorConsoleAgent final : public Inspector::InspectorConsoleAgent 
 public:
     explicit HomeInspectorConsoleAgent(Inspector::AgentContext& context)
         : Inspector::InspectorConsoleAgent(context) { }
-    WTF::String lastMessage() const { return m_consoleMessages.isEmpty() ? WTF::String() : m_consoleMessages.last()->message(); }
+    struct ProtocolRecord {
+        WTF::String type;
+        WTF::RefPtr<Inspector::ScriptCallStack> stack;
+        bool prefixText;
+    };
+    struct Snapshot {
+        std::unique_ptr<Inspector::ConsoleMessage> message;
+        ProtocolRecord protocol;
+    };
+    std::unordered_map<const Inspector::ConsoleMessage*, ProtocolRecord> protocolRecords;
+    void rememberLast(JSC::JSGlobalObject& global, const WTF::String& type, bool prefixText) {
+        // Metadata describes canonical SDK records; it stores no JS values.
+        std::erase_if(protocolRecords, [&](const auto& entry) {
+            for (auto& message : m_consoleMessages) if (message.get() == entry.first) return false;
+            return true;
+        });
+        if (m_consoleMessages.isEmpty()) return;
+        protocolRecords.insert_or_assign(m_consoleMessages.last().get(), ProtocolRecord { type, Inspector::createScriptCallStackForConsole(&global), prefixText });
+    }
+    std::vector<Snapshot> snapshot(JSC::JSGlobalObject& global, bool lastOnly = false) const {
+        std::vector<Snapshot> result;
+        for (size_t i = lastOnly && !m_consoleMessages.isEmpty() ? m_consoleMessages.size() - 1 : 0; i < m_consoleMessages.size(); ++i) {
+            auto& record = *m_consoleMessages[i];
+            auto found = protocolRecords.find(&record);
+            if (record.source() != JSC::MessageSource::ConsoleAPI || found == protocolRecords.end()) continue;
+            auto arguments = record.arguments() ? WTF::Ref<Inspector::ScriptArguments>(*record.arguments()) : Inspector::ScriptArguments::create(&global, { });
+            auto message = std::make_unique<Inspector::ConsoleMessage>(record.source(), record.type(), record.level(), record.message(), WTF::move(arguments), &global, 0, record.timestamp());
+            result.push_back({ WTF::move(message), found->second });
+        }
+        return result;
+    }
     bool hasCounter(const WTF::String& label) const { return m_counts.contains(label); }
     bool hasTimer(const WTF::String& label) const { return m_times.contains(label); }
 };
@@ -120,12 +150,12 @@ bool inspectorObjectIsPromise(JSC::JSGlobalObject& global, const WTF::String& id
     auto value = manager->injectedScriptFor(&global).findObjectById(id);
     return value && WTF::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
 }
-static void inspectorConsoleMessageWithType(Inspector::ConsoleMessage& message, const WTF::String& overrideType) {
+static WTF::String inspectorConsoleMessageJSON(Inspector::ConsoleMessage& message, const WTF::String& overrideType, Inspector::ScriptCallStack* recordedStack = nullptr, bool prefixText = false) {
     auto* global = message.globalObject();
-    if (!global || message.source() != JSC::MessageSource::ConsoleAPI || !inspectorHasConsoleListeners(*global)) return;
+    if (!global || message.source() != JSC::MessageSource::ConsoleAPI) return { };
     Inspector::InjectedScriptManager* manager;
     { std::lock_guard lock(inspectorManagerLock); auto found=inspectorManagers->find(global);
-      if(found==inspectorManagers->end()) return; manager=found->second; }
+      if(found==inspectorManagers->end()) return { }; manager=found->second; }
     JSC::DeferGC deferGC(global->vm());
     auto params=JSON::Object::create();
     WTF::String type="log"_s;
@@ -153,12 +183,20 @@ static void inspectorConsoleMessageWithType(Inspector::ConsoleMessage& message, 
     params->setDouble("timestamp"_s,message.timestamp().secondsSinceEpoch().value()*1000);
     auto args=JSON::Array::create();
     auto script=manager->injectedScriptFor(global);
+    if (prefixText || !message.argumentCount()) {
+        if (prefixText || !message.message().isEmpty()) {
+            auto argument = JSON::Object::create();
+            argument->setString("type"_s, "string"_s);
+            argument->setString("value"_s, message.message());
+            args->pushObject(WTF::move(argument));
+        }
+    }
     if(auto* arguments=message.arguments()) {
         for(size_t i=0;i<arguments->argumentCount();++i) {
             auto wrapped=script.wrapObject(arguments->argumentAt(i),"console"_s,true);
             if(wrapped) args->pushObject(wrapped.releaseNonNull());
         }
-    } else {
+    } else if (!args->length()) {
         auto argument=JSON::Object::create();argument->setString("type"_s,"string"_s);argument->setString("value"_s,message.message());args->pushObject(WTF::move(argument));
     }
     if (!args->length() && (message.type() == JSC::MessageType::EndGroup || message.type() == JSC::MessageType::Clear)) {
@@ -168,7 +206,8 @@ static void inspectorConsoleMessageWithType(Inspector::ConsoleMessage& message, 
         args->pushObject(WTF::move(argument));
     }
     params->setArray("args"_s,WTF::move(args));
-    auto nativeStack=Inspector::createScriptCallStackForConsole(global);
+    WTF::RefPtr<Inspector::ScriptCallStack> nativeStack = recordedStack;
+    if (!nativeStack) nativeStack = Inspector::createScriptCallStackForConsole(global);
     auto frames=JSON::Array::create();
     for(size_t i=0;i<nativeStack->size();++i) {
         auto& frame=nativeStack->at(i);
@@ -183,21 +222,43 @@ static void inspectorConsoleMessageWithType(Inspector::ConsoleMessage& message, 
     }
     auto stack=JSON::Object::create();stack->setArray("callFrames"_s,WTF::move(frames));params->setObject("stackTrace"_s,WTF::move(stack));
     auto event=JSON::Object::create();event->setString("method"_s,"Runtime.consoleAPICalled"_s);event->setObject("params"_s,WTF::move(params));
-    deliverInspectorConsoleMessage(*global,event->toJSONString());
+    return event->toJSONString();
 }
 
 void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
-    inspectorConsoleMessageWithType(message, ""_s);
+    auto* global = message.globalObject();
+    if (!global || !inspectorHasConsoleListeners(*global)) return;
+    auto event = inspectorConsoleMessageJSON(message, ""_s);
+    if (!event.isEmpty()) deliverInspectorConsoleMessage(*global, event);
 }
-static void emitConsoleRecord(JSC::JSGlobalObject& global, const WTF::String& type, const WTF::String& text, Inspector::ScriptArguments* extra = nullptr) {
-    if (!inspectorHasConsoleListeners(global) || text.isNull()) return;
-    WTF::Vector<JSC::Strong<JSC::Unknown>> values;
-    values.append(JSC::Strong<JSC::Unknown>(global.vm(), JSC::jsString(global.vm(), text)));
-    if (extra) for (size_t i = 0; i < extra->argumentCount(); ++i)
-        values.append(JSC::Strong<JSC::Unknown>(global.vm(), extra->argumentAt(i)));
-    auto arguments = Inspector::ScriptArguments::create(&global, WTF::move(values));
-    Inspector::ConsoleMessage message(JSC::MessageSource::ConsoleAPI, JSC::MessageType::Log, JSC::MessageLevel::Log, text, WTF::move(arguments), &global);
-    inspectorConsoleMessageWithType(message, type);
+static void publishConsoleRecord(JSC::JSGlobalObject& global, const WTF::String& type, bool prefixText = false) {
+    auto* agent = consoleAgentFor(global);
+    if (!agent) return;
+    agent->rememberLast(global, type, prefixText);
+    if (!inspectorHasConsoleListeners(global)) return;
+    auto records = agent->snapshot(global, true);
+    for (auto& record : records) {
+        auto event = inspectorConsoleMessageJSON(*record.message, record.protocol.type, record.protocol.stack.get(), record.protocol.prefixText);
+        if (!event.isEmpty()) deliverInspectorConsoleMessage(global, event);
+    }
+}
+std::vector<WTF::String> inspectorConsoleHistory(JSC::JSGlobalObject& global) {
+    std::vector<WTF::String> result;
+    auto* agent = consoleAgentFor(global);
+    if (!agent) return result;
+    // Snapshot all native arguments before replay can enter JavaScript and clear the SDK buffer.
+    auto records = agent->snapshot(global);
+    for (auto& record : records) {
+        auto event = inspectorConsoleMessageJSON(*record.message, record.protocol.type, record.protocol.stack.get(), record.protocol.prefixText);
+        if (!event.isEmpty()) result.push_back(WTF::move(event));
+    }
+    return result;
+}
+void clearInspectorConsoleHistory(JSC::JSGlobalObject& global) {
+    if (auto* agent = consoleAgentFor(global)) {
+        std::ignore = agent->clearMessages();
+        agent->protocolRecords.clear();
+    }
 }
 void inspectorConsoleCount(JSC::JSGlobalObject& global, const WTF::String& label, bool reset) {
     auto* agent = consoleAgentFor(global);
@@ -205,38 +266,37 @@ void inspectorConsoleCount(JSC::JSGlobalObject& global, const WTF::String& label
     bool exists = agent->hasCounter(label);
     if (reset) agent->countReset(&global, label); else agent->count(&global, label);
     if (reset && exists) return;
-    emitConsoleRecord(global, reset ? "warning"_s : "count"_s, agent->lastMessage());
+    publishConsoleRecord(global, reset ? "warning"_s : "count"_s);
 }
 void inspectorConsoleTime(JSC::JSGlobalObject& global, const WTF::String& label) {
     auto* agent = consoleAgentFor(global);
     if (!agent) return;
     bool exists = agent->hasTimer(label);
     agent->startTiming(&global, label);
-    if (exists) emitConsoleRecord(global, "warning"_s, agent->lastMessage());
+    if (exists) publishConsoleRecord(global, "warning"_s);
 }
 void inspectorConsoleTiming(JSC::JSGlobalObject& global, const WTF::String& label, Inspector::ScriptArguments* arguments) {
-    // timeLog changes no timer state. Match the native client's inspection
-    // policy before storing ScriptArguments, which strongly retain the realm.
+    // Preserve the SDK inspection policy; its buffered arguments are the real
+    // strong owner until the console buffer and remote object group are cleared.
     if (arguments && !global.inspectorController().developerExtrasEnabled()) return;
     auto* agent = consoleAgentFor(global);
     if (!agent) return;
     bool exists = agent->hasTimer(label);
     if (arguments) agent->logTiming(&global, label, WTF::Ref<Inspector::ScriptArguments>(*arguments)); else agent->stopTiming(&global, label);
-    emitConsoleRecord(global, exists ? (arguments ? "log"_s : "timeEnd"_s) : "warning"_s, agent->lastMessage(), exists ? arguments : nullptr);
+    publishConsoleRecord(global, exists ? (arguments ? "log"_s : "timeEnd"_s) : "warning"_s, exists && arguments);
 }
 
-void inspectorConsoleArguments(JSC::JSGlobalObject& global,JSC::MessageType type,JSC::MessageLevel level,WTF::Ref<Inspector::ScriptArguments>&& arguments) {
-    if(!inspectorHasConsoleListeners(global)) return;
-    Inspector::ConsoleMessage message(JSC::MessageSource::ConsoleAPI,type,level,""_s,WTF::move(arguments),&global);
-    inspectorConsoleMessage(message);
+void inspectorConsoleArguments(JSC::JSGlobalObject& global,JSC::MessageType,JSC::MessageLevel,WTF::Ref<Inspector::ScriptArguments>&&) {
+    if (!global.inspectorController().developerExtrasEnabled()) return;
+    publishConsoleRecord(global, ""_s);
 }
 class HomeInspectorVMConsoleClient final : public JSC::ConsoleClient {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(HomeInspectorVMConsoleClient);
 public:
     explicit HomeInspectorVMConsoleClient(JSC::ConsoleClient* client):delegate(client) { }
     void messageWithTypeAndLevel(JSC::MessageType type,JSC::MessageLevel level,JSC::JSGlobalObject* global,WTF::Ref<Inspector::ScriptArguments>&& arguments) final {
-        inspectorConsoleArguments(*global,type,level,arguments.copyRef());
-        if(auto* client=delegate.get()) client->messageWithTypeAndLevel(type,level,global,WTF::move(arguments));
+        if(auto* client=delegate.get()) client->messageWithTypeAndLevel(type,level,global,arguments.copyRef());
+        inspectorConsoleArguments(*global,type,level,WTF::move(arguments));
     }
     void count(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleCount(*global,label,false); }
     void countReset(JSC::JSGlobalObject* global,const WTF::String& label) final { inspectorConsoleCount(*global,label,true); }
@@ -448,7 +508,7 @@ CheckedPtr<ConsoleClient> JSGlobalObjectInspectorController::consoleClient() con
 
 bool JSGlobalObjectInspectorController::developerExtrasEnabled() const
 {
-    if (Home::inspectorHasConsoleSessions(m_globalObject)) return true;
+    if (Home::isInspectorConsoleRealm(m_globalObject) || Home::inspectorHasConsoleSessions(m_globalObject)) return true;
 #if ENABLE(REMOTE_INSPECTOR)
     if (!RemoteInspector::singleton().enabled())
         return false;

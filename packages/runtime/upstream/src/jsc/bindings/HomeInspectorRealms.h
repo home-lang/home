@@ -10,6 +10,7 @@
 #include <mutex>
 #include "ScriptExecutionContext.h"
 #include <unordered_map>
+#include <vector>
 #include <wtf/text/WTFString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/JSONValues.h>
@@ -17,6 +18,9 @@ namespace Inspector { class ConsoleMessage; }
 namespace Home {
 bool inspectorHasConsoleListeners(JSC::JSGlobalObject&);
 bool inspectorHasConsoleSessions(JSC::JSGlobalObject&);
+bool isInspectorConsoleRealm(JSC::JSGlobalObject&);
+std::vector<WTF::String> inspectorConsoleHistory(JSC::JSGlobalObject&);
+void clearInspectorConsoleHistory(JSC::JSGlobalObject&);
 void inspectorConsoleMessage(Inspector::ConsoleMessage&);
 void inspectorConsoleCount(JSC::JSGlobalObject&, const WTF::String&, bool reset);
 void inspectorConsoleTime(JSC::JSGlobalObject&, const WTF::String&);

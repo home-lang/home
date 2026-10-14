@@ -67,6 +67,7 @@ static bool inspectorHasConsoleFrontends(JSC::JSGlobalObject& global, bool runti
 }
 bool inspectorHasConsoleListeners(JSC::JSGlobalObject& global) { return inspectorHasConsoleFrontends(global, true); }
 bool inspectorHasConsoleSessions(JSC::JSGlobalObject& global) { return inspectorHasConsoleFrontends(global, false); }
+bool isInspectorConsoleRealm(JSC::JSGlobalObject& global) { return inspectorRealms().contains(&global); }
 inline WTF::String inspectorContextCreatedMessage(int id, const WTF::String& name, const WTF::String& origin) {
     auto description = JSON::Object::create();
     description->setInteger("id"_s, id);
@@ -437,12 +438,33 @@ inline bool LocalInspectorChannel::dispatchAdapter(JSON::Object& request) {
         message->setObject("error"_s, WTF::move(error));
         sendMessageToFrontend(message->toJSONString());
     };
+    if (method == "Console.clearMessages"_s || method == "Runtime.discardConsoleEntries"_s) {
+        clearInspectorConsoleHistory(*global);
+        // Clear native buffers in live owned realms, allowing their real roots to retire.
+        for (auto& entry : inspectorRealms()) if (entry.second->owner == global && entry.second->global)
+            clearInspectorConsoleHistory(*entry.second->global.get());
+        respond(JSON::Object::create());
+        return true;
+    }
     if (method == "Runtime.enable"_s) {
         if (!runtimeEnabled) {
             runtimeEnabled = true;
             sendMessageToFrontend(inspectorContextCreatedMessage(executionContext,global->name(),""_s));
             for(auto& entry:inspectorRealms()) if(entry.second->owner==global && entry.second->global)
                 sendMessageToFrontend(inspectorContextCreatedMessage(entry.second->id,entry.second->name,entry.second->origin));
+            auto replay = [&](JSC::JSGlobalObject& source, int realm) {
+                for (auto& message : inspectorConsoleHistory(source)) {
+                    auto parsed = JSON::Value::parseJSON(message); auto event = parsed ? parsed->asObject() : nullptr;
+                    if (!event) continue;
+                    if (auto params = event->getObject("params"_s)) params->setInteger("executionContextId"_s, realm ? realm : executionContext);
+                    if (realm) remapInspectorRealmObjects(*this, &source, realm, *event);
+                    else decorateInspectorObjects(source, *event);
+                    sendMessageToFrontend(event->toJSONString());
+                }
+            };
+            replay(*global, 0);
+            for (auto& entry : inspectorRealms()) if (entry.second->owner == global && entry.second->global)
+                replay(*entry.second->global.get(), entry.second->id);
         }
         return false;
     }
