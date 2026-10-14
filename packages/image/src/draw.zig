@@ -391,8 +391,8 @@ pub fn ellipse(img: *Image, cx: i32, cy: i32, rx: u32, ry: u32, color: Color) vo
     var x: i64 = 0;
     var y: i64 = b;
 
-    var a2 = a * a;
-    var b2 = b * b;
+    const a2 = a * a;
+    const b2 = b * b;
     var err = b2 - (2 * b - 1) * a2;
 
     while (y >= 0) {
@@ -423,8 +423,8 @@ pub fn ellipseFilled(img: *Image, cx: i32, cy: i32, rx: u32, ry: u32, color: Col
     var x: i64 = 0;
     var y: i64 = b;
 
-    var a2 = a * a;
-    var b2 = b * b;
+    const a2 = a * a;
+    const b2 = b * b;
     var err = b2 - (2 * b - 1) * a2;
     var last_y: i64 = y + 1;
 
