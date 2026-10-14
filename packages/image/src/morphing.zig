@@ -100,8 +100,8 @@ pub fn warpImage(allocator: std.mem.Allocator, img: *const Image, mesh: *const W
             };
 
             // Find which mesh cell this point is in
-            const cell_x = @as(f32, @floatFromInt(x)) / @as(f32, @floatFromInt(img.width)) * @as(f32, @floatFromInt(mesh.grid_width));
-            const cell_y = @as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(img.height)) * @as(f32, @floatFromInt(mesh.grid_height));
+            const cell_x = target_point.x / @as(f32, @floatFromInt(img.width)) * @as(f32, @floatFromInt(mesh.grid_width));
+            const cell_y = target_point.y / @as(f32, @floatFromInt(img.height)) * @as(f32, @floatFromInt(mesh.grid_height));
 
             const grid_x = @as(u32, @intFromFloat(@floor(cell_x)));
             const grid_y = @as(u32, @intFromFloat(@floor(cell_y)));

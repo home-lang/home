@@ -360,7 +360,7 @@ pub fn hslToRgb(hsl: HSL) Color {
 
 fn hueToRgb(p: f32, q: f32, t_in: f32) f32 {
     // Wrap t into [0, 1) using @mod for robustness with extreme inputs.
-    var t = t_in - @floor(t_in);
+    const t = t_in - @floor(t_in);
 
     if (t < 1.0 / 6.0) return p + (q - p) * 6 * t;
     if (t < 0.5) return q;

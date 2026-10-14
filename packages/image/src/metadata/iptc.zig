@@ -238,7 +238,7 @@ pub const IptcData = struct {
     pub fn init(allocator: std.mem.Allocator) IptcData {
         return IptcData{
             .allocator = allocator,
-            .datasets = std.ArrayList(Dataset).init(allocator),
+            .datasets = .empty,
         };
     }
 
@@ -291,7 +291,7 @@ pub const IptcData = struct {
         for (self.datasets.items) |*ds| {
             ds.deinit(self.allocator);
         }
-        self.datasets.deinit();
+        self.datasets.deinit(self.allocator);
     }
 
     pub fn getDataset(self: *const IptcData, record: Record, tag: Tag) ?[]const u8 {
@@ -304,16 +304,16 @@ pub const IptcData = struct {
     }
 
     pub fn getAllDatasets(self: *const IptcData, record: Record, tag: Tag, allocator: std.mem.Allocator) ![][]const u8 {
-        var list = std.ArrayList([]const u8).init(allocator);
-        defer list.deinit();
+        var list: std.ArrayList([]const u8) = .empty;
+        defer list.deinit(allocator);
 
         for (self.datasets.items) |ds| {
             if (ds.record == record and ds.tag == tag) {
-                try list.append(ds.value);
+                try list.append(allocator, ds.value);
             }
         }
 
-        return list.toOwnedSlice();
+        return list.toOwnedSlice(allocator);
     }
 
     /// Format creation date/time as ISO 8601
@@ -406,14 +406,17 @@ pub const IptcParser = struct {
         var iptc = IptcData.init(self.allocator);
         errdefer iptc.deinit();
 
-        var keywords_list = std.ArrayList([]const u8).init(self.allocator);
-        defer keywords_list.deinit();
+        var keywords_list: std.ArrayList([]const u8) = .empty;
+        defer keywords_list.deinit(self.allocator);
+        errdefer for (keywords_list.items) |value| self.allocator.free(value);
 
-        var supp_cat_list = std.ArrayList([]const u8).init(self.allocator);
-        defer supp_cat_list.deinit();
+        var supp_cat_list: std.ArrayList([]const u8) = .empty;
+        defer supp_cat_list.deinit(self.allocator);
+        errdefer for (supp_cat_list.items) |value| self.allocator.free(value);
 
-        var contact_list = std.ArrayList([]const u8).init(self.allocator);
-        defer contact_list.deinit();
+        var contact_list: std.ArrayList([]const u8) = .empty;
+        defer contact_list.deinit(self.allocator);
+        errdefer for (contact_list.items) |value| self.allocator.free(value);
 
         while (self.pos + 5 <= self.data.len) {
             // Each dataset starts with 0x1C
@@ -434,7 +437,7 @@ pub const IptcParser = struct {
 
             if ((len_byte1 & 0x80) != 0) {
                 // Extended dataset
-                const ext_len = ((len_byte1 & 0x7F) << 8) | len_byte2;
+                const ext_len = (@as(usize, len_byte1 & 0x7F) << 8) | len_byte2;
                 if (self.pos + 5 + ext_len > self.data.len) break;
 
                 // Read extended length
@@ -458,7 +461,10 @@ pub const IptcParser = struct {
                 .tag = tag,
                 .value = try self.allocator.dupe(u8, value),
             };
-            try iptc.datasets.append(ds);
+            iptc.datasets.append(self.allocator, ds) catch |err| {
+                self.allocator.free(ds.value);
+                return err;
+            };
 
             // Process known tags (Record 2 - Application)
             if (record == .application) {
@@ -471,9 +477,9 @@ pub const IptcParser = struct {
                     .credit => iptc.credit = try self.allocator.dupe(u8, value),
                     .source => iptc.source = try self.allocator.dupe(u8, value),
                     .copyright_notice => iptc.copyright = try self.allocator.dupe(u8, value),
-                    .keywords => try keywords_list.append(try self.allocator.dupe(u8, value)),
+                    .keywords => try appendOwnedValue(self.allocator, &keywords_list, value),
                     .category => iptc.category = try self.allocator.dupe(u8, value),
-                    .supplemental_category => try supp_cat_list.append(try self.allocator.dupe(u8, value)),
+                    .supplemental_category => try appendOwnedValue(self.allocator, &supp_cat_list, value),
                     .city => iptc.city = try self.allocator.dupe(u8, value),
                     .sub_location => iptc.sub_location = try self.allocator.dupe(u8, value),
                     .province_state => iptc.province_state = try self.allocator.dupe(u8, value),
@@ -497,7 +503,7 @@ pub const IptcParser = struct {
                     .originating_program => iptc.originating_program = try self.allocator.dupe(u8, value),
                     .program_version => iptc.program_version = try self.allocator.dupe(u8, value),
                     .writer_editor => iptc.writer_editor = try self.allocator.dupe(u8, value),
-                    .contact => try contact_list.append(try self.allocator.dupe(u8, value)),
+                    .contact => try appendOwnedValue(self.allocator, &contact_list, value),
                     else => {},
                 }
             }
@@ -507,18 +513,23 @@ pub const IptcParser = struct {
 
         // Convert lists to slices
         if (keywords_list.items.len > 0) {
-            iptc.keywords = try keywords_list.toOwnedSlice();
+            iptc.keywords = try keywords_list.toOwnedSlice(self.allocator);
         }
         if (supp_cat_list.items.len > 0) {
-            iptc.supplemental_categories = try supp_cat_list.toOwnedSlice();
+            iptc.supplemental_categories = try supp_cat_list.toOwnedSlice(self.allocator);
         }
         if (contact_list.items.len > 0) {
-            iptc.contact = try contact_list.toOwnedSlice();
+            iptc.contact = try contact_list.toOwnedSlice(self.allocator);
         }
 
         return iptc;
     }
 };
+
+fn appendOwnedValue(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8), value: []const u8) !void {
+    try list.ensureUnusedCapacity(allocator, 1);
+    list.appendAssumeCapacity(try allocator.dupe(u8, value));
+}
 
 // ============================================================================
 // IPTC Writer
@@ -531,12 +542,12 @@ pub const IptcWriter = struct {
     pub fn init(allocator: std.mem.Allocator) IptcWriter {
         return IptcWriter{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
         };
     }
 
     pub fn deinit(self: *IptcWriter) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn write(self: *IptcWriter, iptc: *const IptcData) ![]const u8 {
@@ -607,29 +618,29 @@ pub const IptcWriter = struct {
     }
 
     fn writeDataset(self: *IptcWriter, record: Record, tag: Tag, value: []const u8) !void {
-        try self.buffer.append(0x1C); // Tag marker
-        try self.buffer.append(@intFromEnum(record));
-        try self.buffer.append(@intFromEnum(tag));
+        try self.buffer.append(self.allocator, 0x1C); // Tag marker
+        try self.buffer.append(self.allocator, @intFromEnum(record));
+        try self.buffer.append(self.allocator, @intFromEnum(tag));
 
         // Write length
         if (value.len > 32767) {
             // Extended dataset (not common, but supported)
             const len_bytes: u16 = 4;
-            try self.buffer.append(0x80 | @as(u8, @intCast(len_bytes >> 8)));
-            try self.buffer.append(@truncate(len_bytes));
+            try self.buffer.append(self.allocator, 0x80 | @as(u8, @intCast(len_bytes >> 8)));
+            try self.buffer.append(self.allocator, @truncate(len_bytes));
 
             // Write 4-byte length
-            try self.buffer.append(@intCast((value.len >> 24) & 0xFF));
-            try self.buffer.append(@intCast((value.len >> 16) & 0xFF));
-            try self.buffer.append(@intCast((value.len >> 8) & 0xFF));
-            try self.buffer.append(@intCast(value.len & 0xFF));
+            try self.buffer.append(self.allocator, @intCast((value.len >> 24) & 0xFF));
+            try self.buffer.append(self.allocator, @intCast((value.len >> 16) & 0xFF));
+            try self.buffer.append(self.allocator, @intCast((value.len >> 8) & 0xFF));
+            try self.buffer.append(self.allocator, @intCast(value.len & 0xFF));
         } else {
             // Standard dataset
-            try self.buffer.append(@intCast((value.len >> 8) & 0xFF));
-            try self.buffer.append(@intCast(value.len & 0xFF));
+            try self.buffer.append(self.allocator, @intCast((value.len >> 8) & 0xFF));
+            try self.buffer.append(self.allocator, @intCast(value.len & 0xFF));
         }
 
-        try self.buffer.appendSlice(value);
+        try self.buffer.appendSlice(self.allocator, value);
     }
 };
 
@@ -646,7 +657,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !IptcData {
 /// Find IPTC in JPEG APP13 segment
 pub fn findInJpeg(data: []const u8) ?[]const u8 {
     const PHOTOSHOP_HEADER = "Photoshop 3.0";
-    const IPTC_RESOURCE_ID = [_]u8{ 0x04, 0x04 }; // 8BIM resource 0x0404
+    const IPTC_RESOURCE_ID: u16 = 0x0404;
 
     var i: usize = 2; // Skip SOI
     while (i + 4 < data.len) {
@@ -671,7 +682,7 @@ pub fn findInJpeg(data: []const u8) ?[]const u8 {
                 while (j + 12 < segment_data.len) {
                     if (std.mem.eql(u8, segment_data[j .. j + 4], "8BIM")) {
                         const resource_id = (@as(u16, segment_data[j + 4]) << 8) | segment_data[j + 5];
-                        if (resource_id == 0x0404) {
+                        if (resource_id == IPTC_RESOURCE_ID) {
                             // Skip pascal string name
                             const name_len = segment_data[j + 6];
                             const padded_name_len = if ((name_len + 1) % 2 == 0) name_len + 1 else name_len + 2;
@@ -742,6 +753,27 @@ pub fn containsIptc(data: []const u8) bool {
 // Tests
 // ============================================================================
 
+fn parseForAllocationFailureTest(allocator: std.mem.Allocator) !void {
+    const data = [_]u8{ 0x1C, 0x02, 0x05, 0x00, 0x05, 'T', 'i', 't', 'l', 'e' } ++
+        [_]u8{ 0x1C, 0x02, 0x19, 0x00, 0x03, 'o', 'n', 'e' } ++
+        [_]u8{ 0x1C, 0x02, 0x19, 0x00, 0x03, 't', 'w', 'o' };
+    var iptc = try parse(allocator, &data);
+    defer iptc.deinit();
+
+    try std.testing.expectEqualStrings("Title", iptc.title.?);
+    try std.testing.expectEqual(@as(usize, 2), iptc.keywords.?.len);
+}
+
+fn writeForAllocationFailureTest(allocator: std.mem.Allocator) !void {
+    var iptc = IptcData.init(allocator);
+    defer iptc.deinit();
+    iptc.title = try allocator.dupe(u8, "Title");
+
+    var writer = IptcWriter.init(allocator);
+    defer writer.deinit();
+    _ = try writer.write(&iptc);
+}
+
 test "IPTC tag names" {
     try std.testing.expectEqualStrings("Title", Tag.object_name.name());
     try std.testing.expectEqualStrings("Headline", Tag.headline.name());
@@ -774,4 +806,9 @@ test "IPTC contains detection" {
     const sample_iptc = [_]u8{ 0x1C, 0x02, 0x05, 0x00, 0x04, 'T', 'e', 's', 't' };
     try std.testing.expect(containsIptc(&sample_iptc));
     try std.testing.expect(!containsIptc("not iptc data"));
+}
+
+test "IPTC parser and writer release partial allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseForAllocationFailureTest, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, writeForAllocationFailureTest, .{});
 }
