@@ -23,15 +23,15 @@ pub const Filter = struct {
     input_format: ?FrameFormat = null,
     output_format: ?FrameFormat = null,
 
-    // Processing function pointers
-    processFn: ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!*Frame = null,
+    // Processors mutate the caller-owned frame in place. Filters that need new
+    // storage replace the frame's buffers but never the frame pointer itself.
+    processFn: ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!void = null,
     flushFn: ?*const fn (*Filter, std.mem.Allocator) MediaError!?*Frame = null,
 
-    pub fn process(self: *Filter, input: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+    pub fn process(self: *Filter, input: *Frame, allocator: std.mem.Allocator) MediaError!void {
         if (self.processFn) |func| {
             return func(self, input, allocator);
         }
-        return input; // Pass through if no processing function
     }
 
     pub fn flush(self: *Filter, allocator: std.mem.Allocator) MediaError!?*Frame {
@@ -63,14 +63,14 @@ pub const FilterGraph = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .video_filters = std.ArrayList(Filter).init(allocator),
-            .audio_filters = std.ArrayList(Filter).init(allocator),
+            .video_filters = .empty,
+            .audio_filters = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.video_filters.deinit();
-        self.audio_filters.deinit();
+        self.video_filters.deinit(self.allocator);
+        self.audio_filters.deinit(self.allocator);
     }
 
     /// Add a video filter to the chain
@@ -81,7 +81,7 @@ pub const FilterGraph = struct {
             .config = config,
             .processFn = getVideoProcessor(config),
         };
-        try self.video_filters.append(filter);
+        try self.video_filters.append(self.allocator, filter);
     }
 
     /// Add an audio filter to the chain
@@ -92,7 +92,7 @@ pub const FilterGraph = struct {
             .config = config,
             .processFn = getAudioProcessor(config),
         };
-        try self.audio_filters.append(filter);
+        try self.audio_filters.append(self.allocator, filter);
     }
 
     /// Configure the filter graph based on input format
@@ -119,22 +119,20 @@ pub const FilterGraph = struct {
     pub fn processVideoFrame(self: *Self, frame: *Frame) !*Frame {
         if (!self.is_configured) return MediaError.PipelineNotReady;
 
-        var current = frame;
         for (self.video_filters.items) |*filter| {
-            current = try filter.process(current, self.allocator);
+            try filter.process(frame, self.allocator);
         }
-        return current;
+        return frame;
     }
 
     /// Process an audio frame through all audio filters
     pub fn processAudioFrame(self: *Self, frame: *Frame) !*Frame {
         if (!self.is_configured) return MediaError.PipelineNotReady;
 
-        var current = frame;
         for (self.audio_filters.items) |*filter| {
-            current = try filter.process(current, self.allocator);
+            try filter.process(frame, self.allocator);
         }
-        return current;
+        return frame;
     }
 
     /// Flush all filters (for end of stream)
@@ -212,7 +210,7 @@ fn getOutputFormat(config: FilterConfig, input_format: ?FrameFormat) ?FrameForma
 // Video Filter Processors
 // ============================================================================
 
-fn getVideoProcessor(config: FilterConfig) ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!*Frame {
+fn getVideoProcessor(config: FilterConfig) ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!void {
     return switch (config) {
         .scale => processScale,
         .crop => processCrop,
@@ -229,10 +227,11 @@ fn getVideoProcessor(config: FilterConfig) ?*const fn (*Filter, *Frame, std.mem.
     };
 }
 
-fn processScale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processScale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     const config = filter.config.scale;
     const new_width = config.width orelse frame.width;
     const new_height = config.height orelse frame.height;
+    if (new_width == 0 or new_height == 0) return MediaError.InvalidArgument;
 
     // Create output frame with new dimensions
     var output = try Frame.initVideo(allocator, new_width, new_height, frame.format);
@@ -259,14 +258,18 @@ fn processScale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) Me
         }
     }
 
-    return &output;
+    frame.deinit();
+    frame.* = output;
 }
 
-fn processCrop(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processCrop(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     const config = filter.config.crop;
 
     // Validate crop region
-    if (config.x + config.width > frame.width or config.y + config.height > frame.height) {
+    if (config.width == 0 or config.height == 0 or
+        config.x > frame.width or config.width > frame.width - config.x or
+        config.y > frame.height or config.height > frame.height - config.y)
+    {
         return MediaError.InvalidArgument;
     }
 
@@ -285,19 +288,21 @@ fn processCrop(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) Med
         }
     }
 
-    return &output;
+    frame.deinit();
+    frame.* = output;
 }
 
-fn processRotate(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processRotate(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
+    _ = frame;
     _ = allocator;
     // Rotation implementation
-    return frame; // Placeholder
 }
 
-fn processFlipH(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processFlipH(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
     _ = allocator;
+    if (frame.width < 2) return;
 
     // Flip horizontally in place
     for (0..frame.height) |y| {
@@ -318,13 +323,11 @@ fn processFlipH(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) Me
             right -= 1;
         }
     }
-
-    return frame;
 }
 
-fn processFlipV(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processFlipV(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
-    _ = allocator;
+    if (frame.height < 2) return;
 
     // Flip vertically by swapping rows
     var top: u32 = 0;
@@ -346,25 +349,23 @@ fn processFlipV(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) Me
         top += 1;
         bottom -= 1;
     }
-
-    return frame;
 }
 
-fn processBlur(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processBlur(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
+    _ = frame;
     _ = allocator;
     // Gaussian blur implementation using convolution
-    return frame; // Placeholder
 }
 
-fn processSharpen(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processSharpen(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
+    _ = frame;
     _ = allocator;
     // Sharpening using unsharp mask
-    return frame; // Placeholder
 }
 
-fn processGrayscale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processGrayscale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = filter;
     _ = allocator;
 
@@ -388,11 +389,9 @@ fn processGrayscale(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator
             // Alpha channel unchanged
         }
     }
-
-    return frame;
 }
 
-fn processBrightness(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processBrightness(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = allocator;
     const factor = filter.config.brightness;
     const adjustment: i16 = @intFromFloat(factor * 255.0);
@@ -407,11 +406,9 @@ fn processBrightness(filter: *Filter, frame: *Frame, allocator: std.mem.Allocato
             }
         }
     }
-
-    return frame;
 }
 
-fn processContrast(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processContrast(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = allocator;
     const factor = filter.config.contrast;
 
@@ -426,11 +423,9 @@ fn processContrast(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator)
             }
         }
     }
-
-    return frame;
 }
 
-fn processSaturation(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processSaturation(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = allocator;
     const factor = filter.config.saturation;
 
@@ -455,22 +450,20 @@ fn processSaturation(filter: *Filter, frame: *Frame, allocator: std.mem.Allocato
             frame.data[0][idx + 2] = @intFromFloat(std.math.clamp(new_b, 0.0, 255.0));
         }
     }
-
-    return frame;
 }
 
 // ============================================================================
 // Audio Filter Processors
 // ============================================================================
 
-fn getAudioProcessor(config: FilterConfig) ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!*Frame {
+fn getAudioProcessor(config: FilterConfig) ?*const fn (*Filter, *Frame, std.mem.Allocator) MediaError!void {
     return switch (config) {
         .volume => processVolume,
         else => null,
     };
 }
 
-fn processVolume(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!*Frame {
+fn processVolume(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) MediaError!void {
     _ = allocator;
     const factor = filter.config.volume;
 
@@ -485,8 +478,6 @@ fn processVolume(filter: *Filter, frame: *Frame, allocator: std.mem.Allocator) M
             samples[i] = std.math.clamp(samples[i], -1.0, 1.0);
         }
     }
-
-    return frame;
 }
 
 // ============================================================================
@@ -508,6 +499,8 @@ test "FilterGraph add filters" {
 
     try graph.addVideoFilter(.{ .scale = .{ .width = 1920, .height = 1080 } });
     try graph.addVideoFilter(.{ .grayscale = {} });
+    try graph.addAudioFilter(.{ .volume = 0.5 });
 
     try std.testing.expectEqual(@as(usize, 2), graph.video_filters.items.len);
+    try std.testing.expectEqual(@as(usize, 1), graph.audio_filters.items.len);
 }
