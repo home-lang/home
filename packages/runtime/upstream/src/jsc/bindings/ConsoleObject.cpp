@@ -3,6 +3,7 @@
 #include "JavaScriptCore/ArgList.h"
 #include "headers.h"
 #include "ConsoleObject.h"
+#include "HomeInspectorRealms.h"
 
 #include <JavaScriptCore/ConsoleClient.h>
 #include <JavaScriptCore/ConsoleMessage.h>
@@ -34,7 +35,7 @@ void ConsoleObject::messageWithTypeAndLevel(MessageType type, MessageLevel level
     JSC::JSGlobalObject* globalObject,
     Ref<ScriptArguments>&& arguments)
 {
-    if (globalObject->inspectable()) {
+    if (globalObject->inspectable() || Home::inspectorHasConsoleListeners(*globalObject)) {
         if (auto client = globalObject->inspectorController().consoleClient()) {
             client->messageWithTypeAndLevel(type, level, globalObject, arguments.copyRef());
         }
@@ -55,6 +56,7 @@ void ConsoleObject::messageWithTypeAndLevel(MessageType type, MessageLevel level
         return;
     }
 
+    Home::inspectorConsoleArguments(*globalObject,type,level,arguments.copyRef());
     Bun__ConsoleObject__messageWithTypeAndLevel(this->m_client, static_cast<uint32_t>(type), static_cast<uint32_t>(level), globalObject, jsArgs, count);
 }
 void ConsoleObject::count(JSGlobalObject* globalObject, const String& label)
@@ -112,7 +114,7 @@ void ConsoleObject::warnUnimplemented(const String& method) {}
 
 void ConsoleObject::profile(JSC::JSGlobalObject* globalObject, const String& title)
 {
-    if (globalObject->inspectable()) {
+    if (globalObject->inspectable() || Home::inspectorHasConsoleListeners(*globalObject)) {
         if (auto client = globalObject->inspectorController().consoleClient()) {
             client->profile(globalObject, title);
         }
@@ -121,7 +123,7 @@ void ConsoleObject::profile(JSC::JSGlobalObject* globalObject, const String& tit
 
 void ConsoleObject::profileEnd(JSC::JSGlobalObject* globalObject, const String& title)
 {
-    if (globalObject->inspectable()) {
+    if (globalObject->inspectable() || Home::inspectorHasConsoleListeners(*globalObject)) {
         if (auto client = globalObject->inspectorController().consoleClient()) {
             client->profileEnd(globalObject, title);
         }

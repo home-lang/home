@@ -55,6 +55,16 @@ inline auto& localInspectorChannels() {
     static auto* channels = new std::unordered_map<JSC::JSGlobalObject*, std::vector<std::shared_ptr<LocalInspectorChannel>>>;
     return *channels;
 }
+bool inspectorHasConsoleListeners(JSC::JSGlobalObject& global) {
+    auto* owner=&global;
+    auto realm=inspectorRealms().find(&global);
+    if(realm!=inspectorRealms().end()) owner=realm->second->owner;
+    std::lock_guard lock(localInspectorLock());
+    auto found=localInspectorChannels().find(owner);
+    if(found==localInspectorChannels().end()) return false;
+    for(auto& channel:found->second) if(channel->connected && channel->runtimeEnabled) return true;
+    return false;
+}
 inline WTF::String inspectorContextCreatedMessage(int id, const WTF::String& name, const WTF::String& origin) {
     auto description = JSON::Object::create();
     description->setInteger("id"_s, id);
@@ -123,6 +133,20 @@ template<typename Visitor> void LocalInspectorHandle::visitChildrenImpl(JSC::JSC
     visitor.append(object->callback);
 }
 DEFINE_VISIT_CHILDREN(LocalInspectorHandle);
+inline void remapInspectorRealmObjects(LocalInspectorChannel& channel,JSC::JSGlobalObject* global,int realm,JSON::Value& value) {
+        if(auto object=value.asObject()) {
+            auto type=object->getString("type"_s);
+            bool remote=type=="object"_s || type=="function"_s;
+            auto native=object->getString("objectId"_s);
+            if(remote && !native.isEmpty()) {
+                if(global && inspectorObjectIsPromise(*global,native)) object->setString("subtype"_s,"promise"_s);
+                auto exposed=makeString("home-realm:"_s,realm,":"_s,native);
+                channel.realmObjects.set(exposed,realm);channel.nativeRealmObjects.set(exposed,native);
+                object->setString("objectId"_s,exposed);
+            }
+            for(auto& entry:*object) if(!remote || entry.key!="value"_s) remapInspectorRealmObjects(channel,global,realm,entry.value.get());
+        } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapInspectorRealmObjects(channel,global,realm,array->get(i).get());
+    }
 class InspectorRealmForwarder final : public Inspector::FrontendChannel {
 public:
     LocalInspectorChannel& channel;
@@ -139,20 +163,8 @@ public:
             channel.sendMessageToFrontend(object->toJSONString());
         }
     }
-    void remapObjects(JSON::Value& value) {
-        if(auto object=value.asObject()) {
-            auto type=object->getString("type"_s);
-            bool remote=type=="object"_s || type=="function"_s;
-            auto native=object->getString("objectId"_s);
-            if(remote && !native.isEmpty()) {
-                if(auto* value=global.get()) if(inspectorObjectIsPromise(*value,native)) object->setString("subtype"_s,"promise"_s);
-                auto exposed=makeString("home-realm:"_s,realm,":"_s,native);
-                channel.realmObjects.set(exposed,realm);channel.nativeRealmObjects.set(exposed,native);
-                object->setString("objectId"_s,exposed);
-            }
-            for(auto& entry:*object) if(!remote || entry.key!="value"_s) remapObjects(entry.value.get());
-        } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) remapObjects(array->get(i).get());
-    }
+    void remapObjects(JSON::Value& value) { remapInspectorRealmObjects(channel,global.get(),realm,value); }
+
 };
 inline bool unwrapInspectorObjects(LocalInspectorChannel& channel,JSON::Value& value,int target,bool callArgument=false) {
     if(auto object=value.asObject()) {
@@ -251,6 +263,25 @@ inline void decorateInspectorObjects(JSC::JSGlobalObject& global,JSON::Value& va
         if(remote && !id.isEmpty() && !id.startsWith("home-realm:"_s) && inspectorObjectIsPromise(global,id)) object->setString("subtype"_s,"promise"_s);
         for(auto& entry:*object) if(!remote || entry.key!="value"_s) decorateInspectorObjects(global,entry.value.get());
     } else if(auto array=value.asArray()) for(size_t i=0;i<array->length();++i) decorateInspectorObjects(global,array->get(i).get());
+}
+void deliverInspectorConsoleMessage(JSC::JSGlobalObject& global,const WTF::String& message) {
+    auto* owner=&global;int realm=0;
+    auto record=inspectorRealms().find(&global);
+    if(record!=inspectorRealms().end()) { owner=record->second->owner;realm=record->second->id; }
+    std::vector<std::shared_ptr<LocalInspectorChannel>> channels;
+    { std::lock_guard lock(localInspectorLock()); auto found=localInspectorChannels().find(owner);if(found!=localInspectorChannels().end()) channels=found->second; }
+    for(auto& channel:channels) {
+        if(!channel->connected || !channel->runtimeEnabled) continue;
+        auto parsed=JSON::Value::parseJSON(message);auto event=parsed?parsed->asObject():nullptr;
+        if(!event) continue;
+        if(auto params=event->getObject("params"_s)) params->setInteger("executionContextId"_s,realm?realm:channel->executionContext);
+        if(realm) remapInspectorRealmObjects(*channel,&global,realm,*event);
+        else decorateInspectorObjects(global,*event);
+        channel->sendMessageToFrontend(event->toJSONString());
+        // Console callbacks run on the active VM thread, outside GC. Deliver
+        // to every enabled local frontend before the console call returns.
+        channel->drain();
+    }
 }
 inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& message) {
     if (!connected) return;
