@@ -15,76 +15,70 @@ pub const LSBOptions = struct {
 
 /// Encodes data into an image using LSB steganography
 pub fn encodeLSB(allocator: std.mem.Allocator, img: *const Image, data: []const u8, options: LSBOptions) !Image {
-    const capacity = calculateCapacity(img, options);
-    if (data.len * 8 > capacity) {
-        return error.InsufficientCapacity;
-    }
+    try validateLSBOptions(img, options);
+    if (data.len > std.math.maxInt(u32)) return error.DataTooLarge;
+    const carrier_bits = try calculateCarrierBits(img, options);
+    if (carrier_bits < 32 or data.len > (carrier_bits - 32) / 8) return error.InsufficientCapacity;
 
     var result = try Image.init(allocator, img.width, img.height, img.format);
+    errdefer result.deinit();
 
     // Copy original image
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            result.setPixel(@intCast(x), @intCast(y), img.getPixel(@intCast(x), @intCast(y)));
+            result.setPixel(
+                @intCast(x),
+                @intCast(y),
+                img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat,
+            );
         }
     }
 
     // Prepare data with length header
-    var data_with_header = std.ArrayList(u8).init(allocator);
-    defer data_with_header.deinit();
+    const message_len = std.math.add(usize, 4, data.len) catch return error.DataTooLarge;
+    const message = try allocator.alloc(u8, message_len);
+    defer allocator.free(message);
 
     // Add 4-byte length header
-    const len = @as(u32, @intCast(data.len));
-    try data_with_header.append(@intCast((len >> 24) & 0xFF));
-    try data_with_header.append(@intCast((len >> 16) & 0xFF));
-    try data_with_header.append(@intCast((len >> 8) & 0xFF));
-    try data_with_header.append(@intCast(len & 0xFF));
-    try data_with_header.appendSlice(data);
+    std.mem.writeInt(u32, message[0..4], @intCast(data.len), .big);
+    @memcpy(message[4..], data);
 
     // Optional simple XOR encryption
     if (options.encryption) |key| {
-        for (data_with_header.items[4..], 0..) |*byte, i| {
+        for (message[4..], 0..) |*byte, i| {
             byte.* ^= key[i % key.len];
         }
     }
 
     // Encode data into LSBs
     var bit_index: usize = 0;
-    const total_bits = data_with_header.items.len * 8;
+    const total_bits = std.math.mul(usize, message.len, 8) catch return error.DataTooLarge;
     const mask = (@as(u8, 1) << options.bits_per_channel) - 1;
 
     outer: for (0..result.height) |y| {
         for (0..result.width) |x| {
             if (bit_index >= total_bits) break :outer;
 
-            var pixel = result.getPixel(@intCast(x), @intCast(y));
+            var pixel = result.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat;
 
             // Encode in R channel
             if (bit_index < total_bits) {
-                const bits = extractBits(data_with_header.items, bit_index, options.bits_per_channel);
-                pixel.r = (pixel.r & ~mask) | bits;
-                bit_index += options.bits_per_channel;
+                embedChannel(&pixel.r, message, &bit_index, options.bits_per_channel, mask);
             }
 
             // Encode in G channel
             if (bit_index < total_bits) {
-                const bits = extractBits(data_with_header.items, bit_index, options.bits_per_channel);
-                pixel.g = (pixel.g & ~mask) | bits;
-                bit_index += options.bits_per_channel;
+                embedChannel(&pixel.g, message, &bit_index, options.bits_per_channel, mask);
             }
 
             // Encode in B channel
             if (bit_index < total_bits) {
-                const bits = extractBits(data_with_header.items, bit_index, options.bits_per_channel);
-                pixel.b = (pixel.b & ~mask) | bits;
-                bit_index += options.bits_per_channel;
+                embedChannel(&pixel.b, message, &bit_index, options.bits_per_channel, mask);
             }
 
             // Encode in A channel if enabled
             if (options.use_alpha and bit_index < total_bits) {
-                const bits = extractBits(data_with_header.items, bit_index, options.bits_per_channel);
-                pixel.a = (pixel.a & ~mask) | bits;
-                bit_index += options.bits_per_channel;
+                embedChannel(&pixel.a, message, &bit_index, options.bits_per_channel, mask);
             }
 
             result.setPixel(@intCast(x), @intCast(y), pixel);
@@ -96,171 +90,19 @@ pub fn encodeLSB(allocator: std.mem.Allocator, img: *const Image, data: []const 
 
 /// Decodes data from an image using LSB steganography
 pub fn decodeLSB(allocator: std.mem.Allocator, img: *const Image, options: LSBOptions) ![]u8 {
-    // First, extract the length header (4 bytes)
-    var header_bits = std.ArrayList(u8).init(allocator);
-    defer header_bits.deinit();
+    try validateLSBOptions(img, options);
 
-    var bit_buffer: u8 = 0;
-    var bits_in_buffer: u3 = 0;
-    var bytes_extracted: usize = 0;
-    const mask = (@as(u8, 1) << options.bits_per_channel) - 1;
-
-    // Extract header (4 bytes = 32 bits)
-    outer_header: for (0..img.height) |y| {
-        for (0..img.width) |x| {
-            if (bytes_extracted >= 4) break :outer_header;
-
-            const pixel = img.getPixel(@intCast(x), @intCast(y));
-
-            // Extract from R
-            const r_bits = pixel.r & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | r_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                try header_bits.append(bit_buffer);
-                bytes_extracted += 1;
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-                if (bytes_extracted >= 4) break :outer_header;
-            }
-
-            // Extract from G
-            const g_bits = pixel.g & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | g_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                try header_bits.append(bit_buffer);
-                bytes_extracted += 1;
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-                if (bytes_extracted >= 4) break :outer_header;
-            }
-
-            // Extract from B
-            const b_bits = pixel.b & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | b_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                try header_bits.append(bit_buffer);
-                bytes_extracted += 1;
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-                if (bytes_extracted >= 4) break :outer_header;
-            }
-
-            // Extract from A if enabled
-            if (options.use_alpha) {
-                const a_bits = pixel.a & mask;
-                bit_buffer = (bit_buffer << options.bits_per_channel) | a_bits;
-                bits_in_buffer += options.bits_per_channel;
-                if (bits_in_buffer >= 8) {
-                    try header_bits.append(bit_buffer);
-                    bytes_extracted += 1;
-                    bit_buffer = 0;
-                    bits_in_buffer = 0;
-                    if (bytes_extracted >= 4) break :outer_header;
-                }
-            }
-        }
-    }
-
-    if (header_bits.items.len < 4) return error.InvalidData;
+    var header: [4]u8 = undefined;
+    try extractBitsInto(img, options, 0, &header);
 
     // Parse length from header
-    const data_len = (@as(u32, header_bits.items[0]) << 24) |
-        (@as(u32, header_bits.items[1]) << 16) |
-        (@as(u32, header_bits.items[2]) << 8) |
-        @as(u32, header_bits.items[3]);
-
-    if (data_len == 0 or data_len > 100_000_000) return error.InvalidLength;
+    const data_len = std.mem.readInt(u32, &header, .big);
+    if (data_len > try calculateCapacity(img, options)) return error.InvalidLength;
 
     // Extract the actual data
-    var result = try allocator.alloc(u8, data_len);
+    const result = try allocator.alloc(u8, data_len);
     errdefer allocator.free(result);
-
-    bit_buffer = 0;
-    bits_in_buffer = 0;
-    bytes_extracted = 0;
-    var skip_header = true;
-    var header_bytes_skipped: usize = 0;
-
-    outer: for (0..img.height) |y| {
-        for (0..img.width) |x| {
-            if (bytes_extracted >= data_len) break :outer;
-
-            const pixel = img.getPixel(@intCast(x), @intCast(y));
-
-            // Process R channel
-            const r_bits = pixel.r & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | r_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                if (skip_header) {
-                    header_bytes_skipped += 1;
-                    if (header_bytes_skipped >= 4) skip_header = false;
-                } else {
-                    result[bytes_extracted] = bit_buffer;
-                    bytes_extracted += 1;
-                    if (bytes_extracted >= data_len) break :outer;
-                }
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-            }
-
-            // Process G channel
-            const g_bits = pixel.g & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | g_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                if (skip_header) {
-                    header_bytes_skipped += 1;
-                    if (header_bytes_skipped >= 4) skip_header = false;
-                } else {
-                    result[bytes_extracted] = bit_buffer;
-                    bytes_extracted += 1;
-                    if (bytes_extracted >= data_len) break :outer;
-                }
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-            }
-
-            // Process B channel
-            const b_bits = pixel.b & mask;
-            bit_buffer = (bit_buffer << options.bits_per_channel) | b_bits;
-            bits_in_buffer += options.bits_per_channel;
-            if (bits_in_buffer >= 8) {
-                if (skip_header) {
-                    header_bytes_skipped += 1;
-                    if (header_bytes_skipped >= 4) skip_header = false;
-                } else {
-                    result[bytes_extracted] = bit_buffer;
-                    bytes_extracted += 1;
-                    if (bytes_extracted >= data_len) break :outer;
-                }
-                bit_buffer = 0;
-                bits_in_buffer = 0;
-            }
-
-            // Process A channel if enabled
-            if (options.use_alpha) {
-                const a_bits = pixel.a & mask;
-                bit_buffer = (bit_buffer << options.bits_per_channel) | a_bits;
-                bits_in_buffer += options.bits_per_channel;
-                if (bits_in_buffer >= 8) {
-                    if (skip_header) {
-                        header_bytes_skipped += 1;
-                        if (header_bytes_skipped >= 4) skip_header = false;
-                    } else {
-                        result[bytes_extracted] = bit_buffer;
-                        bytes_extracted += 1;
-                        if (bytes_extracted >= data_len) break :outer;
-                    }
-                    bit_buffer = 0;
-                    bits_in_buffer = 0;
-                }
-            }
-        }
-    }
+    try extractBitsInto(img, options, 32, result);
 
     // Decrypt if needed
     if (options.encryption) |key| {
@@ -272,25 +114,74 @@ pub fn decodeLSB(allocator: std.mem.Allocator, img: *const Image, options: LSBOp
     return result;
 }
 
-fn calculateCapacity(img: *const Image, options: LSBOptions) usize {
-    const channels: usize = if (options.use_alpha) 4 else 3;
-    const total_pixels = img.width * img.height;
-    const bits_per_pixel = channels * options.bits_per_channel;
-    const total_bits = total_pixels * bits_per_pixel;
-    return total_bits / 8 - 4; // Subtract header size
+fn validateLSBOptions(img: *const Image, options: LSBOptions) !void {
+    if (options.bits_per_channel == 0 or options.bits_per_channel > 4) return error.InvalidBitsPerChannel;
+    if (img.format != .rgb8 and img.format != .rgba8) return error.UnsupportedFormat;
+    if (options.use_alpha and img.format != .rgba8) return error.AlphaChannelUnavailable;
+    if (options.encryption) |key| {
+        if (key.len == 0) return error.InvalidEncryptionKey;
+    }
 }
 
-fn extractBits(data: []const u8, bit_index: usize, num_bits: u3) u8 {
-    const byte_index = bit_index / 8;
-    const bit_offset = @as(u3, @intCast(bit_index % 8));
+fn calculateCapacity(img: *const Image, options: LSBOptions) !usize {
+    const total_bits = try calculateCarrierBits(img, options);
+    return if (total_bits >= 32) (total_bits - 32) / 8 else 0;
+}
 
-    if (byte_index >= data.len) return 0;
+fn calculateCarrierBits(img: *const Image, options: LSBOptions) !usize {
+    const channels: usize = if (options.use_alpha) 4 else 3;
+    const total_pixels = std.math.mul(usize, img.width, img.height) catch return error.InvalidDimensions;
+    const bits_per_pixel = channels * @as(usize, options.bits_per_channel);
+    return std.math.mul(usize, total_pixels, bits_per_pixel) catch return error.InvalidDimensions;
+}
 
-    const byte = data[byte_index];
-    const shift = @as(u3, @intCast(8 - bit_offset - num_bits));
-    const mask = (@as(u8, 1) << num_bits) - 1;
+fn embedChannel(channel: *u8, data: []const u8, bit_index: *usize, bits_per_channel: u3, mask: u8) void {
+    const total_bits = data.len * 8;
+    var group: u8 = 0;
+    var slot: u3 = 0;
+    while (slot < bits_per_channel) : (slot += 1) {
+        group <<= 1;
+        if (bit_index.* < total_bits) {
+            const byte = data[bit_index.* / 8];
+            const shift: u3 = @intCast(7 - bit_index.* % 8);
+            group |= (byte >> shift) & 1;
+            bit_index.* += 1;
+        }
+    }
+    channel.* = (channel.* & ~mask) | group;
+}
 
-    return (byte >> shift) & mask;
+fn extractBitsInto(img: *const Image, options: LSBOptions, skip_bits: usize, output: []u8) !void {
+    @memset(output, 0);
+    const output_bits = std.math.mul(usize, output.len, 8) catch return error.InvalidLength;
+    const required_bits = std.math.add(usize, skip_bits, output_bits) catch return error.InvalidLength;
+    if (output_bits == 0) return;
+
+    var stream_bit: usize = 0;
+    var output_bit: usize = 0;
+    for (0..img.height) |y| {
+        for (0..img.width) |x| {
+            const pixel = img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat;
+            const channels = [_]u8{ pixel.r, pixel.g, pixel.b, pixel.a };
+            const channel_count: usize = if (options.use_alpha) 4 else 3;
+
+            for (channels[0..channel_count]) |channel| {
+                var slot: u3 = 0;
+                while (slot < options.bits_per_channel) : (slot += 1) {
+                    if (stream_bit >= required_bits) return;
+                    if (stream_bit >= skip_bits) {
+                        const channel_shift: u3 = @intCast(options.bits_per_channel - 1 - slot);
+                        const output_shift: u3 = @intCast(7 - output_bit % 8);
+                        output[output_bit / 8] |= ((channel >> channel_shift) & 1) << output_shift;
+                        output_bit += 1;
+                    }
+                    stream_bit += 1;
+                }
+            }
+        }
+    }
+
+    return error.InvalidData;
 }
 
 // ============================================================================
@@ -328,20 +219,21 @@ pub const WatermarkDetectionOptions = struct {
 /// Detects invisible watermarks in an image
 pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options: WatermarkDetectionOptions) !WatermarkResult {
     if (options.block_size < 2) return error.InvalidBlockSize;
+    try validateColorImage(img);
 
-    var locations = std.ArrayList(WatermarkLocation).init(allocator);
-    defer locations.deinit();
+    var locations: std.ArrayList(WatermarkLocation) = .empty;
+    defer locations.deinit(allocator);
 
-    var strength_map = try Image.init(allocator, img.width, img.height, .rgba);
+    var strength_map = try Image.init(allocator, img.width, img.height, .rgba8);
     errdefer strength_map.deinit();
 
     var max_strength: f32 = 0.0;
 
     // Analyze blocks for watermark patterns
     var y: u32 = 0;
-    while (y + options.block_size <= img.height) : (y += options.block_size / 2) {
+    while (y <= img.height and options.block_size <= img.height - y) : (y += options.block_size / 2) {
         var x: u32 = 0;
-        while (x + options.block_size <= img.width) : (x += options.block_size / 2) {
+        while (x <= img.width and options.block_size <= img.width - x) : (x += options.block_size / 2) {
             var strength: f32 = 0.0;
 
             // Spatial domain analysis
@@ -357,7 +249,7 @@ pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options:
             max_strength = @max(max_strength, strength);
 
             if (strength > options.threshold) {
-                try locations.append(WatermarkLocation{
+                try locations.append(allocator, WatermarkLocation{
                     .x = x,
                     .y = y,
                     .width = options.block_size,
@@ -387,10 +279,13 @@ pub fn detectWatermark(allocator: std.mem.Allocator, img: *const Image, options:
     const detected = max_strength > options.threshold * 2.0;
     const confidence = @min(1.0, max_strength / 0.5);
 
+    const owned_locations = try locations.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_locations);
+
     return WatermarkResult{
         .detected = detected,
         .confidence = confidence,
-        .locations = try locations.toOwnedSlice(),
+        .locations = owned_locations,
         .visualization = strength_map,
         .allocator = allocator,
     };
@@ -406,7 +301,7 @@ fn analyzeSpatialWatermark(img: *const Image, x: u32, y: u32, block_size: u32) f
             const px = x + @as(u32, @intCast(dx));
             const py = y + @as(u32, @intCast(dy));
             if (px < img.width and py < img.height) {
-                const pixel = img.getPixel(@intCast(px), @intCast(py));
+                const pixel = img.getPixel(@intCast(px), @intCast(py)) orelse continue;
                 // Extract LSB pattern
                 const lsb_pattern = (pixel.r & 1) << 2 | (pixel.g & 1) << 1 | (pixel.b & 1);
                 bit_counts[lsb_pattern] += 1;
@@ -444,8 +339,8 @@ fn analyzeFrequencyWatermark(img: *const Image, x: u32, y: u32, block_size: u32)
             const py = y + @as(u32, @intCast(dy));
 
             if (px2 < img.width and py < img.height) {
-                const p1 = img.getPixel(@intCast(px1), @intCast(py));
-                const p2 = img.getPixel(@intCast(px2), @intCast(py));
+                const p1 = img.getPixel(@intCast(px1), @intCast(py)) orelse continue;
+                const p2 = img.getPixel(@intCast(px2), @intCast(py)) orelse continue;
 
                 const diff = @as(f32, @floatFromInt(p1.r)) - @as(f32, @floatFromInt(p2.r));
                 const energy = diff * diff;
@@ -467,8 +362,8 @@ fn analyzeFrequencyWatermark(img: *const Image, x: u32, y: u32, block_size: u32)
             const py2 = y + @as(u32, @intCast(dy + 1));
 
             if (px < img.width and py2 < img.height) {
-                const p1 = img.getPixel(@intCast(px), @intCast(py1));
-                const p2 = img.getPixel(@intCast(px), @intCast(py2));
+                const p1 = img.getPixel(@intCast(px), @intCast(py1)) orelse continue;
+                const p2 = img.getPixel(@intCast(px), @intCast(py2)) orelse continue;
 
                 const diff = @as(f32, @floatFromInt(p1.r)) - @as(f32, @floatFromInt(p2.r));
                 const energy = diff * diff;
@@ -504,12 +399,19 @@ pub fn embedPattern(
     pattern: []const u8,
     strength: EmbeddingStrength,
 ) !Image {
+    if (pattern.len == 0) return error.EmptyPattern;
+    try validateColorImage(img);
     var result = try Image.init(allocator, img.width, img.height, img.format);
+    errdefer result.deinit();
 
     // Copy original
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            result.setPixel(@intCast(x), @intCast(y), img.getPixel(@intCast(x), @intCast(y)));
+            result.setPixel(
+                @intCast(x),
+                @intCast(y),
+                img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat,
+            );
         }
     }
 
@@ -525,7 +427,7 @@ pub fn embedPattern(
             const pattern_idx = (x + y * img.width) % pattern.len;
             const pattern_bit = (pattern[pattern_idx] & 1) != 0;
 
-            var pixel = result.getPixel(@intCast(x), @intCast(y));
+            var pixel = result.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat;
 
             if (pattern_bit) {
                 pixel.r = @intFromFloat(@min(255.0, @as(f32, @floatFromInt(pixel.r)) + amplitude));
@@ -542,7 +444,10 @@ pub fn embedPattern(
 
 /// Extracts an embedded pattern from an image
 pub fn extractPattern(allocator: std.mem.Allocator, img: *const Image, pattern_len: usize) ![]u8 {
-    var pattern = try allocator.alloc(u8, pattern_len);
+    if (pattern_len == 0) return error.EmptyPattern;
+    try validateColorImage(img);
+    const pattern = try allocator.alloc(u8, pattern_len);
+    errdefer allocator.free(pattern);
     @memset(pattern, 0);
 
     // Extract pattern from multiple locations and average
@@ -554,7 +459,7 @@ pub fn extractPattern(allocator: std.mem.Allocator, img: *const Image, pattern_l
             for (0..img.width) |x| {
                 const idx = (x + y * img.width) % pattern_len;
                 if (idx == i) {
-                    const pixel = img.getPixel(@intCast(x), @intCast(y));
+                    const pixel = img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat;
                     const brightness = (@as(u32, pixel.r) + @as(u32, pixel.g) + @as(u32, pixel.b)) / 3;
 
                     if (brightness > 128) bit_votes += 1;
@@ -569,4 +474,53 @@ pub fn extractPattern(allocator: std.mem.Allocator, img: *const Image, pattern_l
     }
 
     return pattern;
+}
+
+fn validateColorImage(img: *const Image) !void {
+    switch (img.format) {
+        .grayscale8, .rgb8, .rgba8 => {},
+        else => return error.UnsupportedFormat,
+    }
+}
+
+test "LSB steganography round-trips every supported group width" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 16, 16, .rgba8);
+    defer img.deinit();
+    for (0..img.height) |y| {
+        for (0..img.width) |x| {
+            img.setPixel(@intCast(x), @intCast(y), .{ .r = 120, .g = 121, .b = 122, .a = 200 });
+        }
+    }
+
+    for ([_]u3{ 1, 2, 3, 4 }) |bits_per_channel| {
+        const options = LSBOptions{ .bits_per_channel = bits_per_channel, .encryption = "key" };
+        var encoded = try encodeLSB(allocator, &img, "home", options);
+        defer encoded.deinit();
+        try std.testing.expectEqual(@as(u8, 200), encoded.getPixel(0, 0).?.a);
+
+        const decoded = try decodeLSB(allocator, &encoded, options);
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("home", decoded);
+    }
+
+    var tiny = try Image.init(allocator, 1, 1, .rgba8);
+    defer tiny.deinit();
+    try std.testing.expectError(error.InsufficientCapacity, encodeLSB(allocator, &tiny, "x", .{}));
+    try std.testing.expectError(error.InsufficientCapacity, encodeLSB(allocator, &tiny, "", .{}));
+    try std.testing.expectError(error.InvalidBitsPerChannel, encodeLSB(allocator, &img, "x", .{ .bits_per_channel = 0 }));
+    try std.testing.expectError(error.InvalidEncryptionKey, encodeLSB(allocator, &img, "x", .{ .encryption = "" }));
+}
+
+test "watermark analysis and pattern validation own their results" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 4, 4, .rgba8);
+    defer img.deinit();
+
+    var result = try detectWatermark(allocator, &img, .{ .block_size = 2 });
+    defer result.deinit();
+    try std.testing.expectEqual(img.width, result.visualization.width);
+    try std.testing.expectEqual(img.height, result.visualization.height);
+    try std.testing.expectError(error.EmptyPattern, embedPattern(allocator, &img, "", .weak));
+    try std.testing.expectError(error.EmptyPattern, extractPattern(allocator, &img, 0));
 }

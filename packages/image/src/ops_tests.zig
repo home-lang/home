@@ -7,4 +7,6 @@ test {
     _ = @import("color_blindness.zig");
     _ = @import("compose.zig");
     _ = @import("dither.zig");
+    _ = @import("steganography.zig");
+    _ = @import("vector.zig");
 }
