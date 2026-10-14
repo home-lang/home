@@ -3653,7 +3653,19 @@ const Return = struct {
                 },
                 .buffers => {
                     defer bun.default_allocator.free(this.buffers);
-                    return .fromAny(globalObject, []Buffer, this.buffers);
+                    var consumed: usize = 0;
+                    defer for (this.buffers[consumed..]) |*buffer| buffer.destroy();
+                    var array = try jsc.JSValue.createEmptyArray(globalObject, this.buffers.len);
+                    var array_root = jsc.Strong.create(array, globalObject);
+                    defer array_root.deinit();
+                    for (this.buffers, 0..) |*buffer, i| {
+                        const value = buffer.toNodeBuffer(globalObject);
+                        // The Node Buffer now owns the native allocation.
+                        buffer.allocator = null;
+                        consumed = i + 1;
+                        try array.putIndex(globalObject, @truncate(i), value);
+                    }
+                    return array;
                 },
                 .files => {
                     // automatically freed
