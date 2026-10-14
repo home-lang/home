@@ -416,35 +416,35 @@ fn extractChannel(pixel: u32, mask: u32) u8 {
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     // Encode as uncompressed BGRA
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Magic
-    try output.appendSlice(DDS_MAGIC);
+    try output.appendSlice(allocator, DDS_MAGIC);
 
     // Header
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, DDS_HEADER_SIZE)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_PITCH)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, img.height)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, img.width)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, img.width * 4))); // pitch
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, DDS_HEADER_SIZE)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_PITCH)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, img.height)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, img.width)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, img.width * 4))); // pitch
 
     // Depth, mipmap count, reserved
-    try output.appendNTimes(0, 4 + 4 + 44);
+    try output.appendNTimes(allocator, 0, 4 + 4 + 44);
 
     // Pixel format
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 32))); // size
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, DDPF_RGB | DDPF_ALPHAPIXELS))); // flags
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // fourCC
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 32))); // bit count
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0x00FF0000))); // R mask
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0x0000FF00))); // G mask
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0x000000FF))); // B mask
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0xFF000000))); // A mask
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 32))); // size
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, DDPF_RGB | DDPF_ALPHAPIXELS))); // flags
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // fourCC
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 32))); // bit count
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0x00FF0000))); // R mask
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0x0000FF00))); // G mask
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0x000000FF))); // B mask
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0xFF000000))); // A mask
 
     // Caps
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 0x1000))); // DDSCAPS_TEXTURE
-    try output.appendNTimes(0, 16); // caps2-4, reserved2
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 0x1000))); // DDSCAPS_TEXTURE
+    try output.appendNTimes(allocator, 0, 16); // caps2-4, reserved2
 
     // Pixel data (BGRA)
     var y: u32 = 0;
@@ -452,11 +452,11 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
-            try output.appendSlice(&[_]u8{ c.b, c.g, c.r, c.a });
+            try output.appendSlice(allocator, &[_]u8{ c.b, c.g, c.r, c.a });
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -485,4 +485,20 @@ test "Color interpolation" {
 
     const mid = interpolateColor(white, black, 1, 1);
     try std.testing.expectEqual(@as(u8, 127), mid.r);
+}
+
+test "DDS encoder round trips uncompressed pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }
