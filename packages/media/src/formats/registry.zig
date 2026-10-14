@@ -464,6 +464,11 @@ pub const Registry = struct {
         return true;
     }
 
+    /// Check whether a video codec can be stored in a container format.
+    pub fn isCodecCompatible(format: ContainerFormat, codec: VideoCodec) bool {
+        return isCodecSupported(format, codec, null);
+    }
+
     /// Get all supported container formats
     pub fn getSupportedFormats() []const FormatInfo {
         return &supported_formats;

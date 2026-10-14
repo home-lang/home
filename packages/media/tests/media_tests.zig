@@ -18,20 +18,20 @@ test "MediaType enum values" {
 test "VideoCodec enum completeness" {
     // Ensure all codecs are defined
     const codecs = [_]media.VideoCodec{
-        .h264, .hevc, .vp8, .vp9, .av1, .vvc,
-        .mpeg2, .mpeg4, .mjpeg, .prores, .dnxhd,
-        .theora, .wmv, .copy, .none, .unknown,
+        .h264,  .hevc,  .vp6,     .vp8,    .vp9,   .av1,    .vvc,
+        .mpeg2, .mpeg4, .mjpeg,   .prores, .dnxhd, .theora, .wmv,
+        .copy,  .none,  .unknown,
     };
-    try testing.expectEqual(codecs.len, 16);
+    try testing.expectEqual(codecs.len, 17);
 }
 
 test "AudioCodec enum completeness" {
     const codecs = [_]media.AudioCodec{
-        .aac, .mp3, .opus, .vorbis, .flac, .ac3,
-        .eac3, .dts, .pcm_s16le, .pcm_s24le, .pcm_f32le,
-        .alac, .wma, .copy, .none, .unknown,
+        .aac,  .mp3,  .opus,      .vorbis,    .flac,      .pcm,  .ac3,
+        .eac3, .dts,  .pcm_s16le, .pcm_s24le, .pcm_f32le, .alac, .wma,
+        .copy, .none, .unknown,
     };
-    try testing.expectEqual(codecs.len, 16);
+    try testing.expectEqual(codecs.len, 17);
 }
 
 test "ContainerFormat from extension" {
@@ -63,14 +63,14 @@ test "Timestamp from seconds" {
 
 test "Timestamp from milliseconds" {
     const ts = media.Timestamp.fromMilliseconds(2500);
-    try testing.expectEqual(@as(u64, 2500), ts.toMilliseconds());
+    try testing.expectEqual(@as(i64, 2500), ts.toMilliseconds());
     try testing.expectApproxEqAbs(@as(f64, 2.5), ts.toSeconds(), 0.0001);
 }
 
 test "Timestamp from microseconds" {
     const ts = media.Timestamp.fromMicroseconds(1500000);
-    try testing.expectEqual(@as(u64, 1500000), ts.pts);
-    try testing.expectEqual(@as(u64, 1500), ts.toMilliseconds());
+    try testing.expectEqual(@as(i64, 1500000), ts.us);
+    try testing.expectEqual(@as(i64, 1500), ts.toMilliseconds());
 }
 
 test "Timestamp arithmetic" {
@@ -111,7 +111,7 @@ test "Duration from milliseconds" {
 
 test "Duration zero" {
     const d = media.Duration.zero();
-    try testing.expectEqual(@as(u64, 0), d.microseconds);
+    try testing.expectEqual(@as(u64, 0), d.us);
 }
 
 // ============================================================================
@@ -171,15 +171,17 @@ test "QualityPreset audio settings" {
 // ============================================================================
 
 test "MediaError to ErrorCode" {
-    try testing.expectEqual(media.ErrorCode.ok, media.MediaError.none.toCode());
-    try testing.expectEqual(media.ErrorCode.invalid_input, media.MediaError.InvalidInput.toCode());
-    try testing.expectEqual(media.ErrorCode.unsupported_codec, media.MediaError.UnsupportedCodec.toCode());
+    try testing.expectEqual(media.ErrorCode.ok, media.ErrorCode.fromError(media.MediaError.Ok));
+    try testing.expectEqual(media.ErrorCode.invalid_input, media.ErrorCode.fromError(media.MediaError.InvalidInput));
+    try testing.expectEqual(media.ErrorCode.unsupported_codec, media.ErrorCode.fromError(media.MediaError.UnsupportedCodec));
+    try testing.expectEqual(media.ErrorCode.timeout, media.ErrorCode.fromError(media.MediaError.Timeout));
 }
 
 test "ErrorCode to MediaError" {
-    try testing.expectEqual(media.MediaError.none, media.ErrorCode.ok.toError());
+    try testing.expectEqual(media.MediaError.Ok, media.ErrorCode.ok.toError());
     try testing.expectEqual(media.MediaError.InvalidInput, media.ErrorCode.invalid_input.toError());
     try testing.expectEqual(media.MediaError.OutOfMemory, media.ErrorCode.out_of_memory.toError());
+    try testing.expectEqual(media.MediaError.Timeout, media.ErrorCode.timeout.toError());
 }
 
 test "Error recovery check" {
@@ -301,7 +303,7 @@ test "Pipeline time operations" {
     _ = p.to(70.0);
 
     try testing.expect(p.start_time != null);
-    try testing.expect(p.duration_time != null);
+    try testing.expect(p.duration_limit != null);
     try testing.expect(p.end_time != null);
 }
 
@@ -325,8 +327,8 @@ test "Pipeline no streams" {
     _ = p.noVideo();
     _ = p.noAudio();
 
-    try testing.expect(p.no_video);
-    try testing.expect(p.no_audio);
+    try testing.expect(p.remove_video);
+    try testing.expect(p.remove_audio);
 }
 
 // ============================================================================
@@ -338,7 +340,8 @@ test "FilterGraph initialization" {
     var fg = media.FilterGraph.init(allocator);
     defer fg.deinit();
 
-    try testing.expectEqual(@as(usize, 0), fg.filters.items.len);
+    try testing.expectEqual(@as(usize, 0), fg.video_filters.items.len);
+    try testing.expectEqual(@as(usize, 0), fg.audio_filters.items.len);
 }
 
 test "FilterGraph add video filter" {
@@ -349,7 +352,7 @@ test "FilterGraph add video filter" {
     try fg.addVideoFilter(.{ .scale = .{ .width = 1920, .height = 1080 } });
     try fg.addVideoFilter(.{ .blur = .{ .sigma = 1.0 } });
 
-    try testing.expectEqual(@as(usize, 2), fg.filters.items.len);
+    try testing.expectEqual(@as(usize, 2), fg.video_filters.items.len);
 }
 
 test "FilterGraph add audio filter" {
@@ -357,10 +360,10 @@ test "FilterGraph add audio filter" {
     var fg = media.FilterGraph.init(allocator);
     defer fg.deinit();
 
-    try fg.addAudioFilter(.{ .volume = .{ .level = 1.5 } });
+    try fg.addAudioFilter(.{ .volume = 1.5 });
     try fg.addAudioFilter(.{ .normalize = .{} });
 
-    try testing.expectEqual(@as(usize, 2), fg.filters.items.len);
+    try testing.expectEqual(@as(usize, 2), fg.audio_filters.items.len);
 }
 
 // ============================================================================
@@ -459,7 +462,7 @@ test "Registry format info" {
 test "Registry video codec info" {
     const h264_info = media.Registry.getVideoCodecInfo(.h264);
     try testing.expect(h264_info != null);
-    try testing.expect(h264_info.?.lossy);
+    try testing.expect(!h264_info.?.is_lossless);
 
     const av1_info = media.Registry.getVideoCodecInfo(.av1);
     try testing.expect(av1_info != null);
@@ -468,11 +471,11 @@ test "Registry video codec info" {
 test "Registry audio codec info" {
     const aac_info = media.Registry.getAudioCodecInfo(.aac);
     try testing.expect(aac_info != null);
-    try testing.expect(aac_info.?.lossy);
+    try testing.expect(!aac_info.?.is_lossless);
 
     const flac_info = media.Registry.getAudioCodecInfo(.flac);
     try testing.expect(flac_info != null);
-    try testing.expect(!flac_info.?.lossy);
+    try testing.expect(flac_info.?.is_lossless);
 }
 
 test "Registry codec compatibility" {
