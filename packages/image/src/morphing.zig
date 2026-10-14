@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Mesh Warping

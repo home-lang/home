@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // RAW Image Data Structures
@@ -580,8 +581,8 @@ fn calculateHomogeneity(rgb: [][3]f32, width: usize, x: usize, y: usize) f32 {
     // Check 8 neighbors
     const neighbors = [_][2]i32{
         .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 },
-        .{ -1, 0 },             .{ 1, 0 },
-        .{ -1, 1 },  .{ 0, 1 },  .{ 1, 1 },
+        .{ -1, 0 },  .{ 1, 0 },  .{ -1, 1 },
+        .{ 0, 1 },   .{ 1, 1 },
     };
 
     for (neighbors) |n| {
@@ -820,8 +821,8 @@ fn recoverHighlightsReconstruct(img: *Image, threshold: u8) void {
 
                 const neighbors = [_][2]i32{
                     .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 },
-                    .{ -1, 0 },             .{ 1, 0 },
-                    .{ -1, 1 },  .{ 0, 1 },  .{ 1, 1 },
+                    .{ -1, 0 },  .{ 1, 0 },  .{ -1, 1 },
+                    .{ 0, 1 },   .{ 1, 1 },
                 };
 
                 for (neighbors) |n| {
