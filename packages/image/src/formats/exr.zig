@@ -261,12 +261,12 @@ fn parseHeader(allocator: std.mem.Allocator, data: []const u8) !EXRHeader {
 }
 
 fn parseChannels(allocator: std.mem.Allocator, data: []const u8) ![]Channel {
-    var channels = std.ArrayList(Channel).init(allocator);
+    var channels: std.ArrayList(Channel) = .empty;
     errdefer {
         for (channels.items) |ch| {
             allocator.free(ch.name);
         }
-        channels.deinit();
+        channels.deinit(allocator);
     }
 
     var pos: usize = 0;
@@ -290,16 +290,19 @@ fn parseChannels(allocator: std.mem.Allocator, data: []const u8) ![]Channel {
         const y_sampling = std.mem.readInt(u32, data[pos + 12 ..][0..4], .little);
         pos += 16;
 
-        try channels.append(.{
+        channels.append(allocator, .{
             .name = name,
             .pixel_type = pixel_type,
             .linear = linear,
             .x_sampling = x_sampling,
             .y_sampling = y_sampling,
-        });
+        }) catch |append_err| {
+            allocator.free(name);
+            return append_err;
+        };
     }
 
-    return channels.toOwnedSlice();
+    return channels.toOwnedSlice(allocator);
 }
 
 fn decodeScanlines(img: *Image, data: []const u8, offset_table_pos: usize, header: EXRHeader, allocator: std.mem.Allocator) !void {
@@ -365,14 +368,15 @@ fn decodeScanlines(img: *Image, data: []const u8, offset_table_pos: usize, heade
 
             var channel_offset: usize = 0;
             for (header.channels) |ch| {
-                const pixel_offset = channel_offset + @as(usize, x) * switch (ch.pixel_type) {
+                const channel_size: usize = switch (ch.pixel_type) {
                     .uint => 4,
                     .half => 2,
                     .float => 4,
                     else => 2,
                 };
+                const pixel_offset = channel_offset + @as(usize, x) * channel_size;
 
-                if (pixel_offset + 2 > pixel_data.len) continue;
+                if (pixel_offset + channel_size > pixel_data.len) continue;
 
                 const val: f32 = switch (ch.pixel_type) {
                     .half => halfToFloat(std.mem.readInt(u16, pixel_data[pixel_offset..][0..2], .little)),
@@ -391,12 +395,7 @@ fn decodeScanlines(img: *Image, data: []const u8, offset_table_pos: usize, heade
                     }
                 }
 
-                channel_offset += width * switch (ch.pixel_type) {
-                    .uint => 4,
-                    .half => 2,
-                    .float => 4,
-                    else => 2,
-                };
+                channel_offset += width * channel_size;
             }
 
             // Tone map and convert to 8-bit
@@ -466,24 +465,24 @@ fn toneMap(r: f32, g: f32, b: f32) struct { r: f32, g: f32, b: f32 } {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Magic
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, EXR_MAGIC)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, EXR_MAGIC)));
 
     // Version (2, single-part, scanline)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, 2)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 2)));
 
     // Attributes
-    try writeAttribute(&output, "channels", "chlist", &[_]u8{
+    try writeAttribute(allocator, &output, "channels", "chlist", &[_]u8{
         'B', 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
         'G', 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
         'R', 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
         0, // terminator
     });
 
-    try writeAttribute(&output, "compression", "compression", &[_]u8{0}); // no compression
+    try writeAttribute(allocator, &output, "compression", "compression", &[_]u8{0}); // no compression
 
     // dataWindow
     var data_window: [16]u8 = undefined;
@@ -491,22 +490,22 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     std.mem.writeInt(i32, data_window[4..8], 0, .little);
     std.mem.writeInt(i32, data_window[8..12], @as(i32, @intCast(img.width)) - 1, .little);
     std.mem.writeInt(i32, data_window[12..16], @as(i32, @intCast(img.height)) - 1, .little);
-    try writeAttribute(&output, "dataWindow", "box2i", &data_window);
-    try writeAttribute(&output, "displayWindow", "box2i", &data_window);
+    try writeAttribute(allocator, &output, "dataWindow", "box2i", &data_window);
+    try writeAttribute(allocator, &output, "displayWindow", "box2i", &data_window);
 
-    try writeAttribute(&output, "lineOrder", "lineOrder", &[_]u8{0});
+    try writeAttribute(allocator, &output, "lineOrder", "lineOrder", &[_]u8{0});
 
     // pixelAspectRatio
-    try writeAttribute(&output, "pixelAspectRatio", "float", &std.mem.toBytes(std.mem.nativeToLittle(f32, 1.0)));
+    try writeAttribute(allocator, &output, "pixelAspectRatio", "float", &std.mem.toBytes(std.mem.nativeToLittle(f32, 1.0)));
 
     // screenWindowCenter
-    try writeAttribute(&output, "screenWindowCenter", "v2f", &std.mem.toBytes([2]f32{ 0.0, 0.0 }));
+    try writeAttribute(allocator, &output, "screenWindowCenter", "v2f", &std.mem.toBytes([2]f32{ 0.0, 0.0 }));
 
     // screenWindowWidth
-    try writeAttribute(&output, "screenWindowWidth", "float", &std.mem.toBytes(std.mem.nativeToLittle(f32, 1.0)));
+    try writeAttribute(allocator, &output, "screenWindowWidth", "float", &std.mem.toBytes(std.mem.nativeToLittle(f32, 1.0)));
 
     // End of header
-    try output.append(0);
+    try output.append(allocator, 0);
 
     // Offset table
     const header_size = output.items.len;
@@ -515,22 +514,22 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 
     for (0..img.height) |y| {
         const offset: u64 = header_size + offset_table_size + y * (8 + bytes_per_scanline);
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u64, offset)));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u64, offset)));
     }
 
     // Scanlines
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
         // Scanline header
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(i32, @as(i32, @intCast(y)))));
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(bytes_per_scanline)))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(i32, @as(i32, @intCast(y)))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(bytes_per_scanline)))));
 
         // B channel
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
             const b = srgbToLinear(@as(f32, @floatFromInt(c.b)) / 255.0);
-            try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(b))));
+            try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(b))));
         }
 
         // G channel
@@ -538,7 +537,7 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
             const g = srgbToLinear(@as(f32, @floatFromInt(c.g)) / 255.0);
-            try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(g))));
+            try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(g))));
         }
 
         // R channel
@@ -546,20 +545,20 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         while (x < img.width) : (x += 1) {
             const c = img.getPixel(x, y) orelse Color.BLACK;
             const r = srgbToLinear(@as(f32, @floatFromInt(c.r)) / 255.0);
-            try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(r))));
+            try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, floatToHalf(r))));
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeAttribute(output: *std.ArrayList(u8), name: []const u8, attr_type: []const u8, data: []const u8) !void {
-    try output.appendSlice(name);
-    try output.append(0);
-    try output.appendSlice(attr_type);
-    try output.append(0);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(data.len)))));
-    try output.appendSlice(data);
+fn writeAttribute(allocator: std.mem.Allocator, output: *std.ArrayList(u8), name: []const u8, attr_type: []const u8, data: []const u8) !void {
+    try output.appendSlice(allocator, name);
+    try output.append(allocator, 0);
+    try output.appendSlice(allocator, attr_type);
+    try output.append(allocator, 0);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @as(u32, @intCast(data.len)))));
+    try output.appendSlice(allocator, data);
 }
 
 fn srgbToLinear(v: f32) f32 {
@@ -594,4 +593,21 @@ test "Half-float conversion" {
 test "Compression enum" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Compression.none));
     try std.testing.expectEqual(@as(u8, 1), @intFromEnum(Compression.rle));
+}
+
+test "EXR encoder emits dimensions and scanline pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > 8);
+    try std.testing.expectEqual(EXR_MAGIC, std.mem.readInt(u32, encoded[0..4], .little));
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
 }

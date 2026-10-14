@@ -60,6 +60,11 @@ pub fn probe(allocator: std.mem.Allocator, path: []const u8) !MediaInfo {
     return probe_mod.probe(allocator, path);
 }
 
+/// Probe a media file using the caller's I/O implementation.
+pub fn probeWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !MediaInfo {
+    return probe_mod.probeWithIo(allocator, io_context, path);
+}
+
 /// Probe media from memory buffer
 pub fn probeFromMemory(allocator: std.mem.Allocator, data: []const u8) !MediaInfo {
     return probe_mod.probeFromMemory(allocator, data);
@@ -181,11 +186,17 @@ pub const Media = struct {
 
     /// Open media file
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Self {
+        return openWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// Open a media file using the caller's I/O implementation.
+    pub fn openWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !Self {
         var media = Self{
             .allocator = allocator,
             .path = try allocator.dupe(u8, path),
         };
-        media.info = try probe(allocator, path);
+        errdefer allocator.free(media.path.?);
+        media.info = try probeWithIo(allocator, io_context, path);
         return media;
     }
 
@@ -202,6 +213,9 @@ pub const Media = struct {
     pub fn deinit(self: *Self) void {
         if (self.path) |p| self.allocator.free(p);
         if (self.data) |d| self.allocator.free(d);
+        if (self.info) |info| {
+            if (info.path) |p| self.allocator.free(p);
+        }
     }
 
     /// Get media information
@@ -427,4 +441,31 @@ test "Registry lookup" {
 
     const codec_info = Registry.getVideoCodecInfo(.h264);
     try std.testing.expect(codec_info != null);
+}
+
+test "Media open uses caller-provided I/O without leaking probe paths" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "media.png" });
+    defer allocator.free(path);
+
+    const png = [_]u8{
+        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+        0,    0,   0,   13,  'I',  'H',  'D',  'R',
+        0,    0,   0,   4,   0,    0,    0,    3,
+    };
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, &png);
+    }
+
+    var media = try Media.openWithIo(allocator, std.testing.io, path);
+    defer media.deinit();
+    try std.testing.expectEqual(ContainerFormat.png, media.info.?.format);
+    try std.testing.expectEqual(@as(u32, 4), media.dimensions().?.width);
+    try std.testing.expectEqual(@as(u32, 3), media.dimensions().?.height);
 }

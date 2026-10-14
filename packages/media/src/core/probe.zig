@@ -182,21 +182,25 @@ pub fn detectMediaType(data: []const u8) MediaType {
 
 /// Probe a file and extract media information
 pub fn probe(allocator: std.mem.Allocator, path: []const u8) !MediaInfo {
-    const file = std.fs.cwd().openFile(path, .{}) catch |e| {
+    return probeWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+}
+
+/// Probe a file using the caller's I/O implementation.
+pub fn probeWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !MediaInfo {
+    const file = std.Io.Dir.cwd().openFile(io_context, path, .{}) catch |e| {
         return switch (e) {
             error.FileNotFound => MediaError.FileNotFound,
             error.AccessDenied => MediaError.PermissionDenied,
             else => MediaError.IoError,
         };
     };
-    defer file.close();
+    defer file.close(io_context);
 
-    const stat = try file.stat();
-    const size = stat.size;
+    const size = try file.length(io_context);
 
     // Read header for format detection
     var header_buf: [4096]u8 = undefined;
-    const bytes_read = try file.read(&header_buf);
+    const bytes_read = try file.readStreaming(io_context, &.{&header_buf});
     if (bytes_read == 0) {
         return MediaError.TruncatedData;
     }
@@ -210,7 +214,9 @@ pub fn probe(allocator: std.mem.Allocator, path: []const u8) !MediaInfo {
     };
 
     // Copy path
-    info.path = try allocator.dupe(u8, path);
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    info.path = owned_path;
 
     // Get extension-based info
     const ext = std.fs.path.extension(path);
@@ -282,7 +288,7 @@ pub fn probeFromMemory(allocator: std.mem.Allocator, data: []const u8) !MediaInf
 // Format-Specific Probing
 // ============================================================================
 
-fn probeMp4(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeMp4(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
     _ = header;
 
@@ -294,7 +300,7 @@ fn probeMp4(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     info.audio_codec = .aac;
 }
 
-fn probeMatroska(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeMatroska(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     // Check for webm doctype
@@ -314,7 +320,7 @@ fn probeMatroska(file: std.fs.File, header: []const u8, info: *MediaInfo) !void 
     info.has_audio = true;
 }
 
-fn probeAvi(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeAvi(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
     _ = header;
 
@@ -322,7 +328,7 @@ fn probeAvi(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     info.has_audio = true;
 }
 
-fn probeFlv(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeFlv(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     if (header.len >= 5) {
@@ -332,7 +338,7 @@ fn probeFlv(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     }
 }
 
-fn probeMpegTs(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeMpegTs(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
     _ = header;
 
@@ -340,7 +346,7 @@ fn probeMpegTs(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     info.has_audio = true;
 }
 
-fn probeWav(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeWav(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     info.has_video = false;
@@ -355,7 +361,7 @@ fn probeWav(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     }
 }
 
-fn probeMp3(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeMp3(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     info.has_video = false;
@@ -397,7 +403,7 @@ fn probeMp3(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     }
 }
 
-fn probeFlac(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeFlac(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     info.has_video = false;
@@ -427,7 +433,7 @@ fn probeFlac(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
     }
 }
 
-fn probeOgg(file: std.fs.File, header: []const u8, info: *MediaInfo) !void {
+fn probeOgg(file: std.Io.File, header: []const u8, info: *MediaInfo) !void {
     _ = file;
 
     info.has_video = false;
@@ -531,4 +537,32 @@ test "Format detection - FLAC" {
 test "Format detection - WAV" {
     const wav_header = [_]u8{ 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E' };
     try std.testing.expectEqual(ContainerFormat.wav, detectFormat(&wav_header));
+}
+
+test "File probing uses caller-provided I/O" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "probe.png" });
+    defer allocator.free(path);
+
+    const png = [_]u8{
+        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+        0,    0,   0,   13,  'I',  'H',  'D',  'R',
+        0,    0,   0,   3,   0,    0,    0,    2,
+    };
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, &png);
+    }
+
+    const info = try probeWithIo(allocator, std.testing.io, path);
+    defer if (info.path) |owned_path| allocator.free(owned_path);
+    try std.testing.expectEqual(ContainerFormat.png, info.format);
+    try std.testing.expectEqual(@as(u64, png.len), info.size_bytes);
+    try std.testing.expectEqual(@as(u32, 3), info.width);
+    try std.testing.expectEqual(@as(u32, 2), info.height);
 }

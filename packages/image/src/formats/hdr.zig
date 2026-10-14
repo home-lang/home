@@ -80,7 +80,6 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
         if (parser.startsWith("\n") or parser.startsWith("\r\n")) {
             parser.skipLine();
-            break;
         }
 
         // Look for resolution string
@@ -275,23 +274,23 @@ const Parser = struct {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Header
-    try output.appendSlice("#?RADIANCE\n");
-    try output.appendSlice("FORMAT=32-bit_rle_rgbe\n");
-    try output.appendSlice("\n");
+    try output.appendSlice(allocator, "#?RADIANCE\n");
+    try output.appendSlice(allocator, "FORMAT=32-bit_rle_rgbe\n");
+    try output.appendSlice(allocator, "\n");
 
     // Resolution
-    try output.appendSlice("-Y ");
+    try output.appendSlice(allocator, "-Y ");
     var buf: [32]u8 = undefined;
-    var len = std.fmt.formatIntBuf(&buf, img.height, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.appendSlice(" +X ");
-    len = std.fmt.formatIntBuf(&buf, img.width, 10, .lower, .{});
-    try output.appendSlice(buf[0..len]);
-    try output.append('\n');
+    var len = std.fmt.printInt(&buf, img.height, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.appendSlice(allocator, " +X ");
+    len = std.fmt.printInt(&buf, img.width, 10, .lower, .{});
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.append(allocator, '\n');
 
     // Encode scanlines with RLE
     var scanline = try allocator.alloc(u8, img.width * 4);
@@ -300,16 +299,15 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
         // New-style RLE header
-        try output.append(2);
-        try output.append(2);
-        try output.append(@truncate(img.width >> 8));
-        try output.append(@truncate(img.width));
+        try output.append(allocator, 2);
+        try output.append(allocator, 2);
+        try output.append(allocator, @truncate(img.width >> 8));
+        try output.append(allocator, @truncate(img.width));
 
         // Fill scanline buffer
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
-            const src_y = img.height - 1 - y;
-            const color = img.getPixel(x, src_y) orelse Color.BLACK;
+            const color = img.getPixel(x, y) orelse Color.BLACK;
 
             // Convert to HDR (assume sRGB input)
             const r = srgbToLinear(@as(f32, @floatFromInt(color.r)) / 255.0);
@@ -326,14 +324,14 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         // RLE encode each channel
         for (0..4) |channel| {
             const channel_data = scanline[channel * img.width ..][0..img.width];
-            try encodeRLE(&output, channel_data);
+            try encodeRLE(allocator, &output, channel_data);
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn encodeRLE(output: *std.ArrayList(u8), data: []const u8) !void {
+fn encodeRLE(allocator: std.mem.Allocator, output: *std.ArrayList(u8), data: []const u8) !void {
     var i: usize = 0;
 
     while (i < data.len) {
@@ -345,8 +343,8 @@ fn encodeRLE(output: *std.ArrayList(u8), data: []const u8) !void {
 
         if (run_len > 2) {
             // Encode as run
-            try output.append(@as(u8, @truncate(run_len + 128)));
-            try output.append(data[i]);
+            try output.append(allocator, @as(u8, @truncate(run_len + 128)));
+            try output.append(allocator, data[i]);
             i += run_len;
         } else {
             // Find literal run
@@ -362,8 +360,8 @@ fn encodeRLE(output: *std.ArrayList(u8), data: []const u8) !void {
                 lit_len += 1;
             }
 
-            try output.append(@truncate(lit_len));
-            try output.appendSlice(data[i..][0..lit_len]);
+            try output.append(allocator, @truncate(lit_len));
+            try output.appendSlice(allocator, data[i..][0..lit_len]);
             i += lit_len;
         }
     }
@@ -399,4 +397,27 @@ test "RGBE zero handling" {
 
 test "HDR magic detection" {
     try std.testing.expectEqualSlices(u8, "#?RADIANCE", HDR_MAGIC_RADIANCE);
+}
+
+test "HDR encoder round trips scanline dimensions" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 8, 2, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(7, 1, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 8), decoded.width);
+    try std.testing.expectEqual(@as(u32, 2), decoded.height);
+    const top_left = decoded.getPixel(0, 0).?;
+    try std.testing.expect(top_left.r > 0);
+    try std.testing.expectEqual(@as(u8, 0), top_left.g);
+    try std.testing.expectEqual(@as(u8, 0), top_left.b);
+    const bottom_right = decoded.getPixel(7, 1).?;
+    try std.testing.expectEqual(@as(u8, 0), bottom_right.r);
+    try std.testing.expectEqual(@as(u8, 0), bottom_right.g);
+    try std.testing.expect(bottom_right.b > 0);
 }

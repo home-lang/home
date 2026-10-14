@@ -60,8 +60,8 @@ fn decodeContainer(allocator: std.mem.Allocator, data: []const u8) !Image {
     var pos: usize = 12; // Skip container signature
 
     // Collect codestream fragments
-    var codestream_data = std.ArrayList(u8).init(allocator);
-    defer codestream_data.deinit();
+    var codestream_data: std.ArrayList(u8) = .empty;
+    defer codestream_data.deinit(allocator);
 
     while (pos + 8 <= data.len) {
         // Read box header
@@ -95,11 +95,11 @@ fn decodeContainer(allocator: std.mem.Allocator, data: []const u8) !Image {
         // Handle box types
         if (std.mem.eql(u8, box_type, BOX_JXLC)) {
             // Complete codestream
-            try codestream_data.appendSlice(data[data_start..][0..data_size]);
+            try codestream_data.appendSlice(allocator, data[data_start..][0..data_size]);
         } else if (std.mem.eql(u8, box_type, BOX_JXLP)) {
             // Partial codestream - skip 4-byte index
             if (data_size > 4) {
-                try codestream_data.appendSlice(data[data_start + 4 ..][0 .. data_size - 4]);
+                try codestream_data.appendSlice(allocator, data[data_start + 4 ..][0 .. data_size - 4]);
             }
         }
 
@@ -301,12 +301,13 @@ const BitReader = struct {
     }
 
     fn readBits(self: *BitReader, n: u6) ?u32 {
+        if (n > 32) return null;
         var result: u32 = 0;
         var i: u6 = 0;
         while (i < n) : (i += 1) {
             const bit = self.readBit() orelse return null;
             if (bit) {
-                result |= @as(u32, 1) << i;
+                result |= @as(u32, 1) << @as(u5, @intCast(i));
             }
         }
         return result;
@@ -331,40 +332,40 @@ const BitReader = struct {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write container signature
-    try output.appendSlice(&JXL_CONTAINER_SIGNATURE);
+    try output.appendSlice(allocator, &JXL_CONTAINER_SIGNATURE);
 
     // Create codestream
-    var codestream = std.ArrayList(u8).init(allocator);
-    defer codestream.deinit();
+    var codestream: std.ArrayList(u8) = .empty;
+    defer codestream.deinit(allocator);
 
     // Write codestream signature
-    try codestream.appendSlice(&JXL_CODESTREAM_SIGNATURE);
+    try codestream.appendSlice(allocator, &JXL_CODESTREAM_SIGNATURE);
 
     // Write SizeHeader
-    try writeSizeHeader(&codestream, img.width, img.height);
+    try writeSizeHeader(allocator, &codestream, img.width, img.height);
 
     // Write minimal ImageMetadata (all defaults)
-    try codestream.append(1); // all_default = true
+    try codestream.append(allocator, 1); // all_default = true
 
     // Write basic frame header
-    try writeFrameHeader(&codestream, img);
+    try writeFrameHeader(allocator, &codestream, img);
 
     // Write pixel data (simplified - real JXL uses complex transforms)
-    try writePixelData(&codestream, img);
+    try writePixelData(allocator, &codestream, img);
 
     // Write codestream box
-    try writeBox(&output, BOX_JXLC, codestream.items);
+    try writeBox(allocator, &output, BOX_JXLC, codestream.items);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeSizeHeader(output: *std.ArrayList(u8), width: u32, height: u32) !void {
-    var bits = std.ArrayList(u8).init(output.allocator);
-    defer bits.deinit();
+fn writeSizeHeader(allocator: std.mem.Allocator, output: *std.ArrayList(u8), width: u32, height: u32) !void {
+    var bits: std.ArrayList(u8) = .empty;
+    defer bits.deinit(allocator);
 
     // Check if small image format can be used
     if (width % 8 == 0 and height % 8 == 0 and width <= 256 and height <= 256) {
@@ -372,54 +373,54 @@ fn writeSizeHeader(output: *std.ArrayList(u8), width: u32, height: u32) !void {
         var byte: u8 = 1; // div8 bit
         const h_val: u8 = @intCast((height / 8) - 1);
         byte |= h_val << 1;
-        try bits.append(byte);
+        try bits.append(allocator, byte);
 
         // ratio = 0 (explicit width)
         var byte2: u8 = 0; // ratio bits
         const w_val: u8 = @intCast((width / 8) - 1);
         byte2 |= w_val << 3;
-        try bits.append(byte2);
+        try bits.append(allocator, byte2);
     } else {
         // Full format: div8 = 0
-        try bits.append(0);
+        try bits.append(allocator, 0);
 
         // Write height as U32
-        try writeU32(&bits, height - 1);
+        try writeU32(allocator, &bits, height - 1);
 
         // ratio = 0
-        try bits.append(0);
+        try bits.append(allocator, 0);
 
         // Write width as U32
-        try writeU32(&bits, width - 1);
+        try writeU32(allocator, &bits, width - 1);
     }
 
-    try output.appendSlice(bits.items);
+    try output.appendSlice(allocator, bits.items);
 }
 
-fn writeU32(output: *std.ArrayList(u8), value: u32) !void {
+fn writeU32(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: u32) !void {
     if (value == 0) {
-        try output.append(0); // selector = 0
+        try output.append(allocator, 0); // selector = 0
     } else if (value <= 16) {
-        try output.append(1); // selector = 1
-        try output.append(@intCast(value - 1)); // 4 bits value
+        try output.append(allocator, 1); // selector = 1
+        try output.append(allocator, @intCast(value - 1)); // 4 bits value
     } else if (value <= 272) {
-        try output.append(2); // selector = 2
-        try output.append(@intCast(value - 17)); // 8 bits value
+        try output.append(allocator, 2); // selector = 2
+        try output.append(allocator, @intCast(value - 17)); // 8 bits value
     } else {
-        try output.append(3); // selector = 3
+        try output.append(allocator, 3); // selector = 3
         const v = value - 273;
-        try output.append(@truncate(v)); // low 8 bits
-        try output.append(@truncate(v >> 8)); // high 4 bits
+        try output.append(allocator, @truncate(v)); // low 8 bits
+        try output.append(allocator, @truncate(v >> 8)); // high 4 bits
     }
 }
 
-fn writeFrameHeader(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeFrameHeader(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     _ = img;
     // Minimal frame header
-    try output.append(0); // Regular frame, no special flags
+    try output.append(allocator, 0); // Regular frame, no special flags
 }
 
-fn writePixelData(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writePixelData(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // Simple uncompressed pixel data (placeholder)
     // Real JXL uses modular encoding, VarDCT, etc.
     var y: u32 = 0;
@@ -427,27 +428,27 @@ fn writePixelData(output: *std.ArrayList(u8), img: *const Image) !void {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const color = img.getPixel(x, y) orelse Color.BLACK;
-            try output.append(color.r);
-            try output.append(color.g);
-            try output.append(color.b);
+            try output.append(allocator, color.r);
+            try output.append(allocator, color.g);
+            try output.append(allocator, color.b);
             if (img.format.hasAlpha()) {
-                try output.append(color.a);
+                try output.append(allocator, color.a);
             }
         }
     }
 }
 
-fn writeBox(output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
+fn writeBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
     const box_size: u32 = @intCast(8 + data.len);
 
     // Box size
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, box_size)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, box_size)));
 
     // Box type
-    try output.appendSlice(box_type);
+    try output.appendSlice(allocator, box_type);
 
     // Box data
-    try output.appendSlice(data);
+    try output.appendSlice(allocator, data);
 }
 
 // ============================================================================
@@ -482,4 +483,18 @@ test "BitReader" {
     // Read next 3 bits
     const bits = reader.readBits(3).?;
     try std.testing.expectEqual(@as(u32, 0b010), bits); // bits 1-3 = 010
+    try std.testing.expectEqual(@as(?u32, null), reader.readBits(33));
+}
+
+test "JXL encoder emits a container and codestream box" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 8, 8, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > JXL_CONTAINER_SIGNATURE.len + 8);
+    try std.testing.expectEqualSlices(u8, &JXL_CONTAINER_SIGNATURE, encoded[0..JXL_CONTAINER_SIGNATURE.len]);
+    try std.testing.expectEqualSlices(u8, BOX_JXLC, encoded[JXL_CONTAINER_SIGNATURE.len + 4 ..][0..4]);
 }

@@ -476,7 +476,7 @@ const BitReader = struct {
             const bits_to_read = @min(count - bits_read, bits_available);
 
             const mask: u8 = @as(u8, 0xFF) >> @as(u3, @intCast(8 - bits_to_read));
-            const shift: u3 = @intCast(8 - self.bit_pos - bits_to_read);
+            const shift: u3 = @intCast(bits_available - bits_to_read);
             const bits: u32 = (self.data[self.pos] >> shift) & mask;
 
             result = (result << @intCast(bits_to_read)) | bits;
@@ -509,96 +509,96 @@ const BitReader = struct {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write ftyp box
-    try writeFtypBox(&output);
+    try writeFtypBox(allocator, &output);
 
     // Write meta box
-    try writeMetaBox(&output, img);
+    try writeMetaBox(allocator, &output, img);
 
     // Write mdat box with HEVC data
     try writeMdatBox(&output, img, allocator);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeFtypBox(output: *std.ArrayList(u8)) !void {
+fn writeFtypBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
     const ftyp_data = [_]u8{
         'h', 'e', 'i', 'c', // major_brand
-        0,   0,   0,   0, // minor_version
+        0, 0, 0, 0, // minor_version
         'h', 'e', 'i', 'c', // compatible_brand
         'm', 'i', 'f', '1', // compatible_brand
     };
 
-    try writeBox(output, FTYP_BOX, &ftyp_data);
+    try writeBox(allocator, output, FTYP_BOX, &ftyp_data);
 }
 
-fn writeMetaBox(output: *std.ArrayList(u8), img: *const Image) !void {
-    var meta_content = std.ArrayList(u8).init(output.allocator);
-    defer meta_content.deinit();
+fn writeMetaBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
+    var meta_content: std.ArrayList(u8) = .empty;
+    defer meta_content.deinit(allocator);
 
     // FullBox header
-    try meta_content.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+    try meta_content.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
 
     // hdlr box
     const hdlr_data = [_]u8{
-        0,   0,   0,   0, // version/flags
-        0,   0,   0,   0, // pre_defined
+        0, 0, 0, 0, // version/flags
+        0, 0, 0, 0, // pre_defined
         'p', 'i', 'c', 't', // handler_type
-        0,   0,   0,   0, // reserved
-        0,   0,   0,   0, // reserved
-        0,   0,   0,   0, // reserved
+        0, 0, 0, 0, // reserved
+        0, 0, 0, 0, // reserved
+        0, 0, 0, 0, // reserved
         0, // name
     };
-    try writeBox(&meta_content, "hdlr", &hdlr_data);
+    try writeBox(allocator, &meta_content, "hdlr", &hdlr_data);
 
     // pitm box
     const pitm_data = [_]u8{ 0, 0, 0, 0, 0, 1 };
-    try writeBox(&meta_content, PITM_BOX, &pitm_data);
+    try writeBox(allocator, &meta_content, PITM_BOX, &pitm_data);
 
     // iloc box
     const iloc_data = [_]u8{
-        0,    0,    0,    0, // version/flags
+        0, 0, 0, 0, // version/flags
         0x44, 0, // offset/length sizes
-        0,    1, // item_count
-        0,    1, // item_ID
-        0,    0, // data_reference_index
-        0,    1, // extent_count
-        0,    0,    0,    0, // offset placeholder
-        0,    0,    0,    0, // length placeholder
+        0, 1, // item_count
+        0, 1, // item_ID
+        0, 0, // data_reference_index
+        0, 1, // extent_count
+        0, 0, 0, 0, // offset placeholder
+        0, 0, 0, 0, // length placeholder
     };
-    try writeBox(&meta_content, ILOC_BOX, &iloc_data);
+    try writeBox(allocator, &meta_content, ILOC_BOX, &iloc_data);
 
     // iinf box
-    var iinf_data = std.ArrayList(u8).init(output.allocator);
-    defer iinf_data.deinit();
-    try iinf_data.appendSlice(&[_]u8{ 0, 0, 0, 0, 0, 1 });
+    var iinf_data: std.ArrayList(u8) = .empty;
+    defer iinf_data.deinit(allocator);
+    try iinf_data.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0, 0, 1 });
 
     const infe_data = [_]u8{
-        2,   0,   0,   0, // version=2
-        0,   1, // item_ID
-        0,   0, // protection_index
+        2, 0, 0, 0, // version=2
+        0, 1, // item_ID
+        0, 0, // protection_index
         'h', 'v', 'c', '1', // item_type
         0, // name
     };
-    try writeBox(&iinf_data, "infe", &infe_data);
-    try writeBox(&meta_content, IINF_BOX, iinf_data.items);
+    try writeBox(allocator, &iinf_data, "infe", &infe_data);
+    try writeBox(allocator, &meta_content, IINF_BOX, iinf_data.items);
 
     // iprp box
-    var iprp_data = std.ArrayList(u8).init(output.allocator);
-    defer iprp_data.deinit();
+    var iprp_data: std.ArrayList(u8) = .empty;
+    defer iprp_data.deinit(allocator);
 
-    var ipco_data = std.ArrayList(u8).init(output.allocator);
-    defer ipco_data.deinit();
+    var ipco_data: std.ArrayList(u8) = .empty;
+    defer ipco_data.deinit(allocator);
 
     // ispe
     var ispe_data: [12]u8 = undefined;
     ispe_data[0..4].* = .{ 0, 0, 0, 0 };
     std.mem.writeInt(u32, ispe_data[4..8], img.width, .big);
     std.mem.writeInt(u32, ispe_data[8..12], img.height, .big);
-    try writeBox(&ipco_data, ISPE_BOX, &ispe_data);
+    try writeBox(allocator, &ipco_data, ISPE_BOX, &ispe_data);
 
     // hvcC (simplified)
     const hvcc_data = [_]u8{
@@ -616,63 +616,63 @@ fn writeMetaBox(output: *std.ArrayList(u8), img: *const Image) !void {
         0x0F, // constantFrameRate, numTemporalLayers, etc.
         0, // numOfArrays
     };
-    try writeBox(&ipco_data, HVCL_BOX, &hvcc_data);
+    try writeBox(allocator, &ipco_data, HVCL_BOX, &hvcc_data);
 
-    try writeBox(&iprp_data, IPCO_BOX, ipco_data.items);
+    try writeBox(allocator, &iprp_data, IPCO_BOX, ipco_data.items);
 
     // ipma
     const ipma_data = [_]u8{
-        0,    0,    0,    0, // version/flags
-        0,    1, // entry_count
-        0,    1, // item_ID
+        0, 0, 0, 0, // version/flags
+        0, 1, // entry_count
+        0, 1, // item_ID
         2, // association_count
         0x01, // property 1 (ispe)
         0x82, // property 2 (hvcC) essential
     };
-    try writeBox(&iprp_data, IPMA_BOX, &ipma_data);
+    try writeBox(allocator, &iprp_data, IPMA_BOX, &ipma_data);
 
-    try writeBox(&meta_content, IPRP_BOX, iprp_data.items);
+    try writeBox(allocator, &meta_content, IPRP_BOX, iprp_data.items);
 
-    try writeBox(output, META_BOX, meta_content.items);
+    try writeBox(allocator, output, META_BOX, meta_content.items);
 }
 
 fn writeMdatBox(output: *std.ArrayList(u8), img: *const Image, allocator: std.mem.Allocator) !void {
-    var hevc_data = std.ArrayList(u8).init(allocator);
-    defer hevc_data.deinit();
+    var hevc_data: std.ArrayList(u8) = .empty;
+    defer hevc_data.deinit(allocator);
 
-    try encodeHEVC(&hevc_data, img);
+    try encodeHEVC(allocator, &hevc_data, img);
 
-    try writeBox(output, MDAT_BOX, hevc_data.items);
+    try writeBox(allocator, output, MDAT_BOX, hevc_data.items);
 }
 
-fn encodeHEVC(output: *std.ArrayList(u8), img: *const Image) !void {
+fn encodeHEVC(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // Write minimal HEVC NAL units
     // VPS
-    try writeNalUnit(output, @intFromEnum(NAL_UNIT_TYPE.vps_nut), &[_]u8{ 0x00, 0x00 });
+    try writeNalUnit(allocator, output, @intFromEnum(NAL_UNIT_TYPE.vps_nut), &[_]u8{ 0x00, 0x00 });
 
     // SPS with dimensions
     var sps_data: [20]u8 = undefined;
     var sps_len: usize = 0;
     encodeSPS(&sps_data, &sps_len, img);
-    try writeNalUnit(output, @intFromEnum(NAL_UNIT_TYPE.sps_nut), sps_data[0..sps_len]);
+    try writeNalUnit(allocator, output, @intFromEnum(NAL_UNIT_TYPE.sps_nut), sps_data[0..sps_len]);
 
     // PPS
-    try writeNalUnit(output, @intFromEnum(NAL_UNIT_TYPE.pps_nut), &[_]u8{0x00});
+    try writeNalUnit(allocator, output, @intFromEnum(NAL_UNIT_TYPE.pps_nut), &[_]u8{0x00});
 
     // IDR frame placeholder
-    try writeNalUnit(output, @intFromEnum(NAL_UNIT_TYPE.idr_n_lp), &[_]u8{ 0x00, 0x00 });
+    try writeNalUnit(allocator, output, @intFromEnum(NAL_UNIT_TYPE.idr_n_lp), &[_]u8{ 0x00, 0x00 });
 }
 
-fn writeNalUnit(output: *std.ArrayList(u8), nal_type: u6, data: []const u8) !void {
+fn writeNalUnit(allocator: std.mem.Allocator, output: *std.ArrayList(u8), nal_type: u6, data: []const u8) !void {
     // Length-prefixed format for HEIF
     const length: u32 = @intCast(2 + data.len);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, length)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, length)));
 
     // NAL header (2 bytes)
     const nal_header: u16 = (@as(u16, nal_type) << 9) | 1;
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, nal_header)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, nal_header)));
 
-    try output.appendSlice(data);
+    try output.appendSlice(allocator, data);
 }
 
 fn encodeSPS(data: *[20]u8, len: *usize, img: *const Image) void {
@@ -683,11 +683,11 @@ fn encodeSPS(data: *[20]u8, len: *usize, img: *const Image) void {
     len.* = 2;
 }
 
-fn writeBox(output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
+fn writeBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
     const size: u32 = @intCast(8 + data.len);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, size)));
-    try output.appendSlice(box_type);
-    try output.appendSlice(data);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, size)));
+    try output.appendSlice(allocator, box_type);
+    try output.appendSlice(allocator, data);
 }
 
 // ============================================================================
@@ -704,7 +704,7 @@ test "HEIC brand detection" {
 
 test "Box parsing" {
     const box_data = [_]u8{
-        0,   0,   0,   16, // size
+        0, 0, 0, 16, // size
         'f', 't', 'y', 'p', // type
         'h', 'e', 'i', 'c', // data
         0,   0,   0,   0,
@@ -723,4 +723,17 @@ test "BitReader exp-golomb" {
     try std.testing.expectEqual(@as(u32, 0), try reader.readUE());
     try std.testing.expectEqual(@as(u32, 1), try reader.readUE());
     try std.testing.expectEqual(@as(u32, 2), try reader.readUE());
+}
+
+test "HEIC encoder emits file type, metadata, and media boxes" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 8, 8, .rgba8);
+    defer img.deinit();
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > 24);
+    try std.testing.expectEqualSlices(u8, FTYP_BOX, encoded[4..8]);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, META_BOX) != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, MDAT_BOX) != null);
 }

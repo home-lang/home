@@ -196,11 +196,11 @@ fn generatePlaceholder(img: *Image, width: u32, height: u32, color_space: ColorS
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Magic
-    try output.appendSlice(FLIF_MAGIC);
+    try output.appendSlice(allocator, FLIF_MAGIC);
 
     // Header byte: interlacing (non-interlaced) + color space
     const color_space: ColorSpace = switch (img.format) {
@@ -209,7 +209,7 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         .rgba8, .rgba16, .indexed8 => .rgba,
     };
     const header_byte: u8 = (@as(u8, @intFromEnum(Interlacing.non_interlaced)) << 4) | @intFromEnum(color_space);
-    try output.append(header_byte);
+    try output.append(allocator, header_byte);
 
     // Bytes per channel + num frames
     const bpc: BytesPerChannel = switch (img.format) {
@@ -218,14 +218,14 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     };
     const num_frames: u8 = 1;
     const bpc_byte: u8 = (num_frames << 4) | @intFromEnum(bpc);
-    try output.append(bpc_byte);
+    try output.append(allocator, bpc_byte);
 
     // Dimensions (varint encoded)
-    try writeVarint(&output, img.width);
-    try writeVarint(&output, img.height);
+    try writeVarint(allocator, &output, img.width);
+    try writeVarint(allocator, &output, img.height);
 
     // No transforms (simplified encoder)
-    try output.append(0xFF); // End of transforms marker
+    try output.append(allocator, 0xFF); // End of transforms marker
 
     // Write pixel data (simplified - real FLIF uses MANIAC)
     // Just store raw bytes for now
@@ -237,27 +237,27 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 
             switch (color_space) {
                 .grayscale => {
-                    try output.append(color.toGrayscale());
+                    try output.append(allocator, color.toGrayscale());
                 },
                 .rgb => {
-                    try output.append(color.r);
-                    try output.append(color.g);
-                    try output.append(color.b);
+                    try output.append(allocator, color.r);
+                    try output.append(allocator, color.g);
+                    try output.append(allocator, color.b);
                 },
                 .rgba => {
-                    try output.append(color.r);
-                    try output.append(color.g);
-                    try output.append(color.b);
-                    try output.append(color.a);
+                    try output.append(allocator, color.r);
+                    try output.append(allocator, color.g);
+                    try output.append(allocator, color.b);
+                    try output.append(allocator, color.a);
                 },
             }
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeVarint(output: *std.ArrayList(u8), value: u32) !void {
+fn writeVarint(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: u32) !void {
     var v = value;
     if (v > 0) v -= 1; // FLIF varints are 1-based
 
@@ -266,10 +266,10 @@ fn writeVarint(output: *std.ArrayList(u8), value: u32) !void {
         v >>= 7;
 
         if (v == 0) {
-            try output.append(byte);
+            try output.append(allocator, byte);
             break;
         } else {
-            try output.append(byte | 0x80);
+            try output.append(allocator, byte | 0x80);
         }
     }
 }
@@ -286,20 +286,43 @@ test "Varint encoding/decoding" {
     const allocator = std.testing.allocator;
 
     // Test writeVarint
-    var buf = std.ArrayList(u8).init(allocator);
-    defer buf.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
 
-    try writeVarint(&buf, 1);
+    try writeVarint(allocator, &buf, 1);
     try std.testing.expectEqual(@as(usize, 1), buf.items.len);
     try std.testing.expectEqual(@as(u8, 0), buf.items[0]);
+    var pos: usize = 0;
+    try std.testing.expectEqual(@as(u32, 1), try readVarint(buf.items, &pos));
 
     buf.clearRetainingCapacity();
-    try writeVarint(&buf, 128);
+    try writeVarint(allocator, &buf, 128);
+    try std.testing.expectEqual(@as(usize, 1), buf.items.len);
+    pos = 0;
+    try std.testing.expectEqual(@as(u32, 128), try readVarint(buf.items, &pos));
+
+    buf.clearRetainingCapacity();
+    try writeVarint(allocator, &buf, 129);
     try std.testing.expectEqual(@as(usize, 2), buf.items.len);
+    pos = 0;
+    try std.testing.expectEqual(@as(u32, 129), try readVarint(buf.items, &pos));
 }
 
 test "ColorSpace enum" {
     try std.testing.expectEqual(@as(u4, 1), @intFromEnum(ColorSpace.grayscale));
     try std.testing.expectEqual(@as(u4, 3), @intFromEnum(ColorSpace.rgb));
     try std.testing.expectEqual(@as(u4, 4), @intFromEnum(ColorSpace.rgba));
+}
+
+test "FLIF encoder emits dimensions and RGBA pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, FLIF_MAGIC, encoded[0..FLIF_MAGIC.len]);
+    try std.testing.expect(encoded.len >= FLIF_MAGIC.len + 5 + 8);
 }

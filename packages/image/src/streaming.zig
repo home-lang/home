@@ -317,7 +317,8 @@ pub const ScanlineIterator = struct {
 
 pub const StreamingReader = struct {
     allocator: std.mem.Allocator,
-    file: ?std.fs.File,
+    io_context: std.Io,
+    file: ?std.Io.File,
     buffer: []u8,
     buffer_size: usize,
     position: usize,
@@ -326,8 +327,13 @@ pub const StreamingReader = struct {
     const DEFAULT_BUFFER_SIZE = 64 * 1024; // 64KB
 
     pub fn init(allocator: std.mem.Allocator, buffer_size: ?usize) StreamingReader {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), buffer_size);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io_context: std.Io, buffer_size: ?usize) StreamingReader {
         return StreamingReader{
             .allocator = allocator,
+            .io_context = io_context,
             .file = null,
             .buffer = &.{},
             .buffer_size = buffer_size orelse DEFAULT_BUFFER_SIZE,
@@ -337,28 +343,34 @@ pub const StreamingReader = struct {
     }
 
     pub fn open(self: *StreamingReader, path: []const u8) !void {
-        self.file = try std.fs.cwd().openFile(path, .{});
-        const stat = try self.file.?.stat();
-        self.file_size = stat.size;
-        self.buffer = try self.allocator.alloc(u8, self.buffer_size);
+        if (self.file != null) return error.AlreadyOpen;
+
+        const file = try std.Io.Dir.cwd().openFile(self.io_context, path, .{});
+        errdefer file.close(self.io_context);
+        const file_size = std.math.cast(usize, try file.length(self.io_context)) orelse return error.FileTooBig;
+        const buffer = try self.allocator.alloc(u8, self.buffer_size);
+
+        self.file = file;
+        self.file_size = file_size;
+        self.buffer = buffer;
         self.position = 0;
     }
 
     pub fn deinit(self: *StreamingReader) void {
-        if (self.file) |f| f.close();
+        if (self.file) |f| f.close(self.io_context);
         if (self.buffer.len > 0) self.allocator.free(self.buffer);
     }
 
     pub fn read(self: *StreamingReader, dest: []u8) !usize {
-        if (self.file == null) return 0;
-        return self.file.?.read(dest);
+        const file = self.file orelse return 0;
+        const bytes_read = try file.readPositional(self.io_context, &.{dest}, self.position);
+        self.position += bytes_read;
+        return bytes_read;
     }
 
     pub fn seek(self: *StreamingReader, offset: u64) !void {
-        if (self.file) |f| {
-            try f.seekTo(offset);
-            self.position = @intCast(offset);
-        }
+        if (self.file == null) return;
+        self.position = std.math.cast(usize, offset) orelse return error.FileTooBig;
     }
 
     pub fn getPosition(self: *const StreamingReader) usize {
@@ -376,16 +388,23 @@ pub const StreamingReader = struct {
 
 pub const StreamingWriter = struct {
     allocator: std.mem.Allocator,
-    file: ?std.fs.File,
+    io_context: std.Io,
+    file: ?std.Io.File,
     buffer: []u8,
     buffer_pos: usize,
 
     const DEFAULT_BUFFER_SIZE = 64 * 1024; // 64KB
 
     pub fn init(allocator: std.mem.Allocator, buffer_size: ?usize) !StreamingWriter {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), buffer_size);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io_context: std.Io, buffer_size: ?usize) !StreamingWriter {
         const size = buffer_size orelse DEFAULT_BUFFER_SIZE;
+        if (size == 0) return error.InvalidBufferSize;
         return StreamingWriter{
             .allocator = allocator,
+            .io_context = io_context,
             .file = null,
             .buffer = try allocator.alloc(u8, size),
             .buffer_pos = 0,
@@ -393,12 +412,13 @@ pub const StreamingWriter = struct {
     }
 
     pub fn create(self: *StreamingWriter, path: []const u8) !void {
-        self.file = try std.fs.cwd().createFile(path, .{});
+        if (self.file != null) return error.AlreadyOpen;
+        self.file = try std.Io.Dir.cwd().createFile(self.io_context, path, .{});
     }
 
     pub fn deinit(self: *StreamingWriter) void {
         self.flush() catch {};
-        if (self.file) |f| f.close();
+        if (self.file) |f| f.close(self.io_context);
         self.allocator.free(self.buffer);
     }
 
@@ -421,7 +441,7 @@ pub const StreamingWriter = struct {
 
     pub fn flush(self: *StreamingWriter) !void {
         if (self.buffer_pos > 0 and self.file != null) {
-            _ = try self.file.?.write(self.buffer[0..self.buffer_pos]);
+            try self.file.?.writeStreamingAll(self.io_context, self.buffer[0..self.buffer_pos]);
             self.buffer_pos = 0;
         }
     }
@@ -483,11 +503,17 @@ pub const MappedImage = struct {
     width: u32,
     height: u32,
     format: PixelFormat,
-    file: std.fs.File,
+    io_context: std.Io,
+    file: std.Io.File,
     mapping: ?[]align(std.heap.page_size_min) u8,
 
     pub fn open(path: []const u8, width: u32, height: u32, format: PixelFormat) !MappedImage {
-        const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
+        return openWithIo(std.Io.Threaded.global_single_threaded.io(), path, width, height, format);
+    }
+
+    pub fn openWithIo(io_context: std.Io, path: []const u8, width: u32, height: u32, format: PixelFormat) !MappedImage {
+        const file = try std.Io.Dir.cwd().openFile(io_context, path, .{ .mode = .read_write });
+        errdefer file.close(io_context);
 
         const bpp = format.bytesPerPixel();
         const size = @as(usize, width) * @as(usize, height) * bpp;
@@ -505,6 +531,7 @@ pub const MappedImage = struct {
             .width = width,
             .height = height,
             .format = format,
+            .io_context = io_context,
             .file = file,
             .mapping = mapping,
         };
@@ -514,7 +541,7 @@ pub const MappedImage = struct {
         if (self.mapping) |m| {
             std.posix.munmap(m);
         }
-        self.file.close();
+        self.file.close(self.io_context);
     }
 
     pub fn getPixel(self: *const MappedImage, x: u32, y: u32) ?Color {
@@ -709,4 +736,60 @@ test "Scanline iterator" {
     }
 
     try std.testing.expectEqual(@as(u32, 50), count);
+}
+
+test "Streaming reader and writer preserve position and all bytes" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "stream.bin" });
+    defer allocator.free(path);
+
+    {
+        var writer = try StreamingWriter.initWithIo(allocator, std.testing.io, 3);
+        defer writer.deinit();
+        try writer.create(path);
+        try writer.write("hello");
+        try writer.write(" world");
+        try writer.flush();
+    }
+
+    var reader = StreamingReader.initWithIo(allocator, std.testing.io, 4);
+    defer reader.deinit();
+    try reader.open(path);
+    try std.testing.expectEqual(@as(usize, 11), reader.getSize());
+
+    var prefix: [6]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, prefix.len), try reader.read(&prefix));
+    try std.testing.expectEqualStrings("hello ", &prefix);
+    try std.testing.expectEqual(@as(usize, 6), reader.getPosition());
+
+    try reader.seek(6);
+    var suffix: [5]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, suffix.len), try reader.read(&suffix));
+    try std.testing.expectEqualStrings("world", &suffix);
+}
+
+test "Mapped image uses caller-provided I/O" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "mapped.rgba" });
+    defer allocator.free(path);
+
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .read = true });
+        defer file.close(std.testing.io);
+        try file.setLength(std.testing.io, 16);
+    }
+
+    var mapped = try MappedImage.openWithIo(std.testing.io, path, 2, 2, .rgba8);
+    defer mapped.deinit();
+    mapped.setPixel(1, 1, Color.GREEN);
+    try mapped.sync();
+    try std.testing.expectEqual(Color.GREEN, mapped.getPixel(1, 1).?);
 }
