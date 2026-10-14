@@ -378,10 +378,17 @@ pub const Audio = struct {
 
     /// Load audio from file (auto-detects format)
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return loadWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const data = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
+    /// Load audio from file using the caller's I/O implementation.
+    pub fn loadWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !Self {
+        const data = try std.Io.Dir.cwd().readFileAlloc(
+            io_context,
+            path,
+            allocator,
+            .limited(1024 * 1024 * 1024),
+        );
         defer allocator.free(data);
 
         return loadFromMemory(allocator, data);
@@ -405,14 +412,16 @@ pub const Audio = struct {
     fn loadWav(allocator: std.mem.Allocator, data: []const u8) !Self {
         var reader = try WavReader.fromMemory(allocator, data);
 
-        var frames = std.ArrayList(AudioFrame).init(allocator);
+        var frames: std.ArrayList(AudioFrame) = .empty;
         errdefer {
             for (frames.items) |*f| f.deinit();
-            frames.deinit();
+            frames.deinit(allocator);
         }
 
         while (try reader.readFrames(4096)) |audio_frame| {
-            try frames.append(audio_frame);
+            var owned_frame = audio_frame;
+            errdefer owned_frame.deinit();
+            try frames.append(allocator, owned_frame);
         }
 
         return Self{
@@ -428,14 +437,16 @@ pub const Audio = struct {
     fn loadAiff(allocator: std.mem.Allocator, data: []const u8) !Self {
         var reader = try AiffReader.fromMemory(allocator, data);
 
-        var frames = std.ArrayList(AudioFrame).init(allocator);
+        var frames: std.ArrayList(AudioFrame) = .empty;
         errdefer {
             for (frames.items) |*f| f.deinit();
-            frames.deinit();
+            frames.deinit(allocator);
         }
 
         while (try reader.readFrames(4096)) |audio_frame| {
-            try frames.append(audio_frame);
+            var owned_frame = audio_frame;
+            errdefer owned_frame.deinit();
+            try frames.append(allocator, owned_frame);
         }
 
         return Self{
@@ -454,7 +465,7 @@ pub const Audio = struct {
 
         // MP3 decoding not implemented - return info only
         return Self{
-            .frames = std.ArrayList(AudioFrame).init(allocator),
+            .frames = .empty,
             .sample_rate = reader.getSampleRate(),
             .channels = reader.getChannels(),
             .format = .s16le,
@@ -468,7 +479,7 @@ pub const Audio = struct {
         defer reader.deinit();
 
         return Self{
-            .frames = std.ArrayList(AudioFrame).init(allocator),
+            .frames = .empty,
             .sample_rate = reader.getSampleRate(),
             .channels = reader.getChannels(),
             .format = reader.stream_info.getSampleFormat(),
@@ -482,7 +493,7 @@ pub const Audio = struct {
         defer reader.deinit();
 
         return Self{
-            .frames = std.ArrayList(AudioFrame).init(allocator),
+            .frames = .empty,
             .sample_rate = reader.getSampleRate(),
             .channels = reader.getChannels(),
             .format = .f32le,
@@ -495,7 +506,7 @@ pub const Audio = struct {
         const reader = try AacReader.fromMemory(allocator, data);
 
         return Self{
-            .frames = std.ArrayList(AudioFrame).init(allocator),
+            .frames = .empty,
             .sample_rate = reader.getSampleRate(),
             .channels = reader.getChannels(),
             .format = .f32le,
@@ -508,7 +519,7 @@ pub const Audio = struct {
         for (self.frames.items) |*f| {
             f.deinit();
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
         if (self.metadata) |*m| {
             m.deinit();
         }
@@ -516,20 +527,30 @@ pub const Audio = struct {
 
     /// Save audio to file (format determined by extension)
     pub fn save(self: *const Self, path: []const u8) !void {
+        return self.saveWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// Save audio to file using the caller's I/O implementation.
+    pub fn saveWithIo(self: *const Self, io_context: std.Io, path: []const u8) !void {
         const ext = std.fs.path.extension(path);
         const format_type = AudioFormat.fromExtension(ext);
 
-        try self.saveAs(path, format_type);
+        try self.saveAsWithIo(io_context, path, format_type);
     }
 
     /// Save audio as specific format
     pub fn saveAs(self: *const Self, path: []const u8, format_type: AudioFormat) !void {
+        return self.saveAsWithIo(std.Io.Threaded.global_single_threaded.io(), path, format_type);
+    }
+
+    /// Save audio as a specific format using the caller's I/O implementation.
+    pub fn saveAsWithIo(self: *const Self, io_context: std.Io, path: []const u8, format_type: AudioFormat) !void {
         const data = try self.encode(format_type);
         defer self.allocator.free(data);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(data);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, data);
     }
 
     /// Encode to specific format
@@ -730,6 +751,39 @@ test "SampleFormat" {
 test "ChannelLayout" {
     try std.testing.expectEqual(@as(u8, 2), ChannelLayout.stereo.channelCount());
     try std.testing.expectEqual(@as(u8, 6), ChannelLayout.surround_51.channelCount());
+}
+
+test "Audio save uses explicit std.Io" {
+    const allocator = std.testing.allocator;
+    var original = Audio{
+        .frames = .empty,
+        .sample_rate = 44100,
+        .channels = 2,
+        .format = .s16le,
+        .metadata = null,
+        .allocator = allocator,
+    };
+    defer original.deinit();
+
+    {
+        var audio_frame = try AudioFrame.init(allocator, 16, .s16le, 2, 44100);
+        errdefer audio_frame.deinit();
+        audio_frame.setSampleF32(0, 0, 0.5);
+        audio_frame.setSampleF32(0, 1, -0.5);
+        try original.frames.append(allocator, audio_frame);
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "round-trip.wav" });
+    defer allocator.free(path);
+
+    try original.saveAsWithIo(std.testing.io, path, .wav);
+    const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+    defer allocator.free(data);
+    try std.testing.expect(wav.isWav(data));
 }
 
 // Import tests from all new modules

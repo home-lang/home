@@ -501,12 +501,17 @@ pub const AiffWriter = struct {
 
     /// Write to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
+        return self.writeToFileWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// Write to file using the caller's I/O implementation.
+    pub fn writeToFileWithIo(self: *Self, io_context: std.Io, path: []const u8) !void {
         const data = try self.finalize();
         defer self.buffer.allocator.free(data);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(data);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, data);
     }
 };
 
@@ -578,5 +583,27 @@ test "AIFF writer" {
     const data = try writer.finalize();
     defer std.testing.allocator.free(data);
 
+    try std.testing.expect(isAiff(data));
+}
+
+test "AIFF writer uses explicit std.Io" {
+    const allocator = std.testing.allocator;
+    var original = try AudioFrame.init(allocator, 8, .s16be, 2, 44100);
+    defer original.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "output.aiff" });
+    defer allocator.free(path);
+
+    var writer = try AiffWriter.init(allocator, 2, 44100, 16);
+    defer writer.deinit();
+    try writer.writeFrame(&original);
+    try writer.writeToFileWithIo(std.testing.io, path);
+
+    const data = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+    defer allocator.free(data);
     try std.testing.expect(isAiff(data));
 }

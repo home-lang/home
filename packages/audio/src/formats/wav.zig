@@ -132,6 +132,7 @@ pub const WavHeader = struct {
 
 pub const WavReader = struct {
     data: []const u8,
+    owned_data: ?[]u8,
     pos: usize,
     header: WavHeader,
     samples_read: u64,
@@ -155,6 +156,7 @@ pub const WavReader = struct {
 
         var reader = Self{
             .data = data,
+            .owned_data = null,
             .pos = 12,
             .header = undefined,
             .samples_read = 0,
@@ -167,14 +169,31 @@ pub const WavReader = struct {
 
     /// Create reader from file
     pub fn fromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = std.fs.cwd().openFile(path, .{}) catch return AudioError.FileNotFound;
-        defer file.close();
+        return fromFileWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const data = file.readToEndAlloc(allocator, 1024 * 1024 * 1024) catch return AudioError.ReadError;
+    /// Create reader from file using the caller's I/O implementation.
+    pub fn fromFileWithIo(allocator: std.mem.Allocator, io_context: std.Io, path: []const u8) !Self {
+        const data = std.Io.Dir.cwd().readFileAlloc(
+            io_context,
+            path,
+            allocator,
+            .limited(1024 * 1024 * 1024),
+        ) catch |read_err| switch (read_err) {
+            error.FileNotFound => return AudioError.FileNotFound,
+            else => return AudioError.ReadError,
+        };
         errdefer allocator.free(data);
 
-        const reader = try fromMemory(allocator, data);
+        var reader = try fromMemory(allocator, data);
+        reader.owned_data = data;
         return reader;
+    }
+
+    /// Release storage owned by a file-backed reader.
+    pub fn deinit(self: *Self) void {
+        if (self.owned_data) |data| self.allocator.free(data);
+        self.owned_data = null;
     }
 
     fn parseChunks(self: *Self) !void {
@@ -430,12 +449,17 @@ pub const WavWriter = struct {
 
     /// Write to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
+        return self.writeToFileWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// Write to file using the caller's I/O implementation.
+    pub fn writeToFileWithIo(self: *Self, io_context: std.Io, path: []const u8) !void {
         const data = try self.finalize();
         defer self.buffer.allocator.free(data);
 
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(data);
+        const file = try std.Io.Dir.cwd().createFile(io_context, path, .{});
+        defer file.close(io_context);
+        try file.writeStreamingAll(io_context, data);
     }
 };
 
@@ -472,18 +496,18 @@ test "WAV header parsing" {
     // Minimal WAV header
     const wav_data = [_]u8{
         'R', 'I', 'F', 'F', // RIFF
-        36,  0,   0,   0, // File size - 8
+        36, 0, 0, 0, // File size - 8
         'W', 'A', 'V', 'E', // WAVE
         'f', 'm', 't', ' ', // fmt chunk
-        16,  0,   0,   0, // fmt chunk size
-        1,   0, // PCM format
-        2,   0, // 2 channels
-        0x44, 0xAC, 0,   0, // 44100 Hz
+        16, 0, 0, 0, // fmt chunk size
+        1, 0, // PCM format
+        2, 0, // 2 channels
+        0x44, 0xAC, 0, 0, // 44100 Hz
         0x10, 0xB1, 0x02, 0, // Byte rate
-        4,   0, // Block align
-        16,  0, // Bits per sample
+        4, 0, // Block align
+        16, 0, // Bits per sample
         'd', 'a', 't', 'a', // data chunk
-        0,   0,   0,   0, // Data size
+        0, 0, 0, 0, // Data size
     };
 
     const reader = try WavReader.fromMemory(std.testing.allocator, &wav_data);
@@ -523,4 +547,32 @@ test "WAV round-trip" {
     try std.testing.expectEqual(original.num_samples, decoded.num_samples);
     try std.testing.expectEqual(original.channels, decoded.channels);
     try std.testing.expectEqual(original.sample_rate, decoded.sample_rate);
+}
+
+test "WAV file reader owns its input buffer" {
+    const allocator = std.testing.allocator;
+    var original = try AudioFrame.init(allocator, 8, .s16le, 2, 44100);
+    defer original.deinit();
+    original.setSampleF32(0, 0, 0.25);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "owned.wav" });
+    defer allocator.free(path);
+
+    var writer = try WavWriter.init(allocator, 2, 44100, .s16le);
+    defer writer.deinit();
+    try writer.writeFrame(&original);
+    try writer.writeToFileWithIo(std.testing.io, path);
+
+    var reader = try WavReader.fromFileWithIo(allocator, std.testing.io, path);
+    defer reader.deinit();
+    try std.testing.expect(reader.owned_data != null);
+
+    var decoded = try reader.readAll();
+    defer decoded.deinit();
+    try std.testing.expectEqual(original.num_samples, decoded.num_samples);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), decoded.getSampleF32(0, 0), 0.001);
 }
