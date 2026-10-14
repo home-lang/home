@@ -674,3 +674,44 @@ has SHA-256 `3baafa1219a4568568567a20a8f48499546b890bdbbd7c3c9f8bd5c75e661e5c`;
 all 2,639 payload hashes were verified. The archive retains initial failures,
 corrected regression controls, final passing gates, disk interruptions and
 lock-wait expiries. The disk floors and memory limit remain unchanged.
+
+## Imported inherited generic callable types
+
+Callable schema transfer now retains a supported intersection's concrete sibling
+members instead of replacing the whole type with its base's contextual read
+projection. This preserves an inherited generic interface's own fields across
+imports and re-exports. Inference also expands retained generic declaration
+edges under a recursion guard before matching their structural members.
+Property diagnostics combine exact object constituents, preserving duplicate
+members' intersected types and requiredness. Contradictory discriminants now
+point to the property while retaining the original intersection's reduction
+chain; private conflicts continue through the existing diagnostic path.
+
+The final sources pass **4,597 checker, 210 driver, 294 Program and 50 CLI tests**
+and eight stream checks. Debug and ReleaseFast each match **32** table-shaped
+observations and **56** tracked imported-generic observations. The latter cover
+inherited and own fields, explicit and inferred arguments, returned row types,
+re-exports, both optional-property modes and invalid inputs. Their CLI workflow
+retains both engines' codes, locations, statuses, input hashes and raw output.
+Diagnostic prose remains a separate compatibility requirement.
+
+ReleaseFast also passes 32 generic-indexed, 48 optional-indexed, 88 recursive,
+360 automatic-variable and 50 declaration/output observations. The unchanged
+**306-file** table graph passes native TypeScript but still fails Home: its
+Home-only diagnostics fall from **32 to 24**, with eight false TS2353 property
+errors removed and none added. All inputs and the project output set remain
+unchanged. This entrypoint and the complete local project tree remain unqualified;
+the outstanding table errors, ts-images memory growth, other compiler versions,
+wrappers and API uses still need investigation.
+
+The [imported-generic evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-imported-generic-controls.tar.gz)
+has SHA-256 `5e6bf14fdb42356cba59526701074da299f13f85a3f53d53f2758eb71103b011`; all 2,880 payload hashes were
+verified. Initial failures, corrected diagnostic regressions, interrupted builds
+and final passing gates are retained. The 3,840 MB ceiling and disk floors are
+unchanged.
+
+The rebase changed only resource-probe reporting among the recorded candidate
+inputs. All 72 compiler build/test inputs stayed identical. The 56 imported
+controls pass through the updated guard; its probe cleanup test and six isolated
+disk controls also pass. The archive retains the lock-contention observations
+and subsequent passing controls.

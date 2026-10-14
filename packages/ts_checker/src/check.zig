@@ -164450,6 +164450,19 @@ pub const Checker = struct {
             return;
         }
         if (try self.inferFromSameGenericInstantiation(param_t, arg_t, subs)) return;
+        // Program declaration edges retain their generic identity instead of
+        // eagerly flattening nested fields. Inference must inspect the
+        // instantiated body when it cannot match the same origin directly.
+        if (p_flags.is_instantiation or a_flags.is_instantiation) {
+            const pair_key = (@as(u64, param_t) << 32) | @as(u64, arg_t);
+            const entry = try self.active_inference_pairs.getOrPut(self.gpa, pair_key);
+            if (entry.found_existing) return;
+            defer _ = self.active_inference_pairs.remove(pair_key);
+            const parameter = try self.resolveGenericType(param_t);
+            const argument = try self.resolveGenericType(arg_t);
+            if (parameter != param_t or argument != arg_t)
+                return self.inferFromPair(parameter, argument, subs);
+        }
         if (try self.inferFromCallableSignatureMembers(param_t, arg_t, subs)) return;
         // Union/intersection flags are aggregate ORs of their members,
         // so a union containing `T` also has `is_type_parameter`.
@@ -186623,6 +186636,47 @@ pub const Checker = struct {
     ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
         const instantiated_target = self.resolveGenericType(target_t) catch target_t;
+        if (self.intersectionNeverReduction(instantiated_target)) |reduction| {
+            if (!reduction.is_private_conflict) {
+                if (try self.findObjectLiteralPropNodeForTargetMember(init_node, reduction.prop_name)) |prop_node| {
+                    const property = hir_mod.objectPropertyOf(self.hir, prop_node);
+                    if (property.value != hir_mod.none_node_id) {
+                        const source = if (self.hir.typeOf(property.value) != types.Primitive.none)
+                            self.hir.typeOf(property.value)
+                        else
+                            try self.checkExpression(property.value);
+                        // Keep the original intersection for its reduction
+                        // chain, but point at the contradictory property.
+                        try self.reportTypeNotAssignable(
+                            if (property.key != hir_mod.none_node_id) property.key else property.value,
+                            self.widenLiteralType(source),
+                            instantiated_target,
+                            "Type is not assignable to property type.",
+                        );
+                        return true;
+                    }
+                }
+            }
+        }
+        if (instantiated_target < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(instantiated_target).is_intersection and
+            self.intersectionHasOnlyObjectMembers(instantiated_target) and
+            !self.intersectionReducesToNeverForAssignability(instantiated_target))
+        {
+            // Inherited Program interfaces keep base and own members as an
+            // intersection. Diagnose the complete property shape, including
+            // duplicate members' intersected types and requiredness.
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            try self.collectIntersectionObjectMembers(instantiated_target, &members);
+            const object = try self.interner.internObjectType(members.items);
+            return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(
+                init_node,
+                object,
+                include_optional_undefined,
+                widen_literal_sources,
+            );
+        }
         const resolved_target = self.diagnosticObjectTypeFromMaybeOptional(instantiated_target, 0) orelse return false;
         if (self.typeHasAliasDisplayPrefix(target_t, "RecursivePartial<") or
             self.typeHasAliasDisplayPrefix(resolved_target, "RecursivePartial<"))

@@ -282,6 +282,17 @@ pub const Builder = struct {
                 };
             },
             .intersection => |members| {
+                // A projection of one base cannot stand in for concrete
+                // sibling fields. Keep a fully supported intersection exact;
+                // unsupported utility scaffolding still uses its read surface.
+                for (members) |member| {
+                    const has_members = switch (member.*) {
+                        .object => |own| own.len != 0,
+                        .indexed_object => |own| own.members.len != 0,
+                        else => false,
+                    };
+                    if (has_members and try schema.Schema.expressionSupported(expr, self.gpa)) return null;
+                }
                 var all: ?ReadCoverage = null;
                 var picked: ?ReadCoverage = null;
                 var omitted: ?ReadCoverage = null;
@@ -1458,6 +1469,25 @@ const TestGraph = struct {
         return @constCast(try collect(T.allocator, &self.resolver, self.sources.items, source, symbol.decls.items[0]));
     }
 };
+
+test "class schema: supported inherited callable types keep their complete declaration" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Request { index: string; page?: number; }
+        \\export interface Driver<T> { search: (request: Request) => T; }
+        \\export interface Options<T> extends Omit<Request, "index"> { index: string; driver: Driver<T>; ranking?: string; }
+        \\export declare function create<T>(options: Options<T>): Driver<T>;
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "create");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const parameter = result.declaration.body.?.function.parameters[0].type.reference;
+    try T.expect(!parameter.contextual_projection);
+    try T.expect(parameter.contextual_read == null);
+    const body = parameter.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 3), body[1].object.len);
+    try T.expectEqualStrings("driver", body[1].object[1].name);
+}
 
 test "class schema: parameters defaults constraints and nested members keep owner identities" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
