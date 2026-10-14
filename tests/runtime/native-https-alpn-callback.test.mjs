@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const fixture = join(dirname(fileURLToPath(import.meta.url)), '../../packages/runtime/test/test/js/node/http/fixtures')
+const fixture = join(dirname(fileURLToPath(import.meta.url)), './fixtures/https-localhost')
 const cert = readFileSync(join(fixture, 'openssl_localhost.crt'))
 const key = readFileSync(join(fixture, 'openssl_localhost.key'))
 const ca = readFileSync(join(fixture, 'openssl_localhost_ca.pem'))

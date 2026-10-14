@@ -5,6 +5,7 @@ import { createServer as createTLSListener } from 'node:tls'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 performance.clearResourceTimings()
 const plain = createServer((req, res) => res.end('connection'))
@@ -34,7 +35,7 @@ assert(lookup.domainLookupEnd >= lookup.domainLookupStart)
 assert(lookup.connectStart >= lookup.domainLookupEnd)
 const plainClosed = once(plain, 'close'); plain.close(); await plainClosed
 
-const fixture = join(import.meta.dir, '../../packages/runtime/test/test/js/node/http/fixtures')
+const fixture = fileURLToPath(new URL('./fixtures/https-localhost/', import.meta.url))
 const cert = readFileSync(join(fixture, 'openssl_localhost.crt'))
 const ca = readFileSync(join(fixture, 'openssl_localhost_ca.pem'))
 const secure = createSecureServer({ cert, key: readFileSync(join(fixture, 'openssl_localhost.key')), ALPNProtocols: ['http/1.1'] }, (req, res) => res.end('secure'))

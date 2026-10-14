@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "revisions": [
+    {
+      "path": "js/node/http/fixtures/openssl_localhost.crt",
+      "upstream_blob": "ffef6e4b865e20e8669b3d4b9eda1c76ad94ed0c",
+      "maintained_blob": "94acf2549df365c64d8eae5ac19a6e654504992d",
+      "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+      "issue": "https://github.com/home-lang/home/issues/710",
+      "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+      "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+      "sha256": "70295d5b03007fec6e20465409902450a68d52aaf4e117dc63a56ae78287e0dd"
+    },
+    {
+      "path": "js/node/http/fixtures/openssl_localhost.key",
+      "upstream_blob": "d293a804bcb5ffadf9955198506c380eb285974d",
+      "maintained_blob": "8f8bb23d10df01b724c42d9773cd96568095cd02",
+      "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+      "issue": "https://github.com/home-lang/home/issues/710",
+      "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+      "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+      "sha256": "900d54fcb3a413c88215d4ce4beab6616da5fb5dc031782595c986b9685c82a5"
+    },
+    {
+      "path": "js/node/http/fixtures/openssl_localhost_ca.pem",
+      "upstream_blob": "d4668a606943a23b0ca91fe386ffbe306237bafa",
+      "maintained_blob": "5349ce57409ceb4ef11940ac18affc5164e89448",
+      "source_commit": "f0327d43445cd8ec7ed4ce3c4488940daf82cc8c",
+      "issue": "https://github.com/home-lang/home/issues/710",
+      "reason": "Adopted renewed custom-CA fixtures; original verification and trust-chain assertions remain unchanged.",
+      "upstream_revision": "15c936cd93878f44724c79869753b85e8b9b2f2c",
+      "sha256": "e13eea7bc0957a5970a4d087cd8531634f05a733772fb8470318362aae4b050b"
+    }
+  ]
+}
