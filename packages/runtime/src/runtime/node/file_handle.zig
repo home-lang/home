@@ -91,6 +91,33 @@ pub export fn Home__FileHandle__detach(state: *State) void {
     defer state.lock.unlock();
     state.closed = true;
 }
+
+const Transfer = struct {
+    fd: bun.FD,
+    owned: bool = true,
+};
+
+// A serialized value owns the descriptor between the sender and receiver.
+// This allocation contains no pointers into the sender's JavaScript VM.
+pub export fn Home__FileHandle__take(state: *State) ?*Transfer {
+    state.lock.lock();
+    defer state.lock.unlock();
+    if (state.closed) return null;
+    const transfer = bun.new(Transfer, .{ .fd = state.fd });
+    state.closed = true;
+    return transfer;
+}
+
+pub export fn Home__FileHandle__receive(global: *jsc.JSGlobalObject, transfer: *Transfer) jsc.JSValue {
+    if (!transfer.owned) return .zero;
+    transfer.owned = false;
+    return State.create(global, transfer.fd);
+}
+
+pub export fn Home__FileHandle__releaseTransfer(transfer: *Transfer) void {
+    if (transfer.owned) transfer.fd.close();
+    bun.destroy(transfer);
+}
 pub export fn Home__FileHandle__fd(state: *State) jsc.JSValue {
     state.lock.lock();
     defer state.lock.unlock();

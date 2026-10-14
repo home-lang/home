@@ -286,6 +286,7 @@ pub fn cryptoObject1(b: *std.Build, object_root: []const u8) std.Build.LazyPath 
 pub fn serializedScriptValueObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_serialized_script_value_object) |object| return object;
     const files = b.addWriteFiles();
+    _ = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/HomeFileHandleTransfer.h"), "HomeFileHandleTransfer.h");
     const source = files.addCopyFile(
         b.path("packages/runtime/upstream/src/jsc/bindings/webcore/SerializedScriptValue.cpp"),
         "SerializedScriptValue.cpp",
@@ -491,6 +492,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.cpp",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.h",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/HomeFileHandleTransfer.h",
         "packages/runtime/upstream/src/jsc/bindings/NodeFSStatBinding.cpp",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.h",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingHTTPParser.cpp",

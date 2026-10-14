@@ -27,6 +27,7 @@
 #include "config.h"
 #include "SerializedScriptValue.h"
 #include "BunString.h"
+#include "HomeFileHandleTransfer.h"
 // #include "BlobRegistry.h"
 // #include "ByteArrayPixelBuffer.h"
 #include "CryptoKeyAES.h"
@@ -259,6 +260,7 @@ enum SerializationTag {
     Bun__KeyObjectTag = 252,
     Bun__nodenet_BlockList = 251,
     Bun__NodePerformanceHooksHistogramTag = 250,
+    Home__FileHandleTransferTag = 249,
 
     ErrorTag = 255
 };
@@ -1776,6 +1778,16 @@ private:
                 write(column);
                 writeNullableString(sourceURL);
                 writeNullableString(stack);
+                return true;
+            }
+            if (Home::isFileHandle(m_lexicalGlobalObject, obj)) {
+                uint32_t index;
+                if (!Home::FileHandleTransferScope::index(obj, index)) {
+                    code = SerializationReturnCode::ValidationError;
+                    return true;
+                }
+                write(Home__FileHandleTransferTag);
+                write(index);
                 return true;
             }
             if (obj->inherits<JSMessagePort>()) {
@@ -5083,6 +5095,13 @@ private:
             }
             return m_gcBuffer.at(*index);
         }
+        case Home__FileHandleTransferTag: {
+            uint32_t index;
+            if (!read(index)) return JSValue();
+            auto value = Home::FileHandleReceiveScope::receive(m_lexicalGlobalObject, index);
+            if (!value) fail();
+            return value;
+        }
         case MessagePortReferenceTag: {
             uint32_t index;
             bool indexSuccessfullyRead = read(index);
@@ -5582,6 +5601,7 @@ error:
 
 SerializedScriptValue::~SerializedScriptValue()
 {
+    Home::releaseFileHandleTransfers(this);
     for (auto* ptr : m_serializedBlockListRefs)
         BlockList__onStructuredCloneDestroy(ptr);
 }
@@ -6253,6 +6273,7 @@ ExceptionOr<Ref<SerializedScriptValue>> SerializedScriptValue::create(JSGlobalOb
 #if ENABLE(WEB_CODECS)
     Vector<Ref<WebCodecsVideoFrame>> transferredVideoFrames;
 #endif
+    Home::FileHandleTransferScope fileHandles(&lexicalGlobalObject);
     HashSet<JSC::JSObject*> uniqueTransferables;
     for (auto& transferable : transferList) {
         if (!uniqueTransferables.add(transferable.get()).isNewEntry) {
@@ -6315,6 +6336,13 @@ ExceptionOr<Ref<SerializedScriptValue>> SerializedScriptValue::create(JSGlobalOb
             continue;
         }
 #endif
+        if (Home::isFileHandle(&lexicalGlobalObject, transferable.get())) {
+            if (forStorage == SerializationForStorage::Yes || forTransfer == SerializationForCrossProcessTransfer::Yes)
+                return Exception { DataCloneError };
+            if (!fileHandles.admit(transferable.get()))
+                RELEASE_AND_RETURN(scope, Exception { ExistingExceptionError });
+            continue;
+        }
         return Exception { DataCloneError };
     }
 
@@ -6394,6 +6422,10 @@ ExceptionOr<Ref<SerializedScriptValue>> SerializedScriptValue::create(JSGlobalOb
         RELEASE_AND_RETURN(scope, exceptionForSerializationFailure(code));
     }
 
+    if (!fileHandles.validate()) {
+        releaseSerializedBlockListRefs();
+        RELEASE_AND_RETURN(scope, Exception { ExistingExceptionError });
+    }
     auto arrayBufferContentsArray = transferArrayBuffers(vm, arrayBuffers);
     if (arrayBufferContentsArray.hasException()) {
         releaseSerializedBlockListRefs();
@@ -6459,6 +6491,7 @@ ExceptionOr<Ref<SerializedScriptValue>> SerializedScriptValue::create(JSGlobalOb
 #endif
             ));
     result->m_serializedBlockListRefs = WTF::move(serializedBlockListRefs);
+    fileHandles.commit(result.ptr());
     return result;
 }
 
@@ -6610,6 +6643,7 @@ JSValue SerializedScriptValue::deserialize(JSGlobalObject& lexicalGlobalObject, 
 
 JSValue SerializedScriptValue::deserialize(JSGlobalObject& lexicalGlobalObject, JSGlobalObject* globalObject, const Vector<RefPtr<MessagePort>>& messagePorts, const Vector<String>& blobURLs, const Vector<String>& blobFilePaths, SerializationErrorMode throwExceptions, bool* didFail)
 {
+    Home::FileHandleReceiveScope fileHandles(this);
     VM& vm = lexicalGlobalObject.vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
     switch (m_fastPath) {

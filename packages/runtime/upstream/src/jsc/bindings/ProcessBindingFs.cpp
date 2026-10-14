@@ -1,5 +1,12 @@
 
 #include "ProcessBindingFs.h"
+#include "HomeFileHandleTransfer.h"
+#include "BunBuiltinNames.h"
+#include "InternalModuleRegistry.h"
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+#include <string>
 #include <JavaScriptCore/ObjectConstructor.h>
 #include <JavaScriptCore/JSDestructibleObject.h>
 #include <JavaScriptCore/CompleteSubspace.h>
@@ -129,6 +136,9 @@ extern "C" void Home__FileHandle__release(void*);
 extern "C" size_t Home__FileHandle__memoryCost();
 extern "C" bool Home__FileHandle__isOpen(void*);
 extern "C" void Home__FileHandle__detach(void*);
+extern "C" void* Home__FileHandle__take(void*);
+extern "C" EncodedJSValue Home__FileHandle__receive(JSGlobalObject*, void*);
+extern "C" void Home__FileHandle__releaseTransfer(void*);
 extern "C" EncodedJSValue Home__FileHandle__fd(void*);
 extern "C" EncodedJSValue Home__FSRequest__event(JSGlobalObject*, EncodedJSValue, EncodedJSValue, uint8_t);
 JSC_DECLARE_CUSTOM_GETTER(homeFileHandleFd);
@@ -138,6 +148,7 @@ public:
     static size_t estimatedSize(JSCell* cell, VM& vm) { return Base::estimatedSize(cell, vm) + Home__FileHandle__memoryCost(); }
     static constexpr unsigned StructureFlags = Base::StructureFlags;
     DECLARE_INFO;
+    DECLARE_VISIT_CHILDREN;
     template<typename CellType, SubspaceAccess>
     static CompleteSubspace* subspaceFor(VM& vm) { return &vm.destructibleObjectSpace(); }
     static HomeFileHandle* create(JSGlobalObject* global, void* state)
@@ -187,10 +198,35 @@ private:
         auto* global = uncheckedDowncast<Zig::GlobalObject>(globalObject());
         if (auto* context = global->scriptExecutionContext()) m_context = context->identifier();
     }
+public:
+    void bind(VM& vm, JSObject* wrapper, JSObject* validator, JSValue flag)
+    {
+        m_wrapper.set(vm, this, wrapper);
+        m_validator.set(vm, this, validator);
+        m_flag.set(vm, this, flag);
+    }
+    JSObject* wrapper() const { return m_wrapper.get(); }
+    JSObject* validator() const { return m_validator.get(); }
+    JSValue flag() const { return m_flag.get(); }
+private:
+    WriteBarrier<JSObject> m_wrapper;
+    WriteBarrier<JSObject> m_validator;
+    WriteBarrier<Unknown> m_flag;
     void* m_state;
     double m_asyncId { 0 };
     std::optional<WebCore::ScriptExecutionContextIdentifier> m_context;
 };
+template<typename Visitor>
+void HomeFileHandle::visitChildrenImpl(JSCell* cell, Visitor& visitor)
+{
+    auto* object = static_cast<HomeFileHandle*>(cell);
+    Base::visitChildren(object, visitor);
+    visitor.append(object->m_wrapper);
+    visitor.append(object->m_validator);
+    visitor.append(object->m_flag);
+}
+DEFINE_VISIT_CHILDREN(HomeFileHandle);
+
 const ClassInfo HomeFileHandle::s_info = { "FileHandle"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(HomeFileHandle) };
 extern "C" EncodedJSValue Home__FileHandle__wrap(JSGlobalObject* global, void* state)
 {
@@ -216,6 +252,23 @@ extern "C" void* Home__FileHandle__state(JSGlobalObject* global, EncodedJSValue 
     auto* object = ownedFileHandle(global, JSValue::decode(value));
     return object ? object->state() : nullptr;
 }
+JSC_DEFINE_HOST_FUNCTION(homeBindFileHandle, (JSGlobalObject* global, CallFrame* frame))
+{
+    auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* backend = ownedFileHandle(global, frame->argument(1));
+    RETURN_IF_EXCEPTION(scope, {});
+    auto* wrapper = frame->argument(0).getObject();
+    auto* validator = frame->argument(2).getObject();
+    if (!wrapper || !validator || !validator->isCallable()) {
+        throwTypeError(global, scope, "FileHandle wrapper and validator are required"_s);
+        return {};
+    }
+    backend->bind(vm, wrapper, validator, frame->argument(3));
+    wrapper->putDirect(vm, WebCore::builtinNames(vm).dataPrivateName(), backend, 0);
+    return JSValue::encode(jsUndefined());
+}
+
 JSC_DEFINE_HOST_FUNCTION(homeOpenFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__open(global, frame); }
 JSC_DEFINE_HOST_FUNCTION(homeAdoptFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__adopt(global, frame); }
 JSC_DEFINE_HOST_FUNCTION(homeCloseFileHandle, (JSGlobalObject* global, CallFrame* frame)) { return Home__FileHandle__close(global, frame, true); }
@@ -226,6 +279,11 @@ JSC_DEFINE_HOST_FUNCTION(homeDetachFileHandle, (JSGlobalObject* global, CallFram
     if (!object) return {};
     Home__FileHandle__detach(object->state());
     return JSValue::encode(jsUndefined());
+}
+JSC_DEFINE_HOST_FUNCTION(homeFileHandleDescriptor, (JSGlobalObject* global, CallFrame* frame))
+{
+    auto* object = ownedFileHandle(global, frame->argument(0));
+    return object ? Home__FileHandle__fd(object->state()) : EncodedJSValue {};
 }
 JSC_DEFINE_HOST_FUNCTION(homeFileHandleAsyncId, (JSGlobalObject* global, CallFrame* frame))
 {
@@ -455,6 +513,8 @@ void ProcessBindingFs::finishCreation(JSC::VM& vm)
     ASSERT(inherits(info()));
     auto* global = globalObject();
     putDirect(vm, Identifier::fromString(vm, "homeOpenFileHandle"_s), JSFunction::create(vm, global, 3, "homeOpenFileHandle"_s, homeOpenFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeFileHandleDescriptor"_s), JSFunction::create(vm, global, 1, "homeFileHandleDescriptor"_s, homeFileHandleDescriptor, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
+    putDirect(vm, Identifier::fromString(vm, "homeBindFileHandle"_s), JSFunction::create(vm, global, 4, "homeBindFileHandle"_s, homeBindFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeDetachFileHandle"_s), JSFunction::create(vm, global, 1, "homeDetachFileHandle"_s, homeDetachFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeAdoptFileHandle"_s), JSFunction::create(vm, global, 1, "homeAdoptFileHandle"_s, homeAdoptFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
     putDirect(vm, Identifier::fromString(vm, "homeCloseFileHandle"_s), JSFunction::create(vm, global, 1, "homeCloseFileHandle"_s, homeCloseFileHandle, ImplementationVisibility::Public), static_cast<unsigned>(PropertyAttribute::DontEnum));
@@ -473,3 +533,200 @@ void ProcessBindingFs::finishCreation(JSC::VM& vm)
 } // namespace Bun
 
 #undef PROCESS_BINDING_NOT_IMPLEMENTED
+
+namespace Home {
+using namespace JSC;
+
+static Bun::HomeFileHandle* fileHandleBackend(JSGlobalObject* global, JSObject* wrapper)
+{
+    auto value = wrapper->getDirect(global->vm(), WebCore::builtinNames(global->vm()).dataPrivateName());
+    auto* backend = value ? dynamicDowncast<Bun::HomeFileHandle>(value) : nullptr;
+    return backend && backend->wrapper() == wrapper ? backend : nullptr;
+}
+
+bool isFileHandle(JSGlobalObject* global, JSObject* wrapper)
+{
+    return fileHandleBackend(global, wrapper);
+}
+
+struct FileHandleTicket {
+    void* descriptor { nullptr };
+    enum class FlagKind { Undefined, Null, Number, String } flagKind { FlagKind::Undefined };
+    double number { 0 };
+    std::string string;
+    ~FileHandleTicket()
+    {
+        if (descriptor) Bun::Home__FileHandle__releaseTransfer(descriptor);
+    }
+};
+using FileHandleTickets = std::vector<std::shared_ptr<FileHandleTicket>>;
+static std::mutex fileHandleTicketsLock;
+static std::unordered_map<const WebCore::SerializedScriptValue*, FileHandleTickets> fileHandleTickets;
+static thread_local FileHandleTransferScope* activeFileHandleTransfer;
+static thread_local FileHandleReceiveScope* activeFileHandleReceive;
+
+struct FileHandleTransferScope::Impl {
+    JSGlobalObject* global;
+    MarkedArgumentBuffer roots;
+    std::vector<Bun::HomeFileHandle*> handles;
+    std::vector<JSObject*> wrappers;
+    FileHandleTickets tickets;
+};
+
+FileHandleTransferScope::FileHandleTransferScope(JSGlobalObject* global)
+    : m_impl(std::make_unique<Impl>())
+    , m_previous(activeFileHandleTransfer)
+{
+    m_impl->global = global;
+    activeFileHandleTransfer = this;
+}
+
+FileHandleTransferScope::~FileHandleTransferScope()
+{
+    activeFileHandleTransfer = m_previous;
+}
+
+bool FileHandleTransferScope::admit(JSObject* wrapper)
+{
+    auto* backend = fileHandleBackend(m_impl->global, wrapper);
+    if (!backend) return false;
+    m_impl->roots.append(wrapper);
+    m_impl->roots.append(backend);
+    m_impl->handles.push_back(backend);
+    m_impl->wrappers.push_back(wrapper);
+    auto ticket = std::make_shared<FileHandleTicket>();
+    auto flag = backend->flag();
+    if (flag.isNull()) ticket->flagKind = FileHandleTicket::FlagKind::Null;
+    else if (flag.isNumber()) {
+        ticket->flagKind = FileHandleTicket::FlagKind::Number;
+        ticket->number = flag.asNumber();
+    } else if (flag.isString()) {
+        ticket->flagKind = FileHandleTicket::FlagKind::String;
+        auto text = flag.toWTFString(m_impl->global).utf8();
+        ticket->string.assign(text.data(), text.length());
+    }
+    m_impl->tickets.push_back(std::move(ticket));
+    return validate();
+}
+
+bool FileHandleTransferScope::validate()
+{
+    auto* global = m_impl->global;
+    auto& vm = global->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    for (unsigned i = 0; i < m_impl->handles.size(); ++i) {
+        MarkedArgumentBuffer args;
+        auto* backend = m_impl->handles[i];
+        JSC::call(global, backend->validator(), m_impl->wrappers[i], args, "FileHandle transfer validator must be callable"_s);
+        RETURN_IF_EXCEPTION(scope, false);
+    }
+    return true;
+}
+
+bool FileHandleTransferScope::index(JSObject* wrapper, uint32_t& index)
+{
+    if (!activeFileHandleTransfer) return false;
+    auto& wrappers = activeFileHandleTransfer->m_impl->wrappers;
+    for (unsigned i = 0; i < wrappers.size(); ++i) {
+        if (wrappers[i] == wrapper) {
+            index = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+void FileHandleTransferScope::commit(WebCore::SerializedScriptValue* value)
+{
+    if (m_impl->tickets.empty()) return;
+    for (unsigned i = 0; i < m_impl->handles.size(); ++i) {
+        // Validation runs after serialization and before any transferable is
+        // detached. With the source VM rooted, this ownership move cannot race
+        // its close/GC/shutdown operations.
+        m_impl->tickets[i]->descriptor = Bun::Home__FileHandle__take(m_impl->handles[i]->state());
+        RELEASE_ASSERT(m_impl->tickets[i]->descriptor);
+    }
+    std::lock_guard locker(fileHandleTicketsLock);
+    fileHandleTickets.emplace(value, std::move(m_impl->tickets));
+}
+
+void releaseFileHandleTransfers(const WebCore::SerializedScriptValue* value)
+{
+    FileHandleTickets released;
+    {
+        std::lock_guard locker(fileHandleTicketsLock);
+        auto found = fileHandleTickets.find(value);
+        if (found == fileHandleTickets.end()) return;
+        released = std::move(found->second);
+        fileHandleTickets.erase(found);
+    }
+    // Close unclaimed descriptors outside the registry lock.
+}
+
+struct FileHandleReceiveScope::Impl {
+    FileHandleTickets tickets;
+    std::vector<JSValue> values;
+    MarkedArgumentBuffer roots;
+};
+
+FileHandleReceiveScope::FileHandleReceiveScope(const WebCore::SerializedScriptValue* value)
+    : m_impl(std::make_unique<Impl>())
+    , m_previous(activeFileHandleReceive)
+{
+    {
+        std::lock_guard locker(fileHandleTicketsLock);
+        auto found = fileHandleTickets.find(value);
+        if (found != fileHandleTickets.end()) {
+            m_impl->tickets = std::move(found->second);
+            fileHandleTickets.erase(found);
+        }
+    }
+    m_impl->values.resize(m_impl->tickets.size());
+    activeFileHandleReceive = this;
+}
+
+FileHandleReceiveScope::~FileHandleReceiveScope()
+{
+    activeFileHandleReceive = m_previous;
+    // Unreferenced transfer-list entries and failed decodes close here, even
+    // if the worker retains the SerializedScriptValue after reading its data.
+}
+
+JSValue FileHandleReceiveScope::receive(JSGlobalObject* globalObject, uint32_t index)
+{
+    if (!activeFileHandleReceive || index >= activeFileHandleReceive->m_impl->tickets.size()) return {};
+    auto& receive = *activeFileHandleReceive->m_impl;
+    if (receive.values[index]) return receive.values[index];
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* global = ::defaultGlobalObject(globalObject);
+    auto module = global->internalModuleRegistry()->requireId(global, vm, Bun::InternalModuleRegistry::NodeFSPromises);
+    RETURN_IF_EXCEPTION(scope, {});
+    auto data = module.get(global, WebCore::builtinNames(vm).dataPrivateName());
+    RETURN_IF_EXCEPTION(scope, {});
+    auto constructor = data.get(global, Identifier::fromString(vm, "FileHandle"_s));
+    RETURN_IF_EXCEPTION(scope, {});
+    auto& ticket = *receive.tickets[index];
+    auto backend = JSValue::decode(Bun::Home__FileHandle__receive(globalObject, ticket.descriptor));
+    RETURN_IF_EXCEPTION(scope, {});
+    if (!backend) return {};
+    receive.roots.append(backend);
+    JSValue flag = jsUndefined();
+    switch (ticket.flagKind) {
+    case FileHandleTicket::FlagKind::Undefined: break;
+    case FileHandleTicket::FlagKind::Null: flag = jsNull(); break;
+    case FileHandleTicket::FlagKind::Number: flag = jsNumber(ticket.number); break;
+    case FileHandleTicket::FlagKind::String:
+        flag = JSC::jsString(vm, String::fromUTF8(std::span<const char>(ticket.string.data(), ticket.string.size())));
+        break;
+    }
+    MarkedArgumentBuffer args;
+    args.append(backend);
+    args.append(flag);
+    auto result = JSC::construct(globalObject, constructor, getConstructData(constructor), args);
+    RETURN_IF_EXCEPTION(scope, {});
+    receive.values[index] = result;
+    receive.roots.append(result);
+    return result;
+}
+}

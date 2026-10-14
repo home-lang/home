@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "Worker.h"
+#include "HomeFileHandleTransfer.h"
 
 #include "ErrorCode.h"
 #include "ErrorEvent.h"
@@ -711,6 +712,9 @@ bool Worker::dispatchExit(int32_t exitCode)
     // TransferredMessagePort destruction can close other pipes and post tasks.
     // It must not run under either Worker lock or the global contexts-map lock.
     dropped.clear();
+    // A worker may stop without ever importing worker_threads/reading its
+    // data. Retaining the Worker must not retain those native descriptor owners.
+    Home::releaseFileHandleTransfers(m_options.workerDataAndEnvironmentData.get());
 
     if (auto* parentGlobal = Home__Worker__parentGlobalForExit(impl_)) {
         // Nested parents keep their VM alive until every direct child has

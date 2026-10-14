@@ -2,12 +2,11 @@
 import type { FileSink } from "bun";
 const { Readable, Writable, finished } = require("node:stream");
 const fs: typeof import("node:fs") = require("node:fs");
-const { read, write, fsync, writev } = fs;
-const { FileHandle, kRef, kUnref, kFd } = (fs.promises as any).$data as {
+const { FileHandle, kRef, kUnref, getFileHandleFd } = (fs.promises as any).$data as {
   FileHandle: { new (): FileHandle };
   readonly kRef: unique symbol;
   readonly kUnref: unique symbol;
-  readonly kFd: unique symbol;
+  readonly getFileHandleFd: (handle: FileHandle) => number;
 };
 type FileHandle = import("node:fs/promises").FileHandle & {
   on(event: any, listener: any): FileHandle;
@@ -47,47 +46,35 @@ const kIoDone = Symbol("kIoDone");
 const kWriteStreamFastPath = Symbol("kWriteStreamFastPath");
 const kFs = Symbol("kFs");
 
-const {
-  read: fileHandlePrototypeRead,
-  write: fileHandlePrototypeWrite,
-  fsync: fileHandlePrototypeFsync,
-  writev: fileHandlePrototypeWritev,
-} = FileHandle.prototype;
-
+// FileHandle methods provide the operation's descriptor, reference counting
+// and virtual dispatch. Bypassing them changes observable fd overrides.
 const fileHandleStreamFs = (fh: FileHandle) => ({
-  // try to use the basic fs.read/write/fsync if available, since they are less
-  // abstractions. however, node.js allows patching the file handle, so this has
-  // to be checked for.
-  read:
-    fh.read === fileHandlePrototypeRead
-      ? read
-      : function (fd, buf, offset, length, pos, cb) {
-          return fh.read(buf, offset, length, pos).then(
-            ({ bytesRead, buffer }) => cb(null, bytesRead, buffer),
-            err => cb(err, 0, buf),
-          );
-        },
-  write:
-    fh.write === fileHandlePrototypeWrite
-      ? write
-      : function (fd, buffer, offset, length, position, cb) {
-          return fh.write(buffer, offset, length, position).then(
-            ({ bytesWritten, buffer }) => cb(null, bytesWritten, buffer),
-            err => cb(err, 0, buffer),
-          );
-        },
-  writev: fh.writev === fileHandlePrototypeWritev ? writev : undefined,
-  fsync:
-    fh.sync === fileHandlePrototypeFsync
-      ? fsync
-      : function (fd, cb) {
-          return fh.sync().then(() => cb(), cb);
-        },
+  read(fd, buffer, offset, length, position, callback) {
+    return fh.read(buffer, offset, length, position).then(
+      ({ bytesRead, buffer }) => callback(null, bytesRead, buffer),
+      error => callback(error, 0, buffer),
+    );
+  },
+  write(fd, buffer, offset, length, position, callback) {
+    return fh.write(buffer, offset, length, position).then(
+      ({ bytesWritten, buffer }) => callback(null, bytesWritten, buffer),
+      error => callback(error, 0, buffer),
+    );
+  },
+  writev(fd, buffers, position, callback) {
+    return fh.writev(buffers, position).then(
+      ({ bytesWritten, buffers }) => callback(null, bytesWritten, buffers),
+      error => callback(error, 0, buffers),
+    );
+  },
+  fsync(fd, callback) {
+    return fh.sync().then(() => callback(), callback);
+  },
   close: streamFileHandleClose.bind(fh),
 });
 
 function streamFileHandleClose(this: FileHandle, fd: FD, cb: (err?: any) => void) {
-  $assert(this[kFd] == fd, "fd mismatch");
+  $assert(getFileHandleFd(this) == fd, "fd mismatch");
   this[kUnref]();
   this.close().then(() => cb(), cb);
 }
@@ -171,7 +158,7 @@ function ReadStream(this: FSStream, path, options): void {
       throw $ERR_METHOD_NOT_IMPLEMENTED("fs.FileHandle with custom fs operations");
     }
     this[kFs] = fileHandleStreamFs(fd);
-    this.fd = fd[kFd];
+    this.fd = getFileHandleFd(fd);
     fd[kRef]();
     fd.on("close", this.close.bind(this));
   } else {
@@ -450,7 +437,7 @@ function WriteStream(this: FSStream, path: string | null, options?: any): void {
     this[kFs] = customFs = fileHandleStreamFs(fd);
     fd[kRef]();
     fd.on("close", this.close.bind(this));
-    this.fd = fd = fd[kFd];
+    this.fd = fd = getFileHandleFd(fd);
   } else {
     throw $ERR_INVALID_ARG_TYPE("options.fd", "number or FileHandle", fd);
   }

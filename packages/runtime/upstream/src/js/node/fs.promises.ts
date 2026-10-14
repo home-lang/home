@@ -155,7 +155,13 @@ async function opendir(dir: string, options) {
   return promise;
 }
 
+function getFileHandleFd(handle) {
+  const owner = handle[kNativeHandle];
+  return owner ? nativeFileHandles().homeFileHandleDescriptor(owner) : handle[kFd];
+}
+
 const private_symbols = {
+  getFileHandleFd,
   kRef,
   kUnref,
   kFd,
@@ -331,6 +337,12 @@ function asyncWrap(fn: any, name: string) {
   // Partially taken from https://github.com/nodejs/node/blob/c25878d370/lib/internal/fs/promises.js#L148
   // These functions await the result so that errors propagate correctly with
   // async stack traces and so that the ref counting is correct.
+  function validateFileHandleTransfer() {
+    if (this[kClosePromise] || this[kRefs] > 1 || getFileHandleFd(this) === -1) {
+      throw new DOMException("Cannot transfer FileHandle while in use or closed", "DataCloneError");
+    }
+  }
+
   class FileHandle extends EventEmitter {
     constructor(fd, flag) {
       super();
@@ -340,6 +352,7 @@ function asyncWrap(fn: any, name: string) {
       this[kRefs] = 1;
       this[kClosePromise] = null;
       this[kFlag] = flag;
+      if (this[kNativeHandle]) nativeFileHandles().homeBindFileHandle(this, this[kNativeHandle], validateFileHandleTransfer, flag);
     }
 
     getAsyncId() {
@@ -347,7 +360,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     get fd() {
-      return this[kFd];
+      return getFileHandleFd(this);
     }
 
     [kCloseResolve];
@@ -355,11 +368,10 @@ function asyncWrap(fn: any, name: string) {
     [kFlag];
     [kClosePromise];
     [kRefs];
-    // needs to exist for https://github.com/nodejs/node/blob/8641d941893/test/parallel/test-worker-message-port-transfer-fake-js-transferable.js to pass
-    [Symbol("messaging_transfer_symbol")]() {}
+    [Symbol("messaging_transfer_symbol")]() { return this[kNativeHandle]; }
 
     async appendFile(data, options) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("writeFile", fd);
       let encoding = "utf8";
       let flush = false;
@@ -380,7 +392,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async chmod(mode) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("fchmod", fd);
 
       try {
@@ -392,7 +404,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async chown(uid, gid) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("fchown", fd);
 
       try {
@@ -404,7 +416,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async datasync() {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("fdatasync", fd);
 
       try {
@@ -416,7 +428,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async sync() {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("fsync", fd);
 
       try {
@@ -428,7 +440,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async read(bufferOrParams, offset, length, position) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("read", fd);
 
       let buffer = bufferOrParams;
@@ -471,7 +483,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async readv(buffers, position) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("readv", fd);
 
       try {
@@ -483,7 +495,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async readFile(options) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("readFile", fd);
 
       try {
@@ -503,7 +515,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async stat(options) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("fstat", fd);
 
       try {
@@ -515,7 +527,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async truncate(len = 0) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("ftruncate", fd);
 
       try {
@@ -527,7 +539,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async utimes(atime, mtime) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("futimes", fd);
 
       try {
@@ -539,7 +551,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async write(buffer, offset, length, position) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("write", fd);
 
       if (buffer?.byteLength === 0) return { __proto__: null, bytesWritten: 0, buffer };
@@ -568,7 +580,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async writev(buffers, position) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("writev", fd);
 
       try {
@@ -580,7 +592,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     async writeFile(data: string, options: any = "utf8") {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("writeFile", fd);
       let encoding: string = "utf8";
       let signal: AbortSignal | undefined = undefined;
@@ -609,7 +621,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     close = async () => {
-      const fd = this[kFd];
+      const fd = getFileHandleFd(this);
       if (fd === -1) {
         return Promise.$resolve();
       }
@@ -646,7 +658,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     readableWebStream(options = kEmptyObject) {
-      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (getFileHandleFd(this) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
       if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
       if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
       validateObject(options, "options");
@@ -706,7 +718,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     createReadStream(options = kEmptyObject) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("createReadStream", fd);
       return new (require("internal/fs/streams").ReadStream)(undefined, {
         highWaterMark: 64 * 1024,
@@ -716,7 +728,7 @@ function asyncWrap(fn: any, name: string) {
     }
 
     createWriteStream(options = kEmptyObject) {
-      const fd = this[kFd];
+      const fd = this.fd;
       throwEBADFIfNecessary("createWriteStream", fd);
       return new (require("internal/fs/streams").WriteStream)(undefined, {
         highWaterMark: 64 * 1024,
@@ -730,7 +742,7 @@ function asyncWrap(fn: any, name: string) {
     // iterable streams pull model. Optional transforms and options (including
     // AbortSignal) may be provided as trailing arguments.
     pull(...args) {
-      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (getFileHandleFd(this) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
       if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
       if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
 
@@ -741,7 +753,7 @@ function asyncWrap(fn: any, name: string) {
       let { start: pos = -1, limit: remaining = -1 } = options;
 
       const handle = this;
-      const fd = this[kFd];
+      const fd = this.fd;
 
       validateBoolean(autoClose, "options.autoClose");
 
@@ -794,7 +806,7 @@ function asyncWrap(fn: any, name: string) {
         async *[Symbol.asyncIterator]() {
           // The fd was captured when pull() was called; the handle may have
           // been closed in between (an unstarted source doesn't hold a ref).
-          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          if (getFileHandleFd(handle) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
           handle[kRef]();
           try {
             while (remaining !== 0) {
@@ -833,7 +845,7 @@ function asyncWrap(fn: any, name: string) {
     // Port of Node.js FileHandle.prototype.pullSync. Returns the file
     // contents as an Iterable<Uint8Array[]> using synchronous reads.
     pullSync(...args) {
-      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (getFileHandleFd(this) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
       if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
       if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
 
@@ -844,7 +856,7 @@ function asyncWrap(fn: any, name: string) {
       let { start: pos = -1, limit: remaining = -1 } = options;
 
       const handle = this;
-      const fd = this[kFd];
+      const fd = this.fd;
 
       validateBoolean(autoClose, "options.autoClose");
 
@@ -868,7 +880,7 @@ function asyncWrap(fn: any, name: string) {
           // The fd was captured when pullSync() was called; the handle may
           // have been closed in between (an unstarted source doesn't hold a
           // ref).
-          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          if (getFileHandleFd(handle) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
           // Acquire the ref per iteration (like pull()'s async generator), so
           // an iterable that is never consumed doesn't pin the handle open;
           // cleanup is idempotent so a stray next() after return() can't
@@ -936,7 +948,7 @@ function asyncWrap(fn: any, name: string) {
     // Writer backed by this file handle. Supports writev() for batch writes,
     // handles zero-byte writes with retry (up to 5 attempts).
     writer(options = kEmptyObject) {
-      if (this[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+      if (getFileHandleFd(this) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
       if (this[kClosePromise]) throw $ERR_INVALID_STATE("The FileHandle is closing");
       if (this[kLocked]) throw $ERR_INVALID_STATE("The FileHandle is locked");
 
@@ -947,7 +959,7 @@ function asyncWrap(fn: any, name: string) {
       let { start: pos = -1, limit: bytesRemaining = -1 } = options;
 
       const handle = this;
-      const fd = this[kFd];
+      const fd = this.fd;
       let totalBytesWritten = 0;
       let closed = false;
       let closing = false;
@@ -1139,7 +1151,7 @@ function asyncWrap(fn: any, name: string) {
           if (closed) {
             return Promise.$reject($ERR_INVALID_STATE_TypeError("The writer is closed"));
           }
-          if (handle[kFd] === -1) {
+          if (getFileHandleFd(handle) === -1) {
             // The handle was closed before this writer took its ref.
             return Promise.$reject($ERR_INVALID_STATE("The FileHandle is closed"));
           }
@@ -1171,7 +1183,7 @@ function asyncWrap(fn: any, name: string) {
           if (closed) {
             return Promise.$reject($ERR_INVALID_STATE_TypeError("The writer is closed"));
           }
-          if (handle[kFd] === -1) {
+          if (getFileHandleFd(handle) === -1) {
             return Promise.$reject($ERR_INVALID_STATE("The FileHandle is closed"));
           }
           validateObject(options, "options");
@@ -1199,7 +1211,7 @@ function asyncWrap(fn: any, name: string) {
 
         writeSync(chunk) {
           if (error || closed || asyncPending) return false;
-          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          if (getFileHandleFd(handle) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
           chunk = toUint8Array(chunk);
           const length = chunk.byteLength;
           if (length > syncWriteThreshold) return false;
@@ -1236,7 +1248,7 @@ function asyncWrap(fn: any, name: string) {
 
         writevSync(chunks) {
           if (error || closed || asyncPending) return false;
-          if (handle[kFd] === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
+          if (getFileHandleFd(handle) === -1) throw $ERR_INVALID_STATE("The FileHandle is closed");
           chunks = convertChunks(chunks);
           let totalSize = 0;
           for (let i = 0; i < chunks.length; i++) {
@@ -1351,7 +1363,7 @@ function asyncWrap(fn: any, name: string) {
 
     // Synchronously close the FileHandle (used by pullSync/writer autoClose).
     [kCloseSync]() {
-      if (this[kFd] === -1) return;
+      if (getFileHandleFd(this) === -1) return;
       if (this[kClosePromise]) {
         throw $ERR_INVALID_STATE("The FileHandle is closing");
       }
@@ -1365,7 +1377,7 @@ function asyncWrap(fn: any, name: string) {
         throw new DOMException("Cannot transfer FileHandle while in use", "DataCloneError");
       }
 
-      const fd = this[kFd];
+      const fd = getFileHandleFd(this);
       const flag = this[kFlag];
       nativeFileHandles().homeDetachFileHandle(this[kNativeHandle]);
       this[kFd] = -1;
@@ -1383,6 +1395,7 @@ function asyncWrap(fn: any, name: string) {
       this[kNativeHandle] = nativeFileHandles().homeAdoptFileHandle(fd);
       this[kFd] = fd;
       this[kFlag] = flag;
+      nativeFileHandles().homeBindFileHandle(this, this[kNativeHandle], validateFileHandleTransfer, flag);
     }
 
     [kRef]() {
@@ -1395,7 +1408,7 @@ function asyncWrap(fn: any, name: string) {
         // and short-circuit without ever closing the descriptor, leaking it
         // on the deferred-close path (close() called while an op was still
         // in flight).
-        const fd = this[kFd];
+        const fd = getFileHandleFd(this);
         this[kFd] = -1;
         (fd !== -1 ? nativeFileHandles().homeCloseFileHandle(this[kNativeHandle]) : Promise.$resolve()).$then(this[kCloseResolve], this[kCloseReject]);
       }
