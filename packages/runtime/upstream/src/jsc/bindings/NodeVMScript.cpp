@@ -420,7 +420,7 @@ static JSC::EncodedJSValue runInContext(NodeVMGlobalObject* globalObject, NodeVM
     script->setSigintReceived(false);
 
     if (exception) [[unlikely]] {
-        if (handleException(globalObject, vm, exception, scope)) {
+        if (options.displayErrors && handleException(globalObject, vm, exception, scope)) {
             return {};
         }
         JSC::throwException(globalObject, scope, exception.get());
@@ -483,7 +483,7 @@ JSC_DEFINE_HOST_FUNCTION(scriptRunInThisContext, (JSGlobalObject * globalObject,
     script->setSigintReceived(false);
 
     if (exception) [[unlikely]] {
-        if (handleException(globalObject, vm, exception, scope)) {
+        if (options.displayErrors && handleException(globalObject, vm, exception, scope)) {
             return {};
         }
         JSC::throwException(globalObject, scope, exception.get());

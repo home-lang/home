@@ -223,9 +223,51 @@ function scriptOptionsSemantics() {
   assert.equal(collectedCache.runInThisContext(), 42)
 }
 
+function scriptDisplaySemantics() {
+  for (const run of [
+    (script, options) => script.runInThisContext(options),
+    (script, options) => script.runInContext(vm.createContext({}), options),
+    (script, options) => script.runInNewContext({}, options),
+  ]) {
+    for (const displayErrors of [undefined, true, false]) {
+      const source = 'throw new Error("display marker")'
+      const script = new vm.Script(source, { filename: 'display-probe.vm' })
+      assert.throws(() => run(script, { displayErrors }), error => {
+        assert.equal(error.name, 'Error')
+        assert.equal(error.message, 'display marker')
+        assert.equal(error.stack.startsWith('display-probe.vm:1\n'), displayErrors !== false)
+        assert.equal(error.stack.includes(source + '\n'), displayErrors !== false)
+        return true
+      })
+    }
+  }
+  for (const innerDisplay of [false, true]) {
+    for (const outerDisplay of [false, true]) {
+      const context = vm.createContext({
+        inner() {
+          new vm.Script('throw new Error("nested display")', { filename: 'inner-display.vm' }).runInThisContext({ displayErrors: innerDisplay })
+        },
+      })
+      assert.throws(() => new vm.Script('inner()', { filename: 'outer-display.vm' }).runInContext(context, { displayErrors: outerDisplay }), error => {
+        assert.equal(error.stack.startsWith('inner-display.vm:1\n'), innerDisplay || outerDisplay)
+        assert.equal((error.stack.match(/inner-display\.vm:1\n/g) || []).length, innerDisplay || outerDisplay ? 1 : 0)
+        return true
+      })
+    }
+  }
+  const marker = new Error('stack getter marker')
+  let reads = 0
+  Object.defineProperty(marker, 'stack', {
+    get() { reads++; throw new Error('stack getter executed') },
+  })
+  assert.throws(() => new vm.Script('throw marker').runInContext(vm.createContext({ marker }), { displayErrors: false }), error => error === marker)
+  assert.equal(reads, 0)
+}
+
 async function main() {
   contextOptionsSemantics()
   scriptOptionsSemantics()
+  scriptDisplaySemantics()
   const reuse = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');
     const vm = require('node:vm');
