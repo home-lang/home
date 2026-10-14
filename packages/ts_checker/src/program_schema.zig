@@ -179,9 +179,24 @@ pub const Schema = struct {
     /// the prepared source owners, which must outlive this schema.
     arena: std.heap.ArenaAllocator,
     declaration: *const Declaration,
+    shared_graph: ?*SharedGraph = null,
+
+    pub const SharedGraph = struct {
+        arena: std.heap.ArenaAllocator,
+        references: usize = 1,
+
+        pub fn release(self: *SharedGraph, gpa: std.mem.Allocator) void {
+            std.debug.assert(self.references > 0);
+            self.references -= 1;
+            if (self.references == 0) {
+                self.arena.deinit();
+                gpa.destroy(self);
+            }
+        }
+    };
 
     pub fn deinit(self: *Schema, gpa: std.mem.Allocator) void {
-        self.arena.deinit();
+        if (self.shared_graph) |graph| graph.release(gpa) else self.arena.deinit();
         gpa.destroy(self);
     }
 

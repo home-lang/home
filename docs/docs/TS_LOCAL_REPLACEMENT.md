@@ -801,3 +801,39 @@ contains **5,664** verified payloads, with SHA-256
 Only synthetic fixtures, hashes, logs and replay scripts are included; real-project
 sources are excluded. Cleanup reclaimed **1,577,299,048 bytes** from inactive
 regenerable objects in this task's dedicated Zig cache.
+
+## Shared class declaration graphs
+
+Runtime samples identified repeated class-schema construction before checking:
+each exported class rebuilt its inherited and referenced declaration graph.
+Class collection now uses one builder per bound source snapshot. Export aliases
+retain separate schema views sharing declaration identities. A reference-counted
+arena remains alive after collection until the last view is released; the
+regression verifies graph reuse, inheritance and release order.
+
+The candidate passes **4,599 checker, 210 driver, 295 Program and 50 CLI tests**
+and eight stream checks. Debug and ReleaseFast pass the 64 library observations;
+ReleaseFast passes the seven existing CLI contracts too. All eight suites also
+pass through TypeScript's executable package wrapper. Two full-suite attempts
+were stopped by failed resource probes under load; the unchanged-limit third
+attempt passed. Those interrupted logs remain in the evidence.
+
+The optimized replay now completes within the unchanged 300-second deadline.
+Native TypeScript passes the unchanged **306-file** table graph; Home reports
+**12** diagnostics, down from **17**, with five removed and none added. All
+inputs and the project output set remain unchanged. The preceding debug replay
+still timed out. Guard peaks were **2,788 MB** for optimized validation,
+**3,203 MB** for the completed table replay and **2,191 MB** for the final
+compiler suites, below the unchanged 3,840 MB ceiling.
+
+The table project remains unqualified. Its remaining failures involve optional
+object inference, array relations, callback context and unique-symbol computed
+members. Simple isolated array controls pass, so richer declaration/inference
+paths require investigation. This evidence does not qualify the complete
+`~/Code/**` project tree.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-schema-sharing-controls.tar.gz`
+contains **5,519** verified payloads, with SHA-256
+`d3a19745853b65cee71d4ef883c15cd37614a21f2c8c3ded7c47ea7e218e81a1`.
+The archive retains synthetic contracts, sampled stacks, hashes, logs and replay
+scripts; real-project sources are excluded.
