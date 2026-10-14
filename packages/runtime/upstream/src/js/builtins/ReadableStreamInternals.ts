@@ -1692,7 +1692,22 @@ export function readableStreamCancel(stream: ReadableStream, reason: any) {
       $putInternalField($asyncContext, 0, previous);
     }
   }
-  if (controller === null) return Promise.$resolve();
+  if (controller === null) {
+    // An unread native stream still owns a source although its lazy controller
+    // has not started. Cancel that source without pulling or opening it.
+    const nativeSource = stream.$bunNativePtr;
+    stream.$start = undefined;
+    stream.$bunNativePtr = undefined;
+    if (nativeSource && nativeSource !== -1) {
+      try {
+        nativeSource.updateRef(false);
+        return Promise.$resolve(nativeSource.cancel(reason)).$then(function () {});
+      } catch (error) {
+        return Promise.$reject(error);
+      }
+    }
+    return Promise.$resolve();
+  }
 
   const cancel = controller.$cancel;
   if (cancel) return cancel(controller, reason).$then(function () {});
