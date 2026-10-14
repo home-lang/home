@@ -14400,10 +14400,10 @@ pub const Parser = struct {
         } else if (count == 0) {
             try self.reportCodeAt(start.span.start, start.line, 1096, "An index signature must have exactly one parameter.");
         } else if (saw_equal) {
-            try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+            try self.reportGrammarCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
             if (first_ident_tok) |ident_tok| try self.reportCannotFindNameToken(ident_tok);
         } else {
-            try self.reportCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+            try self.reportGrammarCodeAt(start.span.start, start.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
         }
     }
 
@@ -14444,9 +14444,9 @@ pub const Parser = struct {
                 // the same shape inside `var v: { ... }`.
                 if (!is_mapped_member_syntax) {
                     if (self.parsing_interface_body) {
-                        try self.reportCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                        try self.reportGrammarCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
                     } else {
-                        try self.reportCodeAt(start_tok.span.start, start_tok.line, 1170, "A computed property name in a type literal must refer to an expression whose type is a literal type or a 'unique symbol' type.");
+                        try self.reportGrammarCodeAt(start_tok.span.start, start_tok.line, 1170, "A computed property name in a type literal must refer to an expression whose type is a literal type or a 'unique symbol' type.");
                     }
                 }
                 break :blk @as(hir_mod.StringId, 0);
@@ -14967,7 +14967,7 @@ pub const Parser = struct {
             return false;
         }
         const id1 = self.tokens[after_bracket];
-        if (id1.kind != .identifier) {
+        if (id1.kind != .identifier and !id1.kind.isContextualKeyword()) {
             self.cursor = checkpoint;
             return false;
         }
@@ -36916,4 +36916,23 @@ test "parser: ambient variables retain strict binding diagnostics" {
         found = true;
     };
     try T.expect(found);
+}
+
+test "parser: contextual keyword index parameters retain index signature structure" {
+    inline for (.{ "symbol", "string", "number", "type", "readonly", "get", "async", "declare" }) |name| {
+        const source = try std.fmt.allocPrint(T.allocator,
+            "interface I {{ [{s}: string]: number; }} type A = {{ readonly [{s}: number]: string; }}; class C {{ [{s}: string]: boolean; }}",
+            .{ name, name, name });
+        defer T.allocator.free(source);
+        const setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        const root = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&setup.hir, root);
+        const member = hir_mod.interfaceMembers(&setup.hir, statements[0])[0];
+        try T.expectEqual(hir_mod.NodeKind.index_signature, setup.hir.kindOf(member));
+        const index = hir_mod.indexSignatureOf(&setup.hir, member);
+        try T.expectEqualStrings(name, setup.interner.get(index.key_name));
+        try T.expectEqual(@as(u32, 0), countDiag(setup, 1169));
+    }
 }

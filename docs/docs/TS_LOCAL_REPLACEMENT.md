@@ -837,3 +837,36 @@ contains **5,519** verified payloads, with SHA-256
 `d3a19745853b65cee71d4ef883c15cd37614a21f2c8c3ded7c47ea7e218e81a1`.
 The archive retains synthetic contracts, sampled stacks, hashes, logs and replay
 scripts; real-project sources are excluded.
+
+## Contextual index parameters and declaration grammar
+
+The three remaining Node declaration errors came from valid `[symbol: string]`
+index signatures, rather than unique-symbol members. The shared index-signature
+parser now accepts contextual keyword parameter names and preserves their key
+and value metadata in interfaces, type literals and classes. Computed-key
+TS1169/TS1170 checks now carry grammar classification, so `skipLibCheck` suppresses
+them in declarations while true syntax errors remain visible.
+
+The sources pass **907 parser, 4,599 checker, 211 driver, 295 Program and 50 CLI
+tests**, plus eight stream checks. Debug and ReleaseFast each pass **56** tracked
+declaration-index observations, including contextual names, typed reads, invalid
+assignments, computed keys and syntax errors with `skipLibCheck` enabled and
+disabled. The eight existing CLI suites pass too, and all nine suites pass
+through the executable TypeScript package wrapper. The initial optimized
+contract runner was stopped by resource-probe failures under load; its completed
+suites and the successful fresh-output continuation are retained.
+
+Native TypeScript passes the unchanged **306-file** table graph. Home diagnostics
+fall from **12 to 9**, removing all three false TS1169 index-signature errors and
+adding none. Project inputs and output files remain unchanged. Guard peaks are
+**3,160 MB** for the replay and **2,274 MB** for the final compiler suites, below
+the unchanged 3,840 MB ceiling. The remaining nine application inference and
+callback errors keep this project unqualified, and the complete `~/Code/**`
+replacement goal remains open.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-contextual-index-controls.tar.gz`
+contains **6,285** verified payloads, with SHA-256
+`af4147571db098220163720b277210ecc3bcba0324ece82f9047b889b4c77775`.
+Synthetic contracts, hashes, logs and replay scripts are included; real-project
+sources are excluded. Cleanup reclaimed **1,080,840,560 bytes** of inactive
+regenerable objects while preserving the running test binary.
