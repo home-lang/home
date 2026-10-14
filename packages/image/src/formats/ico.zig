@@ -184,7 +184,7 @@ fn decodeDIB(allocator: std.mem.Allocator, data: []const u8, entry: IconDirEntry
                 4 => {
                     const byte_idx = row_offset + x / 2;
                     if (byte_idx < xor_data.len) {
-                        const shift: u2 = if (x % 2 == 0) 4 else 0;
+                        const shift: u3 = if (x % 2 == 0) 4 else 0;
                         const idx = (xor_data[byte_idx] >> shift) & 0x0F;
                         color = color_table[idx];
                     } else {
@@ -259,20 +259,21 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 }
 
 pub fn encodeMultiple(allocator: std.mem.Allocator, images: []const *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     const image_count: u16 = @intCast(images.len);
 
     // Header
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Reserved
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, ICO_TYPE)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, image_count)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Reserved
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, ICO_TYPE)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, image_count)));
 
     // Encode each image as PNG
-    var png_datas = try allocator.alloc([]u8, images.len);
+    const png_datas = try allocator.alloc([]u8, images.len);
+    var encoded_count: usize = 0;
     defer {
-        for (png_datas) |pd| {
+        for (png_datas[0..encoded_count]) |pd| {
             allocator.free(pd);
         }
         allocator.free(png_datas);
@@ -280,6 +281,7 @@ pub fn encodeMultiple(allocator: std.mem.Allocator, images: []const *const Image
 
     for (images, 0..) |img, i| {
         png_datas[i] = try png.encode(allocator, img);
+        encoded_count += 1;
     }
 
     // Calculate offsets
@@ -290,24 +292,24 @@ pub fn encodeMultiple(allocator: std.mem.Allocator, images: []const *const Image
         const w: u8 = if (img.width >= 256) 0 else @truncate(img.width);
         const h: u8 = if (img.height >= 256) 0 else @truncate(img.height);
 
-        try output.append(w);
-        try output.append(h);
-        try output.append(0); // color count
-        try output.append(0); // reserved
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 1))); // planes
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 32))); // bit count
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(png_datas[i].len))));
-        try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, current_offset)));
+        try output.append(allocator, w);
+        try output.append(allocator, h);
+        try output.append(allocator, 0); // color count
+        try output.append(allocator, 0); // reserved
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 1))); // planes
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 32))); // bit count
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(png_datas[i].len))));
+        try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, current_offset)));
 
         current_offset += @intCast(png_datas[i].len);
     }
 
     // Write image data
     for (png_datas) |pd| {
-        try output.appendSlice(pd);
+        try output.appendSlice(allocator, pd);
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -364,10 +366,10 @@ test "CUR header validation" {
 
 test "Entry parsing" {
     const entry_data = [_]u8{
-        32,   // width
-        32,   // height
-        0,    // color count
-        0,    // reserved
+        32, // width
+        32, // height
+        0, // color count
+        0, // reserved
         1, 0, // planes
         32, 0, // bit count
         0x00, 0x10, 0x00, 0x00, // bytes = 4096
@@ -380,4 +382,23 @@ test "Entry parsing" {
     try std.testing.expectEqual(@as(u16, 32), entry.bit_count);
     try std.testing.expectEqual(@as(u32, 4096), entry.bytes_in_res);
     try std.testing.expectEqual(@as(u32, 22), entry.image_offset);
+}
+
+test "ICO encoder round trips PNG-backed RGBA pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expectEqual(@as(u16, 1), try getImageCount(encoded));
+
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }

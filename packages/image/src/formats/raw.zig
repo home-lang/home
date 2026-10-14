@@ -105,37 +105,31 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     const ifd_info = try parser.parseIFD(ifd_offset);
 
     // Try to find the main image (largest resolution)
-    var best_width: u32 = ifd_info.width;
-    var best_height: u32 = ifd_info.height;
-    var best_offset = ifd_info.strip_offset;
-    var best_size = ifd_info.strip_size;
+    var best_info = ifd_info;
 
     // Check SubIFDs for higher resolution images
     if (ifd_info.sub_ifd_offset > 0 and ifd_info.sub_ifd_offset < data.len) {
         const sub_info = parser.parseIFD(ifd_info.sub_ifd_offset) catch ifd_info;
-        if (sub_info.width > best_width or sub_info.height > best_height) {
-            best_width = sub_info.width;
-            best_height = sub_info.height;
-            best_offset = sub_info.strip_offset;
-            best_size = sub_info.strip_size;
+        if (sub_info.width > best_info.width or sub_info.height > best_info.height) {
+            best_info = sub_info;
         }
     }
 
-    if (best_width == 0 or best_height == 0) {
+    if (best_info.width == 0 or best_info.height == 0) {
         return error.InvalidDimensions;
     }
 
     // Create output image
-    var img = try Image.init(allocator, best_width, best_height, .rgb8);
+    var img = try Image.init(allocator, best_info.width, best_info.height, .rgb8);
     errdefer img.deinit();
 
     // Decode raw data
-    if (best_offset > 0 and best_offset + best_size <= data.len) {
-        const raw_data = data[best_offset..][0..best_size];
-        try decodeRawData(&img, raw_data, ifd_info, allocator);
+    if (best_info.strip_offset > 0 and best_info.strip_offset <= data.len and best_info.strip_size <= data.len - best_info.strip_offset) {
+        const raw_data = data[best_info.strip_offset..][0..best_info.strip_size];
+        try decodeRawData(&img, raw_data, best_info, allocator);
     } else {
         // No valid raw data found, generate placeholder
-        generatePlaceholder(&img, best_width, best_height);
+        generatePlaceholder(&img, best_info.width, best_info.height);
     }
 
     return img;
@@ -178,6 +172,8 @@ const IFDInfo = struct {
     height: u32 = 0,
     bits_per_sample: u16 = 0,
     compression: Compression = .none,
+    photometric: u16 = 0,
+    samples_per_pixel: u16 = 1,
     strip_offset: usize = 0,
     strip_size: usize = 0,
     tile_width: u32 = 0,
@@ -203,21 +199,25 @@ const TiffParser = struct {
             const field_type = readU16(self.data[pos + 2 ..][0..2], self.little_endian);
             const count = readU32(self.data[pos + 4 ..][0..4], self.little_endian);
             const value_offset = readU32(self.data[pos + 8 ..][0..4], self.little_endian);
+            const inline_short = readU16(self.data[pos + 8 ..][0..2], self.little_endian);
 
             const tag: TiffTag = @enumFromInt(tag_id);
 
             switch (tag) {
                 .image_width => {
-                    info.width = if (field_type == 3) @as(u32, @truncate(value_offset)) else value_offset;
+                    info.width = if (field_type == 3) inline_short else value_offset;
                 },
                 .image_length => {
-                    info.height = if (field_type == 3) @as(u32, @truncate(value_offset)) else value_offset;
+                    info.height = if (field_type == 3) inline_short else value_offset;
                 },
                 .bits_per_sample => {
-                    info.bits_per_sample = @truncate(value_offset);
+                    info.bits_per_sample = inline_short;
                 },
                 .compression => {
-                    info.compression = @enumFromInt(@as(u16, @truncate(value_offset)));
+                    info.compression = @enumFromInt(inline_short);
+                },
+                .photometric => {
+                    info.photometric = inline_short;
                 },
                 .strip_offsets => {
                     if (count == 1) {
@@ -232,6 +232,9 @@ const TiffParser = struct {
                     } else if (value_offset < self.data.len) {
                         info.strip_size = readU32(self.data[value_offset..][0..4], self.little_endian);
                     }
+                },
+                .samples_per_pixel => {
+                    info.samples_per_pixel = inline_short;
                 },
                 .tile_width => {
                     info.tile_width = value_offset;
@@ -286,6 +289,28 @@ fn decodeRawData(img: *Image, raw_data: []const u8, info: IFDInfo, allocator: st
 }
 
 fn decodeUncompressed(img: *Image, raw_data: []const u8, info: IFDInfo, allocator: std.mem.Allocator) !void {
+    if (info.photometric == 2) {
+        if (info.bits_per_sample != 8 or info.samples_per_pixel < 3) return error.UnsupportedFormat;
+
+        const pixel_count = std.math.mul(usize, img.width, img.height) catch return error.InvalidDimensions;
+        const required_len = std.math.mul(usize, pixel_count, info.samples_per_pixel) catch return error.InvalidDimensions;
+        if (raw_data.len < required_len) return error.TruncatedData;
+
+        for (0..img.height) |y| {
+            for (0..img.width) |x| {
+                const pixel_index = y * img.width + x;
+                const raw_index = pixel_index * info.samples_per_pixel;
+                img.setPixel(@intCast(x), @intCast(y), .{
+                    .r = raw_data[raw_index],
+                    .g = raw_data[raw_index + 1],
+                    .b = raw_data[raw_index + 2],
+                    .a = 255,
+                });
+            }
+        }
+        return;
+    }
+
     const bits = if (info.bits_per_sample > 0) info.bits_per_sample else 16;
     const bytes_per_sample = @max(1, bits / 8);
     const row_bytes = @as(usize, img.width) * bytes_per_sample;
@@ -435,55 +460,56 @@ fn readU32(bytes: *const [4]u8, little_endian: bool) u32 {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write TIFF header (little-endian)
-    try output.appendSlice("II"); // Little-endian
-    try output.appendSlice(&[_]u8{ 42, 0 }); // TIFF magic
+    try output.appendSlice(allocator, "II"); // Little-endian
+    try output.appendSlice(allocator, &[_]u8{ 42, 0 }); // TIFF magic
 
     // IFD offset (8 bytes from start)
-    try output.appendSlice(&[_]u8{ 8, 0, 0, 0 });
+    try output.appendSlice(allocator, &[_]u8{ 8, 0, 0, 0 });
 
     // Write IFD
     const num_tags: u16 = 10;
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, num_tags)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, num_tags)));
 
     const data_offset: u32 = 8 + 2 + (num_tags * 12) + 4;
 
     // Tag: ImageWidth (256)
-    try writeTag(&output, 256, 3, 1, img.width);
+    try writeTag(allocator, &output, 256, if (img.width <= std.math.maxInt(u16)) 3 else 4, 1, img.width);
 
     // Tag: ImageLength (257)
-    try writeTag(&output, 257, 3, 1, img.height);
+    try writeTag(allocator, &output, 257, if (img.height <= std.math.maxInt(u16)) 3 else 4, 1, img.height);
 
     // Tag: BitsPerSample (258)
-    try writeTag(&output, 258, 3, 1, 8);
+    try writeTag(allocator, &output, 258, 3, 1, 8);
 
     // Tag: Compression (259) - None
-    try writeTag(&output, 259, 3, 1, 1);
+    try writeTag(allocator, &output, 259, 3, 1, 1);
 
     // Tag: PhotometricInterpretation (262) - RGB
-    try writeTag(&output, 262, 3, 1, 2);
+    try writeTag(allocator, &output, 262, 3, 1, 2);
 
     // Tag: StripOffsets (273)
-    try writeTag(&output, 273, 4, 1, data_offset);
+    try writeTag(allocator, &output, 273, 4, 1, data_offset);
 
     // Tag: SamplesPerPixel (277)
-    try writeTag(&output, 277, 3, 1, 3);
+    try writeTag(allocator, &output, 277, 3, 1, 3);
 
     // Tag: RowsPerStrip (278)
-    try writeTag(&output, 278, 3, 1, img.height);
+    try writeTag(allocator, &output, 278, if (img.height <= std.math.maxInt(u16)) 3 else 4, 1, img.height);
 
     // Tag: StripByteCounts (279)
-    const strip_size: u32 = img.width * img.height * 3;
-    try writeTag(&output, 279, 4, 1, strip_size);
+    const pixel_count = std.math.mul(u32, img.width, img.height) catch return error.InvalidDimensions;
+    const strip_size = std.math.mul(u32, pixel_count, 3) catch return error.InvalidDimensions;
+    try writeTag(allocator, &output, 279, 4, 1, strip_size);
 
     // Tag: DNGVersion (50706)
-    try writeTag(&output, 50706, 1, 4, 0x01040000);
+    try writeTag(allocator, &output, 50706, 1, 4, 0x00000401);
 
     // Next IFD offset (0 = no more IFDs)
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
 
     // Write pixel data
     var y: u32 = 0;
@@ -491,20 +517,20 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const color = img.getPixel(x, y) orelse Color.BLACK;
-            try output.append(color.r);
-            try output.append(color.g);
-            try output.append(color.b);
+            try output.append(allocator, color.r);
+            try output.append(allocator, color.g);
+            try output.append(allocator, color.b);
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeTag(output: *std.ArrayList(u8), tag: u16, field_type: u16, count: u32, value: u32) !void {
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, tag)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, field_type)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, count)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, value)));
+fn writeTag(allocator: std.mem.Allocator, output: *std.ArrayList(u8), tag: u16, field_type: u16, count: u32, value: u32) !void {
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, tag)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, field_type)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, count)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, value)));
 }
 
 // ============================================================================
@@ -533,4 +559,22 @@ test "Read U16" {
 
     const be_bytes = [_]u8{ 0x12, 0x34 };
     try std.testing.expectEqual(@as(u16, 0x1234), readU16(&be_bytes, false));
+}
+
+test "RAW encoder round trips RGB TIFF strips" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }

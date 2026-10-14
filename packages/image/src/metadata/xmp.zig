@@ -157,7 +157,7 @@ pub const XmpData = struct {
     pub fn init(allocator: std.mem.Allocator) XmpData {
         return XmpData{
             .allocator = allocator,
-            .properties = std.ArrayList(XmpProperty).init(allocator),
+            .properties = .empty,
         };
     }
 
@@ -195,11 +195,11 @@ pub const XmpData = struct {
         for (self.properties.items) |*prop| {
             prop.deinit(self.allocator);
         }
-        self.properties.deinit();
+        self.properties.deinit(self.allocator);
     }
 
     pub fn addProperty(self: *XmpData, prop: XmpProperty) !void {
-        try self.properties.append(prop);
+        try self.properties.append(self.allocator, prop);
     }
 
     pub fn getProperty(self: *const XmpData, namespace: Namespace, name: []const u8) ?[]const u8 {
@@ -474,8 +474,14 @@ pub const XmpParser = struct {
     }
 
     fn parseRdfList(self: *XmpParser, xmp: *XmpData, elem_name: []const u8, content: []const u8) !void {
-        var items = std.ArrayList([]const u8).init(self.allocator);
-        defer items.deinit();
+        var items: std.ArrayList([]const u8) = .empty;
+        var owns_items = true;
+        defer {
+            if (owns_items) {
+                for (items.items) |item| self.allocator.free(item);
+            }
+            items.deinit(self.allocator);
+        }
 
         var i: usize = 0;
         while (std.mem.indexOfPos(u8, content, i, "<rdf:li")) |li_start| {
@@ -487,7 +493,11 @@ pub const XmpParser = struct {
 
             const item_content = std.mem.trim(u8, content[content_start + 1 .. close_pos], " \t\n\r");
             if (item_content.len > 0) {
-                try items.append(try self.allocator.dupe(u8, item_content));
+                const item = try self.allocator.dupe(u8, item_content);
+                items.append(self.allocator, item) catch |err| {
+                    self.allocator.free(item);
+                    return err;
+                };
             }
 
             i = close_pos + 9;
@@ -495,12 +505,13 @@ pub const XmpParser = struct {
 
         // Handle dc:subject (keywords)
         if (std.mem.indexOf(u8, elem_name, "subject") != null and items.items.len > 0) {
-            xmp.subject = try items.toOwnedSlice();
-        } else {
-            // Free items we didn't use
-            for (items.items) |item| {
-                self.allocator.free(item);
+            const subjects = try items.toOwnedSlice(self.allocator);
+            owns_items = false;
+            if (xmp.subject) |old_subjects| {
+                for (old_subjects) |item| self.allocator.free(item);
+                self.allocator.free(old_subjects);
             }
+            xmp.subject = subjects;
         }
     }
 };
@@ -516,129 +527,129 @@ pub const XmpWriter = struct {
     pub fn init(allocator: std.mem.Allocator) XmpWriter {
         return XmpWriter{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
         };
     }
 
     pub fn deinit(self: *XmpWriter) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn write(self: *XmpWriter, xmp: *const XmpData) ![]const u8 {
         self.buffer.clearRetainingCapacity();
 
         // XMP packet header
-        try self.buffer.appendSlice("<?xpacket begin=\"\xef\xbb\xbf\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
-        try self.buffer.appendSlice("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
-        try self.buffer.appendSlice("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
+        try self.appendSlice("<?xpacket begin=\"\xef\xbb\xbf\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
+        try self.appendSlice("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
+        try self.appendSlice("<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
 
         // Main description with namespaces
-        try self.buffer.appendSlice("<rdf:Description rdf:about=\"\"\n");
-        try self.buffer.appendSlice("    xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n");
-        try self.buffer.appendSlice("    xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n");
-        try self.buffer.appendSlice("    xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\"\n");
-        try self.buffer.appendSlice("    xmlns:xmpRights=\"http://ns.adobe.com/xap/1.0/rights/\"\n");
-        try self.buffer.appendSlice("    xmlns:photoshop=\"http://ns.adobe.com/photoshop/1.0/\"");
+        try self.appendSlice("<rdf:Description rdf:about=\"\"\n");
+        try self.appendSlice("    xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n");
+        try self.appendSlice("    xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n");
+        try self.appendSlice("    xmlns:xmpMM=\"http://ns.adobe.com/xap/1.0/mm/\"\n");
+        try self.appendSlice("    xmlns:xmpRights=\"http://ns.adobe.com/xap/1.0/rights/\"\n");
+        try self.appendSlice("    xmlns:photoshop=\"http://ns.adobe.com/photoshop/1.0/\"");
 
         // Write simple attributes
         if (xmp.title) |t| {
-            try self.buffer.appendSlice("\n    dc:title=\"");
+            try self.appendSlice("\n    dc:title=\"");
             try self.writeEscaped(t);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.description) |d| {
-            try self.buffer.appendSlice("\n    dc:description=\"");
+            try self.appendSlice("\n    dc:description=\"");
             try self.writeEscaped(d);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.creator) |c| {
-            try self.buffer.appendSlice("\n    dc:creator=\"");
+            try self.appendSlice("\n    dc:creator=\"");
             try self.writeEscaped(c);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.rights) |r| {
-            try self.buffer.appendSlice("\n    dc:rights=\"");
+            try self.appendSlice("\n    dc:rights=\"");
             try self.writeEscaped(r);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.create_date) |d| {
-            try self.buffer.appendSlice("\n    xmp:CreateDate=\"");
+            try self.appendSlice("\n    xmp:CreateDate=\"");
             try self.writeEscaped(d);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.modify_date) |d| {
-            try self.buffer.appendSlice("\n    xmp:ModifyDate=\"");
+            try self.appendSlice("\n    xmp:ModifyDate=\"");
             try self.writeEscaped(d);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.creator_tool) |t| {
-            try self.buffer.appendSlice("\n    xmp:CreatorTool=\"");
+            try self.appendSlice("\n    xmp:CreatorTool=\"");
             try self.writeEscaped(t);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.rating) |r| {
-            try self.buffer.appendSlice("\n    xmp:Rating=\"");
+            try self.appendSlice("\n    xmp:Rating=\"");
             var buf: [16]u8 = undefined;
             const rating_str = std.fmt.bufPrint(&buf, "{d}", .{r}) catch "0";
-            try self.buffer.appendSlice(rating_str);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice(rating_str);
+            try self.appendSlice("\"");
         }
         if (xmp.document_id) |d| {
-            try self.buffer.appendSlice("\n    xmpMM:DocumentID=\"");
+            try self.appendSlice("\n    xmpMM:DocumentID=\"");
             try self.writeEscaped(d);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.instance_id) |i| {
-            try self.buffer.appendSlice("\n    xmpMM:InstanceID=\"");
+            try self.appendSlice("\n    xmpMM:InstanceID=\"");
             try self.writeEscaped(i);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.marked) |m| {
-            try self.buffer.appendSlice("\n    xmpRights:Marked=\"");
-            try self.buffer.appendSlice(if (m) "True" else "False");
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\n    xmpRights:Marked=\"");
+            try self.appendSlice(if (m) "True" else "False");
+            try self.appendSlice("\"");
         }
         if (xmp.headline) |h| {
-            try self.buffer.appendSlice("\n    photoshop:Headline=\"");
+            try self.appendSlice("\n    photoshop:Headline=\"");
             try self.writeEscaped(h);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.city) |c| {
-            try self.buffer.appendSlice("\n    photoshop:City=\"");
+            try self.appendSlice("\n    photoshop:City=\"");
             try self.writeEscaped(c);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
         if (xmp.country) |c| {
-            try self.buffer.appendSlice("\n    photoshop:Country=\"");
+            try self.appendSlice("\n    photoshop:Country=\"");
             try self.writeEscaped(c);
-            try self.buffer.appendSlice("\"");
+            try self.appendSlice("\"");
         }
 
         // Check if we need child elements
         if (xmp.subject != null) {
-            try self.buffer.appendSlice(">\n");
+            try self.appendSlice(">\n");
 
             // Write subject/keywords as rdf:Bag
             if (xmp.subject) |subjects| {
-                try self.buffer.appendSlice("  <dc:subject>\n");
-                try self.buffer.appendSlice("    <rdf:Bag>\n");
+                try self.appendSlice("  <dc:subject>\n");
+                try self.appendSlice("    <rdf:Bag>\n");
                 for (subjects) |subject| {
-                    try self.buffer.appendSlice("      <rdf:li>");
+                    try self.appendSlice("      <rdf:li>");
                     try self.writeEscaped(subject);
-                    try self.buffer.appendSlice("</rdf:li>\n");
+                    try self.appendSlice("</rdf:li>\n");
                 }
-                try self.buffer.appendSlice("    </rdf:Bag>\n");
-                try self.buffer.appendSlice("  </dc:subject>\n");
+                try self.appendSlice("    </rdf:Bag>\n");
+                try self.appendSlice("  </dc:subject>\n");
             }
 
-            try self.buffer.appendSlice("</rdf:Description>\n");
+            try self.appendSlice("</rdf:Description>\n");
         } else {
-            try self.buffer.appendSlice("/>\n");
+            try self.appendSlice("/>\n");
         }
 
-        try self.buffer.appendSlice("</rdf:RDF>\n");
-        try self.buffer.appendSlice("</x:xmpmeta>\n");
-        try self.buffer.appendSlice("<?xpacket end=\"w\"?>");
+        try self.appendSlice("</rdf:RDF>\n");
+        try self.appendSlice("</x:xmpmeta>\n");
+        try self.appendSlice("<?xpacket end=\"w\"?>");
 
         return self.buffer.items;
     }
@@ -646,14 +657,18 @@ pub const XmpWriter = struct {
     fn writeEscaped(self: *XmpWriter, text: []const u8) !void {
         for (text) |c| {
             switch (c) {
-                '<' => try self.buffer.appendSlice("&lt;"),
-                '>' => try self.buffer.appendSlice("&gt;"),
-                '&' => try self.buffer.appendSlice("&amp;"),
-                '"' => try self.buffer.appendSlice("&quot;"),
-                '\'' => try self.buffer.appendSlice("&apos;"),
-                else => try self.buffer.append(c),
+                '<' => try self.appendSlice("&lt;"),
+                '>' => try self.appendSlice("&gt;"),
+                '&' => try self.appendSlice("&amp;"),
+                '"' => try self.appendSlice("&quot;"),
+                '\'' => try self.appendSlice("&apos;"),
+                else => try self.buffer.append(self.allocator, c),
             }
         }
+    }
+
+    fn appendSlice(self: *XmpWriter, bytes: []const u8) !void {
+        try self.buffer.appendSlice(self.allocator, bytes);
     }
 };
 
@@ -739,6 +754,8 @@ test "XMP writer basic" {
 
     xmp.title = try std.testing.allocator.dupe(u8, "Test Image");
     xmp.creator = try std.testing.allocator.dupe(u8, "Test Author");
+    xmp.rating = 4;
+    xmp.marked = true;
 
     var writer = XmpWriter.init(std.testing.allocator);
     defer writer.deinit();
@@ -746,4 +763,11 @@ test "XMP writer basic" {
     const output = try writer.write(&xmp);
     try std.testing.expect(std.mem.indexOf(u8, output, "Test Image") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "Test Author") != null);
+
+    var decoded = try parse(std.testing.allocator, output);
+    defer decoded.deinit();
+    try std.testing.expectEqualStrings("Test Image", decoded.title.?);
+    try std.testing.expectEqualStrings("Test Author", decoded.creator.?);
+    try std.testing.expectEqual(@as(?i32, 4), decoded.rating);
+    try std.testing.expectEqual(@as(?bool, true), decoded.marked);
 }

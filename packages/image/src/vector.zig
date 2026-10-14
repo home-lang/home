@@ -86,17 +86,26 @@ pub const BezierCurve = struct {
     }
 
     pub fn flatten(self: *const BezierCurve, allocator: std.mem.Allocator, tolerance: f32) ![]Point {
-        var points = std.ArrayList(Point).init(allocator);
-        errdefer points.deinit();
+        if (!std.math.isFinite(tolerance) or tolerance <= 0) return error.InvalidTolerance;
+        var points: std.ArrayList(Point) = .empty;
+        errdefer points.deinit(allocator);
 
-        try points.append(self.p0);
-        try self.flattenRecursive(&points, 0, 1, tolerance);
-        try points.append(if (self.cubic) self.p3 else self.p2);
+        try points.append(allocator, self.p0);
+        try self.flattenRecursive(allocator, &points, 0, 1, tolerance, 0);
+        try points.append(allocator, if (self.cubic) self.p3 else self.p2);
 
-        return points.toOwnedSlice();
+        return points.toOwnedSlice(allocator);
     }
 
-    fn flattenRecursive(self: *const BezierCurve, points: *std.ArrayList(Point), t0: f32, t1: f32, tolerance: f32) !void {
+    fn flattenRecursive(
+        self: *const BezierCurve,
+        allocator: std.mem.Allocator,
+        points: *std.ArrayList(Point),
+        t0: f32,
+        t1: f32,
+        tolerance: f32,
+        depth: u8,
+    ) !void {
         const p0 = self.evaluate(t0);
         const p1 = self.evaluate(t1);
         const tmid = (t0 + t1) / 2;
@@ -113,10 +122,11 @@ pub const BezierCurve = struct {
         if (dist < tolerance) {
             return;
         }
+        if (depth >= 32) return error.FlatteningLimitExceeded;
 
-        try self.flattenRecursive(points, t0, tmid, tolerance);
-        try points.append(pmid);
-        try self.flattenRecursive(points, tmid, t1, tolerance);
+        try self.flattenRecursive(allocator, points, t0, tmid, tolerance, depth + 1);
+        try points.append(allocator, pmid);
+        try self.flattenRecursive(allocator, points, tmid, t1, tolerance, depth + 1);
     }
 };
 
@@ -127,22 +137,22 @@ pub const Path = struct {
 
     pub fn init(allocator: std.mem.Allocator) Path {
         return .{
-            .points = std.ArrayList(Point).init(allocator),
+            .points = .empty,
             .closed = false,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Path) void {
-        self.points.deinit();
+        self.points.deinit(self.allocator);
     }
 
     pub fn moveTo(self: *Path, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = x, .y = y });
+        try self.points.append(self.allocator, .{ .x = x, .y = y });
     }
 
     pub fn lineTo(self: *Path, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = x, .y = y });
+        try self.points.append(self.allocator, .{ .x = x, .y = y });
     }
 
     pub fn quadraticTo(self: *Path, cp_x: f32, cp_y: f32, x: f32, y: f32, tolerance: f32) !void {
@@ -158,9 +168,7 @@ pub const Path = struct {
         const flat_points = try curve.flatten(self.allocator, tolerance);
         defer self.allocator.free(flat_points);
 
-        for (flat_points[1..]) |pt| {
-            try self.points.append(pt);
-        }
+        try self.points.appendSlice(self.allocator, flat_points[1..]);
     }
 
     pub fn cubicTo(self: *Path, cp1_x: f32, cp1_y: f32, cp2_x: f32, cp2_y: f32, x: f32, y: f32, tolerance: f32) !void {
@@ -177,19 +185,19 @@ pub const Path = struct {
         const flat_points = try curve.flatten(self.allocator, tolerance);
         defer self.allocator.free(flat_points);
 
-        for (flat_points[1..]) |pt| {
-            try self.points.append(pt);
-        }
+        try self.points.appendSlice(self.allocator, flat_points[1..]);
     }
 
     pub fn arc(self: *Path, cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32, segments: u32) !void {
+        if (segments == 0 or segments == std.math.maxInt(u32)) return error.InvalidSegments;
         const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(segments));
+        try self.points.ensureUnusedCapacity(self.allocator, @as(usize, segments) + 1);
 
         for (0..segments + 1) |i| {
             const angle = start_angle + angle_step * @as(f32, @floatFromInt(i));
             const x = cx + radius * @cos(angle);
             const y = cy + radius * @sin(angle);
-            try self.points.append(.{ .x = x, .y = y });
+            self.points.appendAssumeCapacity(.{ .x = x, .y = y });
         }
     }
 
@@ -276,7 +284,7 @@ pub fn strokePath(img: *Image, path: *const Path, style: StrokeStyle) !void {
 }
 
 pub fn fillPath(img: *Image, path: *const Path, style: FillStyle) !void {
-    if (path.points.items.len < 3) return;
+    if (path.points.items.len < 3 or img.width == 0 or img.height == 0) return;
 
     const bounds = path.getBounds() orelse return;
     const min_y = @as(i32, @intFromFloat(@floor(bounds.y)));
@@ -288,8 +296,8 @@ pub fn fillPath(img: *Image, path: *const Path, style: FillStyle) !void {
         const fy = @as(f32, @floatFromInt(y)) + 0.5;
 
         // Find intersections with scanline
-        var intersections = std.ArrayList(f32).init(img.allocator);
-        defer intersections.deinit();
+        var intersections: std.ArrayList(f32) = .empty;
+        defer intersections.deinit(img.allocator);
 
         const n = path.points.items.len;
         for (0..n) |i| {
@@ -299,7 +307,7 @@ pub fn fillPath(img: *Image, path: *const Path, style: FillStyle) !void {
             if ((p0.y <= fy and p1.y > fy) or (p1.y <= fy and p0.y > fy)) {
                 const t = (fy - p0.y) / (p1.y - p0.y);
                 const x = p0.x + t * (p1.x - p0.x);
-                try intersections.append(x);
+                try intersections.append(img.allocator, x);
             }
         }
 
@@ -436,6 +444,7 @@ fn blendColor(dst: Color, src: Color, alpha: f32) Color {
 // ============================================================================
 
 pub fn drawCircleAA(img: *Image, cx: f32, cy: f32, radius: f32, color: Color, filled: bool) !void {
+    if (img.width == 0 or img.height == 0) return;
     const min_x = @as(i32, @intFromFloat(@floor(cx - radius - 1)));
     const max_x = @as(i32, @intFromFloat(@ceil(cx + radius + 1)));
     const min_y = @as(i32, @intFromFloat(@floor(cy - radius - 1)));
@@ -470,6 +479,7 @@ pub fn drawCircleAA(img: *Image, cx: f32, cy: f32, radius: f32, color: Color, fi
 }
 
 pub fn drawRectangleAA(img: *Image, x: f32, y: f32, width: f32, height: f32, color: Color, filled: bool) !void {
+    if (img.width == 0 or img.height == 0) return;
     if (filled) {
         const x0 = @as(i32, @intFromFloat(@floor(x)));
         const y0 = @as(i32, @intFromFloat(@floor(y)));
@@ -493,6 +503,8 @@ pub fn drawRectangleAA(img: *Image, x: f32, y: f32, width: f32, height: f32, col
 }
 
 pub fn drawEllipseAA(img: *Image, cx: f32, cy: f32, rx: f32, ry: f32, color: Color, filled: bool) !void {
+    if (img.width == 0 or img.height == 0) return;
+    if (rx <= 0 or ry <= 0) return error.InvalidRadius;
     const min_x = @as(i32, @intFromFloat(@floor(cx - rx - 1)));
     const max_x = @as(i32, @intFromFloat(@ceil(cx + rx + 1)));
     const min_y = @as(i32, @intFromFloat(@floor(cy - ry - 1)));
@@ -626,9 +638,7 @@ pub fn parseSVGPath(allocator: std.mem.Allocator, svg_path: []const u8) !Path {
                 // Close path
                 path.close();
             },
-            else => {
-                // Unknown command, skip
-            },
+            else => return error.InvalidPathCommand,
         }
     }
 
@@ -636,6 +646,7 @@ pub fn parseSVGPath(allocator: std.mem.Allocator, svg_path: []const u8) !Path {
 }
 
 fn parseNumbers(str: []const u8, idx: *usize, count: usize) ![6]f32 {
+    if (count > 6) return error.InvalidPathData;
     var numbers: [6]f32 = undefined;
     var num_idx: usize = 0;
 
@@ -667,10 +678,14 @@ fn parseNumbers(str: []const u8, idx: *usize, count: usize) ![6]f32 {
         }
 
         const num_str = str[num_start..idx.*];
-        numbers[num_idx] = std.fmt.parseFloat(f32, num_str) catch 0;
+        if (num_str.len == 0 or (num_str.len == 1 and (num_str[0] == '-' or num_str[0] == '+'))) {
+            return error.InvalidPathData;
+        }
+        numbers[num_idx] = std.fmt.parseFloat(f32, num_str) catch return error.InvalidPathData;
         num_idx += 1;
     }
 
+    if (num_idx != count) return error.InvalidPathData;
     return numbers;
 }
 
@@ -708,6 +723,7 @@ pub const VectorGradient = struct {
             .radial => blk: {
                 const dist = pt.distance(self.start);
                 const max_dist = self.start.distance(self.end);
+                if (max_dist < 0.0001) break :blk 0.0;
                 break :blk std.math.clamp(dist / max_dist, 0, 1);
             },
         };
@@ -739,4 +755,38 @@ fn interpolateColor(c1: Color, c2: Color, t: f32) Color {
         .b = @intFromFloat(@as(f32, @floatFromInt(c1.b)) * (1 - t) + @as(f32, @floatFromInt(c2.b)) * t),
         .a = @intFromFloat(@as(f32, @floatFromInt(c1.a)) * (1 - t) + @as(f32, @floatFromInt(c2.a)) * t),
     };
+}
+
+test "Bezier flattening validates tolerance and owns points" {
+    const allocator = std.testing.allocator;
+    const curve = BezierCurve.quadratic(
+        .{ .x = 0, .y = 0 },
+        .{ .x = 5, .y = 10 },
+        .{ .x = 10, .y = 0 },
+    );
+    try std.testing.expectError(error.InvalidTolerance, curve.flatten(allocator, 0));
+
+    const points = try curve.flatten(allocator, 0.25);
+    defer allocator.free(points);
+    try std.testing.expect(points.len > 2);
+    try std.testing.expectEqual(curve.p0, points[0]);
+    try std.testing.expectEqual(curve.p2, points[points.len - 1]);
+}
+
+test "SVG paths validate input and fill pixels" {
+    const allocator = std.testing.allocator;
+    var path = try parseSVGPath(allocator, "M 1 1 L 6 1 L 6 6 L 1 6 Z");
+    defer path.deinit();
+
+    var img = try Image.init(allocator, 8, 8, .rgba8);
+    defer img.deinit();
+    try fillPath(&img, &path, .{ .color = Color.RED });
+    try std.testing.expectEqual(Color.RED, img.getPixel(3, 3).?);
+
+    try std.testing.expectError(error.InvalidPathData, parseSVGPath(allocator, "M 1"));
+    try std.testing.expectError(error.InvalidPathCommand, parseSVGPath(allocator, "X 1 2"));
+
+    var empty_path = Path.init(allocator);
+    defer empty_path.deinit();
+    try std.testing.expectError(error.InvalidSegments, empty_path.arc(0, 0, 1, 0, std.math.pi, 0));
 }

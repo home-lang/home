@@ -45,7 +45,7 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-declaration-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-declaration-contracts"
       - name: Compare recursive ambient interface contracts
         env:
@@ -53,7 +53,7 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-recursive-interface-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-recursive-interface-contracts"
       - name: Compare automatic variable flow and scope contracts
         env:
@@ -61,7 +61,7 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-automatic-variable-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-automatic-variable-contracts"
       - name: Compare optional indexed read and write contracts
         env:
@@ -69,7 +69,7 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-optional-indexed-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-optional-indexed-contracts"
       - name: Compare generic indexed return and inference contracts
         env:
@@ -77,7 +77,7 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-generic-indexed-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-generic-indexed-contracts"
       - name: Compare imported generic inheritance and inference contracts
         env:
@@ -85,8 +85,16 @@ jobs:
         run: |
           perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-imported-generic-cli.py \
             --home zig-out/bin/home-tsc \
-            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-imported-generic-contracts"
+      - name: Compare optional object write contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-optional-object-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-optional-object-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -99,5 +107,6 @@ jobs:
             ${{ runner.temp }}/home-ts-optional-indexed-contracts
             ${{ runner.temp }}/home-ts-generic-indexed-contracts
             ${{ runner.temp }}/home-ts-imported-generic-contracts
+            ${{ runner.temp }}/home-ts-optional-object-contracts
           if-no-files-found: ignore
           retention-days: 14

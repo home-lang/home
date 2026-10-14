@@ -123,9 +123,9 @@ const SvgParser = struct {
             .data = data,
             .pos = 0,
             .allocator = allocator,
-            .shapes = std.ArrayList(Shape).init(allocator),
-            .shape_data = std.ArrayList([]Point).init(allocator),
-            .path_data = std.ArrayList([]PathCommand).init(allocator),
+            .shapes = .empty,
+            .shape_data = .empty,
+            .path_data = .empty,
             .width = 300,
             .height = 150,
             .view_box = null,
@@ -136,14 +136,14 @@ const SvgParser = struct {
         for (self.shape_data.items) |pts| {
             self.allocator.free(pts);
         }
-        self.shape_data.deinit();
+        self.shape_data.deinit(self.allocator);
 
         for (self.path_data.items) |cmds| {
             self.allocator.free(cmds);
         }
-        self.path_data.deinit();
+        self.path_data.deinit(self.allocator);
 
-        self.shapes.deinit();
+        self.shapes.deinit(self.allocator);
     }
 
     fn parse(self: *SvgParser) !void {
@@ -280,7 +280,7 @@ const SvgParser = struct {
 
         self.skipElement();
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -316,7 +316,7 @@ const SvgParser = struct {
 
         self.skipElement();
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -353,7 +353,7 @@ const SvgParser = struct {
 
         self.skipElement();
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -389,7 +389,7 @@ const SvgParser = struct {
 
         self.skipElement();
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = null,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -432,9 +432,12 @@ const SvgParser = struct {
         self.skipElement();
 
         const cmds = try parsePathData(self.allocator, d_attr);
-        try self.path_data.append(cmds);
+        self.path_data.append(self.allocator, cmds) catch |err| {
+            self.allocator.free(cmds);
+            return err;
+        };
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -477,9 +480,12 @@ const SvgParser = struct {
         self.skipElement();
 
         const pts = try parsePoints(self.allocator, points_attr);
-        try self.shape_data.append(pts);
+        self.shape_data.append(self.allocator, pts) catch |err| {
+            self.allocator.free(pts);
+            return err;
+        };
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -522,9 +528,12 @@ const SvgParser = struct {
         self.skipElement();
 
         const pts = try parsePoints(self.allocator, points_attr);
-        try self.shape_data.append(pts);
+        self.shape_data.append(self.allocator, pts) catch |err| {
+            self.allocator.free(pts);
+            return err;
+        };
 
-        try self.shapes.append(.{
+        try self.shapes.append(self.allocator, .{
             .fill = fill,
             .stroke = stroke,
             .stroke_width = stroke_width,
@@ -701,8 +710,8 @@ fn parseViewBox(value: []const u8) ?struct { x: f32, y: f32, w: f32, h: f32 } {
 }
 
 fn parsePoints(allocator: std.mem.Allocator, value: []const u8) ![]Point {
-    var points = std.ArrayList(Point).init(allocator);
-    errdefer points.deinit();
+    var points: std.ArrayList(Point) = .empty;
+    errdefer points.deinit(allocator);
 
     var i: usize = 0;
     while (i < value.len) {
@@ -732,15 +741,15 @@ fn parsePoints(allocator: std.mem.Allocator, value: []const u8) ![]Point {
         if (i == y_start) break;
         const y = std.fmt.parseFloat(f32, value[y_start..i]) catch break;
 
-        try points.append(.{ .x = x, .y = y });
+        try points.append(allocator, .{ .x = x, .y = y });
     }
 
-    return points.toOwnedSlice();
+    return points.toOwnedSlice(allocator);
 }
 
 fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
-    var cmds = std.ArrayList(PathCommand).init(allocator);
-    errdefer cmds.deinit();
+    var cmds: std.ArrayList(PathCommand) = .empty;
+    errdefer cmds.deinit(allocator);
 
     var i: usize = 0;
     var current_x: f32 = 0;
@@ -772,7 +781,7 @@ fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
                 const y = parseNextNumber(d, &i) orelse break;
                 const abs_x = if (is_relative) current_x + x else x;
                 const abs_y = if (is_relative) current_y + y else y;
-                try cmds.append(.{ .move_to = .{ .x = abs_x, .y = abs_y } });
+                try cmds.append(allocator, .{ .move_to = .{ .x = abs_x, .y = abs_y } });
                 current_x = abs_x;
                 current_y = abs_y;
                 last_cmd = if (is_relative) 'l' else 'L';
@@ -782,20 +791,20 @@ fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
                 const y = parseNextNumber(d, &i) orelse break;
                 const abs_x = if (is_relative) current_x + x else x;
                 const abs_y = if (is_relative) current_y + y else y;
-                try cmds.append(.{ .line_to = .{ .x = abs_x, .y = abs_y } });
+                try cmds.append(allocator, .{ .line_to = .{ .x = abs_x, .y = abs_y } });
                 current_x = abs_x;
                 current_y = abs_y;
             },
             'H' => {
                 const x = parseNextNumber(d, &i) orelse break;
                 const abs_x = if (is_relative) current_x + x else x;
-                try cmds.append(.{ .line_to = .{ .x = abs_x, .y = current_y } });
+                try cmds.append(allocator, .{ .line_to = .{ .x = abs_x, .y = current_y } });
                 current_x = abs_x;
             },
             'V' => {
                 const y = parseNextNumber(d, &i) orelse break;
                 const abs_y = if (is_relative) current_y + y else y;
-                try cmds.append(.{ .line_to = .{ .x = current_x, .y = abs_y } });
+                try cmds.append(allocator, .{ .line_to = .{ .x = current_x, .y = abs_y } });
                 current_y = abs_y;
             },
             'C' => {
@@ -809,7 +818,7 @@ fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
                 const offset_x = if (is_relative) current_x else 0;
                 const offset_y = if (is_relative) current_y else 0;
 
-                try cmds.append(.{ .curve_to = .{
+                try cmds.append(allocator, .{ .curve_to = .{
                     .c1 = .{ .x = x1 + offset_x, .y = y1 + offset_y },
                     .c2 = .{ .x = x2 + offset_x, .y = y2 + offset_y },
                     .p = .{ .x = x + offset_x, .y = y + offset_y },
@@ -827,7 +836,7 @@ fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
                 const offset_x = if (is_relative) current_x else 0;
                 const offset_y = if (is_relative) current_y else 0;
 
-                try cmds.append(.{ .quad_to = .{
+                try cmds.append(allocator, .{ .quad_to = .{
                     .c = .{ .x = x1 + offset_x, .y = y1 + offset_y },
                     .p = .{ .x = x + offset_x, .y = y + offset_y },
                 } });
@@ -836,13 +845,13 @@ fn parsePathData(allocator: std.mem.Allocator, d: []const u8) ![]PathCommand {
                 current_y = y + offset_y;
             },
             'Z' => {
-                try cmds.append(.close);
+                try cmds.append(allocator, .close);
             },
             else => {},
         }
     }
 
-    return cmds.toOwnedSlice();
+    return cmds.toOwnedSlice(allocator);
 }
 
 fn parseNextNumber(d: []const u8, i: *usize) ?f32 {
@@ -895,13 +904,13 @@ fn rasterize(allocator: std.mem.Allocator, parser: *SvgParser, target_width: u32
     // Render each shape
     for (parser.shapes.items) |shape| {
         const combined_transform = view_transform.multiply(shape.transform);
-        try renderShape(&img, shape, combined_transform);
+        try renderShape(allocator, &img, shape, combined_transform);
     }
 
     return img;
 }
 
-fn renderShape(img: *Image, shape: Shape, transform: Transform) !void {
+fn renderShape(allocator: std.mem.Allocator, img: *Image, shape: Shape, transform: Transform) !void {
     switch (shape.shape_type) {
         .rect => |r| {
             if (shape.fill) |fill| {
@@ -947,7 +956,7 @@ fn renderShape(img: *Image, shape: Shape, transform: Transform) !void {
         },
         .path => |cmds| {
             if (shape.fill) |fill| {
-                fillPath(img, cmds, fill, transform);
+                try fillPath(allocator, img, cmds, fill, transform);
             }
             if (shape.stroke) |stroke| {
                 strokePath(img, cmds, stroke, shape.stroke_width, transform);
@@ -1137,10 +1146,10 @@ fn strokePolygon(img: *Image, pts: []Point, color: Color, stroke_width: f32, tra
     }
 }
 
-fn fillPath(img: *Image, cmds: []PathCommand, color: Color, transform: Transform) void {
+fn fillPath(allocator: std.mem.Allocator, img: *Image, cmds: []PathCommand, color: Color, transform: Transform) !void {
     // Convert path to polygon and fill
-    var pts = std.ArrayList(Point).init(std.heap.page_allocator);
-    defer pts.deinit();
+    var pts: std.ArrayList(Point) = .empty;
+    defer pts.deinit(allocator);
 
     var current = Point{ .x = 0, .y = 0 };
 
@@ -1148,11 +1157,11 @@ fn fillPath(img: *Image, cmds: []PathCommand, color: Color, transform: Transform
         switch (cmd) {
             .move_to => |p| {
                 current = p;
-                pts.append(p) catch {};
+                try pts.append(allocator, p);
             },
             .line_to => |p| {
                 current = p;
-                pts.append(p) catch {};
+                try pts.append(allocator, p);
             },
             .curve_to => |c| {
                 // Approximate bezier with line segments
@@ -1161,7 +1170,7 @@ fn fillPath(img: *Image, cmds: []PathCommand, color: Color, transform: Transform
                 while (i <= steps) : (i += 1) {
                     const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(steps));
                     const p = cubicBezier(current, c.c1, c.c2, c.p, t);
-                    pts.append(p) catch {};
+                    try pts.append(allocator, p);
                 }
                 current = c.p;
             },
@@ -1171,13 +1180,13 @@ fn fillPath(img: *Image, cmds: []PathCommand, color: Color, transform: Transform
                 while (i <= steps) : (i += 1) {
                     const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(steps));
                     const p = quadBezier(current, q.c, q.p, t);
-                    pts.append(p) catch {};
+                    try pts.append(allocator, p);
                 }
                 current = q.p;
             },
             .arc_to => |a| {
                 current = a.p;
-                pts.append(a.p) catch {};
+                try pts.append(allocator, a.p);
             },
             .close => {},
         }
@@ -1334,28 +1343,28 @@ fn isSvg(data: []const u8) bool {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write SVG header
-    try output.appendSlice("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    try output.appendSlice("<svg xmlns=\"http://www.w3.org/2000/svg\" ");
+    try output.appendSlice(allocator, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    try output.appendSlice(allocator, "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
 
     // Width and height
     var buf: [32]u8 = undefined;
-    var len = std.fmt.formatIntBuf(&buf, img.width, 10, .lower, .{});
-    try output.appendSlice("width=\"");
-    try output.appendSlice(buf[0..len]);
-    try output.appendSlice("\" ");
+    var len = std.fmt.printInt(&buf, img.width, 10, .lower, .{});
+    try output.appendSlice(allocator, "width=\"");
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.appendSlice(allocator, "\" ");
 
-    len = std.fmt.formatIntBuf(&buf, img.height, 10, .lower, .{});
-    try output.appendSlice("height=\"");
-    try output.appendSlice(buf[0..len]);
-    try output.appendSlice("\">\n");
+    len = std.fmt.printInt(&buf, img.height, 10, .lower, .{});
+    try output.appendSlice(allocator, "height=\"");
+    try output.appendSlice(allocator, buf[0..len]);
+    try output.appendSlice(allocator, "\">\n");
 
     // Encode image as embedded base64 PNG or as pixel rectangles
     // For simplicity, we'll create a single image element referencing the raster data
-    try output.appendSlice("  <!-- Rasterized from image data -->\n");
+    try output.appendSlice(allocator, "  <!-- Rasterized from image data -->\n");
 
     // Create a simple representation using rectangles (inefficient but works)
     // For production, you'd want to embed as base64 PNG in an <image> element
@@ -1376,18 +1385,18 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
                 // End of run - write rectangle
                 const c = run_color.?;
                 if (c.a > 0) {
-                    try output.appendSlice("  <rect x=\"");
-                    len = std.fmt.formatIntBuf(&buf, run_start, 10, .lower, .{});
-                    try output.appendSlice(buf[0..len]);
-                    try output.appendSlice("\" y=\"");
-                    len = std.fmt.formatIntBuf(&buf, y, 10, .lower, .{});
-                    try output.appendSlice(buf[0..len]);
-                    try output.appendSlice("\" width=\"");
-                    len = std.fmt.formatIntBuf(&buf, x - run_start, 10, .lower, .{});
-                    try output.appendSlice(buf[0..len]);
-                    try output.appendSlice("\" height=\"1\" fill=\"");
-                    try appendColorHex(&output, c);
-                    try output.appendSlice("\"/>\n");
+                    try output.appendSlice(allocator, "  <rect x=\"");
+                    len = std.fmt.printInt(&buf, run_start, 10, .lower, .{});
+                    try output.appendSlice(allocator, buf[0..len]);
+                    try output.appendSlice(allocator, "\" y=\"");
+                    len = std.fmt.printInt(&buf, y, 10, .lower, .{});
+                    try output.appendSlice(allocator, buf[0..len]);
+                    try output.appendSlice(allocator, "\" width=\"");
+                    len = std.fmt.printInt(&buf, x - run_start, 10, .lower, .{});
+                    try output.appendSlice(allocator, buf[0..len]);
+                    try output.appendSlice(allocator, "\" height=\"1\" fill=\"");
+                    try appendColorHex(allocator, &output, c);
+                    try output.appendSlice(allocator, "\"/>\n");
                 }
 
                 run_color = color;
@@ -1396,24 +1405,24 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
         }
     }
 
-    try output.appendSlice("</svg>\n");
+    try output.appendSlice(allocator, "</svg>\n");
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 fn colorsEqual(a: Color, b: Color) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
-fn appendColorHex(output: *std.ArrayList(u8), c: Color) !void {
+fn appendColorHex(allocator: std.mem.Allocator, output: *std.ArrayList(u8), c: Color) !void {
     const hex = "0123456789abcdef";
-    try output.append('#');
-    try output.append(hex[c.r >> 4]);
-    try output.append(hex[c.r & 0xF]);
-    try output.append(hex[c.g >> 4]);
-    try output.append(hex[c.g & 0xF]);
-    try output.append(hex[c.b >> 4]);
-    try output.append(hex[c.b & 0xF]);
+    try output.append(allocator, '#');
+    try output.append(allocator, hex[c.r >> 4]);
+    try output.append(allocator, hex[c.r & 0xF]);
+    try output.append(allocator, hex[c.g >> 4]);
+    try output.append(allocator, hex[c.g & 0xF]);
+    try output.append(allocator, hex[c.b >> 4]);
+    try output.append(allocator, hex[c.b & 0xF]);
 }
 
 // ============================================================================
@@ -1457,4 +1466,22 @@ test "Transform operations" {
     const p2 = t2.apply(.{ .x = 5, .y = 10 });
     try std.testing.expectEqual(@as(f32, 10), p2.x);
     try std.testing.expectEqual(@as(f32, 30), p2.y);
+}
+
+test "SVG encoder round trips opaque pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), decoded.width);
+    try std.testing.expectEqual(@as(u32, 1), decoded.height);
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }

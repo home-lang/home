@@ -715,3 +715,48 @@ inputs. All 72 compiler build/test inputs stayed identical. The 56 imported
 controls pass through the updated guard; its probe cleanup test and six isolated
 disk controls also pass. The archive retains the lock-contention observations
 and subsequent passing controls.
+
+## Optional object writes and structured array diagnostics
+
+Optional property writes now use one rule across object-literal relations and
+property diagnostics: legacy mode permits `undefined`; exact optional mode
+retains the declared type. The relation engine receives the exact optional flag,
+so typed object assignments obey it too. Exact-only failures use the enclosing
+TS2375, TS2379 or TS1360 diagnostic. Other invalid fields retain their property
+errors, and the older literal-undefined path avoids duplicate diagnostics.
+
+Array relations now reject incompatible concrete object elements even when the
+target has only optional fields. Object-element mismatches belong to the whole
+array's declaration, argument or return diagnostic. This fixes both silent
+invalid returns and incorrect element-level error locations.
+
+The final sources pass **4,598 checker, 210 driver, 294 Program and 50 CLI tests**
+and eight stream checks. Debug and ReleaseFast each pass **128** tracked
+observations covering local/imported returns, async returns, variable and typed
+assignments, calls, satisfies expressions, nested objects, arrays, generic call
+results, mixed invalid fields, concrete numbers, omitted properties and explicit
+undefined types in both optional modes. The archive retains the invalid original
+async fixture; a corrected fixture supplies Promise/PromiseLike globals and
+uses ESNext. Only valid fixtures contribute to the final passing contract.
+
+ReleaseFast also passes 56 imported-generic, 32 generic-indexed, 48 optional-indexed,
+88 recursive, 360 automatic-variable and 50 declaration/output observations.
+All seven suites pass locally through the pinned TypeScript package's executable
+`bin/tsc` entry point. The workflow now uses that executable for every reference
+invocation; direct subprocess callers could not execute the package's non-executable
+`lib/tsc.js`. GitHub reports the workflow active, but no execution was recorded;
+these are local validations and workflow wiring, not a remote green run.
+
+The unchanged **306-file** table graph passes native TypeScript but still fails
+Home. Home-only diagnostics fall from **24 to 17**, with seven false optional-return
+errors removed and none added. Inputs and the project output set stay unchanged.
+The optimized build peaks at **2,760 MB** and the final replay at **3,144 MB**,
+below the unchanged 3,840 MB ceiling. This entrypoint and the complete local
+project tree remain unqualified; remaining table errors, ts-images memory growth,
+other configurations, versions, wrappers and API uses still require evidence.
+
+The [optional-object evidence](../../bench/vs_tsgo/evidence/20261014-local-tsc-optional-object-controls.tar.gz)
+has SHA-256 `0b68bba3adc732e0972917e83bb4f995359481b9cd978cc5820bbca6bf30bf40`; all 5,786 payload hashes were verified. Initial
+failures, diagnostic regressions, corrected fixtures, complete gates, both reference
+entry points and the real-project observations are retained. Diagnostic prose
+outside the asserted contracts remains a separate qualification requirement.

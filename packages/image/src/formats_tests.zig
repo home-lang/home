@@ -1,6 +1,7 @@
 test {
     _ = @import("formats/png.zig");
     _ = @import("formats/jpeg.zig");
+    _ = @import("formats/jp2.zig");
     _ = @import("formats/gif.zig");
     _ = @import("formats/bmp.zig");
     _ = @import("formats/webp.zig");
