@@ -84,14 +84,25 @@ public:
     bool hasCounter(const WTF::String& label) const { return m_counts.contains(label); }
     bool hasTimer(const WTF::String& label) const { return m_times.contains(label); }
 };
-static thread_local auto* inspectorConsoleAgents = new std::unordered_map<JSC::JSGlobalObject*, HomeInspectorConsoleAgent*>;
+static auto* inspectorConsoleAgents = new std::unordered_map<JSC::JSGlobalObject*, HomeInspectorConsoleAgent*>;
 static HomeInspectorConsoleAgent* consoleAgentFor(JSC::JSGlobalObject& global) {
     // Console state exists before a frontend attaches and survives Runtime.disable.
     (void)global.inspectorController();
+    std::lock_guard lock(inspectorManagerLock);
     auto found = inspectorConsoleAgents->find(&global);
     return found == inspectorConsoleAgents->end() ? nullptr : found->second;
 }
 
+static void registerInspectorConsoleAgent(JSC::JSGlobalObject& global, HomeInspectorConsoleAgent& agent) {
+    std::lock_guard lock(inspectorManagerLock);
+    (*inspectorConsoleAgents)[&global] = &agent;
+}
+static void retireInspectorConsoleAgent(JSC::JSGlobalObject& global) {
+    // Global finalization can run off the owner thread. Retire the shared
+    // non-owning entry, as for the injected-script registry below.
+    std::lock_guard lock(inspectorManagerLock);
+    inspectorConsoleAgents->erase(&global);
+}
 static void registerInspectorManager(JSC::JSGlobalObject& global, Inspector::InjectedScriptManager& manager) {
     std::lock_guard lock(inspectorManagerLock); (*inspectorManagers)[&global] = &manager;
 }
@@ -266,7 +277,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<Home::HomeInspectorConsoleAgent>(context);
-    (*Home::inspectorConsoleAgents)[&m_globalObject] = consoleAgent.ptr();
+    Home::registerInspectorConsoleAgent(m_globalObject, consoleAgent.get());
     m_consoleAgent = consoleAgent.ptr();
     m_agents.append(WTF::move(consoleAgent));
 
@@ -287,7 +298,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
     auto context = jsAgentContext();
 
     auto consoleAgent = makeUniqueRef<Home::HomeInspectorConsoleAgent>(context);
-    (*Home::inspectorConsoleAgents)[&m_globalObject] = consoleAgent.ptr();
+    Home::registerInspectorConsoleAgent(m_globalObject, consoleAgent.get());
     m_consoleAgent = consoleAgent.ptr();
     m_agents.append(WTF::move(consoleAgent));
 
@@ -298,7 +309,7 @@ JSGlobalObjectInspectorController::JSGlobalObjectInspectorController(JSGlobalObj
 
 JSGlobalObjectInspectorController::~JSGlobalObjectInspectorController()
 {
-    Home::inspectorConsoleAgents->erase(&m_globalObject);
+    Home::retireInspectorConsoleAgent(m_globalObject);
     Home::retireInspectorManager(m_globalObject, m_injectedScriptManager.get());
     // Non-owning checked agent references must be released before the agent
     // registry members are destroyed (C++ destroys m_agents before these).
