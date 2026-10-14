@@ -355,6 +355,7 @@ pub const Engine = struct {
     /// `strictNullChecks`. When false (tsc default), `null` and
     /// `undefined` are assignable to every target except `never`.
     strict_null_checks: bool = false,
+    exact_optional_property_types: bool = false,
     /// Optional string-interner reference. When set, structural
     /// assignability uses property-name bytes for special-case
     /// handling (e.g. resolving numeric "0", "1", … keys via the
@@ -409,6 +410,10 @@ pub const Engine = struct {
 
     pub fn setStrictNullChecks(self: *Engine, on: bool) void {
         self.strict_null_checks = on;
+    }
+
+    pub fn setExactOptionalPropertyTypes(self: *Engine, on: bool) void {
+        self.exact_optional_property_types = on;
     }
 
     pub fn setStringInterner(self: *Engine, si: *const string_interner.Interner) void {
@@ -3145,10 +3150,11 @@ pub const Engine = struct {
     /// value of `undefined` satisfies an optional target property. We
     /// fold that in lazily here — appending `undefined` to the target
     /// member's declared type when the member is optional and
-    /// strictNullChecks is on. Without strictNullChecks `undefined` is
+    /// strictNullChecks is on and exact optional writes are disabled.
+    /// Exact mode retains the declared type. Without strictNullChecks `undefined` is
     /// already assignable to everything, so the augmentation is a no-op.
     fn effectiveOptionalMemberType(self: *Engine, member: types.ObjectMember) anyerror!TypeId {
-        if (!member.is_optional or !self.strict_null_checks) return member.type;
+        if (!member.is_optional or !self.strict_null_checks or self.exact_optional_property_types) return member.type;
         if (member.type == Primitive.undefined_t) return member.type;
         if (self.pool().flagsOf(member.type).is_union) {
             for (self.interner.unionMembers(member.type)) |m| {

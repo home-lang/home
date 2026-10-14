@@ -6187,6 +6187,7 @@ pub const Checker = struct {
         self.strict_flags_explicit = true;
         self.engine.setStrictFunctionTypes(flags.strict_function_types);
         self.engine.setStrictNullChecks(flags.strict_null_checks);
+        self.engine.setExactOptionalPropertyTypes(flags.exact_optional_property_types);
     }
 
     pub fn setHomeRuleOptions(self: *Checker, options: HomeRuleOptions) void {
@@ -10336,6 +10337,12 @@ pub const Checker = struct {
                                     r.value,
                                     TsCodes.type_instantiation_excessively_deep,
                                 )));
+                    if (!emitted_nullish_return_mismatch and r.value != hir_mod.none_node_id) {
+                        if (try self.formatExactOptionalObjectNotAssignable(ret_t, declared)) |message| {
+                            try self.report(node, TsCodes.exact_optional_property, message);
+                            emitted_nullish_return_mismatch = true;
+                        }
+                    }
                     if (self.strict_flags.strict_null_checks and
                         r.value == hir_mod.none_node_id and
                         self.declaredReturnRejectsNullish(declared, types.Primitive.undefined_t))
@@ -93047,6 +93054,7 @@ pub const Checker = struct {
             if (!(ok and self.arrayTargetElementIsTupleShaped(declared_type)) and
                 !recursive_tuple_annotation_ok and
                 self.hir.kindOf(v.init) == .array_literal and
+                !self.arrayLiteralHasObjectElementMismatch(v.init, declared_type) and
                 try self.tryReportArrayLiteralArrayElementMismatch(v.init, declared_type))
             {
                 contextual_literal_diag_emitted = true;
@@ -174297,8 +174305,16 @@ pub const Checker = struct {
     }
 
     fn formatExactOptionalArgumentNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) !?[]const u8 {
+        return self.formatExactOptionalNotAssignable(arg_t, param_t, true);
+    }
+
+    fn formatExactOptionalObjectNotAssignable(self: *Checker, source: TypeId, target: TypeId) !?[]const u8 {
+        return self.formatExactOptionalNotAssignable(source, target, false);
+    }
+
+    fn formatExactOptionalNotAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId, argument: bool) !?[]const u8 {
         if (!self.strict_flags.exact_optional_property_types) return null;
-        if (!self.hasExactOptionalUnassignableProperty(arg_t, param_t)) return null;
+        if (!self.hasExactOptionalOnlyMismatch(arg_t, param_t)) return null;
         const arg_text = (try self.allocSimpleTypeName(arg_t)) orelse
             (try self.allocObjectTypeShapeWithUndefined(arg_t)) orelse
             (try self.allocObjectTypeShape(arg_t)) orelse return null;
@@ -174313,14 +174329,14 @@ pub const Checker = struct {
                 (try self.allocSimpleTypeName(param_t)) orelse return null;
         return try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "Argument of type '{s}' is not assignable to parameter of type '{s}' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.",
-            .{ arg_text, param_text },
+            "{s} '{s}' is not assignable to {s} '{s}' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.",
+            .{ if (argument) "Argument of type" else "Type", arg_text, if (argument) "parameter of type" else "type", param_text },
         );
     }
 
     fn hasExactOptionalUnassignableProperty(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
-        const source_obj = self.objectTypeFromMaybeOptional(source_t) orelse return false;
-        const target_obj = self.objectTypeFromMaybeOptional(target_t) orelse return false;
+        const source_obj = self.objectTypeFromMaybeOptional(self.resolveGenericType(source_t) catch source_t) orelse return false;
+        const target_obj = self.objectTypeFromMaybeOptional(self.resolveGenericType(target_t) catch target_t) orelse return false;
         for (self.interner.objectMembers(target_obj)) |target_member| {
             if (!target_member.is_optional) continue;
             if (self.typeIncludesUndefined(target_member.type)) continue;
@@ -174329,6 +174345,29 @@ pub const Checker = struct {
             if (self.typeIncludesUndefined(source_member.type)) return true;
         }
         return false;
+    }
+
+    fn hasExactOptionalOnlyMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) bool {
+        if (!self.hasExactOptionalUnassignableProperty(source_t, target_t)) return false;
+        const source = self.objectTypeFromMaybeOptional(self.resolveGenericType(source_t) catch source_t) orelse return false;
+        const target = self.objectTypeFromMaybeOptional(self.resolveGenericType(target_t) catch target_t) orelse return false;
+        const members = self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target)) catch return false;
+        defer self.gpa.free(members);
+        for (members) |member| {
+            const actual = self.interner.objectMemberInfo(source, member.name) orelse {
+                if (member.is_optional) continue;
+                return false;
+            };
+            if (!member.is_optional and actual.is_optional) return false;
+            if ((actual.declaration_origin != 0 or member.declaration_origin != 0) and
+                (actual.declaration_origin != member.declaration_origin or actual.visibility != member.visibility)) return false;
+            const relaxed_target = if (member.is_optional)
+                self.unionWithUndefined(member.type) catch return false
+            else
+                member.type;
+            if (!(self.engine.isAssignableTo(actual.type, relaxed_target) catch false)) return false;
+        }
+        return true;
     }
 
     fn tryReportArrayLiteralTupleArgumentWidthMismatch(
@@ -182526,6 +182565,12 @@ pub const Checker = struct {
         const target_num = self.interner.objectNumberIndex(target_ret);
         if (source_num == types.Primitive.none or target_num == types.Primitive.none) return false;
         if (self.engine.isAssignableTo(source_num, target_num) catch false) return false;
+        const source_object = try self.resolveGenericType(source_num);
+        const target_object = try self.resolveGenericType(target_num);
+        if (self.isConcreteObjectForArrayRelation(source_object) and
+            self.isConcreteObjectForArrayRelation(target_object)) return true;
+        if (self.strict_flags.exact_optional_property_types and
+            self.hasExactOptionalUnassignableProperty(source_num, target_num)) return true;
         if (try self.contextualReturnLacksRequiredObjectShape(source_num, target_num)) return true;
         return try self.contextualReturnTargetHasRequiredObjectShape(target_num);
     }
@@ -185578,7 +185623,9 @@ pub const Checker = struct {
         }
         const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target_t));
         defer self.gpa.free(target_members);
-        for (target_members) |tm| {
+        for (target_members) |target_member| {
+            var tm = target_member;
+            tm.type = try self.objectMemberWriteType(tm);
             const source_member = blk: {
                 for (arg_members) |am| {
                     if (am.name == tm.name) break :blk am;
@@ -186112,6 +186159,9 @@ pub const Checker = struct {
     }
 
     fn checkSatisfiesObjectLiteral(self: *Checker, expr: NodeId, expr_t: TypeId, target_t: TypeId) CheckError!void {
+        // An exact-optional mismatch belongs to the satisfies expression's
+        // TS1360 diagnostic, rather than an individual property's TS2322.
+        if (self.strict_flags.exact_optional_property_types and self.hasExactOptionalOnlyMismatch(expr_t, target_t)) return;
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(target_t);
         if (flags.is_union) {
@@ -186475,6 +186525,36 @@ pub const Checker = struct {
         return self.tryReportObjectLiteralPropertyMismatchWithOptionalDisplay(init_node, target_t, false, false);
     }
 
+    fn objectMemberWriteType(self: *Checker, member: types.ObjectMember) CheckError!TypeId {
+        if (member.is_optional and self.strict_flags.strict_null_checks and
+            !self.strict_flags.exact_optional_property_types)
+            return self.unionWithUndefined(member.type);
+        return member.type;
+    }
+
+    fn isConcreteObjectForArrayRelation(self: *Checker, type_id: TypeId) bool {
+        if (type_id >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(type_id);
+        return flags.is_object_type and !flags.is_union and !flags.is_intersection and !flags.is_instantiation;
+    }
+
+    fn arrayLiteralHasObjectElementMismatch(self: *Checker, node: NodeId, target: TypeId) bool {
+        if (self.hir.kindOf(node) != .array_literal) return false;
+        const array = self.arrayTypeFromMaybeOptional(target) orelse return false;
+        const raw_element = self.interner.objectNumberIndex(array);
+        const element = self.resolveGenericType(raw_element) catch raw_element;
+        if (element == types.Primitive.none) return false;
+        if (!self.isConcreteObjectForArrayRelation(element)) return false;
+        for (hir_mod.arrayLiteralElements(self.hir, node)) |item| {
+            if (item == hir_mod.none_node_id or self.hir.kindOf(item) == .spread) continue;
+            const raw_source = self.hir.typeOf(item);
+            const source = self.resolveGenericType(raw_source) catch raw_source;
+            if (self.isConcreteObjectForArrayRelation(source) and
+                !(self.engine.isAssignableTo(source, element) catch true)) return true;
+        }
+        return false;
+    }
+
     fn tryReportObjectLiteralPropertyMismatchForCall(
         self: *Checker,
         init_node: NodeId,
@@ -186636,6 +186716,8 @@ pub const Checker = struct {
     ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
         const instantiated_target = self.resolveGenericType(target_t) catch target_t;
+        if (self.strict_flags.exact_optional_property_types and
+            self.hasExactOptionalOnlyMismatch(self.hir.typeOf(init_node), instantiated_target)) return false;
         if (self.intersectionNeverReduction(instantiated_target)) |reduction| {
             if (!reduction.is_private_conflict) {
                 if (try self.findObjectLiteralPropNodeForTargetMember(init_node, reduction.prop_name)) |prop_node| {
@@ -186703,7 +186785,7 @@ pub const Checker = struct {
             if (raw_value_t == types.Primitive.none) continue;
             var value_t = try self.diagnosticExpressionSourceTypeForTarget(op.value, raw_value_t, tm.type);
             if (widen_literal_sources) value_t = self.widenLiteralType(value_t);
-            const contextual_target_t = if (tm.is_optional) try self.unionWithUndefined(tm.type) else tm.type;
+            const contextual_target_t = try self.objectMemberWriteType(tm);
             if (try self.contextualGenericCallResult(op.value, raw_value_t, contextual_target_t)) |contextual_t| {
                 self.removeUnknownAssignabilityDiagnosticsForNode(op.value);
                 try self.checkContextualGenericCallFunctionArgs(op.value, raw_value_t, contextual_target_t);
@@ -186726,11 +186808,16 @@ pub const Checker = struct {
                 continue;
             }
             if (try self.contextualGeneratorFunctionAssignableToParam(op.value, value_t, tm.type)) continue;
-            const relation_target_t = if (include_optional_undefined and tm.is_optional)
-                contextual_target_t
-            else
-                tm.type;
+            const relation_target_t = contextual_target_t;
             if (try self.checkerAssignableExpressionTo(op.value, value_t, relation_target_t)) continue;
+            // Optional undefined gets an enclosing exact-optional diagnostic.
+            // A different invalid member owns property-level elaboration.
+            if (self.strict_flags.exact_optional_property_types and tm.is_optional and
+                !self.typeIncludesUndefined(tm.type) and self.typeIncludesUndefined(value_t))
+            {
+                const present_value = try self.subtractUndefined(value_t);
+                if (self.engine.isAssignableTo(present_value, tm.type) catch false) continue;
+            }
             if (self.hir.kindOf(op.value) == .array_literal) {
                 if (try self.tryReportArrayLiteralArrayElementMismatch(op.value, tm.type)) {
                     emitted = true;
@@ -186756,9 +186843,15 @@ pub const Checker = struct {
             // `optionalBindingParameters2.ts(7,7)`. tsc emits one
             // TS2322 per offending member, so we no longer `break`
             // after the first mismatch.
+            if (try self.formatExactOptionalObjectNotAssignable(value_t, tm.type)) |message| {
+                try self.report(anchor, TsCodes.exact_optional_property, message);
+                emitted = true;
+                continue;
+            }
             if (!try self.tryReportSinglePropertyMissing(anchor, op.value, value_t, tm.type)) {
-                const diagnostic_target_t = if (include_optional_undefined and tm.is_optional)
-                    contextual_target_t
+                const diagnostic_target_t = if (include_optional_undefined and tm.is_optional and
+                    !self.strict_flags.exact_optional_property_types)
+                    try self.unionWithUndefined(tm.type)
                 else
                     tm.type;
                 try self.reportTypeNotAssignable(
@@ -187482,6 +187575,9 @@ pub const Checker = struct {
         target_t: TypeId,
     ) !bool {
         if (self.hir.kindOf(init_node) != .array_literal) return false;
+        // Object-shaped element failures elaborate the enclosing array's
+        // assignment, argument or return diagnostic.
+        if (self.arrayLiteralHasObjectElementMismatch(init_node, target_t)) return false;
         const resolved_target = self.arrayTypeFromMaybeOptional(target_t) orelse return false;
         if (self.isTupleShapedTarget(resolved_target)) return false;
         // Named array interfaces retain their declaration identity in tsc's
@@ -189445,6 +189541,10 @@ pub const Checker = struct {
         target: TypeId,
         fallback: []const u8,
     ) !void {
+        if (try self.formatExactOptionalObjectNotAssignable(source, target)) |message| {
+            try self.report(node, TsCodes.exact_optional_property, message);
+            return;
+        }
         if (self.deeplyNestedConditionalMappedAliasAssignment(init_node, target_node)) return;
         const recursive_source_name = try self.recursiveHomomorphicAliasExpansionNameForIdentifier(init_node);
         const recursive_target_name = try self.recursiveHomomorphicAliasExpansionNameForIdentifier(target_node);
@@ -201058,6 +201158,15 @@ pub const Checker = struct {
         if (!self.strict_flags.exact_optional_property_types) return;
         if (init_node == hir_mod.none_node_id) return;
         if (self.hir.kindOf(init_node) != .object_literal) return;
+        const declaration = self.hir.parentOf(init_node);
+        if (declaration != hir_mod.none_node_id) {
+            const span = self.hir.spanOf(declaration);
+            for (self.diagnostics.items) |diagnostic| {
+                if (diagnostic.code != TsCodes.exact_optional_property and diagnostic.code != TsCodes.type_not_assignable) continue;
+                const position = self.hir.spanOf(diagnostic.node).start;
+                if (position >= span.start and position < span.end) return;
+            }
+        }
         if (!self.interner.pool.flagsOf(declared_t).is_object_type) return;
         const props = hir_mod.objectLiteralProps(self.hir, init_node);
         for (props) |p| {
@@ -226063,6 +226172,42 @@ test "checker: logical empty object property reads stay fresh but writes widen" 
             std.mem.indexOf(u8, diag.message, "expression of type '\"a\"' can't be used to index type '{}'.") != null) saw_empty_object_index = true;
     }
     try T.expect(saw_empty_object_index);
+}
+
+test "checker: optional object writes share legacy and exact semantics across contexts" {
+    for ([_]bool{ false, true }) |exact| {
+        const s = try newSetup(
+            \\interface Result { value: string; optional?: number; }
+            \\declare const optional: number | undefined;
+            \\function make(): Result { return { value: "ok", optional }; }
+            \\const item: Result = { value: "ok", optional };
+            \\declare function accept(item: Result): void;
+            \\accept({ value: "ok", optional });
+            \\const checked = { value: "ok", optional } satisfies Result;
+            \\const explicit: { optional?: number | undefined } = { optional: undefined };
+            \\const missing: Result = { value: "ok", optional: undefined };
+            \\const nested: { result: Result } = { result: { value: "ok", optional } };
+            \\const items: Result[] = [{ value: "ok", optional }];
+            \\interface OptionalOnly { optional?: number; }
+            \\function arrays(): OptionalOnly[] { return [{ optional }]; }
+            \\declare function acceptMany(items: OptionalOnly[]): void;
+            \\acceptMany([{ optional }]);
+            \\const wrong: Result = { value: 123, optional };
+            \\function wrongReturn(): Result { return { value: 123, optional }; }
+            \\function wrongArray(): OptionalOnly[] { return [{ optional: "bad" }]; }
+            \\const wrongItems: OptionalOnly[] = [{ optional: "bad" }];
+            \\acceptMany([{ optional: "bad" }]);
+        );
+        defer destroySetup(s);
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .exact_optional_property_types = exact });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (exact) 14 else 5), s.checker.diagnostics.items.len);
+        if (exact) {
+            try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.exact_optional_property));
+            try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.exact_optional_argument_type_mismatch));
+            try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.satisfies_constraint));
+        }
+    }
 }
 
 test "checker: exactOptionalPropertyTypes flags explicit undefined on optional property" {
