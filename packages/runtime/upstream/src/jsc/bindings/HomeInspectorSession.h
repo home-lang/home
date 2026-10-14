@@ -278,6 +278,9 @@ void deliverInspectorConsoleMessage(JSC::JSGlobalObject& global,const WTF::Strin
         if(realm) remapInspectorRealmObjects(*channel,&global,realm,*event);
         else decorateInspectorObjects(global,*event);
         channel->sendMessageToFrontend(event->toJSONString());
+        // Console callbacks run on the active VM thread, outside GC. Deliver
+        // to every enabled local frontend before the console call returns.
+        channel->drain();
     }
 }
 inline void LocalInspectorChannel::sendMessageToFrontend(const WTF::String& message) {
