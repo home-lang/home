@@ -235,11 +235,11 @@ pub const Mp3Decoder = struct {
             .header = header,
             .sample_rate = header.getSampleRate(),
             .channels = header.getChannels(),
-            .reservoir = .{},
+            .reservoir = .empty,
             .reservoir_allocator = allocator,
             .overlap = std.mem.zeroes([MAX_CHANNELS][SBLIMIT][SSLIMIT]f32),
             .v_vec = std.mem.zeroes([MAX_CHANNELS][2][512]f32),
-            .v_offset = [_]usize{0} ** MAX_CHANNELS,
+            .v_offset = @splat(0),
         };
 
         return decoder;
@@ -369,7 +369,7 @@ pub const Mp3Decoder = struct {
                     }
                     granule.region0_count = @intCast(try bs.readBits(4));
                     granule.region1_count = @intCast(try bs.readBits(3));
-                    granule.subblock_gain = [_]u3{0} ** 3;
+                    granule.subblock_gain = @splat(0);
                 }
 
                 granule.preflag = try bs.readBit() == 1;
@@ -495,7 +495,7 @@ pub const Mp3Decoder = struct {
         _ = mixed;
         // 12-point IMDCT for short blocks (3 windows)
         for (0..SBLIMIT) |sb| {
-            var block: [18]f32 = [_]f32{0} ** 18;
+            var block: [18]f32 = @splat(0);
 
             for (0..3) |window| {
                 var window_block: [12]f32 = undefined;
