@@ -200,10 +200,8 @@ fn colorDifference(a: Color, b: Color) u8 {
     const dr = @as(i16, a.r) - @as(i16, b.r);
     const dg = @as(i16, a.g) - @as(i16, b.g);
     const db = @as(i16, a.b) - @as(i16, b.b);
-    const da = @as(i16, a.a) - @as(i16, b.a);
-
-    const sum = @abs(dr) + @abs(dg) + @abs(db) + @abs(da);
-    return @intCast(@min(sum / 4, 255));
+    const sum = @abs(dr) + @abs(dg) + @abs(db);
+    return @intCast(@min(sum / 3, 255));
 }
 
 // ============================================================================

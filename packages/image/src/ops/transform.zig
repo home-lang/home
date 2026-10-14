@@ -171,8 +171,8 @@ fn rotate90(img: *const Image) !Image {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             if (img.getPixel(x, y)) |color| {
-                // 90° clockwise: (x,y) → (y, width-1-x)
-                result.setPixel(y, img.width - 1 - x, color);
+                // 90° clockwise: (x,y) → (height-1-y, x)
+                result.setPixel(img.height - 1 - y, x, color);
             }
         }
     }
@@ -206,7 +206,7 @@ fn rotate270(img: *const Image) !Image {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             if (img.getPixel(x, y)) |color| {
-                result.setPixel(img.height - 1 - y, x, color);
+                result.setPixel(y, img.width - 1 - x, color);
             }
         }
     }
@@ -427,6 +427,21 @@ test "Rotate 90 degrees" {
     try std.testing.expectEqual(@as(u8, 255), pixel.?.r);
 }
 
+test "Rotate 270 degrees" {
+    var img = try Image.init(std.testing.allocator, 4, 2, .rgba8);
+    defer img.deinit();
+
+    img.setPixel(0, 0, Color.RED);
+
+    var rotated = try rotate(&img, .degrees_270);
+    defer rotated.deinit();
+
+    // RED (0,0) should now be at (0,3).
+    const pixel = rotated.getPixel(0, 3);
+    try std.testing.expect(pixel != null);
+    try std.testing.expectEqual(@as(u8, 255), pixel.?.r);
+}
+
 test "Flip vertical" {
     var img = try Image.init(std.testing.allocator, 2, 4, .rgba8);
     defer img.deinit();
@@ -448,12 +463,17 @@ test "Flip vertical" {
 test "Affine matrix multiplication" {
     const scale = AffineMatrix.scale(2, 2);
     const translate = AffineMatrix.translation(10, 20);
-    const combined = scale.multiply(translate);
 
-    // Point (5, 5) -> scale to (10, 10) -> translate to (20, 30)
-    const result = combined.transformPoint(5, 5);
-    try std.testing.expectApproxEqAbs(@as(f64, 20), result.x, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f64, 30), result.y, 0.001);
+    // Matrix multiplication composes right-to-left.
+    const scale_after_translate = scale.multiply(translate);
+    const translated_then_scaled = scale_after_translate.transformPoint(5, 5);
+    try std.testing.expectApproxEqAbs(@as(f64, 30), translated_then_scaled.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 50), translated_then_scaled.y, 0.001);
+
+    const translate_after_scale = translate.multiply(scale);
+    const scaled_then_translated = translate_after_scale.transformPoint(5, 5);
+    try std.testing.expectApproxEqAbs(@as(f64, 20), scaled_then_translated.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 30), scaled_then_translated.y, 0.001);
 }
 
 test "Affine matrix inverse" {
