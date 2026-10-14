@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // CMYK Color Space
@@ -306,6 +307,12 @@ fn addBleedMarks(canvas: *Image, dimensions: PrintDimensions) void {
 
     drawHorizontalLine(canvas, bleed_x + bleed_width, bleed_y, mark_length, 1, cyan);
     drawVerticalLine(canvas, bleed_x + bleed_width, bleed_y - mark_length, mark_length, 1, cyan);
+
+    drawHorizontalLine(canvas, bleed_x - mark_length, bleed_y + bleed_height, mark_length, 1, cyan);
+    drawVerticalLine(canvas, bleed_x, bleed_y + bleed_height, mark_length, 1, cyan);
+
+    drawHorizontalLine(canvas, bleed_x + bleed_width, bleed_y + bleed_height, mark_length, 1, cyan);
+    drawVerticalLine(canvas, bleed_x + bleed_width, bleed_y + bleed_height, mark_length, 1, cyan);
 }
 
 fn addRegistrationMarks(canvas: *Image, dimensions: PrintDimensions) void {

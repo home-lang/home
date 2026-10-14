@@ -1,6 +1,7 @@
 const std = @import("std");
-const Image = @import("image.zig").Image;
-const Color = @import("color.zig").Color;
+const image = @import("image.zig");
+const Image = image.Image;
+const Color = image.Color;
 
 // ============================================================================
 // Vector Graphics Types
@@ -435,7 +436,6 @@ fn blendColor(dst: Color, src: Color, alpha: f32) Color {
 // ============================================================================
 
 pub fn drawCircleAA(img: *Image, cx: f32, cy: f32, radius: f32, color: Color, filled: bool) !void {
-    const r2 = radius * radius;
     const min_x = @as(i32, @intFromFloat(@floor(cx - radius - 1)));
     const max_x = @as(i32, @intFromFloat(@ceil(cx + radius + 1)));
     const min_y = @as(i32, @intFromFloat(@floor(cy - radius - 1)));
@@ -647,12 +647,10 @@ fn parseNumbers(str: []const u8, idx: *usize, count: usize) ![6]f32 {
         if (idx.* >= str.len) break;
 
         // Parse number
-        var num_start = idx.*;
+        const num_start = idx.*;
         var has_dot = false;
-        var has_sign = false;
 
         if (str[idx.*] == '-' or str[idx.*] == '+') {
-            has_sign = true;
             idx.* += 1;
         }
 
