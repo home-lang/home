@@ -99,8 +99,14 @@ fn bilinearScale(
     dst_width: u32,
     dst_height: u32,
 ) void {
-    const x_ratio = @as(f32, @floatFromInt(src_width - 1)) / @as(f32, @floatFromInt(dst_width));
-    const y_ratio = @as(f32, @floatFromInt(src_height - 1)) / @as(f32, @floatFromInt(dst_height));
+    const x_ratio = if (dst_width > 1)
+        @as(f32, @floatFromInt(src_width - 1)) / @as(f32, @floatFromInt(dst_width - 1))
+    else
+        0;
+    const y_ratio = if (dst_height > 1)
+        @as(f32, @floatFromInt(src_height - 1)) / @as(f32, @floatFromInt(dst_height - 1))
+    else
+        0;
 
     var y: u32 = 0;
     while (y < dst_height) : (y += 1) {
@@ -360,8 +366,8 @@ test "Bilinear scale" {
 
     // 2x2 image with red, green, blue, white
     const src = [_]u8{
-        255, 0,   0,   0, 255, 0,
-        0,   0,   255, 255, 255, 255,
+        255, 0, 0,   0,   255, 0,
+        0,   0, 255, 255, 255, 255,
     };
 
     var dst: [12]u8 = undefined;

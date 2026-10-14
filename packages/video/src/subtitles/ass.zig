@@ -686,7 +686,7 @@ fn parseColor(s: []const u8) u32 {
 
 /// Check if data looks like ASS/SSA
 pub fn isAss(data: []const u8) bool {
-    const trimmed = std.mem.trimLeft(u8, data, " \t\r\n\xef\xbb\xbf"); // Skip BOM
+    const trimmed = std.mem.trimStart(u8, data, " \t\r\n\xef\xbb\xbf"); // Skip BOM
     return std.mem.startsWith(u8, trimmed, "[Script Info]");
 }
 

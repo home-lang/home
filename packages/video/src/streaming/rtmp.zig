@@ -151,19 +151,22 @@ pub const RtmpHandshake = struct {
     }
 
     /// Generate C0+C1 for client
-    pub fn generateC0C1(self: *RtmpHandshake) []const u8 {
+    pub fn generateC0C1(self: *RtmpHandshake, io: std.Io) []const u8 {
         // C0: version
         self.c0_c1[0] = RTMP_VERSION;
 
         // C1: time + zero + random
-        const timestamp = @as(u32, @intCast(std.time.milliTimestamp() & 0xFFFFFFFF));
+        const now_ns = std.Io.Clock.real.now(io).nanoseconds;
+        const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
+        const timestamp: u32 = @truncate(@as(u96, @bitCast(now_ms)));
         std.mem.writeInt(u32, self.c0_c1[1..5], timestamp, .big);
         std.mem.writeInt(u32, self.c0_c1[5..9], 0, .big); // Zero
 
         // Random bytes
-        var prng = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
+        const seed: u64 = @bitCast(@as(i64, @truncate(@divFloor(now_ns, std.time.ns_per_us))));
+        var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
-        random.bytes(self.c0_c1[9..][0..RTMP_HANDSHAKE_SIZE - 8]);
+        random.bytes(self.c0_c1[9..][0 .. RTMP_HANDSHAKE_SIZE - 8]);
 
         self.state = .version_sent;
         return &self.c0_c1;
@@ -187,18 +190,21 @@ pub const RtmpHandshake = struct {
     }
 
     /// Generate S0+S1 for server
-    pub fn generateS0S1(self: *RtmpHandshake) []const u8 {
+    pub fn generateS0S1(self: *RtmpHandshake, io: std.Io) []const u8 {
         // S0: version
         self.s0_s1[0] = RTMP_VERSION;
 
         // S1: time + zero + random
-        const timestamp = @as(u32, @intCast(std.time.milliTimestamp() & 0xFFFFFFFF));
+        const now_ns = std.Io.Clock.real.now(io).nanoseconds;
+        const now_ms = @divFloor(now_ns, std.time.ns_per_ms);
+        const timestamp: u32 = @truncate(@as(u96, @bitCast(now_ms)));
         std.mem.writeInt(u32, self.s0_s1[1..5], timestamp, .big);
         std.mem.writeInt(u32, self.s0_s1[5..9], 0, .big);
 
-        var prng = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
+        const seed: u64 = @bitCast(@as(i64, @truncate(@divFloor(now_ns, std.time.ns_per_us))));
+        var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
-        random.bytes(self.s0_s1[9..][0..RTMP_HANDSHAKE_SIZE - 8]);
+        random.bytes(self.s0_s1[9..][0 .. RTMP_HANDSHAKE_SIZE - 8]);
 
         return &self.s0_s1;
     }
@@ -523,10 +529,15 @@ test "RTMP handshake C0C1 generation" {
     const testing = std.testing;
 
     var handshake = RtmpHandshake.init();
-    const c0c1 = handshake.generateC0C1();
+    const c0c1 = handshake.generateC0C1(std.testing.io);
 
     try testing.expectEqual(@as(usize, 1 + RTMP_HANDSHAKE_SIZE), c0c1.len);
     try testing.expectEqual(@as(u8, RTMP_VERSION), c0c1[0]);
+
+    var server_handshake = RtmpHandshake.init();
+    const s0s1 = server_handshake.generateS0S1(std.testing.io);
+    try testing.expectEqual(@as(usize, 1 + RTMP_HANDSHAKE_SIZE), s0s1.len);
+    try testing.expectEqual(@as(u8, RTMP_VERSION), s0s1[0]);
 }
 
 test "RTMP URL parsing" {
