@@ -97,10 +97,16 @@ try {
   fs.mkdirSync(join(root, surrogateDirectory))
   fs.writeFileSync(join(root, surrogateDirectory, 'child'), 'surrogate')
   for (const read of readers) {
-    const rows = await read(root, { recursive: true, withFileTypes: true, encoding: 'utf16le' })
-    const child = rows.find(row => row.name === Buffer.from('child').toString('utf16le'))
-    assert(child)
-    assert.equal(child.parentPath, join(root, Buffer.from(surrogateDirectory).toString('utf16le')))
+    for (const input of [root, Buffer.from(root)]) {
+      const rows = await read(input, { recursive: true, withFileTypes: true, encoding: 'utf16le' })
+      const child = rows.find(row => row.name === Buffer.from('child').toString('utf16le'))
+      assert(child)
+      const decodedDirectory = Buffer.from(surrogateDirectory).toString('utf16le')
+      const expectedParent = Buffer.isBuffer(input)
+        ? Buffer.concat([input, Buffer.from(sep), Buffer.from(decodedDirectory)])
+        : root + sep + decodedDirectory
+      assert.deepEqual(child.parentPath, expectedParent)
+    }
   }
 
   const retained = await readdir(root, { recursive: true, withFileTypes: true, encoding: 'buffer' })
