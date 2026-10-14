@@ -168,7 +168,7 @@ pub const CaptionHandler = struct {
     pub const CaptionPosition = struct {
         x: f32 = 0.5, // 0.0 = left, 1.0 = right
         y: f32 = 0.9, // 0.0 = top, 1.0 = bottom
-        align: Alignment = .center,
+        alignment: Alignment = .center,
 
         pub const Alignment = enum { left, center, right };
     };
@@ -176,7 +176,7 @@ pub const CaptionHandler = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .extracted_cues = std.ArrayList(CaptionCue).init(allocator),
+            .extracted_cues = .empty,
         };
     }
 
@@ -184,7 +184,7 @@ pub const CaptionHandler = struct {
         for (self.extracted_cues.items) |*cue| {
             cue.deinit();
         }
-        self.extracted_cues.deinit();
+        self.extracted_cues.deinit(self.allocator);
     }
 
     /// Set the caption format to use
@@ -266,12 +266,15 @@ pub const CaptionHandler = struct {
                     // CEA-608 field 1 or 2
                     const text = try self.decodeCea608Pair(cc_data1, cc_data2);
                     if (text.len > 0) {
-                        try self.extracted_cues.append(.{
+                        errdefer self.allocator.free(text);
+                        try self.extracted_cues.append(self.allocator, .{
                             .start_time_ms = timestamp_ms,
                             .end_time_ms = timestamp_ms + 3000, // Default 3 second duration
                             .text = text,
                             .allocator = self.allocator,
                         });
+                    } else {
+                        self.allocator.free(text);
                     }
                 }
                 // cc_type 2 and 3 would be CEA-708 DTVCC packets
@@ -284,54 +287,54 @@ pub const CaptionHandler = struct {
     fn decodeCea608Pair(self: *Self, data1: u8, data2: u8) ![]const u8 {
         // Basic CEA-608 character decoding
         // This is a simplified implementation
-        var buf = std.ArrayList(u8).init(self.allocator);
-        errdefer buf.deinit();
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(self.allocator);
 
         // Check for printable characters
         const c1 = data1 & 0x7F;
         const c2 = data2 & 0x7F;
 
         if (c1 >= 0x20 and c1 < 0x7F) {
-            try buf.append(c1);
+            try buf.append(self.allocator, c1);
         }
         if (c2 >= 0x20 and c2 < 0x7F) {
-            try buf.append(c2);
+            try buf.append(self.allocator, c2);
         }
 
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(self.allocator);
     }
 
     /// Create SEI NAL unit with embedded captions
     pub fn createCaptionSei(self: *Self, cue: CaptionCue) ![]u8 {
         _ = cue;
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
 
         // SEI NAL unit header (for H.264)
-        try output.append(0x06); // NAL type = SEI
+        try output.append(self.allocator, 0x06); // NAL type = SEI
 
         // User data registered payload (ITU-T T.35)
-        try output.append(4); // payload_type = 4
+        try output.append(self.allocator, 4); // payload_type = 4
 
         // Placeholder for payload size (will be updated)
         const size_pos = output.items.len;
-        try output.append(0);
+        try output.append(self.allocator, 0);
 
         // Country code (US)
-        try output.append(0xB5);
+        try output.append(self.allocator, 0xB5);
         // Provider code (ATSC)
-        try output.appendSlice(&[_]u8{ 0x00, 0x31 });
+        try output.appendSlice(self.allocator, &[_]u8{ 0x00, 0x31 });
         // User identifier "GA94"
-        try output.appendSlice("GA94");
+        try output.appendSlice(self.allocator, "GA94");
 
         // cc_data_pkt
-        try output.append(0x03); // user_data_type_code
+        try output.append(self.allocator, 0x03); // user_data_type_code
         // ... add actual caption data here
 
         // Update payload size
         output.items[size_pos] = @intCast(output.items.len - size_pos - 1);
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.allocator);
     }
 
     /// Get all extracted caption cues
@@ -341,38 +344,37 @@ pub const CaptionHandler = struct {
 
     /// Export captions to WebVTT format
     pub fn exportToWebVtt(self: *Self) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(self.allocator);
 
         // WebVTT header
-        try output.appendSlice("WEBVTT\n\n");
+        try output.appendSlice(self.allocator, "WEBVTT\n\n");
 
         for (self.extracted_cues.items, 0..) |cue, i| {
             // Cue identifier
-            try output.writer().print("{d}\n", .{i + 1});
+            try output.writer(self.allocator).print("{d}\n", .{i + 1});
 
             // Timing
             try self.formatVttTimestamp(&output, cue.start_time_ms);
-            try output.appendSlice(" --> ");
+            try output.appendSlice(self.allocator, " --> ");
             try self.formatVttTimestamp(&output, cue.end_time_ms);
-            try output.append('\n');
+            try output.append(self.allocator, '\n');
 
             // Text
-            try output.appendSlice(cue.text);
-            try output.appendSlice("\n\n");
+            try output.appendSlice(self.allocator, cue.text);
+            try output.appendSlice(self.allocator, "\n\n");
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(self.allocator);
     }
 
     fn formatVttTimestamp(self: *Self, output: *std.ArrayList(u8), ms: u64) !void {
-        _ = self;
         const hours = ms / (60 * 60 * 1000);
         const minutes = (ms / (60 * 1000)) % 60;
         const seconds = (ms / 1000) % 60;
         const millis = ms % 1000;
 
-        try output.writer().print("{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ hours, minutes, seconds, millis });
+        try output.writer(self.allocator).print("{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ hours, minutes, seconds, millis });
     }
 };
 
@@ -458,7 +460,7 @@ pub const SignLanguageTrack = struct {
         const h: u32 = @intFromFloat(@as(f32, @floatFromInt(frame_height)) * size_factor);
         const margin: u32 = 10;
 
-        const pos = switch (self.info.position) {
+        const pos: struct { x: u32, y: u32 } = switch (self.info.position) {
             .top_left => .{ .x = margin, .y = margin },
             .top_right => .{ .x = frame_width - w - margin, .y = margin },
             .bottom_left => .{ .x = margin, .y = frame_height - h - margin },
@@ -486,9 +488,9 @@ pub const AccessibilityManager = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .audio_description_tracks = std.ArrayList(AudioDescriptionTrack).init(allocator),
+            .audio_description_tracks = .empty,
             .caption_handler = CaptionHandler.init(allocator),
-            .sign_language_tracks = std.ArrayList(SignLanguageTrack).init(allocator),
+            .sign_language_tracks = .empty,
         };
     }
 
@@ -496,27 +498,27 @@ pub const AccessibilityManager = struct {
         for (self.audio_description_tracks.items) |*track| {
             track.deinit();
         }
-        self.audio_description_tracks.deinit();
+        self.audio_description_tracks.deinit(self.allocator);
 
         self.caption_handler.deinit();
 
         for (self.sign_language_tracks.items) |*track| {
             track.deinit();
         }
-        self.sign_language_tracks.deinit();
+        self.sign_language_tracks.deinit(self.allocator);
     }
 
     /// Add an audio description track
     pub fn addAudioDescriptionTrack(self: *Self, track_id: u32) !*AudioDescriptionTrack {
-        var track = AudioDescriptionTrack.init(self.allocator, track_id);
-        try self.audio_description_tracks.append(track);
+        const track = AudioDescriptionTrack.init(self.allocator, track_id);
+        try self.audio_description_tracks.append(self.allocator, track);
         return &self.audio_description_tracks.items[self.audio_description_tracks.items.len - 1];
     }
 
     /// Add a sign language track
     pub fn addSignLanguageTrack(self: *Self, track_id: u32) !*SignLanguageTrack {
-        var track = SignLanguageTrack.init(self.allocator, track_id);
-        try self.sign_language_tracks.append(track);
+        const track = SignLanguageTrack.init(self.allocator, track_id);
+        try self.sign_language_tracks.append(self.allocator, track);
         return &self.sign_language_tracks.items[self.sign_language_tracks.items.len - 1];
     }
 

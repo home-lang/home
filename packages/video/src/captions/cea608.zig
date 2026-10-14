@@ -69,18 +69,62 @@ pub const Position = struct {
 // CEA-608 Character Set
 // ============================================================================
 
-const BASIC_CHARS: [96]u8 = .{
-    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', 'á', '+', ',', '-', '.', '/',
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
-    '@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
-    'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', 'é', ']', 'í', 'ó',
-    'ú', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
-    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'ç', '÷', 'Ñ', 'ñ', '█',
+const BASIC_CHARS: [96]u21 = .{
+    ' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')',
+    'á',
+    '+', ',', '-', '.', '/', '0', '1', '2',  '3', '4',
+    '5', '6', '7', '8', '9', ':', ';', '<',  '=', '>',
+    '?', '@', 'A', 'B', 'C', 'D', 'E', 'F',  'G', 'H',
+    'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',  'Q', 'R',
+    'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',  '[',
+    'é',
+    ']',
+    'í',
+    'ó',
+    'ú',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',  'i', 'j',
+    'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',  's', 't',
+    'u', 'v', 'w', 'x', 'y', 'z',
+    'ç',
+    '÷',
+    'Ñ',
+    'ñ',
+    '█',
 };
 
-const SPECIAL_CHARS: [32][]const u8 = .{
-    "®", "°", "½", "¿", "™", "¢", "£", "♪", "à", " ", "è", "â", "ê", "î", "ô", "û",
-    "Á", "É", "Ó", "Ú", "Ü", "ü", "'", "¡", "*", "'", "—", "©", "℠", "·", """, """,
+const SPECIAL_CHARS: [32]u21 = .{
+    '®',
+    '°',
+    '½',
+    '¿',
+    '™',
+    '¢',
+    '£',
+    '♪',
+    'à',
+    ' ',
+    'è',
+    'â',
+    'ê',
+    'î',
+    'ô',
+    'û',
+    'Á',
+    'É',
+    'Ó',
+    'Ú',
+    'Ü',
+    'ü',
+    '‘',
+    '¡',
+    '*',
+    '’',
+    '—',
+    '©',
+    '℠',
+    '•',
+    '“',
+    '”',
 };
 
 // ============================================================================
@@ -88,7 +132,7 @@ const SPECIAL_CHARS: [32][]const u8 = .{
 // ============================================================================
 
 pub const ScreenCell = struct {
-    char: u8 = ' ',
+    char: u21 = ' ',
     style: CaptionStyle = .{},
 };
 
@@ -115,13 +159,14 @@ pub const ScreenBuffer = struct {
         }
     }
 
-    pub fn writeChar(self: *ScreenBuffer, row: u8, col: u8, char: u8, style: CaptionStyle) void {
+    pub fn writeChar(self: *ScreenBuffer, row: u8, col: u8, char: u21, style: CaptionStyle) void {
         if (row >= 15 or col >= 32) return;
         self.rows[row][col] = .{ .char = char, .style = style };
     }
 
     pub fn getText(self: *const ScreenBuffer, allocator: Allocator) ![]const u8 {
-        var output = std.ArrayList(u8).init(allocator);
+        var output: std.ArrayList(u8) = .empty;
+        errdefer output.deinit(allocator);
 
         for (self.rows, 0..) |row, r| {
             var has_content = false;
@@ -140,16 +185,18 @@ pub const ScreenBuffer = struct {
                 }
 
                 for (row[0..end]) |cell| {
-                    try output.append(cell.char);
+                    var encoded: [4]u8 = undefined;
+                    const encoded_len = try std.unicode.utf8Encode(cell.char, &encoded);
+                    try output.appendSlice(allocator, encoded[0..encoded_len]);
                 }
 
                 if (r < 14) {
-                    try output.append('\n');
+                    try output.append(allocator, '\n');
                 }
             }
         }
 
-        return output.toOwnedSlice();
+        return output.toOwnedSlice(allocator);
     }
 };
 
@@ -214,11 +261,6 @@ pub const Cea608Decoder = struct {
 
         self.last_cmd = 0;
 
-        // Special characters
-        if (b1 >= 0x11 and b1 <= 0x13) {
-            return try self.handleSpecialChar(b1, b2);
-        }
-
         // Basic characters
         if (b1 >= 0x20) {
             try self.writeCharacter(b1);
@@ -236,18 +278,28 @@ pub const Cea608Decoder = struct {
         const channel = if (b1 & 0x08 != 0) @as(u8, 1) else @as(u8, 0);
         if (channel != self.channel) return null;
 
-        const cmd = b2 & 0x0F;
-        const cmd_high = (b2 >> 4) & 0x07;
+        const normalized_b1 = b1 & 0x17;
 
         // Preamble Address Codes (PAC) - set position and style
-        if (b1 >= 0x10 and b1 <= 0x17 and cmd_high <= 0x02) {
+        if (b2 >= 0x40 and b2 <= 0x7F) {
             return try self.handlePAC(b1, b2);
         }
 
         // Mid-row codes - change style
-        if (b1 == 0x11 or b1 == 0x19) {
+        if (normalized_b1 == 0x11 and b2 >= 0x20 and b2 <= 0x2F) {
             return try self.handleMidRowCode(b2);
         }
+
+        // North American special characters and the first extended set.
+        if ((normalized_b1 == 0x11 and b2 >= 0x30 and b2 <= 0x3F) or
+            (normalized_b1 == 0x12 and b2 >= 0x20 and b2 <= 0x2F))
+        {
+            return try self.handleSpecialChar(normalized_b1, b2);
+        }
+
+        // The control-command table is carried by 0x14/0x1c. Other control
+        // prefixes select character sets or tab offsets handled separately.
+        if (normalized_b1 != 0x14) return null;
 
         // Caption control codes
         switch (b2) {
@@ -371,19 +423,15 @@ pub const Cea608Decoder = struct {
     }
 
     fn handleSpecialChar(self: *Cea608Decoder, b1: u8, b2: u8) !?CaptionEvent {
-        _ = b1;
-        const char_idx = b2 & 0x0F;
+        const table_offset: usize = if (b1 == 0x12) 16 else 0;
+        const char_idx = table_offset + (b2 & 0x0F);
         if (char_idx < SPECIAL_CHARS.len) {
-            const special = SPECIAL_CHARS[char_idx];
-            // For simplicity, use first byte of UTF-8
-            if (special.len > 0) {
-                try self.writeCharacter(special[0]);
-            }
+            try self.writeCharacter(SPECIAL_CHARS[char_idx]);
         }
         return null;
     }
 
-    fn writeCharacter(self: *Cea608Decoder, char: u8) !void {
+    fn writeCharacter(self: *Cea608Decoder, char: u21) !void {
         if (self.current_col >= 32) return;
 
         self.writeToBuffer(self.current_row, self.current_col, char, self.current_style);
@@ -398,7 +446,7 @@ pub const Cea608Decoder = struct {
         }
     }
 
-    fn writeToBuffer(self: *Cea608Decoder, row: u8, col: u8, char: u8, style: CaptionStyle) void {
+    fn writeToBuffer(self: *Cea608Decoder, row: u8, col: u8, char: u21, style: CaptionStyle) void {
         const buffer = if (self.mode == .pop_on) &self.non_displayed else &self.displayed;
         buffer.writeChar(row, col, char, style);
     }
@@ -563,7 +611,10 @@ test "CEA-608 basic character" {
 
     var decoder = Cea608Decoder.init(testing.allocator);
 
-    // Write "ABC"
+    // Paint-on mode writes directly to the displayed buffer.
+    _ = try decoder.decode(0x14, CC_RESUME_DIRECT_CAPTIONING);
+
+    // Write "ABC".
     _ = try decoder.decode(0x41, 0x42); // AB
     _ = try decoder.decode(0x43, 0x00); // C
 
@@ -571,6 +622,18 @@ test "CEA-608 basic character" {
     defer testing.allocator.free(text);
 
     try testing.expect(std.mem.indexOf(u8, text, "ABC") != null);
+}
+
+test "CEA-608 special character is emitted as UTF-8" {
+    const testing = std.testing;
+
+    var decoder = Cea608Decoder.init(testing.allocator);
+    _ = try decoder.decode(0x14, CC_RESUME_DIRECT_CAPTIONING);
+    _ = try decoder.decode(0x11, 0x30); // ®
+
+    const text = try decoder.getDisplayedText();
+    defer testing.allocator.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "®") != null);
 }
 
 test "CEA-608 pop-on caption" {
