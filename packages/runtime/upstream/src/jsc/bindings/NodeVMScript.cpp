@@ -3,6 +3,7 @@
 #include "ErrorCode.h"
 
 #include "JavaScriptCore/Completion.h"
+#include "JavaScriptCore/JSArrayBufferView.h"
 #include "JavaScriptCore/JIT.h"
 #include "JavaScriptCore/JSWeakMap.h"
 #include "JavaScriptCore/JSWeakMapInlines.h"
@@ -15,76 +16,96 @@
 #include "../vm/SigintWatcher.h"
 
 #include <bit>
+#include <cmath>
 
 namespace Bun {
 using namespace NodeVM;
 
-bool ScriptOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg, JSValue* importer)
+static bool parseScriptOptions(ScriptOptions& parsed, JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg, JSValue* importer, bool* suppliedCache)
 {
-    if (importer) {
-        *importer = jsUndefined();
+    if (importer) *importer = jsUndefined();
+    if (suppliedCache) *suppliedCache = false;
+    parsed.filename = "evalmachine.<anonymous>"_s;
+    if (optionsArg.isUndefined()) return false;
+    if (!optionsArg.isObject() || optionsArg.isCallable() || isArray(globalObject, optionsArg)) {
+        ERR::INVALID_ARG_TYPE(scope, globalObject, "options"_s, "object"_s, optionsArg);
+        return false;
     }
-
-    bool any = BaseVMOptions::fromJS(globalObject, vm, scope, optionsArg);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSObject* options = asObject(optionsArg);
+    MarkedArgumentBuffer values;
+    auto read = [&](ASCIILiteral key) {
+        JSValue value = options->get(globalObject, Identifier::fromString(vm, key));
+        if (value) values.append(value);
+        return value;
+    };
+    JSValue filenameValue = read("filename"_s);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSValue lineValue = read("lineOffset"_s);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSValue columnValue = read("columnOffset"_s);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSValue cachedValue = read("cachedData"_s);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSValue produceValue = read("produceCachedData"_s);
+    RETURN_IF_EXCEPTION(scope, false);
+    JSValue callback = read("importModuleDynamically"_s);
     RETURN_IF_EXCEPTION(scope, false);
 
-    if (!optionsArg.isUndefined() && !optionsArg.isString()) {
-        JSObject* options = asObject(optionsArg);
-
-        // Validate contextName and contextOrigin are strings
-        auto contextNameOpt = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "contextName"_s));
+    if (!filenameValue.isUndefined()) {
+        if (!filenameValue.isString()) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, "options.filename"_s, "string"_s, filenameValue);
+            return false;
+        }
+        parsed.filename = filenameValue.toWTFString(globalObject);
         RETURN_IF_EXCEPTION(scope, false);
-        if (contextNameOpt) {
-            if (!contextNameOpt.isUndefined() && !contextNameOpt.isString()) {
-                ERR::INVALID_ARG_TYPE(scope, globalObject, "options.contextName"_s, "string"_s, contextNameOpt);
-                return false;
-            }
-            any = true;
-        }
-
-        auto contextOriginOpt = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "contextOrigin"_s));
-        RETURN_IF_EXCEPTION(scope, false);
-        if (contextOriginOpt) {
-            if (!contextOriginOpt.isUndefined() && !contextOriginOpt.isString()) {
-                ERR::INVALID_ARG_TYPE(scope, globalObject, "options.contextOrigin"_s, "string"_s, contextOriginOpt);
-                return false;
-            }
-            any = true;
-        }
-
-        if (validateTimeout(globalObject, vm, scope, options, this->timeout)) {
-            RETURN_IF_EXCEPTION(scope, false);
-            any = true;
-        }
-
-        if (validateProduceCachedData(globalObject, vm, scope, options, this->produceCachedData)) {
-            RETURN_IF_EXCEPTION(scope, false);
-            any = true;
-        }
-
-        if (validateCachedData(globalObject, vm, scope, options, this->cachedData)) {
-            RETURN_IF_EXCEPTION(scope, false);
-            any = true;
-        }
-
-        // Handle importModuleDynamically option
-        JSValue importModuleDynamicallyValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
-        RETURN_IF_EXCEPTION(scope, {});
-
-        if (importModuleDynamicallyValue) {
-            if ((importModuleDynamicallyValue.isCallable() || isUseMainContextDefaultLoaderConstant(globalObject, importModuleDynamicallyValue))) {
-                if (importer) {
-                    *importer = importModuleDynamicallyValue;
-                }
-                any = true;
-            } else if (!importModuleDynamicallyValue.isUndefined()) {
-                ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, importModuleDynamicallyValue);
-                return false;
-            }
-        }
+        parsed.filenameProvided = true;
     }
+    auto offset = [&](JSValue value, ASCIILiteral key, OrdinalNumber& target) {
+        if (value.isUndefined()) return true;
+        if (!value.isNumber()) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, key), "number"_s, value);
+            return false;
+        }
+        double number = value.asNumber();
+        if (!std::isfinite(number) || std::trunc(number) != number) {
+            ERR::OUT_OF_RANGE(scope, globalObject, makeString("options."_s, key), "an integer"_s, value);
+            return false;
+        }
+        if (number < std::numeric_limits<int32_t>().min() || number > std::numeric_limits<int32_t>().max()) {
+            ERR::OUT_OF_RANGE(scope, globalObject, makeString("options."_s, key), std::numeric_limits<int32_t>().min(), std::numeric_limits<int32_t>().max(), value);
+            return false;
+        }
+        target = OrdinalNumber::fromZeroBasedInt(static_cast<int32_t>(number));
+        return true;
+    };
+    if (!offset(lineValue, "lineOffset"_s, parsed.lineOffset)) return false;
+    if (!offset(columnValue, "columnOffset"_s, parsed.columnOffset)) return false;
+    if (!cachedValue.isUndefined() && (!dynamicDowncast<JSC::JSArrayBufferView>(cachedValue) || !extractCachedData(cachedValue, parsed.cachedData))) {
+        ERR::INVALID_ARG_INSTANCE(scope, globalObject, "options.cachedData"_s, "Buffer, TypedArray, or DataView"_s, cachedValue);
+        return false;
+    }
+    if (suppliedCache) *suppliedCache = !cachedValue.isUndefined();
+    if (!produceValue.isUndefined()) {
+        if (!produceValue.isBoolean()) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, "options.produceCachedData"_s, "boolean"_s, produceValue);
+            return false;
+        }
+        parsed.produceCachedData = produceValue.asBoolean();
+    }
+    if (!callback.isUndefined()) {
+        if (!callback.isCallable() && !isUseMainContextDefaultLoaderConstant(globalObject, callback)) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, callback);
+            return false;
+        }
+        if (importer) *importer = callback;
+    }
+    return true;
+}
 
-    return any;
+bool ScriptOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg, JSValue* importer)
+{
+    return parseScriptOptions(*this, globalObject, vm, scope, optionsArg, importer, nullptr);
 }
 
 static EncodedJSValue
@@ -105,11 +126,12 @@ constructScript(JSGlobalObject* globalObject, CallFrame* callFrame, JSValue newT
     JSValue optionsArg = args.at(1);
     ScriptOptions options(""_s);
     JSValue importer;
+    bool cachedDataProvided = false;
 
     if (optionsArg.isString()) {
         options.filename = optionsArg.toWTFString(globalObject);
         RETURN_IF_EXCEPTION(scope, {});
-    } else if (!options.fromJS(globalObject, vm, scope, optionsArg, &importer)) {
+    } else if (!parseScriptOptions(options, globalObject, vm, scope, optionsArg, &importer, &cachedDataProvided)) {
         RETURN_IF_EXCEPTION(scope, JSValue::encode(jsUndefined()));
     }
 
@@ -141,6 +163,11 @@ constructScript(JSGlobalObject* globalObject, CallFrame* callFrame, JSValue newT
     fetcher->owner(vm, script);
 
     WTF::Vector<uint8_t>& cachedData = script->cachedData();
+
+    // An empty supplied cache cannot contain a bytecode header. Distinguish
+    // this rejection from the absence of a cachedData option.
+    if (cachedDataProvided && cachedData.isEmpty())
+        script->cachedDataRejected(TriState::True);
 
     if (!cachedData.isEmpty()) {
         JSC::ProgramExecutable* executable = script->cachedExecutable();
@@ -705,45 +732,39 @@ const ClassInfo NodeVMScriptConstructor::s_info = { "Script"_s, &Base::s_info, n
 
 bool RunningScriptOptions::fromJS(JSC::JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSC::JSValue optionsArg)
 {
-    bool any = BaseVMOptions::fromJS(globalObject, vm, scope, optionsArg);
-    RETURN_IF_EXCEPTION(scope, false);
-
-    if (!optionsArg.isUndefined() && !optionsArg.isString()) {
-        JSObject* options = asObject(optionsArg);
-
-        auto displayErrorsOpt = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "displayErrors"_s));
-        RETURN_IF_EXCEPTION(scope, false);
-        if (displayErrorsOpt) {
-            if (!displayErrorsOpt.isUndefined()) {
-                if (!displayErrorsOpt.isBoolean()) {
-                    ERR::INVALID_ARG_TYPE(scope, globalObject, "options.displayErrors"_s, "boolean"_s, displayErrorsOpt);
-                    return false;
-                }
-                this->displayErrors = displayErrorsOpt.asBoolean();
-                any = true;
-            }
-        }
-
-        if (validateTimeout(globalObject, vm, scope, options, this->timeout)) {
-            any = true;
-        }
-        RETURN_IF_EXCEPTION(scope, {});
-
-        auto breakOnSigintOpt = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "breakOnSigint"_s));
-        RETURN_IF_EXCEPTION(scope, false);
-        if (breakOnSigintOpt) {
-            if (!breakOnSigintOpt.isUndefined()) {
-                if (!breakOnSigintOpt.isBoolean()) {
-                    ERR::INVALID_ARG_TYPE(scope, globalObject, "options.breakOnSigint"_s, "boolean"_s, breakOnSigintOpt);
-                    return false;
-                }
-                this->breakOnSigint = breakOnSigintOpt.asBoolean();
-                any = true;
-            }
-        }
+    if (optionsArg.isUndefined()) return false;
+    if (!optionsArg.isObject() || optionsArg.isCallable() || isArray(globalObject, optionsArg)) {
+        ERR::INVALID_ARG_TYPE(scope, globalObject, "options"_s, "object"_s, optionsArg);
+        return false;
     }
-
-    return any;
+    RETURN_IF_EXCEPTION(scope, false);
+    JSObject* options = asObject(optionsArg);
+    // Execution options have their own fields; filename/offsets belong to
+    // construction and must not trigger getters during execution.
+    validateTimeout(globalObject, vm, scope, options, timeout);
+    RETURN_IF_EXCEPTION(scope, false);
+    MarkedArgumentBuffer values;
+    JSValue displayValue = options->get(globalObject, Identifier::fromString(vm, "displayErrors"_s));
+    RETURN_IF_EXCEPTION(scope, false);
+    values.append(displayValue);
+    JSValue breakValue = options->get(globalObject, Identifier::fromString(vm, "breakOnSigint"_s));
+    RETURN_IF_EXCEPTION(scope, false);
+    values.append(breakValue);
+    if (!displayValue.isUndefined()) {
+        if (!displayValue.isBoolean()) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, "options.displayErrors"_s, "boolean"_s, displayValue);
+            return false;
+        }
+        displayErrors = displayValue.asBoolean();
+    }
+    if (!breakValue.isUndefined()) {
+        if (!breakValue.isBoolean()) {
+            ERR::INVALID_ARG_TYPE(scope, globalObject, "options.breakOnSigint"_s, "boolean"_s, breakValue);
+            return false;
+        }
+        breakOnSigint = breakValue.asBoolean();
+    }
+    return true;
 }
 
 } // namespace Bun

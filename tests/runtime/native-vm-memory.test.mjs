@@ -138,8 +138,94 @@ function contextOptionsSemantics() {
   }
 }
 
+function scriptOptionsSemantics() {
+  const collect = () => globalThis.Bun ? Bun.gc(true) : globalThis.gc()
+  for (const key of ['contextName', 'contextOrigin', 'timeout', 'microtaskMode']) {
+    const options = { get [key]() { throw new Error('ignored construction field') } }
+    assert.equal(new vm.Script('42', options).runInThisContext(), 42)
+  }
+  const script = new vm.Script('42')
+  for (const key of ['filename', 'lineOffset', 'columnOffset', 'cachedData', 'produceCachedData', 'contextName', 'contextOrigin']) {
+    const options = { get [key]() { throw new Error('ignored execution field') } }
+    assert.equal(script.runInThisContext(options), 42)
+    assert.equal(script.runInContext(vm.createContext({}), options), 42)
+  }
+  const keys = ['filename', 'lineOffset', 'columnOffset', 'cachedData', 'produceCachedData', 'importModuleDynamically']
+  const reads = []
+  const defaults = { filename: 'option-snapshot.vm', lineOffset: 0, columnOffset: 0, cachedData: undefined, produceCachedData: false, importModuleDynamically: undefined }
+  const options = {}
+  for (const key of keys) Object.defineProperty(options, key, { get() { reads.push(key); return defaults[key] } })
+  assert.equal(new vm.Script('42', options).runInThisContext(), 42)
+  assert.deepEqual(reads, keys)
+  const marker = new Error('later option getter')
+  assert.throws(() => new vm.Script('42', {
+    filename: 17, get lineOffset() { throw marker },
+  }), error => error === marker)
+  assert.throws(() => new vm.Script('42', {
+    cachedData: 'bad', produceCachedData: 'bad',
+  }), error => error.code === 'ERR_INVALID_ARG_TYPE' && error.message.includes('cachedData'))
+  const virtual = new Proxy({}, {
+    get(target, key) { return key === 'filename' ? 'virtual-option.vm' : Reflect.get(target, key) },
+    has() { throw new Error('unexpected has operation') },
+  })
+  assert.throws(() => new vm.Script('throw new Error("virtual filename")', virtual).runInThisContext(), error => error.stack.includes('virtual-option.vm'))
+  const runtimeReads = []
+  assert.equal(script.runInThisContext({
+    get timeout() { runtimeReads.push('timeout'); return undefined },
+    get displayErrors() { runtimeReads.push('displayErrors'); return true },
+    get breakOnSigint() { runtimeReads.push('breakOnSigint'); return false },
+  }), 42)
+  assert.deepEqual(runtimeReads, ['timeout', 'displayErrors', 'breakOnSigint'])
+  assert.throws(() => script.runInThisContext({
+    displayErrors: 17, get breakOnSigint() { throw marker },
+  }), error => error === marker)
+  assert.throws(() => script.runInThisContext({
+    timeout: 0, get displayErrors() { throw marker },
+  }), { code: 'ERR_OUT_OF_RANGE' })
+  assert.equal(script.runInThisContext(new Proxy({}, {
+    get(target, key) { return Reflect.get(target, key) },
+    has() { throw new Error('unexpected runtime has operation') },
+  })), 42)
+  for (const value of [[], () => {}, new Proxy([], {}), new Proxy(() => {}, {})]) {
+    assert.throws(() => new vm.Script('42', value), { code: 'ERR_INVALID_ARG_TYPE' })
+    assert.throws(() => script.runInThisContext(value), { code: 'ERR_INVALID_ARG_TYPE' })
+  }
+  for (const value of [0, -1, 2 ** 32, 1.5, NaN]) {
+    assert.throws(() => script.runInThisContext({ timeout: value }), { code: 'ERR_OUT_OF_RANGE' })
+  }
+  assert.equal(script.runInThisContext({ timeout: 2 ** 32 - 1 }), 42)
+  for (const value of [-0, 0, 2147483647, -2147483648]) {
+    assert.equal(new vm.Script('42', { lineOffset: value, columnOffset: value }).runInThisContext(), 42)
+  }
+  for (const value of [2147483648, -2147483649, 1.5, NaN]) {
+    assert.throws(() => new vm.Script('42', { lineOffset: value }), { code: 'ERR_OUT_OF_RANGE' })
+  }
+  assert.throws(() => new vm.Script('42', { cachedData: new ArrayBuffer(0) }), { code: 'ERR_INVALID_ARG_TYPE' })
+  for (const [label, cachedData] of [['buffer', Buffer.alloc(0)], ['view', new Uint8Array(0)], ['dataview', new DataView(new ArrayBuffer(0))]]) {
+    const emptyCache = new vm.Script(`17 + 25 /* empty option cache ${label} */`, { cachedData })
+    assert.equal(emptyCache.cachedDataRejected, true)
+    assert.equal(emptyCache.runInThisContext(), 42)
+  }
+  assert.equal(new vm.Script('17 + 25 /* omitted option cache */').cachedDataRejected, undefined)
+  const producedAfterEmpty = new vm.Script('17 + 25 /* produce after empty option cache */', {
+    cachedData: Buffer.alloc(0), produceCachedData: true,
+  })
+  assert.equal(producedAfterEmpty.cachedDataRejected, true)
+  assert.equal(producedAfterEmpty.cachedDataProduced, true)
+  assert(Buffer.isBuffer(producedAfterEmpty.cachedData))
+  assert(producedAfterEmpty.cachedData.length > 0)
+  const collectedCache = new vm.Script('17 + 25 /* option getter GC cache */', {
+    get cachedData() { return Buffer.from('invalid-bytecode') },
+    get produceCachedData() { collect(); return false },
+    get importModuleDynamically() { collect(); return undefined },
+  })
+  assert.equal(collectedCache.cachedDataRejected, true)
+  assert.equal(collectedCache.runInThisContext(), 42)
+}
+
 async function main() {
   contextOptionsSemantics()
+  scriptOptionsSemantics()
   const reuse = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');
     const vm = require('node:vm');
