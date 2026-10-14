@@ -79007,15 +79007,13 @@ pub const Checker = struct {
     ) CheckError!bool {
         const return_type_node = self.current_function_return_node;
         if (return_type_node == hir_mod.none_node_id or self.hir.kindOf(return_type_node) != .indexed_access_type) return false;
-        switch (self.hir.kindOf(value_node)) {
-            .literal_string, .literal_number, .literal_bool, .literal_bigint, .literal_null, .literal_undefined => {},
-            else => return false,
-        }
         const ia = hir_mod.indexedAccessTypeOf(self.hir, return_type_node);
+        const obj_t = self.lowererLowerWithTypeParams(ia.object) catch return false;
         const idx_t = self.lowererLowerWithTypeParams(ia.index) catch return false;
-        if (idx_t >= self.interner.pool.typeCount()) return false;
-        if (!self.interner.pool.flagsOf(idx_t).is_type_parameter) return false;
+        if (!self.typeIsGenericObjectType(obj_t, 0) and !self.typeIsGenericIndexType(idx_t, 0)) return false;
         const source_t = try self.expressionLiteralType(value_node, value_t);
+        const target_t = self.interner.internIndexedAccess(obj_t, idx_t) catch return error.OutOfMemory;
+        if (try self.checkerAssignableTo(source_t, target_t)) return false;
         const source_name = (try self.literalExpressionAssignmentName(value_node, source_t)) orelse
             (try self.allocAssignmentDiagnosticTypeName(source_t)) orelse
             (try self.allocObjectTypeShape(source_t)) orelse
@@ -80827,6 +80825,9 @@ pub const Checker = struct {
                             (number_index == types.Primitive.none or number_index == string_index) and
                             (self.engine.isAssignableTo(idx, types.Primitive.string_t) catch false)) return string_index;
                     }
+                    return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                }
+                if (self.typeIsGenericObjectType(obj, 0)) {
                     return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
                 }
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
@@ -119864,7 +119865,8 @@ pub const Checker = struct {
                     const access_obj_t = self.typeParameterBaseConstraint(obj_t) orelse obj_t;
                     if (access_obj_t != obj_t) {
                         if (try self.lookupObjectMember(access_obj_t, lit.value)) |t| {
-                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                            const member_t = try self.indexedMemberReadType(t, self.objectMemberAccessIsOptional(access_obj_t, lit.value));
+                            break :blk try self.optionalChainResult(member_t, element_is_optional_chain);
                         }
                     }
                     if (self.typeHasStringPrimitivePart(access_obj_t) or
@@ -119924,7 +119926,8 @@ pub const Checker = struct {
                         {
                             const lit = hir_mod.literalStringOf(self.hir, e.index);
                             if (self.interner.objectMember(constraint_t, lit.value)) |member_t| {
-                                break :blk try self.optionalChainResult(member_t, element_is_optional_chain);
+                                const read_t = try self.indexedMemberReadType(member_t, self.objectMemberAccessIsOptional(constraint_t, lit.value));
+                                break :blk try self.optionalChainResult(read_t, element_is_optional_chain);
                             }
                         }
                         if (constraint_t < self.interner.pool.typeCount() and
@@ -150419,6 +150422,16 @@ pub const Checker = struct {
 
         const af = self.interner.pool.flagsOf(a);
         const bf = self.interner.pool.flagsOf(b);
+        if (self.indexedAccessPayloadOrNull(a) != null) {
+            if (try self.indexedAccessBaseConstraint(a, 0)) |constraint| {
+                if (constraint != a) return self.typesHaveComparableOverlapLimit(constraint, b, depth + 1);
+            }
+        }
+        if (self.indexedAccessPayloadOrNull(b) != null) {
+            if (try self.indexedAccessBaseConstraint(b, 0)) |constraint| {
+                if (constraint != b) return self.typesHaveComparableOverlapLimit(a, constraint, depth + 1);
+            }
+        }
         if (self.classPrivateComparableMismatch(a, b)) return false;
         // Type-parameter flags can also carry the union/intersection shape
         // of their constraints. Compare the parameters themselves before
@@ -189114,7 +189127,9 @@ pub const Checker = struct {
         target_node: NodeId,
         source_t: TypeId,
     ) CheckError!bool {
-        if (source_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(source_t).is_type_parameter) return false;
+        if (source_t >= self.interner.pool.typeCount()) return false;
+        const indexed_source = self.indexedAccessPayloadOrNull(source_t) != null;
+        if (!self.interner.pool.flagsOf(source_t).is_type_parameter and !indexed_source) return false;
         const source_text = self.visibleAnnotatedIdentifierTypeText(source_node) orelse return false;
         const target_text = self.visibleAnnotatedIdentifierTypeText(target_node) orelse return false;
         const source_norm = try self.normalizedTypeAnnotationText(source_text);
@@ -189124,7 +189139,10 @@ pub const Checker = struct {
         const inner = target_norm[prefix.len .. target_norm.len - 1];
         if (!std.mem.eql(u8, source_norm, inner)) return false;
 
-        const constraint = self.typeParameterConstraint(source_t) orelse return true;
+        const constraint = (if (indexed_source)
+            try self.indexedAccessBaseConstraint(source_t, 0)
+        else
+            self.typeParameterConstraint(source_t)) orelse return true;
         if (constraint == types.Primitive.any or
             constraint == types.Primitive.unknown or
             self.typeIncludesNull(constraint) or
@@ -235756,6 +235774,35 @@ test "checker: indexed access into any resolves to any" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic indexed return checks both object and index dependence" {
+    const s = try newSetup(
+        \\interface Options { value: number }
+        \\function wrong<T extends Options>(value: string): T["value"] { return value; }
+        \\function literal<T extends Options>(): T["value"] { return "wrong"; }
+        \\function uniform<K extends keyof Options>(): Options[K] { return 1; }
+        \\function read<T extends Options>(options: T): T["value"] { return options["value"]; }
+        \\function anyValue<T extends Options>(value: any): T["value"] { return value; }
+        \\function neverValue<T extends Options>(value: never): T["value"] { return value; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: constrained optional indexed return preserves read undefined" {
+    for ([_]bool{ false, true }) |exact| {
+        const s = try newSetup(
+            \\interface Options { value?: number }
+            \\function read<T extends Options>(options: T): T["value"] { return options["value"]; }
+        );
+        defer destroySetup(s);
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .exact_optional_property_types = exact });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (exact) 1 else 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    }
 }
 
 test "checker: generic indexed access follows constraint direction" {
