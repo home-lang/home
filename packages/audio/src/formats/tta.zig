@@ -199,12 +199,12 @@ test "TtaFormat lossless check" {
 }
 
 test "TTA detection" {
-    const tta1_magic = "TTA1" ++ [_]u8{0} ** 20;
+    const tta1_magic = "TTA1" ++ @as([20]u8, @splat(0));
     try std.testing.expect(isTta(tta1_magic));
 
-    const tta2_magic = "TTA2" ++ [_]u8{0} ** 20;
+    const tta2_magic = "TTA2" ++ @as([20]u8, @splat(0));
     try std.testing.expect(isTta(tta2_magic));
 
-    const not_tta = "RIFF" ++ [_]u8{0} ** 20;
+    const not_tta = "RIFF" ++ @as([20]u8, @splat(0));
     try std.testing.expect(!isTta(not_tta));
 }

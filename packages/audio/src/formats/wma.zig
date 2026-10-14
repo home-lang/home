@@ -557,7 +557,7 @@ test "WMA/ASF detection" {
 
     try std.testing.expect(isWma(&wma_data));
 
-    const not_wma = [_]u8{ 'R', 'I', 'F', 'F' } ++ [_]u8{0} ** 12;
+    const not_wma = [_]u8{ 'R', 'I', 'F', 'F' } ++ @as([12]u8, @splat(0));
     try std.testing.expect(!isWma(&not_wma));
 }
 
