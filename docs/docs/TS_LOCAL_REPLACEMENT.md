@@ -760,3 +760,44 @@ has SHA-256 `0b68bba3adc732e0972917e83bb4f995359481b9cd978cc5820bbca6bf30bf40`; 
 failures, diagnostic regressions, corrected fixtures, complete gates, both reference
 entry points and the real-project observations are retained. Diagnostic prose
 outside the asserted contracts remains a separate qualification requirement.
+
+## Library arrays, dictionary inference and collation
+
+`toSorted` now contextually types comparator parameters, returns a mutable array
+for readonly receivers, and observes the ES2023 library boundary. Older mutable
+arrays receive TS2550; readonly and union receivers receive TS2339, with implicit
+callback parameter diagnostics retained when the method is unavailable.
+
+`Object.entries` retains generic dictionary values and fixed tuple positions.
+Anonymous object properties contribute their combined value types to dictionary
+inference. Interfaces and classes require explicit index signatures, except for
+TypeScript's `any` dictionary exception. Declaration metadata survives checked
+source transfer, imports and substitution. Generic interface schemas retain their
+interface origin, and the relation pointer follows transferred metadata storage.
+
+`localeCompare` accepts Intl options with closed value domains. Primitive member
+calls collect overloads, and incompatible object properties elaborate TS2769 at
+the offending property key.
+
+The sources pass **4,599 checker, 210 driver, 294 Program and 50 CLI tests** and
+eight stream checks. Debug and ReleaseFast each pass **64** library observations.
+ReleaseFast also passes the existing 128 optional-object, 56 imported-generic,
+32 generic-indexed, 48 optional-indexed, 88 recursive, 360 automatic-variable and
+50 declaration observations. All eight contracts pass through the executable
+TypeScript package wrapper. An initial reference-wrapper timeout was retained;
+the fresh-output retry passed.
+
+Native TypeScript passes the unchanged **306-file** table graph. Both Home Debug
+and ReleaseFast reached the replay's 300-second deadline, so no diagnostic delta
+or replacement qualification is claimed. Project inputs remain unchanged. The
+optimized validation guard peaked at **2,824 MB**; the timed-out optimized replay
+peaked at **3,217 MB**, below the unchanged 3,840 MB ceiling. Process-probe timeouts
+under machine load are retained in the logs. Further project runtime investigation
+and the broader local-project qualification remain required.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-library-array-controls.tar.gz`
+contains **5,664** verified payloads, with SHA-256
+`55132af9f041213dcfc88c0e3ad84763e00521e1da9a4abcaf9392691bdedaab`.
+Only synthetic fixtures, hashes, logs and replay scripts are included; real-project
+sources are excluded. Cleanup reclaimed **1,577,299,048 bytes** from inactive
+regenerable objects in this task's dedicated Zig cache.

@@ -356,6 +356,8 @@ pub const Engine = struct {
     /// `undefined` are assignable to every target except `never`.
     strict_null_checks: bool = false,
     exact_optional_property_types: bool = false,
+    /// Interfaces/classes cannot acquire an implicit dictionary indexer.
+    implicit_index_excluded_types: ?*const std.AutoHashMapUnmanaged(TypeId, void) = null,
     /// Optional string-interner reference. When set, structural
     /// assignability uses property-name bytes for special-case
     /// handling (e.g. resolving numeric "0", "1", … keys via the
@@ -2641,6 +2643,8 @@ pub const Engine = struct {
                 // Pins `multipleStringIndexers.ts(18,5)`.
                 if (source_str_idx != Primitive.none) {
                     if (!try self.isAssignableTo(source_str_idx, target_str_idx)) return false;
+                } else if (self.implicit_index_excluded_types != null and self.implicit_index_excluded_types.?.contains(source)) {
+                    return false;
                 } else if (source_num_idx != Primitive.none) {
                     return false;
                 } else if (source_members_for_index.len == 0) {

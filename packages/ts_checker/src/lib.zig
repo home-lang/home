@@ -42,6 +42,10 @@ pub const LibCache = struct {
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
+    object_entries_parameter: TypeId = types.Primitive.none,
+    object_entries_signature: TypeId = types.Primitive.none,
+    object_entries_tuple: TypeId = types.Primitive.none,
+    object_entries_fallback_tuple: TypeId = types.Primitive.none,
     /// The `ThisType<any>` marker inside `Object.defineProperty`'s
     /// descriptor parameter. Object types are not deduplicated, so the
     /// checker registers this exact id as a marker.
@@ -75,6 +79,14 @@ pub const LibCache = struct {
         self.array_proto_by_elem.deinit(gpa);
     }
 };
+
+fn optionalStringChoices(ti: *interner_mod.Interner, sint: *string_interner.Interner, choices: []const []const u8) !TypeId {
+    var members: [32]TypeId = undefined;
+    std.debug.assert(choices.len < members.len);
+    for (choices, 0..) |choice, index| members[index] = try ti.internStringLiteral(try sint.intern(choice));
+    members[choices.len] = types.Primitive.undefined_t;
+    return ti.internUnion(members[0 .. choices.len + 1]);
+}
 
 /// Build (or fetch from cache) the `String.prototype` member shape.
 /// All methods are typed against the concrete `string` primitive —
@@ -301,8 +313,21 @@ pub fn stringProto(
     const sig_code_point_at = try ti.internSignature(&[_]TypeId{number_t}, number_or_undefined_t, false);
     // `normalize(form?: string): string` (es2015).
     const sig_normalize = try ti.internSignature(&[_]TypeId{string_or_undefined_t}, string_t, false);
-    // `localeCompare(that: string): number`.
-    const sig_locale_compare = try ti.internSignature(&[_]TypeId{string_t}, number_t, false);
+    // The ES5 Intl overload retains its closed option domains.
+    const optional_boolean = try ti.internUnion(&.{ boolean_t, types.Primitive.undefined_t });
+    const collator_options = try ti.internObjectType(&.{
+        .{ .name = try sint.intern("usage"), .type = try optionalStringChoices(ti, sint, &.{ "sort", "search" }), .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("localeMatcher"), .type = try optionalStringChoices(ti, sint, &.{ "lookup", "best fit" }), .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("numeric"), .type = optional_boolean, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("caseFirst"), .type = try optionalStringChoices(ti, sint, &.{ "upper", "lower", "false" }), .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("sensitivity"), .type = try optionalStringChoices(ti, sint, &.{ "base", "accent", "case", "variant" }), .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("collation"), .type = try optionalStringChoices(ti, sint, &.{ "big5han", "compat", "default", "dict", "direct", "ducet", "emoji", "eor", "gb2312", "phonebk", "phonetic", "pinyin", "reformed", "searchjl", "stroke", "trad", "unihan", "zhuyin" }), .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("ignorePunctuation"), .type = optional_boolean, .is_optional = true, .is_readonly = false, .is_method = false },
+    });
+    const locales = try ti.internUnion(&.{ string_t, string_arr, types.Primitive.undefined_t });
+    const optional_collator = try ti.internUnion(&.{ collator_options, types.Primitive.undefined_t });
+    const sig_locale_compare = try ti.internSignature(&.{ string_t, locales, optional_collator }, number_t, false);
+    const sig_locale_compare_simple = try ti.internSignature(&.{string_t}, number_t, false);
     // `lastIndexOf(searchString: string, position?: number): number`.
     const sig_last_index_of = try ti.internSignature(&[_]TypeId{ string_t, number_or_undefined_t }, number_t, false);
     // `substr(from: number, length?: number): string`.
@@ -350,6 +375,7 @@ pub fn stringProto(
         .{ .name = try sint.intern("at"), .type = sig_at, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("codePointAt"), .type = sig_code_point_at, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("normalize"), .type = sig_normalize, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("localeCompare"), .type = sig_locale_compare_simple, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("localeCompare"), .type = sig_locale_compare, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("lastIndexOf"), .type = sig_last_index_of, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("substr"), .type = sig_substr, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -639,6 +665,7 @@ pub fn arrayProto(
         .{ .name = try sint.intern("concat"), .type = sig_concat, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("reverse"), .type = sig_reverse, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("sort"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toSorted"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -722,16 +749,25 @@ pub fn objectGlobal(
     const sig_keys = try ti.internSignature(&[_]TypeId{any_t}, string_arr, false);
     // `Object.values(o: any): any[]`
     const sig_values = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
-    // `Object.entries(o: {}): [string, any][]` — precise tuple-typed
-    // result (es2017). The generic overload `entries<T>(o: { [s: string]: T }
-    // | ArrayLike<T>): [string, T][]` would bind `T` from a typed
-    // argument, but the loose `(o: any)` arg means `T` collapses to
-    // `any`, so the faithful concrete result is `[string, any][]`.
-    // We build the `[string, any]` tuple structurally (matching the
-    // checker's tuple encoding) and wrap it in an array.
+    // Keep the generic record/array-like overload before the {} fallback.
+    // Both results retain fixed tuple positions for destructuring.
     const string_any_tuple = try internTuple(ti, sint, &[_]TypeId{ string_t, any_t });
+    cache.object_entries_fallback_tuple = string_any_tuple;
     const string_any_tuple_arr = try ti.internArrayType(sint, string_any_tuple);
-    const sig_entries = try ti.internSignature(&[_]TypeId{any_t}, string_any_tuple_arr, false);
+    const empty_object = try ti.internObjectType(&.{});
+    const sig_entries_fallback = try ti.internSignature(&.{empty_object}, string_any_tuple_arr, false);
+    const entries_parameter = try ti.internFreshTypeParameterWithFlags(try sint.intern("T"), types.Primitive.none, types.Primitive.none, .bivariant, false);
+    cache.object_entries_parameter = entries_parameter;
+    const entries_record = try ti.internObjectTypeWithIndex(&.{}, entries_parameter, types.Primitive.none);
+    const entries_array_like = try ti.internObjectTypeWithIndex(&.{
+        .{ .name = try sint.intern("length"), .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+    }, types.Primitive.none, entries_parameter);
+    const entries_argument = try ti.internUnion(&.{ entries_record, entries_array_like });
+    const entries_tuple = try internTuple(ti, sint, &.{ string_t, entries_parameter });
+    cache.object_entries_tuple = entries_tuple;
+    const entries_array = try ti.internArrayType(sint, entries_tuple);
+    const sig_entries = try ti.internSignature(&.{entries_argument}, entries_array, false);
+    cache.object_entries_signature = sig_entries;
     // `Object.assign(...)` is variadic in lib.d.ts. Model the common
     // overload arities used by conformance while leaving the return
     // loose (`any`) until generic intersection returns are wired here.
@@ -800,6 +836,7 @@ pub fn objectGlobal(
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("entries"), .type = sig_entries_fallback, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("assign"), .type = sig_assign, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("create"), .type = sig_create, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("defineProperty"), .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -1487,7 +1524,7 @@ test "lib: objectGlobal exposes freeze/getOwnPropertyNames/fromEntries/is" {
     try T.expect(ti.objectMember(og, try sint.intern("notARealObjectStatic")) == null);
 }
 
-test "lib: Object.entries returns [string, any][] (tuple-typed elements)" {
+test "lib: Object.entries retains generic and fallback tuple elements" {
     var sint = try string_interner.Interner.init(T.allocator);
     defer sint.deinit();
     var ti = try interner_mod.Interner.init(T.allocator);
@@ -1502,10 +1539,10 @@ test "lib: Object.entries returns [string, any][] (tuple-typed elements)" {
     const tuple_t = ti.objectNumberIndex(ret);
     try T.expect(tuple_t != types.Primitive.none);
     try T.expect(tuple_t != types.Primitive.any);
-    // The tuple's element 0 is `string`, element 1 is `any`, and it has
-    // a literal `length` of 2 — i.e. the precise `[string, any]` shape.
+    // Generic tuples preserve T; the non-generic fallback preserves any.
     try T.expectEqual(types.Primitive.string_t, ti.objectMember(tuple_t, try sint.intern("0")).?);
-    try T.expectEqual(types.Primitive.any, ti.objectMember(tuple_t, try sint.intern("1")).?);
+    try T.expectEqual(cache.object_entries_parameter, ti.objectMember(tuple_t, try sint.intern("1")).?);
+    try T.expectEqual(types.Primitive.any, ti.objectMember(cache.object_entries_fallback_tuple, try sint.intern("1")).?);
     const length_t = ti.objectMember(tuple_t, try sint.intern("length")).?;
     try T.expect(length_t != types.Primitive.number_t); // a 2-literal, not plain number
 }

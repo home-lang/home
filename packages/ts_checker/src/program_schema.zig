@@ -163,6 +163,7 @@ pub const Declaration = struct {
     parameters: []Parameter = &.{},
     body: ?*const Expression = null,
     is_class: bool = false,
+    is_interface: bool = false,
     is_function: bool = false,
     /// This declaration preserves a callable shell by degrading at least one
     /// untransferable leaf. It is valid only as contextual function input.
