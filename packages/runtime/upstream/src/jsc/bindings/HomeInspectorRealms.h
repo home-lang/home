@@ -11,7 +11,11 @@
 #include <wtf/text/WTFString.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/JSONValues.h>
+namespace Inspector { class ConsoleMessage; }
 namespace Home {
+bool inspectorHasConsoleListeners(JSC::JSGlobalObject&);
+void inspectorConsoleMessage(Inspector::ConsoleMessage&);
+void deliverInspectorConsoleMessage(JSC::JSGlobalObject&, const WTF::String&);
 bool inspectorObjectIsPromise(JSC::JSGlobalObject&, const WTF::String&);
 struct InspectorRealm {
     JSC::Weak<JSC::JSGlobalObject> global;

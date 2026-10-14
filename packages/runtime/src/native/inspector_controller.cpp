@@ -34,6 +34,11 @@
 #include <JavaScriptCore/InjectedScriptHost.h>
 #include <JavaScriptCore/InjectedScriptManager.h>
 #include <JavaScriptCore/JSPromise.h>
+#include <JavaScriptCore/ScriptArguments.h>
+#include <JavaScriptCore/InjectedScript.h>
+#include <JavaScriptCore/ScriptCallStackFactory.h>
+#include <JavaScriptCore/ScriptCallStack.h>
+#include "HomeInspectorRealms.h"
 #include <JavaScriptCore/DeferGC.h>
 #include <mutex>
 #include <unordered_map>
@@ -85,6 +90,66 @@ bool inspectorObjectIsPromise(JSC::JSGlobalObject& global, const WTF::String& id
     auto value = manager->injectedScriptFor(&global).findObjectById(id);
     return value && WTF::dynamicDowncast<JSC::JSPromise>(value) != nullptr;
 }
+void inspectorConsoleMessage(Inspector::ConsoleMessage& message) {
+    auto* global = message.globalObject();
+    if (!global || message.source() != JSC::MessageSource::ConsoleAPI || !inspectorHasConsoleListeners(*global)) return;
+    Inspector::InjectedScriptManager* manager;
+    { std::lock_guard lock(inspectorManagerLock); auto found=inspectorManagers->find(global);
+      if(found==inspectorManagers->end()) return; manager=found->second; }
+    JSC::DeferGC deferGC(global->vm());
+    auto params=JSON::Object::create();
+    WTF::String type="log"_s;
+    switch(message.type()) {
+    case JSC::MessageType::Dir: type="dir"_s;break;
+    case JSC::MessageType::DirXML: type="dirxml"_s;break;
+    case JSC::MessageType::Table: type="table"_s;break;
+    case JSC::MessageType::Trace: type="trace"_s;break;
+    case JSC::MessageType::StartGroup: type="startGroup"_s;break;
+    case JSC::MessageType::StartGroupCollapsed: type="startGroupCollapsed"_s;break;
+    case JSC::MessageType::EndGroup: type="endGroup"_s;break;
+    case JSC::MessageType::Clear: type="clear"_s;break;
+    case JSC::MessageType::Assert: type="assert"_s;break;
+    case JSC::MessageType::Timing: type="timeEnd"_s;break;
+    default:
+        switch(message.level()) {
+        case JSC::MessageLevel::Warning:type="warning"_s;break;
+        case JSC::MessageLevel::Error:type="error"_s;break;
+        case JSC::MessageLevel::Debug:type="debug"_s;break;
+        case JSC::MessageLevel::Info:type="info"_s;break;
+        default:break;
+        }
+    }
+    params->setString("type"_s,type);
+    params->setDouble("timestamp"_s,message.timestamp().secondsSinceEpoch().value()*1000);
+    auto args=JSON::Array::create();
+    auto script=manager->injectedScriptFor(global);
+    if(auto* arguments=message.arguments()) {
+        for(size_t i=0;i<arguments->argumentCount();++i) {
+            auto wrapped=script.wrapObject(arguments->argumentAt(i),"console"_s,true);
+            if(wrapped) args->pushObject(wrapped.releaseNonNull());
+        }
+    } else {
+        auto argument=JSON::Object::create();argument->setString("type"_s,"string"_s);argument->setString("value"_s,message.message());args->pushObject(WTF::move(argument));
+    }
+    params->setArray("args"_s,WTF::move(args));
+    auto nativeStack=Inspector::createScriptCallStackForConsole(global);
+    auto frames=JSON::Array::create();
+    for(size_t i=0;i<nativeStack->size();++i) {
+        auto& frame=nativeStack->at(i);
+        if(frame.isNative()) continue;
+        auto result=JSON::Object::create();
+        result->setString("functionName"_s,frame.functionName());
+        result->setString("scriptId"_s,WTF::String::number(frame.sourceID()));
+        result->setString("url"_s,frame.sourceURL());
+        result->setInteger("lineNumber"_s,frame.lineNumber()?frame.lineNumber()-1:0);
+        result->setInteger("columnNumber"_s,frame.columnNumber()?frame.columnNumber()-1:0);
+        frames->pushObject(WTF::move(result));
+    }
+    auto stack=JSON::Object::create();stack->setArray("callFrames"_s,WTF::move(frames));params->setObject("stackTrace"_s,WTF::move(stack));
+    auto event=JSON::Object::create();event->setString("method"_s,"Runtime.consoleAPICalled"_s);event->setObject("params"_s,WTF::move(params));
+    deliverInspectorConsoleMessage(*global,event->toJSONString());
+}
+
 }
 
 namespace Inspector {
@@ -273,6 +338,7 @@ CheckedPtr<ConsoleClient> JSGlobalObjectInspectorController::consoleClient() con
 
 bool JSGlobalObjectInspectorController::developerExtrasEnabled() const
 {
+    if (Home::inspectorHasConsoleListeners(m_globalObject)) return true;
 #if ENABLE(REMOTE_INSPECTOR)
     if (!RemoteInspector::singleton().enabled())
         return false;
@@ -406,3 +472,6 @@ void JSGlobalObjectInspectorController::createLazyAgents()
 } // namespace Inspector
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+
+// Build the complete pinned console agent alongside its owning controller.
+#include "inspector_console_agent.cpp"
