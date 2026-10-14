@@ -68269,7 +68269,13 @@ pub const Checker = struct {
                             self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, unified_t) catch unified_t
                         else
                             self.mergeInterfaceDeclarationType(existing_t, unified_t) catch unified_t;
-                        if (prev_decl != hir_mod.none_node_id and prev_decl != node) {
+                        // Forward resolution may revisit an earlier declaration
+                        // after a later sibling has merged. Predecessors follow
+                        // source order; linking the earlier node back to that
+                        // sibling would turn the existing chain into a cycle.
+                        if (prev_decl != hir_mod.none_node_id and prev_decl != node and
+                            self.hir.spanOf(prev_decl).start < self.hir.spanOf(node).start)
+                        {
                             try self.interface_merge_predecessor.put(self.gpa, node, prev_decl);
                         }
                         // Back-patch EVERY prior same-scope same-named
@@ -68332,7 +68338,12 @@ pub const Checker = struct {
             // Remember this declaration as the most-recent registrar
             // for `name` so subsequent same-name interface_decls can
             // confirm same-scope before merging.
-            try self.last_iface_decl_for_name.put(self.gpa, id.name, node);
+            const latest = self.last_iface_decl_for_name.get(id.name);
+            if (latest == null or !self.interfaceDeclScopesMatchExistingType(node, id.name) or
+                self.hir.spanOf(latest.?).start <= self.hir.spanOf(node).start)
+            {
+                try self.last_iface_decl_for_name.put(self.gpa, id.name, node);
+            }
             if (param_ids.items.len > 0) {
                 if (keep_first_params and self.generic_aliases.get(id.name) != null) {
                     // Keep the first declaration's type parameters — the
@@ -292130,4 +292141,74 @@ test "checker: implicit dictionary inference preserves anonymous and declared ob
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
     try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+}
+
+test "checker: rechecking merged interfaces preserves an acyclic predecessor chain" {
+    const s = try newSetup(
+        \\interface Item { first: string; }
+        \\interface Item { second: number; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const declarations = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(@as(usize, 2), declarations.len);
+    // A forward resolution rechecks a declaration before its primary visit.
+    _ = s.checker.primary_checked_interfaces.remove(declarations[0]);
+    try s.checker.checkInterfaceDecl(declarations[0]);
+    const name = try s.sint.intern("Item");
+    try T.expectEqual(declarations[1], s.checker.last_iface_decl_for_name.get(name).?);
+    const merged = s.checker.type_names.get(name).?;
+    var first = false;
+    var second = false;
+    for (s.ti.objectMembers(merged)) |member| {
+        if (std.mem.eql(u8, s.sint.get(member.name), "first")) first = true;
+        if (std.mem.eql(u8, s.sint.get(member.name), "second")) second = true;
+    }
+    try T.expect(first and second);
+    var entries = s.checker.interface_merge_predecessor.iterator();
+    while (entries.next()) |entry| {
+        var seen: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+        defer seen.deinit(T.allocator);
+        var current = entry.key_ptr.*;
+        while (s.checker.interface_merge_predecessor.get(current)) |previous| {
+            const slot = try seen.getOrPut(T.allocator, current);
+            try T.expect(!slot.found_existing);
+            current = previous;
+        }
+    }
+}
+
+test "checker: rechecking generic merged interfaces preserves an acyclic predecessor chain" {
+    const s = try newSetup(
+        \\interface Item<T> { first: T; }
+        \\interface Item<T> { second: T; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const declarations = hir_mod.blockStmts(&s.hir, s.root);
+    try T.expectEqual(@as(usize, 2), declarations.len);
+    // A forward resolution rechecks a declaration before its primary visit.
+    _ = s.checker.primary_checked_interfaces.remove(declarations[0]);
+    try s.checker.checkInterfaceDecl(declarations[0]);
+    const name = try s.sint.intern("Item");
+    try T.expectEqual(declarations[1], s.checker.last_iface_decl_for_name.get(name).?);
+    const merged = s.checker.type_names.get(name).?;
+    var first = false;
+    var second = false;
+    for (s.ti.objectMembers(merged)) |member| {
+        if (std.mem.eql(u8, s.sint.get(member.name), "first")) first = true;
+        if (std.mem.eql(u8, s.sint.get(member.name), "second")) second = true;
+    }
+    try T.expect(first and second);
+    var entries = s.checker.interface_merge_predecessor.iterator();
+    while (entries.next()) |entry| {
+        var seen: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+        defer seen.deinit(T.allocator);
+        var current = entry.key_ptr.*;
+        while (s.checker.interface_merge_predecessor.get(current)) |previous| {
+            const slot = try seen.getOrPut(T.allocator, current);
+            try T.expect(!slot.found_existing);
+            current = previous;
+        }
+    }
 }
