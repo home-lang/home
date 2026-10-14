@@ -314,7 +314,7 @@ pub const AnimationTimeline = struct {
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) AnimationTimeline {
         return AnimationTimeline{
-            .frames = std.ArrayList(AnimationFrame).init(allocator),
+            .frames = .empty,
             .width = width,
             .height = height,
             .allocator = allocator,
@@ -326,12 +326,13 @@ pub const AnimationTimeline = struct {
             frame.image.deinit();
             self.allocator.destroy(frame.image);
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     /// Add a frame to the end
     pub fn addFrame(self: *AnimationTimeline, image: *Image, delay_ms: u32) !void {
-        try self.frames.append(AnimationFrame{
+        if (image.width != self.width or image.height != self.height) return error.FrameDimensionsMismatch;
+        try self.frames.append(self.allocator, AnimationFrame{
             .image = image,
             .delay_ms = delay_ms,
         });
@@ -339,7 +340,8 @@ pub const AnimationTimeline = struct {
 
     /// Insert frame at specific index
     pub fn insertFrame(self: *AnimationTimeline, index: usize, image: *Image, delay_ms: u32) !void {
-        try self.frames.insert(index, AnimationFrame{
+        if (image.width != self.width or image.height != self.height) return error.FrameDimensionsMismatch;
+        try self.frames.insert(self.allocator, index, AnimationFrame{
             .image = image,
             .delay_ms = delay_ms,
         });
@@ -359,13 +361,17 @@ pub const AnimationTimeline = struct {
 
         const original = self.frames.items[index];
         const new_image = try self.allocator.create(Image);
+        errdefer self.allocator.destroy(new_image);
         new_image.* = try original.image.clone();
+        errdefer new_image.deinit();
 
-        try self.frames.insert(index + 1, AnimationFrame{
+        try self.frames.insert(self.allocator, index + 1, AnimationFrame{
             .image = new_image,
             .delay_ms = original.delay_ms,
             .dispose_op = original.dispose_op,
             .blend_op = original.blend_op,
+            .x_offset = original.x_offset,
+            .y_offset = original.y_offset,
         });
     }
 
@@ -373,7 +379,7 @@ pub const AnimationTimeline = struct {
     pub fn moveFrame(self: *AnimationTimeline, from: usize, to: usize) void {
         if (from >= self.frames.items.len or to >= self.frames.items.len) return;
         const frame = self.frames.orderedRemove(from);
-        self.frames.insert(to, frame) catch {};
+        self.frames.insertAssumeCapacity(to, frame);
     }
 
     /// Set delay for all frames
@@ -402,11 +408,35 @@ pub const AnimationTimeline = struct {
         const original_len = self.frames.items.len;
         if (original_len < 2) return;
 
-        // Add reversed frames (excluding first and last to avoid duplicates)
-        var i: usize = original_len - 2;
-        while (i > 0) : (i -= 1) {
-            try self.duplicateFrame(i);
+        var additions: std.ArrayList(AnimationFrame) = .empty;
+        defer additions.deinit(self.allocator);
+        errdefer {
+            for (additions.items) |frame| {
+                frame.image.deinit();
+                self.allocator.destroy(frame.image);
+            }
         }
+
+        // Append reversed frames, excluding the first and last endpoints.
+        var i = original_len - 1;
+        while (i > 1) {
+            i -= 1;
+            const original = self.frames.items[i];
+            const new_image = try self.allocator.create(Image);
+            errdefer self.allocator.destroy(new_image);
+            new_image.* = try original.image.clone();
+            errdefer new_image.deinit();
+            try additions.append(self.allocator, .{
+                .image = new_image,
+                .delay_ms = original.delay_ms,
+                .dispose_op = original.dispose_op,
+                .blend_op = original.blend_op,
+                .x_offset = original.x_offset,
+                .y_offset = original.y_offset,
+            });
+        }
+
+        try self.frames.appendSlice(self.allocator, additions.items);
     }
 
     /// Resize all frames
@@ -427,10 +457,16 @@ pub const AnimationTimeline = struct {
 
     /// Extract frames to individual images
     pub fn extractFrames(self: *const AnimationTimeline, allocator: std.mem.Allocator) ![]Image {
-        var images = try allocator.alloc(Image, self.frames.items.len);
+        const images = try allocator.alloc(Image, self.frames.items.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (images[0..initialized]) |*frame| frame.deinit();
+            allocator.free(images);
+        }
 
         for (self.frames.items, 0..) |frame, i| {
             images[i] = try frame.image.clone();
+            initialized += 1;
         }
 
         return images;
@@ -439,19 +475,39 @@ pub const AnimationTimeline = struct {
     /// Create from animated image
     pub fn fromImage(image: *const Image, allocator: std.mem.Allocator) !AnimationTimeline {
         var timeline = AnimationTimeline.init(allocator, image.width, image.height);
+        errdefer timeline.deinit();
 
         if (image.frames) |frames| {
             for (frames) |frame| {
                 const frame_image = try allocator.create(Image);
+                errdefer allocator.destroy(frame_image);
                 frame_image.* = try Image.init(allocator, image.width, image.height, image.format);
+                errdefer frame_image.deinit();
+                if (frame.pixels.len != frame_image.pixels.len) return error.InvalidFrameData;
                 @memcpy(frame_image.pixels, frame.pixels);
 
-                try timeline.addFrame(frame_image, frame.delay_ms);
+                try timeline.frames.append(allocator, .{
+                    .image = frame_image,
+                    .delay_ms = frame.delay_ms,
+                    .dispose_op = switch (frame.dispose_op) {
+                        .none => .none,
+                        .background => .background,
+                        .previous => .previous,
+                    },
+                    .blend_op = switch (frame.blend_op) {
+                        .source => .source,
+                        .over => .over,
+                    },
+                    .x_offset = frame.x_offset,
+                    .y_offset = frame.y_offset,
+                });
             }
         } else {
             // Single frame
             const frame_image = try allocator.create(Image);
+            errdefer allocator.destroy(frame_image);
             frame_image.* = try image.clone();
+            errdefer frame_image.deinit();
             try timeline.addFrame(frame_image, 100);
         }
 
@@ -463,15 +519,21 @@ pub const AnimationTimeline = struct {
         if (self.frames.items.len == 0) return error.NoFrames;
 
         var result = try self.frames.items[0].image.clone();
+        errdefer result.deinit();
 
         if (self.frames.items.len > 1) {
-            result.frames = try self.allocator.alloc(Image.Frame, self.frames.items.len);
+            const frames = try result.allocator.alloc(Image.Frame, self.frames.items.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (frames[0..initialized]) |frame| result.allocator.free(frame.pixels);
+                result.allocator.free(frames);
+            }
 
             for (self.frames.items, 0..) |frame, i| {
-                const pixels = try self.allocator.alloc(u8, frame.image.pixels.len);
+                const pixels = try result.allocator.alloc(u8, frame.image.pixels.len);
                 @memcpy(pixels, frame.image.pixels);
 
-                result.frames.?[i] = Image.Frame{
+                frames[i] = Image.Frame{
                     .pixels = pixels,
                     .delay_ms = frame.delay_ms,
                     .x_offset = frame.x_offset,
@@ -486,8 +548,10 @@ pub const AnimationTimeline = struct {
                         .over => .over,
                     },
                 };
+                initialized += 1;
             }
 
+            result.frames = frames;
             result.loop_count = self.loop_count;
         }
 
@@ -507,7 +571,7 @@ pub const MultiPageDocument = struct {
 
     pub fn init(allocator: std.mem.Allocator) MultiPageDocument {
         return MultiPageDocument{
-            .pages = std.ArrayList(*Image).init(allocator),
+            .pages = .empty,
             .metadata = std.StringHashMap([]const u8).init(allocator),
             .allocator = allocator,
         };
@@ -518,7 +582,7 @@ pub const MultiPageDocument = struct {
             page.deinit();
             self.allocator.destroy(page);
         }
-        self.pages.deinit();
+        self.pages.deinit(self.allocator);
 
         var it = self.metadata.iterator();
         while (it.next()) |entry| {
@@ -530,12 +594,12 @@ pub const MultiPageDocument = struct {
 
     /// Add a page
     pub fn addPage(self: *MultiPageDocument, image: *Image) !void {
-        try self.pages.append(image);
+        try self.pages.append(self.allocator, image);
     }
 
     /// Insert page at index
     pub fn insertPage(self: *MultiPageDocument, index: usize, image: *Image) !void {
-        try self.pages.insert(index, image);
+        try self.pages.insert(self.allocator, index, image);
     }
 
     /// Remove page
@@ -550,7 +614,7 @@ pub const MultiPageDocument = struct {
     pub fn movePage(self: *MultiPageDocument, from: usize, to: usize) void {
         if (from >= self.pages.items.len or to >= self.pages.items.len) return;
         const page = self.pages.orderedRemove(from);
-        self.pages.insert(to, page) catch {};
+        self.pages.insertAssumeCapacity(to, page);
     }
 
     /// Get page count
@@ -566,8 +630,17 @@ pub const MultiPageDocument = struct {
 
     /// Set metadata
     pub fn setMetadata(self: *MultiPageDocument, key: []const u8, value: []const u8) !void {
+        if (self.metadata.getPtr(key)) |existing| {
+            const value_copy = try self.allocator.dupe(u8, value);
+            self.allocator.free(existing.*);
+            existing.* = value_copy;
+            return;
+        }
+
         const key_copy = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(key_copy);
         const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
         try self.metadata.put(key_copy, value_copy);
     }
 
@@ -580,26 +653,37 @@ pub const MultiPageDocument = struct {
     pub fn merge(self: *MultiPageDocument, other: *const MultiPageDocument) !void {
         for (other.pages.items) |page| {
             const new_page = try self.allocator.create(Image);
+            errdefer self.allocator.destroy(new_page);
             new_page.* = try page.clone();
-            try self.pages.append(new_page);
+            errdefer new_page.deinit();
+            try self.pages.append(self.allocator, new_page);
         }
     }
 
     /// Split into separate documents
     pub fn split(self: *const MultiPageDocument, pages_per_doc: usize) ![]MultiPageDocument {
-        const num_docs = (self.pages.items.len + pages_per_doc - 1) / pages_per_doc;
-        var docs = try self.allocator.alloc(MultiPageDocument, num_docs);
+        if (pages_per_doc == 0) return error.InvalidPagesPerDocument;
+        const num_docs = self.pages.items.len / pages_per_doc + @intFromBool(self.pages.items.len % pages_per_doc != 0);
+        const docs = try self.allocator.alloc(MultiPageDocument, num_docs);
+        var initialized: usize = 0;
+        errdefer {
+            for (docs[0..initialized]) |*doc| doc.deinit();
+            self.allocator.free(docs);
+        }
 
         for (0..num_docs) |i| {
             docs[i] = MultiPageDocument.init(self.allocator);
+            initialized += 1;
 
             const start = i * pages_per_doc;
             const end = @min(start + pages_per_doc, self.pages.items.len);
 
             for (start..end) |j| {
                 const new_page = try self.allocator.create(Image);
+                errdefer self.allocator.destroy(new_page);
                 new_page.* = try self.pages.items[j].clone();
-                try docs[i].pages.append(new_page);
+                errdefer new_page.deinit();
+                try docs[i].pages.append(self.allocator, new_page);
             }
         }
 
@@ -616,11 +700,17 @@ pub const MultiPageDocument = struct {
         bg_color: Color,
         allocator: std.mem.Allocator,
     ) !Image {
-        const rows = (self.pages.items.len + cols - 1) / cols;
-        const sheet_width = cols * (thumb_width + padding) + padding;
-        const sheet_height = rows * (thumb_height + padding) + padding;
+        if (cols == 0) return error.InvalidColumns;
+        if (thumb_width == 0 or thumb_height == 0) return error.InvalidThumbnailDimensions;
+        const rows_usize = self.pages.items.len / cols + @intFromBool(self.pages.items.len % cols != 0);
+        const rows = std.math.cast(u32, rows_usize) orelse return error.ImageTooLarge;
+        const cell_width = std.math.add(u32, thumb_width, padding) catch return error.ImageTooLarge;
+        const cell_height = std.math.add(u32, thumb_height, padding) catch return error.ImageTooLarge;
+        const sheet_width = std.math.add(u32, std.math.mul(u32, cols, cell_width) catch return error.ImageTooLarge, padding) catch return error.ImageTooLarge;
+        const sheet_height = std.math.add(u32, std.math.mul(u32, rows, cell_height) catch return error.ImageTooLarge, padding) catch return error.ImageTooLarge;
 
         var sheet = try Image.init(allocator, sheet_width, sheet_height, .rgba8);
+        errdefer sheet.deinit();
 
         // Fill background
         var y: u32 = 0;
@@ -633,6 +723,7 @@ pub const MultiPageDocument = struct {
 
         // Draw thumbnails
         for (self.pages.items, 0..) |page, i| {
+            if (page.width == 0 or page.height == 0) return error.InvalidPageDimensions;
             const col = i % cols;
             const row = i / cols;
 
@@ -681,7 +772,7 @@ pub fn isMultiPageFormat(data: []const u8) bool {
     // TIFF
     if (data.len >= 4 and
         ((data[0] == 'I' and data[1] == 'I' and data[2] == 42 and data[3] == 0) or
-        (data[0] == 'M' and data[1] == 'M' and data[2] == 0 and data[3] == 42)))
+            (data[0] == 'M' and data[1] == 'M' and data[2] == 0 and data[3] == 42)))
     {
         return true;
     }
@@ -705,15 +796,18 @@ pub fn isAnimatedFormat(data: []const u8) bool {
     if (data.len >= 8 and data[0] == 0x89 and data[1] == 'P' and data[2] == 'N' and data[3] == 'G') {
         // Search for acTL chunk
         var i: usize = 8;
-        while (i + 8 < data.len) {
-            const chunk_len = (@as(u32, data[i]) << 24) | (@as(u32, data[i + 1]) << 16) |
+        while (i <= data.len and data.len - i >= 12) {
+            const chunk_len_u32 = (@as(u32, data[i]) << 24) | (@as(u32, data[i + 1]) << 16) |
                 (@as(u32, data[i + 2]) << 8) | @as(u32, data[i + 3]);
+            const chunk_len: usize = chunk_len_u32;
+            const chunk_size = std.math.add(usize, chunk_len, 12) catch return false;
+            if (chunk_size > data.len - i) return false;
 
-            if (std.mem.eql(u8, data[i + 4 .. i + 8], "acTL")) {
+            if (chunk_len == 8 and std.mem.eql(u8, data[i + 4 .. i + 8], "acTL")) {
                 return true;
             }
 
-            i += chunk_len + 12;
+            i += chunk_size;
         }
     }
 
@@ -721,13 +815,15 @@ pub fn isAnimatedFormat(data: []const u8) bool {
     if (data.len >= 16 and std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WEBP")) {
         // Search for ANIM chunk
         var i: usize = 12;
-        while (i + 8 < data.len) {
-            if (std.mem.eql(u8, data[i .. i + 4], "ANIM")) {
-                return true;
-            }
-            const chunk_size = (@as(u32, data[i + 7]) << 24) | (@as(u32, data[i + 6]) << 16) |
+        while (i <= data.len and data.len - i >= 8) {
+            const payload_size_u32 = (@as(u32, data[i + 7]) << 24) | (@as(u32, data[i + 6]) << 16) |
                 (@as(u32, data[i + 5]) << 8) | @as(u32, data[i + 4]);
-            i += 8 + chunk_size + (chunk_size % 2);
+            const payload_size: usize = payload_size_u32;
+            const padded_size = std.math.add(usize, payload_size, payload_size & 1) catch return false;
+            const chunk_size = std.math.add(usize, padded_size, 8) catch return false;
+            if (chunk_size > data.len - i) return false;
+            if (payload_size >= 6 and std.mem.eql(u8, data[i .. i + 4], "ANIM")) return true;
+            i += chunk_size;
         }
     }
 
@@ -737,7 +833,7 @@ pub fn isAnimatedFormat(data: []const u8) bool {
 /// Get animation frame count from file data
 pub fn getFrameCount(data: []const u8) u32 {
     // GIF
-    if (data.len >= 6 and data[0] == 'G' and data[1] == 'I' and data[2] == 'F') {
+    if (data.len >= 13 and data[0] == 'G' and data[1] == 'I' and data[2] == 'F') {
         var count: u32 = 0;
         var i: usize = 13; // Skip header
 
@@ -745,32 +841,31 @@ pub fn getFrameCount(data: []const u8) u32 {
         const flags = data[10];
         if ((flags & 0x80) != 0) {
             const table_size: usize = @as(usize, 3) << @intCast((flags & 7) + 1);
+            if (table_size > data.len - i) return 1;
             i += table_size;
         }
 
         // Count image descriptors
         while (i < data.len) {
             if (data[i] == 0x2C) { // Image descriptor
+                if (data.len - i < 10) break;
                 count += 1;
                 i += 10;
                 // Skip local color table
                 const local_flags = data[i - 1];
                 if ((local_flags & 0x80) != 0) {
                     const local_size: usize = @as(usize, 3) << @intCast((local_flags & 7) + 1);
+                    if (local_size > data.len - i) break;
                     i += local_size;
                 }
                 // Skip image data
+                if (i >= data.len) break;
                 i += 1; // LZW minimum code size
-                while (i < data.len and data[i] != 0) {
-                    i += @as(usize, data[i]) + 1;
-                }
-                i += 1;
+                if (!skipGifSubBlocks(data, &i)) break;
             } else if (data[i] == 0x21) { // Extension
+                if (data.len - i < 2) break;
                 i += 2;
-                while (i < data.len and data[i] != 0) {
-                    i += @as(usize, data[i]) + 1;
-                }
-                i += 1;
+                if (!skipGifSubBlocks(data, &i)) break;
             } else if (data[i] == 0x3B) { // Trailer
                 break;
             } else {
@@ -784,19 +879,128 @@ pub fn getFrameCount(data: []const u8) u32 {
     // APNG
     if (data.len >= 8 and data[0] == 0x89 and data[1] == 'P') {
         var i: usize = 8;
-        while (i + 8 < data.len) {
-            const chunk_len = (@as(u32, data[i]) << 24) | (@as(u32, data[i + 1]) << 16) |
+        while (i <= data.len and data.len - i >= 12) {
+            const chunk_len_u32 = (@as(u32, data[i]) << 24) | (@as(u32, data[i + 1]) << 16) |
                 (@as(u32, data[i + 2]) << 8) | @as(u32, data[i + 3]);
+            const chunk_len: usize = chunk_len_u32;
+            const chunk_size = std.math.add(usize, chunk_len, 12) catch return 1;
+            if (chunk_size > data.len - i) return 1;
 
-            if (std.mem.eql(u8, data[i + 4 .. i + 8], "acTL")) {
+            if (chunk_len == 8 and std.mem.eql(u8, data[i + 4 .. i + 8], "acTL")) {
                 // Frame count is at offset 8 in acTL
                 return (@as(u32, data[i + 8]) << 24) | (@as(u32, data[i + 9]) << 16) |
                     (@as(u32, data[i + 10]) << 8) | @as(u32, data[i + 11]);
             }
 
-            i += chunk_len + 12;
+            i += chunk_size;
         }
     }
 
     return 1;
+}
+
+fn skipGifSubBlocks(data: []const u8, index: *usize) bool {
+    while (index.* < data.len) {
+        const block_len: usize = data[index.*];
+        index.* += 1;
+        if (block_len == 0) return true;
+        if (block_len > data.len - index.*) return false;
+        index.* += block_len;
+    }
+    return false;
+}
+
+fn appendTestFrame(timeline: *AnimationTimeline, red: u8, delay_ms: u32) !void {
+    const frame = try timeline.allocator.create(Image);
+    errdefer timeline.allocator.destroy(frame);
+    frame.* = try Image.init(timeline.allocator, timeline.width, timeline.height, .rgba8);
+    errdefer frame.deinit();
+    frame.setPixel(0, 0, .{ .r = red, .g = 0, .b = 0, .a = 255 });
+    try timeline.addFrame(frame, delay_ms);
+}
+
+test "animation timelines preserve ownership and ping-pong order" {
+    const allocator = std.testing.allocator;
+    var timeline = AnimationTimeline.init(allocator, 2, 1);
+    defer timeline.deinit();
+
+    try appendTestFrame(&timeline, 10, 10);
+    try appendTestFrame(&timeline, 20, 20);
+    try appendTestFrame(&timeline, 30, 30);
+    try appendTestFrame(&timeline, 40, 40);
+    try timeline.pingPong();
+
+    try std.testing.expectEqual(@as(usize, 6), timeline.frames.items.len);
+    const expected = [_]u8{ 10, 20, 30, 40, 30, 20 };
+    for (timeline.frames.items, expected) |frame, red| {
+        try std.testing.expectEqual(red, frame.image.getPixel(0, 0).?.r);
+    }
+
+    const extracted = try timeline.extractFrames(allocator);
+    defer {
+        for (extracted) |*frame| frame.deinit();
+        allocator.free(extracted);
+    }
+    try std.testing.expectEqual(timeline.frames.items.len, extracted.len);
+
+    var exported = try timeline.toImage();
+    defer exported.deinit();
+    try std.testing.expectEqual(timeline.frames.items.len, exported.frames.?.len);
+
+    const wrong_size = try allocator.create(Image);
+    defer allocator.destroy(wrong_size);
+    wrong_size.* = try Image.init(allocator, 1, 1, .rgba8);
+    defer wrong_size.deinit();
+    try std.testing.expectError(error.FrameDimensionsMismatch, timeline.addFrame(wrong_size, 1));
+}
+
+test "multi-page documents replace metadata and validate layout" {
+    const allocator = std.testing.allocator;
+    var document = MultiPageDocument.init(allocator);
+    defer document.deinit();
+
+    const page = try allocator.create(Image);
+    errdefer allocator.destroy(page);
+    page.* = try Image.init(allocator, 2, 1, .rgba8);
+    errdefer page.deinit();
+    page.setPixel(0, 0, Color.RED);
+    try document.addPage(page);
+
+    try document.setMetadata("title", "first");
+    try document.setMetadata("title", "second");
+    try std.testing.expectEqualStrings("second", document.getMetadata("title").?);
+
+    const documents = try document.split(1);
+    defer {
+        for (documents) |*split_document| split_document.deinit();
+        allocator.free(documents);
+    }
+    try std.testing.expectEqual(@as(usize, 1), documents.len);
+    try std.testing.expectEqual(@as(usize, 1), documents[0].pageCount());
+    try std.testing.expectError(error.InvalidPagesPerDocument, document.split(0));
+
+    var sheet = try document.createContactSheet(2, 2, 1, 1, Color.BLACK, allocator);
+    defer sheet.deinit();
+    try std.testing.expectEqual(@as(u32, 4), sheet.width);
+    try std.testing.expectEqual(@as(u32, 4), sheet.height);
+    try std.testing.expectError(error.InvalidColumns, document.createContactSheet(2, 2, 0, 1, Color.BLACK, allocator));
+}
+
+test "animation format probes reject truncated chunks" {
+    const malformed_png = [_]u8{
+        0x89, 'P',  'N',  'G',  0x0D, 0x0A, 0x1A, 0x0A,
+        0xFF, 0xFF, 0xFF, 0xFF, 'a',  'c',  'T',  'L',
+    };
+    try std.testing.expect(!isAnimatedFormat(&malformed_png));
+    try std.testing.expectEqual(@as(u32, 1), getFrameCount(&malformed_png));
+    try std.testing.expectEqual(@as(u32, 1), getFrameCount("GIF89a"));
+
+    const apng = [_]u8{
+        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+        0,    0,   0,   8,   'a',  'c',  'T',  'L',
+        0,    0,   0,   2,   0,    0,    0,    0,
+        0,    0,   0,   0,
+    };
+    try std.testing.expect(isAnimatedFormat(&apng));
+    try std.testing.expectEqual(@as(u32, 2), getFrameCount(&apng));
 }
