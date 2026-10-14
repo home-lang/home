@@ -201,7 +201,10 @@ var access = function access(path, mode, callback) {
 
     ensureCallback(callback);
 
-    fs.mkdir(path, options, error => callback(error));
+    fs.mkdir(path, options, (error, firstPathCreated) => {
+      if (error || firstPathCreated === undefined) callback(error);
+      else callback(null, firstPathCreated);
+    });
   },
   mkdtemp = function mkdtemp(prefix, options, callback) {
     if ($isCallable(options)) {

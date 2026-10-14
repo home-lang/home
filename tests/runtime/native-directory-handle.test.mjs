@@ -8,6 +8,36 @@ import { Worker } from 'node:worker_threads'
 import { createHook, executionAsyncId, executionAsyncResource } from 'node:async_hooks'
 
 {
+const base=fs.mkdtempSync(join(tmpdir(),'home-mkdir-callback-result-'))
+async function create(path,options,expectedError,expectedResult){
+ return new Promise((resolve,reject)=>{
+  fs.mkdir(path,options,function(error,result){
+   try {
+    assert.equal(this,undefined)
+    assert.equal(arguments.length,expectedResult===undefined?1:2)
+    assert.equal(error?.code,expectedError)
+    assert.equal(result,expectedResult)
+    if(globalThis.Bun)assert.equal(executionAsyncResource().constructor.name,'FSReqCallback')
+    resolve()
+   }catch(error){reject(error)}
+  })
+ })
+}
+try {
+ const first=join(base,'new'),last=join(first,'child')
+ await create(last,{recursive:true},undefined,first)
+ await create(last,{recursive:true},undefined,undefined)
+ const single=join(base,'single')
+ await create(single,{},undefined,undefined)
+ await create(single,{},'EEXIST',undefined)
+ const promised=join(base,'promise')
+ assert.equal(await fs.promises.mkdir(join(promised,'child'),{recursive:true}),promised)
+ assert.equal(await fs.promises.mkdir(join(promised,'child'),{recursive:true}),undefined)
+ console.log('mkdir callbacks retain first-created paths and result-dependent argument counts')
+}finally{fs.rmSync(base,{recursive:true,force:true})}
+}
+
+{
 const base=fs.mkdtempSync(join(tmpdir(),'home-directory-identity-'))
 try {
  for(const mode of ['sync','async']) {
