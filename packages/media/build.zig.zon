@@ -1,5 +1,6 @@
 .{
-    .name = "media",
+    .fingerprint = 0x6a2ca10c7e15edb4,
+    .name = .media,
     .version = "0.1.0",
     .minimum_zig_version = "0.14.0",
 
@@ -12,9 +13,6 @@
         },
         .image = .{
             .path = "../image",
-        },
-        .test_framework = .{
-            .path = "../../zig-test-framework",
         },
     },
 
