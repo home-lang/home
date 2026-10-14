@@ -444,11 +444,11 @@ pub const WmaReader = struct {
     }
 
     fn decodeUtf16Le(self: *Self, data: []const u8) ![]const u8 {
-        if (data.len < 2) return "";
+        if (data.len < 2) return try self.allocator.dupe(u8, "");
 
         // Simple UTF-16LE to UTF-8 conversion
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
 
         var i: usize = 0;
         while (i + 1 < data.len) {
@@ -459,18 +459,18 @@ pub const WmaReader = struct {
 
             // Simple ASCII range
             if (code_unit < 0x80) {
-                try result.append(@truncate(code_unit));
+                try result.append(self.allocator, @truncate(code_unit));
             } else if (code_unit < 0x800) {
-                try result.append(@truncate(0xC0 | (code_unit >> 6)));
-                try result.append(@truncate(0x80 | (code_unit & 0x3F)));
+                try result.append(self.allocator, @truncate(0xC0 | (code_unit >> 6)));
+                try result.append(self.allocator, @truncate(0x80 | (code_unit & 0x3F)));
             } else {
-                try result.append(@truncate(0xE0 | (code_unit >> 12)));
-                try result.append(@truncate(0x80 | ((code_unit >> 6) & 0x3F)));
-                try result.append(@truncate(0x80 | (code_unit & 0x3F)));
+                try result.append(self.allocator, @truncate(0xE0 | (code_unit >> 12)));
+                try result.append(self.allocator, @truncate(0x80 | ((code_unit >> 6) & 0x3F)));
+                try result.append(self.allocator, @truncate(0x80 | (code_unit & 0x3F)));
             }
         }
 
-        return try result.toOwnedSlice();
+        return try result.toOwnedSlice(self.allocator);
     }
 
     pub fn deinit(self: *Self) void {
@@ -585,4 +585,26 @@ test "WMA Audio Format parsing" {
     try std.testing.expectEqual(WmaCodecId.wma_v2, format.codec_id);
     try std.testing.expectEqual(@as(u16, 2), format.channels);
     try std.testing.expectEqual(@as(u32, 44100), format.sample_rate);
+}
+
+test "WMA UTF-16 decoding returns owned storage" {
+    const allocator = std.testing.allocator;
+    var reader = WmaReader{
+        .data = &.{},
+        .pos = 0,
+        .file_properties = null,
+        .audio_format = null,
+        .metadata = .{ .allocator = allocator },
+        .data_offset = 0,
+        .allocator = allocator,
+    };
+    defer reader.deinit();
+
+    const text = try reader.decodeUtf16Le(&.{ 'H', 0, 'i', 0, 0, 0 });
+    defer allocator.free(text);
+    try std.testing.expectEqualStrings("Hi", text);
+
+    const empty = try reader.decodeUtf16Le(&.{});
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
 }

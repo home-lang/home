@@ -478,7 +478,7 @@ pub const AacWriter = struct {
         }
 
         return Self{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
             .channels = channels,
             .sample_rate = sample_rate,
             .sample_rate_index = sample_rate_index,
@@ -489,7 +489,7 @@ pub const AacWriter = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Write raw AAC frame data
@@ -511,8 +511,8 @@ pub const AacWriter = struct {
             .crc = null,
         };
 
-        try self.buffer.appendSlice(&header.encode());
-        try self.buffer.appendSlice(frame_data);
+        try self.buffer.appendSlice(self.allocator, &header.encode());
+        try self.buffer.appendSlice(self.allocator, frame_data);
         self.frames_written += 1;
     }
 
@@ -592,4 +592,17 @@ test "M4A detection" {
     @memcpy(m4a_data[8..12], "M4A ");
 
     try std.testing.expect(isM4a(&m4a_data));
+}
+
+test "AAC writer uses allocator-explicit storage" {
+    const allocator = std.testing.allocator;
+    var writer = try AacWriter.init(allocator, 2, 44100);
+    defer writer.deinit();
+    try writer.writeFrame(&.{ 1, 2, 3, 4 });
+
+    const data = try writer.finalize();
+    defer allocator.free(data);
+    const header = try AdtsHeader.parse(data[0..7]);
+    try std.testing.expectEqual(@as(u13, 11), header.frame_length);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, data[7..]);
 }

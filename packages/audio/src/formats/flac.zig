@@ -79,18 +79,18 @@ pub const StreamInfo = struct {
     /// Parse from 34-byte STREAMINFO block
     pub fn parse(data: []const u8) !Self {
         if (data.len < 34) return AudioError.TruncatedData;
+        const packed_stream_info = std.mem.readInt(u32, data[10..14], .big);
 
         return Self{
             .min_block_size = std.mem.readInt(u16, data[0..2], .big),
             .max_block_size = std.mem.readInt(u16, data[2..4], .big),
             .min_frame_size = @truncate(std.mem.readInt(u24, data[4..7], .big)),
             .max_frame_size = @truncate(std.mem.readInt(u24, data[7..10], .big)),
-            .sample_rate = @truncate(std.mem.readInt(u32, data[10..14], .big) >> 12),
-            .channels = @truncate((std.mem.readInt(u16, data[12..14], .big) >> 1) & 0x07),
-            .bits_per_sample = @truncate(((std.mem.readInt(u16, data[12..14], .big) & 0x01) << 4) |
-                ((data[14] >> 4) & 0x0F)),
-            .total_samples = @truncate((@as(u64, data[14] & 0x0F) << 32) |
-                std.mem.readInt(u32, data[15..19], .big)),
+            .sample_rate = @truncate(packed_stream_info >> 12),
+            .channels = @truncate((packed_stream_info >> 9) & 0x07),
+            .bits_per_sample = @truncate((packed_stream_info >> 4) & 0x1F),
+            .total_samples = @truncate((@as(u64, packed_stream_info & 0x0F) << 32) |
+                std.mem.readInt(u32, data[14..18], .big)),
             .md5_signature = data[18..34].*,
         };
     }
@@ -467,16 +467,17 @@ pub const FlacWriter = struct {
         bits_per_sample: u8,
     ) !Self {
         var writer = Self{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
             .channels = channels,
             .sample_rate = sample_rate,
             .bits_per_sample = bits_per_sample,
             .total_samples = 0,
             .allocator = allocator,
         };
+        errdefer writer.buffer.deinit(allocator);
 
         // Write magic and placeholder STREAMINFO
-        try writer.buffer.appendSlice(&FLAC_MAGIC);
+        try writer.buffer.appendSlice(allocator, &FLAC_MAGIC);
         // Placeholder for metadata blocks
         try writer.writeStreamInfoPlaceholder();
 
@@ -484,20 +485,20 @@ pub const FlacWriter = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     fn writeStreamInfoPlaceholder(self: *Self) !void {
         // Last metadata block flag + STREAMINFO type
-        try self.buffer.append(0x80); // Last block, type 0
+        try self.buffer.append(self.allocator, 0x80); // Last block, type 0
 
         // Block size: 34 bytes
-        try self.buffer.append(0);
-        try self.buffer.append(0);
-        try self.buffer.append(34);
+        try self.buffer.append(self.allocator, 0);
+        try self.buffer.append(self.allocator, 0);
+        try self.buffer.append(self.allocator, 34);
 
         // Placeholder STREAMINFO (34 bytes)
-        try self.buffer.appendNTimes(0, 34);
+        try self.buffer.appendNTimes(self.allocator, 0, 34);
     }
 
     /// Finalize and get the FLAC data
@@ -593,4 +594,18 @@ test "StreamInfo getSampleFormat" {
 
     try std.testing.expectEqual(SampleFormat.s16le, info.getSampleFormat());
     try std.testing.expectEqual(@as(u8, 2), info.getChannelCount());
+}
+
+test "FLAC writer uses allocator-explicit storage" {
+    const allocator = std.testing.allocator;
+    var writer = try FlacWriter.init(allocator, 2, 44100, 16);
+    defer writer.deinit();
+
+    const data = try writer.finalize();
+    defer allocator.free(data);
+    var reader = try FlacReader.fromMemory(allocator, data);
+    defer reader.deinit();
+    try std.testing.expectEqual(@as(u32, 44100), reader.getSampleRate());
+    try std.testing.expectEqual(@as(u8, 2), reader.getChannels());
+    try std.testing.expectEqual(@as(u8, 16), reader.getBitsPerSample());
 }

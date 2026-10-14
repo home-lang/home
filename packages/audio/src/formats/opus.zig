@@ -166,6 +166,7 @@ pub const OpusTags = struct {
 
         if (pos + vendor_len > data.len) return AudioError.TruncatedData;
         const vendor = try allocator.dupe(u8, data[pos..][0..vendor_len]);
+        errdefer allocator.free(vendor);
         pos += vendor_len;
 
         // Comment count
@@ -173,13 +174,13 @@ pub const OpusTags = struct {
         const comment_count = std.mem.readInt(u32, data[pos..][0..4], .little);
         pos += 4;
 
-        var comments = std.ArrayList(Comment).init(allocator);
+        var comments: std.ArrayList(Comment) = .empty;
         errdefer {
             for (comments.items) |c| {
                 allocator.free(c.field);
                 allocator.free(c.value);
             }
-            comments.deinit();
+            comments.deinit(allocator);
         }
 
         for (0..comment_count) |_| {
@@ -195,8 +196,10 @@ pub const OpusTags = struct {
             // Find '=' separator
             if (std.mem.indexOf(u8, comment_data, "=")) |eq_pos| {
                 const field = try allocator.dupe(u8, comment_data[0..eq_pos]);
+                errdefer allocator.free(field);
                 const value = try allocator.dupe(u8, comment_data[eq_pos + 1 ..]);
-                try comments.append(.{ .field = field, .value = value });
+                errdefer allocator.free(value);
+                try comments.append(allocator, .{ .field = field, .value = value });
             }
         }
 
@@ -213,7 +216,7 @@ pub const OpusTags = struct {
             self.allocator.free(c.field);
             self.allocator.free(c.value);
         }
-        self.comments.deinit();
+        self.comments.deinit(self.allocator);
     }
 
     /// Get a field value (case-insensitive)
@@ -627,4 +630,14 @@ test "OpusPacketInfo" {
 
     try std.testing.expectEqual(@as(u8, 1), info.frame_count);
     try std.testing.expect(info.stereo);
+}
+
+test "Opus tags use allocator-explicit storage" {
+    const data = "OpusTags" ++ [_]u8{ 4, 0, 0, 0 } ++ "home" ++
+        [_]u8{ 1, 0, 0, 0, 10, 0, 0, 0 } ++ "TITLE=Song";
+    var tags = try OpusTags.parse(std.testing.allocator, data);
+    defer tags.deinit();
+
+    try std.testing.expectEqualStrings("home", tags.vendor);
+    try std.testing.expectEqualStrings("Song", tags.get("title").?);
 }

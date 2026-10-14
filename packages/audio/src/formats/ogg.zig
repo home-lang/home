@@ -476,7 +476,7 @@ pub const OggPageWriter = struct {
 
     pub fn init(allocator: std.mem.Allocator, serial_number: u32) Self {
         return Self{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
             .serial_number = serial_number,
             .page_number = 0,
             .allocator = allocator,
@@ -484,7 +484,7 @@ pub const OggPageWriter = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Write a page with given data
@@ -495,55 +495,55 @@ pub const OggPageWriter = struct {
         flags: PageFlags,
     ) !void {
         // Create segment table
-        var segments = std.ArrayList(u8).init(self.allocator);
-        defer segments.deinit();
+        var segments: std.ArrayList(u8) = .empty;
+        defer segments.deinit(self.allocator);
 
         var remaining = data.len;
         while (remaining > 0) {
             const seg_size: u8 = @min(255, @as(u8, @intCast(remaining)));
-            try segments.append(seg_size);
+            try segments.append(self.allocator, seg_size);
             remaining -= seg_size;
             if (seg_size == 255 and remaining == 0) {
-                try segments.append(0); // Terminating zero for exact multiple
+                try segments.append(self.allocator, 0); // Terminating zero for exact multiple
             }
         }
 
         // Write OGG magic
-        try self.buffer.appendSlice(&OGG_MAGIC);
+        try self.buffer.appendSlice(self.allocator, &OGG_MAGIC);
 
         // Version
-        try self.buffer.append(0);
+        try self.buffer.append(self.allocator, 0);
 
         // Flags
-        try self.buffer.append(@bitCast(flags));
+        try self.buffer.append(self.allocator, @bitCast(flags));
 
         // Granule position
         var gp_bytes: [8]u8 = undefined;
         std.mem.writeInt(i64, &gp_bytes, granule_position, .little);
-        try self.buffer.appendSlice(&gp_bytes);
+        try self.buffer.appendSlice(self.allocator, &gp_bytes);
 
         // Serial number
         var sn_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &sn_bytes, self.serial_number, .little);
-        try self.buffer.appendSlice(&sn_bytes);
+        try self.buffer.appendSlice(self.allocator, &sn_bytes);
 
         // Page number
         var pn_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &pn_bytes, self.page_number, .little);
-        try self.buffer.appendSlice(&pn_bytes);
+        try self.buffer.appendSlice(self.allocator, &pn_bytes);
         self.page_number += 1;
 
         // CRC placeholder (will be computed later)
-        try self.buffer.appendSlice(&[_]u8{ 0, 0, 0, 0 });
+        try self.buffer.appendSlice(self.allocator, &[_]u8{ 0, 0, 0, 0 });
 
         // Segment count
-        try self.buffer.append(@intCast(segments.items.len));
+        try self.buffer.append(self.allocator, @intCast(segments.items.len));
 
         // Segment table
-        try self.buffer.appendSlice(segments.items);
+        try self.buffer.appendSlice(self.allocator, segments.items);
 
         // Data
-        try self.buffer.appendSlice(data);
+        try self.buffer.appendSlice(self.allocator, data);
 
         // Compute CRC
         const page_start = self.buffer.items.len - (27 + segments.items.len + data.len);
@@ -646,4 +646,16 @@ test "Vorbis comment headers use allocator-explicit storage" {
 
     try std.testing.expectEqualStrings("home", comments.vendor);
     try std.testing.expectEqualStrings("Song", comments.get("title").?);
+}
+
+test "OGG page writer uses allocator-explicit storage" {
+    var writer = OggPageWriter.init(std.testing.allocator, 42);
+    defer writer.deinit();
+    try writer.writePage("home", 4, .{ .continuation = false, .bos = true, .eos = true });
+
+    const page = try OggPage.parse(writer.getData());
+    try std.testing.expectEqual(@as(u32, 42), page.serial_number);
+    try std.testing.expect(page.isFirstPage());
+    try std.testing.expect(page.isLastPage());
+    try std.testing.expectEqualStrings("home", page.data);
 }
