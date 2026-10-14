@@ -1038,6 +1038,13 @@ pub fn formatJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator
     return if (isWindows) formatWindowsJS_T(T, globalObject, pathObject, buf) else formatPosixJS_T(T, globalObject, pathObject, buf);
 }
 
+// Path uses JavaScript || semantics. getTruthy retains 0 and false for Bun
+// option objects, so it cannot implement these short-circuit property reads.
+fn getPathTruthy(object: jsc.JSValue, globalObject: *jsc.JSGlobalObject, property: []const u8) bun.JSError!?jsc.JSValue {
+    const value = (try object.get(globalObject, property)) orelse return null;
+    return if (value.toBoolean()) value else null;
+}
+
 pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]jsc.JSValue, args_len: u16) bun.JSError!jsc.JSValue {
     const pathObject_ptr: jsc.JSValue = if (args_len > 0) args_ptr[0] else .js_undefined;
     // Supress exeption in zig. It does globalThis.vm().throwError() in JS land.
@@ -1048,35 +1055,74 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
 
     // Match JavaScript's short-circuit property reads. Each returned value must
     // survive subsequent user getters, coercions, and garbage collections.
-    const dir_value = (try pathObject_ptr.getTruthy(globalObject, "dir")) orelse
-        (try pathObject_ptr.getTruthy(globalObject, "root")) orelse .js_undefined;
+    const dir_value = (try getPathTruthy(pathObject_ptr, globalObject, "dir")) orelse
+        (try getPathTruthy(pathObject_ptr, globalObject, "root")) orelse .js_undefined;
     dir_value.protect();
     defer dir_value.unprotect();
-    const base_value = (try pathObject_ptr.getTruthy(globalObject, "base")) orelse .js_undefined;
+    const base_value = (try getPathTruthy(pathObject_ptr, globalObject, "base")) orelse .js_undefined;
     base_value.protect();
     defer base_value.unprotect();
-    var fields: [5][]const u16 = .{ &.{}, &.{}, &.{}, &.{}, &.{} };
-    defer for (fields) |field| allocator.free(field);
+    var name: []const u16 = &.{};
+    defer allocator.free(name);
+    var ext: []const u16 = &.{};
+    defer allocator.free(ext);
+    var prefix_dot = false;
     if (base_value.isUndefined()) {
-        if (try pathObject_ptr.getTruthy(globalObject, "name")) |value| fields[3] = try copyPathCodeUnits(globalObject, allocator, value);
-        if (try pathObject_ptr.getTruthy(globalObject, "ext")) |value| fields[4] = try copyPathCodeUnits(globalObject, allocator, value);
+        // Template interpolation coerces name before reading the extension.
+        if (try getPathTruthy(pathObject_ptr, globalObject, "name")) |value|
+            name = try copyPathCodeUnits(globalObject, allocator, value);
+        if (try getPathTruthy(pathObject_ptr, globalObject, "ext")) |value| {
+            value.protect();
+            defer value.unprotect();
+            // Indexed property access is observable even for boxed primitives,
+            // proxies and extensions whose stringification produces no units.
+            const first = try value.getIndex(globalObject, 0);
+            first.protect();
+            defer first.unprotect();
+            prefix_dot = !try first.isStrictEqual(try pathStringToJS(u8, globalObject, "."), globalObject);
+            ext = try copyPathCodeUnits(globalObject, allocator, value);
+        }
     }
-    if (dir_value.isUndefined()) {
-        if (!base_value.isUndefined()) return base_value;
-    } else {
+    if (dir_value.isUndefined() and !base_value.isUndefined()) return base_value;
+
+    var dir_is_root = true;
+    var dir: []const u16 = &.{};
+    defer allocator.free(dir);
+    if (!dir_value.isUndefined()) {
         const root_value = (try pathObject_ptr.get(globalObject, "root")) orelse .js_undefined;
-        const dir_is_root = try dir_value.isStrictEqual(root_value, globalObject);
-        fields[1] = try copyPathCodeUnits(globalObject, allocator, dir_value);
-        if (dir_is_root) fields[0] = bun.handleOom(allocator.dupe(u16, fields[1]));
+        dir_is_root = try dir_value.isStrictEqual(root_value, globalObject);
+        dir = try copyPathCodeUnits(globalObject, allocator, dir_value);
     }
-    if (!base_value.isUndefined()) fields[2] = try copyPathCodeUnits(globalObject, allocator, base_value);
-    return formatJS_T(u16, globalObject, allocator, isWindows, .{
-        .root = fields[0],
-        .dir = fields[1],
-        .base = fields[2],
-        .name = fields[3],
-        .ext = fields[4],
-    });
+    var base: []const u16 = &.{};
+    defer allocator.free(base);
+    if (!base_value.isUndefined()) base = try copyPathCodeUnits(globalObject, allocator, base_value);
+
+    // Keep raw field truthiness separate from the lengths of coerced strings.
+    // An object returning "" is still a directory/base/extension to JavaScript.
+    const separator = !dir_value.isUndefined() and !dir_is_root;
+    const size = dir.len + @intFromBool(separator) +
+        (if (!base_value.isUndefined()) base.len else name.len + @intFromBool(prefix_dot) + ext.len);
+    const output = bun.handleOom(allocator.alloc(u16, size));
+    defer allocator.free(output);
+    var offset: usize = 0;
+    bun.copy(u16, output[offset .. offset + dir.len], dir);
+    offset += dir.len;
+    if (separator) {
+        output[offset] = if (isWindows) CHAR_BACKWARD_SLASH else CHAR_FORWARD_SLASH;
+        offset += 1;
+    }
+    if (!base_value.isUndefined()) {
+        bun.copy(u16, output[offset .. offset + base.len], base);
+    } else {
+        bun.copy(u16, output[offset .. offset + name.len], name);
+        offset += name.len;
+        if (prefix_dot) {
+            output[offset] = CHAR_DOT;
+            offset += 1;
+        }
+        bun.copy(u16, output[offset .. offset + ext.len], ext);
+    }
+    return pathStringToJS(u16, globalObject, output);
 }
 
 /// Based on Node v21.6.1 path.posix.isAbsolute:
