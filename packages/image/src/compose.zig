@@ -26,8 +26,11 @@ pub const Layer = struct {
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, width: u32, height: u32) !*Layer {
         const layer = try allocator.create(Layer);
+        errdefer allocator.destroy(layer);
         const image = try allocator.create(Image);
+        errdefer allocator.destroy(image);
         image.* = try Image.init(allocator, width, height, .rgba8);
+        errdefer image.deinit();
 
         const name_copy = try allocator.dupe(u8, name);
 
@@ -42,6 +45,7 @@ pub const Layer = struct {
 
     pub fn initFromImage(allocator: std.mem.Allocator, name: []const u8, image: *Image) !*Layer {
         const layer = try allocator.create(Layer);
+        errdefer allocator.destroy(layer);
         const name_copy = try allocator.dupe(u8, name);
 
         layer.* = Layer{
@@ -69,6 +73,7 @@ pub const Layer = struct {
         if (self.mask != null) return;
 
         const mask = try self.allocator.create(Mask);
+        errdefer self.allocator.destroy(mask);
         mask.* = try Mask.init(self.allocator, self.image.width, self.image.height, initial_value);
         self.mask = mask;
     }
@@ -280,7 +285,7 @@ pub const Composition = struct {
             .width = width,
             .height = height,
             .background_color = Color.WHITE,
-            .layers = std.ArrayList(*Layer).init(allocator),
+            .layers = .empty,
             .allocator = allocator,
         };
     }
@@ -289,26 +294,28 @@ pub const Composition = struct {
         for (self.layers.items) |layer| {
             layer.deinit();
         }
-        self.layers.deinit();
+        self.layers.deinit(self.allocator);
     }
 
     /// Add a new empty layer
     pub fn addLayer(self: *Composition, name: []const u8) !*Layer {
+        try self.layers.ensureUnusedCapacity(self.allocator, 1);
         const layer = try Layer.init(self.allocator, name, self.width, self.height);
-        try self.layers.append(layer);
+        self.layers.appendAssumeCapacity(layer);
         return layer;
     }
 
     /// Add an existing image as a layer
     pub fn addImageAsLayer(self: *Composition, name: []const u8, image: *Image) !*Layer {
+        try self.layers.ensureUnusedCapacity(self.allocator, 1);
         const layer = try Layer.initFromImage(self.allocator, name, image);
-        try self.layers.append(layer);
+        self.layers.appendAssumeCapacity(layer);
         return layer;
     }
 
     /// Insert layer at specific index
     pub fn insertLayer(self: *Composition, index: usize, layer: *Layer) !void {
-        try self.layers.insert(index, layer);
+        try self.layers.insert(self.allocator, index, layer);
     }
 
     /// Remove layer by index
@@ -322,7 +329,7 @@ pub const Composition = struct {
     pub fn moveLayer(self: *Composition, from: usize, to: usize) void {
         if (from >= self.layers.items.len or to >= self.layers.items.len) return;
         const layer = self.layers.orderedRemove(from);
-        self.layers.insert(to, layer) catch {};
+        self.layers.insertAssumeCapacity(to, layer);
     }
 
     /// Get layer by name
@@ -405,25 +412,30 @@ pub const Composition = struct {
 
                 // Apply blend mode
                 const blended = blend_ops.blend(
-                    .{ dst_color.r, dst_color.g, dst_color.b, dst_color.a },
-                    .{ layer_color.r, layer_color.g, layer_color.b, layer_color.a },
+                    dst_color,
+                    layer_color,
                     layer.blend_mode,
                     opacity,
                 );
 
-                result.setPixel(ux, uy, Color{
-                    .r = blended[0],
-                    .g = blended[1],
-                    .b = blended[2],
-                    .a = blended[3],
-                });
+                result.setPixel(ux, uy, blended);
             }
         }
     }
 
     /// Merge visible layers
     pub fn mergeVisible(self: *Composition) !void {
-        const flattened = try self.flatten();
+        try self.layers.ensureTotalCapacity(self.allocator, 1);
+        var flattened = try self.flatten();
+        var owns_flattened = true;
+        errdefer if (owns_flattened) flattened.deinit();
+
+        const image = try self.allocator.create(Image);
+        errdefer self.allocator.destroy(image);
+        image.* = flattened;
+        owns_flattened = false;
+        errdefer image.deinit();
+        const merged_layer = try Layer.initFromImage(self.allocator, "Merged", image);
 
         // Remove all layers
         for (self.layers.items) |layer| {
@@ -432,10 +444,7 @@ pub const Composition = struct {
         self.layers.clearRetainingCapacity();
 
         // Add flattened as new layer
-        const image = try self.allocator.create(Image);
-        image.* = flattened;
-        const layer = try Layer.initFromImage(self.allocator, "Merged", image);
-        try self.layers.append(layer);
+        self.layers.appendAssumeCapacity(merged_layer);
     }
 
     /// Merge layer down (merge with layer below)
@@ -483,42 +492,50 @@ pub const ClippingPath = struct {
 
     pub fn init(allocator: std.mem.Allocator) ClippingPath {
         return ClippingPath{
-            .points = std.ArrayList(PathPoint).init(allocator),
-            .segments = std.ArrayList(PathSegment).init(allocator),
+            .points = .empty,
+            .segments = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *ClippingPath) void {
-        self.points.deinit();
-        self.segments.deinit();
+        self.points.deinit(self.allocator);
+        self.segments.deinit(self.allocator);
     }
 
     pub fn moveTo(self: *ClippingPath, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = x, .y = y });
-        try self.segments.append(.move_to);
+        try self.points.ensureUnusedCapacity(self.allocator, 1);
+        try self.segments.ensureUnusedCapacity(self.allocator, 1);
+        self.points.appendAssumeCapacity(.{ .x = x, .y = y });
+        self.segments.appendAssumeCapacity(.move_to);
     }
 
     pub fn lineTo(self: *ClippingPath, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = x, .y = y });
-        try self.segments.append(.line_to);
+        try self.points.ensureUnusedCapacity(self.allocator, 1);
+        try self.segments.ensureUnusedCapacity(self.allocator, 1);
+        self.points.appendAssumeCapacity(.{ .x = x, .y = y });
+        self.segments.appendAssumeCapacity(.line_to);
     }
 
     pub fn quadTo(self: *ClippingPath, cx: f32, cy: f32, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = cx, .y = cy, .on_curve = false });
-        try self.points.append(.{ .x = x, .y = y });
-        try self.segments.append(.quad_to);
+        try self.points.ensureUnusedCapacity(self.allocator, 2);
+        try self.segments.ensureUnusedCapacity(self.allocator, 1);
+        self.points.appendAssumeCapacity(.{ .x = cx, .y = cy, .on_curve = false });
+        self.points.appendAssumeCapacity(.{ .x = x, .y = y });
+        self.segments.appendAssumeCapacity(.quad_to);
     }
 
     pub fn cubicTo(self: *ClippingPath, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) !void {
-        try self.points.append(.{ .x = c1x, .y = c1y, .on_curve = false });
-        try self.points.append(.{ .x = c2x, .y = c2y, .on_curve = false });
-        try self.points.append(.{ .x = x, .y = y });
-        try self.segments.append(.cubic_to);
+        try self.points.ensureUnusedCapacity(self.allocator, 3);
+        try self.segments.ensureUnusedCapacity(self.allocator, 1);
+        self.points.appendAssumeCapacity(.{ .x = c1x, .y = c1y, .on_curve = false });
+        self.points.appendAssumeCapacity(.{ .x = c2x, .y = c2y, .on_curve = false });
+        self.points.appendAssumeCapacity(.{ .x = x, .y = y });
+        self.segments.appendAssumeCapacity(.cubic_to);
     }
 
     pub fn close(self: *ClippingPath) !void {
-        try self.segments.append(.close);
+        try self.segments.append(self.allocator, .close);
         self.closed = true;
     }
 
@@ -862,6 +879,7 @@ pub const AdjustmentLayer = struct {
 pub const Shapes = struct {
     pub fn rectangle(x: f32, y: f32, width: f32, height: f32, allocator: std.mem.Allocator) !ClippingPath {
         var path = ClippingPath.init(allocator);
+        errdefer path.deinit();
         try path.moveTo(x, y);
         try path.lineTo(x + width, y);
         try path.lineTo(x + width, y + height);
@@ -871,7 +889,9 @@ pub const Shapes = struct {
     }
 
     pub fn ellipse(cx: f32, cy: f32, rx: f32, ry: f32, segments: u32, allocator: std.mem.Allocator) !ClippingPath {
+        if (segments < 3) return error.InvalidSegments;
         var path = ClippingPath.init(allocator);
+        errdefer path.deinit();
         const step = 2.0 * std.math.pi / @as(f32, @floatFromInt(segments));
 
         try path.moveTo(cx + rx, cy);
@@ -887,6 +907,7 @@ pub const Shapes = struct {
 
     pub fn roundedRectangle(x: f32, y: f32, width: f32, height: f32, radius: f32, allocator: std.mem.Allocator) !ClippingPath {
         var path = ClippingPath.init(allocator);
+        errdefer path.deinit();
         const r = @min(radius, @min(width, height) / 2);
 
         try path.moveTo(x + r, y);
@@ -903,3 +924,32 @@ pub const Shapes = struct {
         return path;
     }
 };
+
+test "composition owns layers and flattens pixels" {
+    const allocator = std.testing.allocator;
+    var composition = Composition.init(allocator, 2, 1);
+    defer composition.deinit();
+
+    const layer = try composition.addLayer("foreground");
+    layer.image.setPixel(0, 0, Color.RED);
+    layer.image.setPixel(1, 0, Color.BLUE);
+
+    try composition.mergeVisible();
+    try std.testing.expectEqual(@as(usize, 1), composition.layers.items.len);
+    try std.testing.expectEqualStrings("Merged", composition.layers.items[0].name);
+
+    var flattened = try composition.flatten();
+    defer flattened.deinit();
+    try std.testing.expectEqual(Color.RED, flattened.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, flattened.getPixel(1, 0).?);
+}
+
+test "clipping path batches point and segment growth" {
+    const allocator = std.testing.allocator;
+    var path = try Shapes.rectangle(1, 1, 4, 4, allocator);
+    defer path.deinit();
+
+    try std.testing.expect(path.contains(2, 2));
+    try std.testing.expect(!path.contains(0, 0));
+    try std.testing.expectError(error.InvalidSegments, Shapes.ellipse(0, 0, 1, 1, 2, allocator));
+}

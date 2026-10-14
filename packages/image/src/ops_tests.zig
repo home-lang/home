@@ -4,4 +4,7 @@ test {
     _ = @import("ops/transform.zig");
     _ = @import("ops/color.zig");
     _ = @import("ops/filter.zig");
+    _ = @import("color_blindness.zig");
+    _ = @import("compose.zig");
+    _ = @import("dither.zig");
 }

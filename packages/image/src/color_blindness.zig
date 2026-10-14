@@ -23,6 +23,13 @@ pub const SimulationOptions = struct {
     preserve_brightness: bool = true,
 };
 
+fn validatePixelFormat(format: image.PixelFormat) !void {
+    switch (format) {
+        .rgba8, .rgb8, .grayscale8 => {},
+        else => return error.UnsupportedFormat,
+    }
+}
+
 /// Simulates how an image appears to people with color blindness
 pub fn simulateColorBlindness(
     allocator: std.mem.Allocator,
@@ -30,11 +37,13 @@ pub fn simulateColorBlindness(
     cb_type: ColorBlindnessType,
     options: SimulationOptions,
 ) !Image {
+    try validatePixelFormat(img.format);
     var result = try Image.init(allocator, img.width, img.height, img.format);
+    errdefer result.deinit();
 
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            const pixel = img.getPixel(@intCast(x), @intCast(y));
+            const pixel = img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat;
             const transformed = transformColor(pixel, cb_type, options);
             result.setPixel(@intCast(x), @intCast(y), transformed);
         }
@@ -258,14 +267,20 @@ pub const ColorPair = struct {
 
 /// Analyzes an image for color blindness accessibility
 pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_type: ColorBlindnessType) !AccessibilityReport {
-    var problematic = std.ArrayList(ColorPair).init(allocator);
-    defer problematic.deinit();
+    var problematic: std.ArrayList(ColorPair) = .empty;
+    defer problematic.deinit(allocator);
 
-    var contrasts = std.ArrayList(f32).init(allocator);
-    defer contrasts.deinit();
+    var contrasts: std.ArrayList(f32) = .empty;
+    defer contrasts.deinit(allocator);
 
-    var recommendations = std.ArrayList([]const u8).init(allocator);
-    defer recommendations.deinit();
+    var recommendations: std.ArrayList([]const u8) = .empty;
+    var recommendations_own_items = true;
+    defer {
+        if (recommendations_own_items) {
+            for (recommendations.items) |recommendation| allocator.free(recommendation);
+        }
+        recommendations.deinit(allocator);
+    }
 
     // Sample colors from the image
     const sample_step = 20;
@@ -273,7 +288,7 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
         for (0..img.width / sample_step) |sx| {
             const y1 = @as(u32, @intCast(sy)) * sample_step;
             const x1 = @as(u32, @intCast(sx)) * sample_step;
-            const color1 = img.getPixel(x1, y1);
+            const color1 = img.getPixel(x1, y1) orelse continue;
 
             // Compare with nearby colors
             for (0..img.height / sample_step) |sy2| {
@@ -282,7 +297,7 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
                     const x2 = @as(u32, @intCast(sx2)) * sample_step;
                     if (x1 == x2 and y1 == y2) continue;
 
-                    const color2 = img.getPixel(x2, y2);
+                    const color2 = img.getPixel(x2, y2) orelse continue;
 
                     // Check if colors are distinguishable
                     const normal_diff = colorDifference(color1, color2);
@@ -292,7 +307,7 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
 
                     // If colors are distinct normally but similar with color blindness
                     if (normal_diff > 30.0 and cb_diff < 15.0) {
-                        try problematic.append(ColorPair{
+                        try problematic.append(allocator, ColorPair{
                             .color1 = color1,
                             .color2 = color2,
                             .location1 = .{ .x = x1, .y = y1 },
@@ -304,7 +319,7 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
 
                     // Check contrast ratio
                     const contrast = computeContrastRatio(color1, color2);
-                    try contrasts.append(contrast);
+                    try contrasts.append(allocator, contrast);
                 }
             }
         }
@@ -312,9 +327,9 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
 
     // Generate recommendations
     if (problematic.items.len > 0) {
-        try recommendations.append(try allocator.dupe(u8, "Some colors may be indistinguishable with color blindness"));
-        try recommendations.append(try allocator.dupe(u8, "Consider using patterns, textures, or labels in addition to color"));
-        try recommendations.append(try allocator.dupe(u8, "Increase contrast between important elements"));
+        try appendRecommendation(allocator, &recommendations, "Some colors may be indistinguishable with color blindness");
+        try appendRecommendation(allocator, &recommendations, "Consider using patterns, textures, or labels in addition to color");
+        try appendRecommendation(allocator, &recommendations, "Increase contrast between important elements");
     }
 
     const avg_contrast = if (contrasts.items.len > 0) blk: {
@@ -324,15 +339,35 @@ pub fn analyzeAccessibility(allocator: std.mem.Allocator, img: *const Image, cb_
     } else 0.0;
 
     if (avg_contrast < 4.5) {
-        try recommendations.append(try allocator.dupe(u8, "Overall contrast is low (below WCAG AA standard of 4.5:1)"));
+        try appendRecommendation(allocator, &recommendations, "Overall contrast is low (below WCAG AA standard of 4.5:1)");
+    }
+
+    const is_accessible = problematic.items.len == 0 and avg_contrast >= 4.5;
+    const problematic_colors = try problematic.toOwnedSlice(allocator);
+    errdefer allocator.free(problematic_colors);
+    const contrast_ratios = try contrasts.toOwnedSlice(allocator);
+    errdefer allocator.free(contrast_ratios);
+    const recommendation_items = try recommendations.toOwnedSlice(allocator);
+    recommendations_own_items = false;
+    errdefer {
+        for (recommendation_items) |recommendation| allocator.free(recommendation);
+        allocator.free(recommendation_items);
     }
 
     return AccessibilityReport{
-        .is_accessible = problematic.items.len == 0 and avg_contrast >= 4.5,
-        .problematic_colors = try problematic.toOwnedSlice(),
-        .contrast_ratios = try contrasts.toOwnedSlice(),
-        .recommendations = try recommendations.toOwnedSlice(),
+        .is_accessible = is_accessible,
+        .problematic_colors = problematic_colors,
+        .contrast_ratios = contrast_ratios,
+        .recommendations = recommendation_items,
         .allocator = allocator,
+    };
+}
+
+fn appendRecommendation(allocator: std.mem.Allocator, recommendations: *std.ArrayList([]const u8), text: []const u8) !void {
+    const recommendation = try allocator.dupe(u8, text);
+    recommendations.append(allocator, recommendation) catch |err| {
+        allocator.free(recommendation);
+        return err;
     };
 }
 
@@ -437,18 +472,62 @@ pub const SimulationSet = struct {
 
 /// Generates simulations for all major types of color blindness
 pub fn generateAllSimulations(allocator: std.mem.Allocator, img: *const Image) !SimulationSet {
+    try validatePixelFormat(img.format);
     var normal = try Image.init(allocator, img.width, img.height, img.format);
+    errdefer normal.deinit();
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            normal.setPixel(@intCast(x), @intCast(y), img.getPixel(@intCast(x), @intCast(y)));
+            normal.setPixel(
+                @intCast(x),
+                @intCast(y),
+                img.getPixel(@intCast(x), @intCast(y)) orelse return error.UnsupportedFormat,
+            );
         }
     }
 
+    var protanopia = try simulateColorBlindness(allocator, img, .protanopia, .{});
+    errdefer protanopia.deinit();
+    var deuteranopia = try simulateColorBlindness(allocator, img, .deuteranopia, .{});
+    errdefer deuteranopia.deinit();
+    var tritanopia = try simulateColorBlindness(allocator, img, .tritanopia, .{});
+    errdefer tritanopia.deinit();
+
     return SimulationSet{
         .normal = normal,
-        .protanopia = try simulateColorBlindness(allocator, img, .protanopia, .{}),
-        .deuteranopia = try simulateColorBlindness(allocator, img, .deuteranopia, .{}),
-        .tritanopia = try simulateColorBlindness(allocator, img, .tritanopia, .{}),
+        .protanopia = protanopia,
+        .deuteranopia = deuteranopia,
+        .tritanopia = tritanopia,
         .allocator = allocator,
     };
+}
+
+test "accessibility analysis owns its report buffers" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 40, 20, .rgba8);
+    defer img.deinit();
+
+    for (0..img.height) |y| {
+        for (0..img.width) |x| {
+            img.setPixel(@intCast(x), @intCast(y), if (x < 20) Color.BLACK else Color.WHITE);
+        }
+    }
+
+    var report = try analyzeAccessibility(allocator, &img, .protanopia);
+    defer report.deinit();
+    try std.testing.expectEqual(@as(usize, 2), report.contrast_ratios.len);
+    try std.testing.expect(report.is_accessible);
+}
+
+test "all color blindness simulations preserve dimensions" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    var simulations = try generateAllSimulations(allocator, &img);
+    defer simulations.deinit();
+    try std.testing.expectEqual(img.width, simulations.protanopia.width);
+    try std.testing.expectEqual(img.height, simulations.tritanopia.height);
+    try std.testing.expectEqual(Color.RED, simulations.normal.getPixel(0, 0).?);
 }
