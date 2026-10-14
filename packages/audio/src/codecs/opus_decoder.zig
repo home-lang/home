@@ -57,7 +57,7 @@ const SilkDecoder = struct {
 
     pub fn init() SilkDecoder {
         return SilkDecoder{
-            .lpc_state = [_]f32{0} ** SILK_MAX_ORDER_LPC,
+            .lpc_state = @splat(0),
             .pitch_lag = 0,
             .pitch_gain = 0,
             .gain = 1.0,
@@ -129,9 +129,9 @@ const CeltDecoder = struct {
 
     pub fn init() CeltDecoder {
         return CeltDecoder{
-            .overlap = [_]f32{0} ** CELT_FRAME_SIZE,
-            .band_energy = [_]f32{1.0} ** CELT_MAX_BANDS,
-            .postfilter_gains = [_]f32{1.0} ** CELT_MAX_BANDS,
+            .overlap = @splat(0),
+            .band_energy = @splat(1.0),
+            .postfilter_gains = @splat(1.0),
         };
     }
 
@@ -148,7 +148,7 @@ const CeltDecoder = struct {
         // 8. Apply post-filter
 
         // Simplified IMDCT + overlap-add
-        var spectrum: [CELT_FRAME_SIZE]f32 = [_]f32{0} ** CELT_FRAME_SIZE;
+        var spectrum: [CELT_FRAME_SIZE]f32 = @splat(0);
 
         // Placeholder spectrum with band energies
         for (0..CELT_MAX_BANDS) |band| {
@@ -214,7 +214,7 @@ const OpusResampler = struct {
 
     pub fn init() OpusResampler {
         return OpusResampler{
-            .state = [_]f32{0} ** 16,
+            .state = @splat(0),
         };
     }
 
@@ -277,7 +277,7 @@ pub const OpusDecoder = struct {
             .silk = SilkDecoder.init(),
             .celt = CeltDecoder.init(),
             .resampler = OpusResampler.init(),
-            .plc_state = [_]f32{0} ** MAX_FRAME_SIZE,
+            .plc_state = @splat(0),
             .last_packet_valid = false,
         };
     }
@@ -332,12 +332,12 @@ pub const OpusDecoder = struct {
         // Split packet into SILK and CELT parts
 
         // Decode SILK (low frequencies)
-        var silk_output = try self.allocator.alloc(f32, frame_size);
+        const silk_output = try self.allocator.alloc(f32, frame_size);
         defer self.allocator.free(silk_output);
         try self.silk.decode(packet, silk_output, frame_size);
 
         // Decode CELT (high frequencies)
-        var celt_output = try self.allocator.alloc(f32, frame_size);
+        const celt_output = try self.allocator.alloc(f32, frame_size);
         defer self.allocator.free(celt_output);
         try self.celt.decode(packet, celt_output, frame_size);
 
@@ -411,7 +411,7 @@ test "OpusDecoder packet loss concealment" {
 test "CELT IMDCT" {
     var celt = CeltDecoder.init();
 
-    var spectrum: [CELT_FRAME_SIZE]f32 = [_]f32{0} ** CELT_FRAME_SIZE;
+    var spectrum: [CELT_FRAME_SIZE]f32 = @splat(0);
     var time_data: [CELT_FRAME_SIZE]f32 = undefined;
 
     spectrum[0] = 1.0;

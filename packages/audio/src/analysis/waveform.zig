@@ -414,7 +414,7 @@ test "WaveformGenerator fixed points" {
 
     var gen = WaveformGenerator.init(allocator, 44100, 1);
 
-    var samples = [_]f32{0.5} ** 1000;
+    var samples: [1000]f32 = @splat(0.5);
     const waveform = try gen.generateFixed(&samples, 10);
     defer gen.freeWaveform(waveform);
 
@@ -426,7 +426,7 @@ test "OverviewWaveform generate" {
 
     var overview = OverviewWaveform.init(allocator, 100);
 
-    var samples = [_]f32{0.3} ** 1000;
+    var samples: [1000]f32 = @splat(0.3);
     const waveform = try overview.generate(&samples, 1);
     defer overview.free(waveform);
 

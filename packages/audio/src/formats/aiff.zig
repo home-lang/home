@@ -75,7 +75,7 @@ fn extendedToDouble(bytes: [10]u8) f64 {
 
 /// Convert f64 to 80-bit extended precision float
 fn doubleToExtended(value: f64) [10]u8 {
-    var bytes: [10]u8 = .{0} ** 10;
+    var bytes: [10]u8 = @splat(0);
 
     if (value == 0.0) {
         return bytes;
@@ -556,7 +556,7 @@ test "AIFF detection" {
 
     try std.testing.expect(isAiff(&aifc_data));
 
-    const not_aiff = [_]u8{ 'R', 'I', 'F', 'F' } ++ [_]u8{0} ** 8;
+    const not_aiff = [_]u8{ 'R', 'I', 'F', 'F' } ++ @as([8]u8, @splat(0));
     try std.testing.expect(!isAiff(&not_aiff));
 }
 
