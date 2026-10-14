@@ -11,6 +11,37 @@ function bounds(range) {
 }
 
 async function main() {
+  for (const property of ['name', 'origin', 'codeGeneration', 'microtaskMode', 'importModuleDynamically']) {
+    const getterError = new Error(property)
+    assert.throws(() => vm.createContext({}, {
+      get [property]() { throw getterError },
+    }), error => error === getterError)
+  }
+  const wasmBytes = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
+  for (const run of [
+    (code, flags) => vm.runInContext(code, vm.createContext({ wasmBytes }, { codeGeneration: flags })),
+    (code, flags) => vm.runInNewContext(code, { wasmBytes }, { contextCodeGeneration: flags }),
+    (code, flags) => new vm.Script(code).runInNewContext({ wasmBytes }, { contextCodeGeneration: flags }),
+  ]) {
+    for (const flags of [{}, { strings: undefined, wasm: undefined }, { strings: true }, { wasm: true }]) {
+      assert.equal(run('eval("6 * 7")', flags), 42)
+      assert.equal(run('new WebAssembly.Module(wasmBytes) instanceof WebAssembly.Module', flags), true)
+    }
+    assert.throws(() => run('eval("6 * 7")', { strings: false, wasm: undefined }), { name: 'EvalError' })
+    assert.throws(() => run('new WebAssembly.Module(wasmBytes)', { strings: undefined, wasm: false }), { name: 'CompileError' })
+    for (const flag of ['strings', 'wasm']) {
+      for (const value of [null, 0, 'true']) {
+        assert.throws(() => run('42', { [flag]: value }), { code: 'ERR_INVALID_ARG_TYPE' })
+      }
+    }
+    const flagReads = []
+    const flagGetterError = new Error('wasm flag getter')
+    assert.throws(() => run('42', {
+      get strings() { flagReads.push('strings'); return 0 },
+      get wasm() { flagReads.push('wasm'); throw flagGetterError },
+    }), error => error === flagGetterError)
+    assert.deepEqual(flagReads, ['strings', 'wasm'])
+  }
   const reuse = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');
     const vm = require('node:vm');
@@ -95,7 +126,7 @@ async function main() {
   assert.equal(small.payload.length, 2000)
   assert.equal(large.payload.length, 8000)
 
-  const collect = () => Bun.gc(true)
+  const collect = () => globalThis.Bun ? Bun.gc(true) : globalThis.gc()
   const pending = vm.measureMemory({ mode: 'detailed' })
   collect()
   assert.equal((await pending).other.length, 2)
