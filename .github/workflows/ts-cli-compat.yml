@@ -71,6 +71,14 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
             --output "$RUNNER_TEMP/home-ts-optional-indexed-contracts"
+      - name: Compare generic indexed return and inference contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 300 python3 scripts/tests/test-ts-generic-indexed-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/lib/tsc.js" \
+            --output "$RUNNER_TEMP/home-ts-generic-indexed-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,5 +89,6 @@ jobs:
             ${{ runner.temp }}/home-ts-recursive-interface-contracts
             ${{ runner.temp }}/home-ts-automatic-variable-contracts
             ${{ runner.temp }}/home-ts-optional-indexed-contracts
+            ${{ runner.temp }}/home-ts-generic-indexed-contracts
           if-no-files-found: ignore
           retention-days: 14

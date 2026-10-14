@@ -635,3 +635,42 @@ are retained alongside final passing gates. The 3,840 MB memory limit and disk
 floors are unchanged. These results do not qualify the remaining generic
 semantics, ts-images memory failure, other projects, compiler versions,
 wrappers, emission, watch/build commands or TypeScript API clients.
+
+## Generic indexed return and result inference
+
+Generic object projections such as `T["value"]` now stay dependent until their
+actual arguments are substituted. Lowering them through the object's constraint
+previously lost concrete call-result types and allowed unknown results to satisfy
+annotations. Indexed return checking now uses the ordinary writing relation for
+both generic objects and generic keys. This rejects incompatible dependent
+returns while accepting a concrete object whose possible selected properties
+all share the returned type. Constrained optional element reads also retain
+`undefined`, including when exact optional writes are enabled.
+
+Preserving those types exposed two existing relation gaps: assertion overlap
+must inspect an indexed type's base constraint, and assignment to
+`NonNullable<T["x"]>` must reject the source when that constraint remains
+nullish. Both existing regression expectations match native TypeScript and pass
+with the corrected dependent representation.
+
+The final candidate passes **4,597 checker, 210 driver, 292 Program and 50 CLI
+tests**, plus eight stream checks. Debug and ReleaseFast match all **124**
+return/inference/regression observations and all **32** tracked generic indexed
+observations. The tracked regression runs in the Mac/Linux CLI workflow.
+ReleaseFast also passes the existing 26 diagnostic, 112 augmentation, 180
+automatic-variable comparison, 50 declaration, 88 recursive-interface and 48
+optional-indexed gates. The optimized build peaks at **2,814 MB**, below the
+unchanged 3,840 MB ceiling.
+
+The unchanged 306-file table graph still has **32** Home-only diagnostics,
+with no additions or removals. Native TypeScript passes, Home exits one, all
+inputs remain unchanged, and the replay peaks at **3,201 MB**. This project
+remains unqualified. Other generic features and the complete project tree still
+require qualification; these controls replace the previously recorded failures
+only within their actual tested scope.
+
+The [generic indexed-access evidence](../../bench/vs_tsgo/evidence/20261013-local-tsc-generic-indexed-controls.tar.gz)
+has SHA-256 `3baafa1219a4568568567a20a8f48499546b890bdbbd7c3c9f8bd5c75e661e5c`;
+all 2,639 payload hashes were verified. The archive retains initial failures,
+corrected regression controls, final passing gates, disk interruptions and
+lock-wait expiries. The disk floors and memory limit remain unchanged.
