@@ -305,7 +305,7 @@ test "TapeSaturation process" {
     tape.setDrive(2.0);
     tape.setSaturation(0.7);
 
-    const input = [_]f32{0.5} ** 100;
+    const input: [100]f32 = @splat(0.5);
     var output: [100]f32 = undefined;
 
     tape.process(&input, &output);

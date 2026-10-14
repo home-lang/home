@@ -318,8 +318,8 @@ test "SidechainCompressor ducking" {
     comp.setRelease(100);
 
     // Process with loud sidechain signal
-    const sidechain = [_]f32{0.8} ** 100; // Loud sidechain
-    const input = [_]f32{0.5} ** 100; // Normal input
+    const sidechain: [100]f32 = @splat(0.8); // Loud sidechain
+    const input: [100]f32 = @splat(0.5); // Normal input
     var output: [100]f32 = undefined;
 
     comp.process(&sidechain, &input, &output);

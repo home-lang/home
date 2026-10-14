@@ -417,8 +417,8 @@ test "Reverb process" {
     defer reverb.deinit();
     reverb.setPreset(.medium_room);
 
-    var left = [_]f32{0.5} ** 100;
-    var right = [_]f32{0.5} ** 100;
+    var left: [100]f32 = @splat(0.5);
+    var right: [100]f32 = @splat(0.5);
 
     reverb.process(&left, &right);
 

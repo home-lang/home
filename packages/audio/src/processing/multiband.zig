@@ -427,7 +427,7 @@ test "MultibandCompressor process" {
     );
     defer comp.deinit();
 
-    const input = [_]f32{0.5} ** 100;
+    const input: [100]f32 = @splat(0.5);
     var output: [100]f32 = undefined;
 
     comp.process(&input, &output);
