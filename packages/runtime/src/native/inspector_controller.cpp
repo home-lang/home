@@ -448,7 +448,7 @@ CheckedPtr<ConsoleClient> JSGlobalObjectInspectorController::consoleClient() con
 
 bool JSGlobalObjectInspectorController::developerExtrasEnabled() const
 {
-    if (Home::inspectorHasConsoleListeners(m_globalObject)) return true;
+    if (Home::inspectorHasConsoleSessions(m_globalObject)) return true;
 #if ENABLE(REMOTE_INSPECTOR)
     if (!RemoteInspector::singleton().enabled())
         return false;

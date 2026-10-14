@@ -55,16 +55,18 @@ inline auto& localInspectorChannels() {
     static auto* channels = new std::unordered_map<JSC::JSGlobalObject*, std::vector<std::shared_ptr<LocalInspectorChannel>>>;
     return *channels;
 }
-bool inspectorHasConsoleListeners(JSC::JSGlobalObject& global) {
+static bool inspectorHasConsoleFrontends(JSC::JSGlobalObject& global, bool runtimeOnly) {
     auto* owner=&global;
     auto realm=inspectorRealms().find(&global);
     if(realm!=inspectorRealms().end()) owner=realm->second->owner;
     std::lock_guard lock(localInspectorLock());
     auto found=localInspectorChannels().find(owner);
     if(found==localInspectorChannels().end()) return false;
-    for(auto& channel:found->second) if(channel->connected && channel->runtimeEnabled) return true;
+    for(auto& channel:found->second) if(channel->connected && (!runtimeOnly || channel->runtimeEnabled)) return true;
     return false;
 }
+bool inspectorHasConsoleListeners(JSC::JSGlobalObject& global) { return inspectorHasConsoleFrontends(global, true); }
+bool inspectorHasConsoleSessions(JSC::JSGlobalObject& global) { return inspectorHasConsoleFrontends(global, false); }
 inline WTF::String inspectorContextCreatedMessage(int id, const WTF::String& name, const WTF::String& origin) {
     auto description = JSON::Object::create();
     description->setInteger("id"_s, id);

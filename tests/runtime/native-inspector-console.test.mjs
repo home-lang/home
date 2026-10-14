@@ -17,8 +17,9 @@ assert(realm)
 for (const contextId of [undefined, realm.id]) {
   const start = events.length
   await session.post('Runtime.evaluate', { contextId, expression: 'console.count("before-native-attachment"); console.timeEnd("before-native-attachment-time")' })
-  assert(events.slice(start).some(event => event.type === 'count' && event.args[0]?.value === 'before-native-attachment: 2'))
-  assert(events.slice(start).some(event => event.type === 'timeEnd' && /^before-native-attachment-time: [\d.]+\s?ms$/.test(event.args[0]?.value)))
+  assert(events.slice(start).some(event => event.type === 'count' && event.args[0]?.value === `before-native-attachment: ${contextId === undefined ? 1 : 2}`))
+  if (contextId === undefined) assert(events.slice(start).some(event => event.type === 'warning' && event.args[0]?.value.includes('before-native-attachment-time')))
+  else assert(events.slice(start).some(event => event.type === 'timeEnd' && /^before-native-attachment-time: [\d.]+\s?ms$/.test(event.args[0]?.value)))
 }
 for (const contextId of [undefined, realm.id]) {
   const start = events.length

@@ -16,6 +16,7 @@
 namespace Inspector { class ConsoleMessage; }
 namespace Home {
 bool inspectorHasConsoleListeners(JSC::JSGlobalObject&);
+bool inspectorHasConsoleSessions(JSC::JSGlobalObject&);
 void inspectorConsoleMessage(Inspector::ConsoleMessage&);
 void inspectorConsoleCount(JSC::JSGlobalObject&, const WTF::String&, bool reset);
 void inspectorConsoleTime(JSC::JSGlobalObject&, const WTF::String&);
