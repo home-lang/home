@@ -141,7 +141,7 @@ pub const BatchConverter = struct {
         return Self{
             .allocator = allocator,
             .options = .{},
-            .jobs = .{},
+            .jobs = .empty,
             .progress_callback = null,
             .callback_user_data = null,
             .completed_count = 0,

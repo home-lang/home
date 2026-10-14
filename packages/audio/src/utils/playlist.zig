@@ -46,7 +46,7 @@ pub const Playlist = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .entries = .{},
+            .entries = .empty,
             .title = null,
             .format = .m3u,
         };

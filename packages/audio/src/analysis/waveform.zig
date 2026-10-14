@@ -184,7 +184,7 @@ pub const StreamingWaveformGenerator = struct {
             .current_max = try allocator.alloc(f32, channels),
             .current_sum_sq = try allocator.alloc(f32, channels),
             .sample_count = 0,
-            .points = .{},
+            .points = .empty,
         };
 
         gen.resetAccumulators();

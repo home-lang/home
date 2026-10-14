@@ -55,7 +55,7 @@ pub const CueTrack = struct {
             .track_type = track_type,
             .pregap = null,
             .start = Timestamp.ZERO,
-            .indices = .{},
+            .indices = .empty,
             .file_index = 0,
         };
     }
@@ -213,9 +213,9 @@ pub const CueSheet = struct {
             .songwriter = null,
             .catalog = null,
             .cdtextfile = null,
-            .files = .{},
-            .tracks = .{},
-            .comments = .{},
+            .files = .empty,
+            .tracks = .empty,
+            .comments = .empty,
         };
     }
 
