@@ -4973,14 +4973,24 @@ pub const NodeFS = struct {
         defer root.deref();
         // Keep UTF-16 code units intact, including lone surrogates produced by
         // utf16le/ucs2 filename decoding. Filesystem traversal still uses bytes.
-        var joined = std.array_list.Managed(u16).init(bun.default_allocator);
-        defer joined.deinit();
-        for (0..root.length()) |i| bun.handleOom(joined.append(root.charAt(i)));
-        bun.handleOom(joined.append(if (Environment.isWindows) '\\' else '/'));
-        for (0..encoded.length()) |i| bun.handleOom(joined.append(encoded.charAt(i)));
-        const normalized = bun.handleOom(bun.default_allocator.alloc(u16, joined.items.len + 2));
+        const root_length = root.length();
+        const relative_length = encoded.length();
+        const joined = bun.handleOom(bun.default_allocator.alloc(u16, root_length + 1 + relative_length));
+        defer bun.default_allocator.free(joined);
+        if (root.isUTF16()) {
+            @memcpy(joined[0..root_length], root.utf16());
+        } else {
+            for (root.latin1(), 0..) |unit, i| joined[i] = unit;
+        }
+        joined[root_length] = if (Environment.isWindows) '\\' else '/';
+        if (encoded.isUTF16()) {
+            @memcpy(joined[root_length + 1 ..], encoded.utf16());
+        } else {
+            for (encoded.latin1(), 0..) |unit, i| joined[root_length + 1 + i] = unit;
+        }
+        const normalized = bun.handleOom(bun.default_allocator.alloc(u16, joined.len + 2));
         defer bun.default_allocator.free(normalized);
-        return .{ .path = bun.String.cloneUTF16(bun.path.normalizeBufT(u16, joined.items, normalized, .auto)) };
+        return .{ .path = bun.String.cloneUTF16(bun.path.normalizeBufT(u16, joined, normalized, .auto)) };
     }
 
     fn makeReaddirDirent(args: Arguments.Readdir, name: []const u8, path: bun.String, kind: jsc.Node.Dirent.Kind, parent: ?*jsc.Node.Dirent.BufferParent, is_root: bool) jsc.Node.Dirent {
