@@ -62,22 +62,23 @@ const Box = struct {
 };
 
 fn parseBox(data: []const u8, offset: usize) ?Box {
-    if (offset + 8 > data.len) return null;
+    if (offset > data.len or data.len - offset < 8) return null;
 
     var size: u64 = std.mem.readInt(u32, data[offset..][0..4], .big);
     const box_type = data[offset + 4 ..][0..4].*;
     var data_offset = offset + 8;
 
     if (size == 1) {
-        if (offset + 16 > data.len) return null;
+        if (data.len - offset < 16) return null;
         size = std.mem.readInt(u64, data[offset + 8 ..][0..8], .big);
         data_offset = offset + 16;
     } else if (size == 0) {
         size = data.len - offset;
     }
 
-    if (size < 8) return null;
-    const data_size: usize = @intCast(size - (data_offset - offset));
+    const header_size = data_offset - offset;
+    if (size < header_size or size > data.len - offset) return null;
+    const data_size = std.math.cast(usize, size - header_size) orelse return null;
 
     return Box{
         .box_type = box_type,
@@ -305,30 +306,36 @@ fn decodeImageData(img: *Image, data: []const u8, start_pos: usize, bit_depth: u
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    if (img.width == 0 or img.height == 0) return error.InvalidDimensions;
+    switch (img.format) {
+        .grayscale8, .rgb8, .rgba8 => {},
+        else => return error.UnsupportedFormat,
+    }
+
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // Write JP2 container format
-    try writeJP2Container(&output, img);
+    try writeJP2Container(allocator, &output, img);
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeJP2Container(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeJP2Container(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // Signature box
-    try output.appendSlice(&JP2_SIGNATURE);
+    try output.appendSlice(allocator, &JP2_SIGNATURE);
 
     // File type box
     const ftyp_data = [_]u8{
         'j', 'p', '2', ' ', // brand
-        0,   0,   0,   0, // minor_version
+        0, 0, 0, 0, // minor_version
         'j', 'p', '2', ' ', // compatible
     };
-    try writeBox(output, JP2_FILETYPE_BOX, &ftyp_data);
+    try writeBox(allocator, output, JP2_FILETYPE_BOX, &ftyp_data);
 
     // JP2 header box
-    var jp2h_data = std.ArrayList(u8).init(output.allocator);
-    defer jp2h_data.deinit();
+    var jp2h_data: std.ArrayList(u8) = .empty;
+    defer jp2h_data.deinit(allocator);
 
     // Image header box
     var ihdr_data: [22]u8 = undefined;
@@ -347,7 +354,7 @@ fn writeJP2Container(output: *std.ArrayList(u8), img: *const Image) !void {
     ihdr_data[12] = 0; // colorspace unknown
     ihdr_data[13] = 0; // intellectual property
 
-    try writeBox(&jp2h_data, JP2_IMAGE_HEADER_BOX, ihdr_data[0..14]);
+    try writeBox(allocator, &jp2h_data, JP2_IMAGE_HEADER_BOX, ihdr_data[0..14]);
 
     // Color specification box
     const colr_data = [_]u8{
@@ -356,46 +363,46 @@ fn writeJP2Container(output: *std.ArrayList(u8), img: *const Image) !void {
         0, // approximation
         0, 0, 0, if (num_components == 1) @as(u8, 17) else @as(u8, 16), // colorspace: 16=sRGB, 17=grayscale
     };
-    try writeBox(&jp2h_data, JP2_COLR_BOX, &colr_data);
+    try writeBox(allocator, &jp2h_data, JP2_COLR_BOX, &colr_data);
 
-    try writeBox(output, JP2_HEADER_BOX, jp2h_data.items);
+    try writeBox(allocator, output, JP2_HEADER_BOX, jp2h_data.items);
 
     // Codestream box
-    var codestream = std.ArrayList(u8).init(output.allocator);
-    defer codestream.deinit();
+    var codestream: std.ArrayList(u8) = .empty;
+    defer codestream.deinit(allocator);
 
-    try writeCodestream(&codestream, img);
+    try writeCodestream(allocator, &codestream, img);
 
-    try writeBox(output, JP2_CODESTREAM_BOX, codestream.items);
+    try writeBox(allocator, output, JP2_CODESTREAM_BOX, codestream.items);
 }
 
-fn writeCodestream(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeCodestream(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // SOC - Start of codestream
-    try output.appendSlice(&[_]u8{ 0xFF, 0x4F });
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x4F });
 
     // SIZ - Image size
-    try writeSIZMarker(output, img);
+    try writeSIZMarker(allocator, output, img);
 
     // COD - Coding style default
-    try writeCODMarker(output);
+    try writeCODMarker(allocator, output);
 
     // QCD - Quantization default
-    try writeQCDMarker(output);
+    try writeQCDMarker(allocator, output);
 
     // SOT - Start of tile
-    try writeSOTMarker(output, img);
+    try writeSOTMarker(allocator, output, img);
 
     // SOD - Start of data
-    try output.appendSlice(&[_]u8{ 0xFF, 0x93 });
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x93 });
 
     // Tile data (placeholder - real encoding would use DWT + EBCOT)
-    try output.append(0x00);
+    try output.append(allocator, 0x00);
 
     // EOC - End of codestream
-    try output.appendSlice(&[_]u8{ 0xFF, 0xD9 });
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xD9 });
 }
 
-fn writeSIZMarker(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeSIZMarker(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     const num_components: u16 = switch (img.format) {
         .grayscale8, .grayscale16 => 1,
         .rgb8, .rgb16 => 3,
@@ -405,87 +412,87 @@ fn writeSIZMarker(output: *std.ArrayList(u8), img: *const Image) !void {
 
     const seg_len: u16 = @intCast(38 + num_components * 3);
 
-    try output.appendSlice(&[_]u8{ 0xFF, 0x51 }); // SIZ marker
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x51 }); // SIZ marker
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
 
     // Rsiz (capabilities)
-    try output.appendSlice(&[_]u8{ 0x00, 0x00 });
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x00 });
 
     // Image size
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
 
     // Image offset
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // XOsiz
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // YOsiz
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // XOsiz
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // YOsiz
 
     // Tile size (same as image for single tile)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
 
     // Tile offset
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // XTOsiz
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // YTOsiz
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // XTOsiz
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // YTOsiz
 
     // Number of components
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, num_components)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, num_components)));
 
     // Component parameters
     var i: u16 = 0;
     while (i < num_components) : (i += 1) {
-        try output.append(7); // Ssiz: bit_depth - 1 = 7 (8 bits, unsigned)
-        try output.append(1); // XRsiz: horizontal sampling
-        try output.append(1); // YRsiz: vertical sampling
+        try output.append(allocator, 7); // Ssiz: bit_depth - 1 = 7 (8 bits, unsigned)
+        try output.append(allocator, 1); // XRsiz: horizontal sampling
+        try output.append(allocator, 1); // YRsiz: vertical sampling
     }
 }
 
-fn writeCODMarker(output: *std.ArrayList(u8)) !void {
-    try output.appendSlice(&[_]u8{ 0xFF, 0x52 }); // COD marker
+fn writeCODMarker(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x52 }); // COD marker
 
     const seg_len: u16 = 12;
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
 
-    try output.append(0x00); // Scod: coding style
-    try output.append(0x00); // SGcod: progression order = LRCP
-    try output.appendSlice(&[_]u8{ 0x00, 0x01 }); // number of layers
-    try output.append(0x00); // multiple component transform
-    try output.append(5); // number of decomposition levels
-    try output.append(3); // code-block width exponent - 2
-    try output.append(3); // code-block height exponent - 2
-    try output.append(0x00); // code-block style
-    try output.append(0x00); // wavelet transform (9-7 irreversible)
+    try output.append(allocator, 0x00); // Scod: coding style
+    try output.append(allocator, 0x00); // SGcod: progression order = LRCP
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x01 }); // number of layers
+    try output.append(allocator, 0x00); // multiple component transform
+    try output.append(allocator, 5); // number of decomposition levels
+    try output.append(allocator, 3); // code-block width exponent - 2
+    try output.append(allocator, 3); // code-block height exponent - 2
+    try output.append(allocator, 0x00); // code-block style
+    try output.append(allocator, 0x00); // wavelet transform (9-7 irreversible)
 }
 
-fn writeQCDMarker(output: *std.ArrayList(u8)) !void {
-    try output.appendSlice(&[_]u8{ 0xFF, 0x5C }); // QCD marker
+fn writeQCDMarker(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x5C }); // QCD marker
 
     // Simplified quantization - scalar derived
     const seg_len: u16 = 5;
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
 
-    try output.append(0x22); // Sqcd: scalar derived, guard bits = 2
-    try output.appendSlice(&[_]u8{ 0x00, 0x40 }); // step size for LL band
+    try output.append(allocator, 0x22); // Sqcd: scalar derived, guard bits = 2
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x40 }); // step size for LL band
 }
 
-fn writeSOTMarker(output: *std.ArrayList(u8), img: *const Image) !void {
+fn writeSOTMarker(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     _ = img;
 
-    try output.appendSlice(&[_]u8{ 0xFF, 0x90 }); // SOT marker
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0x90 }); // SOT marker
 
     const seg_len: u16 = 10;
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, seg_len)));
 
-    try output.appendSlice(&[_]u8{ 0x00, 0x00 }); // Isot: tile index
-    try output.appendSlice(&[_]u8{ 0x00, 0x00, 0x00, 0x0E }); // Psot: tile-part length (placeholder)
-    try output.append(0x00); // TPsot: tile-part index
-    try output.append(0x01); // TNsot: number of tile-parts
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x00 }); // Isot: tile index
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x0F }); // Psot: SOT through tile data
+    try output.append(allocator, 0x00); // TPsot: tile-part index
+    try output.append(allocator, 0x01); // TNsot: number of tile-parts
 }
 
-fn writeBox(output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
-    const size: u32 = @intCast(8 + data.len);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, size)));
-    try output.appendSlice(box_type);
-    try output.appendSlice(data);
+fn writeBox(allocator: std.mem.Allocator, output: *std.ArrayList(u8), box_type: *const [4]u8, data: []const u8) !void {
+    const size = std.math.cast(u32, std.math.add(usize, 8, data.len) catch return error.BoxTooLarge) orelse return error.BoxTooLarge;
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, size)));
+    try output.appendSlice(allocator, box_type);
+    try output.appendSlice(allocator, data);
 }
 
 // ============================================================================
@@ -516,4 +523,33 @@ test "Box parsing" {
     try std.testing.expect(box != null);
     try std.testing.expectEqualSlices(u8, "jp2h", &box.?.box_type);
     try std.testing.expectEqual(@as(u64, 16), box.?.size);
+
+    const truncated = [_]u8{ 0, 0, 0, 32, 'j', 'p', '2', 'h' };
+    try std.testing.expect(parseBox(&truncated, 0) == null);
+}
+
+test "JP2 encoder writes parseable dimensions" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 3, 2, .rgba8);
+    defer img.deinit();
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, &JP2_SIGNATURE, encoded[0..JP2_SIGNATURE.len]);
+    try std.testing.expect(findBox(encoded, JP2_HEADER_BOX) != null);
+    try std.testing.expect(findBox(encoded, JP2_CODESTREAM_BOX) != null);
+
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 3), decoded.width);
+    try std.testing.expectEqual(@as(u32, 2), decoded.height);
+    try std.testing.expectEqual(PixelFormat.rgba8, decoded.format);
+
+    var empty = try Image.init(allocator, 0, 1, .rgba8);
+    defer empty.deinit();
+    try std.testing.expectError(error.InvalidDimensions, encode(allocator, &empty));
+
+    var unsupported = try Image.init(allocator, 1, 1, .rgba16);
+    defer unsupported.deinit();
+    try std.testing.expectError(error.UnsupportedFormat, encode(allocator, &unsupported));
 }

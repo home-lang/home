@@ -721,17 +721,25 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    if (img.width == 0 or img.height == 0 or img.width > std.math.maxInt(u16) or img.height > std.math.maxInt(u16)) {
+        return error.InvalidDimensions;
+    }
+    switch (img.format) {
+        .grayscale8, .rgb8, .rgba8 => {},
+        else => return error.UnsupportedFormat,
+    }
+
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // SOI marker
-    try output.appendSlice(&[_]u8{ 0xFF, 0xD8 });
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xD8 });
 
     // APP0 (JFIF) marker
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF, 0xE0, // APP0
         0x00, 0x10, // Length = 16
-        'J',  'F',  'I', 'F', 0x00, // Identifier
+        'J', 'F', 'I', 'F', 0x00, // Identifier
         0x01, 0x01, // Version 1.1
         0x00, // Aspect ratio units (0 = no units)
         0x00, 0x01, // X density
@@ -741,41 +749,41 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     });
 
     // DQT marker (quantization tables)
-    try output.appendSlice(&[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x00 }); // Length, table 0
-    try output.appendSlice(&DEFAULT_LUMINANCE_QUANT);
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x00 }); // Length, table 0
+    try output.appendSlice(allocator, &DEFAULT_LUMINANCE_QUANT);
 
     // Second quantization table for chrominance
-    try output.appendSlice(&[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x01 });
-    try output.appendSlice(&DEFAULT_CHROMINANCE_QUANT);
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x01 });
+    try output.appendSlice(allocator, &DEFAULT_CHROMINANCE_QUANT);
 
     // SOF0 (baseline DCT)
     const is_grayscale = img.format == .grayscale8;
     const num_components: u8 = if (is_grayscale) 1 else 3;
 
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF,
         0xC0, // SOF0
         0x00,
         @intCast(8 + num_components * 3), // Length
         0x08, // Precision (8 bits)
     });
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.height))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.width))));
-    try output.append(num_components);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.height))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.width))));
+    try output.append(allocator, num_components);
 
     if (is_grayscale) {
-        try output.appendSlice(&[_]u8{ 1, 0x11, 0 }); // Y component
+        try output.appendSlice(allocator, &[_]u8{ 1, 0x11, 0 }); // Y component
     } else {
-        try output.appendSlice(&[_]u8{ 1, 0x11, 0 }); // Y component
-        try output.appendSlice(&[_]u8{ 2, 0x11, 1 }); // Cb component
-        try output.appendSlice(&[_]u8{ 3, 0x11, 1 }); // Cr component
+        try output.appendSlice(allocator, &[_]u8{ 1, 0x11, 0 }); // Y component
+        try output.appendSlice(allocator, &[_]u8{ 2, 0x11, 1 }); // Cb component
+        try output.appendSlice(allocator, &[_]u8{ 3, 0x11, 1 }); // Cr component
     }
 
     // DHT (Huffman tables) - using standard JPEG tables
-    try writeStandardHuffmanTables(&output);
+    try writeStandardHuffmanTables(allocator, &output);
 
     // SOS (start of scan)
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF,
         0xDA, // SOS
         0x00,
@@ -784,14 +792,14 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     });
 
     if (is_grayscale) {
-        try output.appendSlice(&[_]u8{ 1, 0x00 }); // Component 1, DC/AC table 0
+        try output.appendSlice(allocator, &[_]u8{ 1, 0x00 }); // Component 1, DC/AC table 0
     } else {
-        try output.appendSlice(&[_]u8{ 1, 0x00 }); // Y: tables 0/0
-        try output.appendSlice(&[_]u8{ 2, 0x11 }); // Cb: tables 1/1
-        try output.appendSlice(&[_]u8{ 3, 0x11 }); // Cr: tables 1/1
+        try output.appendSlice(allocator, &[_]u8{ 1, 0x00 }); // Y: tables 0/0
+        try output.appendSlice(allocator, &[_]u8{ 2, 0x11 }); // Cb: tables 1/1
+        try output.appendSlice(allocator, &[_]u8{ 3, 0x11 }); // Cr: tables 1/1
     }
 
-    try output.appendSlice(&[_]u8{ 0x00, 0x3F, 0x00 }); // Spectral selection, successive approx
+    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x3F, 0x00 }); // Spectral selection, successive approx
 
     // Encode scan data (simplified - just output raw MCUs with minimal compression)
     // This is a placeholder - full encoding would require DCT, quantization, Huffman encoding
@@ -800,14 +808,14 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     // A proper implementation would encode each 8x8 block with DCT
 
     // EOI marker
-    try output.appendSlice(&[_]u8{ 0xFF, 0xD9 });
+    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xD9 });
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn writeStandardHuffmanTables(output: *std.ArrayList(u8)) !void {
+fn writeStandardHuffmanTables(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
     // DC luminance table
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF, 0xC4, // DHT marker
         0x00, 0x1F, // Length
         0x00, // DC table 0
@@ -816,7 +824,7 @@ fn writeStandardHuffmanTables(output: *std.ArrayList(u8)) !void {
     });
 
     // AC luminance table
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF, 0xC4, // DHT marker
         0x00, 0xB5, // Length
         0x10, // AC table 0
@@ -836,10 +844,10 @@ fn writeStandardHuffmanTables(output: *std.ArrayList(u8)) !void {
         0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
         0xF9, 0xFA,
     };
-    try output.appendSlice(&ac_values);
+    try output.appendSlice(allocator, &ac_values);
 
     // DC chrominance table
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF, 0xC4, // DHT marker
         0x00, 0x1F, // Length
         0x01, // DC table 1
@@ -848,13 +856,13 @@ fn writeStandardHuffmanTables(output: *std.ArrayList(u8)) !void {
     });
 
     // AC chrominance table
-    try output.appendSlice(&[_]u8{
+    try output.appendSlice(allocator, &[_]u8{
         0xFF, 0xC4, // DHT marker
         0x00, 0xB5, // Length
         0x11, // AC table 1
         0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77, // Bits
     });
-    try output.appendSlice(&ac_values);
+    try output.appendSlice(allocator, &ac_values);
 }
 
 // ============================================================================
@@ -884,4 +892,27 @@ test "Clamp function" {
     try std.testing.expectEqual(@as(i32, 0), clamp(-100));
     try std.testing.expectEqual(@as(i32, 255), clamp(300));
     try std.testing.expectEqual(@as(i32, 128), clamp(128));
+}
+
+test "JPEG encoder writes bounded baseline dimensions" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 3, 2, .rgb8);
+    defer img.deinit();
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, &.{ 0xFF, 0xD8 }, encoded[0..2]);
+    try std.testing.expectEqualSlices(u8, &.{ 0xFF, 0xD9 }, encoded[encoded.len - 2 ..]);
+
+    const sof = std.mem.indexOf(u8, encoded, &.{ 0xFF, 0xC0 }) orelse return error.MissingStartOfFrame;
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, encoded[sof + 5 ..][0..2], .big));
+    try std.testing.expectEqual(@as(u16, 3), std.mem.readInt(u16, encoded[sof + 7 ..][0..2], .big));
+
+    var empty = try Image.init(allocator, 0, 1, .rgb8);
+    defer empty.deinit();
+    try std.testing.expectError(error.InvalidDimensions, encode(allocator, &empty));
+
+    var unsupported = try Image.init(allocator, 1, 1, .rgb16);
+    defer unsupported.deinit();
+    try std.testing.expectError(error.UnsupportedFormat, encode(allocator, &unsupported));
 }

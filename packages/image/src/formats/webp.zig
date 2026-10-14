@@ -87,16 +87,16 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Animation data
     var loop_count: u32 = 0;
-    var anim_frames = std.ArrayList(AnimFrame).init(allocator);
-    defer anim_frames.deinit();
+    var anim_frames: std.ArrayList(AnimFrame) = .empty;
+    defer anim_frames.deinit(allocator);
 
     while (pos + 8 <= data.len) {
         const chunk_type = ChunkType.fromBytes(data[pos..][0..4]);
-        const chunk_size = std.mem.readInt(u32, data[pos + 4 ..][0..4], .little);
+        const chunk_size: usize = std.mem.readInt(u32, data[pos + 4 ..][0..4], .little);
         pos += 8;
 
+        if (chunk_size > data.len - pos) return error.TruncatedData;
         const chunk_data_end = pos + chunk_size;
-        if (chunk_data_end > data.len) break;
 
         const chunk_data = data[pos..chunk_data_end];
 
@@ -177,8 +177,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
                     while (frame_pos + 8 <= chunk_size) {
                         const sub_type = ChunkType.fromBytes(chunk_data[frame_pos..][0..4]);
-                        const sub_size = std.mem.readInt(u32, chunk_data[frame_pos + 4 ..][0..4], .little);
+                        const sub_size: usize = std.mem.readInt(u32, chunk_data[frame_pos + 4 ..][0..4], .little);
                         frame_pos += 8;
+                        if (sub_size > chunk_size - frame_pos) return error.TruncatedData;
 
                         if (sub_type == .VP8L) {
                             frame_is_lossless = true;
@@ -197,7 +198,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                     }
 
                     if (frame_data_len > 0) {
-                        try anim_frames.append(AnimFrame{
+                        try anim_frames.append(allocator, AnimFrame{
                             .x_offset = frame_x,
                             .y_offset = frame_y,
                             .width = frame_width,
@@ -226,6 +227,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Create output image
     const format: PixelFormat = if (has_alpha) .rgba8 else .rgb8;
+    _ = try pixelBufferSize(width, height, format);
     var img = try Image.init(allocator, width, height, format);
     errdefer img.deinit();
 
@@ -236,19 +238,21 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
         // Decode first frame as main image
         const first_frame = anim_frames.items[0];
-        if (first_frame.data_offset + first_frame.data_len <= data.len) {
-            const frame_data = data[first_frame.data_offset..][0..first_frame.data_len];
-            if (first_frame.is_lossless) {
-                try decodeVP8L(&img, frame_data, allocator);
-            } else {
-                try decodeVP8(&img, frame_data, null, allocator);
-            }
+        if (first_frame.data_offset > data.len or first_frame.data_len > data.len - first_frame.data_offset) {
+            return error.TruncatedData;
+        }
+        const first_frame_data = data[first_frame.data_offset..][0..first_frame.data_len];
+        if (first_frame.is_lossless) {
+            try decodeVP8L(&img, first_frame_data, allocator);
+        } else {
+            try decodeVP8(&img, first_frame_data, null, allocator);
         }
 
         // Allocate frames array
-        var frames = try allocator.alloc(Image.Frame, anim_frames.items.len);
+        const frames = try allocator.alloc(Image.Frame, anim_frames.items.len);
+        var initialized_frames: usize = 0;
         errdefer {
-            for (frames) |f| {
+            for (frames[0..initialized_frames]) |f| {
                 allocator.free(f.pixels);
             }
             allocator.free(frames);
@@ -256,20 +260,23 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
         // Decode each animation frame
         for (anim_frames.items, 0..) |anim_frame, i| {
-            const frame_size = @as(usize, anim_frame.width) * @as(usize, anim_frame.height) * format.bytesPerPixel();
+            const frame_size = try pixelBufferSize(anim_frame.width, anim_frame.height, format);
             const frame_pixels = try allocator.alloc(u8, frame_size);
+            var owns_frame_pixels = true;
+            errdefer if (owns_frame_pixels) allocator.free(frame_pixels);
 
             // Create temp image for decoding
             var temp_img = try Image.init(allocator, anim_frame.width, anim_frame.height, format);
             defer temp_img.deinit();
 
-            if (anim_frame.data_offset + anim_frame.data_len <= data.len) {
-                const frame_data = data[anim_frame.data_offset..][0..anim_frame.data_len];
-                if (anim_frame.is_lossless) {
-                    decodeVP8L(&temp_img, frame_data, allocator) catch {};
-                } else {
-                    decodeVP8(&temp_img, frame_data, null, allocator) catch {};
-                }
+            if (anim_frame.data_offset > data.len or anim_frame.data_len > data.len - anim_frame.data_offset) {
+                return error.TruncatedData;
+            }
+            const frame_data = data[anim_frame.data_offset..][0..anim_frame.data_len];
+            if (anim_frame.is_lossless) {
+                try decodeVP8L(&temp_img, frame_data, allocator);
+            } else {
+                try decodeVP8(&temp_img, frame_data, null, allocator);
             }
 
             @memcpy(frame_pixels, temp_img.pixels);
@@ -282,6 +289,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
                 .dispose_op = anim_frame.dispose_op,
                 .blend_op = anim_frame.blend_op,
             };
+            initialized_frames += 1;
+            owns_frame_pixels = false;
         }
 
         img.frames = frames;
@@ -374,7 +383,7 @@ fn decodeVP8L(img: *Image, data: []const u8, allocator: std.mem.Allocator) !void
 
         switch (transforms[num_transforms].transform_type) {
             .predictor, .color => {
-                transforms[num_transforms].bits = (reader.readBits(3) catch return error.DecompressionFailed) + 2;
+                transforms[num_transforms].bits = @intCast((reader.readBits(3) catch return error.DecompressionFailed) + 2);
             },
             .subtract_green => {},
             .color_indexing => {
@@ -412,9 +421,14 @@ fn decodeVP8L(img: *Image, data: []const u8, allocator: std.mem.Allocator) !void
 
 const TransformData = struct {
     transform_type: Transform,
-    bits: u8,
+    bits: u9,
     data: ?[]u8,
 };
+
+fn pixelBufferSize(width: u32, height: u32, format: PixelFormat) !usize {
+    const pixels = std.math.mul(usize, width, height) catch return error.InvalidDimensions;
+    return std.math.mul(usize, pixels, format.bytesPerPixel()) catch return error.InvalidDimensions;
+}
 
 const BitReader = struct {
     data: []const u8,
@@ -453,40 +467,48 @@ const BitReader = struct {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    if (img.width == 0 or img.height == 0 or img.width > 1 << 14 or img.height > 1 << 14) {
+        return error.InvalidDimensions;
+    }
+    switch (img.format) {
+        .grayscale8, .rgb8, .rgba8 => {},
+        else => return error.UnsupportedFormat,
+    }
+
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     // We'll encode as lossless VP8L for simplicity
-    var vp8l_data = std.ArrayList(u8).init(allocator);
-    defer vp8l_data.deinit();
+    var vp8l_data: std.ArrayList(u8) = .empty;
+    defer vp8l_data.deinit(allocator);
 
-    try encodeVP8L(&vp8l_data, img);
+    try encodeVP8L(allocator, &vp8l_data, img);
 
     // Calculate total size
     const vp8l_chunk_size = vp8l_data.items.len;
     const file_size = 4 + 8 + vp8l_chunk_size + (vp8l_chunk_size % 2); // WEBP + VP8L chunk + padding
 
     // RIFF header
-    try output.appendSlice(RIFF_SIGNATURE);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(file_size))));
-    try output.appendSlice(WEBP_SIGNATURE);
+    try output.appendSlice(allocator, RIFF_SIGNATURE);
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(file_size))));
+    try output.appendSlice(allocator, WEBP_SIGNATURE);
 
     // VP8L chunk
-    try output.appendSlice("VP8L");
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(vp8l_chunk_size))));
-    try output.appendSlice(vp8l_data.items);
+    try output.appendSlice(allocator, "VP8L");
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, @intCast(vp8l_chunk_size))));
+    try output.appendSlice(allocator, vp8l_data.items);
 
     // Padding
     if (vp8l_chunk_size % 2 != 0) {
-        try output.append(0);
+        try output.append(allocator, 0);
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn encodeVP8L(output: *std.ArrayList(u8), img: *const Image) !void {
+fn encodeVP8L(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image) !void {
     // VP8L signature
-    try output.append(0x2F);
+    try output.append(allocator, 0x2F);
 
     // Image size (14 bits each) and alpha flag
     const width_minus_1 = img.width - 1;
@@ -494,7 +516,7 @@ fn encodeVP8L(output: *std.ArrayList(u8), img: *const Image) !void {
     const has_alpha: u32 = if (img.format.hasAlpha()) 1 else 0;
 
     const size_bits: u32 = (width_minus_1 & 0x3FFF) | ((height_minus_1 & 0x3FFF) << 14) | (has_alpha << 28);
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u32, size_bits)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, size_bits)));
 
     // Simple encoding: no transforms, no color cache
     // Write transform bit = 0 (no transforms)
@@ -503,7 +525,7 @@ fn encodeVP8L(output: *std.ArrayList(u8), img: *const Image) !void {
     // For a minimal valid VP8L, we need Huffman codes and pixel data
     // This is a simplified version - real encoding would be much more complex
 
-    var bit_writer = BitWriter{ .output = output, .buffer = 0, .bits = 0 };
+    var bit_writer = BitWriter{ .allocator = allocator, .output = output, .buffer = 0, .bits = 0 };
 
     // No transforms
     try bit_writer.writeBit(false);
@@ -524,6 +546,7 @@ fn encodeVP8L(output: *std.ArrayList(u8), img: *const Image) !void {
 }
 
 const BitWriter = struct {
+    allocator: std.mem.Allocator,
     output: *std.ArrayList(u8),
     buffer: u8,
     bits: u4,
@@ -535,7 +558,7 @@ const BitWriter = struct {
         self.bits += 1;
 
         if (self.bits == 8) {
-            try self.output.append(self.buffer);
+            try self.output.append(self.allocator, self.buffer);
             self.buffer = 0;
             self.bits = 0;
         }
@@ -550,7 +573,7 @@ const BitWriter = struct {
 
     fn flush(self: *BitWriter) !void {
         if (self.bits > 0) {
-            try self.output.append(self.buffer);
+            try self.output.append(self.allocator, self.buffer);
             self.buffer = 0;
             self.bits = 0;
         }
@@ -588,4 +611,31 @@ test "BitReader" {
     try std.testing.expectEqual(false, try reader.readBit()); // 0
     try std.testing.expectEqual(true, try reader.readBit()); // 1
     try std.testing.expectEqual(false, try reader.readBit()); // 0
+}
+
+test "WebP encoder preserves RIFF and VP8L dimensions" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 3, 2, .rgba8);
+    defer img.deinit();
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualStrings("RIFF", encoded[0..4]);
+    try std.testing.expectEqual(@as(u32, @intCast(encoded.len - 8)), std.mem.readInt(u32, encoded[4..8], .little));
+    try std.testing.expectEqualStrings("WEBP", encoded[8..12]);
+    try std.testing.expectEqualStrings("VP8L", encoded[12..16]);
+
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(u32, 3), decoded.width);
+    try std.testing.expectEqual(@as(u32, 2), decoded.height);
+    try std.testing.expectEqual(PixelFormat.rgba8, decoded.format);
+
+    var empty = try Image.init(allocator, 0, 1, .rgba8);
+    defer empty.deinit();
+    try std.testing.expectError(error.InvalidDimensions, encode(allocator, &empty));
+
+    var unsupported = try Image.init(allocator, 1, 1, .rgba16);
+    defer unsupported.deinit();
+    try std.testing.expectError(error.UnsupportedFormat, encode(allocator, &unsupported));
 }
