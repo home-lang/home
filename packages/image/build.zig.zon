@@ -1,0 +1,13 @@
+.{
+    .fingerprint = 0xc53d045f4d7e35fe,
+    .name = .image,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+        "examples",
+    },
+}

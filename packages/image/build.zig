@@ -11,97 +11,72 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Static library
-    const lib = b.addStaticLibrary(.{
-        .name = "image",
-        .root_source_file = b.path("src/image.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Enable SIMD optimizations for release builds
     if (optimize != .debug) {
-        lib.root_module.addCMacro("ENABLE_SIMD", "1");
+        image_module.addCMacro("ENABLE_SIMD", "1");
     }
 
+    // Static library
+    const lib = b.addLibrary(.{
+        .name = "image",
+        .linkage = .static,
+        .root_module = image_module,
+    });
     b.installArtifact(lib);
 
     // Shared library
-    const shared_lib = b.addSharedLibrary(.{
+    const shared_lib = b.addLibrary(.{
         .name = "image",
-        .root_source_file = b.path("src/image.zig"),
-        .target = target,
-        .optimize = optimize,
+        .linkage = .dynamic,
+        .root_module = image_module,
     });
-
-    if (optimize != .debug) {
-        shared_lib.root_module.addCMacro("ENABLE_SIMD", "1");
-    }
-
     b.installArtifact(shared_lib);
 
     // Unit tests
-    const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/image.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const unit_tests = b.addTest(.{ .root_module = image_module });
+
+    const check_step = b.step("check", "Compile the shipped image libraries and all tests");
+    check_step.dependOn(&lib.step);
+    check_step.dependOn(&shared_lib.step);
+    check_step.dependOn(&unit_tests.step);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
     // Format tests
-    const format_tests = [_]struct { name: []const u8, file: []const u8 }{
-        .{ .name = "png", .file = "src/formats/png.zig" },
-        .{ .name = "jpeg", .file = "src/formats/jpeg.zig" },
-        .{ .name = "gif", .file = "src/formats/gif.zig" },
-        .{ .name = "bmp", .file = "src/formats/bmp.zig" },
-        .{ .name = "webp", .file = "src/formats/webp.zig" },
-        .{ .name = "tiff", .file = "src/formats/tiff.zig" },
-        .{ .name = "tga", .file = "src/formats/tga.zig" },
-        .{ .name = "ppm", .file = "src/formats/ppm.zig" },
-        .{ .name = "qoi", .file = "src/formats/qoi.zig" },
-        .{ .name = "hdr", .file = "src/formats/hdr.zig" },
-    };
-
-    const format_test_step = b.step("test-formats", "Run format-specific tests");
-    for (format_tests) |t| {
-        const format_test = b.addTest(.{
-            .root_source_file = b.path(t.file),
+    const format_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/formats_tests.zig"),
             .target = target,
             .optimize = optimize,
-        });
-        const run_format_test = b.addRunArtifact(format_test);
-        format_test_step.dependOn(&run_format_test.step);
-    }
+        }),
+    });
+    check_step.dependOn(&format_tests.step);
+    const run_format_tests = b.addRunArtifact(format_tests);
+    const format_test_step = b.step("test-formats", "Run format-specific tests");
+    format_test_step.dependOn(&run_format_tests.step);
 
     // Operations tests
-    const ops_tests = [_]struct { name: []const u8, file: []const u8 }{
-        .{ .name = "resize", .file = "src/ops/resize.zig" },
-        .{ .name = "crop", .file = "src/ops/crop.zig" },
-        .{ .name = "transform", .file = "src/ops/transform.zig" },
-        .{ .name = "color", .file = "src/ops/color.zig" },
-        .{ .name = "filter", .file = "src/ops/filter.zig" },
-    };
-
-    const ops_test_step = b.step("test-ops", "Run operations tests");
-    for (ops_tests) |t| {
-        const ops_test = b.addTest(.{
-            .root_source_file = b.path(t.file),
+    const ops_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ops_tests.zig"),
             .target = target,
             .optimize = optimize,
-        });
-        const run_ops_test = b.addRunArtifact(ops_test);
-        ops_test_step.dependOn(&run_ops_test.step);
-    }
+        }),
+    });
+    check_step.dependOn(&ops_tests.step);
+    const run_ops_tests = b.addRunArtifact(ops_tests);
+    const ops_test_step = b.step("test-ops", "Run operations tests");
+    ops_test_step.dependOn(&run_ops_tests.step);
 
     // Benchmark executable
     const bench = b.addExecutable(.{
         .name = "image-bench",
-        .root_source_file = b.path("src/bench.zig"),
-        .target = target,
-        .optimize = .fast,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .fast,
+        }),
     });
 
     bench.root_module.addImport("image", image_module);
@@ -124,9 +99,11 @@ pub fn build(b: *std.Build) void {
         const example_path = b.fmt("examples/{s}.zig", .{example});
         const exe = b.addExecutable(.{
             .name = example,
-            .root_source_file = b.path(example_path),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(example_path),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
         exe.root_module.addImport("image", image_module);
         const install_exe = b.addInstallArtifact(exe, .{});
@@ -142,11 +119,6 @@ pub fn build(b: *std.Build) void {
 
     const docs_step = b.step("docs", "Generate documentation");
     docs_step.dependOn(&docs.step);
-
-    // Clean step
-    const clean_step = b.step("clean", "Remove build artifacts");
-    clean_step.dependOn(&b.addRemoveDirTree(b.path("zig-out")).step);
-    clean_step.dependOn(&b.addRemoveDirTree(b.path(".zig-cache")).step);
 
     // All tests
     const all_tests_step = b.step("test-all", "Run all tests");
