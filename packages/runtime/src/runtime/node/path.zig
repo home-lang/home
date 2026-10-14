@@ -18,9 +18,12 @@ const stack_fallback_size_small = switch (Environment.os) {
 ///
 /// Compares ASCII values case-insensitively, non-ASCII values are compared directly
 fn eqlIgnoreCaseT(comptime T: type, a: []const T, b: []const T) bool {
-    if (T != u16) {
-        return bun.strings.eqlCaseInsensitiveASCII(a, b, true);
+    if (T != u16) return bun.strings.eqlCaseInsensitiveASCII(a, b, true);
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (toLowerT(T, left) != toLowerT(T, right)) return false;
     }
+    return true;
 }
 
 /// Taken from Zig 0.11.0 zig/src/resinator/rc.zig
@@ -62,20 +65,55 @@ const CHAR_STR_DOT = ".";
 /// Based on Node v21.6.1 path.parse:
 /// https://github.com/nodejs/node/blob/6ae20aa63de78294b18d5015481485b7cd8fbb60/lib/path.js#L919
 /// The structs returned by parse methods.
+// Pure path operations act on JavaScript code units. Filesystem byte encoding
+// belongs to the filesystem adapters, where unpaired surrogates have different
+// semantics. Keep the existing UTF-8 fast path for eight-bit inputs.
+fn pathStringToJS(comptime T: type, globalObject: *jsc.JSGlobalObject, value: []const T) bun.JSError!jsc.JSValue {
+    if (T == u8) return bun.String.createUTF8ForJS(globalObject, value);
+    var result = bun.String.cloneUTF16(value);
+    defer result.deref();
+    return result.toJS(globalObject);
+}
+
+fn pathSlice16(allocator: std.mem.Allocator, value: jsc.ZigString) []const u16 {
+    if (value.is16Bit()) return value.utf16SliceAligned();
+    const result = bun.handleOom(allocator.alloc(u16, value.len));
+    for (value.slice(), result) |code_unit, *out| out.* = code_unit;
+    return result;
+}
+
+fn copyPathCodeUnits(globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, value: jsc.JSValue) bun.JSError![]const u16 {
+    const str = try value.toBunString(globalObject);
+    defer str.deref();
+    const units = bun.handleOom(allocator.alloc(u16, str.length()));
+    for (units, 0..) |*unit, index| unit.* = str.charAt(index);
+    return units;
+}
+
 fn PathParsed(comptime T: type) type {
     return struct {
-        root: []const T = "",
-        dir: []const T = "",
-        base: []const T = "",
-        ext: []const T = "",
-        name: []const T = "",
+        root: []const T = &.{},
+        dir: []const T = &.{},
+        base: []const T = &.{},
+        ext: []const T = &.{},
+        name: []const T = &.{},
 
         pub fn toJSObject(this: @This(), globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
-            const root = try bun.String.createUTF8ForJS(globalObject, this.root);
-            const dir = try bun.String.createUTF8ForJS(globalObject, this.dir);
-            const base = try bun.String.createUTF8ForJS(globalObject, this.base);
-            const ext = try bun.String.createUTF8ForJS(globalObject, this.ext);
-            const name_val = try bun.String.createUTF8ForJS(globalObject, this.name);
+            const root = try pathStringToJS(T, globalObject, this.root);
+            root.protect();
+            defer root.unprotect();
+            const dir = try pathStringToJS(T, globalObject, this.dir);
+            dir.protect();
+            defer dir.unprotect();
+            const base = try pathStringToJS(T, globalObject, this.base);
+            base.protect();
+            defer base.unprotect();
+            const ext = try pathStringToJS(T, globalObject, this.ext);
+            ext.protect();
+            defer ext.unprotect();
+            const name_val = try pathStringToJS(T, globalObject, this.name);
+            name_val.protect();
+            defer name_val.unprotect();
             return PathParsedObject__create(globalObject, root, dir, base, ext, name_val);
         }
     };
@@ -106,7 +144,7 @@ inline fn formatExtT(comptime T: type, ext: []const T, buf: []T) []const T {
     }
     const bufSize = len + 1;
     buf[0] = CHAR_DOT;
-    bun.memmove(buf[1..bufSize], ext);
+    bun.copy(T, buf[1..bufSize], ext);
     return buf[0..bufSize];
 }
 
@@ -153,12 +191,12 @@ inline fn posixCwdT(comptime T: type, buf: []T) MaybeBuf(T) {
 const withoutTrailingSlash = if (Environment.isWindows) strings.withoutTrailingSlashWindowsPath else strings.withoutTrailingSlash;
 
 pub fn getCwdWindowsU16(buf: []u16) MaybeBuf(u16) {
-    const len: u32 = strings.convertUTF8toUTF16InBuffer(&buf, withoutTrailingSlash(bun.fs.FileSystem.instance.top_level_dir));
-    if (len == 0) {
+    const result = @import("../../string/immutable/unicode.zig").convertUTF8toUTF16InBuffer(buf, withoutTrailingSlash(bun.fs.FileSystem.instance.top_level_dir));
+    if (result.len == 0) {
         // Indirectly calls std.os.windows.kernel32.GetLastError().
         return MaybeBuf(u16).errnoSys(0, Syscall.Tag.getcwd).?;
     }
-    return MaybeBuf(u16){ .result = buf[0..len] };
+    return MaybeBuf(u16){ .result = result };
 }
 
 pub fn getCwdU8(buf: []u8) MaybeBuf(u8) {
@@ -168,7 +206,7 @@ pub fn getCwdU8(buf: []u8) MaybeBuf(u8) {
 }
 
 pub fn getCwdU16(buf: []u16) MaybeBuf(u16) {
-    const result = strings.convertUTF8toUTF16InBuffer(&buf, withoutTrailingSlash(bun.fs.FileSystem.instance.top_level_dir));
+    const result = @import("../../string/immutable/unicode.zig").convertUTF8toUTF16InBuffer(buf, withoutTrailingSlash(bun.fs.FileSystem.instance.top_level_dir));
     return MaybeBuf(u16){ .result = result };
 }
 
@@ -390,11 +428,11 @@ pub fn basenameWindowsT(comptime T: type, path: []const T, suffix: ?[]const T) [
 }
 
 pub fn basenamePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, suffix: ?[]const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, basenamePosixT(T, path, suffix));
+    return pathStringToJS(T, globalObject, basenamePosixT(T, path, suffix));
 }
 
 pub fn basenameWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, suffix: ?[]const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, basenameWindowsT(T, path, suffix));
+    return pathStringToJS(T, globalObject, basenameWindowsT(T, path, suffix));
 }
 
 pub fn basenameJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, isWindows: bool, path: []const T, suffix: ?[]const T) bun.JSError!jsc.JSValue {
@@ -422,12 +460,20 @@ pub fn basename(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
 
+    const suffixZStr = if (suffix_ptr) |value| try value.getZigString(globalObject) else jsc.ZigString.init("");
+    if (pathZStr.is16Bit() or suffixZStr.is16Bit()) {
+        const path16 = pathSlice16(allocator, pathZStr);
+        defer if (!pathZStr.is16Bit()) allocator.free(path16);
+        const suffix16 = pathSlice16(allocator, suffixZStr);
+        defer if (!suffixZStr.is16Bit()) allocator.free(suffix16);
+        return basenameJS_T(u16, globalObject, isWindows, path16, if (suffix_ptr != null) suffix16 else null);
+    }
+
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
 
     var suffixZSlice: ?jsc.ZigString.Slice = null;
-    if (suffix_ptr) |_suffix_ptr| {
-        const suffixZStr = try _suffix_ptr.getZigString(globalObject);
+    if (suffix_ptr != null) {
         if (suffixZStr.len > 0 and suffixZStr.len <= pathZStr.len) {
             suffixZSlice = suffixZStr.toSlice(allocator);
         }
@@ -586,11 +632,11 @@ pub fn dirnameWindowsT(comptime T: type, path: []const T) []const T {
 }
 
 pub fn dirnamePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, dirnamePosixT(T, path));
+    return pathStringToJS(T, globalObject, dirnamePosixT(T, path));
 }
 
 pub fn dirnameWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, dirnameWindowsT(T, path));
+    return pathStringToJS(T, globalObject, dirnameWindowsT(T, path));
 }
 
 pub fn dirnameJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, isWindows: bool, path: []const T) bun.JSError!jsc.JSValue {
@@ -610,6 +656,8 @@ pub fn dirname(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
 
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
+
+    if (pathZStr.is16Bit()) return dirnameJS_T(u16, globalObject, isWindows, pathZStr.utf16SliceAligned());
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -782,11 +830,11 @@ pub fn extnameWindowsT(comptime T: type, path: []const T) []const T {
 }
 
 pub fn extnamePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, extnamePosixT(T, path));
+    return pathStringToJS(T, globalObject, extnamePosixT(T, path));
 }
 
 pub fn extnameWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, extnameWindowsT(T, path));
+    return pathStringToJS(T, globalObject, extnameWindowsT(T, path));
 }
 
 pub fn extnameJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, isWindows: bool, path: []const T) bun.JSError!jsc.JSValue {
@@ -806,6 +854,8 @@ pub fn extname(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
 
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
+
+    if (pathZStr.is16Bit()) return extnameJS_T(u16, globalObject, isWindows, pathZStr.utf16SliceAligned());
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -827,7 +877,7 @@ fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []con
 
     // Translated from the following JS code:
     //   const dir = pathObject.dir || pathObject.root;
-    const dirIsRoot = dir.len == 0 or std.mem.eql(u8, dir, root);
+    const dirIsRoot = dir.len == 0 or std.mem.eql(T, dir, root);
     const dirOrRoot = if (dirIsRoot) root else dir;
     const dirLen = dirOrRoot.len;
 
@@ -840,7 +890,7 @@ fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []con
     var baseLen = base.len;
     var baseOrNameExt = base;
     if (baseLen > 0) {
-        bun.memmove(buf[0..baseLen], base);
+        bun.copy(T, buf[0..baseLen], base);
     } else {
         const formattedExt = formatExtT(T, ext, buf);
         const nameLen = _name.len;
@@ -853,7 +903,7 @@ fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []con
             bun.copy(T, buf[bufOffset..bufSize], formattedExt);
         }
         if (nameLen > 0) {
-            bun.memmove(buf[0..nameLen], _name);
+            bun.copy(T, buf[0..nameLen], _name);
         }
         if (bufSize > 0) {
             baseOrNameExt = buf[0..bufSize];
@@ -878,7 +928,7 @@ fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []con
         // Use bun.copy because baseOrNameExt and buf overlap.
         bun.copy(T, buf[bufOffset..bufSize], baseOrNameExt);
     }
-    bun.memmove(buf[0..dirLen], dirOrRoot);
+    bun.copy(T, buf[0..dirLen], dirOrRoot);
     bufSize = dirLen + baseLen;
     if (!dirIsRoot) {
         bufSize += 1;
@@ -888,11 +938,11 @@ fn _formatT(comptime T: type, pathObject: PathParsed(T), sep: T, buf: []T) []con
 }
 
 pub fn formatPosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, pathObject: PathParsed(T), buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, _formatT(T, pathObject, CHAR_FORWARD_SLASH, buf));
+    return pathStringToJS(T, globalObject, _formatT(T, pathObject, CHAR_FORWARD_SLASH, buf));
 }
 
 pub fn formatWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, pathObject: PathParsed(T), buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, _formatT(T, pathObject, CHAR_BACKWARD_SLASH, buf));
+    return pathStringToJS(T, globalObject, _formatT(T, pathObject, CHAR_BACKWARD_SLASH, buf));
 }
 
 pub fn formatJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, pathObject: PathParsed(T)) bun.JSError!jsc.JSValue {
@@ -917,47 +967,37 @@ pub fn format(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]j
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
 
-    var root: []const u8 = "";
-    var root_slice: ?jsc.ZigString.Slice = null;
-    defer if (root_slice) |slice| slice.deinit();
-
-    if (try pathObject_ptr.getTruthy(globalObject, "root")) |jsValue| {
-        root_slice = try jsValue.toSlice(globalObject, allocator);
-        root = root_slice.?.slice();
+    // Match JavaScript's short-circuit property reads. Each returned value must
+    // survive subsequent user getters, coercions, and garbage collections.
+    const dir_value = (try pathObject_ptr.getTruthy(globalObject, "dir")) orelse
+        (try pathObject_ptr.getTruthy(globalObject, "root")) orelse .js_undefined;
+    dir_value.protect();
+    defer dir_value.unprotect();
+    const base_value = (try pathObject_ptr.getTruthy(globalObject, "base")) orelse .js_undefined;
+    base_value.protect();
+    defer base_value.unprotect();
+    var fields: [5][]const u16 = .{ &.{}, &.{}, &.{}, &.{}, &.{} };
+    defer for (fields) |field| allocator.free(field);
+    if (base_value.isUndefined()) {
+        if (try pathObject_ptr.getTruthy(globalObject, "name")) |value| fields[3] = try copyPathCodeUnits(globalObject, allocator, value);
+        if (try pathObject_ptr.getTruthy(globalObject, "ext")) |value| fields[4] = try copyPathCodeUnits(globalObject, allocator, value);
     }
-    var dir: []const u8 = "";
-    var dir_slice: ?jsc.ZigString.Slice = null;
-    defer if (dir_slice) |slice| slice.deinit();
-
-    if (try pathObject_ptr.getTruthy(globalObject, "dir")) |jsValue| {
-        dir_slice = try jsValue.toSlice(globalObject, allocator);
-        dir = dir_slice.?.slice();
+    if (dir_value.isUndefined()) {
+        if (!base_value.isUndefined()) return base_value;
+    } else {
+        const root_value = (try pathObject_ptr.get(globalObject, "root")) orelse .js_undefined;
+        const dir_is_root = try dir_value.isStrictEqual(root_value, globalObject);
+        fields[1] = try copyPathCodeUnits(globalObject, allocator, dir_value);
+        if (dir_is_root) fields[0] = bun.handleOom(allocator.dupe(u16, fields[1]));
     }
-    var base: []const u8 = "";
-    var base_slice: ?jsc.ZigString.Slice = null;
-    defer if (base_slice) |slice| slice.deinit();
-
-    if (try pathObject_ptr.getTruthy(globalObject, "base")) |jsValue| {
-        base_slice = try jsValue.toSlice(globalObject, allocator);
-        base = base_slice.?.slice();
-    }
-    var _name: []const u8 = "";
-    var _name_slice: ?jsc.ZigString.Slice = null;
-    defer if (_name_slice) |slice| slice.deinit();
-
-    if (try pathObject_ptr.getTruthy(globalObject, "name")) |jsValue| {
-        _name_slice = try jsValue.toSlice(globalObject, allocator);
-        _name = _name_slice.?.slice();
-    }
-    var ext: []const u8 = "";
-    var ext_slice: ?jsc.ZigString.Slice = null;
-    defer if (ext_slice) |slice| slice.deinit();
-
-    if (try pathObject_ptr.getTruthy(globalObject, "ext")) |jsValue| {
-        ext_slice = try jsValue.toSlice(globalObject, allocator);
-        ext = ext_slice.?.slice();
-    }
-    return formatJS_T(u8, globalObject, allocator, isWindows, .{ .root = root, .dir = dir, .base = base, .ext = ext, .name = _name });
+    if (!base_value.isUndefined()) fields[2] = try copyPathCodeUnits(globalObject, allocator, base_value);
+    return formatJS_T(u16, globalObject, allocator, isWindows, .{
+        .root = fields[0],
+        .dir = fields[1],
+        .base = fields[2],
+        .name = fields[3],
+        .ext = fields[4],
+    });
 }
 
 /// Based on Node v21.6.1 path.posix.isAbsolute:
@@ -1057,7 +1097,7 @@ pub fn joinPosixT(comptime T: type, paths: []const []const T, buf: []T, buf2: []
             }
             bufOffset = bufSize;
             bufSize += len;
-            bun.memmove(buf2[bufOffset..bufSize], path);
+            bun.copy(T, buf2[bufOffset..bufSize], path);
 
             joined = buf2[0..bufSize];
         }
@@ -1113,7 +1153,7 @@ pub fn joinWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf2: 
             bufOffset = bufSize;
             if (bufSize == 0) {
                 bufSize = len;
-                bun.memmove(buf2[0..bufSize], path);
+                bun.copy(T, buf2[0..bufSize], path);
 
                 joined = buf2[0..bufSize];
                 firstPart = joined;
@@ -1123,7 +1163,7 @@ pub fn joinWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf2: 
                 buf2[bufOffset] = CHAR_BACKWARD_SLASH;
                 bufOffset = bufSize;
                 bufSize += len;
-                bun.memmove(buf2[bufOffset..bufSize], path);
+                bun.copy(T, buf2[bufOffset..bufSize], path);
 
                 joined = buf2[0..bufSize];
             }
@@ -1180,7 +1220,7 @@ pub fn joinWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf2: 
             bufSize = bufOffset + (bufSize - slashCount);
             // Move all bytes to the right by slashCount - 1.
             // Use bun.copy because joined and buf2 overlap.
-            bun.copy(u8, buf2[bufOffset..bufSize], joined[slashCount..]);
+            bun.copy(T, buf2[bufOffset..bufSize], joined[slashCount..]);
             // Prepend the separator.
             buf2[0] = CHAR_BACKWARD_SLASH;
 
@@ -1191,11 +1231,11 @@ pub fn joinWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf2: 
 }
 
 pub fn joinPosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, paths: []const []const T, buf: []T, buf2: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, joinPosixT(T, paths, buf, buf2));
+    return pathStringToJS(T, globalObject, joinPosixT(T, paths, buf, buf2));
 }
 
 pub fn joinWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, paths: []const []const T, buf: []T, buf2: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, joinWindowsT(T, paths, buf, buf2));
+    return pathStringToJS(T, globalObject, joinWindowsT(T, paths, buf, buf2));
 }
 
 pub fn joinJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, paths: []const []const T) bun.JSError!jsc.JSValue {
@@ -1219,15 +1259,20 @@ pub fn join(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]jsc
     var stack_fallback = bun.stackFallback(stack_fallback_size_large, arena.allocator());
     const allocator = stack_fallback.get();
 
-    var paths = bun.handleOom(allocator.alloc(string, args_len));
-    defer allocator.free(paths);
-
+    const strings_buf = bun.handleOom(allocator.alloc(jsc.ZigString, args_len));
+    var wide = false;
     for (0..args_len, args_ptr) |i, path_ptr| {
-        // Supress exeption in zig. It does globalThis.vm().throwError() in JS land.
         try validateString(globalObject, path_ptr, "paths[{d}]", .{i});
-        const pathZStr = try path_ptr.getZigString(globalObject);
-        paths[i] = if (pathZStr.len > 0) pathZStr.toSlice(allocator).slice() else "";
+        strings_buf[i] = try path_ptr.getZigString(globalObject);
+        wide = wide or strings_buf[i].is16Bit();
     }
+    if (wide) {
+        const paths = bun.handleOom(allocator.alloc([]const u16, args_len));
+        for (strings_buf, paths) |value, *out| out.* = pathSlice16(allocator, value);
+        return joinJS_T(u16, globalObject, allocator, isWindows, paths);
+    }
+    const paths = bun.handleOom(allocator.alloc(string, args_len));
+    for (strings_buf, paths) |value, *out| out.* = value.toSlice(allocator).slice();
     return joinJS_T(u8, globalObject, allocator, isWindows, paths);
 }
 
@@ -1347,7 +1392,7 @@ fn normalizeStringT(comptime T: type, path: []const T, allowAboveRoot: bool, sep
 
                 bufOffset = bufSize;
                 bufSize += slice.len;
-                bun.memmove(buf[bufOffset..bufSize], slice);
+                bun.copy(T, buf[bufOffset..bufSize], slice);
 
                 // Translated from the following JS code:
                 //   lastSegmentLength = i - lastSlash - 1;
@@ -1478,7 +1523,7 @@ pub fn normalizeWindowsT(comptime T: type, path: []const T, buf: []T) []const T 
                 j += 1;
             }
             if (j < len and j != last) {
-                const firstPart: []const u8 = path[last..j];
+                const firstPart: []const T = path[last..j];
                 // Matched!
                 last = j;
                 // Match 1 or more path separators
@@ -1508,13 +1553,13 @@ pub fn normalizeWindowsT(comptime T: type, path: []const T, buf: []T) []const T 
                         buf[1] = CHAR_BACKWARD_SLASH;
                         bufOffset = bufSize;
                         bufSize += firstPart.len;
-                        bun.memmove(buf[bufOffset..bufSize], firstPart);
+                        bun.copy(T, buf[bufOffset..bufSize], firstPart);
                         bufOffset = bufSize;
                         bufSize += 1;
                         buf[bufOffset] = CHAR_BACKWARD_SLASH;
                         bufOffset = bufSize;
                         bufSize += len - last;
-                        bun.memmove(buf[bufOffset..bufSize], path[last..len]);
+                        bun.copy(T, buf[bufOffset..bufSize], path[last..len]);
                         bufOffset = bufSize;
                         bufSize += 1;
                         buf[bufOffset] = CHAR_BACKWARD_SLASH;
@@ -1532,13 +1577,13 @@ pub fn normalizeWindowsT(comptime T: type, path: []const T, buf: []T) []const T 
                         buf[1] = CHAR_BACKWARD_SLASH;
                         bufOffset = bufSize;
                         bufSize += firstPart.len;
-                        bun.memmove(buf[bufOffset..bufSize], firstPart);
+                        bun.copy(T, buf[bufOffset..bufSize], firstPart);
                         bufOffset = bufSize;
                         bufSize += 1;
                         buf[bufOffset] = CHAR_BACKWARD_SLASH;
                         bufOffset = bufSize;
                         bufSize += j - last;
-                        bun.memmove(buf[bufOffset..bufSize], path[last..j]);
+                        bun.copy(T, buf[bufOffset..bufSize], path[last..j]);
 
                         device = buf[0..bufSize];
                         rootEnd = j;
@@ -1603,11 +1648,11 @@ pub fn normalizeT(comptime T: type, path: []const T, buf: []T) []const T {
 }
 
 pub fn normalizePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, normalizePosixT(T, path, buf));
+    return pathStringToJS(T, globalObject, normalizePosixT(T, path, buf));
 }
 
 pub fn normalizeWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, buf: []T) bun.JSError!jsc.JSValue {
-    return bun.String.createUTF8ForJS(globalObject, normalizeWindowsT(T, path, buf));
+    return pathStringToJS(T, globalObject, normalizeWindowsT(T, path, buf));
 }
 
 pub fn normalizeJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, path: []const T) bun.JSError!jsc.JSValue {
@@ -1628,6 +1673,8 @@ pub fn normalize(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [
 
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
+
+    if (pathZStr.is16Bit()) return normalizeJS_T(u16, globalObject, allocator, isWindows, pathZStr.utf16SliceAligned());
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
@@ -1949,6 +1996,8 @@ pub fn parse(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]js
     var stack_fallback = bun.stackFallback(stack_fallback_size_small, bun.default_allocator);
     const allocator = stack_fallback.get();
 
+    if (pathZStr.is16Bit()) return parseJS_T(u16, globalObject, isWindows, pathZStr.utf16SliceAligned());
+
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
     return parseJS_T(u8, globalObject, isWindows, pathZSlice.slice());
@@ -2081,7 +2130,7 @@ pub fn relativePosixT(comptime T: type, from: []const T, to: []const T, buf: []T
         bun.copy(T, buf[bufOffset..bufSize], toOrig[toStart..toOrigLen]);
     }
     if (outLen > 0) {
-        bun.memmove(buf[0..outLen], out);
+        bun.copy(T, buf[0..outLen], out);
     }
     buf[bufSize] = 0;
     return MaybeSlice(T){ .result = buf[0..bufSize :0] };
@@ -2261,7 +2310,7 @@ pub fn relativeWindowsT(comptime T: type, from: []const T, to: []const T, buf: [
             // Use bun.copy because toOrig and buf overlap.
             bun.copy(T, buf[bufOffset..bufSize], toOrig[toStart..toEnd]);
         }
-        bun.memmove(buf[0..outLen], out);
+        bun.copy(T, buf[0..outLen], out);
         buf[bufSize] = 0;
         return MaybeSlice(T){ .result = buf[0..bufSize :0] };
     }
@@ -2275,14 +2324,14 @@ pub fn relativeWindowsT(comptime T: type, from: []const T, to: []const T, buf: [
 
 pub fn relativePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, from: []const T, to: []const T, buf: []T, buf2: []T, buf3: []T) bun.JSError!jsc.JSValue {
     return switch (relativePosixT(T, from, to, buf, buf2, buf3)) {
-        .result => |r| bun.String.createUTF8ForJS(globalObject, r),
+        .result => |r| pathStringToJS(T, globalObject, r),
         .err => |e| e.toJS(globalObject),
     };
 }
 
 pub fn relativeWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, from: []const T, to: []const T, buf: []T, buf2: []T, buf3: []T) bun.JSError!jsc.JSValue {
     return switch (relativeWindowsT(T, from, to, buf, buf2, buf3)) {
-        .result => |r| bun.String.createUTF8ForJS(globalObject, r),
+        .result => |r| pathStringToJS(T, globalObject, r),
         .err => |e| e.toJS(globalObject),
     };
 }
@@ -2317,6 +2366,14 @@ pub fn relative(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*
         bun.default_allocator,
     );
     const allocator = sfa.get();
+
+    if (fromZigStr.is16Bit() or toZigStr.is16Bit()) {
+        const from16 = pathSlice16(allocator, fromZigStr);
+        defer if (!fromZigStr.is16Bit()) allocator.free(from16);
+        const to16 = pathSlice16(allocator, toZigStr);
+        defer if (!toZigStr.is16Bit()) allocator.free(to16);
+        return relativeJS_T(u16, globalObject, allocator, isWindows, from16, to16);
+    }
 
     const fromZigSlice = fromZigStr.toSlice(allocator);
     defer fromZigSlice.deinit();
@@ -2369,10 +2426,10 @@ pub fn resolvePosixT(comptime T: type, paths: []const []const T, buf: []T, buf2:
             bufSize = bufOffset + resolvedPathLen;
             // Move all bytes to the right by path.len + 1 for the separator.
             // Use bun.copy because resolvedPath and buf2 overlap.
-            bun.copy(u8, buf2[bufOffset..bufSize], resolvedPath);
+            bun.copy(T, buf2[bufOffset..bufSize], resolvedPath);
         }
         bufSize = len;
-        bun.memmove(buf2[0..bufSize], path);
+        bun.copy(T, buf2[0..bufSize], path);
         bufSize += 1;
         buf2[len] = CHAR_FORWARD_SLASH;
         bufSize += resolvedPathLen;
@@ -2477,7 +2534,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                     buf2[0] = '=';
                     bufOffset = bufSize;
                     bufSize += resolvedDeviceLen;
-                    bun.memmove(buf2[bufOffset..bufSize], resolvedDevice);
+                    bun.copy(T, buf2[bufOffset..bufSize], resolvedDevice);
                     if (T == u16) {
                         break :brk buf2[0..bufSize];
                     } else {
@@ -2494,7 +2551,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                 if (std.process.getenvW(key_w)) |r| {
                     if (T == u16) {
                         bufSize = r.len;
-                        bun.memmove(buf2[0..bufSize], r);
+                        bun.copy(T, buf2[0..bufSize], r);
                     } else {
                         // Reuse buf2 because it's used for path.
                         bufSize = std.unicode.wtf16LeToWtf8(buf2, r);
@@ -2529,7 +2586,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                 // Translated from the following JS code:
                 //   path = `${resolvedDevice}\\`;
                 bufSize = resolvedDeviceLen;
-                bun.memmove(buf2[0..bufSize], resolvedDevice);
+                bun.copy(T, buf2[0..bufSize], resolvedDevice);
                 bufOffset = bufSize;
                 bufSize += 1;
                 buf2[bufOffset] = CHAR_BACKWARD_SLASH;
@@ -2611,7 +2668,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                             // A long UNC first-part / slice would overflow the
                             // fixed-size tmpBuf; fail instead of writing past it.
                             if (bufSize > tmpBuf.len) return MaybeSlice(T){ .err = bun.sys.Error.fromCode(.NAMETOOLONG, .TODO) };
-                            bun.memmove(tmpBuf[bufOffset..bufSize], firstPart);
+                            bun.copy(T, tmpBuf[bufOffset..bufSize], firstPart);
                             bufOffset = bufSize;
                             bufSize += 1;
                             tmpBuf[bufOffset] = CHAR_BACKWARD_SLASH;
@@ -2619,7 +2676,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                             bufOffset = bufSize;
                             bufSize += slice.len;
                             if (bufSize > tmpBuf.len) return MaybeSlice(T){ .err = bun.sys.Error.fromCode(.NAMETOOLONG, .TODO) };
-                            bun.memmove(tmpBuf[bufOffset..bufSize], slice);
+                            bun.copy(T, tmpBuf[bufOffset..bufSize], slice);
 
                             device = tmpBuf[0..bufSize];
                             rootEnd = j;
@@ -2659,7 +2716,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                 bufSize = device.len;
                 // Copy device over if it's backed by an anonymous buffer.
                 if (device.ptr != tmpBuf[0..].ptr) {
-                    bun.memmove(tmpBuf[0..bufSize], device);
+                    bun.copy(T, tmpBuf[0..bufSize], device);
                 }
                 resolvedDevice = tmpBuf[0..bufSize];
                 resolvedDeviceLen = bufSize;
@@ -2679,11 +2736,11 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
                 bufSize = bufOffset + resolvedTailLen;
                 // Move all bytes to the right by path slice.len + 1 for the separator
                 // Use bun.copy because resolvedTail and buf2 overlap.
-                bun.copy(u8, buf2[bufOffset..bufSize], resolvedTail);
+                bun.copy(T, buf2[bufOffset..bufSize], resolvedTail);
             }
             bufSize = sliceLen;
             if (sliceLen > 0) {
-                bun.memmove(buf2[0..bufSize], path[rootEnd..len]);
+                bun.copy(T, buf2[0..bufSize], path[rootEnd..len]);
             }
             bufOffset = bufSize;
             bufSize += 1;
@@ -2722,7 +2779,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
         // Use bun.copy because resolvedTail and buf overlap.
         bun.copy(T, buf[bufOffset..bufSize], resolvedTail);
         buf[resolvedDeviceLen] = CHAR_BACKWARD_SLASH;
-        bun.memmove(buf[0..resolvedDeviceLen], resolvedDevice);
+        bun.copy(T, buf[0..resolvedDeviceLen], resolvedDevice);
         buf[bufSize] = 0;
         return MaybeSlice(T){ .result = buf[0..bufSize :0] };
     }
@@ -2733,7 +2790,7 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
         bufSize = bufOffset + resolvedTailLen;
         // Use bun.copy because resolvedTail and buf overlap.
         bun.copy(T, buf[bufOffset..bufSize], resolvedTail);
-        bun.memmove(buf[0..resolvedDeviceLen], resolvedDevice);
+        bun.copy(T, buf[0..resolvedDeviceLen], resolvedDevice);
         buf[bufSize] = 0;
         return MaybeSlice(T){ .result = buf[0..bufSize :0] };
     }
@@ -2742,14 +2799,14 @@ pub fn resolveWindowsT(comptime T: type, paths: []const []const T, buf: []T, buf
 
 pub fn resolvePosixJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, paths: []const []const T, buf: []T, buf2: []T) bun.JSError!jsc.JSValue {
     return switch (resolvePosixT(T, paths, buf, buf2)) {
-        .result => |r| bun.String.createUTF8ForJS(globalObject, r),
+        .result => |r| pathStringToJS(T, globalObject, r),
         .err => |e| e.toJS(globalObject),
     };
 }
 
 pub fn resolveWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, paths: []const []const T, buf: []T, buf2: []T) bun.JSError!jsc.JSValue {
     return switch (resolveWindowsT(T, paths, buf, buf2)) {
-        .result => |r| bun.String.createUTF8ForJS(globalObject, r),
+        .result => |r| pathStringToJS(T, globalObject, r),
         .err => |e| e.toJS(globalObject),
     };
 }
@@ -2789,54 +2846,54 @@ pub fn resolve(globalObject: *jsc.JSGlobalObject, isWindows: bool, args_ptr: [*]
     var sfa = globalObject.bunVM().rareData().path_buf.get(stack_fallback_size_large, arena.allocator());
     const allocator = sfa.get();
 
-    var paths_buf = try allocator.alloc(string, args_len);
-    defer allocator.free(paths_buf);
+    const strings_buf = try allocator.alloc(jsc.ZigString, args_len);
     var paths_offset: usize = args_len;
-    var resolved_root = false;
-
+    var wide = false;
+    var resolved_absolute = false;
+    var resolved_device: []const u16 = &.{};
     var i = args_len;
     while (i > 0) {
         i -= 1;
-
-        if (resolved_root) {
-            break;
-        }
-
         const path = args_ptr[i];
         try validateString(globalObject, path, "paths[{d}]", .{i});
-        const path_str = try path.toBunString(globalObject);
-        defer path_str.deref();
-
-        if (path_str.length() == 0) {
-            continue;
-        }
-
+        const value = try path.getZigString(globalObject);
+        if (value.len == 0) continue;
         paths_offset -= 1;
-        paths_buf[paths_offset] = try path_str.toOwnedSlice(allocator);
-
-        if (!isWindows) {
-            if (path_str.charAt(0) == CHAR_FORWARD_SLASH) {
-                resolved_root = true;
+        strings_buf[paths_offset] = value;
+        wide = wide or value.is16Bit();
+        if (!isWindows and (if (value.is16Bit()) value.utf16SliceAligned()[0] else value.slice()[0]) == CHAR_FORWARD_SLASH) break;
+        if (isWindows) {
+            const units = pathSlice16(allocator, value);
+            const root = parseWindowsT(u16, units).root;
+            var device: []const u16 = &.{};
+            if (root.len >= 2 and root[1] == CHAR_COLON) {
+                device = root[0..2];
+            } else if (root.len > 1 and isSepWindowsT(u16, root[0]) and isSepWindowsT(u16, root[1])) {
+                const root_buf = try allocator.alloc(u16, root.len + 2);
+                const normalized_root = normalizeWindowsT(u16, root, root_buf);
+                device = normalized_root[0 .. normalized_root.len - 1];
             }
+            if (device.len > 0) {
+                if (resolved_device.len > 0 and !eqlIgnoreCaseT(u16, resolved_device, device)) continue;
+                if (resolved_device.len == 0) resolved_device = device;
+            }
+            resolved_absolute = resolved_absolute or isAbsoluteWindowsT(u16, units);
+            if (resolved_absolute and resolved_device.len > 0) break;
         }
     }
-
-    const paths = paths_buf[paths_offset..];
-
+    const values = strings_buf[paths_offset..];
+    if (wide) {
+        const paths = try allocator.alloc([]const u16, values.len);
+        for (values, paths) |value, *out| out.* = pathSlice16(allocator, value);
+        return resolveJS_T(u16, globalObject, allocator, isWindows, paths);
+    }
+    const paths = try allocator.alloc(string, values.len);
+    for (values, paths) |value, *out| out.* = value.toSlice(allocator).slice();
     if (comptime Environment.isPosix) {
-        if (!isWindows) {
-            // Micro-optimization #1: avoid creating a new string when passing no arguments or only empty strings.
-            if (paths.len == 0) {
-                return Process__getCachedCwd(globalObject);
-            }
-
-            // Micro-optimization #2: path.resolve(".") and path.resolve("./") === process.cwd()
-            else if (paths.len == 1 and (strings.eqlComptime(paths[0], ".") or strings.eqlComptime(paths[0], "./"))) {
-                return Process__getCachedCwd(globalObject);
-            }
-        }
+        if (!isWindows and (paths.len == 0 or
+            (paths.len == 1 and (strings.eqlComptime(paths[0], ".") or strings.eqlComptime(paths[0], "./")))))
+            return Process__getCachedCwd(globalObject);
     }
-
     return resolveJS_T(u8, globalObject, allocator, isWindows, paths);
 }
 
@@ -2919,13 +2976,13 @@ pub fn toNamespacedPathWindowsT(comptime T: type, path: []const T, buf: []T, buf
 
 pub fn toNamespacedPathWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, path: []const T, buf: []T, buf2: []T) bun.JSError!jsc.JSValue {
     return switch (toNamespacedPathWindowsT(T, path, buf, buf2)) {
-        .result => |r| bun.String.createUTF8ForJS(globalObject, r),
+        .result => |r| pathStringToJS(T, globalObject, r),
         .err => |e| e.toJS(globalObject),
     };
 }
 
 pub fn toNamespacedPathJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, path: []const T) bun.JSError!jsc.JSValue {
-    if (!isWindows or path.len == 0) return bun.String.createUTF8ForJS(globalObject, path);
+    if (!isWindows or path.len == 0) return pathStringToJS(T, globalObject, path);
     // Account for CWD (up to MAX_PATH_SIZE) that resolve may prepend to relative paths.
     const bufLen = @max(path.len + MAX_PATH_SIZE(T) + 1, PATH_SIZE(T));
     // +8 for possible UNC prefix, +1 for null terminator
@@ -2955,6 +3012,8 @@ pub fn toNamespacedPath(globalObject: *jsc.JSGlobalObject, isWindows: bool, args
         bun.default_allocator,
     );
     const allocator = sfa.get();
+
+    if (pathZStr.is16Bit()) return toNamespacedPathJS_T(u16, globalObject, allocator, isWindows, pathZStr.utf16SliceAligned());
 
     const pathZSlice = pathZStr.toSlice(allocator);
     defer pathZSlice.deinit();
