@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "source_commit": "4852a23304b36dad547211b20a7866763cae2696",
+  "upstream": "4982b91e3702094330f3be3883354c52b8c01323",
+  "platform": "Darwin arm64",
+  "executable_sha256": "bbe7ee714a219e97df4ea7f3d4d023721cb4f96526e674d19e1594c22d2d63a7",
+  "source_hashes": {
+    "packages/runtime/src/native/inspector_controller.cpp": "f1530e3cb811ca19f747cbd267fb47e835249cdcf37039506d8dcd8b07c78c57",
+    "packages/runtime/upstream/src/jsc/bindings/ConsoleObject.cpp": "21dd551a2249342f038efc83ec5b4bde69442830c5de069cce6be87632f427d4",
+    "packages/runtime/upstream/src/jsc/bindings/HomeInspectorSession.h": "498ae25b9ba0b858e8b6cc4572274accc9cff7bc9a5718b72091d40041daf225",
+    "packages/runtime/upstream/src/jsc/bindings/HomeInspectorRealms.h": "73efc0f23d86f167f833e4d150e6c082c34d2774bbff88bc91720484ace1b753"
+  },
+  "probe_results": [
+    {
+      "runtime": "node",
+      "exit": 0,
+      "completed": true
+    },
+    {
+      "runtime": "home",
+      "exit": 0,
+      "completed": true
+    }
+  ],
+  "files": [
+    {
+      "file": "baseline-identity.json",
+      "archive": "raw/baseline-identity.json.gz",
+      "bytes": 708,
+      "sha256": "0bfa749e0547c8cbe2539cd958643ad5cf53d8742705ab8f86e6b6a16d1e3f00"
+    },
+    {
+      "file": "cache-candidates.json",
+      "archive": "raw/cache-candidates.json.gz",
+      "bytes": 3,
+      "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+    },
+    {
+      "file": "cache-cleanup.json",
+      "archive": "raw/cache-cleanup.json.gz",
+      "bytes": 194,
+      "sha256": "29b9a261f97d6f1616142c41c4430fc4d0dfbe6ce0c44c5a0da98a116e3d427a"
+    },
+    {
+      "file": "download-cache-cleanup.json",
+      "archive": "raw/download-cache-cleanup.json.gz",
+      "bytes": 147,
+      "sha256": "86288315bde4272b36da55e6915ea6d2f2b5bc25e8ea2ceb37825500d7abba51"
+    },
+    {
+      "file": "home-lifetime.log",
+      "archive": "raw/home-lifetime.log.gz",
+      "bytes": 931,
+      "sha256": "350425dfbceaaa38a3a90e0d8024d35feda7fb617a13f37a1e3f41d812c4b245"
+    },
+    {
+      "file": "home-probe.json",
+      "archive": "raw/home-probe.json.gz",
+      "bytes": 44665,
+      "sha256": "369b2692fbfb558d7d13c1346500032a99c0b662bbc155009d7353bf928d2812"
+    },
+    {
+      "file": "home-probe.log",
+      "archive": "raw/home-probe.log.gz",
+      "bytes": 23203,
+      "sha256": "51f69f35ff7ae5e30cf165c73f774c78211ecfd2ea8f8412d9e3525f9ddeb544"
+    },
+    {
+      "file": "initial-home-probe.log",
+      "archive": "raw/initial-home-probe.log.gz",
+      "bytes": 2289,
+      "sha256": "6fbee59a25d3dc22363931d28ca6ca869ffbfcb09d8ca584012e9a74e6806525"
+    },
+    {
+      "file": "initial-node-probe.json",
+      "archive": "raw/initial-node-probe.json.gz",
+      "bytes": 73002,
+      "sha256": "92ee57177b5fe029be714eb1d8cb053aa911a364666811399509e114065c99eb"
+    },
+    {
+      "file": "initial-node-probe.log",
+      "archive": "raw/initial-node-probe.log.gz",
+      "bytes": 37795,
+      "sha256": "87f249a3ddd001cb104c4d2dfd41785340852ddc74d41a82463aa60354121d0f"
+    },
+    {
+      "file": "lifetime-probe.mjs",
+      "archive": "raw/lifetime-probe.mjs.gz",
+      "bytes": 1710,
+      "sha256": "f3f32bede9088d35f1564013b0134b407e72502af87d162f2ce4fcd149103c59"
+    },
+    {
+      "file": "node-lifetime.log",
+      "archive": "raw/node-lifetime.log.gz",
+      "bytes": 1126,
+      "sha256": "99671d6e517fa760403cfac9d0fe1a5d7c19acb393d5af0e5821f1f37b9683d9"
+    },
+    {
+      "file": "node-probe.json",
+      "archive": "raw/node-probe.json.gz",
+      "bytes": 73003,
+      "sha256": "85ac9458c83fa98a9cf6cbd679179c3250ccbaffcc3260f0a20eaadc0ccc0988"
+    },
+    {
+      "file": "node-probe.log",
+      "archive": "raw/node-probe.log.gz",
+      "bytes": 37796,
+      "sha256": "96f5ea05cd99eea794b241f623dc75a126b332976f43ef1d495dc5edecd3e5a3"
+    },
+    {
+      "file": "probe-summary.json",
+      "archive": "raw/probe-summary.json.gz",
+      "bytes": 141,
+      "sha256": "f664b21621d4f184b1e4ea31678427a1be8cd72bff8bcefc749a3efe2eeaf294"
+    },
+    {
+      "file": "probe.mjs",
+      "archive": "raw/probe.mjs.gz",
+      "bytes": 1844,
+      "sha256": "4f92de2a6568aef408187563b8df7f663ea3968bd3fcfd6e80e1092e3753f275"
+    },
+    {
+      "file": "references.json",
+      "archive": "raw/references.json.gz",
+      "bytes": 559,
+      "sha256": "8c80cfc2e1e3382fa406d7fbdfc0d2b280a2fd12b09c577edf543e559699e2f8"
+    }
+  ],
+  "limitations": [
+    "Investigation only; no method implementation repair or passing acceptance claim.",
+    "Initial Home probe dropped sandbox liveness before second-half commands; preserved failure. Revised probe explicitly retains sandbox and completes in both runtimes.",
+    "Lifetime probe retains context in both Node and Home after release/clear/disconnect; does not establish a Home-specific lifetime failure.",
+    "Node host console adds implementation-generated secondary log events; comparison preserves raw outputs rather than treating exact event count as portable.",
+    "Disk admission failure preceded cleanup; source, evidence and active updater preserved."
+  ]
+}
