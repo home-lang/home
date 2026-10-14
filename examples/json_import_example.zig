@@ -149,9 +149,9 @@ const env = blk: {
     const build_mode = @import("builtin").mode;
 
     const env_file = switch (build_mode) {
-        std.builtin.OptimizeMode.Debug => "config.development.json",
-        std.builtin.OptimizeMode.ReleaseSafe => "config.staging.json",
-        std.builtin.OptimizeMode.ReleaseFast => "config.production.json",
+        std.builtin.OptimizeMode.debug => "config.development.json",
+        std.builtin.OptimizeMode.safe => "config.staging.json",
+        std.builtin.OptimizeMode.fast => "config.production.json",
         else => "config.development.json",
     };
 

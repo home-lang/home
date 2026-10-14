@@ -20,10 +20,10 @@ pub const LtoLevel = enum {
 
     pub fn fromBuildMode(mode: std.builtin.OptimizeMode) LtoLevel {
         return switch (mode) {
-            std.builtin.OptimizeMode.Debug => .None,
-            std.builtin.OptimizeMode.ReleaseSafe => .Thin,
-            std.builtin.OptimizeMode.ReleaseFast => .Fat,
-            std.builtin.OptimizeMode.ReleaseSmall => .Fat,
+            std.builtin.OptimizeMode.debug => .None,
+            std.builtin.OptimizeMode.safe => .Thin,
+            std.builtin.OptimizeMode.fast => .Fat,
+            std.builtin.OptimizeMode.small => .Fat,
         };
     }
 };

@@ -55,11 +55,11 @@ test "build - optimization levels" {
     try testing.expect(desc.len > 0);
 }
 
-test "build - qualified optimization aliases" {
-    try testing.expectEqual(std.builtin.OptimizeMode.debug, std.builtin.OptimizeMode.Debug);
-    try testing.expectEqual(std.builtin.OptimizeMode.safe, std.builtin.OptimizeMode.ReleaseSafe);
-    try testing.expectEqual(std.builtin.OptimizeMode.fast, std.builtin.OptimizeMode.ReleaseFast);
-    try testing.expectEqual(std.builtin.OptimizeMode.small, std.builtin.OptimizeMode.ReleaseSmall);
+test "build - canonical optimization tags" {
+    try testing.expectEqualStrings("debug", @tagName(std.builtin.OptimizeMode.debug));
+    try testing.expectEqualStrings("safe", @tagName(std.builtin.OptimizeMode.safe));
+    try testing.expectEqualStrings("fast", @tagName(std.builtin.OptimizeMode.fast));
+    try testing.expectEqualStrings("small", @tagName(std.builtin.OptimizeMode.small));
 }
 
 test "build - build mode flags" {
