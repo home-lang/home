@@ -110,17 +110,19 @@ die "usage: run-bounded.pl <seconds> <command> [args...]\n"
 my $run_deadline;
 our $reaping = 0;
 my @pending_probes;
+my $probe_failure;
 
 sub capture_probe {
     my (@command) = @_;
     my $allow_nonzero = ref($command[0]) eq "HASH" ? shift(@command)->{allow_nonzero} : 0;
     @pending_probes = grep { waitpid($_, WNOHANG) == 0 } @pending_probes;
+    $probe_failure = "deadline exceeded: $command[0]";
     my $until = time + 2;
     $until = $run_deadline if !$reaping && defined($run_deadline) && $run_deadline < $until;
     return undef if time >= $until;
-    pipe(my $reader, my $writer) or return undef;
+    pipe(my $reader, my $writer) or do { $probe_failure = "pipe failed: $!"; return undef };
     my $probe = fork();
-    if (!defined $probe) { close($reader); close($writer); return undef }
+    if (!defined $probe) { $probe_failure = "fork failed: $!"; close($reader); close($writer); return undef }
     if ($probe == 0) {
         setpgrp(0, 0);
         close($reader);
@@ -151,9 +153,10 @@ sub capture_probe {
             if ($done == $probe) {
                 my $status = $?;
                 return $output if $status == 0 || ($allow_nonzero && !($status & 127));
+                $probe_failure = "probe exited with status $status: $command[0]";
                 return undef;
             }
-            last if $done == -1;
+            if ($done == -1) { $probe_failure = "waitpid failed: $command[0]: $!"; last }
             select(undef, undef, undef, 0.01);
         }
     }
@@ -494,6 +497,7 @@ while (1) {
         if (!defined $mb) {
             # Fail closed. Being unable to measure under load is itself the
             # signal the old guard threw away.
+            print STDERR "run-bounded: memory probe failed: " . ($probe_failure || "no process footprint records") . "\n";
             if (++$mem_fail >= $MEM_FAIL_MAX) {
                 print STDERR "run-bounded: could not measure memory $mem_fail times running; killing\n";
                 reap_tree($pid);
