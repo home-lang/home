@@ -4934,8 +4934,12 @@ pub const NodeFS = struct {
         switch (path) {
             .slice_with_underlying_string, .threadsafe_string => |value| {
                 if (!value.underlying.isEmpty()) {
-                    value.underlying.ref();
-                    return value.underlying;
+                    // Recursive subtasks share the arguments across workers.
+                    // StringImpl reference counts are not a cross-thread owner.
+                    return if (value.underlying.isUTF16())
+                        bun.String.cloneUTF16(value.underlying.utf16())
+                    else
+                        bun.String.cloneLatin1(value.underlying.latin1());
                 }
             },
             else => {},

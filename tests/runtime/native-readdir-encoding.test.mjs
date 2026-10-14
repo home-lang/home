@@ -109,6 +109,20 @@ try {
     }
   }
 
+  const concurrentRoot = fs.mkdtempSync(join(tmpdir(), 'home-readdir-concurrent-'))
+  try {
+    for (let index = 0; index < 128; index++) {
+      fs.mkdirSync(join(concurrentRoot, String(index)))
+      fs.writeFileSync(join(concurrentRoot, String(index), 'file'), 'shared')
+    }
+    const results = await Promise.all(Array.from({ length: 64 }, () => readdir(concurrentRoot, { recursive: true, withFileTypes: true })))
+    for (const rows of results) {
+      assert.equal(rows.length, 256)
+      assert.equal(rows.filter(row => row.isDirectory()).length, 128)
+      assert.equal(rows.filter(row => row.isFile()).length, 128)
+    }
+  } finally { fs.rmSync(concurrentRoot, { recursive: true, force: true }) }
+
   const retained = await readdir(root, { recursive: true, withFileTypes: true, encoding: 'buffer' })
   const before = retained.map(row => Buffer.from(row.name))
   fs.renameSync(join(root, 'é', 'second.txt'), join(root, 'é', 'renamed.txt'))
