@@ -229,8 +229,8 @@ pub const Toolchain = struct {
             .ar = "ar",
             .ld = "ld",
             .strip = "strip",
-            .cflags = std.ArrayList([]const u8).init(allocator),
-            .ldflags = std.ArrayList([]const u8).init(allocator),
+            .cflags = .empty,
+            .ldflags = .empty,
         };
     }
 
@@ -238,12 +238,12 @@ pub const Toolchain = struct {
         for (self.cflags.items) |flag| {
             self.allocator.free(flag);
         }
-        self.cflags.deinit();
+        self.cflags.deinit(self.allocator);
 
         for (self.ldflags.items) |flag| {
             self.allocator.free(flag);
         }
-        self.ldflags.deinit();
+        self.ldflags.deinit(self.allocator);
 
         if (self.sysroot) |sysroot| {
             self.allocator.free(sysroot);
@@ -253,28 +253,29 @@ pub const Toolchain = struct {
     /// Detect and configure toolchain for target
     pub fn detect(allocator: Allocator, target: Target) !Toolchain {
         var toolchain = Toolchain.init(allocator, target);
+        errdefer toolchain.deinit();
 
         // Configure target-specific compiler
         const target_triple = try target.toString(allocator);
         defer allocator.free(target_triple);
 
-        try toolchain.cflags.append(try std.fmt.allocPrint(allocator, "--target={s}", .{target_triple}));
-        try toolchain.ldflags.append(try std.fmt.allocPrint(allocator, "--target={s}", .{target_triple}));
+        try appendOwned(&toolchain.cflags, allocator, try std.fmt.allocPrint(allocator, "--target={s}", .{target_triple}));
+        try appendOwned(&toolchain.ldflags, allocator, try std.fmt.allocPrint(allocator, "--target={s}", .{target_triple}));
 
         // Add architecture-specific flags
         switch (target.arch) {
             .x86_64 => {
-                try toolchain.cflags.append(try allocator.dupe(u8, "-march=x86-64"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-march=x86-64"));
             },
             .aarch64 => {
-                try toolchain.cflags.append(try allocator.dupe(u8, "-march=armv8-a"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-march=armv8-a"));
             },
             .arm => {
-                try toolchain.cflags.append(try allocator.dupe(u8, "-march=armv7-a"));
-                try toolchain.cflags.append(try allocator.dupe(u8, "-mfloat-abi=hard"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-march=armv7-a"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-mfloat-abi=hard"));
             },
             .riscv64 => {
-                try toolchain.cflags.append(try allocator.dupe(u8, "-march=rv64gc"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-march=rv64gc"));
             },
             .wasm32, .wasm64 => {
                 // WebAssembly uses different toolchain
@@ -288,17 +289,17 @@ pub const Toolchain = struct {
         // Add OS-specific flags
         switch (target.os) {
             .linux => {
-                try toolchain.ldflags.append(try allocator.dupe(u8, "-lc"));
+                try appendOwned(&toolchain.ldflags, allocator, try allocator.dupe(u8, "-lc"));
             },
             .macos => {
-                try toolchain.ldflags.append(try allocator.dupe(u8, "-lSystem"));
+                try appendOwned(&toolchain.ldflags, allocator, try allocator.dupe(u8, "-lSystem"));
             },
             .windows => {
-                try toolchain.ldflags.append(try allocator.dupe(u8, "-lmsvcrt"));
+                try appendOwned(&toolchain.ldflags, allocator, try allocator.dupe(u8, "-lmsvcrt"));
             },
             .freestanding => {
-                try toolchain.cflags.append(try allocator.dupe(u8, "-ffreestanding"));
-                try toolchain.cflags.append(try allocator.dupe(u8, "-nostdlib"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-ffreestanding"));
+                try appendOwned(&toolchain.cflags, allocator, try allocator.dupe(u8, "-nostdlib"));
             },
             else => {},
         }
@@ -308,38 +309,50 @@ pub const Toolchain = struct {
 
     /// Get complete compiler command
     pub fn getCompilerCommand(self: *const Toolchain, allocator: Allocator) ![][]const u8 {
-        var cmd = std.ArrayList([]const u8).init(allocator);
+        var cmd: std.ArrayList([]const u8) = .empty;
+        errdefer freeOwnedStrings(allocator, &cmd);
 
-        try cmd.append(try allocator.dupe(u8, self.cc));
+        try appendOwned(&cmd, allocator, try allocator.dupe(u8, self.cc));
 
         for (self.cflags.items) |flag| {
-            try cmd.append(try allocator.dupe(u8, flag));
+            try appendOwned(&cmd, allocator, try allocator.dupe(u8, flag));
         }
 
         if (self.sysroot) |sysroot| {
-            try cmd.append(try std.fmt.allocPrint(allocator, "--sysroot={s}", .{sysroot}));
+            try appendOwned(&cmd, allocator, try std.fmt.allocPrint(allocator, "--sysroot={s}", .{sysroot}));
         }
 
-        return cmd.toOwnedSlice();
+        return cmd.toOwnedSlice(allocator);
     }
 
     /// Get complete linker command
     pub fn getLinkerCommand(self: *const Toolchain, allocator: Allocator) ![][]const u8 {
-        var cmd = std.ArrayList([]const u8).init(allocator);
+        var cmd: std.ArrayList([]const u8) = .empty;
+        errdefer freeOwnedStrings(allocator, &cmd);
 
-        try cmd.append(try allocator.dupe(u8, self.ld));
+        try appendOwned(&cmd, allocator, try allocator.dupe(u8, self.ld));
 
         for (self.ldflags.items) |flag| {
-            try cmd.append(try allocator.dupe(u8, flag));
+            try appendOwned(&cmd, allocator, try allocator.dupe(u8, flag));
         }
 
         if (self.sysroot) |sysroot| {
-            try cmd.append(try std.fmt.allocPrint(allocator, "--sysroot={s}", .{sysroot}));
+            try appendOwned(&cmd, allocator, try std.fmt.allocPrint(allocator, "--sysroot={s}", .{sysroot}));
         }
 
-        return cmd.toOwnedSlice();
+        return cmd.toOwnedSlice(allocator);
     }
 };
+
+fn appendOwned(list: *std.ArrayList([]const u8), allocator: Allocator, value: []u8) !void {
+    errdefer allocator.free(value);
+    try list.append(allocator, value);
+}
+
+fn freeOwnedStrings(allocator: Allocator, list: *std.ArrayList([]const u8)) void {
+    for (list.items) |item| allocator.free(item);
+    list.deinit(allocator);
+}
 
 /// Common cross-compilation targets
 pub const CommonTargets = struct {
@@ -370,10 +383,32 @@ test "Target - parse and format" {
 
 test "Target - host" {
     const testing = std.testing;
+    const builtin = @import("builtin");
 
     const host = Target.host();
-    try testing.expect(host.arch != @as(Arch, undefined));
-    try testing.expect(host.os != @as(OS, undefined));
+    const expected_arch: Arch = switch (builtin.cpu.arch) {
+        .x86_64 => .x86_64,
+        .aarch64 => .aarch64,
+        .arm => .arm,
+        .riscv64 => .riscv64,
+        .wasm32 => .wasm32,
+        .wasm64 => .wasm64,
+        else => .x86_64,
+    };
+    const expected_os: OS = switch (builtin.os.tag) {
+        .linux => .linux,
+        .macos => .macos,
+        .windows => .windows,
+        .freebsd => .freebsd,
+        .openbsd => .openbsd,
+        .netbsd => .netbsd,
+        .wasi => .wasi,
+        .freestanding => .freestanding,
+        else => .linux,
+    };
+    try testing.expectEqual(expected_arch, host.arch);
+    try testing.expectEqual(expected_os, host.os);
+    try testing.expect(host.canCrossCompile(host));
 }
 
 test "Toolchain - detect" {
@@ -384,4 +419,20 @@ test "Toolchain - detect" {
     defer toolchain.deinit();
 
     try testing.expect(toolchain.cflags.items.len > 0);
+
+    const compiler_command = try toolchain.getCompilerCommand(allocator);
+    defer {
+        for (compiler_command) |arg| allocator.free(arg);
+        allocator.free(compiler_command);
+    }
+    try testing.expectEqualStrings("clang", compiler_command[0]);
+    try testing.expect(std.mem.startsWith(u8, compiler_command[1], "--target="));
+
+    const linker_command = try toolchain.getLinkerCommand(allocator);
+    defer {
+        for (linker_command) |arg| allocator.free(arg);
+        allocator.free(linker_command);
+    }
+    try testing.expectEqualStrings("ld", linker_command[0]);
+    try testing.expect(std.mem.startsWith(u8, linker_command[1], "--target="));
 }

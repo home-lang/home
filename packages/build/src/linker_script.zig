@@ -76,7 +76,7 @@ pub const Section = struct {
         return .{
             .name = name,
             .type_ = type_,
-            .input_sections = .{},
+            .input_sections = .empty,
             .flags = flagsFromType(type_),
             .allocator = allocator,
         };
@@ -150,9 +150,9 @@ pub const LinkerScript = struct {
         return .{
             .allocator = allocator,
             .entry = "_start",
-            .memory = .{},
-            .sections = .{},
-            .symbols = .{},
+            .memory = .empty,
+            .sections = .empty,
+            .symbols = .empty,
             .output_format = "elf64-x86-64",
             .architecture = "i386:x86-64",
         };
@@ -557,8 +557,8 @@ pub const Linker = struct {
 
     /// Build linker command
     pub fn buildCommand(self: *Linker) ![]const []const u8 {
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .empty;
+        errdefer freeOwnedArgs(self.allocator, &args);
 
         // Linker executable
         const linker_exe = switch (self.config.type_) {
@@ -567,64 +567,60 @@ pub const Linker = struct {
             .Mold => "mold",
             .Gold => "ld.gold",
         };
-        try args.append(linker_exe);
+        try appendArg(&args, self.allocator, linker_exe);
 
         // Output file
-        try args.append("-o");
-        try args.append(self.config.output_path);
+        try appendArg(&args, self.allocator, "-o");
+        try appendArg(&args, self.allocator, self.config.output_path);
 
         // Linker script
         if (self.config.script_path) |script| {
-            try args.append("-T");
-            try args.append(script);
+            try appendArg(&args, self.allocator, "-T");
+            try appendArg(&args, self.allocator, script);
         }
 
         // Object files
         for (self.config.object_files) |obj| {
-            try args.append(obj);
+            try appendArg(&args, self.allocator, obj);
         }
 
         // Library paths
         for (self.config.library_paths) |path| {
-            try args.append(try std.fmt.allocPrint(self.allocator, "-L{s}", .{path}));
+            try appendOwnedArg(&args, self.allocator, try std.fmt.allocPrint(self.allocator, "-L{s}", .{path}));
         }
 
         // Libraries
         for (self.config.libraries) |lib| {
-            try args.append(try std.fmt.allocPrint(self.allocator, "-l{s}", .{lib}));
+            try appendOwnedArg(&args, self.allocator, try std.fmt.allocPrint(self.allocator, "-l{s}", .{lib}));
         }
 
         // Options
         if (self.config.gc_sections) {
-            try args.append("--gc-sections");
+            try appendArg(&args, self.allocator, "--gc-sections");
         }
 
         if (self.config.strip) {
-            try args.append("--strip-all");
+            try appendArg(&args, self.allocator, "--strip-all");
         }
 
         if (self.config.dynamic) {
-            try args.append("-dynamic");
+            try appendArg(&args, self.allocator, "-dynamic");
         } else {
-            try args.append("-static");
+            try appendArg(&args, self.allocator, "-static");
         }
 
         if (self.config.verbose) {
-            try args.append("--verbose");
+            try appendArg(&args, self.allocator, "--verbose");
         }
 
-        return try args.toOwnedSlice();
+        return args.toOwnedSlice(self.allocator);
     }
 
     /// Execute linker
     pub fn link(self: *Linker) !void {
         const argv = try self.buildCommand();
         defer {
-            for (argv) |arg| {
-                if (std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-l")) {
-                    self.allocator.free(arg);
-                }
-            }
+            for (argv) |arg| self.allocator.free(arg);
             self.allocator.free(argv);
         }
 
@@ -642,6 +638,20 @@ pub const Linker = struct {
         }
     }
 };
+
+fn appendArg(args: *std.ArrayList([]const u8), allocator: std.mem.Allocator, arg: []const u8) !void {
+    return appendOwnedArg(args, allocator, try allocator.dupe(u8, arg));
+}
+
+fn appendOwnedArg(args: *std.ArrayList([]const u8), allocator: std.mem.Allocator, arg: []u8) !void {
+    errdefer allocator.free(arg);
+    try args.append(allocator, arg);
+}
+
+fn freeOwnedArgs(allocator: std.mem.Allocator, args: *std.ArrayList([]const u8)) void {
+    for (args.items) |arg| allocator.free(arg);
+    args.deinit(allocator);
+}
 
 // ============================================================================
 // Tests
@@ -673,14 +683,39 @@ test "linker script generation" {
     try text.addInputSection(".text*");
     try script.addSection(text);
 
-    var output: std.ArrayList(u8) = .empty;
-    defer output.deinit(allocator);
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
 
-    try script.generateGnuLd(output.writer(allocator));
+    try script.generateGnuLd(&output.writer);
 
-    const result = output.items;
+    const result = output.written();
     try std.testing.expect(std.mem.indexOf(u8, result, "MEMORY") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "SECTIONS") != null);
+}
+
+test "linker command owns every argument" {
+    const allocator = std.testing.allocator;
+    const objects = [_][]const u8{"-Lobject-name.o"};
+    const paths = [_][]const u8{"vendor/lib"};
+    const libraries = [_][]const u8{"home"};
+    var linker = Linker.init(allocator, .{
+        .type_ = .Lld,
+        .output_path = "out.bin",
+        .object_files = &objects,
+        .library_paths = &paths,
+        .libraries = &libraries,
+    });
+
+    const argv = try linker.buildCommand();
+    defer {
+        for (argv) |arg| allocator.free(arg);
+        allocator.free(argv);
+    }
+
+    try std.testing.expectEqualStrings("ld.lld", argv[0]);
+    try std.testing.expectEqualStrings("-Lobject-name.o", argv[3]);
+    try std.testing.expectEqualStrings("-Lvendor/lib", argv[4]);
+    try std.testing.expectEqualStrings("-lhome", argv[5]);
 }
 
 test "ARM Cortex-M target" {
