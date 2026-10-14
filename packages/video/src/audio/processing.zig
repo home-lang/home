@@ -95,7 +95,7 @@ pub const EqBand = struct {
     y2: f32 = 0.0,
 
     pub fn init(band_type: EqBandType, frequency: f32, gain_db: f32, q: f32) EqBand {
-        var band = EqBand{
+        const band = EqBand{
             .type = band_type,
             .frequency = frequency,
             .gain_db = gain_db,
@@ -230,7 +230,7 @@ pub const ParametricEq = struct {
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, sample_rate: u32, num_bands: usize) !ParametricEq {
-        var bands = try allocator.alloc(EqBand, num_bands);
+        const bands = try allocator.alloc(EqBand, num_bands);
         for (bands) |*band| {
             band.* = EqBand.init(.peak, 1000, 0, 1.0);
         }
@@ -487,7 +487,7 @@ pub fn dbToLinear(db: f32) f32 {
 }
 
 pub fn linearToDb(linear: f32) f32 {
-    return 20.0 * std.math.log10(std.math.max(linear, 1e-10));
+    return 20.0 * std.math.log10(@max(linear, 1e-10));
 }
 
 // ============================================================================
@@ -499,13 +499,13 @@ test "Ducker basic operation" {
 
     var ducker = Ducker.init(48000, .{});
 
-    var input = [_]f32{0.5} ** 100;
-    var output = [_]f32{0.0} ** 100;
+    var input: [1000]f32 = @splat(0.5);
+    var output: [1000]f32 = @splat(0.0);
 
     ducker.process(&input, &output);
 
     // Output should be attenuated
-    try testing.expect(output[50] < input[50]);
+    try testing.expect(output[500] < input[500]);
 }
 
 test "EQ band coefficient calculation" {
@@ -529,7 +529,7 @@ test "Audio normalization peak" {
     const testing = std.testing;
 
     var input = [_]f32{ 0.5, 0.3, 0.7, 0.2 };
-    var output = [_]f32{0.0} ** 4;
+    var output: [4]f32 = @splat(0.0);
 
     normalizeAudio(&input, &output, .{ .type = .peak, .target_db = 0.0 });
 
@@ -541,7 +541,7 @@ test "Audio normalization peak" {
 test "Graphic EQ initialization" {
     const testing = std.testing;
 
-    var eq = GraphicEq.init(48000);
+    const eq = GraphicEq.init(48000);
 
     // Check that all bands are initialized
     for (eq.bands) |band| {

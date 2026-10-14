@@ -275,7 +275,7 @@ pub const SpectrumAnalyzer = struct {
     fft_buffer: []std.math.Complex(f32),
 
     pub fn init(allocator: std.mem.Allocator, fft_size: usize) !SpectrumAnalyzer {
-        var analyzer = SpectrumAnalyzer{
+        const analyzer = SpectrumAnalyzer{
             .allocator = allocator,
             .fft_size = fft_size,
             .window = try allocator.alloc(f32, fft_size),
@@ -311,7 +311,7 @@ pub const SpectrumAnalyzer = struct {
         // self.fft(self.fft_buffer);
 
         // Calculate magnitude spectrum
-        var magnitudes = try self.allocator.alloc(f32, self.fft_size / 2);
+        const magnitudes = try self.allocator.alloc(f32, self.fft_size / 2);
         for (magnitudes, 0..) |*mag, i| {
             const re = self.fft_buffer[i].re;
             const im = self.fft_buffer[i].im;

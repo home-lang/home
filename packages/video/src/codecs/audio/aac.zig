@@ -477,7 +477,7 @@ pub const AacDecoder = struct {
         const num_samples = self.config.frame_length;
         const channels = self.config.channels;
 
-        var audio_frame = try AudioFrame.init(
+        const audio_frame = try AudioFrame.init(
             self.allocator,
             num_samples,
             .f32le,
