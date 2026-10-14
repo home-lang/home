@@ -14,17 +14,8 @@ pub fn StatType(comptime big: bool) type {
         }
 
         inline fn toNanoseconds(ts: StatTimespec) u64 {
-            if (ts.sec < 0) {
-                return @intCast(@max(bun.timespec.nsSigned(&bun.timespec{
-                    .sec = @intCast(ts.sec),
-                    .nsec = @intCast(ts.nsec),
-                }), 0));
-            }
-
-            return bun.timespec.ns(&bun.timespec{
-                .sec = @intCast(ts.sec),
-                .nsec = @intCast(ts.nsec),
-            });
+            const exact: i128 = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+            return @bitCast(@as(i64, @truncate(exact)));
         }
 
         fn toTimeMS(ts: StatTimespec) Float {
@@ -72,7 +63,7 @@ pub fn StatType(comptime big: bool) type {
             const birthtime_ms: Float = toTimeMS(bTime);
 
             if (big) {
-                return bun.jsc.fromJSHostCall(globalObject, @src(), Bun__createJSBigIntStatsObject, .{
+                const object = try bun.jsc.fromJSHostCall(globalObject, @src(), Bun__createJSBigIntStatsObject, .{
                     globalObject,
                     stat_.dev,
                     stat_.ino,
@@ -93,9 +84,10 @@ pub fn StatType(comptime big: bool) type {
                     toNanoseconds(cTime),
                     toNanoseconds(bTime),
                 });
+                return setTimespecs(globalObject, object, .{ aTime, mTime, cTime, bTime });
             }
 
-            return Bun__createJSStatsObject(
+            const object = Bun__createJSStatsObject(
                 globalObject,
                 stat_.dev,
                 stat_.ino,
@@ -112,9 +104,21 @@ pub fn StatType(comptime big: bool) type {
                 ctime_ms,
                 birthtime_ms,
             );
+            return setTimespecs(globalObject, object, .{ aTime, mTime, cTime, bTime });
+        }
+
+        fn setTimespecs(globalObject: *jsc.JSGlobalObject, object: jsc.JSValue, times: [4]StatTimespec) bun.JSError!jsc.JSValue {
+            var seconds: [4]i64 = undefined;
+            var fractions: [4]i64 = undefined;
+            for (times, 0..) |ts, i| {
+                seconds[i] = if (Environment.isWindows) @as(u32, @bitCast(@as(i32, @truncate(ts.sec)))) else @intCast(ts.sec);
+                fractions[i] = if (Environment.isWindows) @as(u32, @bitCast(@as(i32, @truncate(ts.nsec)))) else @intCast(ts.nsec);
+            }
+            return bun.jsc.fromJSHostCall(globalObject, @src(), Home__setStatsTimespecs, .{ globalObject, object, big, &seconds, &fractions });
         }
     };
 }
+extern fn Home__setStatsTimespecs(*jsc.JSGlobalObject, jsc.JSValue, bool, *const [4]i64, *const [4]i64) jsc.JSValue;
 extern fn Bun__JSBigIntStatsObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
 extern fn Bun__JSStatsObjectConstructor(*jsc.JSGlobalObject) jsc.JSValue;
 

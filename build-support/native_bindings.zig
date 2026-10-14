@@ -491,6 +491,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.cpp",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingConstants.h",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.cpp",
+        "packages/runtime/upstream/src/jsc/bindings/NodeFSStatBinding.cpp",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingFs.h",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingHTTPParser.cpp",
         "packages/runtime/upstream/src/jsc/bindings/ProcessBindingHTTPParser.h",

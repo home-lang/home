@@ -20,6 +20,8 @@
 #include <JavaScriptCore/PropertyNameArray.h>
 #include "ZigGlobalObject.h"
 #include "JavaScriptCore/DateInstance.h"
+#include "JavaScriptCore/PropertyDescriptor.h"
+#include "JavaScriptCore/Symbol.h"
 #if !OS(WINDOWS)
 #include <sys/stat.h>
 #endif
@@ -210,6 +212,164 @@ static const Identifier& identifier(JSC::VM& vm, DateFieldType dateField)
     ASSERT_NOT_REACHED();
 }
 
+// Cache genuine metadata symbols on the prototype under private engine names.
+// The instance keys are ordinary symbols so inherited and proxy access follow
+// Node's property semantics, without changing SDK class/global-object layouts.
+static Identifier partialNanosecondsIdentifier(JSGlobalObject* globalObject, DateFieldType field)
+{
+    auto& vm = globalObject->vm();
+    const auto& names = WebCore::builtinNames(vm);
+    auto* prototype = getPrototype<false>(defaultGlobalObject(globalObject));
+    const Identifier* cacheKey = nullptr;
+    ASCIILiteral description;
+    switch (field) {
+    case DateFieldType::atime: cacheKey = &names.atimeMsPrivateName(); description = "partialAtimeNs"_s; break;
+    case DateFieldType::mtime: cacheKey = &names.mtimeMsPrivateName(); description = "partialMtimeNs"_s; break;
+    case DateFieldType::ctime: cacheKey = &names.ctimeMsPrivateName(); description = "partialCtimeNs"_s; break;
+    case DateFieldType::birthtime: cacheKey = &names.birthtimeMsPrivateName(); description = "kPartialBirthtimeNs"_s; break;
+    }
+    RELEASE_ASSERT(cacheKey);
+    auto value = prototype->getDirect(vm, *cacheKey);
+    auto* symbol = value ? dynamicDowncast<Symbol>(value) : nullptr;
+    if (!symbol) {
+        symbol = Symbol::createWithDescription(vm, String(description));
+        prototype->putDirect(vm, *cacheKey, symbol, 0);
+    }
+    return Identifier::fromUid(vm, &symbol->uid());
+}
+
+static Identifier nanosecondsIdentifier(VM& vm, DateFieldType field)
+{
+    switch (field) {
+    case DateFieldType::atime: return Identifier::fromString(vm, "atimeNs"_s);
+    case DateFieldType::mtime: return Identifier::fromString(vm, "mtimeNs"_s);
+    case DateFieldType::ctime: return Identifier::fromString(vm, "ctimeNs"_s);
+    case DateFieldType::birthtime: return Identifier::fromString(vm, "birthtimeNs"_s);
+    }
+    RELEASE_ASSERT_NOT_REACHED();
+}
+
+template<DateFieldType field, bool isBigInt>
+static JSValue getInstantField(JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* object = JSValue::decode(thisValue).toObject(globalObject);
+    RETURN_IF_EXCEPTION(scope, {});
+
+    auto source = object->get(globalObject, isBigInt ? nanosecondsIdentifier(vm, field) : identifier(vm, field));
+    RETURN_IF_EXCEPTION(scope, {});
+    JSValue partial = jsUndefined();
+    if constexpr (!isBigInt) {
+        partial = object->get(globalObject, partialNanosecondsIdentifier(globalObject, field));
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+    // Resolve the real engine constructor, including normal user replacement
+    // semantics. Temporal being disabled is an observable Node error.
+    auto* cacheOwner = getConstructor<false>(defaultGlobalObject(globalObject));
+    const auto& cacheKey = WebCore::builtinNames(vm).atimeMsPrivateName();
+    auto constructor = cacheOwner->getDirect(vm, cacheKey);
+    if (!constructor || constructor.isUndefinedOrNull()) {
+        auto temporal = globalObject->get(globalObject, Identifier::fromString(vm, "Temporal"_s));
+        RETURN_IF_EXCEPTION(scope, {});
+        constructor = jsUndefined();
+        if (!temporal.isUndefinedOrNull()) {
+            constructor = temporal.get(globalObject, Identifier::fromString(vm, "Instant"_s));
+            RETURN_IF_EXCEPTION(scope, {});
+        }
+        if (!constructor.isUndefinedOrNull())
+            cacheOwner->putDirect(vm, cacheKey, constructor, 0);
+    }
+    if (constructor.isUndefined()) {
+        auto* error = JSC::createError(globalObject, "Temporal is not supported in this environment"_s);
+        error->putDirect(vm, Identifier::fromString(vm, "code"_s), JSC::jsString(vm, String("ERR_NO_TEMPORAL"_s)), 0);
+        throwException(globalObject, scope, error);
+        return {};
+    }
+
+    JSValue nanoseconds = source;
+    if constexpr (!isBigInt) {
+        auto number = source.toNumber(globalObject);
+        RETURN_IF_EXCEPTION(scope, {});
+        // A borrowed getter has no native timespec and follows BigInt(undefined).
+        if (!std::isfinite(number)) {
+            throwRangeError(globalObject, scope, "Cannot convert non-finite timestamp to a BigInt"_s);
+            return {};
+        }
+        if (partial.isUndefined()) {
+            throwTypeError(globalObject, scope, "Cannot convert undefined to a BigInt"_s);
+            return {};
+        }
+        auto seconds = std::floor(number / 1000.0);
+        if (seconds < -8640000000000.0 || seconds > 8640000000000.0) {
+            throwRangeError(globalObject, scope, "Invalid Temporal.Instant timestamp"_s);
+            return {};
+        }
+        auto exact = static_cast<Int128>(seconds) * 1000000000 + static_cast<Int128>(partial.asNumber());
+        nanoseconds = JSBigInt::createFrom(globalObject, exact);
+        RETURN_IF_EXCEPTION(scope, {});
+    }
+    MarkedArgumentBuffer args;
+    args.append(nanoseconds);
+    auto data = getConstructData(constructor);
+    if (data.type == CallData::Type::None) {
+        throwTypeError(globalObject, scope, "Temporal.Instant is not a constructor"_s);
+        return {};
+    }
+    auto result = JSC::construct(globalObject, constructor, data, args);
+    RETURN_IF_EXCEPTION(scope, {});
+    object->methodTable()->defineOwnProperty(object, globalObject, propertyName, PropertyDescriptor(result, 0), true);
+    RETURN_IF_EXCEPTION(scope, {});
+    return result;
+}
+
+JSC_DEFINE_CUSTOM_SETTER(jsStatsPrototypeFunction_InstantPutter, (JSGlobalObject* globalObject, EncodedJSValue thisValue, EncodedJSValue encodedValue, PropertyName propertyName))
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* object = dynamicDowncast<JSObject>(JSValue::decode(thisValue));
+    if (!object) {
+        throwTypeError(globalObject, scope, "Object.defineProperty requires an object"_s);
+        return false;
+    }
+    bool result = object->methodTable()->defineOwnProperty(object, globalObject, propertyName, PropertyDescriptor(JSValue::decode(encodedValue), 0), true);
+    RETURN_IF_EXCEPTION(scope, false);
+    return result;
+}
+
+JSC_DEFINE_CUSTOM_GETTER(jsStatsPrototypeGetter_atimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::atime, false>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsStatsPrototypeGetter_mtimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::mtime, false>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsStatsPrototypeGetter_ctimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::ctime, false>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsStatsPrototypeGetter_birthtimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::birthtime, false>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsBigIntStatsPrototypeGetter_atimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::atime, true>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsBigIntStatsPrototypeGetter_mtimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::mtime, true>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsBigIntStatsPrototypeGetter_ctimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::ctime, true>(globalObject, thisValue, propertyName));
+}
+JSC_DEFINE_CUSTOM_GETTER(jsBigIntStatsPrototypeGetter_birthtimeInstant, (JSGlobalObject* globalObject, EncodedJSValue thisValue, PropertyName propertyName))
+{
+    return JSValue::encode(getInstantField<DateFieldType::birthtime, true>(globalObject, thisValue, propertyName));
+}
+
 template<DateFieldType field, bool isBigInt>
 inline JSC::JSValue getDateField(JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue thisValue, JSC::PropertyName propertyName)
 {
@@ -356,6 +516,10 @@ static const HashTableValue JSStatsPrototypeTableValues[] = {
     { "mtime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_mtime, jsStatsPrototypeFunction_DatePutter } },
     { "ctime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_ctime, jsStatsPrototypeFunction_DatePutter } },
     { "birthtime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_birthtime, jsStatsPrototypeFunction_DatePutter } },
+    { "atimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_atimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "mtimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_mtimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "ctimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_ctimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "birthtimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsStatsPrototypeGetter_birthtimeInstant, jsStatsPrototypeFunction_InstantPutter } },
 };
 
 static const HashTableValue JSBigIntStatsPrototypeTableValues[] = {
@@ -370,6 +534,10 @@ static const HashTableValue JSBigIntStatsPrototypeTableValues[] = {
     { "mtime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_mtime, jsStatsPrototypeFunction_DatePutter } },
     { "ctime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_ctime, jsStatsPrototypeFunction_DatePutter } },
     { "birthtime"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_birthtime, jsStatsPrototypeFunction_DatePutter } },
+    { "atimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_atimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "mtimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_mtimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "ctimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_ctimeInstant, jsStatsPrototypeFunction_InstantPutter } },
+    { "birthtimeInstant"_s, static_cast<unsigned>(JSC::PropertyAttribute::CustomAccessor), NoIntrinsic, { HashTableValue::GetterSetterType, jsBigIntStatsPrototypeGetter_birthtimeInstant, jsStatsPrototypeFunction_InstantPutter } },
 };
 
 class JSStatsPrototype final : public JSC::JSNonFinalObject {
@@ -728,6 +896,31 @@ extern "C" JSC::EncodedJSValue Bun__createJSBigIntStatsObject(Zig::GlobalObject*
     RELEASE_AND_RETURN(scope, JSC::JSValue::encode(object));
 }
 
+extern "C" EncodedJSValue Home__setStatsTimespecs(JSGlobalObject* globalObject, EncodedJSValue encoded, bool big,
+    const int64_t* seconds, const int64_t* fractions)
+{
+    auto& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* object = asObject(JSValue::decode(encoded));
+    MarkedArgumentBuffer roots;
+    roots.append(object);
+    for (unsigned i = 0; i < 4; ++i) {
+        auto field = static_cast<DateFieldType>(10 + i);
+        if (big) {
+            auto exact = static_cast<Int128>(seconds[i]) * 1000000000 + fractions[i];
+            auto value = JSBigInt::createFrom(globalObject, exact);
+            RETURN_IF_EXCEPTION(scope, {});
+            object->putDirect(vm, nanosecondsIdentifier(vm, field), value, 0);
+            auto milliseconds = JSBigInt::createFrom(globalObject, exact / 1000000);
+            RETURN_IF_EXCEPTION(scope, {});
+            object->putDirect(vm, identifier(vm, field), milliseconds, 0);
+        } else {
+            object->putDirect(vm, partialNanosecondsIdentifier(globalObject, field), jsNumber(fractions[i]), 0);
+        }
+    }
+    return encoded;
+}
+
 const JSC::ClassInfo JSStatsPrototype::s_info = { "Stats"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSStatsPrototype) };
 const JSC::ClassInfo JSBigIntStatsPrototype::s_info = { "BigIntStats"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSBigIntStatsPrototype) };
 const JSC::ClassInfo JSStatsConstructor::s_info = { "Stats"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(JSStatsConstructor) };
@@ -773,14 +966,26 @@ inline JSValue callJSStatsFunction(JSC::JSGlobalObject* globalObject, JSC::CallF
         // this.mtimeMs = mtimeNs / kNsPerMsBigInt;
         // this.ctimeMs = ctimeNs / kNsPerMsBigInt;
         // this.birthtimeMs = birthtimeNs / kNsPerMsBigInt;
-        const double kNsPerMsBigInt = 1000000;
-        atimeMs = jsDoubleNumber(atimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        auto* divisor = JSBigInt::createFrom(globalObject, int32_t { 1000000 });
         RETURN_IF_EXCEPTION(scope, {});
-        mtimeMs = jsDoubleNumber(mtimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        auto divide = [&](JSValue value) -> JSValue {
+#if USE(BIGINT32)
+            if (value.isBigInt32())
+                return JSBigInt::divide(globalObject, value.bigInt32AsInt32(), divisor);
+#endif
+            if (!value.isHeapBigInt()) {
+                throwTypeError(globalObject, scope, "Cannot mix BigInt and other types"_s);
+                return {};
+            }
+            return JSBigInt::divide(globalObject, dynamicDowncast<JSBigInt>(value), divisor);
+        };
+        atimeMs = divide(atimeNs);
         RETURN_IF_EXCEPTION(scope, {});
-        ctimeMs = jsDoubleNumber(ctimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        mtimeMs = divide(mtimeNs);
         RETURN_IF_EXCEPTION(scope, {});
-        birthtimeMs = jsDoubleNumber(birthtimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        ctimeMs = divide(ctimeNs);
+        RETURN_IF_EXCEPTION(scope, {});
+        birthtimeMs = divide(birthtimeNs);
         RETURN_IF_EXCEPTION(scope, {});
     }
 
@@ -807,6 +1012,15 @@ inline JSValue callJSStatsFunction(JSC::JSGlobalObject* globalObject, JSC::CallF
         object->putDirectOffset(vm, 15, mtimeNs);
         object->putDirectOffset(vm, 16, ctimeNs);
         object->putDirectOffset(vm, 17, birthtimeNs);
+    } else {
+        const JSValue values[] = { atimeMs, mtimeMs, ctimeMs, birthtimeMs };
+        for (unsigned i = 0; i < 4; ++i) {
+            if (values[i].isNumber() && std::isfinite(values[i].asNumber())) {
+                double ms = values[i].asNumber();
+                object->putDirect(vm, partialNanosecondsIdentifier(globalObject, static_cast<DateFieldType>(10 + i)),
+                    jsNumber(std::round((ms - std::floor(ms / 1000.0) * 1000.0) * 1000000.0)), 0);
+            }
+        }
     }
 
     return object;
@@ -858,14 +1072,26 @@ inline JSValue constructJSStatsObject(JSC::JSGlobalObject* lexicalGlobalObject, 
         // this.mtimeMs = mtimeNs / kNsPerMsBigInt;
         // this.ctimeMs = ctimeNs / kNsPerMsBigInt;
         // this.birthtimeMs = birthtimeNs / kNsPerMsBigInt;
-        const double kNsPerMsBigInt = 1000000;
-        atimeMs = jsDoubleNumber(atimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        auto* divisor = JSBigInt::createFrom(globalObject, int32_t { 1000000 });
         RETURN_IF_EXCEPTION(scope, {});
-        mtimeMs = jsDoubleNumber(mtimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        auto divide = [&](JSValue value) -> JSValue {
+#if USE(BIGINT32)
+            if (value.isBigInt32())
+                return JSBigInt::divide(globalObject, value.bigInt32AsInt32(), divisor);
+#endif
+            if (!value.isHeapBigInt()) {
+                throwTypeError(globalObject, scope, "Cannot mix BigInt and other types"_s);
+                return {};
+            }
+            return JSBigInt::divide(globalObject, dynamicDowncast<JSBigInt>(value), divisor);
+        };
+        atimeMs = divide(atimeNs);
         RETURN_IF_EXCEPTION(scope, {});
-        ctimeMs = jsDoubleNumber(ctimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        mtimeMs = divide(mtimeNs);
         RETURN_IF_EXCEPTION(scope, {});
-        birthtimeMs = jsDoubleNumber(birthtimeNs.toBigInt64(globalObject) / kNsPerMsBigInt);
+        ctimeMs = divide(ctimeNs);
+        RETURN_IF_EXCEPTION(scope, {});
+        birthtimeMs = divide(birthtimeNs);
         RETURN_IF_EXCEPTION(scope, {});
     }
 
@@ -890,6 +1116,15 @@ inline JSValue constructJSStatsObject(JSC::JSGlobalObject* lexicalGlobalObject, 
         object->putDirect(vm, Identifier::fromString(vm, "mtimeNs"_s), mtimeNs, 0);
         object->putDirect(vm, Identifier::fromString(vm, "ctimeNs"_s), ctimeNs, 0);
         object->putDirect(vm, Identifier::fromString(vm, "birthtimeNs"_s), birthtimeNs, 0);
+    } else {
+        const JSValue values[] = { atimeMs, mtimeMs, ctimeMs, birthtimeMs };
+        for (unsigned i = 0; i < 4; ++i) {
+            if (values[i].isNumber() && std::isfinite(values[i].asNumber())) {
+                double ms = values[i].asNumber();
+                object->putDirect(vm, partialNanosecondsIdentifier(globalObject, static_cast<DateFieldType>(10 + i)),
+                    jsNumber(std::round((ms - std::floor(ms / 1000.0) * 1000.0) * 1000000.0)), 0);
+            }
+        }
     }
 
     return object;
