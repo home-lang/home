@@ -56,9 +56,6 @@ const {
 
 function createContext(contextObject?, options?) {
   if (contextObject !== null && typeof contextObject === "object" && isContext(contextObject)) return contextObject;
-  if (typeof options === "object" && options !== null) {
-    validateOneOf(options.microtaskMode, "options.microtaskMode", ["afterEvaluate", undefined]);
-  }
   return createContextNative(contextObject, options);
 }
 

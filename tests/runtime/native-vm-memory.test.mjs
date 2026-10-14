@@ -10,7 +10,101 @@ function bounds(range) {
   assert(range.jsMemoryEstimate <= range.jsMemoryRange[1])
 }
 
-async function main() {
+function contextOptionsSemantics() {
+  const contextKeys = ['name', 'origin', 'codeGeneration', 'microtaskMode', 'importModuleDynamically']
+  const contextDefaults = { name: 'snapshot-realm', origin: 'snapshot-origin', codeGeneration: {}, microtaskMode: undefined, importModuleDynamically: undefined }
+  for (const invalid of contextKeys) {
+    const reads = []
+    const options = {}
+    for (const key of contextKeys) {
+      Object.defineProperty(options, key, {
+        get() { reads.push(key); return key === invalid ? 17 : contextDefaults[key] },
+      })
+    }
+    assert.throws(() => vm.createContext({}, options), {
+      code: invalid === 'microtaskMode' ? 'ERR_INVALID_ARG_VALUE' : 'ERR_INVALID_ARG_TYPE',
+    })
+    assert.deepEqual(reads, contextKeys)
+  }
+  const originReads = []
+  const originGetterError = new Error('origin getter')
+  assert.throws(() => vm.createContext({}, {
+    get name() { originReads.push('name'); return 17 },
+    get origin() { originReads.push('origin'); throw originGetterError },
+  }), error => error === originGetterError)
+  assert.deepEqual(originReads, ['name', 'origin'])
+  for (const kind of ['options', 'codeGeneration']) {
+    const operations = []
+    const options = new Proxy({}, {
+      get(target, key) { operations.push(['get', key]); return Reflect.get(target, key) },
+      has(target, key) { operations.push(['has', key]); return Reflect.has(target, key) },
+    })
+    vm.createContext({}, kind === 'options' ? options : { codeGeneration: options })
+    assert.deepEqual(operations, (kind === 'options' ? contextKeys : ['strings', 'wasm']).map(key => ['get', key]))
+  }
+  for (const value of [[], () => {}, new Proxy([], {}), new Proxy(() => {}, {})]) {
+    assert.throws(() => vm.createContext({}, value), { code: 'ERR_INVALID_ARG_TYPE' })
+    assert.throws(() => vm.createContext({}, { codeGeneration: value }), { code: 'ERR_INVALID_ARG_TYPE' })
+    for (const run of [vm.runInNewContext, (code, context, options) => new vm.Script(code).runInNewContext(context, options)]) {
+      assert.throws(() => run('42', {}, { contextCodeGeneration: value }), { code: 'ERR_INVALID_ARG_TYPE' })
+    }
+  }
+  assert.throws(() => vm.createContext({}, {
+    codeGeneration: { strings: 17 }, microtaskMode: 17, importModuleDynamically: 17,
+  }), error => error.code === 'ERR_INVALID_ARG_TYPE' && error.message.includes('codeGeneration.strings'))
+  assert.throws(() => vm.createContext({}, {
+    microtaskMode: 17, importModuleDynamically: 17,
+  }), { code: 'ERR_INVALID_ARG_VALUE' })
+  function contextGetterCollection() {
+    const reads = []
+    const collect = () => globalThis.Bun ? Bun.gc(true) : globalThis.gc()
+    const context = vm.createContext({}, {
+      get codeGeneration() {
+        return {
+          get strings() { reads.push('strings'); collect(); return false },
+          get wasm() { reads.push('wasm'); collect(); return true },
+        }
+      },
+      get microtaskMode() { collect(); return undefined },
+      get importModuleDynamically() { return () => import('node:fs') },
+    })
+    assert.deepEqual(reads, ['strings', 'wasm'])
+    assert.throws(() => vm.runInContext('eval("42")', context), { name: 'EvalError' })
+  }
+  contextGetterCollection()
+  const scriptReads = []
+  assert.equal(new vm.Script('42').runInNewContext({}, {
+    get contextName() { scriptReads.push('name'); return 'script-snapshot' },
+    get contextOrigin() { scriptReads.push('origin'); return 'script-origin' },
+    get microtaskMode() { scriptReads.push('mode'); return 'afterEvaluate' },
+    get contextCodeGeneration() {
+      scriptReads.push('generation')
+      return {
+        get strings() { scriptReads.push('strings'); return true },
+        get wasm() { scriptReads.push('wasm'); return true },
+      }
+    },
+  }), 42)
+  assert.deepEqual(scriptReads, ['name', 'origin', 'mode', 'generation', 'generation', 'generation', 'strings', 'wasm', 'mode', 'mode'])
+  for (const finalValue of [17, [], () => {}, null, undefined]) {
+    let reads = 0
+    const options = {
+      get contextCodeGeneration() { return ++reads < 3 ? {} : finalValue },
+    }
+    if (finalValue === null || finalValue === undefined) {
+      assert.throws(() => new vm.Script('42').runInNewContext({}, options), { name: 'TypeError' })
+    } else {
+      assert.equal(new vm.Script('42').runInNewContext({}, options), 42)
+    }
+    assert.equal(reads, 3)
+  }
+  let modeReads = 0
+  const snapshotQueue = { value: 0 }
+  new vm.Script('Promise.resolve().then(() => value++); void 0').runInNewContext(snapshotQueue, {
+    get microtaskMode() { return ++modeReads === 1 ? 'afterEvaluate' : undefined },
+  })
+  assert.equal(snapshotQueue.value, 1)
+  assert.equal(modeReads, 2)
   for (const property of ['name', 'origin', 'codeGeneration', 'microtaskMode', 'importModuleDynamically']) {
     const getterError = new Error(property)
     assert.throws(() => vm.createContext({}, {
@@ -42,6 +136,10 @@ async function main() {
     }), error => error === flagGetterError)
     assert.deepEqual(flagReads, ['strings', 'wasm'])
   }
+}
+
+async function main() {
+  contextOptionsSemantics()
   const reuse = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');
     const vm = require('node:vm');

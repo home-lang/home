@@ -585,70 +585,107 @@ bool handleException(JSGlobalObject* globalObject, VM& vm, NakedPtr<JSC::Excepti
 // Otherwise, returns an empty optional.
 std::optional<JSC::EncodedJSValue> getHomeNodeVMContextOptions(JSGlobalObject* globalObject, JSC::VM& vm, JSC::ThrowScope& scope, JSValue optionsArg, NodeVMContextOptions& outOptions, ASCIILiteral codeGenerationKey, JSValue* importer, WTF::String* name, WTF::String* origin)
 {
-    if (importer) {
-        *importer = jsUndefined();
-    }
-
+    if (importer) *importer = jsUndefined();
     outOptions = {};
     if (name) *name = WTF::String();
     if (origin) *origin = WTF::String();
-
-    // If options is provided, validate name and origin properties
-    if (!optionsArg.isObject()) {
-        return std::nullopt;
-    }
+    if (!optionsArg.isObject()) return std::nullopt;
 
     JSObject* options = asObject(optionsArg);
-
     const bool scriptContextOptions = codeGenerationKey == "contextCodeGeneration"_s;
     const ASCIILiteral nameKey = scriptContextOptions ? "contextName"_s : "name"_s;
     const ASCIILiteral originKey = scriptContextOptions ? "contextOrigin"_s : "origin"_s;
-    auto nameValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, nameKey));
-    RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-    if (nameValue) {
-        if (!nameValue.isUndefined() && !nameValue.isString()) {
-            return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, nameKey), "string"_s, nameValue);
-        }
-    }
 
-    if (name && nameValue && nameValue.isString()) *name = nameValue.toWTFString(globalObject);
+    // Snapshot ordinary property reads before validation, as Node's object
+    // destructuring does. Keep earlier getter results alive if a later getter
+    // invokes GC, without retaining them after this parser returns.
+    MarkedArgumentBuffer optionValues;
+    auto readOption = [&](ASCIILiteral key) {
+        JSValue value = options->get(globalObject, Identifier::fromString(vm, key));
+        if (value) optionValues.append(value);
+        return value;
+    };
+    JSValue nameValue = readOption(nameKey);
     RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-
-    // Check origin property
-    auto originValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, originKey));
+    JSValue originValue = readOption(originKey);
     RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-    if (originValue) {
-        if (!originValue.isUndefined() && !originValue.isString()) {
-            return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, originKey), "string"_s, originValue);
-        }
-    }
-
-    if (origin && originValue && originValue.isString()) *origin = originValue.toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-
-    // Script execution options use the Script's own callback; only context
-    // creation owns an importModuleDynamically callback in these options.
+    JSValue codeGenerationValue = jsUndefined();
     if (!scriptContextOptions) {
-        JSValue callback = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "importModuleDynamically"_s));
+        codeGenerationValue = readOption(codeGenerationKey);
         RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-        if (callback && !callback.isUndefined()) {
-            if (!callback.isCallable() && !isUseMainContextDefaultLoaderConstant(globalObject, callback))
-                return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, callback);
-            if (importer) *importer = callback;
-        }
+    }
+    JSValue microtaskModeValue = readOption("microtaskMode"_s);
+    RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+    JSValue callback = jsUndefined();
+    if (!scriptContextOptions) {
+        callback = readOption("importModuleDynamically"_s);
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
     }
 
-    // microtaskMode: "afterEvaluate" gives the context its own microtask
-    // queue. Validated here (not only in vm.ts) so native entry points like
-    // script.runInNewContext reject invalid values the way Node does.
-    JSValue microtaskModeValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, "microtaskMode"_s));
+    if (!nameValue.isUndefined() && !nameValue.isString())
+        return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, nameKey), "string"_s, nameValue);
+    if (!originValue.isUndefined() && !originValue.isString())
+        return ERR::INVALID_ARG_TYPE(scope, globalObject, makeString("options."_s, originKey), "string"_s, originValue);
+    if (name && nameValue.isString()) *name = nameValue.toWTFString(globalObject);
     RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-    if (microtaskModeValue && !microtaskModeValue.isUndefined()) {
+    if (origin && originValue.isString()) *origin = originValue.toWTFString(globalObject);
+    RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+
+    if (scriptContextOptions) {
+        codeGenerationValue = readOption(codeGenerationKey);
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+    }
+    if (!codeGenerationValue.isUndefined()) {
+        // getContextOptions reads this property again for validateObject and
+        // then for destructuring. createContext instead uses its snapshot.
+        JSValue objectValue = codeGenerationValue;
+        if (scriptContextOptions) {
+            objectValue = readOption(codeGenerationKey);
+            RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        }
+        if (!objectValue.isObject() || objectValue.isCallable() || isArray(globalObject, objectValue))
+            return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey), "object"_s, objectValue);
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        if (scriptContextOptions) {
+            objectValue = readOption(codeGenerationKey);
+            RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        }
+        JSObject* codeGenerationObject = objectValue.toObject(globalObject);
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        optionValues.append(codeGenerationObject);
+        JSValue allowStringsValue = codeGenerationObject->get(globalObject, Identifier::fromString(vm, "strings"_s));
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        optionValues.append(allowStringsValue);
+        JSValue allowWasmValue = codeGenerationObject->get(globalObject, Identifier::fromString(vm, "wasm"_s));
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        optionValues.append(allowWasmValue);
+        if (!allowStringsValue.isUndefined()) {
+            if (!allowStringsValue.isBoolean())
+                return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey, ".strings"_s), "boolean"_s, allowStringsValue);
+            outOptions.allowStrings = allowStringsValue.asBoolean();
+        }
+        if (!allowWasmValue.isUndefined()) {
+            if (!allowWasmValue.isBoolean())
+                return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey, ".wasm"_s), "boolean"_s, allowWasmValue);
+            outOptions.allowWasm = allowWasmValue.asBoolean();
+        }
+    }
+    if (scriptContextOptions) {
+        JSValue mode = readOption("microtaskMode"_s);
+        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+        if (!mode.isUndefined()) {
+            mode = readOption("microtaskMode"_s);
+            RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
+            if (!mode.isString())
+                return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.microtaskMode"_s, "string"_s, mode);
+        }
+    }
+    if (!microtaskModeValue.isUndefined()) {
         bool isAfterEvaluate = false;
         if (microtaskModeValue.isString()) {
-            String microtaskMode = microtaskModeValue.toWTFString(globalObject);
+            String mode = microtaskModeValue.toWTFString(globalObject);
             RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-            isAfterEvaluate = microtaskMode == "afterEvaluate"_s;
+            isAfterEvaluate = mode == "afterEvaluate"_s;
         }
         if (!isAfterEvaluate) {
             static constexpr ASCIILiteral oneOf[] = { "afterEvaluate"_s, "undefined"_s };
@@ -656,46 +693,11 @@ std::optional<JSC::EncodedJSValue> getHomeNodeVMContextOptions(JSGlobalObject* g
         }
         outOptions.ownMicrotaskQueue = true;
     }
-
-    JSValue codeGenerationValue = options->getIfPropertyExists(globalObject, Identifier::fromString(vm, codeGenerationKey));
-    RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-
-    if (codeGenerationValue) {
-        if (codeGenerationValue.isUndefined()) {
-            return std::nullopt;
-        }
-
-        if (!codeGenerationValue.isObject()) {
-            return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey), "object"_s, codeGenerationValue);
-        }
-
-        JSObject* codeGenerationObject = asObject(codeGenerationValue);
-
-        auto allowStringsValue = codeGenerationObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "strings"_s));
-        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-        // Node reads both properties before validating their defaulted values.
-        // Preserve getter exceptions even when the strings value is invalid.
-        auto allowWasmValue = codeGenerationObject->getIfPropertyExists(globalObject, Identifier::fromString(vm, "wasm"_s));
-        RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-        if (allowStringsValue && !allowStringsValue.isUndefined()) {
-            if (!allowStringsValue.isBoolean()) {
-                return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey, ".strings"_s), "boolean"_s, allowStringsValue);
-            }
-
-            outOptions.allowStrings = allowStringsValue.toBoolean(globalObject);
-            RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-        }
-
-        if (allowWasmValue && !allowWasmValue.isUndefined()) {
-            if (!allowWasmValue.isBoolean()) {
-                return ERR::INVALID_ARG_TYPE(scope, globalObject, WTF::makeString("options."_s, codeGenerationKey, ".wasm"_s), "boolean"_s, allowWasmValue);
-            }
-
-            outOptions.allowWasm = allowWasmValue.toBoolean(globalObject);
-            RETURN_IF_EXCEPTION(scope, encodedJSUndefined());
-        }
+    if (!callback.isUndefined()) {
+        if (!callback.isCallable() && !isUseMainContextDefaultLoaderConstant(globalObject, callback))
+            return ERR::INVALID_ARG_TYPE(scope, globalObject, "options.importModuleDynamically"_s, "function"_s, callback);
+        if (importer) *importer = callback;
     }
-
     return std::nullopt;
 }
 
@@ -1633,9 +1635,10 @@ JSC_DEFINE_HOST_FUNCTION(vmModule_createContext, (JSGlobalObject * globalObject,
     JSValue optionsArg = callFrame->argument(1);
 
     // Validate options argument
-    if (!optionsArg.isUndefined() && !optionsArg.isObject()) {
+    if (!optionsArg.isUndefined() && (!optionsArg.isObject() || optionsArg.isCallable() || isArray(globalObject, optionsArg))) {
         return ERR::INVALID_ARG_TYPE(scope, globalObject, "options"_s, "object"_s, optionsArg);
     }
+    RETURN_IF_EXCEPTION(scope, {});
 
     JSValue importer;
 
