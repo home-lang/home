@@ -293,45 +293,45 @@ fn decodePackBits(src: []const u8, dest: []u8) !void {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     const channels: u16 = if (img.format.hasAlpha()) 4 else 3;
     const color_mode: u16 = @intFromEnum(ColorMode.rgb);
 
     // Signature
-    try output.appendSlice(PSD_SIGNATURE);
+    try output.appendSlice(allocator, PSD_SIGNATURE);
 
     // Version
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, PSD_VERSION_1)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, PSD_VERSION_1)));
 
     // Reserved (6 bytes)
-    try output.appendNTimes(0, 6);
+    try output.appendNTimes(allocator, 0, 6);
 
     // Channels
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, channels)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, channels)));
 
     // Height and width
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.height)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, img.width)));
 
     // Depth (8-bit)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, 8)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 8)));
 
     // Color mode (RGB)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, color_mode)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, color_mode)));
 
     // Color mode data (empty for RGB)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
 
     // Image resources (empty)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
 
     // Layer and mask info (empty)
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, 0)));
 
     // Image data - raw compression
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToBig(u16, 0)));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, 0)));
 
     // Write channel data (planar format)
     for (0..channels) |c| {
@@ -347,12 +347,12 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
                     3 => color.a,
                     else => 0,
                 };
-                try output.append(val);
+                try output.append(allocator, val);
             }
         }
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -383,4 +383,19 @@ test "PackBits decoding" {
 test "ColorMode enum" {
     try std.testing.expectEqual(@as(u16, 3), @intFromEnum(ColorMode.rgb));
     try std.testing.expectEqual(@as(u16, 4), @intFromEnum(ColorMode.cmyk));
+}
+
+test "PSD encoder round trips planar RGBA data" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 2, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.BLUE);
+
+    const encoded = try encode(allocator, &img);
+    defer allocator.free(encoded);
+    var decoded = try decode(allocator, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+    try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
 }

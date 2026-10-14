@@ -246,8 +246,8 @@ pub const EncodeOptions = struct {
 };
 
 pub fn encodeWithOptions(allocator: std.mem.Allocator, img: *const Image, options: EncodeOptions) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
 
     const is_grayscale = img.format == .grayscale8 or img.format == .grayscale16;
     const has_alpha = img.format.hasAlpha();
@@ -259,47 +259,47 @@ pub fn encodeWithOptions(allocator: std.mem.Allocator, img: *const Image, option
         (if (options.rle) 10 else 2);
 
     // Header
-    try output.append(0); // ID length
-    try output.append(0); // No color map
-    try output.append(image_type);
-    try output.appendSlice(&[_]u8{ 0, 0, 0, 0, 0 }); // Color map spec
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // X origin
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Y origin
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
-    try output.appendSlice(&std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
-    try output.append(pixel_depth);
-    try output.append(if (has_alpha) 0x28 else 0x20); // Top-to-bottom, alpha bits
+    try output.append(allocator, 0); // ID length
+    try output.append(allocator, 0); // No color map
+    try output.append(allocator, image_type);
+    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0, 0 }); // Color map spec
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // X origin
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Y origin
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
+    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
+    try output.append(allocator, pixel_depth);
+    try output.append(allocator, if (has_alpha) 0x28 else 0x20); // Top-to-bottom, alpha bits
 
     // Pixel data
     if (options.rle) {
-        try encodeRLE(&output, img, is_grayscale, has_alpha);
+        try encodeRLE(allocator, &output, img, is_grayscale, has_alpha);
     } else {
-        try encodeRaw(&output, img, is_grayscale, has_alpha);
+        try encodeRaw(allocator, &output, img, is_grayscale, has_alpha);
     }
 
     // Footer (TGA 2.0)
     if (options.include_footer) {
-        try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // Extension offset
-        try output.appendSlice(&[_]u8{ 0, 0, 0, 0 }); // Developer offset
-        try output.appendSlice("TRUEVISION-XFILE.");
-        try output.append(0);
+        try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // Extension offset
+        try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // Developer offset
+        try output.appendSlice(allocator, "TRUEVISION-XFILE.");
+        try output.append(allocator, 0);
     }
 
-    return output.toOwnedSlice();
+    return output.toOwnedSlice(allocator);
 }
 
-fn encodeRaw(output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, has_alpha: bool) !void {
+fn encodeRaw(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, has_alpha: bool) !void {
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
         var x: u32 = 0;
         while (x < img.width) : (x += 1) {
             const color = img.getPixel(x, y) orelse Color.BLACK;
-            try writePixel(output, color, is_grayscale, has_alpha);
+            try writePixel(allocator, output, color, is_grayscale, has_alpha);
         }
     }
 }
 
-fn encodeRLE(output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, has_alpha: bool) !void {
+fn encodeRLE(allocator: std.mem.Allocator, output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, has_alpha: bool) !void {
     var y: u32 = 0;
     while (y < img.height) : (y += 1) {
         var x: u32 = 0;
@@ -320,8 +320,8 @@ fn encodeRLE(output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, 
 
             if (run_length > 1) {
                 // RLE packet
-                try output.append(@as(u8, 0x80) | @as(u8, @truncate(run_length - 1)));
-                try writePixel(output, start_color, is_grayscale, has_alpha);
+                try output.append(allocator, @as(u8, 0x80) | @as(u8, @truncate(run_length - 1)));
+                try writePixel(allocator, output, start_color, is_grayscale, has_alpha);
             } else {
                 // Check for raw run
                 const raw_start = start_x;
@@ -341,24 +341,24 @@ fn encodeRLE(output: *std.ArrayList(u8), img: *const Image, is_grayscale: bool, 
                 }
 
                 // Raw packet
-                try output.append(@as(u8, @truncate(raw_len - 1)));
+                try output.append(allocator, @as(u8, @truncate(raw_len - 1)));
                 var i: u32 = 0;
                 while (i < raw_len) : (i += 1) {
                     const color = img.getPixel(raw_start + i, y) orelse Color.BLACK;
-                    try writePixel(output, color, is_grayscale, has_alpha);
+                    try writePixel(allocator, output, color, is_grayscale, has_alpha);
                 }
             }
         }
     }
 }
 
-fn writePixel(output: *std.ArrayList(u8), color: Color, is_grayscale: bool, has_alpha: bool) !void {
+fn writePixel(allocator: std.mem.Allocator, output: *std.ArrayList(u8), color: Color, is_grayscale: bool, has_alpha: bool) !void {
     if (is_grayscale) {
-        try output.append(color.toGrayscale());
+        try output.append(allocator, color.toGrayscale());
     } else {
-        try output.appendSlice(&[_]u8{ color.b, color.g, color.r });
+        try output.appendSlice(allocator, &[_]u8{ color.b, color.g, color.r });
         if (has_alpha) {
-            try output.append(color.a);
+            try output.append(allocator, color.a);
         }
     }
 }
@@ -424,4 +424,28 @@ test "RLE flag detection" {
     };
 
     try std.testing.expect(header.isRLE());
+}
+
+test "TGA encoder round trips raw and RLE pixels" {
+    const allocator = std.testing.allocator;
+    var img = try Image.init(allocator, 4, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, Color.RED);
+    img.setPixel(1, 0, Color.RED);
+    img.setPixel(2, 0, Color.BLUE);
+    img.setPixel(3, 0, Color.GREEN);
+
+    for ([_]bool{ false, true }) |rle| {
+        const encoded = try encodeWithOptions(allocator, &img, .{ .rle = rle });
+        defer allocator.free(encoded);
+        var decoded = try decode(allocator, encoded);
+        defer decoded.deinit();
+
+        try std.testing.expectEqual(@as(u32, 4), decoded.width);
+        try std.testing.expectEqual(@as(u32, 1), decoded.height);
+        try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
+        try std.testing.expectEqual(Color.RED, decoded.getPixel(1, 0).?);
+        try std.testing.expectEqual(Color.BLUE, decoded.getPixel(2, 0).?);
+        try std.testing.expectEqual(Color.GREEN, decoded.getPixel(3, 0).?);
+    }
 }
