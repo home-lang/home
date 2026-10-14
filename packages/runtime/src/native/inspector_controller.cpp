@@ -207,7 +207,7 @@ void inspectorConsoleTiming(JSC::JSGlobalObject& global, const WTF::String& labe
     auto* agent = consoleAgentFor(global);
     if (!agent) return;
     bool exists = agent->hasTimer(label);
-    if (arguments) agent->logTiming(&global, label, arguments->copyRef()); else agent->stopTiming(&global, label);
+    if (arguments) agent->logTiming(&global, label, WTF::Ref<Inspector::ScriptArguments>(*arguments)); else agent->stopTiming(&global, label);
     emitConsoleRecord(global, exists ? (arguments ? "log"_s : "timeEnd"_s) : "warning"_s, agent->lastMessage(), exists ? arguments : nullptr);
 }
 

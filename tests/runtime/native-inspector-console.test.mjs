@@ -48,10 +48,15 @@ for (const contextId of [undefined, realm.id]) {
 }
 await session.post('Runtime.disable')
 const previous = events.length
+vm.runInContext('console.count("disabled-native-count"); console.time("disabled-native-time")', context)
 vm.runInContext('console.log("disabled-console-marker")', context)
 await new Promise(resolve => setImmediate(resolve))
 assert.equal(events.length, previous)
 await session.post('Runtime.enable')
+const resumed = events.length
+vm.runInContext('console.count("disabled-native-count"); console.timeEnd("disabled-native-time")', context)
+assert(events.slice(resumed).some(event => event.type === 'count' && event.args[0]?.value === 'disabled-native-count: 2'))
+assert(events.slice(resumed).some(event => event.type === 'timeEnd' && /^disabled-native-time: [\d.]+\s?ms$/.test(event.args[0]?.value)))
 const second = new Session()
 second.connect()
 const secondEvents = []
