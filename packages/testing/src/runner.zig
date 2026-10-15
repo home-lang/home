@@ -1,14 +1,12 @@
 const std = @import("std");
-const builtin = @import("builtin");
+const Io = std.Io;
 
-/// Test suite metadata for organizing and running tests
+/// Test suite metadata for organizing and running tests.
 pub const TestSuite = struct {
     name: []const u8,
     test_file: []const u8,
     dependencies: []const []const u8 = &.{},
-    /// Estimated execution time in milliseconds (for scheduling)
     estimated_time_ms: u64 = 1000,
-    /// Whether this test requires system libraries
     requires_libc: bool = false,
     system_libs: []const []const u8 = &.{},
 
@@ -17,14 +15,16 @@ pub const TestSuite = struct {
     }
 
     pub fn dependsOn(self: TestSuite, suite_name: []const u8) bool {
-        for (self.dependencies) |dep| {
-            if (std.mem.eql(u8, dep, suite_name)) return true;
+        for (self.dependencies) |dependency| {
+            if (std.mem.eql(u8, dependency, suite_name)) return true;
         }
         return false;
     }
 };
 
-/// Test result for a single test suite
+/// Owned output from one test suite. `suite_name` remains borrowed from the
+/// suite plan; `output` and `error_message` use the allocator passed to
+/// `deinit`.
 pub const TestResult = struct {
     suite_name: []const u8,
     success: bool,
@@ -35,14 +35,30 @@ pub const TestResult = struct {
 
     pub fn deinit(self: *TestResult, allocator: std.mem.Allocator) void {
         allocator.free(self.output);
-        if (self.error_message) |msg| {
-            allocator.free(msg);
-        }
+        if (self.error_message) |message| allocator.free(message);
+        self.* = undefined;
+    }
+
+    fn clone(self: TestResult, allocator: std.mem.Allocator) !TestResult {
+        const output = try allocator.dupe(u8, self.output);
+        errdefer allocator.free(output);
+        const error_message = if (self.error_message) |message|
+            try allocator.dupe(u8, message)
+        else
+            null;
+        return .{
+            .suite_name = self.suite_name,
+            .success = self.success,
+            .duration_ms = self.duration_ms,
+            .output = output,
+            .error_message = error_message,
+            .cached = self.cached,
+        };
     }
 };
 
-/// Cache entry for test results
-const CacheEntry = struct {
+pub const CacheEntry = struct {
+    /// Aliases the owning key in `TestCache.entries`.
     suite_name: []const u8,
     file_hash: [32]u8,
     success: bool,
@@ -50,597 +66,543 @@ const CacheEntry = struct {
     timestamp: i64,
 };
 
-/// Test result cache for avoiding redundant test runs
+/// Persistent cache for test results.
 pub const TestCache = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     cache_path: []const u8,
     entries: std.StringHashMap(CacheEntry),
     modified: bool = false,
 
-    const CACHE_FILE = ".home/test_cache.json";
+    const cache_file = ".home/test_cache.json";
+    const max_cache_bytes = 10 * 1024 * 1024;
+    const max_test_file_bytes = 64 * 1024 * 1024;
 
     pub fn init(allocator: std.mem.Allocator) !TestCache {
-        const cache_path = try getCachePath(allocator);
-        errdefer allocator.free(cache_path);
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io());
+    }
 
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io) !TestCache {
+        const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(cwd);
+        const cache_path = try std.fs.path.join(allocator, &.{ cwd, cache_file });
+        defer allocator.free(cache_path);
+        return initAtPath(allocator, io, cache_path);
+    }
+
+    pub fn initAtPath(allocator: std.mem.Allocator, io: Io, cache_path: []const u8) !TestCache {
         var cache = TestCache{
             .allocator = allocator,
-            .cache_path = cache_path,
+            .io = io,
+            .cache_path = try allocator.dupe(u8, cache_path),
             .entries = std.StringHashMap(CacheEntry).init(allocator),
         };
+        errdefer cache.deinit();
 
-        // Try to load existing cache
-        cache.load() catch |err| {
-            if (err != error.FileNotFound) {
-                std.debug.print("Warning: Failed to load test cache: {any}\n", .{err});
-            }
+        cache.load() catch |err| switch (err) {
+            error.FileNotFound => {},
+            error.OutOfMemory => return err,
+            else => {
+                cache.clearEntries();
+                std.debug.print("Warning: ignoring invalid test cache: {s}\n", .{@errorName(err)});
+            },
         };
-
         return cache;
     }
 
     pub fn deinit(self: *TestCache) void {
-        // Free all entries
-        var iter = self.entries.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.suite_name);
-        }
+        self.clearEntries();
         self.entries.deinit();
         self.allocator.free(self.cache_path);
+        self.* = undefined;
     }
 
-    /// Load cache from disk
-    fn load(self: *TestCache) !void {
-        const file = std.fs.openFileAbsolute(self.cache_path, .{}) catch |err| {
-            return err;
-        };
-        defer file.close();
+    fn clearEntries(self: *TestCache) void {
+        var iterator = self.entries.keyIterator();
+        while (iterator.next()) |key| self.allocator.free(key.*);
+        self.entries.clearRetainingCapacity();
+    }
 
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024); // 10MB max
+    fn load(self: *TestCache) !void {
+        const content = try Io.Dir.cwd().readFileAlloc(
+            self.io,
+            self.cache_path,
+            self.allocator,
+            .limited(max_cache_bytes),
+        );
         defer self.allocator.free(content);
 
-        const parsed = try std.json.parseFromSlice(
-            std.json.Value,
-            self.allocator,
-            content,
-            .{},
-        );
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, content, .{});
         defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidCacheFile;
 
-        const root = parsed.value;
-        if (root != .object) return error.InvalidCacheFile;
+        var iterator = parsed.value.object.iterator();
+        while (iterator.next()) |item| {
+            if (item.value_ptr.* != .object) return error.InvalidCacheFile;
 
-        var obj_iter = root.object.iterator();
-        while (obj_iter.next()) |entry| {
-            const suite_name = try self.allocator.dupe(u8, entry.key_ptr.*);
-            errdefer self.allocator.free(suite_name);
+            const key = try self.allocator.dupe(u8, item.key_ptr.*);
+            var owns_key = true;
+            errdefer if (owns_key) self.allocator.free(key);
 
-            const cache_obj = entry.value_ptr.*;
-            if (cache_obj != .object) {
-                // `continue` doesn't trigger errdefer — free manually or
-                // suite_name leaks for every non-object entry.
-                self.allocator.free(suite_name);
-                continue;
+            var entry = try self.parseCacheEntry(item.value_ptr.object, key);
+            const slot = try self.entries.getOrPut(key);
+            if (slot.found_existing) {
+                self.allocator.free(key);
+                owns_key = false;
+                entry.suite_name = slot.key_ptr.*;
+            } else {
+                slot.key_ptr.* = key;
+                owns_key = false;
             }
-
-            const cache_entry = try self.parseCacheEntry(cache_obj.object, suite_name);
-            try self.entries.put(suite_name, cache_entry);
+            slot.value_ptr.* = entry;
         }
     }
 
-    /// Save cache to disk
+    /// Atomically replaces the cache file after serializing every entry.
     pub fn save(self: *TestCache) !void {
         if (!self.modified) return;
 
-        // Ensure directory exists
-        const dir_path = std.fs.path.dirname(self.cache_path) orelse return error.InvalidPath;
-        try std.fs.cwd().makePath(dir_path);
-
-        const file = try std.fs.createFileAbsolute(self.cache_path, .{
-            .read = true,
-            .truncate = true,
-        });
-        defer file.close();
-
-        var buffered = std.io.bufferedWriter(file.writer());
-        const writer = buffered.writer();
-
+        var output: Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
+        const writer = &output.writer;
         try writer.writeAll("{\n");
 
         var first = true;
-        var iter = self.entries.iterator();
-        while (iter.next()) |entry| {
+        var iterator = self.entries.iterator();
+        while (iterator.next()) |item| {
             if (!first) try writer.writeAll(",\n");
             first = false;
-
             try writer.writeAll("  ");
-            try std.json.encodeJsonString(entry.key_ptr.*, .{}, writer);
-            try writer.writeAll(": {\n");
-
-            try writer.writeAll("    \"suite_name\": ");
-            try std.json.encodeJsonString(entry.value_ptr.suite_name, .{}, writer);
-            try writer.writeAll(",\n");
-
-            try writer.writeAll("    \"file_hash\": \"");
-            for (entry.value_ptr.file_hash) |byte| {
-                try writer.print("{x:0>2}", .{byte});
-            }
+            try std.json.Stringify.value(item.key_ptr.*, .{}, writer);
+            try writer.writeAll(": {\n    \"suite_name\": ");
+            try std.json.Stringify.value(item.value_ptr.suite_name, .{}, writer);
+            try writer.writeAll(",\n    \"file_hash\": \"");
+            for (item.value_ptr.file_hash) |byte| try writer.print("{x:0>2}", .{byte});
             try writer.writeAll("\",\n");
-
-            try writer.print("    \"success\": {s},\n", .{if (entry.value_ptr.success) "true" else "false"});
-            try writer.print("    \"duration_ms\": {d},\n", .{entry.value_ptr.duration_ms});
-            try writer.print("    \"timestamp\": {d}\n", .{entry.value_ptr.timestamp});
-
-            try writer.writeAll("  }");
+            try writer.print("    \"success\": {s},\n", .{if (item.value_ptr.success) "true" else "false"});
+            try writer.print("    \"duration_ms\": {d},\n", .{item.value_ptr.duration_ms});
+            try writer.print("    \"timestamp\": {d}\n  }}", .{item.value_ptr.timestamp});
         }
-
         try writer.writeAll("\n}\n");
-        try buffered.flush();
 
+        const directory = std.fs.path.dirname(self.cache_path) orelse return error.InvalidPath;
+        try Io.Dir.cwd().createDirPath(self.io, directory);
+        const temporary_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.cache_path});
+        defer self.allocator.free(temporary_path);
+        errdefer Io.Dir.cwd().deleteFile(self.io, temporary_path) catch {};
+        try Io.Dir.cwd().writeFile(self.io, .{ .sub_path = temporary_path, .data = output.written() });
+        try Io.Dir.cwd().rename(temporary_path, Io.Dir.cwd(), self.cache_path, self.io);
         self.modified = false;
     }
 
-    /// Check if test result is cached and valid
     pub fn isCached(self: *TestCache, suite: TestSuite) !bool {
         const entry = self.entries.get(suite.name) orelse return false;
-
-        // Compute current file hash
         const current_hash = try self.computeFileHash(suite.test_file);
-
-        // Compare hashes
         return std.mem.eql(u8, &entry.file_hash, &current_hash);
     }
 
-    /// Get cached result
-    pub fn getCached(self: *TestCache, suite_name: []const u8) ?CacheEntry {
+    pub fn getCached(self: *const TestCache, suite_name: []const u8) ?CacheEntry {
         return self.entries.get(suite_name);
     }
 
-    /// Store test result in cache
+    /// Inserts or replaces one entry without removing the previous value until
+    /// every fallible allocation has succeeded.
     pub fn put(self: *TestCache, suite: TestSuite, result: TestResult) !void {
         const file_hash = try self.computeFileHash(suite.test_file);
+        const key = try self.allocator.dupe(u8, suite.name);
+        var owns_key = true;
+        errdefer if (owns_key) self.allocator.free(key);
 
-        const suite_name_copy = try self.allocator.dupe(u8, suite.name);
-        errdefer self.allocator.free(suite_name_copy);
-
-        const entry = CacheEntry{
-            .suite_name = suite_name_copy,
+        const slot = try self.entries.getOrPut(suite.name);
+        const stored_key = if (slot.found_existing) slot.key_ptr.* else key;
+        if (slot.found_existing) {
+            self.allocator.free(key);
+            owns_key = false;
+        } else {
+            slot.key_ptr.* = key;
+            owns_key = false;
+        }
+        slot.value_ptr.* = .{
+            .suite_name = stored_key,
             .file_hash = file_hash,
             .success = result.success,
             .duration_ms = result.duration_ms,
-            .timestamp = std.time.timestamp(),
+            .timestamp = Io.Clock.real.now(self.io).toSeconds(),
         };
-
-        // Remove old entry if it exists
-        if (self.entries.fetchRemove(suite.name)) |old| {
-            self.allocator.free(old.key);
-            self.allocator.free(old.value.suite_name);
-        }
-
-        const key = try self.allocator.dupe(u8, suite.name);
-        errdefer self.allocator.free(key);
-        try self.entries.put(key, entry);
         self.modified = true;
     }
 
-    /// Compute SHA-256 hash of a file
     fn computeFileHash(self: *TestCache, file_path: []const u8) ![32]u8 {
-        _ = self;
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-
-        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-        var buf: [4096]u8 = undefined;
-
-        while (true) {
-            const bytes_read = try file.read(&buf);
-            if (bytes_read == 0) break;
-            hasher.update(buf[0..bytes_read]);
-        }
-
-        return hasher.finalResult();
+        const content = try Io.Dir.cwd().readFileAlloc(
+            self.io,
+            file_path,
+            self.allocator,
+            .limited(max_test_file_bytes),
+        );
+        defer self.allocator.free(content);
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(content, &digest, .{});
+        return digest;
     }
 
-    /// Parse cache entry from JSON
-    fn parseCacheEntry(self: *TestCache, obj: std.json.ObjectMap, suite_name: []const u8) !CacheEntry {
-        const hash_str = obj.get("file_hash") orelse return error.MissingField;
-        const success = obj.get("success") orelse return error.MissingField;
-        const duration = obj.get("duration_ms") orelse return error.MissingField;
-        const timestamp = obj.get("timestamp") orelse return error.MissingField;
+    fn parseCacheEntry(self: *TestCache, object: std.json.ObjectMap, suite_name: []const u8) !CacheEntry {
+        _ = self;
+        const hash_value = object.get("file_hash") orelse return error.MissingField;
+        const success_value = object.get("success") orelse return error.MissingField;
+        const duration_value = object.get("duration_ms") orelse return error.MissingField;
+        const timestamp_value = object.get("timestamp") orelse return error.MissingField;
+        if (hash_value != .string or hash_value.string.len != 64) return error.InvalidHash;
+        if (success_value != .bool or duration_value != .integer or timestamp_value != .integer) {
+            return error.InvalidCacheFile;
+        }
+        if (duration_value.integer < 0) return error.InvalidCacheFile;
 
         var file_hash: [32]u8 = undefined;
-        if (hash_str.string.len != 64) return error.InvalidHash;
-
-        for (0..32) |i| {
-            const hex = hash_str.string[i * 2 .. i * 2 + 2];
-            file_hash[i] = try std.fmt.parseInt(u8, hex, 16);
+        for (0..file_hash.len) |index| {
+            file_hash[index] = try std.fmt.parseInt(u8, hash_value.string[index * 2 .. index * 2 + 2], 16);
         }
-
-        return CacheEntry{
-            .suite_name = try self.allocator.dupe(u8, suite_name),
+        return .{
+            .suite_name = suite_name,
             .file_hash = file_hash,
-            .success = success.bool,
-            .duration_ms = @intCast(duration.integer),
-            .timestamp = timestamp.integer,
+            .success = success_value.bool,
+            .duration_ms = @intCast(duration_value.integer),
+            .timestamp = timestamp_value.integer,
         };
-    }
-
-    fn getCachePath(allocator: std.mem.Allocator) ![]const u8 {
-        const cwd = try std.process.getCwdAlloc(allocator);
-        defer allocator.free(cwd);
-
-        return std.fs.path.join(allocator, &.{ cwd, CACHE_FILE });
     }
 };
 
-/// Parallel test runner with caching and benchmarking
+/// Dependency-aware parallel test runner with persistent result caching.
 pub const TestRunner = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     suites: []const TestSuite,
     cache: TestCache,
     max_parallel: usize,
     verbose: bool = false,
     benchmark: bool = false,
+    executor_context: ?*anyopaque = null,
+    executor: ExecuteFn = executeZigTest,
+    state_mutex: Io.Mutex = .init,
 
-    pub fn init(
+    pub const ExecuteFn = *const fn (?*anyopaque, std.mem.Allocator, Io, TestSuite) anyerror!TestResult;
+
+    const WorkerContext = struct {
+        runner: *TestRunner,
+        work_queue: []const TestSuite,
+        next_index: usize = 0,
+        first_error: ?anyerror = null,
+        results: *std.ArrayList(TestResult),
+    };
+
+    pub fn init(allocator: std.mem.Allocator, suites: []const TestSuite, max_parallel: ?usize) !TestRunner {
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io(), suites, max_parallel);
+    }
+
+    pub fn initWithIo(
         allocator: std.mem.Allocator,
+        io: Io,
         suites: []const TestSuite,
         max_parallel: ?usize,
     ) !TestRunner {
-        const cache = try TestCache.init(allocator);
-
-        return TestRunner{
+        return .{
             .allocator = allocator,
+            .io = io,
             .suites = suites,
-            .cache = cache,
+            .cache = try TestCache.initWithIo(allocator, io),
+            .max_parallel = max_parallel orelse @max(1, try std.Thread.getCpuCount() - 1),
+        };
+    }
+
+    pub fn initWithCachePath(
+        allocator: std.mem.Allocator,
+        io: Io,
+        suites: []const TestSuite,
+        max_parallel: ?usize,
+        cache_path: []const u8,
+    ) !TestRunner {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .suites = suites,
+            .cache = try TestCache.initAtPath(allocator, io, cache_path),
             .max_parallel = max_parallel orelse @max(1, try std.Thread.getCpuCount() - 1),
         };
     }
 
     pub fn deinit(self: *TestRunner) void {
-        self.cache.save() catch |err| {
-            std.debug.print("Warning: Failed to save test cache: {any}\n", .{err});
-        };
         self.cache.deinit();
+        self.* = undefined;
     }
 
-    /// Run all tests with parallel execution and caching
+    pub fn setExecutor(self: *TestRunner, context: ?*anyopaque, executor: ExecuteFn) void {
+        self.executor_context = context;
+        self.executor = executor;
+    }
+
+    pub fn saveCache(self: *TestRunner) !void {
+        try self.cache.save();
+    }
+
     pub fn runAll(self: *TestRunner) ![]TestResult {
-        var results = std.ArrayList(TestResult).init(self.allocator);
+        var results: std.ArrayList(TestResult) = .empty;
         errdefer {
-            for (results.items) |*result| {
-                result.deinit(self.allocator);
-            }
-            results.deinit();
+            for (results.items) |*result| result.deinit(self.allocator);
+            results.deinit(self.allocator);
         }
 
-        // Group tests by dependencies
         const groups = try self.groupByDependencies();
-        defer self.allocator.free(groups);
+        defer {
+            for (groups) |group| self.allocator.free(group);
+            self.allocator.free(groups);
+        }
 
-        const start_time = std.time.milliTimestamp();
-
-        // Run each group (tests within a group can run in parallel)
+        const start = Io.Clock.awake.now(self.io);
         for (groups) |group| {
             const group_results = try self.runGroup(group);
-            defer self.allocator.free(group_results);
-
-            for (group_results) |result| {
-                try results.append(result);
+            var transferred = false;
+            defer {
+                if (!transferred) for (group_results) |*result| result.deinit(self.allocator);
+                self.allocator.free(group_results);
             }
+            try results.appendSlice(self.allocator, group_results);
+            transferred = true;
         }
 
-        const total_time = std.time.milliTimestamp() - start_time;
-
-        // Print summary
-        try self.printSummary(results.items, total_time);
-
-        return results.toOwnedSlice();
+        const elapsed: u64 = @intCast(start.durationTo(Io.Clock.awake.now(self.io)).toMilliseconds());
+        try self.cache.save();
+        self.printSummary(results.items, elapsed);
+        return results.toOwnedSlice(self.allocator);
     }
 
-    /// Group tests by dependency levels (tests in same level can run in parallel)
     fn groupByDependencies(self: *TestRunner) ![][]TestSuite {
-        var groups = std.ArrayList([]TestSuite).init(self.allocator);
-        errdefer {
-            for (groups.items) |group| {
-                self.allocator.free(group);
+        var known = std.StringHashMap(void).init(self.allocator);
+        defer known.deinit();
+        for (self.suites) |suite| {
+            const inserted = try known.getOrPut(suite.name);
+            if (inserted.found_existing) return error.DuplicateSuite;
+            inserted.value_ptr.* = {};
+        }
+        for (self.suites) |suite| {
+            for (suite.dependencies) |dependency| {
+                if (!known.contains(dependency)) return error.MissingDependency;
             }
-            groups.deinit();
         }
 
-        var remaining = std.ArrayList(TestSuite).init(self.allocator);
-        defer remaining.deinit();
-
-        try remaining.appendSlice(self.suites);
-
+        var groups: std.ArrayList([]TestSuite) = .empty;
+        errdefer {
+            for (groups.items) |group| self.allocator.free(group);
+            groups.deinit(self.allocator);
+        }
+        var remaining: std.ArrayList(TestSuite) = .empty;
+        defer remaining.deinit(self.allocator);
+        try remaining.appendSlice(self.allocator, self.suites);
         var completed = std.StringHashMap(void).init(self.allocator);
         defer completed.deinit();
 
         while (remaining.items.len > 0) {
-            var current_group = std.ArrayList(TestSuite).init(self.allocator);
-
-            var i: usize = 0;
-            while (i < remaining.items.len) {
-                const suite = remaining.items[i];
-
-                // Check if all dependencies are completed
-                var can_run = true;
-                for (suite.dependencies) |dep| {
-                    if (!completed.contains(dep)) {
-                        can_run = false;
+            var current: std.ArrayList(TestSuite) = .empty;
+            errdefer current.deinit(self.allocator);
+            var index: usize = 0;
+            while (index < remaining.items.len) {
+                const suite = remaining.items[index];
+                var runnable = true;
+                for (suite.dependencies) |dependency| {
+                    if (!completed.contains(dependency)) {
+                        runnable = false;
                         break;
                     }
                 }
-
-                if (can_run) {
-                    try current_group.append(suite);
-                    try completed.put(suite.name, {});
-                    _ = remaining.swapRemove(i);
+                if (runnable) {
+                    try current.append(self.allocator, suite);
+                    _ = remaining.swapRemove(index);
                 } else {
-                    i += 1;
+                    index += 1;
                 }
             }
-
-            if (current_group.items.len == 0) {
-                // Circular dependency or missing dependency
-                std.debug.print("Error: Circular dependency detected or missing dependencies\n", .{});
-                return error.CircularDependency;
-            }
-
-            try groups.append(try current_group.toOwnedSlice());
+            if (current.items.len == 0) return error.CircularDependency;
+            for (current.items) |suite| try completed.put(suite.name, {});
+            const owned = try current.toOwnedSlice(self.allocator);
+            current = .empty;
+            errdefer self.allocator.free(owned);
+            try groups.append(self.allocator, owned);
         }
-
-        return groups.toOwnedSlice();
+        return groups.toOwnedSlice(self.allocator);
     }
 
-    /// Run a group of independent tests in parallel
-    fn runGroup(self: *TestRunner, group: []TestSuite) ![]TestResult {
-        var results = std.ArrayList(TestResult).init(self.allocator);
+    fn runGroup(self: *TestRunner, group: []const TestSuite) ![]TestResult {
+        if (group.len == 0) return self.allocator.alloc(TestResult, 0);
+        if (self.max_parallel == 0) return error.InvalidThreadCount;
+
+        var results: std.ArrayList(TestResult) = .empty;
         errdefer {
-            for (results.items) |*result| {
-                result.deinit(self.allocator);
-            }
-            results.deinit();
+            for (results.items) |*result| result.deinit(self.allocator);
+            results.deinit(self.allocator);
         }
 
-        // Sort by estimated time (longest first) for better load balancing
-        const sorted_group = try self.allocator.dupe(TestSuite, group);
-        defer self.allocator.free(sorted_group);
-
-        std.mem.sort(TestSuite, sorted_group, {}, struct {
-            fn lessThan(_: void, a: TestSuite, b: TestSuite) bool {
-                return a.estimated_time_ms > b.estimated_time_ms;
+        const sorted = try self.allocator.dupe(TestSuite, group);
+        defer self.allocator.free(sorted);
+        std.mem.sort(TestSuite, sorted, {}, struct {
+            fn lessThan(_: void, lhs: TestSuite, rhs: TestSuite) bool {
+                return lhs.estimated_time_ms > rhs.estimated_time_ms;
             }
         }.lessThan);
 
-        // Run tests in parallel using thread pool
-        const thread_count = @min(self.max_parallel, sorted_group.len);
+        const thread_count = @min(self.max_parallel, sorted.len);
         const threads = try self.allocator.alloc(std.Thread, thread_count);
         defer self.allocator.free(threads);
-
-        const work_queue = try self.allocator.alloc(TestSuite, sorted_group.len);
-        defer self.allocator.free(work_queue);
-        @memcpy(work_queue, sorted_group);
-
-        var work_index = std.atomic.Value(usize).init(0);
-        var result_mutex = std.Thread.Mutex{};
-
-        const WorkerContext = struct {
-            runner: *TestRunner,
-            work_queue: []TestSuite,
-            work_index: *std.atomic.Value(usize),
-            results: *std.ArrayList(TestResult),
-            result_mutex: *std.Thread.Mutex,
-        };
-
-        const worker_context = WorkerContext{
+        var context = WorkerContext{
             .runner = self,
-            .work_queue = work_queue,
-            .work_index = &work_index,
+            .work_queue = sorted,
             .results = &results,
-            .result_mutex = &result_mutex,
         };
 
-        // Spawn worker threads
+        var spawned: usize = 0;
+        var joined = false;
+        errdefer if (!joined) for (threads[0..spawned]) |thread| thread.join();
         for (threads) |*thread| {
-            thread.* = try std.Thread.spawn(.{}, workerThread, .{worker_context});
+            thread.* = try std.Thread.spawn(.{}, workerThread, .{&context});
+            spawned += 1;
         }
-
-        // Wait for all threads to complete
-        for (threads) |thread| {
-            thread.join();
-        }
-
-        return results.toOwnedSlice();
+        for (threads) |thread| thread.join();
+        joined = true;
+        if (context.first_error) |err| return err;
+        return results.toOwnedSlice(self.allocator);
     }
 
-    /// Worker thread function
-    fn workerThread(context: anytype) void {
+    fn workerThread(context: *WorkerContext) void {
         while (true) {
-            const index = context.work_index.fetchAdd(1, .seq_cst);
-            if (index >= context.work_queue.len) break;
+            context.runner.state_mutex.lockUncancelable(context.runner.io);
+            if (context.first_error != null or context.next_index >= context.work_queue.len) {
+                context.runner.state_mutex.unlock(context.runner.io);
+                return;
+            }
+            const index = context.next_index;
+            context.next_index += 1;
+            context.runner.state_mutex.unlock(context.runner.io);
 
-            const suite = context.work_queue[index];
-            const result = context.runner.runSuite(suite) catch |err| {
-                std.debug.print("Error running test suite {s}: {any}\n", .{ suite.name, err });
-                continue;
+            var temporary = context.runner.runSuite(std.heap.smp_allocator, context.work_queue[index]) catch |err| {
+                context.runner.recordWorkerError(context, err);
+                return;
             };
+            defer temporary.deinit(std.heap.smp_allocator);
 
-            context.result_mutex.lock();
-            context.results.append(result) catch |err| {
-                std.debug.print("Error appending result: {any}\n", .{err});
+            context.runner.state_mutex.lockUncancelable(context.runner.io);
+            var owned = temporary.clone(context.runner.allocator) catch |err| {
+                if (context.first_error == null) context.first_error = err;
+                context.runner.state_mutex.unlock(context.runner.io);
+                return;
             };
-            context.result_mutex.unlock();
+            context.results.append(context.runner.allocator, owned) catch |err| {
+                owned.deinit(context.runner.allocator);
+                if (context.first_error == null) context.first_error = err;
+                context.runner.state_mutex.unlock(context.runner.io);
+                return;
+            };
+            context.runner.state_mutex.unlock(context.runner.io);
         }
     }
 
-    /// Run a single test suite
-    fn runSuite(self: *TestRunner, suite: TestSuite) !TestResult {
-        // Check cache first
-        if (try self.cache.isCached(suite)) {
-            if (self.cache.getCached(suite.name)) |cached| {
-                if (self.verbose) {
-                    std.debug.print("✓ {s} (cached, {d}ms)\n", .{ suite.name, cached.duration_ms });
-                }
+    fn recordWorkerError(self: *TestRunner, context: *WorkerContext, err: anyerror) void {
+        self.state_mutex.lockUncancelable(self.io);
+        if (context.first_error == null) context.first_error = err;
+        self.state_mutex.unlock(self.io);
+    }
 
-                return TestResult{
-                    .suite_name = suite.name,
-                    .success = cached.success,
-                    .duration_ms = cached.duration_ms,
-                    .output = try self.allocator.dupe(u8, "[cached]"),
-                    .cached = true,
-                };
-            }
-        }
-
-        const start_time = std.time.milliTimestamp();
-
-        // Run the test
-        var child = std.process.Child.init(&.{ "zig", "test", suite.test_file }, self.allocator);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
-
-        const stdout = try child.stdout.?.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
-        errdefer self.allocator.free(stdout);
-
-        const stderr = try child.stderr.?.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
-        defer self.allocator.free(stderr);
-
-        const term = try child.wait();
-        const success = term == .Exited and term.Exited == 0;
-
-        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-
-        const result = TestResult{
-            .suite_name = suite.name,
-            .success = success,
-            .duration_ms = duration,
-            .output = stdout,
-            .error_message = if (!success and stderr.len > 0)
-                try self.allocator.dupe(u8, stderr)
-            else
-                null,
+    fn runSuite(self: *TestRunner, work_allocator: std.mem.Allocator, suite: TestSuite) !TestResult {
+        const cached_result: ?TestResult = cached: {
+            self.state_mutex.lockUncancelable(self.io);
+            defer self.state_mutex.unlock(self.io);
+            if (!try self.cache.isCached(suite)) break :cached null;
+            const entry = self.cache.getCached(suite.name) orelse break :cached null;
+            break :cached .{
+                .suite_name = suite.name,
+                .success = entry.success,
+                .duration_ms = entry.duration_ms,
+                .output = try work_allocator.dupe(u8, "[cached]"),
+                .cached = true,
+            };
         };
+        if (cached_result) |result| return result;
 
-        // Cache the result
+        var result = try self.executor(self.executor_context, work_allocator, self.io, suite);
+        errdefer result.deinit(work_allocator);
+        result.suite_name = suite.name;
+        self.state_mutex.lockUncancelable(self.io);
+        defer self.state_mutex.unlock(self.io);
         try self.cache.put(suite, result);
-
-        if (self.verbose) {
-            const status = if (success) "✓" else "✗";
-            std.debug.print("{s} {s} ({d}ms)\n", .{ status, suite.name, duration });
-        }
-
         return result;
     }
 
-    /// Print test summary
-    fn printSummary(self: *TestRunner, results: []TestResult, total_time: i64) !void {
-        _ = self;
+    fn executeZigTest(_: ?*anyopaque, allocator: std.mem.Allocator, io: Io, suite: TestSuite) !TestResult {
+        const start = Io.Clock.awake.now(io);
+        var process_result = try std.process.run(allocator, io, .{
+            .argv = &.{ "zig", "test", suite.test_file },
+            .stdout_limit = .limited(10 * 1024 * 1024),
+            .stderr_limit = .limited(10 * 1024 * 1024),
+        });
+        var owns_stdout = true;
+        var owns_stderr = true;
+        errdefer {
+            if (owns_stdout) allocator.free(process_result.stdout);
+            if (owns_stderr) allocator.free(process_result.stderr);
+        }
 
+        const success = process_result.term.success();
+        const error_message = if (!success and process_result.stderr.len > 0) message: {
+            owns_stderr = false;
+            break :message process_result.stderr;
+        } else message: {
+            allocator.free(process_result.stderr);
+            owns_stderr = false;
+            break :message null;
+        };
+        owns_stdout = false;
+        return .{
+            .suite_name = suite.name,
+            .success = success,
+            .duration_ms = @intCast(start.durationTo(Io.Clock.awake.now(io)).toMilliseconds()),
+            .output = process_result.stdout,
+            .error_message = error_message,
+        };
+    }
+
+    fn printSummary(self: *TestRunner, results: []const TestResult, elapsed_ms: u64) void {
+        _ = self;
         var passed: usize = 0;
         var failed: usize = 0;
         var cached: usize = 0;
-
         for (results) |result| {
-            if (result.success) {
-                passed += 1;
-            } else {
-                failed += 1;
-            }
-            if (result.cached) {
-                cached += 1;
-            }
+            if (result.success) passed += 1 else failed += 1;
+            if (result.cached) cached += 1;
         }
-
-        std.debug.print("\n", .{});
-        std.debug.print("================== Test Summary ==================\n", .{});
-        std.debug.print("Total:   {d}\n", .{results.len});
-        std.debug.print("Passed:  {d}\n", .{passed});
-        std.debug.print("Failed:  {d}\n", .{failed});
-        std.debug.print("Cached:  {d}\n", .{cached});
-        std.debug.print("Time:    {d}ms\n", .{total_time});
+        std.debug.print("\n================== Test Summary ==================\n", .{});
+        std.debug.print("Total:   {d}\nPassed:  {d}\nFailed:  {d}\nCached:  {d}\nTime:    {d}ms\n", .{
+            results.len,
+            passed,
+            failed,
+            cached,
+            elapsed_ms,
+        });
         std.debug.print("==================================================\n", .{});
-
-        if (failed > 0) {
-            std.debug.print("\nFailed tests:\n", .{});
-            for (results) |result| {
-                if (!result.success) {
-                    std.debug.print("  ✗ {s}\n", .{result.suite_name});
-                    if (result.error_message) |msg| {
-                        std.debug.print("    {s}\n", .{msg});
-                    }
-                }
-            }
-        }
     }
 };
 
-/// Predefined test suites for Home
 pub const HOME_TEST_SUITES = [_]TestSuite{
-    .{
-        .name = "lexer",
-        .test_file = "packages/lexer/tests/lexer_test.zig",
-        .estimated_time_ms = 500,
-    },
-    .{
-        .name = "ast",
-        .test_file = "packages/ast/tests/ast_test.zig",
-        .dependencies = &.{"lexer"},
-        .estimated_time_ms = 800,
-    },
-    .{
-        .name = "parser",
-        .test_file = "packages/parser/tests/parser_test.zig",
-        .dependencies = &.{ "lexer", "ast" },
-        .estimated_time_ms = 1500,
-    },
-    .{
-        .name = "diagnostics",
-        .test_file = "packages/diagnostics/tests/diagnostics_test.zig",
-        .dependencies = &.{"ast"},
-        .estimated_time_ms = 600,
-    },
-    .{
-        .name = "interpreter",
-        .test_file = "packages/interpreter/tests/interpreter_test.zig",
-        .dependencies = &.{ "ast", "parser" },
-        .estimated_time_ms = 2000,
-    },
-    .{
-        .name = "formatter",
-        .test_file = "packages/formatter/tests/formatter_test.zig",
-        .dependencies = &.{ "lexer", "parser", "ast" },
-        .estimated_time_ms = 1000,
-    },
-    .{
-        .name = "codegen",
-        .test_file = "packages/codegen/tests/codegen_test.zig",
-        .dependencies = &.{"ast"},
-        .estimated_time_ms = 1800,
-    },
-    .{
-        .name = "queue",
-        .test_file = "packages/queue/tests/queue_test.zig",
-        .estimated_time_ms = 400,
-    },
-    .{
-        .name = "database",
-        .test_file = "packages/database/tests/database_test.zig",
-        .estimated_time_ms = 1200,
-        .requires_libc = true,
-        .system_libs = &.{"sqlite3"},
-    },
-    .{
-        .name = "package_manager",
-        .test_file = "packages/pkg/tests/package_manager_test.zig",
-        .estimated_time_ms = 1500,
-    },
-    .{
-        .name = "http_router",
-        .test_file = "packages/basics/tests/http_router_test.zig",
-        .estimated_time_ms = 900,
-    },
+    .{ .name = "lexer", .test_file = "packages/lexer/tests/lexer_test.zig", .estimated_time_ms = 500 },
+    .{ .name = "ast", .test_file = "packages/ast/tests/ast_test.zig", .dependencies = &.{"lexer"}, .estimated_time_ms = 800 },
+    .{ .name = "parser", .test_file = "packages/parser/tests/parser_test.zig", .dependencies = &.{ "lexer", "ast" }, .estimated_time_ms = 1500 },
+    .{ .name = "diagnostics", .test_file = "packages/diagnostics/tests/diagnostics_test.zig", .dependencies = &.{"ast"}, .estimated_time_ms = 600 },
+    .{ .name = "interpreter", .test_file = "packages/interpreter/tests/interpreter_test.zig", .dependencies = &.{ "ast", "parser" }, .estimated_time_ms = 2000 },
+    .{ .name = "formatter", .test_file = "packages/formatter/tests/formatter_test.zig", .dependencies = &.{ "lexer", "parser", "ast" } },
+    .{ .name = "codegen", .test_file = "packages/codegen/tests/codegen_test.zig", .dependencies = &.{"ast"}, .estimated_time_ms = 1800 },
+    .{ .name = "queue", .test_file = "packages/queue/tests/queue_test.zig", .estimated_time_ms = 400 },
+    .{ .name = "database", .test_file = "packages/database/tests/database_test.zig", .estimated_time_ms = 1200, .requires_libc = true, .system_libs = &.{"sqlite3"} },
+    .{ .name = "package_manager", .test_file = "packages/pkg/tests/package_manager_test.zig", .estimated_time_ms = 1500 },
+    .{ .name = "http_router", .test_file = "packages/basics/tests/http_router_test.zig", .estimated_time_ms = 900 },
 };
+
+test {
+    std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(TestCache);
+    std.testing.refAllDecls(TestRunner);
+}
