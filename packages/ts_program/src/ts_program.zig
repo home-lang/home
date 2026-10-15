@@ -1218,12 +1218,32 @@ pub const Program = struct {
     /// payloads, producing transitive growth for otherwise independent files.
     fn fileNeedsImportedGlobal(file: *const File, key: BoundGlobals.Key, owners: []const BoundGlobal, gpa: std.mem.Allocator, references: *?GlobalReferenceNames) bool {
         const compilation = file.compilation orelse return false;
-        // Syntax such as tuple/array types depends on lib declarations even
-        // when the source contains no explicit `Array` type-reference node.
-        // Declaration owners form the semantic environment; unlike checked
-        // script owners, they must remain available for those implicit uses.
-        for (owners) |owner| {
+        // The language can reference these roots without a written type name:
+        // literals/tuples use boxed and array interfaces, async/generators use
+        // promise/iterator interfaces, and resource management uses disposables.
+        // Preserve every augmentation owner of those roots, while ordinary
+        // declaration globals follow the same reference filter as script globals.
+        const name = compilation.interner.get(key.name);
+        const implicit_root = for ([_][]const u8{
+            "Array",                        "ReadonlyArray",               "Object",                      "Function",                   "CallableFunction",              "NewableFunction",
+            "String",                       "Number",                      "Boolean",                     "RegExp",                     "IArguments",                    "Symbol",
+            "BigInt",                       "TemplateStringsArray",        "ImportMeta",                  "Promise",                    "PromiseLike",                   "Awaited",
+            "Iterator",                     "IteratorResult",              "Iterable",                    "IterableIterator",           "IteratorObject",                "BuiltinIteratorReturn",
+            "AsyncIterator",                "AsyncIterable",               "AsyncIterableIterator",       "AsyncIteratorObject",        "Generator",                     "AsyncGenerator",
+            "Disposable",                   "AsyncDisposable",             "DisposableStack",             "AsyncDisposableStack",       "JSX",                           "React",
+            "DecoratorMetadata",            "DecoratorMetadataObject",     "TypedPropertyDescriptor",     "PropertyDescriptor",         "ClassDecoratorContext",         "ClassMemberDecoratorContext",
+            "ClassMethodDecoratorContext",  "ClassGetterDecoratorContext", "ClassSetterDecoratorContext", "ClassFieldDecoratorContext", "ClassAccessorDecoratorContext", "ClassAccessorDecoratorTarget",
+            "ClassAccessorDecoratorResult",
+        }) |root| {
+            if (std.mem.eql(u8, name, root)) break true;
+        } else false;
+        if (implicit_root) for (owners) |owner| {
             if (owner.file != file and owner.file.owner != .none and owner.file.is_declaration) return true;
+        };
+        // Reflecting on the global object can observe declarations without
+        // spelling each property's name (typeof/keyof or computed access).
+        if (compilation.interner.lookup("globalThis")) |global_this| {
+            if (fileReferencesGlobalNameInPass(gpa, file, .{ .name = global_this, .space = .namespace }, references)) return true;
         }
         const local_map = switch (key.space) {
             .value => &compilation.module.root.values,
@@ -17864,4 +17884,31 @@ test "Program: global augmentation aliases preserve generic interface arguments"
     const c = p.fileById(app).compilation.?;
     try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+}
+
+test "Program: declaration globals import referenced owners and implicit language roots" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app = try program.add("/main.ts", "declare const used: Used; const values = [1]; const good: number = used.value;");
+    const used = try program.add("/used.d.ts", "interface Used { value: number; }");
+    const unused = try program.add("/unused.d.ts", "interface Unused { unrelated: string; }");
+    const array = try program.add("/array.d.ts", "interface Array<T> { [n: number]: T; length: number; }");
+    const augmentation = try program.add("/array-augmentation.d.ts", "interface Array<T> { readonly tag: number; }");
+    const reflected = try program.add("/reflection.ts", "type Globals = typeof globalThis;");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    var globals = try program.collectBoundGlobals();
+    defer globals.deinit(T.allocator);
+    var imported = try program.importProgramGlobals(program.fileById(app), &globals);
+    defer imported.deinit();
+    try T.expect(imported.importedFor(program.fileById(used).owner) != null);
+    try T.expect(imported.importedFor(program.fileById(array).owner) != null);
+    try T.expect(imported.importedFor(program.fileById(unused).owner) == null);
+    try T.expect(imported.importedFor(program.fileById(augmentation).owner) != null);
+    var reflected_imports = try program.importProgramGlobals(program.fileById(reflected), &globals);
+    defer reflected_imports.deinit();
+    try T.expect(reflected_imports.importedFor(program.fileById(unused).owner) != null);
 }

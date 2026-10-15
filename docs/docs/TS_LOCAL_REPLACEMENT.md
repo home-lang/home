@@ -1083,3 +1083,48 @@ contains **2,919** verified payloads, SHA-256
 `4e42c2b2e81f40830699fca2188c8f0035f16f9c33d0105518a5f0e9c7f15d11`.
 Synthetic controls, stack samples and input-integrity summaries are retained;
 real-project source files are excluded.
+
+## Declaration owner selection and refreshed project scope
+
+The global-import filter previously imported every checked declaration owner
+into every receiving compilation, including unrelated globals. Ordinary
+declaration globals now use the existing reference filter. Implicit language
+roots retain their owners and augmentations: boxed/array interfaces, async and
+iterator types, resource management, JSX, import metadata and decorators.
+Global-object reflection remains conservative. The regression verifies required
+owners, unused-owner exclusion, array augmentation and `typeof globalThis`;
+restoring the old filter fails at the expected unused-owner assertion.
+
+All **300 Program tests** and **ten Release CLI suites** pass. This includes
+64 library-array observations, 128 optional-object observations, 88 recursive
+interface observations, 180 automatic-variable comparisons and 50 declaration/
+build/watch observations. The final eight installed-library observations pass
+at **1,299 MB**. Earlier attempts timed out under simulator CPU contention; a
+same-fixture control also timed out with the published compiler while the
+candidate completed, and the successful gate retained the 90-second case bound.
+The production build peaks at **2,718 MB**. Formatting is whitespace-only
+relative to the tested source, and the final 4,190-input freeze is unchanged.
+
+The filter removes a demonstrated unnecessary import, but the complete table
+graph still exceeds the unchanged memory guard (**3,928 MB** observed). All
+306 input hashes remain unchanged. The pre-filter symbolic replay completed
+143 files in 360 seconds with about 2 GB last logged live allocation. The
+candidate's symbolic build and production sampling later timed out under host
+contention without useful samples. Whole-owner transfers still copy complete
+payload pools and checked metadata, requiring further memory investigation.
+The table project and the complete replacement goal remain unqualified.
+
+The refreshed local inventory contains **1,201 manifests with check scripts,
+1,481 scripts, 1,420 literal compiler segments and 2,536 configs**. It retains
+91 scripts for review, 1,977 directory symlinks and the same 55 fixture parse
+errors. Relative to the preceding scan, 225 manifest paths were added, 390
+removed and 130 retained manifests changed. Seven inventory coverage tests pass.
+The direct unambiguous segments comprise 1,167 `--noEmit` commands, 30 build
+commands and 203 emit/config-dependent commands; discovery qualifies none of
+them. The report stays local; only aggregate counts and report identity are
+published.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-declaration-owner-filter.tar.gz`
+contains **2,903** verified payloads, SHA-256
+`c73778975ebd37f63960d3a3a146b8a952820a1efe49de625ea15b48da07e9de`.
+Real-project sources and script text are excluded.
