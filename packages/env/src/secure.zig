@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const crypto = std.crypto;
+const compat = @import("compat.zig");
+const Io = std.Io;
 
 // Use ChaCha20-Poly1305 for authenticated encryption
 const Cipher = crypto.aead.chacha_poly.ChaCha20Poly1305;
@@ -16,7 +18,18 @@ pub const SecureEnvError = error{
     DecryptionFailed,
     KeyDerivationFailed,
     InvalidFormat,
-} || std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || std.fs.File.WriteError;
+} || std.mem.Allocator.Error ||
+    Io.RandomSecureError ||
+    Io.Dir.ReadFileAllocError ||
+    Io.File.OpenError ||
+    Io.File.Writer.Error;
+
+fn privateFilePermissions() Io.File.Permissions {
+    return if (@bitSizeOf(Io.File.Permissions) == 0)
+        .default_file
+    else
+        @fromBackingInt(@intCast(0o600));
+}
 
 // Encrypted value format: nonce (12 bytes) + ciphertext + tag (16 bytes)
 pub const EncryptedValue = struct {
@@ -37,21 +50,34 @@ pub const SecureKey = struct {
 
     // Generate a new random key
     pub fn generate() !Self {
+        return generateWithIo(compat.io());
+    }
+
+    pub fn generateWithIo(io: Io) Io.RandomSecureError!Self {
         var key: [key_len]u8 = undefined;
-        crypto.random.bytes(&key);
+        try io.randomSecure(&key);
         return .{ .key = key };
     }
 
     // Derive key from password using Argon2id
     pub fn fromPassword(password: []const u8, salt: []const u8) !Self {
+        return fromPasswordWithIo(std.heap.page_allocator, compat.io(), password, salt);
+    }
+
+    pub fn fromPasswordWithIo(
+        allocator: std.mem.Allocator,
+        io: Io,
+        password: []const u8,
+        salt: []const u8,
+    ) !Self {
         if (salt.len < 16) return error.InvalidKey;
 
         var key: [key_len]u8 = undefined;
 
         // Use Argon2id with secure parameters
         // These parameters provide good security while being reasonable for most systems
-        try crypto.pwhash.argon2.kdf(
-            std.mem.Allocator,
+        crypto.pwhash.argon2.kdf(
+            allocator,
             &key,
             password,
             salt,
@@ -61,6 +87,7 @@ pub const SecureKey = struct {
                 .p = 4, // parallelism
             },
             .argon2id,
+            io,
         ) catch return error.KeyDerivationFailed;
 
         return .{ .key = key };
@@ -68,10 +95,11 @@ pub const SecureKey = struct {
 
     // Load key from file (base64 encoded)
     pub fn fromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return fromFileWithIo(allocator, compat.io(), path);
+    }
 
-        const content = try file.readToEndAlloc(allocator, 1024);
+    pub fn fromFileWithIo(allocator: std.mem.Allocator, io: Io, path: []const u8) !Self {
+        const content = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024));
         defer allocator.free(content);
 
         const trimmed = std.mem.trim(u8, content, " \t\r\n");
@@ -80,13 +108,17 @@ pub const SecureKey = struct {
 
     // Save key to file (base64 encoded)
     pub fn saveToFile(self: *const Self, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 }); // Owner read/write only
-        defer file.close();
+        return self.saveToFileWithIo(compat.io(), path);
+    }
+
+    pub fn saveToFileWithIo(self: *const Self, io: Io, path: []const u8) !void {
+        const file = try Io.Dir.cwd().createFile(io, path, .{ .permissions = privateFilePermissions() });
+        defer file.close(io);
 
         var buf: [128]u8 = undefined;
         const encoded = std.base64.standard.Encoder.encode(&buf, &self.key);
-        try file.writeAll(encoded);
-        try file.writeAll("\n");
+        try file.writeStreamingAll(io, encoded);
+        try file.writeStreamingAll(io, "\n");
     }
 
     // Encode key as base64
@@ -110,9 +142,13 @@ pub const SecureKey = struct {
     }
 
     // Generate a random salt for key derivation
-    pub fn generateSalt() [32]u8 {
+    pub fn generateSalt() ![32]u8 {
+        return generateSaltWithIo(compat.io());
+    }
+
+    pub fn generateSaltWithIo(io: Io) Io.RandomSecureError![32]u8 {
         var salt: [32]u8 = undefined;
-        crypto.random.bytes(&salt);
+        try io.randomSecure(&salt);
         return salt;
     }
 
@@ -126,9 +162,18 @@ pub const SecureKey = struct {
 
 // Encrypt a plaintext value
 pub fn encrypt(allocator: std.mem.Allocator, plaintext: []const u8, key: *const SecureKey) !EncryptedValue {
+    return encryptWithIo(allocator, compat.io(), plaintext, key);
+}
+
+pub fn encryptWithIo(
+    allocator: std.mem.Allocator,
+    io: Io,
+    plaintext: []const u8,
+    key: *const SecureKey,
+) !EncryptedValue {
     // Generate random nonce
     var nonce: [nonce_len]u8 = undefined;
-    crypto.random.bytes(&nonce);
+    try io.randomSecure(&nonce);
 
     // Allocate ciphertext buffer
     const ciphertext = try allocator.alloc(u8, plaintext.len);
@@ -266,22 +311,25 @@ pub const SecureEnv = struct {
 
     // Set encrypted value
     pub fn set(self: *Self, key_name: []const u8, plaintext: []const u8) !void {
+        return self.setWithIo(compat.io(), key_name, plaintext);
+    }
+
+    pub fn setWithIo(self: *Self, io: Io, key_name: []const u8, plaintext: []const u8) !void {
         if (self.key == null) return error.InvalidKey;
 
-        var encrypted = try encrypt(self.allocator, plaintext, &self.key.?);
+        var encrypted = try encryptWithIo(self.allocator, io, plaintext, &self.key.?);
         defer encrypted.deinit(self.allocator);
 
         const encoded = try encodeEncrypted(self.allocator, &encrypted);
         errdefer self.allocator.free(encoded);
 
-        const gop = try self.vars.getOrPut(key_name);
-        if (gop.found_existing) {
-            self.allocator.free(gop.value_ptr.*);
-            gop.value_ptr.* = encoded;
+        if (self.vars.getPtr(key_name)) |old_value| {
+            self.allocator.free(old_value.*);
+            old_value.* = encoded;
         } else {
             const key_owned = try self.allocator.dupe(u8, key_name);
-            gop.key_ptr.* = key_owned;
-            gop.value_ptr.* = encoded;
+            errdefer self.allocator.free(key_owned);
+            try self.vars.put(key_owned, encoded);
         }
     }
 
@@ -299,10 +347,16 @@ pub const SecureEnv = struct {
 
     // Load from encrypted .env file
     pub fn loadFromFile(self: *Self, path: []const u8) !void {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return self.loadFromFileWithIo(compat.io(), path);
+    }
 
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024); // 10MB max
+    pub fn loadFromFileWithIo(self: *Self, io: Io, path: []const u8) !void {
+        const content = try Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            self.allocator,
+            .limited(10 * 1024 * 1024),
+        );
         defer self.allocator.free(content);
 
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -315,16 +369,16 @@ pub const SecureEnv = struct {
             const value = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
 
             if (key_name.len > 0 and value.len > 0) {
-                const key_owned = try self.allocator.dupe(u8, key_name);
                 const value_owned = try self.allocator.dupe(u8, value);
+                errdefer self.allocator.free(value_owned);
 
-                const gop = try self.vars.getOrPut(key_name);
-                if (gop.found_existing) {
-                    self.allocator.free(gop.value_ptr.*);
-                    gop.value_ptr.* = value_owned;
+                if (self.vars.getPtr(key_name)) |old_value| {
+                    self.allocator.free(old_value.*);
+                    old_value.* = value_owned;
                 } else {
-                    gop.key_ptr.* = key_owned;
-                    gop.value_ptr.* = value_owned;
+                    const key_owned = try self.allocator.dupe(u8, key_name);
+                    errdefer self.allocator.free(key_owned);
+                    try self.vars.put(key_owned, value_owned);
                 }
             }
         }
@@ -332,10 +386,16 @@ pub const SecureEnv = struct {
 
     // Save to encrypted .env file
     pub fn saveToFile(self: *Self, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{ .mode = 0o600 });
-        defer file.close();
+        return self.saveToFileWithIo(compat.io(), path);
+    }
 
-        const writer = file.writer();
+    pub fn saveToFileWithIo(self: *Self, io: Io, path: []const u8) !void {
+        const file = try Io.Dir.cwd().createFile(io, path, .{ .permissions = privateFilePermissions() });
+        defer file.close(io);
+
+        var output: Io.Writer.Allocating = .init(self.allocator);
+        defer output.deinit();
+        const writer = &output.writer;
 
         try writer.writeAll("# Encrypted environment variables\n");
         try writer.writeAll("# Generated by Home Programming Language\n");
@@ -345,6 +405,8 @@ pub const SecureEnv = struct {
         while (iter.next()) |entry| {
             try writer.print("{s}={s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
         }
+
+        try file.writeStreamingAll(io, output.written());
     }
 };
 
@@ -457,4 +519,55 @@ test "secure env set and get" {
     defer allocator.free(value.?);
 
     try testing.expectEqualStrings("super_secret_key_123", value.?);
+}
+
+test "password derivation preserves salt validation and uses explicit IO" {
+    const testing = std.testing;
+    try testing.expectError(
+        error.InvalidKey,
+        SecureKey.fromPasswordWithIo(testing.allocator, testing.io, "password", "too-short"),
+    );
+
+    var key = try SecureKey.fromPasswordWithIo(
+        testing.allocator,
+        testing.io,
+        "correct horse battery staple",
+        "0123456789abcdef",
+    );
+    defer key.destroy();
+    try testing.expect(!std.mem.allEqual(u8, &key.key, 0));
+}
+
+test "secure key and environment files round trip through explicit IO" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const key_path = try std.fs.path.join(allocator, &.{ root, "env.key" });
+    defer allocator.free(key_path);
+    const env_path = try std.fs.path.join(allocator, &.{ root, "env.encrypted" });
+    defer allocator.free(env_path);
+
+    var key = try SecureKey.generateWithIo(testing.io);
+    defer key.destroy();
+    try key.saveToFileWithIo(testing.io, key_path);
+
+    var loaded_key = try SecureKey.fromFileWithIo(allocator, testing.io, key_path);
+    defer loaded_key.destroy();
+    try testing.expectEqualSlices(u8, &key.key, &loaded_key.key);
+
+    var original = SecureEnv.init(allocator, loaded_key);
+    defer original.deinit();
+    try original.setWithIo(testing.io, "API_KEY", "secret-value");
+    try original.saveToFileWithIo(testing.io, env_path);
+
+    var loaded = SecureEnv.init(allocator, loaded_key);
+    defer loaded.deinit();
+    try loaded.loadFromFileWithIo(testing.io, env_path);
+    const value = (try loaded.get("API_KEY")).?;
+    defer allocator.free(value);
+    try testing.expectEqualStrings("secret-value", value);
 }

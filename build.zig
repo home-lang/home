@@ -579,6 +579,7 @@ pub fn build(b: *std.Build) void {
     ffi_pkg.link_libc = true;
     const math_pkg = createPackage(b, "packages/math/src/math.zig", target, optimize, zig_test_framework);
     const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize, zig_test_framework);
+    env_pkg.link_libc = true;
     const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize, zig_test_framework);
     const signal_pkg = createPackage(b, "packages/signal/src/signal.zig", target, optimize, zig_test_framework);
     const mac_pkg = createPackage(b, "packages/mac/src/mac.zig", target, optimize, zig_test_framework);

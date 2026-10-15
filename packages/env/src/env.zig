@@ -139,14 +139,16 @@ pub const Parse = struct {
         if (std.mem.eql(u8, lower, "true") or
             std.mem.eql(u8, lower, "1") or
             std.mem.eql(u8, lower, "yes") or
-            std.mem.eql(u8, lower, "on")) {
+            std.mem.eql(u8, lower, "on"))
+        {
             return true;
         }
 
         if (std.mem.eql(u8, lower, "false") or
             std.mem.eql(u8, lower, "0") or
             std.mem.eql(u8, lower, "no") or
-            std.mem.eql(u8, lower, "off")) {
+            std.mem.eql(u8, lower, "off"))
+        {
             return false;
         }
 
@@ -351,4 +353,11 @@ test "env validate require with missing var" {
     // Test require with missing variable
     const result = Validate.require(allocator, "HOME_TEST_MISSING_VAR");
     try testing.expectError(error.RequiredEnvironmentVariableNotFound, result);
+}
+
+test {
+    _ = dotenv;
+    _ = parser;
+    _ = secure;
+    _ = cli;
 }

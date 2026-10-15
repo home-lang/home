@@ -38,7 +38,7 @@ pub fn parseLine(allocator: std.mem.Allocator, line: []const u8) ParseError!?Ent
         }
     }
 
-    const value_raw = std.mem.trim(u8, trimmed[eq_pos + 1..], " \t");
+    const value_raw = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
     const value = try parseValue(allocator, value_raw);
 
     return Entry{
@@ -62,7 +62,7 @@ fn parseValue(allocator: std.mem.Allocator, value: []const u8) ParseError![]cons
 
     // Unquoted value - trim comments
     if (std.mem.indexOfScalar(u8, value, '#')) |comment_pos| {
-        const before_comment = std.mem.trimRight(u8, value[0..comment_pos], " \t");
+        const before_comment = std.mem.trimEnd(u8, value[0..comment_pos], " \t");
         return try allocator.dupe(u8, before_comment);
     }
 
