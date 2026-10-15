@@ -14,6 +14,23 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const lexer_module = b.addModule("cache_lexer", .{
+        .root_source_file = b.path("../lexer/src/lexer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ast_module = b.addModule("cache_ast", .{
+        .root_source_file = b.path("../ast/src/ast.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ast_module.addImport("lexer", lexer_module);
+    const dependency_tracker_module = b.addModule("dependency_tracker", .{
+        .root_source_file = b.path("src/dependency_tracker.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dependency_tracker_module.addImport("ast", ast_module);
 
     const lib = b.addLibrary(.{
         .name = "cache",
@@ -33,6 +50,8 @@ pub fn build(b: *std.Build) void {
     });
     public_tests.root_module.addImport("cache", cache_module);
     public_tests.root_module.addImport("incremental_cache", incremental_module);
+    public_tests.root_module.addImport("dependency_tracker", dependency_tracker_module);
+    public_tests.root_module.addImport("ast", ast_module);
     public_tests.root_module.addImport("ir_cache", b.createModule(.{
         .root_source_file = b.path("src/ir_cache.zig"),
         .target = target,

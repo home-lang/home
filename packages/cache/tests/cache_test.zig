@@ -2,7 +2,9 @@ const std = @import("std");
 const testing = std.testing;
 const cache_pkg = @import("cache");
 const incremental_cache = @import("incremental_cache");
+const dependency_tracker = @import("dependency_tracker");
 const ir_cache = @import("ir_cache");
+const ast = @import("ast");
 
 // Cache system tests
 // Tests for IR caching and build caching
@@ -10,10 +12,109 @@ const ir_cache = @import("ir_cache");
 test "cache - basic compilation" {
     testing.refAllDecls(cache_pkg);
     testing.refAllDecls(incremental_cache);
+    testing.refAllDecls(dependency_tracker);
+    testing.refAllDecls(dependency_tracker.DependencyTracker);
     testing.refAllDecls(cache_pkg.Cache);
     testing.refAllDecls(cache_pkg.MemoryCacheDriver);
     testing.refAllDecls(cache_pkg.FilesystemCacheDriver);
     testing.refAllDecls(cache_pkg.RedisCacheDriver);
+}
+
+fn freeOwnedNames(allocator: std.mem.Allocator, names: []const []const u8) void {
+    for (names) |name| allocator.free(name);
+    allocator.free(names);
+}
+
+fn nameIndex(names: []const []const u8, expected: []const u8) ?usize {
+    for (names, 0..) |name, index| {
+        if (std.mem.eql(u8, name, expected)) return index;
+    }
+    return null;
+}
+
+test "dependency tracker owns edges orders dependencies and propagates invalidation" {
+    const allocator = testing.allocator;
+    var tracker = dependency_tracker.DependencyTracker.init(allocator);
+    defer tracker.deinit();
+
+    var app = [_]u8{ 'a', 'p', 'p' };
+    var library = [_]u8{ 'l', 'i', 'b' };
+    var core = [_]u8{ 'c', 'o', 'r', 'e' };
+    try tracker.addDependency(&app, &library);
+    try tracker.addDependency(&library, &core);
+    try tracker.addDependency(&app, &library);
+    @memset(&app, 'x');
+    @memset(&library, 'y');
+    @memset(&core, 'z');
+
+    try testing.expectEqual(@as(usize, 1), tracker.getDependencies("app").len);
+    try testing.expectEqualStrings("lib", tracker.getDependencies("app")[0]);
+    try testing.expectEqualStrings("app", tracker.getDependents("lib")[0]);
+    try testing.expectEqual(@as(usize, 3), tracker.getStats().total_modules);
+    try testing.expectEqual(@as(usize, 2), tracker.getStats().total_dependencies);
+
+    const order = try tracker.getCompilationOrder();
+    defer freeOwnedNames(allocator, order);
+    try testing.expect(nameIndex(order, "core").? < nameIndex(order, "lib").?);
+    try testing.expect(nameIndex(order, "lib").? < nameIndex(order, "app").?);
+
+    try tracker.invalidate("core");
+    try testing.expect(tracker.isInvalidated("core"));
+    try testing.expect(tracker.isInvalidated("lib"));
+    try testing.expect(tracker.isInvalidated("app"));
+    try testing.expectEqual(@as(usize, 3), tracker.getStats().invalidated_modules);
+    tracker.clearInvalidations();
+    try testing.expectEqual(@as(usize, 0), tracker.getStats().invalidated_modules);
+}
+
+test "dependency tracker extracts segmented imports and reports the exact cycle" {
+    const allocator = testing.allocator;
+    var tracker = dependency_tracker.DependencyTracker.init(allocator);
+    defer tracker.deinit();
+
+    var import_path = [_][]const u8{ "standard", "io" };
+    var import_decl = ast.ImportDecl{
+        .node = .{ .type = .ImportDecl, .loc = .{ .line = 1, .column = 1 } },
+        .path = &import_path,
+        .imports = null,
+    };
+    var statements = [_]ast.Stmt{.{ .ImportDecl = &import_decl }};
+    var program = ast.Program{ .statements = &statements };
+    try tracker.extractFromAST("entry", &program);
+    try testing.expectEqualStrings("standard/io", tracker.getDependencies("entry")[0]);
+
+    try tracker.addDependency("standard/io", "codec");
+    try tracker.addDependency("codec", "standard/io");
+    const cycle = (try tracker.detectCycles()).?;
+    defer freeOwnedNames(allocator, cycle);
+    try testing.expectEqual(@as(usize, 3), cycle.len);
+    try testing.expectEqualStrings("standard/io", cycle[0]);
+    try testing.expectEqualStrings("codec", cycle[1]);
+    try testing.expectEqualStrings("standard/io", cycle[2]);
+}
+
+fn exerciseDependencyTrackerAllocationFailures(allocator: std.mem.Allocator) !void {
+    var tracker = dependency_tracker.DependencyTracker.init(allocator);
+    defer tracker.deinit();
+
+    try tracker.addDependency("app", "library");
+    try tracker.addDependency("library", "core");
+    const order = try tracker.getCompilationOrder();
+    defer freeOwnedNames(allocator, order);
+    try tracker.invalidate("core");
+    try testing.expect((try tracker.detectCycles()) == null);
+
+    try tracker.addDependency("core", "app");
+    const cycle = (try tracker.detectCycles()).?;
+    defer freeOwnedNames(allocator, cycle);
+}
+
+test "dependency tracker preserves ownership across every allocation failure" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        exerciseDependencyTrackerAllocationFailures,
+        .{},
+    );
 }
 
 test "incremental source cache owns registrations and metadata" {
