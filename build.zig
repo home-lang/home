@@ -933,6 +933,7 @@ pub fn build(b: *std.Build) void {
     const io_collections_pkg = createPackage(b, "packages/collections/src/lib.zig", target, optimize, zig_test_framework);
     const io_pkg = createPackage(b, "packages/io/src/lib.zig", target, optimize, zig_test_framework);
     io_pkg.addImport("collections", io_collections_pkg);
+    const test_file_discovery_pkg = createPackage(b, "packages/testing/src/test_file_discovery.zig", target, optimize, zig_test_framework);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
@@ -1613,6 +1614,16 @@ pub fn build(b: *std.Build) void {
     io_tests.root_module.addImport("io", io_pkg);
     const run_io_tests = b.addRunArtifact(io_tests);
 
+    const test_file_discovery_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/testing/tests/test_file_discovery_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_file_discovery_tests.root_module.addImport("test_file_discovery", test_file_discovery_pkg);
+    const run_test_file_discovery_tests = b.addRunArtifact(test_file_discovery_tests);
+
     const toml_tests = b.addTest(.{
         .root_module = toml_pkg,
     });
@@ -1969,6 +1980,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_io_tests.step, test_filter, "io_package");
+    dependOnTest(test_step, &run_test_file_discovery_tests.step, test_filter, "test_file_discovery");
     dependOnTest(test_step, &run_toml_tests.step, test_filter, "toml");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");

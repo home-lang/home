@@ -3,12 +3,18 @@ const std = @import("std");
 /// Discovers test files based on naming conventions
 pub const TestFileDiscovery = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     test_files: std.ArrayList([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) TestFileDiscovery {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: std.Io) TestFileDiscovery {
         return .{
             .allocator = allocator,
-            .test_files = std.ArrayList([]const u8).init(allocator),
+            .io = io,
+            .test_files = .empty,
         };
     }
 
@@ -16,22 +22,23 @@ pub const TestFileDiscovery = struct {
         for (self.test_files.items) |file| {
             self.allocator.free(file);
         }
-        self.test_files.deinit();
+        self.test_files.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Discovers test files in a directory and its subdirectories
     /// Looks for files matching: *.test.home, *.test.hm
     pub fn discoverInDirectory(self: *TestFileDiscovery, dir_path: []const u8) !void {
-        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-        defer dir.close();
+        const dir = try std.Io.Dir.cwd().openDir(self.io, dir_path, .{ .iterate = true });
+        defer dir.close(self.io);
 
         try self.walkDirectory(dir, dir_path);
     }
 
-    fn walkDirectory(self: *TestFileDiscovery, dir: std.fs.Dir, dir_path: []const u8) !void {
-        var iter = dir.iterate();
+    fn walkDirectory(self: *TestFileDiscovery, dir: std.Io.Dir, dir_path: []const u8) !void {
+        var iter = dir.iterateAssumeFirstIteration();
 
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             switch (entry.kind) {
                 .file => {
                     if (isTestFile(entry.name)) {
@@ -39,7 +46,8 @@ pub const TestFileDiscovery = struct {
                             self.allocator,
                             &.{ dir_path, entry.name },
                         );
-                        try self.test_files.append(full_path);
+                        errdefer self.allocator.free(full_path);
+                        try self.test_files.append(self.allocator, full_path);
                     }
                 },
                 .directory => {
@@ -54,8 +62,8 @@ pub const TestFileDiscovery = struct {
                     );
                     defer self.allocator.free(subdir_path);
 
-                    var subdir = try dir.openDir(entry.name, .{ .iterate = true });
-                    defer subdir.close();
+                    const subdir = try dir.openDir(self.io, entry.name, .{ .iterate = true });
+                    defer subdir.close(self.io);
 
                     try self.walkDirectory(subdir, subdir_path);
                 },
