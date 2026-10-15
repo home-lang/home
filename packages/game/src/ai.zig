@@ -49,7 +49,7 @@ pub fn Sequence(comptime max_children: usize) type {
         pub fn init(name: []const u8) Self {
             return Self{
                 .base = .{ .vtable = &vtable, .name = name },
-                .children = [_]?*BehaviorNode{null} ** max_children,
+                .children = @splat(null),
                 .child_count = 0,
                 .current_child = 0,
             };
@@ -114,7 +114,7 @@ pub fn Selector(comptime max_children: usize) type {
         pub fn init(name: []const u8) Self {
             return Self{
                 .base = .{ .vtable = &vtable, .name = name },
-                .children = [_]?*BehaviorNode{null} ** max_children,
+                .children = @splat(null),
                 .child_count = 0,
                 .current_child = 0,
             };
@@ -392,6 +392,11 @@ pub const SteeringAgent = struct {
     max_force: f32 = 50,
     mass: f32 = 1,
     wander_angle: f32 = 0,
+    wander_prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
+
+    pub fn setWanderSeed(self: *SteeringAgent, seed: u64) void {
+        self.wander_prng = std.Random.DefaultPrng.init(seed);
+    }
 
     pub fn applyForce(self: *SteeringAgent, force: Vec2, dt: f32) void {
         const acceleration = force.scale(1.0 / self.mass);
@@ -447,7 +452,7 @@ pub const SteeringAgent = struct {
         };
 
         // Change wander angle slightly
-        self.wander_angle += (std.crypto.random.float(f32) - 0.5) * angle_change;
+        self.wander_angle += (self.wander_prng.random().float(f32) - 0.5) * angle_change;
 
         // Calculate wander force
         circle_center = circle_center.add(displacement);
@@ -504,6 +509,18 @@ test "SteeringAgent seek" {
 
     const force = agent.seek(target);
     try std.testing.expect(force.x > 0);
+}
+
+test "SteeringAgent wander is reproducible with an explicit seed" {
+    var left = SteeringAgent{ .velocity = .{ .x = 1, .y = 0 } };
+    var right = SteeringAgent{ .velocity = .{ .x = 1, .y = 0 } };
+    left.setWanderSeed(0x1234);
+    right.setWanderSeed(0x1234);
+
+    const left_force = left.wander(10, 2, 0.5);
+    const right_force = right.wander(10, 2, 0.5);
+    try std.testing.expectEqual(left_force, right_force);
+    try std.testing.expectEqual(left.wander_angle, right.wander_angle);
 }
 
 test "Vec2 operations" {

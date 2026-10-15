@@ -7,19 +7,19 @@ const Allocator = std.mem.Allocator;
 
 // Particle emitter types
 pub const EmitterType = enum {
-    Point,      // Emits from a point
-    Sphere,     // Emits from sphere surface
-    Box,        // Emits from box volume
-    Cone,       // Emits in cone shape
-    Line,       // Emits along line
+    Point, // Emits from a point
+    Sphere, // Emits from sphere surface
+    Box, // Emits from box volume
+    Cone, // Emits in cone shape
+    Line, // Emits along line
 };
 
 // Particle types
 pub const ParticleType = enum {
-    Billboard,   // Always faces camera
-    Oriented,    // Has fixed orientation
-    Streak,      // Motion blur trail
-    Mesh,        // 3D mesh particle
+    Billboard, // Always faces camera
+    Oriented, // Has fixed orientation
+    Streak, // Motion blur trail
+    Mesh, // 3D mesh particle
 };
 
 // Blend modes for particles
@@ -86,9 +86,9 @@ pub const EmitterConfig = struct {
     blend_mode: ParticleBlend,
 
     // Emission
-    emission_rate: f32,      // Particles per second
+    emission_rate: f32, // Particles per second
     max_particles: u32,
-    burst_count: u32,        // Particles per burst
+    burst_count: u32, // Particles per burst
 
     // Particle properties
     lifetime_min: f32,
@@ -107,9 +107,9 @@ pub const EmitterConfig = struct {
     drag: f32,
 
     // Emitter shape
-    radius: f32,             // For sphere/cone
-    cone_angle: f32,         // For cone
-    box_size: [3]f32,        // For box
+    radius: f32, // For sphere/cone
+    cone_angle: f32, // For cone
+    box_size: [3]f32, // For box
 
     pub fn init() EmitterConfig {
         return .{
@@ -145,16 +145,18 @@ pub const ParticleEmitter = struct {
     position: [3]f32,
     is_active: bool,
     emission_accumulator: f32,
-    prng: std.rand.DefaultPrng,
+    prng: std.Random.DefaultPrng,
 
     pub fn init(allocator: Allocator, config: EmitterConfig) !ParticleEmitter {
+        return initWithSeed(allocator, config, 0);
+    }
+
+    pub fn initWithSeed(allocator: Allocator, config: EmitterConfig, seed: u64) !ParticleEmitter {
         const particles = try allocator.alloc(Particle, config.max_particles);
         for (particles) |*p| {
             p.* = Particle.init();
             p.is_alive = false;
         }
-
-        var prng = std.rand.DefaultPrng.init(0);
 
         return .{
             .allocator = allocator,
@@ -164,7 +166,7 @@ pub const ParticleEmitter = struct {
             .position = [3]f32{ 0.0, 0.0, 0.0 },
             .is_active = true,
             .emission_accumulator = 0.0,
-            .prng = prng,
+            .prng = std.Random.DefaultPrng.init(seed),
         };
     }
 
@@ -232,7 +234,7 @@ pub const ParticleEmitter = struct {
         particle.is_alive = true;
     }
 
-    fn randomSpherePoint(self: *ParticleEmitter, rand: std.rand.Random) [3]f32 {
+    fn randomSpherePoint(self: *ParticleEmitter, rand: std.Random) [3]f32 {
         const theta = rand.float(f32) * std.math.pi * 2.0;
         const phi = std.math.acos(2.0 * rand.float(f32) - 1.0);
 
@@ -243,7 +245,7 @@ pub const ParticleEmitter = struct {
         };
     }
 
-    fn randomBoxPoint(self: *ParticleEmitter, rand: std.rand.Random) [3]f32 {
+    fn randomBoxPoint(self: *ParticleEmitter, rand: std.Random) [3]f32 {
         return [3]f32{
             self.position[0] + (rand.float(f32) - 0.5) * self.config.box_size[0],
             self.position[1] + (rand.float(f32) - 0.5) * self.config.box_size[1],
@@ -251,12 +253,12 @@ pub const ParticleEmitter = struct {
         };
     }
 
-    fn randomConePoint(self: *ParticleEmitter, rand: std.rand.Random) [3]f32 {
+    fn randomConePoint(self: *ParticleEmitter, rand: std.Random) [3]f32 {
         _ = rand;
         return self.position;
     }
 
-    fn randomLinePoint(self: *ParticleEmitter, rand: std.rand.Random) [3]f32 {
+    fn randomLinePoint(self: *ParticleEmitter, rand: std.Random) [3]f32 {
         const t = rand.float(f32);
         return [3]f32{
             self.position[0],
@@ -265,7 +267,7 @@ pub const ParticleEmitter = struct {
         };
     }
 
-    fn randomDirection(self: *ParticleEmitter, rand: std.rand.Random) [3]f32 {
+    fn randomDirection(self: *ParticleEmitter, rand: std.Random) [3]f32 {
         _ = self;
         const theta = rand.float(f32) * std.math.pi * 2.0;
         const phi = std.math.acos(2.0 * rand.float(f32) - 1.0);
@@ -418,6 +420,22 @@ test "ParticleEmitter: burst" {
     emitter.burst(50);
 
     try std.testing.expectEqual(@as(u32, 50), emitter.getAliveCount());
+}
+
+test "ParticleEmitter: explicit seeds reproduce particle state" {
+    const allocator = std.testing.allocator;
+    var config = EmitterConfig.init();
+    config.max_particles = 1;
+    config.emitter_type = .Sphere;
+
+    var left = try ParticleEmitter.initWithSeed(allocator, config, 0x1234);
+    defer left.deinit();
+    var right = try ParticleEmitter.initWithSeed(allocator, config, 0x1234);
+    defer right.deinit();
+
+    left.burst(1);
+    right.burst(1);
+    try std.testing.expectEqual(left.particles[0], right.particles[0]);
 }
 
 test "Preset: explosion emitter" {

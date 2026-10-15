@@ -1907,6 +1907,10 @@ pub fn build(b: *std.Build) void {
     const run_game_deterministic_tests = b.addRunArtifact(game_deterministic_tests);
     dependOnTest(test_step, &run_game_deterministic_tests.step, test_filter, "game_deterministic");
 
+    const game_ai_tests = b.addTest(.{ .root_module = game_ai_pkg });
+    const run_game_ai_tests = b.addRunArtifact(game_ai_tests);
+    dependOnTest(test_step, &run_game_ai_tests.step, test_filter, "game_ai");
+
     const game_ecs_tests = b.addTest(.{ .root_module = game_ecs_pkg });
     const run_game_ecs_tests = b.addRunArtifact(game_ecs_tests);
     dependOnTest(test_step, &run_game_ecs_tests.step, test_filter, "game_ecs");
@@ -1914,6 +1918,10 @@ pub fn build(b: *std.Build) void {
     const game_replay_tests = b.addTest(.{ .root_module = game_replay_pkg });
     const run_game_replay_tests = b.addRunArtifact(game_replay_tests);
     dependOnTest(test_step, &run_game_replay_tests.step, test_filter, "game_replay");
+
+    const graphics_particles_tests = b.addTest(.{ .root_module = particles_pkg });
+    const run_graphics_particles_tests = b.addRunArtifact(graphics_particles_tests);
+    dependOnTest(test_step, &run_graphics_particles_tests.step, test_filter, "graphics_particles");
 
     // Home Runtime substrate tests
     const home_rt_test_filters: []const []const u8 = if (home_rt_test_filter) |needle| &.{needle} else &.{};
