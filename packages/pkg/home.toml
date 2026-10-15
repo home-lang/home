@@ -9,4 +9,4 @@ license = "MIT"
 # Standalone package manager
 
 [scripts]
-test = "zig test src/package_manager.zig"
+test = "zig build test"
