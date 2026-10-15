@@ -150812,7 +150812,9 @@ pub const Checker = struct {
     fn numberLiteralValueFromType(self: *Checker, t: TypeId) ?f64 {
         if (t >= self.interner.pool.typeCount()) return null;
         const f = self.interner.pool.flagsOf(t);
-        if (!f.is_literal or !f.is_number) return null;
+        // Compound types inherit constituent flags, but their payload index
+        // addresses the union/intersection table, never literal_payloads.
+        if (f.is_union or f.is_intersection or !f.is_literal or !f.is_number) return null;
         return switch (self.interner.literalOf(t)) {
             .number_lit => |bits| @as(f64, @bitCast(bits)),
             else => null,
@@ -292713,4 +292715,25 @@ test "checker: structural iterable arguments include array prototype members" {
         .{ .name = try s.sint.intern("required"), .type = types.Primitive.boolean_t, .is_optional = false, .is_readonly = false, .is_method = false },
     });
     try T.expect(!try s.checker.checkerAssignableTo(numbers, required));
+}
+
+test "checker: numeric literal reads reject compound payloads" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const one = try s.ti.internNumberLiteral(1);
+    const number_or_one = try s.ti.internUnion(&.{ types.Primitive.number_t, one });
+    try T.expect(s.ti.pool.flagsOf(number_or_one).is_union);
+    try T.expect(s.checker.numberLiteralValueFromType(number_or_one) == null);
+    const marker = try s.ti.internObjectType(&.{});
+    const compound = try s.ti.internIntersection(&.{ one, marker });
+    try T.expect(s.checker.numberLiteralValueFromType(compound) == null);
+    try T.expectEqual(@as(f64, 1), s.checker.numberLiteralValueFromType(one).?);
+}
+
+test "checker: unary minus of an optional numeric default keeps number type" {
+    const s = try newSetup("interface Options { window?: number } function f(options: Options) { const window = options.window ?? 1; const lower = -window; const good: number = lower; const wrong: string = lower; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), s.checker.diagnostics.items[0].code);
 }

@@ -1340,3 +1340,33 @@ and all **4,191 frozen inputs** remain unchanged. Evidence:
 **3,017 verified payloads**, SHA-256
 `bc8cc18be2c33406b79ef07181eacf7197bb4cd9b14d33b062b96fb8f6e24895`.
 Real-project source and diagnostic text are excluded from the archive.
+
+## Numeric literal payloads after nullish defaults
+
+The next project comparison, ts-auth, exposed a release crash when unary minus
+read a union such as `number | 1` after an optional numeric property's nullish
+default. Compound types inherit constituent flags, so the literal flag did not
+mean their payload belonged to the literal table. The numeric-literal accessor
+now rejects union and intersection payloads before decoding a literal. This
+also prevents an in-range compound payload from silently reading an unrelated
+literal value.
+
+The 370-input project graph remains unchanged. Native TypeScript exits zero;
+home-tsc now completes with **517 diagnostics at 262 distinct code/location
+pairs**, rather than crashing. The
+project and whole-tree replacement remain unqualified. Further mismatches
+include declaration checks, argument counts, imported members and overloads.
+
+All **4,624 checker tests** pass. The disabled-guard control fails the compound
+payload regression as expected. The production build peaks at **2,790 MB**;
+the real-project replay peaks at **1,204 MB**, under the unchanged **3,840 MB**
+guard. A synthetic noLib control isolates the original panic in the numeric
+literal accessor without retaining real-project source in public evidence.
+
+All **305 Program tests and eleven Release CLI suites** pass. The table
+positive and negative comparisons still pass with all 306 original inputs
+unchanged. Final validation peaks at **2,373 MB**; all **4,191 frozen inputs**
+remain unchanged apart from verified whitespace-only formatting. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-numeric-compound.tar.gz` contains
+**2,958 verified payloads**, SHA-256
+`8ef0f84d2cef612421a6531961baaa1769f6353bbcb67c470aaa5742c5ab2c38`.
