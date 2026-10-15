@@ -26,9 +26,11 @@ top-level source files are grouped below.
 | Application helpers | `cli.zig`, `craft.zig`, `datetime.zig`, `temporal.zig`, `zyte.zig` |
 | Security | `crypto.zig` |
 
-These modules vary in maturity. The directory currently has focused Zig tests
-for `craft.zig` and `http_router.zig`; that test presence does not establish a
-stable `.home` import surface for the whole directory.
+These modules vary in maturity. The root build currently has focused Zig test
+targets for the Craft, cryptography, datetime, filesystem, HTTP router, INI
+parser, middleware, and session helpers. Those targets exercise both default
+and caller-supplied `std.Io` paths where available, but their presence does not
+establish a stable `.home` import surface for the whole directory.
 
 ## Other implementation packages
 
