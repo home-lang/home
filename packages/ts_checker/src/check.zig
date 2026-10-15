@@ -95662,8 +95662,39 @@ pub const Checker = struct {
         if (try self.classStaticAssignableTo(source_t, target_t)) return true;
         if (try self.objectMembersAssignableWithClassStaticRelations(source_t, target_t, 4)) return true;
         if (self.expandingGenericObjectAssignmentMismatch(source_t, target_t)) return false;
+        if (try self.arrayPrototypeAssignableToObject(source_t, target_t)) return true;
         if (try self.coinductiveObjectMembersAssignable(source_t, target_t)) return true;
         return self.engine.isAssignableTo(source_t, target_t) catch return error.OutOfMemory;
+    }
+
+    fn arrayPrototypeAssignableToObject(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const target_flags = self.interner.pool.flagsOf(target_t);
+        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection or source_flags.is_signature or
+            !target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection or target_flags.is_signature) return false;
+        if (!self.array_origin_types.contains(source_t) and !self.tuple_origin_types.contains(source_t) and !self.isActualTupleType(source_t)) return false;
+        const iterator_name = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+        if (self.interner.objectMember(target_t, iterator_name) != null) {
+            const element = self.interner.objectNumberIndex(source_t);
+            const expected_element = try self.iterableElementType(target_t);
+            if (element == types.Primitive.none or !try self.checkerAssignableTo(element, expected_element)) return false;
+        }
+        const targets = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target_t));
+        defer self.gpa.free(targets);
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        try members.appendSlice(self.gpa, self.interner.objectMembers(source_t));
+        var added = false;
+        for (targets) |member| {
+            if (self.interner.objectMember(source_t, member.name) != null) continue;
+            const apparent = (try self.arrayLikePrototypeMember(source_t, member.name)) orelse continue;
+            try members.append(self.gpa, .{ .name = member.name, .type = apparent, .is_optional = false, .is_readonly = false, .is_method = true });
+            added = true;
+        }
+        if (!added) return false;
+        const expanded = self.interner.internObjectTypeWithIndexAndSymbol(members.items, self.interner.objectStringIndex(source_t), self.interner.objectNumberIndex(source_t), self.interner.objectSymbolIndex(source_t)) catch return error.OutOfMemory;
+        return self.engine.isAssignableTo(expanded, target_t) catch return error.OutOfMemory;
     }
 
     fn coinductiveObjectMembersAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -111137,6 +111168,9 @@ pub const Checker = struct {
     ) CheckError!void {
         if (!self.interner.isSignature(signature)) return;
         const method = self.string_interner.get(name);
+        if (self.interner.signatureReturn(signature)) |result| {
+            if (self.objectTypeIsArrayLikeContainer(result)) try self.array_origin_types.put(self.gpa, result, {});
+        }
         if (std.mem.eql(u8, method, "includes") or
             std.mem.eql(u8, method, "indexOf") or
             std.mem.eql(u8, method, "lastIndexOf"))
@@ -120733,7 +120767,9 @@ pub const Checker = struct {
                 // and `arr.length` resolve through the existing
                 // object-type machinery without a dedicated array
                 // TypeKind.
-                break :blk self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                const array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                try self.array_origin_types.put(self.gpa, array_t, {});
+                break :blk array_t;
             },
             .object_literal => blk: {
                 // Type each property and synthesize an object-type
@@ -139529,6 +139565,10 @@ pub const Checker = struct {
             return false;
         }
         const source_elem = self.interner.objectNumberIndex(source_t);
+        const iterator_name = self.string_interner.intern("Symbol.iterator") catch return error.OutOfMemory;
+        if (self.interner.objectMember(target_t, iterator_name) != null and
+            self.interner.objectMember(source_t, iterator_name) == null and
+            !self.array_origin_types.contains(source_t) and !self.tuple_origin_types.contains(source_t)) return false;
         const target_elem = if (self.generator_type_info.get(target_t)) |iterable|
             iterable.yield_type
         else
@@ -191651,17 +191691,19 @@ pub const Checker = struct {
         var ordered_target_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer ordered_target_members.deinit(self.gpa);
         if (target_is_class_instance) try self.objectMembersOwnThenInherited(target, &ordered_target_members);
-        const target_members = if (target_is_class_instance)
+        const target_members = try self.gpa.dupe(types.ObjectMember, if (target_is_class_instance)
             ordered_target_members.items
         else
-            self.interner.objectMembers(target);
-        const source_members = if (source < self.interner.pool.typeCount() and
+            self.interner.objectMembers(target));
+        defer self.gpa.free(target_members);
+        const source_members = try self.gpa.dupe(types.ObjectMember, if (source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_object_type and
             !self.interner.pool.flagsOf(source).is_union and
             !self.interner.pool.flagsOf(source).is_intersection)
             self.interner.objectMembers(source)
         else
-            &[_]types.ObjectMember{};
+            &[_]types.ObjectMember{});
+        defer self.gpa.free(source_members);
 
         // Collect every required (non-optional, non-method) target member
         // the source lacks. 1 missing → TS2741; 2-5 → TS2739 (list all);
@@ -191683,7 +191725,7 @@ pub const Checker = struct {
         const direct_call_argument = self.nodeIsDirectCallArgument(value_node);
         for (target_members) |tm| {
             if (tm.is_optional or
-                (tm.is_method and !class_shape_mismatch and !object_literal_to_class and !direct_call_argument)) continue;
+                (tm.is_method and !self.isSymbolNamedMember(tm.name) and !class_shape_mismatch and !object_literal_to_class and !direct_call_argument)) continue;
             var found = (source_is_primitive_object_intersection or source_is_object_intersection) and
                 self.intersectionHasObjectMemberNamed(source, tm.name);
             for (source_members) |sm| {
@@ -191693,6 +191735,8 @@ pub const Checker = struct {
                 }
             }
             if (found) continue;
+            if ((self.array_origin_types.contains(source) or self.tuple_origin_types.contains(source)) and
+                (try self.arrayLikePrototypeMember(source, tm.name)) != null) continue;
             missing_total += 1;
             if (missing_listed < missing_names.len) {
                 missing_names[missing_listed] = tm.name;
@@ -292584,4 +292628,44 @@ test "checker: inferred async returns await nested promises and thenable unions"
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: structural iterable arguments include array prototype members" {
+    const s = try newSetup(
+        \\type Sequence<T> = { [Symbol.iterator](): { next(): { value: T; done: boolean } } };
+        \\declare function consume(values: Sequence<number>): void;
+        \\declare const rows: number[];
+        \\consume(rows);
+        \\consume(rows.map(value => value));
+        \\consume([1, 2]);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    const iterator = try s.checker.buildBuiltinIterableTypeRef("Iterable", try s.sint.intern("Iterable"), &.{types.Primitive.number_t});
+    const dictionary = try s.ti.internObjectTypeWithIndex(&.{.{ .name = try s.sint.intern("length"), .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false }}, types.Primitive.none, types.Primitive.number_t);
+    try T.expect(!try s.checker.checkerAssignableTo(dictionary, iterator.?));
+    try T.expectEqual(@as(?bool, false), try s.checker.arrayElementAssignmentResult(dictionary, iterator.?));
+    var anchor: NodeId = 1;
+    while (anchor < s.hir.nodeCount() and s.hir.kindOf(anchor) != .identifier) : (anchor += 1) {}
+    try T.expect(try s.checker.tryReportSinglePropertyMissing(anchor, anchor, dictionary, iterator.?));
+    try T.expectEqual(TsCodes.property_missing_required, s.checker.diagnostics.items[s.checker.diagnostics.items.len - 1].code);
+    const strings = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    try s.checker.array_origin_types.put(T.allocator, strings, {});
+    try T.expect(!try s.checker.checkerAssignableTo(strings, iterator.?));
+    try T.expect(!try s.checker.tryReportSinglePropertyMissing(anchor, anchor, strings, iterator.?));
+    const value = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("value"), .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const next = try s.ti.internSignature(&.{}, value, false);
+    const cursor = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("next"), .type = next, .is_optional = false, .is_readonly = false, .is_method = true }});
+    const method = try s.ti.internSignature(&.{}, cursor, false);
+    const structural = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("Symbol.iterator"), .type = method, .is_optional = false, .is_readonly = false, .is_method = true }});
+    try T.expect(!try s.checker.checkerAssignableTo(strings, structural));
+    const numbers = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    try s.checker.array_origin_types.put(T.allocator, numbers, {});
+    const required = try s.ti.internObjectType(&.{
+        .{ .name = try s.sint.intern("Symbol.iterator"), .type = s.ti.objectMember(iterator.?, try s.sint.intern("Symbol.iterator")).?, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try s.sint.intern("required"), .type = types.Primitive.boolean_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    try T.expect(!try s.checker.checkerAssignableTo(numbers, required));
 }

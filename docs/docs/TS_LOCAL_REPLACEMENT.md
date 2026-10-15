@@ -1273,3 +1273,38 @@ contains **2,894** verified payloads, SHA-256
 Final validation peaks at **2,156 MB**; formatting is whitespace-only relative
 to the tested source and the 4,190-input freeze is unchanged. Real-project
 source and diagnostic text are excluded.
+
+## Array apparent members in structural iterable relations
+
+Array values store a compact length/index payload; their prototype methods are
+resolved separately. Structural comparison with a project-installed Iterable
+parameter previously saw only that compact payload and reported a missing
+iterator. The checker now supplies requested array prototype members before
+structural comparison. Array literals and synthetic array-method returns retain
+array origin metadata, including after generic substitution. Iterator element
+compatibility is checked separately, and numeric dictionaries do not acquire
+array methods merely by having length and a numeric index.
+
+Negative controls verify the structural helper and map-result provenance are
+both required. Installed-library positives and negatives pass across ESNext,
+DOM and Bun declarations, with native diagnostic codes and locations matching.
+Required symbol methods participate in missing-property diagnostics; real
+arrays expose those methods and retain TS2322 for wrong yielded types.
+Diagnostic prose still renders a numeric dictionary as an array in this
+negative case; full prose compatibility remains unqualified.
+
+All **4,622 checker tests, 303 Program tests and ten Release CLI suites** pass.
+The production build/replay peaks at **2,826 MB** under the unchanged
+**3,840 MB** guard. The unchanged 306-input table project now has **one**
+Home-only TS7006 callback parameter diagnostic, down from three. Native
+TypeScript exits zero; Home exits one. Table and whole-tree replacement remain
+unqualified until the remaining inference error and broader project scope are
+verified.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-array-apparent-final.tar.gz`
+contains **2,932** verified payloads, SHA-256
+`44306bbee88c78364b2217b151eaaaf2f10bbfe13b6a1ac4848c9f377dd80d27`.
+Final validation peaks at **2,183 MB**. Formatting is whitespace-only relative
+to the tested source; all 4,190 frozen inputs remain unchanged. Earlier
+negative-control failures are retained; real-project sources and diagnostic
+text are excluded.
