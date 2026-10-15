@@ -203,5 +203,6 @@ test "resource limits" {
 }
 
 test {
+    std.testing.refAllDecls(io);
     std.testing.refAllDecls(fs);
 }
