@@ -1401,3 +1401,51 @@ suites** pass. The table's positive and negative comparisons still pass with
 `bench/vs_tsgo/evidence/20261015-local-tsc-annotated-default.tar.gz` contains
 **3,174 verified payloads**, SHA-256
 `83f14d1c4449b197e66ae6047c0294bb9a3999595be38157dd7faaa89b64ea5c`.
+
+## Public imported types in declaration signatures
+
+The declaration privacy query treated a public type's presence in an external
+module's export table as evidence that the module was private. A written
+import can be retained in the generated declaration; re-exporting its alias is
+not required. Public type exports now resolve as accessible, while explicit
+cannot-be-named and non-portable reference checks remain separate.
+
+The unchanged 370-input ts-auth graph loses exactly **97 false privacy
+reports**, with no added diagnostic locations. Native exits zero; Home reports
+**348 diagnostics at 93 distinct code/location pairs**. Project and whole-tree
+replacement remain unqualified. Serial/parallel Program regression tests retain
+a planted TS2322 through a renamed barrel import.
+
+The import contract exposed a separate false negative: `export default Config`
+for an interface was present in export-origin queries but absent from declaration
+graph discovery. Collection now enqueues explicit default exports and follows
+the same identity-based origin and supported-schema checks as named routes.
+The initial failing default-import controls are retained. A Program regression
+requires an invalid property value through the default alias to report TS2322.
+
+The corrected import contract passes **40 observations** covering direct,
+renamed, barrel, default and namespace imports, with/without declaration emit,
+and valid/invalid property values. Successful declarations retain their import
+specifier; negative controls match native TS2322 codes and locations. Output
+formatting and all declaration bytes remain a separate compatibility scope.
+The final build peaks at **2,806 MB** and project/contract replay at **1,274 MB**
+under the unchanged **3,840 MB** guard.
+
+Both disabled-fix controls fail as expected: the public-export privacy decision
+breaks nine checker controls, and omitting default-export discovery loses the
+Program's expected TS2322. All **4,624 checker tests and 307 Program tests**
+pass on the restored final source.
+
+All **twelve existing Release CLI suites** pass, including the previous
+72-observation parameter-default contract. Final validation peaks at **2,224
+MB** and all **4,193 frozen inputs** remain unchanged. These checks cover
+public-import accessibility and default-route structural typing; the remaining
+93 distinct ts-auth diagnostic locations still require root-cause repairs.
+
+The table positive and planted-negative comparisons still pass with all 306
+original inputs unchanged. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-public-import.tar.gz` contains
+**3,625 verified payloads**, SHA-256
+`e386d58d3138b515b07831bb20a532c8eba39ab285e3b48cd66e9c9526d949ce`.
+Initial failed controls are retained; real-project source and diagnostic text
+are excluded.

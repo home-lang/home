@@ -314,11 +314,8 @@ pub const ExternalResolver = struct {
         // ./type). Borrowed; lives in the resolver's arena.
         module_name: []const u8,
         // True when the bare name is declared+exported in the resolved
-        // module's top-level body (a type-space export). This is the
-        // `from private module` case (TS4024/4030/...). When this is
-        // true the importing `.d.ts` could in principle re-import the
-        // name; upstream still flags it because the WRITTEN alias is not
-        // preserved (it renders `from private module '{2}'`).
+        // module's top-level body (a type-space export). A written import
+        // can be preserved in declaration output and names this public type.
         exported_type: bool,
         // True when the same export is available in value space. Classes
         // and enums are both type/value exports; interfaces and type
@@ -41206,26 +41203,9 @@ pub const Checker = struct {
         return .accessible;
     }
 
-    // Cross-module declaration-emit privacy: when an exported
-    // declaration's WRITTEN type annotation references a bare type
-    // `name` that is `import`-bound in this file (and not re-exported)
-    // AND that name is an exported type-space symbol in its resolved
-    // source module, return the rendered module name for the `{2}`
-    // diagnostic slot. The importing alias is not preserved in the
-    // emitted `.d.ts`, so the type leaks a name from a "private"
-    // module relative to the declaration. Mirrors upstream's
-    // `selectDiagnosticBasedOnModuleName(... privateModule ...)` for the
-    // ErrorModuleName-set-but-accessible case (the symbol IS named-able
-    // from its own module). Requires the external resolver's
-    // `moduleExport` query (the cross-file export-table merge); without
-    // it we cannot establish the cross-file fact, so we stay silent.
-    //
-    // The `cannot be named` (TS4023/...) variant is distinguished by the
-    // resolver's `cannot_be_named` flag: the name is reachable in its
-    // module only as a nested member of an exported namespace, so no
-    // top-level import alias can name it (upstream's `Accessibility ==
-    // CannotBeNamed`). See `CrossModulePrivacy`.
-
+    // A written import of a public type remains a nameable alias in the
+    // declaration file. Export-table membership establishes accessibility;
+    // it must never be interpreted as a private-module diagnostic.
     /// Outcome of the cross-module declaration-emit privacy query for a
     /// bare type `name`. Mirrors the relevant subset of upstream
     /// `selectDiagnosticBasedOnModuleName`: `ErrorModuleName` is always
@@ -41233,9 +41213,8 @@ pub const Checker = struct {
     /// `NotAccessible` (the `from private module` case) or
     /// `CannotBeNamed` (the `but cannot be named` case).
     const CrossModulePrivacy = union(enum) {
-        /// The name IS a top-level type-space export of its module; the
-        /// importing alias is not preserved in the `.d.ts`. Renders the
-        /// `from private module '{2}'` message (TS4024/4030/...).
+        /// A declaration references a module that is inaccessible from its
+        /// emitted scope. Public imported types never produce this result.
         private_module: []const u8,
         /// The name is reachable only as a nested member of an exported
         /// namespace of its module — no importable top-level alias.
@@ -41257,11 +41236,9 @@ pub const Checker = struct {
                 const specifier = self.string_interner.get(ie.specifier);
                 const bare = self.string_interner.get(name);
                 const info = resolver.moduleExport(specifier, self.importer_path, bare) orelse return null;
-                // `from private module`: the name is genuinely a
-                // top-level type-space export (so it has a module
-                // container and a renderable `{2}`), but the written
-                // alias is not preserved in the `.d.ts`.
-                if (info.exported_type) return .{ .private_module = info.module_name };
+                // Declaration emit retains the import alias of a public
+                // type; re-exporting that alias is not required.
+                if (info.exported_type) return null;
                 // `but cannot be named`: the name is reachable only as a
                 // nested namespace member; no top-level alias can name it
                 // (Accessibility == CannotBeNamed).
@@ -273480,7 +273457,7 @@ test "checker: TS4049/TS4092 fire for an index signature of an exported interfac
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.index_signature_param_private_name, "Parameter 'k' of index signature from exported interface has or is using private name 'PrivateThing'."));
 }
 
-test "checker: TS4084 fires for an exported type alias aliasing an imported private-module type" {
+test "checker: public imported type is accessible for exported type aliases" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export type Alias = Foo;
@@ -273488,11 +273465,7 @@ test "checker: TS4084 fires for an exported type alias aliasing an imported priv
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.exported_type_alias_private_module,
-        "Exported type alias 'Alias' has or is using private name 'Foo' from module \"dep\".",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.exported_type_alias_private_module));
 }
 
 test "checker: TS1379 fires for an import alias referencing a type-only cross-module export" {
@@ -280321,16 +280294,9 @@ test "checker: never-intersection private reduction needs the property in multip
 }
 
 // =============================================================================
-// Cross-module declaration-emit privacy (from private module '{N}') tests.
-//
-// These exercise the cross-file export-table merge end to end: the
-// `CrossModuleStubResolver` plays the role of `ts_program` /
-// `ts_resolver`, reporting (a) the resolved module's rendered name and
-// (b) whether the referenced bare name is an exported type-space symbol
-// there. The checker's `crossModulePrivateNameInfo` then drives the
-// `from private module` variants (TS4024/4030/4032/...). Mirrors the
-// `declarationEmitExpandoPropertyPrivateName` baseline shape:
-//   `... has or is using name 'I' from private module '"a"'.`
+// Public imported types remain accessible through preserved declaration imports.
+// The resolver stub supplies export-table membership; negative tests below
+// separately exercise explicit cannot-be-named and non-portable references.
 // =============================================================================
 
 /// Stub `ExternalResolver` that answers the `moduleExport` query with a
@@ -280500,7 +280466,7 @@ test "checker: namespace import members preserve external generic function facts
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
 }
 
-test "checker: cross-module TS4024 for exported variable using imported private type" {
+test "checker: public imported type is accessible for exported variables" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export const widget: Foo = null as any;
@@ -280508,11 +280474,7 @@ test "checker: cross-module TS4024 for exported variable using imported private 
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.exported_variable_private_module,
-        "Exported variable 'widget' has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.exported_variable_private_module));
     // The same-module private-name variant must NOT also fire.
     try T.expect(!checkerHasAnyCode(s, TsCodes.exported_variable_private_name));
 }
@@ -280563,7 +280525,7 @@ test "checker: TS2742 for inferred exported call result with non-portable module
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.inferred_type_non_portable_reference));
 }
 
-test "checker: cross-module TS4059/TS4077 for exported function return + param" {
+test "checker: public imported type is accessible for exported function signatures" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export function f(p: Foo): Foo { return p; }
@@ -280571,19 +280533,11 @@ test "checker: cross-module TS4059/TS4077 for exported function return + param" 
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.exported_function_return_private_module,
-        "Return type of exported function has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.exported_function_param_private_module,
-        "Parameter 'p' of exported function has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.exported_function_return_private_module));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.exported_function_param_private_module));
 }
 
-test "checker: cross-module TS4030 for public class property" {
+test "checker: public imported type is accessible for public properties" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export class C { public x: Foo = null as any; }
@@ -280591,14 +280545,10 @@ test "checker: cross-module TS4030 for public class property" {
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.public_property_private_module,
-        "Public property 'x' of exported class has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.public_property_private_module));
 }
 
-test "checker: cross-module TS4099/TS4096 for computed public method names" {
+test "checker: public imported type is accessible for computed method names" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export class C {
@@ -280609,19 +280559,11 @@ test "checker: cross-module TS4099/TS4096 for computed public method names" {
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.public_method_name_private_module,
-        "Public method 'Foo' of exported class has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.public_static_method_name_private_module,
-        "Public static method 'Foo' of exported class has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.public_method_name_private_module));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.public_static_method_name_private_module));
 }
 
-test "checker: cross-module TS4032 for exported interface property" {
+test "checker: public imported type is accessible for interface properties" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export interface I { x: Foo; }
@@ -280629,14 +280571,10 @@ test "checker: cross-module TS4032 for exported interface property" {
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.interface_property_private_module,
-        "Property 'x' of exported interface has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.interface_property_private_module));
 }
 
-test "checker: cross-module TS4101 for computed exported interface method name" {
+test "checker: public imported type is accessible for computed interface methods" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export interface I { [Foo](): void; }
@@ -280644,11 +280582,7 @@ test "checker: cross-module TS4101 for computed exported interface method name" 
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.interface_method_name_private_module,
-        "Method 'Foo' of exported interface has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.interface_method_name_private_module));
 }
 
 test "checker: no cross-module diagnostic when name is neither exported nor nested" {
@@ -280816,7 +280750,7 @@ test "checker: cross-module TS4041 for public getter return cannot be named" {
     ));
 }
 
-test "checker: cross-module TS4036/TS4107 for accessor parameter" {
+test "checker: public imported type is accessible for setter parameters" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export class C { set value(v: Foo) {} }
@@ -280824,19 +280758,11 @@ test "checker: cross-module TS4036/TS4107 for accessor parameter" {
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.public_setter_param_private_module,
-        "Parameter type of public setter 'value' from exported class has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.accessor_param_private_module,
-        "Parameter 'v' of accessor has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.public_setter_param_private_module));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.accessor_param_private_module));
 }
 
-test "checker: cross-module TS4034/TS4107 for static accessor parameter" {
+test "checker: public imported type is accessible for static setter parameters" {
     const s = try newSetup(
         \\import { Foo } from "./dep";
         \\export class C { static set value(v: Foo) {} }
@@ -280844,16 +280770,8 @@ test "checker: cross-module TS4034/TS4107 for static accessor parameter" {
     defer destroySetup(s);
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"dep\"", .exported_name = "Foo", .exported_type = true };
     try runCrossModuleCheck(s, &stub);
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.public_static_setter_param_private_module,
-        "Parameter type of public static setter 'value' from exported class has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
-    try T.expect(checkerHasCodeAndMessage(
-        s,
-        TsCodes.accessor_param_private_module,
-        "Parameter 'v' of accessor has or is using name 'Foo' from private module '\"dep\"'.",
-    ));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.public_static_setter_param_private_module));
+    try T.expect(!checkerHasAnyCode(s, TsCodes.accessor_param_private_module));
 }
 
 test "checker: cross-module TS4108 for accessor parameter cannot be named" {

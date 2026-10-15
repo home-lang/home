@@ -18106,3 +18106,51 @@ test "Program: inferred imported generic method results survive unrelated inferr
         }
     }
 }
+
+test "Program: public imported types remain nameable in declaration signatures" {
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const types_source = "export interface Config { value: string }";
+        const barrel = "export type { Config as PublicConfig } from './types.js';";
+        const main = "import type { PublicConfig as Config } from './barrel.js'; export class C { constructor(config: Config) {} method(config: Config): Config { return config; } } export function use(config: Config): Config { return config; } const wrong: Config = { value: 1 };";
+        try vfs.addFile("/proj/types.ts", types_source);
+        try vfs.addFile("/proj/barrel.ts", barrel);
+        try vfs.addFile("/proj/main.ts", main);
+        _ = try program.add("/proj/types.ts", types_source);
+        _ = try program.add("/proj/barrel.ts", barrel);
+        const app = try program.add("/proj/main.ts", main);
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict_flags = .{ .declaration = true, .isolated_declarations = true, .strict_null_checks = true }, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+        const compilation = program.fileById(app).compilation.?;
+        try expectCompilationHasDiagnosticCode(compilation, 2322);
+        try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    }
+}
+
+test "Program: default-exported interface aliases retain their structural type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer checker_resolver.arena.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const types_source = "export interface Config { value: string } export default Config;";
+    const main = "import Config from './types.js'; const good: Config = { value: 'ok' }; const wrong: Config = { value: 1 };";
+    try vfs.addFile("/proj/types.ts", types_source);
+    try vfs.addFile("/proj/main.ts", main);
+    _ = try program.add("/proj/types.ts", types_source);
+    const app = try program.add("/proj/main.ts", main);
+    try program.compileAll(.{ .no_emit = true, .strict_flags = .{ .declaration = true, .isolated_declarations = true, .strict_null_checks = true }, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+    const compilation = program.fileById(app).compilation.?;
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+}

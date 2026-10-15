@@ -228,6 +228,9 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         for (hir.blockStmts(&c.hir, c.root)) |statement| {
             if (c.hir.kindOf(statement) != .export_decl) continue;
             const ex = hir.exportOf(&c.hir, statement);
+            if (ex.is_default and !ex.is_export_equals) {
+                try pending.append(arena, .{ .source = index, .name = "default" });
+            }
             for (hir.exportNamed(&c.hir, statement)) |specifier| {
                 const spec = hir.importSpecifierOf(&c.hir, specifier);
                 try pending.append(arena, .{ .source = index, .name = c.interner.get(spec.local) });
