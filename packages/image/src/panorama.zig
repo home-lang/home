@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const image = @import("image.zig");
 const Image = image.Image;
 const Color = image.Color;
@@ -31,16 +32,16 @@ pub const FeatureDetectionOptions = struct {
 
 /// Detects key features in an image using corner detection
 pub fn detectFeatures(allocator: std.mem.Allocator, img: *const Image, options: FeatureDetectionOptions) ![]Feature {
-    var features = std.ArrayList(Feature).init(allocator);
-    defer features.deinit();
+    var features: std.ArrayList(Feature) = .empty;
+    defer features.deinit(allocator);
 
     // Convert to grayscale
-    var gray = try allocator.alloc(f32, img.width * img.height);
+    const gray = try allocator.alloc(f32, img.width * img.height);
     defer allocator.free(gray);
 
     for (0..img.height) |y| {
         for (0..img.width) |x| {
-            const pixel = img.getPixel(@intCast(x), @intCast(y));
+            const pixel = img.getPixel(@intCast(x), @intCast(y)).?;
             const intensity = (@as(f32, @floatFromInt(pixel.r)) * 0.299 +
                 @as(f32, @floatFromInt(pixel.g)) * 0.587 +
                 @as(f32, @floatFromInt(pixel.b)) * 0.114) / 255.0;
@@ -56,8 +57,8 @@ pub fn detectFeatures(allocator: std.mem.Allocator, img: *const Image, options: 
     for (corners) |corner| {
         if (features.items.len >= options.max_features) break;
 
-        const descriptor = try computeDescriptor(gray, img.width, img.height, corner.x, corner.y);
-        try features.append(Feature{
+        const descriptor = computeDescriptor(gray, img.width, img.height, corner.x, corner.y);
+        try features.append(allocator, Feature{
             .x = corner.x,
             .y = corner.y,
             .scale = 1.0,
@@ -67,7 +68,7 @@ pub fn detectFeatures(allocator: std.mem.Allocator, img: *const Image, options: 
         });
     }
 
-    return features.toOwnedSlice();
+    return features.toOwnedSlice(allocator);
 }
 
 const Corner = struct {
@@ -77,13 +78,13 @@ const Corner = struct {
 };
 
 fn computeHarrisCorners(allocator: std.mem.Allocator, gray: []const f32, width: u32, height: u32, options: FeatureDetectionOptions) ![]Corner {
-    var corners = std.ArrayList(Corner).init(allocator);
-    defer corners.deinit();
+    var corners: std.ArrayList(Corner) = .empty;
+    defer corners.deinit(allocator);
 
     // Compute image gradients
-    var Ix = try allocator.alloc(f32, width * height);
+    const Ix = try allocator.alloc(f32, width * height);
     defer allocator.free(Ix);
-    var Iy = try allocator.alloc(f32, width * height);
+    const Iy = try allocator.alloc(f32, width * height);
     defer allocator.free(Iy);
 
     for (1..height - 1) |y| {
@@ -120,7 +121,7 @@ fn computeHarrisCorners(allocator: std.mem.Allocator, gray: []const f32, width: 
             const response = det - k * trace * trace;
 
             if (response > options.corner_threshold) {
-                try corners.append(Corner{
+                try corners.append(allocator, Corner{
                     .x = @floatFromInt(x),
                     .y = @floatFromInt(y),
                     .strength = response,
@@ -136,7 +137,7 @@ fn computeHarrisCorners(allocator: std.mem.Allocator, gray: []const f32, width: 
         }
     }.lessThan);
 
-    return corners.toOwnedSlice();
+    return corners.toOwnedSlice(allocator);
 }
 
 fn computeDescriptor(gray: []const f32, width: u32, height: u32, x: f32, y: f32) [128]f32 {
@@ -182,8 +183,8 @@ fn computeDescriptor(gray: []const f32, width: u32, height: u32, x: f32, y: f32)
 
 /// Matches features between two images
 pub fn matchFeatures(allocator: std.mem.Allocator, features1: []const Feature, features2: []const Feature, max_distance: f32) ![]FeatureMatch {
-    var matches = std.ArrayList(FeatureMatch).init(allocator);
-    defer matches.deinit();
+    var matches: std.ArrayList(FeatureMatch) = .empty;
+    defer matches.deinit(allocator);
 
     // For each feature in image 1, find best match in image 2
     for (features1, 0..) |f1, i| {
@@ -205,7 +206,7 @@ pub fn matchFeatures(allocator: std.mem.Allocator, features1: []const Feature, f
 
         // Lowe's ratio test
         if (best_distance < max_distance and best_distance < 0.7 * second_best_distance) {
-            try matches.append(FeatureMatch{
+            try matches.append(allocator, FeatureMatch{
                 .feature1_idx = i,
                 .feature2_idx = best_idx,
                 .distance = best_distance,
@@ -214,7 +215,7 @@ pub fn matchFeatures(allocator: std.mem.Allocator, features1: []const Feature, f
         }
     }
 
-    return matches.toOwnedSlice();
+    return matches.toOwnedSlice(allocator);
 }
 
 fn computeDescriptorDistance(desc1: *const [128]f32, desc2: *const [128]f32) f32 {
@@ -231,6 +232,8 @@ fn computeDescriptorDistance(desc1: *const [128]f32, desc2: *const [128]f32) f32
 // ============================================================================
 
 pub const Homography = struct {
+    pub const Point = struct { x: f32, y: f32 };
+
     matrix: [9]f32, // 3x3 matrix stored row-major
 
     pub fn identity() Homography {
@@ -239,7 +242,7 @@ pub const Homography = struct {
         };
     }
 
-    pub fn transform(self: *const Homography, x: f32, y: f32) struct { x: f32, y: f32 } {
+    pub fn transform(self: *const Homography, x: f32, y: f32) Point {
         const w = self.matrix[6] * x + self.matrix[7] * y + self.matrix[8];
         return .{
             .x = (self.matrix[0] * x + self.matrix[1] * y + self.matrix[2]) / w,
@@ -252,6 +255,7 @@ pub const RANSACOptions = struct {
     max_iterations: u32 = 1000,
     inlier_threshold: f32 = 3.0,
     confidence: f32 = 0.99,
+    seed: ?u64 = null,
 };
 
 /// Estimates homography between matched features using RANSAC
@@ -262,13 +266,22 @@ pub fn estimateHomography(
     matches: []const FeatureMatch,
     options: RANSACOptions,
 ) !Homography {
+    return estimateHomographyWithIo(compat.io(), allocator, features1, features2, matches, options);
+}
+
+pub fn estimateHomographyWithIo(
+    io_context: std.Io,
+    allocator: std.mem.Allocator,
+    features1: []const Feature,
+    features2: []const Feature,
+    matches: []const FeatureMatch,
+    options: RANSACOptions,
+) !Homography {
     if (matches.len < 4) return error.InsufficientMatches;
 
     var best_homography = Homography.identity();
     var best_inlier_count: usize = 0;
-    const ts = std.time.timestamp();
-    const seed: u64 = if (ts < 0) 0 else @intCast(ts);
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(options.seed orelse compat.randomSeed(io_context));
 
     for (0..options.max_iterations) |_| {
         // Select 4 random matches
@@ -379,9 +392,10 @@ pub fn stitchPanorama(
     if (images.len < 2) return error.InsufficientImages;
 
     // Detect features in all images
-    var all_features = try allocator.alloc([]Feature, images.len);
+    const all_features = try allocator.alloc([]Feature, images.len);
+    var initialized_features: usize = 0;
     defer {
-        for (all_features) |features| {
+        for (all_features[0..initialized_features]) |features| {
             allocator.free(features);
         }
         allocator.free(all_features);
@@ -389,10 +403,12 @@ pub fn stitchPanorama(
 
     for (images, 0..) |img, i| {
         all_features[i] = try detectFeatures(allocator, img, .{});
+        initialized_features += 1;
     }
 
     // Compute homographies between consecutive images
-    var homographies = try allocator.alloc(Homography, images.len);
+    const homographies = try allocator.alloc(Homography, images.len);
+    errdefer allocator.free(homographies);
     homographies[0] = Homography.identity(); // Reference image
 
     for (1..images.len) |i| {
@@ -415,7 +431,7 @@ pub fn stitchPanorama(
     var max_y: f32 = @floatFromInt(images[0].height);
 
     for (images, homographies) |img, H| {
-        const corners = [_]struct { x: f32, y: f32 }{
+        const corners = [_]Homography.Point{
             H.transform(0, 0),
             H.transform(@floatFromInt(img.width), 0),
             H.transform(0, @floatFromInt(img.height)),
@@ -434,7 +450,8 @@ pub fn stitchPanorama(
     const canvas_height = @as(u32, @intFromFloat(@ceil(max_y - min_y)));
 
     // Create output canvas
-    var canvas = try Image.init(allocator, canvas_width, canvas_height, .rgba);
+    var canvas = try Image.init(allocator, canvas_width, canvas_height, .rgba8);
+    errdefer canvas.deinit();
 
     // Initialize with transparent
     for (0..canvas_height) |y| {
@@ -464,10 +481,10 @@ fn blendImage(canvas: *Image, img: *const Image, H: *const Homography, offset_x:
             const canvas_y = @as(i32, @intFromFloat(src_point.y + offset_y));
 
             if (canvas_x >= 0 and canvas_x < canvas.width and canvas_y >= 0 and canvas_y < canvas.height) {
-                const src_color = img.getPixel(@intCast(x), @intCast(y));
+                const src_color = img.getPixel(@intCast(x), @intCast(y)).?;
                 const ux = @as(u32, @intCast(canvas_x));
                 const uy = @as(u32, @intCast(canvas_y));
-                const existing = canvas.getPixel(ux, uy);
+                const existing = canvas.getPixel(ux, uy).?;
 
                 // Simple alpha blending
                 if (existing.a == 0) {
@@ -490,4 +507,51 @@ fn blendImage(canvas: *Image, img: *const Image, H: *const Homography, offset_x:
             }
         }
     }
+}
+
+fn detectFeaturesAllocationProbe(allocator: std.mem.Allocator) !void {
+    var img = try Image.init(allocator, 8, 8, .rgba8);
+    defer img.deinit();
+
+    const features = try detectFeatures(allocator, &img, .{});
+    defer allocator.free(features);
+}
+
+test "feature detection releases partial allocations" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        detectFeaturesAllocationProbe,
+        .{},
+    );
+}
+
+test "homography estimation exercises RANSAC" {
+    const descriptor: [128]f32 = @splat(0);
+    const source = [_]Feature{
+        .{ .x = 0, .y = 0, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 10, .y = 0, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 0, .y = 10, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 10, .y = 10, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+    };
+    const destination = [_]Feature{
+        .{ .x = 3, .y = 5, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 13, .y = 5, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 3, .y = 15, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+        .{ .x = 13, .y = 15, .scale = 1, .orientation = 0, .descriptor = descriptor, .strength = 1 },
+    };
+    const matches = [_]FeatureMatch{
+        .{ .feature1_idx = 0, .feature2_idx = 0, .distance = 0, .confidence = 1 },
+        .{ .feature1_idx = 1, .feature2_idx = 1, .distance = 0, .confidence = 1 },
+        .{ .feature1_idx = 2, .feature2_idx = 2, .distance = 0, .confidence = 1 },
+        .{ .feature1_idx = 3, .feature2_idx = 3, .distance = 0, .confidence = 1 },
+    };
+
+    const options = RANSACOptions{ .max_iterations = 16, .seed = 0x1234 };
+    const first = try estimateHomographyWithIo(std.Io.failing, std.testing.allocator, &source, &destination, &matches, options);
+    const second = try estimateHomographyWithIo(std.Io.failing, std.testing.allocator, &source, &destination, &matches, options);
+    try std.testing.expectEqual(first.matrix, second.matrix);
+    try std.testing.expectError(
+        error.InsufficientMatches,
+        estimateHomography(std.testing.allocator, &source, &destination, matches[0..3], .{}),
+    );
 }

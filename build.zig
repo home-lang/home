@@ -1636,6 +1636,12 @@ pub fn build(b: *std.Build) void {
 
     const run_math_tests = b.addRunArtifact(math_tests);
 
+    const image_tests = b.addTest(.{
+        .root_module = image_pkg,
+    });
+
+    const run_image_tests = b.addRunArtifact(image_tests);
+
     // Env tests
     const env_tests = b.addTest(.{
         .root_module = env_pkg,
@@ -1891,6 +1897,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_intrinsics_tests.step, test_filter, "intrinsics");
     dependOnTest(test_step, &run_ffi_tests.step, test_filter, "ffi");
     dependOnTest(test_step, &run_math_tests.step, test_filter, "math");
+    dependOnTest(test_step, &run_image_tests.step, test_filter, "image");
     dependOnTest(test_step, &run_env_tests.step, test_filter, "env");
     dependOnTest(test_step, &run_syscall_tests.step, test_filter, "syscall");
     dependOnTest(test_step, &run_signal_tests.step, test_filter, "signal");

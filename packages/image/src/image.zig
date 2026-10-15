@@ -1258,6 +1258,10 @@ pub const TrappingOptions = print_prep_ops.TrappingOptions;
 // Tests
 // ============================================================================
 
+test {
+    std.testing.refAllDecls(panorama_ops);
+}
+
 test "Image creation" {
     var img = try Image.init(std.testing.allocator, 100, 100, .rgba8);
     defer img.deinit();
