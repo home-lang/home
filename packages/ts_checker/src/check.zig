@@ -21169,7 +21169,7 @@ pub const Checker = struct {
             if (f.return_type == hir_mod.none_node_id and !self.current_function_return_from_jsdoc) {
                 const inferred_t = if (f.flags.is_async) blk: {
                     try self.checkAsyncInferredPromiseAvailability(node);
-                    break :blk try self.buildStructuralPromise(expr_t);
+                    break :blk try self.buildStructuralPromise(self.evalAwaited(expr_t));
                 } else expr_t;
                 try self.refineSignatureReturn(node, inferred_t);
                 try self.checkDeclarationInferredReturnCyclicStructure(node);
@@ -21255,7 +21255,7 @@ pub const Checker = struct {
                     self.widenInferredReturnType(inferred_raw);
                 const inferred_t = if (f.flags.is_async) blk: {
                     try self.checkAsyncInferredPromiseAvailability(node);
-                    break :blk try self.buildStructuralPromise(inferred);
+                    break :blk try self.buildStructuralPromise(self.evalAwaited(inferred));
                 } else inferred;
                 try self.refineSignatureReturn(node, inferred_t);
                 try self.checkDeclarationInferredReturnCyclicStructure(node);
@@ -33240,7 +33240,7 @@ pub const Checker = struct {
         else
             types.Primitive.any;
         const effective_source_ret = if (f.flags.is_async and !f.flags.is_generator and contextual_predicate == null)
-            try self.buildStructuralPromise(source_ret)
+            try self.buildStructuralPromise(self.evalAwaited(source_ret))
         else
             source_ret;
         const sig = self.interner.internSignature(contextual_params.items, effective_source_ret, false) catch return error.OutOfMemory;
@@ -136372,7 +136372,7 @@ pub const Checker = struct {
                 ret_t = body_t;
             }
             if (f.flags.is_async and !f.flags.is_generator) {
-                ret_t = try self.buildStructuralPromise(ret_t);
+                ret_t = try self.buildStructuralPromise(self.evalAwaited(ret_t));
             }
             if (!self.strict_flags.strict_null_checks and
                 (ret_t == types.Primitive.null_t or ret_t == types.Primitive.undefined_t))
@@ -292544,4 +292544,44 @@ test "checker: generic index values accept any and never but reject concrete and
     s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: returned async method adopts generic mapped request context" {
+    const s = try newSetup(
+        \\type Request = { index: string; page?: number };
+        \\interface Result<R> { hits: R[]; }
+        \\interface Driver<R> { search: (request: Request) => Promise<Result<R>>; }
+        \\interface Table<R> { search: (request?: Omit<Request, 'index'>) => Promise<Result<R>>; }
+        \\interface Options<R> extends Omit<Request, 'index'> { index: string; driver: Driver<R>; }
+        \\function create<R>(options: Options<R>): Table<R> {
+        \\  const { driver, index, ...defaults } = options;
+        \\  return { async search(request = {}) {
+        \\    const resolved: Request = { ...defaults, ...request, index };
+        \\    return driver.search(resolved);
+        \\  } };
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: inferred async returns await nested promises and thenable unions" {
+    const s = try newSetup(
+        \\declare const promised: Promise<Promise<number>>;
+        \\declare const maybe: string | PromiseLike<string>;
+        \\const expression = async () => promised;
+        \\async function block() { return promised; }
+        \\const contextual: () => Promise<number> = async () => promised;
+        \\const union = async () => maybe;
+        \\const a: Promise<number> = expression();
+        \\const b: Promise<number> = block();
+        \\const c: Promise<string> = union();
+        \\const wrong: Promise<string> = expression();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }

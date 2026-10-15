@@ -1247,3 +1247,29 @@ contains **2,895** verified payloads, SHA-256
 `9299f29769727c3a1fb35d071e940928ef36db5a14efebca1809742abab30d59`.
 Final validation peaks at **2,168 MB**; the 4,190-input source freeze is unchanged.
 Real-project source and diagnostic text are excluded.
+
+## Async inferred returns await promise values
+
+Four inference paths wrapped raw async return values in a structural Promise,
+producing `Promise<Promise<Result<R>>>` when an async method returned a promise.
+They now apply the existing recursive Awaited evaluator before constructing
+the one outer Promise. Explicit Promise type references remain unchanged.
+Coverage includes expression/block bodies, contextual methods, nested promises,
+thenable unions and a retained incompatible Promise return. The imported
+mapped-request method probe now passes in both compilers; the negative return
+control matches native TypeScript's diagnostic code and location. Removing the
+normalization fails the contextual method regression.
+
+All **4,621 checker tests, 303 Program tests and ten Release CLI suites** pass.
+The production build/replay peaks at **2,914 MB** under the unchanged
+**3,840 MB** guard. All 306 project input hashes remain unchanged. The table
+project now reports **three** Home-only diagnostics: two TS2741 iterator errors
+and one TS7006 callback parameter error. Native TypeScript exits zero; Home
+exits one. Table and complete local replacement remain unqualified.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-async-return-await.tar.gz`
+contains **2,894** verified payloads, SHA-256
+`52bc713d56a8a28ad4d3b676ea36a71b12b1ef09c45dfeeab511f733e8b773ef`.
+Final validation peaks at **2,156 MB**; formatting is whitespace-only relative
+to the tested source and the 4,190-input freeze is unchanged. Real-project
+source and diagnostic text are excluded.
