@@ -934,6 +934,7 @@ pub fn build(b: *std.Build) void {
     const io_pkg = createPackage(b, "packages/io/src/lib.zig", target, optimize, zig_test_framework);
     io_pkg.addImport("collections", io_collections_pkg);
     const test_file_discovery_pkg = createPackage(b, "packages/testing/src/test_file_discovery.zig", target, optimize, zig_test_framework);
+    const fuzz_pkg = createPackage(b, "packages/fuzz/src/fuzz.zig", target, optimize, zig_test_framework);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
@@ -1624,6 +1625,20 @@ pub fn build(b: *std.Build) void {
     test_file_discovery_tests.root_module.addImport("test_file_discovery", test_file_discovery_pkg);
     const run_test_file_discovery_tests = b.addRunArtifact(test_file_discovery_tests);
 
+    const fuzz_package_unit_tests = b.addTest(.{ .root_module = fuzz_pkg });
+    const run_fuzz_package_unit_tests = b.addRunArtifact(fuzz_package_unit_tests);
+
+    const fuzz_package_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/fuzz/tests/fuzz_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    fuzz_package_tests.root_module.addImport("fuzz", fuzz_pkg);
+    const run_fuzz_package_tests = b.addRunArtifact(fuzz_package_tests);
+    run_fuzz_package_tests.step.dependOn(&run_fuzz_package_unit_tests.step);
+
     const toml_tests = b.addTest(.{
         .root_module = toml_pkg,
     });
@@ -1981,6 +1996,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_io_tests.step, test_filter, "io_package");
     dependOnTest(test_step, &run_test_file_discovery_tests.step, test_filter, "test_file_discovery");
+    dependOnTest(test_step, &run_fuzz_package_tests.step, test_filter, "fuzz_package");
     dependOnTest(test_step, &run_toml_tests.step, test_filter, "toml");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");

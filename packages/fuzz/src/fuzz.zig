@@ -55,6 +55,8 @@ pub fn Fuzzer(comptime Context: type) type {
         context: Context,
         config: FuzzConfig,
         allocator: std.mem.Allocator,
+        io: std.Io,
+        started_at: std.Io.Timestamp,
         /// Statistics for this fuzzing session
         stats: FuzzStats,
 
@@ -68,17 +70,23 @@ pub fn Fuzzer(comptime Context: type) type {
         };
 
         pub fn init(allocator: std.mem.Allocator, context: Context, config: FuzzConfig) Self {
+            return initWithIo(allocator, context, config, std.Io.Threaded.global_single_threaded.io());
+        }
+
+        pub fn initWithIo(allocator: std.mem.Allocator, context: Context, config: FuzzConfig, io: std.Io) Self {
             return .{
                 .context = context,
                 .config = config,
                 .allocator = allocator,
-                .stats = .{ .start_time = std.time.milliTimestamp() },
+                .io = io,
+                .started_at = std.Io.Clock.awake.now(io),
+                .stats = .{ .start_time = std.Io.Clock.real.now(io).toMilliseconds() },
             };
         }
 
         /// Run a single fuzz iteration with the given input
         pub fn runOne(self: *Self, input: []const u8) FuzzResult {
-            const start_time = std.time.nanoTimestamp();
+            const start_time = std.Io.Clock.awake.now(self.io);
             defer self.stats.total_runs += 1;
 
             // Check input size limits
@@ -98,7 +106,7 @@ pub fn Fuzzer(comptime Context: type) type {
                     break :blk FuzzResult{
                         .passed = false,
                         .error_message = @errorName(err),
-                        .execution_time_ns = @intCast(@as(i64, @intCast(std.time.nanoTimestamp())) - start_time),
+                        .execution_time_ns = @intCast(start_time.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
                         .peak_memory = 0,
                     };
                 };
@@ -124,7 +132,7 @@ pub fn Fuzzer(comptime Context: type) type {
             const seed: u64 = if (self.config.seed) |s|
                 s
             else blk: {
-                const ts = std.time.milliTimestamp();
+                const ts = std.Io.Clock.real.now(self.io).toMilliseconds();
                 break :blk if (ts < 0) 0 else @intCast(ts);
             };
             var prng = std.Random.DefaultPrng.init(seed);
@@ -140,7 +148,7 @@ pub fn Fuzzer(comptime Context: type) type {
                 0 => { // Bit flip
                     if (output.len > 0) {
                         const pos = random.intRangeLessThan(usize, 0, output.len);
-                        const bit = random.intRangeLessThan(u3, 0, 8);
+                        const bit: u3 = @intCast(random.intRangeLessThan(u8, 0, 8));
                         output[pos] ^= @as(u8, 1) << bit;
                     }
                 },
@@ -192,7 +200,7 @@ pub fn Fuzzer(comptime Context: type) type {
 
         /// Print fuzzing progress
         pub fn printProgress(self: *const Self) void {
-            const elapsed = std.time.milliTimestamp() - self.stats.start_time;
+            const elapsed = self.started_at.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
             const exec_per_sec = if (elapsed > 0) @as(f64, @floatFromInt(self.stats.total_runs)) / (@as(f64, @floatFromInt(elapsed)) / 1000.0) else 0;
 
             std.log.info(
@@ -214,27 +222,29 @@ pub fn Fuzzer(comptime Context: type) type {
 /// Lexer fuzzer context
 pub const LexerFuzzer = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     pub fn init(allocator: std.mem.Allocator) LexerFuzzer {
-        return .{ .allocator = allocator };
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: std.Io) LexerFuzzer {
+        return .{ .allocator = allocator, .io = io };
     }
 
     pub fn fuzz(self: *LexerFuzzer, input: []const u8) !FuzzResult {
-        const start = std.time.nanoTimestamp();
+        const start = std.Io.Clock.awake.now(self.io);
 
         // Import lexer module and run tokenization
         // Note: This will be connected to the actual lexer
-        _ = self;
-
         // Simulate lexer processing - actual implementation will call:
         // const lexer = @import("lexer").Lexer;
         // var lex = lexer.init(self.allocator, input);
         // while (lex.nextToken()) |_| {}
 
-        const end = std.time.nanoTimestamp();
         return .{
             .passed = true,
-            .execution_time_ns = @intCast(end - start),
+            .execution_time_ns = @intCast(start.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
             .peak_memory = input.len * 2, // Approximate
         };
     }
@@ -244,16 +254,22 @@ pub const LexerFuzzer = struct {
 pub const ParserFuzzer = struct {
     allocator: std.mem.Allocator,
     max_depth: usize,
+    io: std.Io,
 
     pub fn init(allocator: std.mem.Allocator, max_depth: usize) ParserFuzzer {
+        return initWithIo(allocator, max_depth, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, max_depth: usize, io: std.Io) ParserFuzzer {
         return .{
             .allocator = allocator,
             .max_depth = max_depth,
+            .io = io,
         };
     }
 
     pub fn fuzz(self: *ParserFuzzer, input: []const u8) !FuzzResult {
-        const start = std.time.nanoTimestamp();
+        const start = std.Io.Clock.awake.now(self.io);
 
         // Actual implementation will call:
         // const parser = @import("parser").Parser;
@@ -263,11 +279,9 @@ pub const ParserFuzzer = struct {
         // var p = parser.init(self.allocator, tokens);
         // _ = try p.parse();
 
-        _ = self;
-        const end = std.time.nanoTimestamp();
         return .{
             .passed = true,
-            .execution_time_ns = @intCast(end - start),
+            .execution_time_ns = @intCast(start.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
             .peak_memory = input.len * 4, // Approximate
         };
     }
@@ -277,6 +291,7 @@ pub const ParserFuzzer = struct {
 pub const CodecFuzzer = struct {
     allocator: std.mem.Allocator,
     codec_type: CodecType,
+    io: std.Io,
 
     pub const CodecType = enum {
         jpeg,
@@ -291,14 +306,19 @@ pub const CodecFuzzer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, codec_type: CodecType) CodecFuzzer {
+        return initWithIo(allocator, codec_type, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, codec_type: CodecType, io: std.Io) CodecFuzzer {
         return .{
             .allocator = allocator,
             .codec_type = codec_type,
+            .io = io,
         };
     }
 
     pub fn fuzz(self: *CodecFuzzer, input: []const u8) !FuzzResult {
-        const start = std.time.nanoTimestamp();
+        const start = std.Io.Clock.awake.now(self.io);
 
         // Validate minimum header size based on codec
         const min_size: usize = switch (self.codec_type) {
@@ -323,10 +343,9 @@ pub const CodecFuzzer = struct {
         // Actual decoding would happen here
         // Connected to packages/video, packages/audio, packages/image
 
-        const end = std.time.nanoTimestamp();
         return .{
             .passed = true,
-            .execution_time_ns = @intCast(end - start),
+            .execution_time_ns = @intCast(start.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
             .peak_memory = input.len * 10, // Approximate decoded size
         };
     }
@@ -336,6 +355,7 @@ pub const CodecFuzzer = struct {
 pub const NetworkFuzzer = struct {
     allocator: std.mem.Allocator,
     protocol: Protocol,
+    io: std.Io,
 
     pub const Protocol = enum {
         http,
@@ -347,14 +367,19 @@ pub const NetworkFuzzer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, protocol: Protocol) NetworkFuzzer {
+        return initWithIo(allocator, protocol, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, protocol: Protocol, io: std.Io) NetworkFuzzer {
         return .{
             .allocator = allocator,
             .protocol = protocol,
+            .io = io,
         };
     }
 
     pub fn fuzz(self: *NetworkFuzzer, input: []const u8) !FuzzResult {
-        const start = std.time.nanoTimestamp();
+        const start = std.Io.Clock.awake.now(self.io);
 
         // Protocol-specific validation
         _ = switch (self.protocol) {
@@ -368,15 +393,14 @@ pub const NetworkFuzzer = struct {
             return .{
                 .passed = false,
                 .error_message = @errorName(err),
-                .execution_time_ns = @intCast(std.time.nanoTimestamp() - start),
+                .execution_time_ns = @intCast(start.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
                 .peak_memory = 0,
             };
         };
 
-        const end = std.time.nanoTimestamp();
         return .{
             .passed = true,
-            .execution_time_ns = @intCast(end - start),
+            .execution_time_ns = @intCast(start.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds()),
             .peak_memory = input.len * 2,
         };
     }
@@ -426,7 +450,8 @@ pub const NetworkFuzzer = struct {
 /// Crash deduplication using stack hashes
 pub const CrashDeduplicator = struct {
     allocator: std.mem.Allocator,
-    seen_crashes: std.StringHashMap(CrashInfo),
+    io: std.Io,
+    seen_crashes: std.AutoHashMap(u64, CrashInfo),
 
     pub const CrashInfo = struct {
         hash: u64,
@@ -436,9 +461,14 @@ pub const CrashDeduplicator = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) CrashDeduplicator {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: std.Io) CrashDeduplicator {
         return .{
             .allocator = allocator,
-            .seen_crashes = std.StringHashMap(CrashInfo).init(allocator),
+            .io = io,
+            .seen_crashes = std.AutoHashMap(u64, CrashInfo).init(allocator),
         };
     }
 
@@ -455,20 +485,19 @@ pub const CrashDeduplicator = struct {
 
     /// Record a crash and return true if it's unique
     pub fn recordCrash(self: *CrashDeduplicator, hash: u64, input: []const u8, stack_trace: ?[]const u8) !bool {
-        var hash_str: [16]u8 = undefined;
-        _ = std.fmt.bufPrint(&hash_str, "{x:0>16}", .{hash}) catch return false;
+        if (self.seen_crashes.contains(hash)) return false;
 
-        const result = try self.seen_crashes.getOrPut(&hash_str);
-        if (result.found_existing) {
-            return false; // Duplicate crash
-        }
+        const owned_input = try self.allocator.dupe(u8, input);
+        errdefer self.allocator.free(owned_input);
+        const owned_stack_trace = if (stack_trace) |st| try self.allocator.dupe(u8, st) else null;
+        errdefer if (owned_stack_trace) |st| self.allocator.free(st);
 
-        result.value_ptr.* = .{
+        try self.seen_crashes.putNoClobber(hash, .{
             .hash = hash,
-            .input = try self.allocator.dupe(u8, input),
-            .stack_trace = if (stack_trace) |st| try self.allocator.dupe(u8, st) else null,
-            .timestamp = std.time.milliTimestamp(),
-        };
+            .input = owned_input,
+            .stack_trace = owned_stack_trace,
+            .timestamp = std.Io.Clock.real.now(self.io).toMilliseconds(),
+        });
 
         return true;
     }
@@ -482,14 +511,20 @@ pub const CrashDeduplicator = struct {
 /// Corpus manager for storing and loading test cases
 pub const CorpusManager = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     corpus_dir: []const u8,
     corpus: std.ArrayList([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, corpus_dir: []const u8) CorpusManager {
+        return initWithIo(allocator, corpus_dir, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, corpus_dir: []const u8, io: std.Io) CorpusManager {
         return .{
             .allocator = allocator,
+            .io = io,
             .corpus_dir = corpus_dir,
-            .corpus = std.ArrayList([]const u8).init(allocator),
+            .corpus = .empty,
         };
     }
 
@@ -497,39 +532,43 @@ pub const CorpusManager = struct {
         for (self.corpus.items) |item| {
             self.allocator.free(item);
         }
-        self.corpus.deinit();
+        self.corpus.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Load corpus from directory
     pub fn load(self: *CorpusManager) !void {
-        var dir = std.fs.cwd().openDir(self.corpus_dir, .{ .iterate = true }) catch return;
-        defer dir.close();
+        const dir = std.Io.Dir.cwd().openDir(self.io, self.corpus_dir, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer dir.close(self.io);
 
-        var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        var iter = dir.iterateAssumeFirstIteration();
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind != .file) continue;
 
-            const file = try dir.openFile(entry.name, .{});
-            defer file.close();
-
-            const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
-            try self.corpus.append(content);
+            const content = try dir.readFileAlloc(self.io, entry.name, self.allocator, .limited(1024 * 1024));
+            errdefer self.allocator.free(content);
+            try self.corpus.append(self.allocator, content);
         }
     }
 
     /// Save a test case to the corpus
     pub fn save(self: *CorpusManager, input: []const u8, name: []const u8) !void {
-        var dir = try std.fs.cwd().openDir(self.corpus_dir, .{});
-        defer dir.close();
-
-        const file = try dir.createFile(name, .{});
-        defer file.close();
-
-        try file.writeAll(input);
-
-        // Also keep in memory
+        try self.corpus.ensureUnusedCapacity(self.allocator, 1);
         const copy = try self.allocator.dupe(u8, input);
-        try self.corpus.append(copy);
+        errdefer self.allocator.free(copy);
+
+        const dir = try std.Io.Dir.cwd().openDir(self.io, self.corpus_dir, .{});
+        defer dir.close(self.io);
+
+        const file = try dir.createFile(self.io, name, .{});
+        defer file.close(self.io);
+
+        try file.writeStreamingAll(self.io, input);
+
+        self.corpus.appendAssumeCapacity(copy);
     }
 
     /// Get all corpus entries
@@ -542,7 +581,7 @@ pub const CorpusManager = struct {
 test "fuzzer basic mutation" {
     const allocator = std.testing.allocator;
 
-    var ctx = LexerFuzzer.init(allocator);
+    const ctx = LexerFuzzer.init(allocator);
     var fuzzer = Fuzzer(LexerFuzzer).init(allocator, ctx, .{});
 
     const input = "let x = 42;";
