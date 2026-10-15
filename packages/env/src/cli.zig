@@ -2,9 +2,10 @@
 // Command-line interface for managing encrypted environment variables
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const secure = @import("secure.zig");
 const dotenv = @import("dotenv.zig");
-const parser = @import("parser.zig");
+const Io = std.Io;
 
 pub const CliError = error{
     MissingArgument,
@@ -76,29 +77,38 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !CliOpt
 }
 
 pub fn execute(allocator: std.mem.Allocator, options: CliOptions) !void {
-    const stdout = std.io.getStdOut().writer();
+    return executeWithIo(allocator, compat.io(), options);
+}
 
+pub fn executeWithIo(allocator: std.mem.Allocator, io: Io, options: CliOptions) !void {
+    var buffer: [4096]u8 = undefined;
+    var stdout = Io.File.stdout().writerStreaming(io, &buffer);
+    try executeToWriterWithIo(allocator, io, options, &stdout.interface);
+    try stdout.interface.flush();
+}
+
+pub fn executeToWriterWithIo(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     switch (options.command) {
-        .init => try cmdInit(allocator, options, stdout),
-        .encrypt => try cmdEncrypt(allocator, options, stdout),
-        .decrypt => try cmdDecrypt(allocator, options, stdout),
-        .add => try cmdAdd(allocator, options, stdout),
-        .get => try cmdGet(allocator, options, stdout),
-        .list => try cmdList(allocator, options, stdout),
-        .rotate => try cmdRotate(allocator, options, stdout),
-        .help => try cmdHelp(stdout),
+        .init => try cmdInit(allocator, io, options, writer),
+        .encrypt => try cmdEncrypt(allocator, io, options, writer),
+        .decrypt => try cmdDecrypt(allocator, io, options, writer),
+        .add => try cmdAdd(allocator, io, options, writer),
+        .get => try cmdGet(allocator, io, options, writer),
+        .list => try cmdList(allocator, io, options, writer),
+        .rotate => try cmdRotate(allocator, io, options, writer),
+        .help => try cmdHelp(writer),
     }
 }
 
-fn cmdInit(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdInit(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const key_file = options.key_file orelse ".env.key";
 
     try writer.print("Generating encryption key...\n", .{});
 
-    var key = try secure.SecureKey.generate();
+    var key = try secure.SecureKey.generateWithIo(io);
     defer key.destroy();
 
-    try key.saveToFile(key_file);
+    try key.saveToFileWithIo(io, key_file);
 
     try writer.print("✓ Encryption key saved to: {s}\n", .{key_file});
     try writer.print("\n", .{});
@@ -112,20 +122,20 @@ fn cmdInit(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !
     _ = allocator;
 }
 
-fn cmdEncrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdEncrypt(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const input_file = options.input_file orelse ".env";
     const output_file = options.output_file orelse ".env.encrypted";
     const key_file = options.key_file orelse ".env.key";
 
     try writer.print("Loading encryption key from: {s}\n", .{key_file});
-    var key = try secure.SecureKey.fromFile(allocator, key_file);
+    var key = try secure.SecureKey.fromFileWithIo(allocator, io, key_file);
     defer key.destroy();
 
     try writer.print("Loading environment variables from: {s}\n", .{input_file});
     var env = dotenv.DotEnv.init(allocator);
     defer env.deinit();
 
-    try env.load(input_file);
+    try env.loadWithIo(io, input_file);
 
     try writer.print("Encrypting {d} variables...\n", .{env.count()});
 
@@ -134,23 +144,23 @@ fn cmdEncrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype
 
     var iter = env.getAll().iterator();
     while (iter.next()) |entry| {
-        try secure_env.set(entry.key_ptr.*, entry.value_ptr.*);
+        try secure_env.setWithIo(io, entry.key_ptr.*, entry.value_ptr.*);
     }
 
-    try secure_env.saveToFile(output_file);
+    try secure_env.saveToFileWithIo(io, output_file);
 
     try writer.print("✓ Encrypted variables saved to: {s}\n", .{output_file});
     try writer.print("\n", .{});
     try writer.print("You can now safely commit {s} to version control.\n", .{output_file});
 }
 
-fn cmdDecrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdDecrypt(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const input_file = options.input_file orelse ".env.encrypted";
     const output_file = options.output_file orelse ".env";
     const key_file = options.key_file orelse ".env.key";
 
     try writer.print("Loading encryption key from: {s}\n", .{key_file});
-    var key = try secure.SecureKey.fromFile(allocator, key_file);
+    var key = try secure.SecureKey.fromFileWithIo(allocator, io, key_file);
     defer key.destroy();
 
     try writer.print("Loading encrypted variables from: {s}\n", .{input_file});
@@ -158,7 +168,7 @@ fn cmdDecrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype
     var secure_env = secure.SecureEnv.init(allocator, key);
     defer secure_env.deinit();
 
-    try secure_env.loadFromFile(input_file);
+    try secure_env.loadFromFileWithIo(io, input_file);
 
     try writer.print("Decrypting variables...\n", .{});
 
@@ -176,7 +186,7 @@ fn cmdDecrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype
         }
     }
 
-    try plain_env.save(output_file);
+    try plain_env.saveWithIo(io, output_file);
 
     try writer.print("✓ Decrypted {d} variables to: {s}\n", .{ count, output_file });
     try writer.print("\n", .{});
@@ -184,44 +194,44 @@ fn cmdDecrypt(allocator: std.mem.Allocator, options: CliOptions, writer: anytype
     try writer.print("   Do NOT commit this file to version control.\n", .{});
 }
 
-fn cmdAdd(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdAdd(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const encrypted_file = options.output_file orelse ".env.encrypted";
     const key_file = options.key_file orelse ".env.key";
     const var_name = options.var_name orelse return error.MissingArgument;
     const var_value = options.var_value orelse return error.MissingArgument;
 
     try writer.print("Loading encryption key from: {s}\n", .{key_file});
-    var key = try secure.SecureKey.fromFile(allocator, key_file);
+    var key = try secure.SecureKey.fromFileWithIo(allocator, io, key_file);
     defer key.destroy();
 
     var secure_env = secure.SecureEnv.init(allocator, key);
     defer secure_env.deinit();
 
     // Load existing variables if file exists
-    secure_env.loadFromFile(encrypted_file) catch |err| {
+    secure_env.loadFromFileWithIo(io, encrypted_file) catch |err| {
         if (err != error.FileNotFound) return err;
     };
 
     try writer.print("Adding encrypted variable: {s}\n", .{var_name});
-    try secure_env.set(var_name, var_value);
+    try secure_env.setWithIo(io, var_name, var_value);
 
-    try secure_env.saveToFile(encrypted_file);
+    try secure_env.saveToFileWithIo(io, encrypted_file);
 
     try writer.print("✓ Variable added to: {s}\n", .{encrypted_file});
 }
 
-fn cmdGet(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdGet(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const encrypted_file = options.input_file orelse ".env.encrypted";
     const key_file = options.key_file orelse ".env.key";
     const var_name = options.var_name orelse return error.MissingArgument;
 
-    var key = try secure.SecureKey.fromFile(allocator, key_file);
+    var key = try secure.SecureKey.fromFileWithIo(allocator, io, key_file);
     defer key.destroy();
 
     var secure_env = secure.SecureEnv.init(allocator, key);
     defer secure_env.deinit();
 
-    try secure_env.loadFromFile(encrypted_file);
+    try secure_env.loadFromFileWithIo(io, encrypted_file);
 
     const value = try secure_env.get(var_name);
     if (value) |v| {
@@ -232,17 +242,17 @@ fn cmdGet(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !v
     }
 }
 
-fn cmdList(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdList(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const encrypted_file = options.input_file orelse ".env.encrypted";
     const key_file = options.key_file orelse ".env.key";
 
-    var key = try secure.SecureKey.fromFile(allocator, key_file);
+    var key = try secure.SecureKey.fromFileWithIo(allocator, io, key_file);
     defer key.destroy();
 
     var secure_env = secure.SecureEnv.init(allocator, key);
     defer secure_env.deinit();
 
-    try secure_env.loadFromFile(encrypted_file);
+    try secure_env.loadFromFileWithIo(io, encrypted_file);
 
     try writer.print("Encrypted variables in {s}:\n\n", .{encrypted_file});
 
@@ -254,24 +264,24 @@ fn cmdList(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !
     try writer.print("\n", .{});
 }
 
-fn cmdRotate(allocator: std.mem.Allocator, options: CliOptions, writer: anytype) !void {
+fn cmdRotate(allocator: std.mem.Allocator, io: Io, options: CliOptions, writer: *Io.Writer) !void {
     const encrypted_file = options.input_file orelse ".env.encrypted";
     const old_key_file = options.key_file orelse ".env.key";
     const new_key_file = ".env.key.new";
 
     try writer.print("Loading old encryption key from: {s}\n", .{old_key_file});
-    var old_key = try secure.SecureKey.fromFile(allocator, old_key_file);
+    var old_key = try secure.SecureKey.fromFileWithIo(allocator, io, old_key_file);
     defer old_key.destroy();
 
     try writer.print("Generating new encryption key...\n", .{});
-    var new_key = try secure.SecureKey.generate();
+    var new_key = try secure.SecureKey.generateWithIo(io);
     defer new_key.destroy();
 
     try writer.print("Decrypting with old key...\n", .{});
     var secure_env_old = secure.SecureEnv.init(allocator, old_key);
     defer secure_env_old.deinit();
 
-    try secure_env_old.loadFromFile(encrypted_file);
+    try secure_env_old.loadFromFileWithIo(io, encrypted_file);
 
     try writer.print("Re-encrypting with new key...\n", .{});
     var secure_env_new = secure.SecureEnv.init(allocator, new_key);
@@ -283,7 +293,7 @@ fn cmdRotate(allocator: std.mem.Allocator, options: CliOptions, writer: anytype)
         const decrypted = try secure_env_old.get(entry.key_ptr.*);
         if (decrypted) |value| {
             defer allocator.free(value);
-            try secure_env_new.set(entry.key_ptr.*, value);
+            try secure_env_new.setWithIo(io, entry.key_ptr.*, value);
             count += 1;
         }
     }
@@ -292,13 +302,13 @@ fn cmdRotate(allocator: std.mem.Allocator, options: CliOptions, writer: anytype)
     const backup_file = try std.fmt.allocPrint(allocator, "{s}.backup", .{encrypted_file});
     defer allocator.free(backup_file);
 
-    try std.fs.cwd().copyFile(encrypted_file, std.fs.cwd(), backup_file, .{});
+    try Io.Dir.cwd().copyFile(encrypted_file, .cwd(), backup_file, io, .{});
 
     // Save new encrypted file
-    try secure_env_new.saveToFile(encrypted_file);
+    try secure_env_new.saveToFileWithIo(io, encrypted_file);
 
     // Save new key
-    try new_key.saveToFile(new_key_file);
+    try new_key.saveToFileWithIo(io, new_key_file);
 
     try writer.print("✓ Rotated encryption for {d} variables\n", .{count});
     try writer.print("✓ New key saved to: {s}\n", .{new_key_file});
@@ -311,7 +321,7 @@ fn cmdRotate(allocator: std.mem.Allocator, options: CliOptions, writer: anytype)
     try writer.print("  4. Delete {s} and {s}\n", .{ new_key_file, backup_file });
 }
 
-fn cmdHelp(writer: anytype) !void {
+fn cmdHelp(writer: *Io.Writer) !void {
     try writer.writeAll(
         \\Home Secure Environment Variables
         \\
@@ -401,4 +411,34 @@ test "parse add command" {
     try testing.expectEqual(Command.add, options.command);
     try testing.expectEqualStrings("API_KEY", options.var_name.?);
     try testing.expectEqualStrings("secret123", options.var_value.?);
+}
+
+test "CLI writes through explicit IO and creates a loadable key" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const key_path = try std.fs.path.join(allocator, &.{ root, "cli.key" });
+    defer allocator.free(key_path);
+
+    var output: Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    try executeToWriterWithIo(
+        allocator,
+        testing.io,
+        .{ .command = .init, .key_file = key_path },
+        &output.writer,
+    );
+    try testing.expect(std.mem.indexOf(u8, output.written(), "encryption key") != null);
+
+    var key = try secure.SecureKey.fromFileWithIo(allocator, testing.io, key_path);
+    defer key.destroy();
+    try testing.expect(!std.mem.allEqual(u8, &key.key, 0));
+
+    output.clearRetainingCapacity();
+    try executeToWriterWithIo(allocator, testing.io, .{ .command = .help }, &output.writer);
+    try testing.expect(std.mem.indexOf(u8, output.written(), "Usage: home env-secure") != null);
 }

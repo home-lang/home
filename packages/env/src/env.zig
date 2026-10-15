@@ -356,8 +356,11 @@ test "env validate require with missing var" {
 }
 
 test {
-    _ = dotenv;
-    _ = parser;
-    _ = secure;
-    _ = cli;
+    std.testing.refAllDecls(dotenv);
+    std.testing.refAllDecls(dotenv.DotEnv);
+    std.testing.refAllDecls(parser);
+    std.testing.refAllDecls(secure);
+    std.testing.refAllDecls(secure.SecureKey);
+    std.testing.refAllDecls(secure.SecureEnv);
+    std.testing.refAllDecls(cli);
 }

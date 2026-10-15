@@ -40,9 +40,11 @@ pub fn parseLine(allocator: std.mem.Allocator, line: []const u8) ParseError!?Ent
 
     const value_raw = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t");
     const value = try parseValue(allocator, value_raw);
+    errdefer allocator.free(value);
+    const owned_key = try allocator.dupe(u8, key);
 
     return Entry{
-        .key = try allocator.dupe(u8, key),
+        .key = owned_key,
         .value = value,
     };
 }
@@ -154,15 +156,28 @@ pub fn parseContent(allocator: std.mem.Allocator, content: []const u8) ParseErro
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         if (try parseLine(allocator, line)) |entry| {
-            // If key already exists, free old value
-            if (map.get(entry.key)) |old_value| {
-                allocator.free(old_value);
+            if (map.getPtr(entry.key)) |old_value| {
+                allocator.free(entry.key);
+                allocator.free(old_value.*);
+                old_value.* = entry.value;
+            } else {
+                errdefer allocator.free(entry.key);
+                errdefer allocator.free(entry.value);
+                try map.put(entry.key, entry.value);
             }
-            try map.put(entry.key, entry.value);
         }
     }
 
     return map;
+}
+
+pub fn deinitContent(allocator: std.mem.Allocator, map: *std.StringHashMap([]const u8)) void {
+    var iter = map.iterator();
+    while (iter.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        allocator.free(entry.value_ptr.*);
+    }
+    map.deinit();
 }
 
 // Validate variable name
@@ -299,17 +314,29 @@ test "parser parse content" {
     ;
 
     var map = try parseContent(allocator, content);
-    defer {
-        var iter = map.iterator();
-        while (iter.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
-        }
-        map.deinit();
-    }
+    defer deinitContent(allocator, &map);
 
     try testing.expectEqual(@as(usize, 3), map.count());
     try testing.expectEqualStrings("value1", map.get("KEY1").?);
     try testing.expectEqualStrings("quoted value", map.get("KEY2").?);
     try testing.expectEqualStrings("value3", map.get("KEY3").?);
+}
+
+fn parseContentForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var map = try parseContent(
+        allocator,
+        "KEY=first\nOTHER=value\nKEY=replacement\nQUOTED=\"line\\nvalue\"\n",
+    );
+    defer deinitContent(allocator, &map);
+
+    try std.testing.expectEqual(@as(usize, 3), map.count());
+    try std.testing.expectEqualStrings("replacement", map.get("KEY").?);
+}
+
+test "parser releases duplicate entries across every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        parseContentForAllocationFailure,
+        .{},
+    );
 }
