@@ -13,6 +13,10 @@ pub const FileBufferedReader = @import("buffered.zig").FileBufferedReader;
 pub const FileBufferedReaderWithIo = @import("buffered.zig").FileBufferedReaderWithIo;
 pub const FileBufferedWriter = @import("buffered.zig").FileBufferedWriter;
 pub const FileBufferedWriterWithIo = @import("buffered.zig").FileBufferedWriterWithIo;
+pub const regex = @import("regex.zig");
+pub const Regex = regex.Regex;
+pub const RegexError = regex.RegexError;
+pub const RegexMatch = regex.Match;
 
 // String utilities
 pub const String = @import("string.zig");

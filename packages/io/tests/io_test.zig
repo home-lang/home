@@ -71,6 +71,41 @@ test "public buffered file adapters round trip" {
     try std.testing.expectEqualStrings("IO", remaining);
 }
 
+test "public regex API searches greedily and replaces every match" {
+    const allocator = std.testing.allocator;
+    var regex = try home_io.Regex.compile(allocator, "a+");
+    defer regex.deinit();
+
+    const found = regex.find("caaab aa").?;
+    try std.testing.expectEqual(@as(usize, 1), found.start);
+    try std.testing.expectEqual(@as(usize, 4), found.end);
+    try std.testing.expectEqualStrings("aaa", found.text);
+
+    const matches = try regex.findAll("caaab aa");
+    defer allocator.free(matches);
+    try std.testing.expectEqual(@as(usize, 2), matches.len);
+    try std.testing.expectEqualStrings("aaa", matches[0].text);
+    try std.testing.expectEqualStrings("aa", matches[1].text);
+
+    const replaced = try regex.replace("caaab aa", "x");
+    defer allocator.free(replaced);
+    try std.testing.expectEqualStrings("cxb x", replaced);
+}
+
+test "public regex API handles zero-width matches without stalling" {
+    const allocator = std.testing.allocator;
+    var regex = try home_io.Regex.compile(allocator, "a*");
+    defer regex.deinit();
+
+    const matches = try regex.findAll("bb");
+    defer allocator.free(matches);
+    try std.testing.expectEqual(@as(usize, 3), matches.len);
+
+    const replaced = try regex.replace("bb", "-");
+    defer allocator.free(replaced);
+    try std.testing.expectEqualStrings("-b-b-", replaced);
+}
+
 test "INI files use explicit IO and replace duplicate owned values" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

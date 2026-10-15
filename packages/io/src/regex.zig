@@ -42,10 +42,12 @@ pub const Regex = struct {
 
     /// Compile a regex pattern
     pub fn compile(allocator: Allocator, pattern: []const u8) !Self {
-        var parser = try Parser.init(allocator, pattern);
+        var parse_arena = std.heap.ArenaAllocator.init(allocator);
+        defer parse_arena.deinit();
+
+        var parser = Parser.init(parse_arena.allocator(), pattern);
         const ast = try parser.parse();
         var nfa = try NFA.fromAST(allocator, ast);
-        // If dupe fails, nfa would leak — tear it down on error.
         errdefer nfa.deinit();
         const owned_pattern = try allocator.dupe(u8, pattern);
 
@@ -83,15 +85,20 @@ pub const Regex = struct {
         errdefer result.deinit(self.allocator);
 
         var pos: usize = 0;
-        while (pos < text.len) {
-            if (self.nfa.findAt(text, pos)) |m| {
-                // Add text before match
+        while (pos <= text.len) {
+            if (self.nfa.findFrom(text, pos)) |m| {
                 try result.appendSlice(self.allocator, text[pos..m.start]);
-                // Add replacement
                 try result.appendSlice(self.allocator, replacement);
-                pos = m.end;
+
+                if (m.end > pos) {
+                    pos = m.end;
+                } else if (pos < text.len) {
+                    try result.append(self.allocator, text[pos]);
+                    pos += 1;
+                } else {
+                    break;
+                }
             } else {
-                // Add remaining text
                 try result.appendSlice(self.allocator, text[pos..]);
                 break;
             }
@@ -159,7 +166,7 @@ const Parser = struct {
     pos: usize,
     group_count: usize,
 
-    fn init(allocator: Allocator, pattern: []const u8) !Parser {
+    fn init(allocator: Allocator, pattern: []const u8) Parser {
         return Parser{
             .allocator = allocator,
             .pattern = pattern,
@@ -169,7 +176,14 @@ const Parser = struct {
     }
 
     fn parse(self: *Parser) !*ASTNode {
-        return try self.parseAlternation();
+        const root = try self.parseAlternation();
+        if (self.pos != self.pattern.len) {
+            return if (self.pattern[self.pos] == ')')
+                RegexError.UnmatchedParenthesis
+            else
+                RegexError.InvalidPattern;
+        }
+        return root;
     }
 
     fn parseAlternation(self: *Parser) RegexError!*ASTNode {
@@ -225,12 +239,17 @@ const Parser = struct {
     }
 
     fn parseQuantified(self: *Parser) RegexError!*ASTNode {
-        var node = try self.parseAtom();
+        const node = try self.parseAtom();
 
         if (self.pos < self.pattern.len) {
             const c = self.pattern[self.pos];
             if (c == '*' or c == '+' or c == '?') {
                 self.pos += 1;
+                if (self.pos < self.pattern.len and
+                    (self.pattern[self.pos] == '*' or self.pattern[self.pos] == '+' or self.pattern[self.pos] == '?'))
+                {
+                    return RegexError.InvalidQuantifier;
+                }
                 const quant = try self.allocator.create(ASTNode);
                 quant.* = switch (c) {
                     '*' => ASTNode{ .star = node },
@@ -252,6 +271,10 @@ const Parser = struct {
 
         const c = self.pattern[self.pos];
 
+        if (c == '*' or c == '+' or c == '?') {
+            return RegexError.InvalidQuantifier;
+        }
+
         // Handle special characters
         if (c == '.') {
             self.pos += 1;
@@ -269,7 +292,12 @@ const Parser = struct {
             const group_id = self.group_count;
             self.group_count += 1;
 
-            const inner = try self.parseAlternation();
+            const inner = self.parseAlternation() catch |err| {
+                if (err == RegexError.InvalidPattern and self.pos >= self.pattern.len) {
+                    return RegexError.UnmatchedParenthesis;
+                }
+                return err;
+            };
 
             if (self.pos >= self.pattern.len or self.pattern[self.pos] != ')') {
                 return RegexError.UnmatchedParenthesis;
@@ -322,6 +350,7 @@ const Parser = struct {
                 self.pos += 1; // skip '-'
                 const end_char = self.pattern[self.pos];
                 self.pos += 1;
+                if (end_char < start_char) return RegexError.InvalidPattern;
                 try ranges.append(self.allocator, CharRange{ .start = start_char, .end = end_char });
             } else {
                 try ranges.append(self.allocator, CharRange{ .start = start_char, .end = start_char });
@@ -333,8 +362,7 @@ const Parser = struct {
         }
         self.pos += 1;
 
-        const ranges_copy = try self.allocator.alloc(CharRange, ranges.items.len);
-        @memcpy(ranges_copy, ranges.items);
+        const ranges_copy = try ranges.toOwnedSlice(self.allocator);
 
         const node = try self.allocator.create(ASTNode);
         node.* = ASTNode{
@@ -418,16 +446,22 @@ const State = struct {
     transitions: std.ArrayList(Transition),
     is_accept: bool,
 
-    fn init(allocator: Allocator, id: usize) State {
+    fn init(id: usize) State {
         return State{
             .id = id,
-            .transitions = std.ArrayList(Transition).init(allocator),
+            .transitions = .empty,
             .is_accept = false,
         };
     }
 
-    fn deinit(self: *State) void {
-        self.transitions.deinit();
+    fn deinit(self: *State, allocator: Allocator) void {
+        for (self.transitions.items) |transition| {
+            switch (transition.condition) {
+                .char_class => |char_class| allocator.free(char_class.ranges),
+                else => {},
+            }
+        }
+        self.transitions.deinit(allocator);
     }
 };
 
@@ -451,23 +485,25 @@ const NFA = struct {
 
     fn fromAST(allocator: Allocator, ast: *ASTNode) !NFA {
         var builder = NFABuilder.init(allocator);
+        errdefer builder.deinit();
+
         const fragment = try builder.build(ast);
-        return builder.toNFA(fragment);
+        return try builder.toNFA(fragment);
     }
 
     fn deinit(self: *NFA) void {
         for (self.states) |*state| {
-            state.deinit();
+            state.deinit(self.allocator);
         }
         self.allocator.free(self.states);
     }
 
     fn matchFull(self: *const NFA, text: []const u8) bool {
-        var current_states = std.ArrayList(usize).init(self.allocator);
-        defer current_states.deinit();
+        var current_states: std.ArrayList(usize) = .empty;
+        defer current_states.deinit(self.allocator);
 
-        var next_states = std.ArrayList(usize).init(self.allocator);
-        defer next_states.deinit();
+        var next_states: std.ArrayList(usize) = .empty;
+        defer next_states.deinit(self.allocator);
 
         // Start with epsilon closure of start state
         self.epsilonClosure(self.start, &current_states) catch return false;
@@ -501,8 +537,14 @@ const NFA = struct {
     }
 
     fn findFirst(self: *const NFA, text: []const u8) ?Match {
-        var start_pos: usize = 0;
-        while (start_pos < text.len) : (start_pos += 1) {
+        return self.findFrom(text, 0);
+    }
+
+    fn findFrom(self: *const NFA, text: []const u8, from: usize) ?Match {
+        if (from > text.len) return null;
+
+        var start_pos = from;
+        while (start_pos <= text.len) : (start_pos += 1) {
             if (self.findAt(text, start_pos)) |m| {
                 return m;
             }
@@ -511,17 +553,20 @@ const NFA = struct {
     }
 
     fn findAt(self: *const NFA, text: []const u8, start: usize) ?Match {
+        if (start > text.len) return null;
+
+        var best: ?Match = null;
         var pos = start;
         while (pos <= text.len) : (pos += 1) {
             if (self.matchFull(text[start..pos])) {
-                return Match{
+                best = Match{
                     .start = start,
                     .end = pos,
                     .text = text[start..pos],
                 };
             }
         }
-        return null;
+        return best;
     }
 
     fn findAll(self: *const NFA, allocator: Allocator, text: []const u8) ![]Match {
@@ -529,12 +574,18 @@ const NFA = struct {
         errdefer matches.deinit(allocator);
 
         var pos: usize = 0;
-        while (pos < text.len) {
-            if (self.findAt(text, pos)) |m| {
+        while (pos <= text.len) {
+            if (self.findFrom(text, pos)) |m| {
                 try matches.append(allocator, m);
-                pos = m.end;
+                if (m.end > pos) {
+                    pos = m.end;
+                } else if (pos < text.len) {
+                    pos += 1;
+                } else {
+                    break;
+                }
             } else {
-                pos += 1;
+                break;
             }
         }
 
@@ -547,7 +598,7 @@ const NFA = struct {
             if (id == state_id) return;
         }
 
-        try visited.append(state_id);
+        try visited.append(self.allocator, state_id);
 
         const state = &self.states[state_id];
         for (state.transitions.items) |trans| {
@@ -580,6 +631,10 @@ const NFA = struct {
 const Fragment = struct {
     start: usize,
     out: std.ArrayList(usize), // States with dangling transitions
+
+    fn deinit(self: *Fragment, allocator: Allocator) void {
+        self.out.deinit(allocator);
+    }
 };
 
 const NFABuilder = struct {
@@ -590,15 +645,22 @@ const NFABuilder = struct {
     fn init(allocator: Allocator) NFABuilder {
         return NFABuilder{
             .allocator = allocator,
-            .states = std.ArrayList(State).init(allocator),
+            .states = .empty,
             .next_id = 0,
         };
     }
 
+    fn deinit(self: *NFABuilder) void {
+        for (self.states.items) |*state| {
+            state.deinit(self.allocator);
+        }
+        self.states.deinit(self.allocator);
+    }
+
     fn createState(self: *NFABuilder) !usize {
         const id = self.next_id;
+        try self.states.append(self.allocator, State.init(id));
         self.next_id += 1;
-        try self.states.append(State.init(self.allocator, id));
         return id;
     }
 
@@ -620,13 +682,14 @@ const NFABuilder = struct {
         const start = try self.createState();
         const end = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.append(self.allocator, end);
+
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = end,
             .condition = .{ .char = c },
         });
-
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.append(end);
 
         return Fragment{ .start = start, .out = out };
     }
@@ -635,13 +698,14 @@ const NFABuilder = struct {
         const start = try self.createState();
         const end = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.append(self.allocator, end);
+
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = end,
             .condition = .{ .any = {} },
         });
-
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.append(end);
 
         return Fragment{ .start = start, .out = out };
     }
@@ -650,83 +714,96 @@ const NFABuilder = struct {
         const start = try self.createState();
         const end = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
-            .target = end,
-            .condition = .{ .char_class = cc },
-        });
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.append(self.allocator, end);
 
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.append(end);
+        const ranges = try self.allocator.dupe(CharRange, cc.ranges);
+        errdefer self.allocator.free(ranges);
+        try self.states.items[start].transitions.append(self.allocator, Transition{
+            .target = end,
+            .condition = .{ .char_class = .{
+                .ranges = ranges,
+                .negated = cc.negated,
+            } },
+        });
 
         return Fragment{ .start = start, .out = out };
     }
 
     fn buildConcat(self: *NFABuilder, left: *ASTNode, right: *ASTNode) !Fragment {
         var frag1 = try self.build(left);
-        const frag2 = try self.build(right);
+        defer frag1.deinit(self.allocator);
+        var frag2 = try self.build(right);
+        errdefer frag2.deinit(self.allocator);
 
         // Connect frag1 out states to frag2 start
         for (frag1.out.items) |state_id| {
-            try self.states.items[state_id].transitions.append(Transition{
+            try self.states.items[state_id].transitions.append(self.allocator, Transition{
                 .target = frag2.start,
                 .condition = .{ .epsilon = {} },
             });
         }
-        frag1.out.deinit();
 
         return Fragment{ .start = frag1.start, .out = frag2.out };
     }
 
     fn buildAlternate(self: *NFABuilder, left: *ASTNode, right: *ASTNode) !Fragment {
-        const frag1 = try self.build(left);
-        const frag2 = try self.build(right);
+        var frag1 = try self.build(left);
+        defer frag1.deinit(self.allocator);
+        var frag2 = try self.build(right);
+        defer frag2.deinit(self.allocator);
 
         const start = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.appendSlice(self.allocator, frag1.out.items);
+        try out.appendSlice(self.allocator, frag2.out.items);
+
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = frag1.start,
             .condition = .{ .epsilon = {} },
         });
-        try self.states.items[start].transitions.append(Transition{
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = frag2.start,
             .condition = .{ .epsilon = {} },
         });
-
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.appendSlice(frag1.out.items);
-        try out.appendSlice(frag2.out.items);
 
         return Fragment{ .start = start, .out = out };
     }
 
     fn buildStar(self: *NFABuilder, inner: *ASTNode) !Fragment {
-        const frag = try self.build(inner);
+        var frag = try self.build(inner);
+        defer frag.deinit(self.allocator);
         const start = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.append(self.allocator, start);
+        try out.appendSlice(self.allocator, frag.out.items);
+
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = frag.start,
             .condition = .{ .epsilon = {} },
         });
 
         for (frag.out.items) |state_id| {
-            try self.states.items[state_id].transitions.append(Transition{
+            try self.states.items[state_id].transitions.append(self.allocator, Transition{
                 .target = frag.start,
                 .condition = .{ .epsilon = {} },
             });
         }
 
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.append(start);
-        try out.appendSlice(frag.out.items);
-
         return Fragment{ .start = start, .out = out };
     }
 
     fn buildPlus(self: *NFABuilder, inner: *ASTNode) !Fragment {
-        const frag = try self.build(inner);
+        var frag = try self.build(inner);
+        errdefer frag.deinit(self.allocator);
 
         for (frag.out.items) |state_id| {
-            try self.states.items[state_id].transitions.append(Transition{
+            try self.states.items[state_id].transitions.append(self.allocator, Transition{
                 .target = frag.start,
                 .condition = .{ .epsilon = {} },
             });
@@ -736,35 +813,41 @@ const NFABuilder = struct {
     }
 
     fn buildQuestion(self: *NFABuilder, inner: *ASTNode) !Fragment {
-        const frag = try self.build(inner);
+        var frag = try self.build(inner);
+        defer frag.deinit(self.allocator);
         const start = try self.createState();
 
-        try self.states.items[start].transitions.append(Transition{
+        var out: std.ArrayList(usize) = .empty;
+        errdefer out.deinit(self.allocator);
+        try out.append(self.allocator, start);
+        try out.appendSlice(self.allocator, frag.out.items);
+
+        try self.states.items[start].transitions.append(self.allocator, Transition{
             .target = frag.start,
             .condition = .{ .epsilon = {} },
         });
 
-        var out = std.ArrayList(usize).init(self.allocator);
-        try out.append(start);
-        try out.appendSlice(frag.out.items);
-
         return Fragment{ .start = start, .out = out };
     }
 
-    fn toNFA(self: *NFABuilder, frag: Fragment) !NFA {
+    fn toNFA(self: *NFABuilder, fragment: Fragment) !NFA {
+        var frag = fragment;
+        defer frag.deinit(self.allocator);
+
         const accept = try self.createState();
         self.states.items[accept].is_accept = true;
 
         for (frag.out.items) |state_id| {
-            try self.states.items[state_id].transitions.append(Transition{
+            try self.states.items[state_id].transitions.append(self.allocator, Transition{
                 .target = accept,
                 .condition = .{ .epsilon = {} },
             });
         }
 
+        const states = try self.states.toOwnedSlice(self.allocator);
         return NFA{
             .allocator = self.allocator,
-            .states = try self.states.toOwnedSlice(),
+            .states = states,
             .start = frag.start,
             .accept = accept,
         };
@@ -774,6 +857,71 @@ const NFABuilder = struct {
 // =================================================================================
 //                                    TESTS
 // =================================================================================
+
+fn compileForAllocationFailure(allocator: Allocator) !void {
+    var regex = try Regex.compile(allocator, "(ab|[c-e])+\\w?");
+    defer regex.deinit();
+}
+
+test "Regex - compilation releases every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        compileForAllocationFailure,
+        .{},
+    );
+}
+
+test "Regex - rejects trailing delimiters and invalid quantifiers" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(RegexError.UnmatchedParenthesis, Regex.compile(allocator, "a)"));
+    try std.testing.expectError(RegexError.UnmatchedParenthesis, Regex.compile(allocator, "("));
+    try std.testing.expectError(RegexError.InvalidQuantifier, Regex.compile(allocator, "*a"));
+    try std.testing.expectError(RegexError.InvalidQuantifier, Regex.compile(allocator, "a**"));
+    try std.testing.expectError(RegexError.InvalidPattern, Regex.compile(allocator, "[z-a]"));
+}
+
+test "Regex - search is leftmost and quantifiers are greedy" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "a+");
+    defer regex.deinit();
+
+    const found = regex.find("caaab").?;
+    try std.testing.expectEqual(@as(usize, 1), found.start);
+    try std.testing.expectEqual(@as(usize, 4), found.end);
+    try std.testing.expectEqualStrings("aaa", found.text);
+}
+
+test "Regex - empty matches make progress through findAll and replace" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "a*");
+    defer regex.deinit();
+
+    const empty = regex.find("").?;
+    try std.testing.expectEqual(@as(usize, 0), empty.start);
+    try std.testing.expectEqual(@as(usize, 0), empty.end);
+
+    const matches = try regex.findAll("bbb");
+    defer allocator.free(matches);
+    try std.testing.expectEqual(@as(usize, 4), matches.len);
+    for (matches, 0..) |found, index| {
+        try std.testing.expectEqual(index, found.start);
+        try std.testing.expectEqual(index, found.end);
+    }
+
+    const replaced = try regex.replace("bbb", "-");
+    defer allocator.free(replaced);
+    try std.testing.expectEqualStrings("-b-b-b-", replaced);
+}
+
+test "Regex - replace searches beyond the previous match" {
+    const allocator = std.testing.allocator;
+    var regex = try Regex.compile(allocator, "cat");
+    defer regex.deinit();
+
+    const replaced = try regex.replace("cat and cat", "dog");
+    defer allocator.free(replaced);
+    try std.testing.expectEqualStrings("dog and dog", replaced);
+}
 
 test "Regex - literal match" {
     const testing = std.testing;
