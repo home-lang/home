@@ -7,6 +7,14 @@ pub fn escapeXml(str: string, writer: anytype) !void {
     const len = str.len;
     while (i < len) : (i += 1) {
         const c = str[i];
+        // XML 1.0 also forbids the Unicode noncharacters U+FFFE/U+FFFF.
+        if (i + 2 < len and c == 0xef and str[i + 1] == 0xbf and (str[i + 2] == 0xbe or str[i + 2] == 0xbf)) {
+            if (i > last) try writer.writeAll(str[last..i]);
+            try writer.writeAll("&#xFFFD;");
+            i += 2;
+            last = i + 1;
+            continue;
+        }
         switch (c) {
             '&',
             '<',
@@ -30,7 +38,12 @@ pub fn escapeXml(str: string, writer: anytype) !void {
             },
             0...0x1f => {
                 if (i > last) try writer.writeAll(str[last..i]);
-                try writer.print("&#{d};", .{c});
+                if (c == '\t' or c == '\n' or c == '\r') {
+                    try writer.print("&#{d};", .{c});
+                } else {
+                    // Numeric references cannot make forbidden XML chars legal.
+                    try writer.writeAll("&#xFFFD;");
+                }
                 last = i + 1;
             },
             else => {},
@@ -46,6 +59,25 @@ fn appendEscapedXml(list: *std.ArrayListUnmanaged(u8), value: string) !void {
     defer writer.deinit();
     try escapeXml(value, &writer.writer);
     try list.appendSlice(bun.default_allocator, writer.written());
+}
+
+fn hasInvalidXmlChar(value: string) bool {
+    for (value) |byte| if (byte < 0x20 and byte != '\t' and byte != '\n' and byte != '\r') return true;
+    return std.mem.indexOf(u8, value, "\xef\xbf\xbe") != null or std.mem.indexOf(u8, value, "\xef\xbf\xbf") != null;
+}
+
+// Exact identities remain recoverable when their display form cannot be XML.
+// The JSON case journal keeps the same original bytes; its validator compares
+// this capsule, the XML display name, and the journal independently.
+fn appendRawXmlIdentity(list: *std.ArrayListUnmanaged(u8), comptime key: []const u8, value: string) !void {
+    if (!hasInvalidXmlChar(value)) return;
+    const encoder = std.base64.standard.Encoder;
+    const buffer = try bun.default_allocator.alloc(u8, encoder.calcSize(value.len));
+    defer bun.default_allocator.free(buffer);
+    const encoded = encoder.encode(buffer, value);
+    try list.appendSlice(bun.default_allocator, " bun-" ++ key ++ "-base64=\"");
+    try list.appendSlice(bun.default_allocator, encoded);
+    try list.appendSlice(bun.default_allocator, "\"");
 }
 
 fn appendPrint(list: *std.ArrayListUnmanaged(u8), comptime fmt: []const u8, args: anytype) !void {
@@ -462,6 +494,9 @@ pub const JunitReporter = struct {
         try this.contents.appendSlice(bun.default_allocator, " file=\"");
         try appendEscapedXml(&this.contents, file);
         try this.contents.appendSlice(bun.default_allocator, "\"");
+        try appendRawXmlIdentity(&this.contents, "name", name);
+        try appendRawXmlIdentity(&this.contents, "classname", class_name);
+        try appendRawXmlIdentity(&this.contents, "file", file);
 
         if (line_number > 0) {
             try appendPrint(&this.contents, " line=\"{d}\"", .{line_number});
@@ -945,13 +980,12 @@ pub const CommandLineReporter = struct {
                         for (scopes) |scope| {
                             if (scope.base.name) |name| if (name.len > 0) {
                                 if (initial_length != concatenated_describe_scopes.items.len) {
-                                    bun.handleOom(concatenated_describe_scopes.appendSlice(" &gt; "));
+                                    bun.handleOom(concatenated_describe_scopes.appendSlice(" > "));
                                 }
 
-                                var scope_writer = std.Io.Writer.Allocating.init(allocator);
-                                defer scope_writer.deinit();
-                                bun.handleOom(escapeXml(name, &scope_writer.writer));
-                                bun.handleOom(concatenated_describe_scopes.appendSlice(scope_writer.written()));
+                                // Keep the journal identity raw. writeTestCase
+                                // escapes the complete attribute exactly once.
+                                bun.handleOom(concatenated_describe_scopes.appendSlice(name));
                             };
                         }
                     }

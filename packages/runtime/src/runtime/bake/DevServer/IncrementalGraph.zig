@@ -139,14 +139,12 @@ const ClientFile = struct {
         }
 
         comptime {
-            // Upstream packs this into 32 bytes (4×u64); Home's parked-Bake
-            // `ClientFile.Packed` has diverged to 56 bytes (extra fields not yet
-            // bit-packed). The size invariant is a release-only memory
-            // optimization for the (non-functional) DevServer graph, so it's
-            // relaxed to an upper bound rather than failing the release build.
-            // Re-tighten to `== 32` when Bake's packing is ported.
+            // Safety-enabled untagged unions carry active-field checks. Bun's
+            // compact graph invariant applies when those checks are disabled.
             if (!Environment.allow_assert) {
-                bun.assert(@sizeOf(@This()) <= @sizeOf(u64) * 8);
+                if (@sizeOf(@This()) != @sizeOf(u64) * 4)
+                    @compileError("Bake ClientFile.Packed must occupy exactly 32 bytes without runtime safety tags");
+                bun.assert_eql(@sizeOf(@This()), @sizeOf(u64) * 4);
                 bun.assert_eql(@alignOf(@This()), @alignOf([*]u8));
             }
         }
@@ -2057,6 +2055,65 @@ const useAllFields = bun.meta.useAllFields;
 
 const SourceMap = bun.SourceMap;
 const VLQ = SourceMap.VLQ;
+
+test "Bake ClientFile packed layout" {
+    std.debug.print("Bake layout: Packed={d}, Content={d}, Shared={d}, LineCount={d}, RouteIndex={d}\n", .{
+        @sizeOf(ClientFile.Packed), @sizeOf(Content.Untagged), @sizeOf(Shared(*PackedMap)), @sizeOf(LineCount), @sizeOf(RouteBundle.Index),
+    });
+    if (!Environment.allow_assert) try std.testing.expectEqual(@as(usize, 32), @sizeOf(ClientFile.Packed));
+    try std.testing.expectEqual(@alignOf([*]u8), @alignOf(ClientFile.Packed));
+}
+
+test "Bake ClientFile packing preserves content tags and independent metadata" {
+    const contents = [_]Content{ .unknown, .{ .js = "client code" }, .{ .asset = "asset bytes" }, .{ .css_root = 0xfedcba9876543210 }, .css_child };
+    const maps = [_]PackedMap.Shared{ .none, .{ .line_count = LineCount.init(0) }, .{ .line_count = LineCount.init(std.math.maxInt(u32) - 1) } };
+    for (contents) |content| {
+        for (maps) |map| {
+            for (0..16) |flags| {
+                const file: ClientFile = .{
+                    .content = content,
+                    .source_map = map,
+                    .html_route_bundle_index = if (flags & 1 != 0) RouteBundle.Index.init(std.math.maxInt(u30) - 1) else null,
+                    .failed = flags & 2 != 0,
+                    .is_hmr_root = flags & 4 != 0,
+                    .is_special_framework_file = flags & 8 != 0,
+                };
+                const restored = file.pack().unpack();
+                try std.testing.expectEqualDeep(file, restored);
+            }
+        }
+    }
+}
+
+test "Bake ClientFile packed source map transfers and clones ownership" {
+    var scope = bun.allocators.AllocationScopeIn(bun.DefaultAllocator).initDefault();
+    defer scope.deinit();
+    const dev_allocator = scope.borrow();
+    const vlq = try dev_allocator.allocator().dupe(u8, "AAAA");
+    const escaped_source = try bun.default_allocator.dupe(u8, "source code");
+    var file: ClientFile = .{
+        .content = .{ .js = "client code" },
+        .source_map = .{ .some = Shared(*PackedMap).new(.{
+            .vlq_ = .fromRawIn(vlq, dev_allocator),
+            .escaped_source = .fromRaw(escaped_source),
+            .end_state = .{ .original_line = 8, .original_column = 9 },
+        }) },
+    };
+    const map = file.source_map.get().?;
+    const packed_file = file.pack();
+    var restored = packed_file.unpack();
+    try std.testing.expectEqual(map, restored.source_map.get().?);
+    try std.testing.expectEqual(@as(usize, 1), restored.source_map.some.strongCount());
+    // Packing is a move/copy of the reference, not an implicit clone.
+    file.source_map = .none;
+    var clone = restored.source_map.clone();
+    try std.testing.expectEqual(@as(usize, 2), clone.some.strongCount());
+    restored.source_map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), clone.some.strongCount());
+    try std.testing.expectEqualStrings("AAAA", clone.get().?.vlq());
+    try std.testing.expectEqualStrings("source code", clone.get().?.quotedContents());
+    clone.deinit();
+}
 
 const DevServer = bake.DevServer;
 const ChunkKind = DevServer.ChunkKind;

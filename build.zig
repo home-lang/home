@@ -1895,6 +1895,23 @@ pub fn build(b: *std.Build) void {
     run_home_rt_tests.addArg(b.fmt("--seed=0x{x}", .{@as(u32, 0)}));
     dependOnTest(test_step, &run_home_rt_tests.step, test_filter, "home_rt");
 
+    if (enable_jsc) {
+        // These native graph controls do not launch runtime children. Keep a
+        // dedicated gate so verifying release layout does not require building
+        // the entire optimized language CLI as an unrelated prerequisite.
+        const bake_graph_tests = b.addTest(.{
+            .root_module = home_rt_pkg,
+            .filters = &.{"Bake ClientFile"},
+        });
+        const run_bake_graph_tests = std.Build.Step.Run.create(b, "run native Bake graph tests");
+        run_bake_graph_tests.addFileArg(home_rt_test_launcher.getEmittedBin());
+        run_bake_graph_tests.addFileArg(.{ .relative = .{ .base = .install_bin, .sub_path = "home" } });
+        run_bake_graph_tests.addFileArg(bake_graph_tests.getEmittedBin());
+        run_bake_graph_tests.addArg("--seed=0x0");
+        const bake_graph_step = b.step("test-bake-graph", "Test native Bake graph layout and reference ownership");
+        bake_graph_step.dependOn(&run_bake_graph_tests.step);
+    }
+
     // Modsign tests
     const modsign_tests = b.addTest(.{ .root_module = modsign_pkg });
     const run_modsign_tests = b.addRunArtifact(modsign_tests);

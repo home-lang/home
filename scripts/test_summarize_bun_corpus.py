@@ -1,5 +1,6 @@
 """Storage-validator controls; these do not represent native corpus passes."""
 import hashlib
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -96,6 +97,34 @@ class JournalValidation(unittest.TestCase):
         self.assertFalse(self.result()['successful'])
         self.rows[3]['case_metadata'] = 'missing'
         self.assertFalse(self.result()['successful'])
+
+    def test_xml_identity_capsule_preserves_controls_without_weakening_metadata(self):
+        self.filtered_artifact()
+        xml = (self.root / '000000.junit').read_text()
+        details = [json.loads(line) for line in (self.root / '000000.case_metadata').read_text().splitlines()]
+        original = 'colored\x1b[35m\x00\ufffe'
+        encoded = base64.b64encode(original.encode()).decode()
+        display = module.xml_identity_display(original)
+        self.artifact('junit', xml.replace('name="pass"', f'name="{display}" bun-name-base64="{encoded}"').encode())
+        details[0]['name'] = original
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        valid = self.result()
+        self.assertTrue(valid['successful'])
+        self.assertEqual(valid['cases'][0]['name'], original)
+        # A different forbidden control has the same display replacement, but
+        # the exact original identity must still match its capsule.
+        details[0]['name'] = original.replace('\x1b', '\x02')
+        self.artifact('case_metadata', ''.join(json.dumps(row) + '\n' for row in details).encode())
+        self.assertFalse(self.result()['successful'])
+
+    def test_xml_identity_capsules_reject_invalid_encoding_and_display(self):
+        for encoded, display in [('not-base64!', 'pass'),
+                                 (base64.b64encode(b'pass\x1b').decode(), 'wrong'),
+                                 (base64.b64encode(b'pass').decode(), 'pass')]:
+            self.filtered_artifact()
+            xml = (self.root / '000000.junit').read_text()
+            self.artifact('junit', xml.replace('name="pass"', f'name="{display}" bun-name-base64="{encoded}"').encode())
+            self.assertFalse(self.result()['successful'])
 
     def test_retry_history_does_not_count_as_terminal_failure_or_pass(self):
         self.rows[3]['counts'] = dict(passed=1, failed=0, skipped=0, todo=0, retry_attempts=1)

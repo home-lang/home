@@ -5,6 +5,8 @@ Exit 0 requires complete, internally consistent, successful execution. Skipped
 and TODO cases stay separate, and are never credited as passing features.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +16,14 @@ import xml.etree.ElementTree as ET
 
 COUNTS = ('passed', 'failed', 'skipped', 'todo')
 OUTCOMES = (*COUNTS, 'filtered', 'retry_attempts')
+
+
+def xml_identity_display(value):
+    return ''.join(character if (character in '\t\n\r' or
+                   0x20 <= ord(character) <= 0xD7FF or
+                   0xE000 <= ord(character) <= 0xFFFD or
+                   0x10000 <= ord(character) <= 0x10FFFF) else '\ufffd'
+                   for character in value)
 
 
 def digest(path):
@@ -338,8 +348,25 @@ def summarize(directory):
                                 check(not (failed and skipped is not None), f'{identity}: case has failure and skip')
                                 status = 'failed' if failed else ('todo' if skipped.get('message') == 'TODO' else 'skipped') if skipped is not None else 'passed'
                                 counter = status
+                                identities = {key: case.get(key) for key in ('name', 'classname', 'file')}
+                                for key in identities:
+                                    encoded_identity = case.get('bun-' + key + '-base64')
+                                    if encoded_identity is None:
+                                        continue
+                                    try:
+                                        raw_identity = base64.b64decode(encoded_identity, validate=True)
+                                        original_identity = raw_identity.decode('utf-8')
+                                        check(base64.b64encode(raw_identity).decode('ascii') == encoded_identity,
+                                              f'{identity}: noncanonical encoded {key}')
+                                        check(xml_identity_display(original_identity) != original_identity,
+                                              f'{identity}: unnecessary encoded {key}')
+                                        check(xml_identity_display(original_identity) == case.get(key),
+                                              f'{identity}: encoded {key} display mismatch')
+                                        identities[key] = original_identity
+                                    except (ValueError, UnicodeError, binascii.Error):
+                                        check(False, f'{identity}: invalid encoded {key}')
                                 if purpose == 'suite' and suite is not None:
-                                    source = case.get('file')
+                                    source = identities['file']
                                     absolute = str((Path(suite.get('case_source_base', str(Path(run['corpus_root']).parent))) / source).resolve()) if isinstance(source, str) else None
                                     check(absolute in {entry['path'] for entry in suite['inputs']}, f'{identity}: case source is outside suite inventory')
                                 if metadata is not None and ordinal < len(metadata):
@@ -349,7 +376,7 @@ def summarize(directory):
                                         continue
                                     check(type(detail.get('ordinal')) is int and detail['ordinal'] == ordinal, f'{identity}: case metadata ordinal mismatch')
                                     for key in ('name', 'classname', 'file'):
-                                        check(detail.get(key) == case.get(key), f'{identity}: case metadata {key} mismatch')
+                                        check(detail.get(key) == identities[key], f'{identity}: case metadata {key} mismatch')
                                     native_status = detail.get('status')
                                     native_basic = 'failed' if native_status in ('fail', 'fail_because_timeout', 'fail_because_timeout_with_done_callback', 'fail_because_hook_timeout', 'fail_because_hook_timeout_with_done_callback', 'fail_because_failing_test_passed', 'fail_because_todo_passed', 'fail_because_expected_has_assertions', 'fail_because_expected_assertion_count') else {'pass': 'passed', 'skip': 'skipped', 'skipped_because_label': 'skipped', 'todo': 'todo'}.get(native_status)
                                     check(native_basic == status, f'{identity}: native case metadata disagrees with JUnit result')
@@ -364,7 +391,7 @@ def summarize(directory):
                                     else:
                                         check(native_status != 'skipped_because_label', f'{identity}: filtered result lacks native case kind')
                                 observed[counter] += 1
-                                cases.append({'file_id': identity, 'name': case.get('name'), 'classname': case.get('classname'), 'status': status})
+                                cases.append({'file_id': identity, 'name': identities['name'], 'classname': identities['classname'], 'status': status})
                             check(observed == {key: counts.get(key, 0) for key in OUTCOMES}, f'{identity}: JUnit cases disagree with process counters: {observed} != {counts}')
                         except (ET.ParseError, OSError) as error:
                             errors.append(f'{identity}: invalid JUnit: {error}')

@@ -86,6 +86,10 @@ comptime {
     }
     if (enable_jsc_link) {
         _ = @import("jsc/virtual_machine_exports.zig");
+        // ZigGlobalObject's promise dispatcher references both entry-point
+        // callbacks even when no CLI path forces bun.js into a filtered test.
+        _ = @import("bun.js.zig").Bun__onResolveEntryPointResult;
+        _ = @import("bun.js.zig").Bun__onRejectEntryPointResult;
         _ = @import("jsc/CppTask.zig");
         // Bun.secrets is provided by JSSecrets.zig. Force its strong scheduler
         // export into executable builds so the native host functions enqueue
