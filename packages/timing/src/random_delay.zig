@@ -6,13 +6,13 @@ const timing = @import("timing.zig");
 
 /// Random delay generator
 pub const RandomDelay = struct {
-    rng: std.rand.DefaultPrng,
+    rng: std.Random.DefaultPrng,
     min_cycles: u64,
     max_cycles: u64,
 
     pub fn init(seed: u64, min_cycles: u64, max_cycles: u64) RandomDelay {
         return .{
-            .rng = std.rand.DefaultPrng.init(seed),
+            .rng = std.Random.DefaultPrng.init(seed),
             .min_cycles = min_cycles,
             .max_cycles = max_cycles,
         };
@@ -41,8 +41,7 @@ pub const RandomDelay = struct {
 fn busyWait(cycles: u64) void {
     const start = timing.getCycles();
     while (timing.getCycles() - start < cycles) {
-        // Spin
-        asm volatile ("pause");
+        std.atomic.spinLoopHint();
     }
 }
 
@@ -55,14 +54,14 @@ pub const DelayStrategy = enum {
 
 /// Advanced random delay with different distributions
 pub const AdaptiveDelay = struct {
-    rng: std.rand.DefaultPrng,
+    rng: std.Random.DefaultPrng,
     strategy: DelayStrategy,
     mean_cycles: u64,
     stddev_cycles: u64,
 
     pub fn init(seed: u64, strategy: DelayStrategy, mean: u64, stddev: u64) AdaptiveDelay {
         return .{
-            .rng = std.rand.DefaultPrng.init(seed),
+            .rng = std.Random.DefaultPrng.init(seed),
             .strategy = strategy,
             .mean_cycles = mean,
             .stddev_cycles = stddev,
@@ -92,6 +91,7 @@ pub const AdaptiveDelay = struct {
     }
 
     fn exponentialDelay(self: *AdaptiveDelay) u64 {
+        if (self.mean_cycles == 0) return 0;
         // Simple exponential distribution approximation
         const u = self.rng.random().float(f64);
         const lambda = 1.0 / @as(f64, @floatFromInt(self.mean_cycles));
@@ -102,7 +102,9 @@ pub const AdaptiveDelay = struct {
 
     fn gaussianDelay(self: *AdaptiveDelay) u64 {
         // Box-Muller transform for Gaussian distribution
-        const uniform1 = self.rng.random().float(f64);
+        // `float` includes zero; subtracting from one gives (0, 1] and keeps
+        // log(0) from producing infinity.
+        const uniform1 = 1.0 - self.rng.random().float(f64);
         const uniform2 = self.rng.random().float(f64);
 
         const z0 = @sqrt(-2.0 * @log(uniform1)) * @cos(2.0 * std.math.pi * uniform2);
@@ -127,12 +129,20 @@ pub const DelayBudget = struct {
 
     pub fn canDelay(self: *DelayBudget, cycles: u64) bool {
         const current = self.used.load(.acquire);
-        return current + cycles <= self.total_budget;
+        return current <= self.total_budget and cycles <= self.total_budget - current;
     }
 
     pub fn useDelay(self: *DelayBudget, cycles: u64) bool {
-        const current = self.used.fetchAdd(cycles, .monotonic);
-        return current + cycles <= self.total_budget;
+        var current = self.used.load(.monotonic);
+        while (true) {
+            if (current > self.total_budget or cycles > self.total_budget - current) return false;
+            current = self.used.cmpxchgWeak(
+                current,
+                current + cycles,
+                .monotonic,
+                .monotonic,
+            ) orelse return true;
+        }
     }
 
     pub fn reset(self: *DelayBudget) void {
@@ -182,10 +192,15 @@ test "delay budget" {
 
     // Budget exhausted
     try testing.expect(!budget.canDelay(1000));
+    try testing.expect(!budget.useDelay(1000));
     try testing.expectEqual(@as(u64, 0), budget.getRemaining());
 
     // Reset
     budget.reset();
     try testing.expect(budget.canDelay(5000));
     try testing.expectEqual(@as(u64, 10000), budget.getRemaining());
+
+    // A rejected reservation must not consume budget.
+    try testing.expect(!budget.useDelay(10001));
+    try testing.expect(budget.useDelay(10000));
 }

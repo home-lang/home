@@ -2,10 +2,15 @@
 // Constant-time operations and timing channel protection
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 pub const constant_time = @import("constant_time.zig");
 pub const detection = @import("detection.zig");
 pub const random_delay = @import("random_delay.zig");
+
+test {
+    std.testing.refAllDecls(random_delay);
+}
 
 /// Timing leak severity
 pub const LeakSeverity = enum {
@@ -60,8 +65,7 @@ pub inline fn getCycles() u64 {
         .x86_64 => asm volatile ("rdtsc"
             : [ret] "={rax}" (-> u64),
             :
-            : .{ .memory = true }
-        ),
+            : .{ .memory = true }),
         .aarch64, .aarch64_be => blk: {
             // ARM: Read system timer counter
             var counter: u64 = undefined;
@@ -70,7 +74,7 @@ pub inline fn getCycles() u64 {
             );
             break :blk counter;
         },
-        else => std.time.nanoTimestamp(), // Fallback
+        else => compat.monotonicNanoseconds(compat.io()),
     };
 }
 
@@ -150,8 +154,7 @@ pub inline fn cacheFlush(addr: *const anyopaque) void {
     asm volatile ("clflush (%[addr])"
         :
         : [addr] "r" (addr),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Serialize execution (wait for all prior instructions)
@@ -181,6 +184,7 @@ test "cycle counter" {
     var i: u64 = 0;
     while (i < 100) : (i += 1) {
         sum += i;
+        std.atomic.spinLoopHint();
     }
     const cycles2 = getCycles();
 
@@ -201,6 +205,7 @@ test "measure cycles" {
             var i: u64 = 0;
             while (i < 100) : (i += 1) {
                 sum += i;
+                std.atomic.spinLoopHint();
             }
             compilerBarrier();
         }
@@ -219,6 +224,7 @@ test "benchmark statistics" {
             var i: u64 = 0;
             while (i < 50) : (i += 1) {
                 sum += i;
+                std.atomic.spinLoopHint();
             }
             compilerBarrier();
         }
