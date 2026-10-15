@@ -1196,3 +1196,28 @@ contains **2,894** verified payloads, SHA-256
 `e52b8ca8b2b4b77ac913f9f1c6ca5624aff0ad348d6d5e6330ed3b5e89cd5bf4`.
 Final validation peaks at **2,161 MB**. Real-project sources and diagnostic
 text are excluded from the archive.
+
+## Negative discriminant comparisons of broad array lengths
+
+The inequality branch of a discriminant comparison removed union constituents
+whose broad property merely overlapped the compared literal. Array unions with
+`length: number` therefore became `never` after `length === 1` selected its
+false branch. Equality retains overlap; inequality now excludes a constituent
+only when its entire discriminant type is assignable to the excluded value.
+The correction applies to identifier, member-path and intersection narrowing.
+The regression fails with two diagnostics when the correction is removed.
+
+All **4,617 checker and 303 Program tests**, plus **ten Release CLI comparison
+suites**, pass. The production build/replay peaks at **2,764 MB**, retaining the
+unchanged **3,840 MB** guard. All 306 table inputs remain unchanged. The project
+now reports **five** Home-only errors, down from seven: two TS2322, two TS2741
+and one TS7006. Native TypeScript still exits zero, while Home exits one.
+An additional overlapping broad/literal object-discriminant probe exposes a
+separate conservative narrowing mismatch and remains unqualified. The table
+project and complete local replacement goal remain unqualified.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-negative-discriminant.tar.gz`
+contains **2,892** verified payloads, SHA-256
+`66f25529b492eb6f866af2a420f6b1ab77f471c8683479a16c6bfaf4cd9d9164`.
+Final validation peaks at **2,276 MB**; the 4,190-input source freeze is unchanged.
+Real-project source and diagnostic text are excluded.

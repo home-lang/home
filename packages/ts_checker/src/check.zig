@@ -138747,8 +138747,11 @@ pub const Checker = struct {
         for (members) |variant| {
             const candidate = self.resolveGenericType(variant) catch variant;
             const disc_t = (try self.lookupObjectMember(candidate, prop_name)) orelse continue;
-            const matches = try self.discriminantTypeMatchesLiteral(disc_t, lit_t);
-            if (matches == positive) try keep.append(self.gpa, candidate);
+            const keep_variant = if (positive)
+                try self.discriminantTypeMatchesLiteral(disc_t, lit_t)
+            else
+                !(self.engine.isAssignableTo(disc_t, lit_t) catch false);
+            if (keep_variant) try keep.append(self.gpa, candidate);
         }
         if (keep.items.len == 0) return types.Primitive.never;
         if (keep.items.len == 1) return keep.items[0];
@@ -138859,16 +138862,14 @@ pub const Checker = struct {
         for (members) |variant| {
             const candidate = self.resolveGenericType(variant) catch variant;
             const disc_t = (try self.lookupObjectMember(candidate, prop_name)) orelse continue;
-            // Match: the variant's discriminant is exactly the literal.
-            if (try self.discriminantTypeMatchesLiteral(disc_t, lit_t)) {
-                if (positive) {
-                    try keep.append(self.gpa, candidate);
-                }
-            } else {
-                if (!positive) {
-                    try keep.append(self.gpa, candidate);
-                }
-            }
+            // Equality keeps overlapping discriminants. Inequality excludes
+            // a variant only when its whole discriminant is the compared value:
+            // `number` still admits values other than `1` (array lengths).
+            const keep_variant = if (positive)
+                try self.discriminantTypeMatchesLiteral(disc_t, lit_t)
+            else
+                !(self.engine.isAssignableTo(disc_t, lit_t) catch false);
+            if (keep_variant) try keep.append(self.gpa, candidate);
         }
         const narrowed: TypeId = if (keep.items.len == 0)
             // Exhausted: every variant was excluded. The discriminant
@@ -138942,8 +138943,11 @@ pub const Checker = struct {
             const candidate = self.resolveGenericType(variant) catch variant;
             const disc_t = (try self.lookupObjectMember(candidate, prop_name)) orelse continue;
             saw_discriminant = true;
-            const matches = try self.discriminantTypeMatchesLiteral(disc_t, lit_t);
-            if (matches == positive) try keep.append(self.gpa, candidate);
+            const keep_variant = if (positive)
+                try self.discriminantTypeMatchesLiteral(disc_t, lit_t)
+            else
+                !(self.engine.isAssignableTo(disc_t, lit_t) catch false);
+            if (keep_variant) try keep.append(self.gpa, candidate);
         }
         if (!saw_discriminant) return null;
         if (keep.items.len == 0) return types.Primitive.never;
@@ -292493,4 +292497,18 @@ test "checker: imported namespace objects retain qualified diagnostic names" {
     try s.checker.importProgramTypeMetadata(&.{&source});
     s.checker.setProgramExportedClasses(&.{});
     try T.expectEqualStrings("Temporal.PlainDate", (try s.checker.allocSimpleTypeName(object)).?);
+}
+
+test "checker: negative discriminant comparison retains broad array lengths" {
+    const s = try newSetup(
+        \\type Scalar = boolean | number | string | null;
+        \\function f(value: Scalar | readonly Scalar[]) {
+        \\  const candidates = Array.isArray(value) ? value : [value];
+        \\  return candidates.length === 1 ? candidates[0] : candidates.map(candidate => candidate);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
