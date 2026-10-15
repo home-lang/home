@@ -11,15 +11,13 @@ pub const Failure = struct {
 /// Module-level test API (used as `t.describe(...)`, `t.it(...)`, etc.)
 pub const t = struct {
     pub fn describe(name: []const u8, func: *const fn () anyerror!void) anyerror!void {
-        if (global_test_framework) |fw| {
-            try fw.addSuite(name, func);
-        }
+        const framework = global_test_framework orelse return error.NoTestFramework;
+        try framework.addSuite(name, func);
     }
 
     pub fn it(name: []const u8, func: *const fn (*ModernTest.Expect) anyerror!void) anyerror!void {
-        if (global_test_framework) |fw| {
-            try fw.addTest(name, func);
-        }
+        const framework = global_test_framework orelse return error.NoTestFramework;
+        try framework.addTest(name, func);
     }
 
     pub fn expect(allocator: std.mem.Allocator, value: anytype, failures: *std.ArrayListUnmanaged(Failure)) ModernTest.Expect {
@@ -170,18 +168,27 @@ pub const ModernTest = struct {
     }
 
     pub fn deinit(self: *ModernTest) void {
+        if (global_test_framework == self) global_test_framework = null;
         self.suites.deinit(self.allocator);
         self.tests.deinit(self.allocator);
         self.failures.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn addSuite(self: *ModernTest, name: []const u8, func: SuiteFn) !void {
+        const suite_count = self.suites.items.len;
+        const test_count = self.tests.items.len;
+        errdefer {
+            self.suites.shrinkRetainingCapacity(suite_count);
+            self.tests.shrinkRetainingCapacity(test_count);
+        }
+
+        try self.suites.append(self.allocator, .{ .name = name, .func = func });
+
         const prev_suite = self.current_suite;
+        defer self.current_suite = prev_suite;
         self.current_suite = name;
-        func() catch |err| {
-            std.debug.print("  Suite setup error in '{s}': {}\n", .{ name, err });
-        };
-        self.current_suite = prev_suite;
+        try func();
     }
 
     pub fn addTest(self: *ModernTest, name: []const u8, func: TestFn) !void {
@@ -213,14 +220,17 @@ pub const ModernTest = struct {
             };
 
             const prev_failures = self.failures.items.len;
+            var test_failed = false;
 
             test_case.func(&expect_val) catch |err| {
-                if (err != error.AssertionFailed) {
+                if (err == error.OutOfMemory) return err;
+                test_failed = true;
+                if (err != error.AssertionFailed and self.options.reporter == .pretty) {
                     std.debug.print("    x {s} (error: {})\n", .{ test_case.name, err });
                 }
             };
 
-            if (self.failures.items.len > prev_failures) {
+            if (test_failed or self.failures.items.len > prev_failures) {
                 failed += 1;
                 if (self.options.reporter == .pretty) {
                     std.debug.print("    x {s}\n", .{test_case.name});
@@ -241,3 +251,7 @@ pub const ModernTest = struct {
         };
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

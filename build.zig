@@ -938,6 +938,7 @@ pub fn build(b: *std.Build) void {
     test_discovery_pkg.addImport("ast", ast_pkg);
     const assertions_pkg = createPackage(b, "packages/testing/src/assertions.zig", target, optimize, zig_test_framework);
     const testing_framework_pkg = createPackage(b, "packages/testing/src/framework.zig", target, optimize, zig_test_framework);
+    const modern_test_pkg = createPackage(b, "packages/testing/src/modern_test.zig", target, optimize, zig_test_framework);
     const test_runner_pkg = createPackage(b, "packages/testing/src/test_runner.zig", target, optimize, zig_test_framework);
     test_runner_pkg.addImport("ast", ast_pkg);
     test_runner_pkg.addImport("interpreter", interpreter_pkg);
@@ -1677,6 +1678,20 @@ pub fn build(b: *std.Build) void {
     const run_testing_framework_unit_tests = b.addRunArtifact(testing_framework_unit_tests);
     run_testing_framework_tests.step.dependOn(&run_testing_framework_unit_tests.step);
 
+    const modern_test_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/testing/tests/modern_test_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    modern_test_tests.root_module.addImport("modern_test", modern_test_pkg);
+    const run_modern_test_tests = b.addRunArtifact(modern_test_tests);
+
+    const modern_test_unit_tests = b.addTest(.{ .root_module = modern_test_pkg });
+    const run_modern_test_unit_tests = b.addRunArtifact(modern_test_unit_tests);
+    run_modern_test_tests.step.dependOn(&run_modern_test_unit_tests.step);
+
     const test_runner_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("packages/testing/tests/test_runner_test.zig"),
@@ -2086,6 +2101,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_test_discovery_tests.step, test_filter, "test_declaration_discovery");
     dependOnTest(test_step, &run_assertions_tests.step, test_filter, "testing_assertions");
     dependOnTest(test_step, &run_testing_framework_tests.step, test_filter, "testing_framework");
+    dependOnTest(test_step, &run_modern_test_tests.step, test_filter, "testing_modern");
     dependOnTest(test_step, &run_test_runner_tests.step, test_filter, "testing_runner");
     dependOnTest(test_step, &run_test_executor_tests.step, test_filter, "testing_executor");
     dependOnTest(test_step, &run_fuzz_package_tests.step, test_filter, "fuzz_package");
