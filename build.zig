@@ -251,7 +251,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     // the full compiler executable. The executable links these same objects.
     const native_binding_step = b.step("native-runtime-bindings", "Compile Home-owned native runtime binding objects");
     const owned_objects = [_]std.Build.LazyPath{
-        native_bindings.processObject(b, bun_obj_root),
+        native_bindings.processObject(b, bun_obj_root, bun_webkit_root),
         native_bindings.registryObject(b, bun_obj_root),
         native_bindings.scriptExecutionContextObject(b, bun_obj_root),
         native_bindings.napiObject(b, bun_obj_root),

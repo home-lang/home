@@ -75,12 +75,14 @@ pub fn coreBuiltinsObject(b: *std.Build, object_root: []const u8) std.Build.Lazy
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
 /// produced the rest of the linked Bun objects. Never silently use the stale
 /// external object when its source differs from Home's implementation.
-pub fn processObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+pub fn processObject(b: *std.Build, object_root: []const u8, webkit_root: []const u8) std.Build.LazyPath {
     if (cached_process_object) |object| return object;
     const files = b.addWriteFiles();
     const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/BunProcess.cpp"), "BunProcess.cpp");
     _ = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/HomeICUBinding.cpp"), "HomeICUBinding.cpp");
-    const object = compileObject(b, object_root, "BunProcess.cpp", source);
+    const object = compileObjectWithIncludePaths(b, object_root, "BunProcess.cpp", source, &.{
+        b.fmt("{s}/include/wtf/include", .{webkit_root}),
+    });
     cached_process_object = object;
     return object;
 }
@@ -864,6 +866,10 @@ test "owned unified source resolves selected relative and absolute header roots"
 }
 
 fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, source: std.Build.LazyPath) std.Build.LazyPath {
+    return compileObjectWithIncludePaths(b, object_root, basename, source, &.{});
+}
+
+fn compileObjectWithIncludePaths(b: *std.Build, object_root: []const u8, basename: []const u8, source: std.Build.LazyPath, include_paths: []const []const u8) std.Build.LazyPath {
     const io = std.Io.Threaded.global_single_threaded.io();
     const build_root = std.fs.path.dirname(object_root) orelse
         std.debug.panic("invalid HOME_BUN_OBJ_ROOT: {s}", .{object_root});
@@ -896,6 +902,7 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     compile.setName(b.fmt("compile Home {s} binding", .{basename}));
     compile.setCwd(.{ .cwd_relative = command.directory });
     compile.addFileInput(.{ .cwd_relative = database_path });
+    for (include_paths) |include_path| compile.addArgs(&.{ "-I", include_path });
     if (std.mem.eql(u8, basename, "epoll_kqueue.c") or std.mem.eql(u8, basename, "loop.c") or std.mem.eql(u8, basename, "packages/bun-usockets/src/context.c")) {
         const selected_dir = std.fs.path.dirname(command.file) orelse @panic("poll source has no directory");
         const selected_root = if (std.mem.eql(u8, basename, "epoll_kqueue.c"))

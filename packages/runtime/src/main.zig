@@ -24,10 +24,6 @@ pub fn main(init: std.process.Init) !void {
         _bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.XFSZ)), &act, null);
     }
 
-    if (Environment.isDebug) {
-        _bun.debug_allocator_data.backing = .init;
-    }
-
     // This should appear before we make any calls at all to libuv.
     // So it's safest to put it very early in the main function.
     if (Environment.isWindows) {
