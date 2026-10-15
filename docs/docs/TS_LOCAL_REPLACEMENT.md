@@ -1702,3 +1702,74 @@ the freeze (**4,263 inputs**).
 
 Rebase evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-polymorphic-this-rebase.tar.gz`, **12 verified payloads**,
 SHA-256 `142c835b86248fb146c97b2b10363e6916796b0e6f1dbc5e12fad595b26e3684`.
+
+## Callback relations and conditional properties (2026-10-15)
+
+Callback variance now participates in the complete signature relation. A method
+with a callback must still satisfy its return type, later parameters, arity,
+rest parameters, explicit `this`, predicates, ordinary properties and indexes.
+The rule recognizes single-call function types by structure and position;
+parameter names such as `cb` no longer select a shortcut that waives the rest
+of the method.
+
+Instantiated generic parameters retain their original variance when they become
+callable. Provenance follows ordinary positions, repeated array rests and
+individual expanded tuple-rest positions, including mixed concrete callbacks
+and generic elements. Predicate targets and provenance survive checked storage
+transfer and source-owner relocation; imported predicate metadata carries resolved
+types without treating another file's HIR handles as local nodes. Assertion
+callbacks retain the normal `void` return rule.
+
+Excess-property checking now distinguishes a conditional target shape from a
+conditional value inside a known property or method. Shape queries stop at
+object and callable boundaries and visit shared identities once. Nested generic
+objects are resolved before checking their keys. A property-reporting helper no
+longer silently claims a conditional object was diagnosed and thereby suppresses
+later freshness checks. The duplicate assignment report in the upstream callback
+fixture was also removed.
+
+The final source passes **4,649 checker tests, 314 Program tests and 213 driver
+tests** (**5,176 total**), the production build, **72 callback native observations**
+and **114 receiver native observations** against installed TypeScript 7.0.2.
+Exit statuses, diagnostic codes, multiplicities and locations match; diagnostic
+prose is not claimed identical. Controls include valid assignments, incompatible
+returns and later arguments, renamed and optional callbacks, rest arrays and
+tuples, predicates, assertions, explicit receivers, attached function properties,
+the upstream covariance fixture, and serial/parallel source-owner imports.
+All **sixteen prior Release CLI suites** pass as well.
+
+The table positive and planted-negative controls pass with **49 source files
+and all 306 compiler inputs unchanged**. The negative remains one TS2322 at
+line 3, column 42. Before publication, fresh table controls pass again after
+synchronizing unrelated upstream changes through `82832e940`;
+checker, Program, driver and production build checks remain valid and the
+compiler hash is unchanged.
+
+On ts-auth's unchanged **370-input** graph, native exits zero and Home exits
+one with **287 raw diagnostics at 32 distinct code/location pairs**,
+matching the published baseline. No pair is added or removed. The project and
+whole-tree replacement remain **unqualified**.
+
+The complete validation peaks at **2,790 MB** and the broader replay at
+**1,395 MB**, below the unchanged **3,840 MB** ceiling. All **4,267**
+validation inputs remain unchanged during those runs. Publication records the
+subsequent unrelated input updates and verifies the same binary. Native reference
+executables and project graphs remain unchanged.
+
+Discovery evidence retains the initial false acceptances, interim variance
+regressions, nested reporting failure and corrected fixture expectations. The
+Program fixture's missing virtual resolver was corrected before final validation.
+A colliding validation log was retained, and the unchanged driver result was
+recaptured in a separate log before publication.
+
+Repository-wide Pickier exits 1 with **1,858 errors and 694 warnings**,
+including existing intentional error fixtures. No finding points to a changed
+compiler or runner file. The report is checked separately after this evidence
+section is written.
+
+Final compiler SHA-256:
+`293a817f2e74da6ca6c46274a0f1f9bb59d4a9803cd936d0821f5ea778859126`.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-callback-relations.tar.gz`,
+**4,602 verified payloads**, SHA-256
+`2b9815e00b86bc0625ca2ff8c89eee1802ff5f8b6b0f70cd5000b80b8fdde2ba`. Real-project source and diagnostic prose are excluded.

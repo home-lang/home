@@ -325,6 +325,13 @@ pub const Engine = struct {
         context: *anyopaque,
         substitute: *const fn (*anyopaque, TypeId, []const TpPair) anyerror!TypeId,
     } = null,
+    /// Declaration-owned predicates and generic parameter provenance cannot
+    /// be recovered from an instantiated signature's structural payload.
+    signature_metadata: ?struct {
+        context: *anyopaque,
+        predicate: *const fn (*anyopaque, TypeId) ?SignaturePredicate,
+        callback_parameter_eligible: *const fn (*anyopaque, TypeId, usize, TypeId) bool,
+    } = null,
     tp_definitions: std.StringHashMapUnmanaged(TypeId) = .empty,
     tp_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     tp_expanding: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
@@ -2134,22 +2141,44 @@ pub const Engine = struct {
     /// mapped to the source tp at the matching position, and that
     /// substitution is honoured when comparing the return types.
     fn computeSignatureAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
-        return self.computeSignatureAssignableWithMode(source, target, false, false);
+        return self.computeSignatureAssignableWithMode(source, target, .{});
     }
+
+    pub const SignaturePredicate = struct {
+        param_index: u16,
+        target_type: TypeId,
+        is_asserts: bool,
+    };
+
+    const SignatureMode = struct {
+        strict_params: bool = false,
+        bivariant_params: bool = false,
+        callback: enum { none, strict, bivariant } = .none,
+    };
 
     fn computeSignatureAssignableWithMode(
         self: *Engine,
         source: TypeId,
         target: TypeId,
-        force_strict_params: bool,
-        force_bivariant_params: bool,
+        mode: SignatureMode,
     ) anyerror!bool {
+        if (source == target) return true;
+        const strict_variance = mode.callback == .none and !mode.bivariant_params and
+            (mode.strict_params or self.strict_function_types);
         const source_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(source)];
         const target_payload = self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(target)];
         if (source_payload.is_construct and target_payload.is_construct and
             source_payload.is_abstract_construct and !target_payload.is_abstract_construct)
         {
             return false;
+        }
+        if (source_payload.has_this_type and source_payload.this_type != Primitive.void_t and
+            target_payload.has_this_type)
+        {
+            const covariant_this = !strict_variance and
+                try self.isAssignableTo(source_payload.this_type, target_payload.this_type);
+            if (!covariant_this and
+                !try self.isAssignableTo(target_payload.this_type, source_payload.this_type)) return false;
         }
 
         const sp_raw = try self.gpa.dupe(TypeId, self.interner.signatureParams(source));
@@ -2271,7 +2300,26 @@ pub const Engine = struct {
             // Strict mode: target's param must be assignable to
             // source's (contravariant). Non-strict: bivariant —
             // accept either direction.
-            if (!force_bivariant_params and (force_strict_params or self.strict_function_types)) {
+            // A callback parameter is an output position of its containing
+            // signature. Relate its signature in the opposite direction and
+            // compare its parameters contravariantly, even for methods whose
+            // ordinary parameters are bivariant. The mode stops this rule at
+            // the next callback boundary and keeps the full arity/return check.
+            const source_callback = if (mode.callback == .none) self.singleCallbackSignature(s_param_cmp) else null;
+            const target_callback = if (mode.callback == .none) self.singleCallbackSignature(t_param_cmp) else null;
+            const callback_eligible = if (self.signature_metadata) |owner|
+                source_callback != null and target_callback != null and
+                    owner.callback_parameter_eligible(owner.context, source, s_pos.physical_index, source_callback.?.signature) and
+                    owner.callback_parameter_eligible(owner.context, target, t_pos.physical_index, target_callback.?.signature)
+            else
+                source_callback != null and target_callback != null;
+            if (callback_eligible and source_callback.?.nullish == target_callback.?.nullish and
+                !sf.is_type_parameter and !tf.is_type_parameter)
+            {
+                if (!try self.computeSignatureAssignableWithMode(target_callback.?.signature, source_callback.?.signature, .{
+                    .callback = if (strict_variance) .strict else .bivariant,
+                })) return false;
+            } else if (mode.callback != .none or strict_variance) {
                 if (!try self.signatureParamAssignableTo(t_param_cmp, s_param_cmp, reject_param_inference)) return false;
             } else {
                 const ct = try self.signatureParamAssignableTo(t_param_cmp, s_param_cmp, reject_param_inference);
@@ -2283,11 +2331,63 @@ pub const Engine = struct {
         const s_ret = try self.substituteTpDeep(s_ret_raw, source_context_buf[0..source_context_len]);
         const t_ret_raw = self.interner.signatureReturn(target) orelse return true;
         if (t_ret_raw == Primitive.void_t) return true;
+        if (self.signature_metadata) |owner| {
+            if (owner.predicate(owner.context, target)) |target_predicate| {
+                const source_predicate = owner.predicate(owner.context, source) orelse return false;
+                if (source_predicate.param_index != target_predicate.param_index or
+                    source_predicate.is_asserts != target_predicate.is_asserts) return false;
+                if (source_predicate.target_type != target_predicate.target_type) {
+                    if (source_predicate.target_type == Primitive.none or target_predicate.target_type == Primitive.none) return false;
+                    const source_target = try self.substituteTpDeep(source_predicate.target_type, source_context_buf[0..source_context_len]);
+                    const target_target = try self.substituteTpDeep(target_predicate.target_type, tp_map_buf[0..tp_map_len]);
+                    if (!try self.isAssignableTo(source_target, target_target)) return false;
+                }
+            }
+        }
         // Substitute target type-parameters with their source
         // counterparts so `<T>(x: T) => T` matches `<U>(x: U) => U`
         // even though `T` and `U` intern to distinct ids.
         const t_ret = try self.substituteTpDeep(t_ret_raw, tp_map_buf[0..tp_map_len]);
+        if (mode.callback == .bivariant and try self.isAssignableTo(t_ret, s_ret)) return true;
         return self.isAssignableTo(s_ret, t_ret);
+    }
+
+    const CallbackSignature = struct { signature: TypeId, nullish: u2 = 0 };
+
+    fn singleCallbackSignature(self: *Engine, t: TypeId) ?CallbackSignature {
+        if (t >= self.pool().typeCount()) return null;
+        if (self.pool().flagsOf(t).is_union) {
+            var result: ?CallbackSignature = null;
+            var nullish: u2 = 0;
+            for (self.interner.unionMembers(t)) |member| {
+                if (member == Primitive.null_t) {
+                    nullish |= 1;
+                } else if (member == Primitive.undefined_t) {
+                    nullish |= 2;
+                } else {
+                    if (result != null) return null;
+                    result = self.singleCallbackSignature(member) orelse return null;
+                }
+            }
+            if (result) |*callback| callback.nullish |= nullish;
+            return result;
+        }
+        if (self.interner.isSignature(t)) {
+            return if (self.interner.pool.signature_payloads.items[self.pool().payloadOf(t)].is_construct) null else .{ .signature = t };
+        }
+        if (!self.pool().flagsOf(t).is_object_type) return null;
+        const si = self.string_interner orelse return null;
+        var signature: ?TypeId = null;
+        for (self.interner.objectMembers(t)) |member| {
+            const name = si.getOptional(member.name) orelse return null;
+            if (!std.mem.eql(u8, name, "__call")) return null;
+            if (signature != null or !self.interner.isSignature(member.type)) return null;
+            signature = member.type;
+        }
+        if (self.interner.objectStringIndex(t) != Primitive.none or
+            self.interner.objectNumberIndex(t) != Primitive.none or
+            self.interner.objectSymbolIndex(t) != Primitive.none) return null;
+        return if (signature) |sig| .{ .signature = sig } else null;
     }
 
     /// Collect the property names + types that `source` exposes as an
@@ -3045,7 +3145,7 @@ pub const Engine = struct {
                 }
                 saw_signature_member = true;
                 const ok = if (signature_member_count > 1)
-                    try self.computeSignatureAssignableWithMode(source, tm.type, true, false)
+                    try self.computeSignatureAssignableWithMode(source, tm.type, .{ .strict_params = true })
                 else
                     try self.isAssignableTo(source, tm.type);
                 if (!ok) return false;
@@ -3131,7 +3231,7 @@ pub const Engine = struct {
                 self.pool().flagsOf(sm.type).is_signature and
                 self.pool().flagsOf(effective_target).is_signature)
             {
-                if (try self.computeSignatureAssignableWithMode(sm.type, effective_target, false, true)) return true;
+                if (try self.computeSignatureAssignableWithMode(sm.type, effective_target, .{ .bivariant_params = true })) return true;
                 continue;
             }
             if (try self.isAssignableTo(sm.type, effective_target)) return true;

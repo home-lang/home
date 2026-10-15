@@ -193,6 +193,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .signature_predicates => .{ .key = type_id, .value = predicate },
         .member_predicates => .{ .key = type_member, .value = predicate },
         .signature_param_predicates => .{ .key = signature_param, .value = predicate },
+        .signature_generic_parameter_origins => .{ .key = signature_param, .value = scalar },
         .signature_param_this_types => .{ .key = signature_param, .value = type_id },
         .overloads, .class_constructor_overload_sigs => .{ .key = string_id, .value = type_list },
         .overload_decls => .{ .key = string_id, .value = node_list },

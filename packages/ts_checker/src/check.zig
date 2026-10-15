@@ -4315,6 +4315,7 @@ pub const CheckedTypes = struct {
     member_predicates: std.AutoHashMapUnmanaged(TypeMemberKey, FnPredicate) = .empty,
     signature_param_predicates: std.AutoHashMapUnmanaged(SignatureParamKey, FnPredicate) = .empty,
     signature_param_this_types: std.AutoHashMapUnmanaged(SignatureParamKey, TypeId) = .empty,
+    signature_generic_parameter_origins: std.AutoHashMapUnmanaged(SignatureParamKey, void) = .empty,
     overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)) = .empty,
     overload_has_implementation: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     type_parameter_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
@@ -5197,6 +5198,9 @@ pub const Checker = struct {
     /// resolution, but contextual method bodies still require this semantic
     /// receiver metadata.
     signature_param_this_types: std.AutoHashMapUnmanaged(SignatureParamKey, TypeId),
+    /// Instantiated generic parameters keep ordinary method bivariance even
+    /// when substitution gives them a single callable signature.
+    signature_generic_parameter_origins: std.AutoHashMapUnmanaged(SignatureParamKey, void),
     /// Variable name ÃÂ¢ÃÂÃÂ guard expression alias. Records `let cond =
     /// <guard-expr>` so that `if (cond)` narrows the same way as
     /// `if (<guard-expr>)`. Aliased-conditional narrowing per TS
@@ -6000,7 +6004,7 @@ pub const Checker = struct {
     free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     this_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     this_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
-    conditional_type_pending: std.ArrayListUnmanaged(struct { type_id: TypeId, depth: u8 }) = .empty,
+    conditional_type_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     conditional_type_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
     program_exported_types: []const ProgramExportedType = &.{},
@@ -6140,6 +6144,7 @@ pub const Checker = struct {
             .member_predicates = .empty,
             .signature_param_predicates = .empty,
             .signature_param_this_types = .empty,
+            .signature_generic_parameter_origins = .empty,
             .cond_aliases = .empty,
             .disc_aliases = .empty,
             .dependent_bindings = .empty,
@@ -6560,6 +6565,22 @@ pub const Checker = struct {
                 errdefer self.gpa.free(params);
                 try self.generic_signature_params.put(self.gpa, entry.key_ptr.*, params);
             }
+            // Predicate relations need only the resolved semantic target.
+            // Source-owner HIR handles must never become consumer NodeIds.
+            var predicates = source.signature_predicates.iterator();
+            while (predicates.next()) |entry| {
+                var predicate = entry.value_ptr.*;
+                predicate.target_node = hir_mod.none_node_id;
+                try self.signature_predicates.put(self.gpa, entry.key_ptr.*, predicate);
+            }
+            var parameter_predicates = source.signature_param_predicates.iterator();
+            while (parameter_predicates.next()) |entry| {
+                var predicate = entry.value_ptr.*;
+                predicate.target_node = hir_mod.none_node_id;
+                try self.signature_param_predicates.put(self.gpa, entry.key_ptr.*, predicate);
+            }
+            var generic_parameter_origins = source.signature_generic_parameter_origins.iterator();
+            while (generic_parameter_origins.next()) |entry| try self.signature_generic_parameter_origins.put(self.gpa, entry.key_ptr.*, {});
             var rest_signatures = source.rest_signatures.iterator();
             while (rest_signatures.next()) |entry| {
                 try self.rest_signatures.put(self.gpa, entry.key_ptr.*, {});
@@ -6764,6 +6785,9 @@ pub const Checker = struct {
         self.local_alias_definitions.deinit(self.gpa);
         self.generic_container_aliases_active.deinit(self.gpa);
         self.local_alias_origins.deinit(self.gpa);
+        if (self.engine.signature_metadata) |owner| {
+            if (owner.context == @as(*anyopaque, @ptrCast(self))) self.engine.signature_metadata = null;
+        }
         if (self.engine.type_substitution) |owner| {
             if (owner.context == @as(*anyopaque, @ptrCast(self))) self.engine.type_substitution = null;
         }
@@ -6961,6 +6985,7 @@ pub const Checker = struct {
         self.member_predicates.deinit(self.gpa);
         self.signature_param_predicates.deinit(self.gpa);
         self.signature_param_this_types.deinit(self.gpa);
+        self.signature_generic_parameter_origins.deinit(self.gpa);
         self.cond_aliases.deinit(self.gpa);
         self.disc_aliases.deinit(self.gpa);
         self.dependent_bindings.deinit(self.gpa);
@@ -7146,6 +7171,11 @@ pub const Checker = struct {
             @field(self, name) = .empty;
         }
         destination.* = prepared;
+        self.engine.signature_metadata = .{
+            .context = destination,
+            .predicate = checkedSignaturePredicateForEngine,
+            .callback_parameter_eligible = checkedSignatureCallbackParameterEligibleForEngine,
+        };
         self.engine.setRestSignatures(&destination.rest_signatures);
         self.engine.implicit_index_excluded_types = &destination.implicit_index_excluded_types;
     }
@@ -7157,6 +7187,11 @@ pub const Checker = struct {
         // to `rest_signatures` so signature assignability can expand
         // a tuple-typed rest param into positional params when
         // comparing against a regular (non-rest) signature.
+        self.engine.signature_metadata = .{
+            .context = self,
+            .predicate = signaturePredicateForEngine,
+            .callback_parameter_eligible = signatureCallbackParameterEligibleForEngine,
+        };
         self.engine.type_substitution = .{ .context = self, .substitute = substituteTypeForEngine };
         self.engine.setRestSignatures(&self.rest_signatures);
         self.engine.indexed_access_constraint = .{ .context = self, .resolve = indexedAccessConstraintForEngine };
@@ -86210,58 +86245,26 @@ pub const Checker = struct {
         return false;
     }
 
-    fn containsConditionalType(self: *Checker, t: TypeId) CheckError!bool {
+    fn containsConditionalExcessPropertyShape(self: *Checker, t: TypeId) CheckError!bool {
         const pending = &self.conditional_type_pending;
         const visited = &self.conditional_type_visited;
         pending.clearRetainingCapacity();
         visited.clearRetainingCapacity();
-        try pending.append(self.gpa, .{ .type_id = t, .depth = 0 });
-        // Breadth-first traversal reaches each identity at its shallowest
-        // depth. Preserve the existing 32-level policy while visiting shared
-        // recursive receiver graphs once instead of once per path.
+        try pending.append(self.gpa, t);
+        // Only a conditional that determines the target's own shape makes
+        // its property names uncertain. Conditional property values, method
+        // parameters and returns do not change the enclosing object's keys.
         var cursor: usize = 0;
         while (cursor < pending.items.len) : (cursor += 1) {
-            const frame = pending.items[cursor];
-            const current = frame.type_id;
-            if (frame.depth >= 32 or current >= self.interner.pool.typeCount()) continue;
+            const current = pending.items[cursor];
+            if (current >= self.interner.pool.typeCount()) continue;
             const entry = try visited.getOrPut(self.gpa, current);
             if (entry.found_existing) continue;
-            const next_depth = frame.depth + 1;
             const flags = self.interner.pool.flagsOf(current);
             if (flags.is_conditional) return true;
             if (flags.is_union or flags.is_intersection) {
                 const members = if (flags.is_union) self.interner.unionMembers(current) else self.interner.intersectionMembers(current);
-                for (members) |member| try pending.append(self.gpa, .{ .type_id = member, .depth = next_depth });
-            } else if (flags.is_object_type) {
-                for (self.interner.objectMembers(current)) |member| try pending.append(self.gpa, .{ .type_id = member.type, .depth = next_depth });
-                for ([_]TypeId{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current), self.interner.objectSymbolIndex(current) }) |index| {
-                    if (index != types.Primitive.none) try pending.append(self.gpa, .{ .type_id = index, .depth = next_depth });
-                }
-            } else if (flags.is_signature) {
-                for (self.interner.signatureParams(current)) |parameter| try pending.append(self.gpa, .{ .type_id = parameter, .depth = next_depth });
-                if (self.interner.signatureReturn(current)) |result| try pending.append(self.gpa, .{ .type_id = result, .depth = next_depth });
-            } else if (flags.is_keyof) {
-                const index = self.interner.pool.payloadOf(current);
-                if (index < self.interner.pool.keyof_payloads.items.len) try pending.append(self.gpa, .{ .type_id = self.interner.pool.keyof_payloads.items[index].operand, .depth = next_depth });
-            } else if (flags.is_indexed_access) {
-                const index = self.interner.pool.payloadOf(current);
-                if (index < self.interner.pool.indexed_access_payloads.items.len) {
-                    const indexed = self.interner.pool.indexed_access_payloads.items[index];
-                    try pending.append(self.gpa, .{ .type_id = indexed.object, .depth = next_depth });
-                    try pending.append(self.gpa, .{ .type_id = indexed.index, .depth = next_depth });
-                }
-            } else if (flags.is_mapped) {
-                const mapped = self.interner.mappedPayload(current);
-                try pending.append(self.gpa, .{ .type_id = mapped.constraint, .depth = next_depth });
-                try pending.append(self.gpa, .{ .type_id = mapped.template, .depth = next_depth });
-            } else if (flags.is_template_literal) {
-                for (self.interner.templateLiteralTypes(current)) |part| try pending.append(self.gpa, .{ .type_id = part, .depth = next_depth });
-            } else if (flags.is_string_mapping) {
-                try pending.append(self.gpa, .{ .type_id = self.interner.stringMappingPayload(current).inner, .depth = next_depth });
-            } else if (flags.is_type_parameter) {
-                if (self.typeParameterConstraint(current)) |constraint| {
-                    if (constraint != current) try pending.append(self.gpa, .{ .type_id = constraint, .depth = next_depth });
-                }
+                for (members) |member| try pending.append(self.gpa, member);
             }
         }
         return false;
@@ -95736,8 +95739,6 @@ pub const Checker = struct {
         if (self.bareSignatureMissingRequiredObjectMembers(source_t, target_t)) return false;
         if (!try self.objectMemberSignatureThisTypesAssignable(source_t, target_t)) return false;
         if (try self.overloadedSignatureSetRelation(source_t, target_t)) |ok| return ok;
-        if (try self.callbackMethodMemberSignatureMismatch(source_t, target_t)) return false;
-        if (try self.callbackMethodMembersAssignable(source_t, target_t)) return true;
         if (try self.contextualGenericSignatureRelation(source_t, target_t)) |ok| return ok;
         if (try self.genericSignaturesAlphaRelation(source_t, target_t)) |ok| return ok;
         if (try self.genericSignatureRelationMismatch(source_t, target_t)) return false;
@@ -96584,93 +96585,6 @@ pub const Checker = struct {
             if (try self.genericIndexSignatureValueMismatch(pair.source, pair.target)) return true;
         }
         return false;
-    }
-
-    fn callbackMethodMemberSignatureMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
-        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
-        const source_flags = self.interner.pool.flagsOf(source_t);
-        const target_flags = self.interner.pool.flagsOf(target_t);
-        if (!source_flags.is_object_type or !target_flags.is_object_type) return false;
-        for (self.interner.objectMembers(target_t)) |tm| {
-            if (!tm.is_method) continue;
-            if (!self.interner.isSignature(tm.type)) continue;
-            const sm = self.interner.objectMemberInfo(source_t, tm.name) orelse continue;
-            if (!sm.is_method) continue;
-            if (!self.interner.isSignature(sm.type)) continue;
-            const source_params = self.interner.signatureParams(sm.type);
-            const target_params = self.interner.signatureParams(tm.type);
-            if (source_params.len == 0 or target_params.len == 0) continue;
-            if (!try self.signatureFirstParameterIsCallbackNamed(sm.type)) continue;
-            if (!try self.signatureFirstParameterIsCallbackNamed(tm.type)) continue;
-            const source_cb = self.typeArgSignatureConstraint(source_params[0]) orelse continue;
-            const target_cb = self.typeArgSignatureConstraint(target_params[0]) orelse continue;
-            if (source_cb.is_construct or target_cb.is_construct) continue;
-            if (!try self.covariantCallbackSignatureAssignable(source_cb.sig, target_cb.sig)) return true;
-        }
-        return false;
-    }
-
-    fn callbackMethodMembersAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
-        if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
-        const source_flags = self.interner.pool.flagsOf(source_t);
-        const target_flags = self.interner.pool.flagsOf(target_t);
-        if (!source_flags.is_object_type or !target_flags.is_object_type) return false;
-        if (!self.objectHasRequiredTargetMemberNames(source_t, target_t)) return false;
-        const targets = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target_t));
-        defer self.gpa.free(targets);
-        var ordinary: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer ordinary.deinit(self.gpa);
-        var saw_callback_member = false;
-        for (targets) |tm| {
-            const handled = callback: {
-                if (!tm.is_method or !self.interner.isSignature(tm.type)) break :callback false;
-                const sm = self.interner.objectMemberInfo(source_t, tm.name) orelse break :callback false;
-                if (!sm.is_method or !self.interner.isSignature(sm.type)) break :callback false;
-                const source_params = self.interner.signatureParams(sm.type);
-                const target_params = self.interner.signatureParams(tm.type);
-                if (source_params.len == 0 or target_params.len == 0) break :callback false;
-                if (!try self.signatureFirstParameterIsCallbackNamed(sm.type) or
-                    !try self.signatureFirstParameterIsCallbackNamed(tm.type)) break :callback false;
-                const source_cb = self.typeArgSignatureConstraint(source_params[0]) orelse break :callback false;
-                const target_cb = self.typeArgSignatureConstraint(target_params[0]) orelse break :callback false;
-                if (source_cb.is_construct or target_cb.is_construct) break :callback false;
-                if (!try self.covariantCallbackSignatureAssignable(source_cb.sig, target_cb.sig)) return false;
-                saw_callback_member = true;
-                break :callback true;
-            };
-            if (!handled) try ordinary.append(self.gpa, tm);
-        }
-        if (!saw_callback_member) return false;
-        // The callback variance exception does not waive data properties,
-        // other methods, or index signatures on the same target object.
-        const remainder = try self.interner.internObjectTypeWithIndexAndSymbol(
-            ordinary.items,
-            self.interner.objectStringIndex(target_t),
-            self.interner.objectNumberIndex(target_t),
-            self.interner.objectSymbolIndex(target_t),
-        );
-        return self.checkerAssignableTo(source_t, remainder);
-    }
-
-    fn signatureFirstParameterIsCallbackNamed(self: *Checker, sig: TypeId) CheckError!bool {
-        const name = try self.signatureParamNameAt(sig, 0);
-        return std.mem.eql(u8, name, "cb") or std.mem.eql(u8, name, "callback");
-    }
-
-    fn covariantCallbackSignatureAssignable(self: *Checker, source_sig: TypeId, target_sig: TypeId) CheckError!bool {
-        if (!self.interner.isSignature(source_sig) or !self.interner.isSignature(target_sig)) return true;
-        const source_params = self.interner.signatureParams(source_sig);
-        const target_params = self.interner.signatureParams(target_sig);
-        if (source_params.len < target_params.len) return false;
-        var i: usize = 0;
-        while (i < target_params.len) : (i += 1) {
-            if (!(try self.checkerAssignableTo(source_params[i], target_params[i]))) return false;
-        }
-        const source_ret = self.interner.signatureReturn(source_sig) orelse types.Primitive.void_t;
-        const target_ret = self.interner.signatureReturn(target_sig) orelse types.Primitive.void_t;
-        if (source_ret == types.Primitive.void_t) return true;
-        if (target_ret == types.Primitive.void_t) return false;
-        return try self.checkerAssignableTo(source_ret, target_ret);
     }
 
     fn genericIndexSignatureValueMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
@@ -113662,6 +113576,39 @@ pub const Checker = struct {
         });
     }
 
+    fn predicateForRelation(predicate: ?FnPredicate) ?relation.Engine.SignaturePredicate {
+        const pred = predicate orelse return null;
+        return .{ .param_index = pred.param_index, .target_type = pred.target_type, .is_asserts = pred.is_asserts };
+    }
+
+    fn signaturePredicateForEngine(context: *anyopaque, signature: TypeId) ?relation.Engine.SignaturePredicate {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        return predicateForRelation(self.signature_predicates.get(signature));
+    }
+
+    fn checkedSignaturePredicateForEngine(context: *anyopaque, signature: TypeId) ?relation.Engine.SignaturePredicate {
+        const checked: *const CheckedTypes = @ptrCast(@alignCast(context));
+        return predicateForRelation(checked.signature_predicates.get(signature));
+    }
+
+    fn checkedSignatureCallbackParameterEligibleForEngine(context: *anyopaque, signature: TypeId, index: usize, callback: TypeId) bool {
+        const checked: *const CheckedTypes = @ptrCast(@alignCast(context));
+        if (index > std.math.maxInt(u16)) return false;
+        const key: SignatureParamKey = .{ .signature = signature, .param_index = @intCast(index) };
+        return !checked.signature_generic_parameter_origins.contains(key) and
+            !checked.signature_param_predicates.contains(key) and
+            !checked.signature_predicates.contains(callback);
+    }
+
+    fn signatureCallbackParameterEligibleForEngine(context: *anyopaque, signature: TypeId, index: usize, callback: TypeId) bool {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        if (index > std.math.maxInt(u16)) return false;
+        const key: SignatureParamKey = .{ .signature = signature, .param_index = @intCast(index) };
+        return !self.signature_generic_parameter_origins.contains(key) and
+            !self.signature_param_predicates.contains(key) and
+            !self.signature_predicates.contains(callback);
+    }
+
     fn substituteTypeForEngine(context: *anyopaque, t: TypeId, map: []const relation.Engine.TpPair) anyerror!TypeId {
         const self: *Checker = @ptrCast(@alignCast(context));
         var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -116511,7 +116458,6 @@ pub const Checker = struct {
                 if (a.op == null and self.hir.kindOf(a.target) == .object_literal) {
                     try self.checkObjectDestructuringAssignment(a.target, assignment_check_value_t, a.value);
                 }
-                _ = try self.tryReportSameGenericFunctionArgumentAnnotationMismatch(node, a.value, a.target);
                 const filtered_projection_assignment_diag_fired = a.op == null and
                     try self.tryReportDistinctFilteredProjectionAssignment(node, a.value, a.target);
                 // Note: an `array-literal vs tuple-shape` mismatch used to
@@ -162180,25 +162126,6 @@ pub const Checker = struct {
         return !self.annotationTypeTextAssignable(target.param, source.param);
     }
 
-    fn tryReportSameGenericFunctionArgumentAnnotationMismatch(self: *Checker, node: NodeId, source_node: NodeId, target_node: NodeId) CheckError!bool {
-        if (!try self.sameGenericFunctionArgumentAnnotationMismatch(source_node, target_node)) return false;
-        const source_text = self.visibleAnnotatedIdentifierTypeText(source_node) orelse return false;
-        const target_text = self.visibleAnnotatedIdentifierTypeText(target_node) orelse return false;
-        const source_norm = try self.normalizedTypeAnnotationText(source_text);
-        const target_norm = try self.normalizedTypeAnnotationText(target_text);
-        const msg = try std.fmt.allocPrint(
-            self.diag_arena.allocator(),
-            "Type '{s}' is not assignable to type '{s}'.",
-            .{ source_norm, target_norm },
-        );
-        try self.diagnostics.append(self.gpa, .{
-            .node = node,
-            .code = TsCodes.type_not_assignable,
-            .message = msg,
-        });
-        return true;
-    }
-
     fn sameGenericFunctionArgumentAliasMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         const source_text = self.alias_display_names.get(source_t) orelse return false;
         const target_text = self.alias_display_names.get(target_t) orelse return false;
@@ -169150,6 +169077,40 @@ pub const Checker = struct {
         }
     }
 
+    fn recordSignatureGenericParameterOrigins(self: *Checker, signature: TypeId, original: []const TypeId, substituted: []const TypeId, has_rest: bool) CheckError!void {
+        for (original, 0..) |parameter, index| {
+            if (index > std.math.maxInt(u16)) break;
+            if (parameter == substituted[index]) continue;
+            const generic_parameter = self.typeIsGenericObjectType(parameter, 0) or self.typeIsGenericIndexType(parameter, 0);
+            if (has_rest and index + 1 == original.len) {
+                // Tuple rests have one declared parameter but multiple
+                // effective positions. Preserve provenance separately so a
+                // concrete callback beside a generic element still covaries.
+                if (self.fixedTupleLength(substituted[index])) |length| {
+                    if (length <= 1024) {
+                        for (0..@intCast(length)) |element_index| {
+                            if (index + element_index > std.math.maxInt(u16)) break;
+                            const element = self.tupleElementType(parameter, element_index);
+                            if (generic_parameter or self.typeIsGenericObjectType(element, 0) or self.typeIsGenericIndexType(element, 0)) {
+                                try self.signature_generic_parameter_origins.put(self.gpa, .{ .signature = signature, .param_index = @intCast(index + element_index) }, {});
+                            }
+                        }
+                        continue;
+                    }
+                }
+                // Every repeated position of an array rest shares this
+                // physical parameter index in the relation engine.
+                const element = self.interner.objectNumberIndex(parameter);
+                if (self.typeIsGenericObjectType(element, 0) or self.typeIsGenericIndexType(element, 0)) {
+                    try self.signature_generic_parameter_origins.put(self.gpa, .{ .signature = signature, .param_index = @intCast(index) }, {});
+                }
+            }
+            if (generic_parameter) {
+                try self.signature_generic_parameter_origins.put(self.gpa, .{ .signature = signature, .param_index = @intCast(index) }, {});
+            }
+        }
+    }
+
     /// TypeScript's `isGenericObjectType`: a type parameter, a deferred
     /// indexed access or conditional, or a mapped type over a generic
     /// constraint, directly or as a union or intersection member. Only the
@@ -169542,6 +169503,7 @@ pub const Checker = struct {
                     sig_payload.is_abstract_construct,
                 ) catch return t;
             try self.copySignatureParamNames(new_sig, t);
+            try self.recordSignatureGenericParameterOrigins(new_sig, params_snapshot, new.items, self.rest_signatures.contains(t));
             try self.copySignatureNullishArrayDefaults(new_sig, t);
             if (self.module_augmentation_callback_signatures.contains(t)) {
                 try self.module_augmentation_callback_signatures.put(self.gpa, new_sig, {});
@@ -187367,7 +187329,6 @@ pub const Checker = struct {
         }
         if (try self.tryReportContextualFunctionPropertyReturnMismatch(init_node, resolved_target, false)) return true;
         if (try self.typeContainsMappedType(resolved_target)) return true;
-        if (try self.typeContainsConditionalType(resolved_target)) return true;
         // Checking a property may intern contextual or diagnostic types and
         // relocate the object-member pool. Keep the target view stable across
         // those calls instead of retaining a borrowed pool slice.
@@ -199739,6 +199700,9 @@ pub const Checker = struct {
             @as(usize, std.math.maxInt(u16)) + 1,
         );
         for (0..param_count) |param_index| {
+            if (self.signature_generic_parameter_origins.contains(.{ .signature = donor_sig, .param_index = @intCast(param_index) })) {
+                try self.signature_generic_parameter_origins.put(self.gpa, .{ .signature = target_sig, .param_index = @intCast(param_index) }, {});
+            }
             const receiver = self.signature_param_this_types.get(.{
                 .signature = donor_sig,
                 .param_index = @intCast(param_index),
@@ -199747,6 +199711,17 @@ pub const Checker = struct {
                 .signature = target_sig,
                 .param_index = @intCast(param_index),
             }, receiver);
+        }
+        const donor_params = self.interner.signatureParams(donor_sig);
+        if (self.rest_signatures.contains(donor_sig) and donor_params.len > 0) {
+            if (self.fixedTupleLength(donor_params[donor_params.len - 1])) |length| {
+                const expanded_count = @min(donor_params.len - 1 + @as(usize, @intCast(@min(length, 1024))), @as(usize, std.math.maxInt(u16)) + 1);
+                if (expanded_count > param_count) for (param_count..expanded_count) |param_index| {
+                    if (self.signature_generic_parameter_origins.contains(.{ .signature = donor_sig, .param_index = @intCast(param_index) })) {
+                        try self.signature_generic_parameter_origins.put(self.gpa, .{ .signature = target_sig, .param_index = @intCast(param_index) }, {});
+                    }
+                };
+            }
         }
         if (self.signature_display_min_args.get(donor_sig)) |min_required| {
             try self.signature_display_min_args.put(self.gpa, target_sig, min_required);
@@ -201290,9 +201265,11 @@ pub const Checker = struct {
             .object_literal => {},
             else => return,
         }
+        const resolved_target = try self.resolveGenericType(declared_t);
+        if (resolved_target != declared_t) return self.checkExcessProperties(init_node, resolved_target);
         if (declared_t < types.Primitive.first_dynamic or declared_t >= self.interner.pool.typeCount()) return;
         const declared_flags = self.interner.pool.flagsOf(declared_t);
-        if (try self.containsConditionalType(declared_t)) return;
+        if (try self.containsConditionalExcessPropertyShape(declared_t)) return;
         if (declared_flags.is_union) {
             try self.checkDiscriminatedUnionExcessProperties(init_node, declared_t);
             return;
@@ -293235,35 +293212,103 @@ test "checker: recursive references omit identity substitution environments" {
     try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(instantiated, try s.sint.intern("value")).?);
 }
 
-test "checker: conditional queries visit recursive receiver identities at the nearest depth" {
+test "checker: excess-property shape queries stop at object and callable boundaries" {
     const s = try newSetup("");
     defer destroySetup(s);
     const receiver = try s.checker.freshThisTypeParameter(try s.sint.intern("this"));
-    const signature = try s.ti.internSignature(&.{}, receiver, false);
-    var members: [16]types.ObjectMember = undefined;
-    for (&members, 0..) |*member, index| {
-        member.* = .{ .name = try s.sint.intern(try std.fmt.allocPrint(s.checker.diag_arena.allocator(), "self{d}", .{index})), .type = signature, .is_optional = false, .is_readonly = false, .is_method = true };
-    }
-    const recursive = try s.ti.internObjectType(&members);
-    s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(receiver)].constraint = recursive;
-    try T.expect(!try s.checker.containsConditionalType(recursive));
     const conditional = try s.ti.internConditional(receiver, types.Primitive.string_t, types.Primitive.number_t, types.Primitive.boolean_t);
-    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(recursive)];
-    s.ti.pool.object_member_pool.items[payload.members_start + 15].type = conditional;
-    try T.expect(try s.checker.containsConditionalType(recursive));
-    s.ti.pool.object_member_pool.items[payload.members_start + 15].type = signature;
-    try T.expect(!try s.checker.containsConditionalType(recursive));
-    var deep = conditional;
-    for (0..31) |_| deep = try s.ti.internSignature(&.{}, deep, false);
-    try T.expect(try s.checker.containsConditionalType(deep));
-    deep = try s.ti.internSignature(&.{}, deep, false);
-    try T.expect(!try s.checker.containsConditionalType(deep));
-    const short = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("value"), .type = conditional, .is_optional = false, .is_readonly = false, .is_method = false }});
-    var long = short;
-    for (0..30) |_| long = try s.ti.internSignature(&.{}, long, false);
-    const mixed = try s.ti.internObjectType(&.{
-        .{ .name = try s.sint.intern("long"), .type = long, .is_optional = false, .is_readonly = false, .is_method = false },
-        .{ .name = try s.sint.intern("short"), .type = short, .is_optional = false, .is_readonly = false, .is_method = false },
-    });
-    try T.expect(try s.checker.containsConditionalType(mixed));
+    const signature = try s.ti.internSignature(&.{conditional}, receiver, false);
+    const member = try s.sint.intern("value");
+    const object = try s.ti.internObjectType(&.{.{ .name = member, .type = conditional, .is_optional = false, .is_readonly = false, .is_method = false }});
+    s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(receiver)].constraint = object;
+    try T.expect(!try s.checker.containsConditionalExcessPropertyShape(object));
+    try T.expect(!try s.checker.containsConditionalExcessPropertyShape(signature));
+    try T.expect(try s.checker.containsConditionalExcessPropertyShape(conditional));
+    const intersection = try s.ti.internIntersection(&.{ object, conditional });
+    try T.expect(try s.checker.containsConditionalExcessPropertyShape(intersection));
+    const union_type = try s.ti.internUnion(&.{ object, conditional });
+    try T.expect(try s.checker.containsConditionalExcessPropertyShape(union_type));
+    try T.expect(!try s.checker.containsConditionalExcessPropertyShape(object));
+}
+
+test "checker: callback methods retain return and later parameter checks" {
+    const s = try newSetup("interface Left{run(cb:(n:number)=>void,flag:string):string}interface BadReturn{run(cb:(n:number)=>void,flag:string):number}interface BadTail{run(cb:(n:number)=>void,flag:number):string}declare const left:Left;const wrongReturn:BadReturn=left;const wrongTail:BadTail=left;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
+test "checker: conditional property values retain known excess-property checks" {
+    const s = try newSetup("type PickValue<T>={known:T extends string?number:boolean};declare function take<T>(value:PickValue<T>):void;function use<T>():void{take<T>({known:null as any,extra:true});}");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2353), s.checker.diagnostics.items[0].code);
+}
+
+test "checker: callback provenance preserves generic parameter bivariance" {
+    const s = try newSetup("type One<T>={set(value:T):void};type Two<T>={set(value:T):void};declare let left:One<(value:unknown)=>void>;declare let right:Two<(value:string)=>void>;left=right;right=left;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expect(s.checker.signature_generic_parameter_origins.count() > 0);
+}
+
+test "checker: callback provenance survives checked ownership transfer" {
+    const s = try newSetup("interface A{a:number}interface B extends A{b:number}interface Left{run(listener:(value:A)=>value is A):void}interface Right{run(observer:(value:B)=>value is B):void}");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    const left = s.checker.type_names.get(try s.sint.intern("Left")).?;
+    const right = s.checker.type_names.get(try s.sint.intern("Right")).?;
+    var checked: CheckedTypes = .{};
+    defer checked.deinit(T.allocator);
+    try s.checker.takeCheckedTypes(&checked);
+    try T.expect(s.engine.signature_metadata.?.context == @as(*anyopaque, @ptrCast(&checked)));
+    try T.expect(!try s.engine.isAssignableTo(left, right));
+    try T.expect(!try s.engine.isAssignableTo(right, left));
+    var consumer = Checker.init(T.allocator, &s.hir, &s.ti, &s.sint, &s.engine);
+    defer consumer.deinit();
+    try consumer.importProgramTypeMetadata(&.{&checked});
+    var predicates = consumer.signature_predicates.valueIterator();
+    while (predicates.next()) |predicate| try T.expectEqual(hir_mod.none_node_id, predicate.target_node);
+    try T.expectEqual(checked.signature_generic_parameter_origins.count(), consumer.signature_generic_parameter_origins.count());
+}
+
+test "checker: callback provenance retains optional callback covariance" {
+    const s = try newSetup("interface A{a:number}interface B extends A{b:number}interface Left{run(listener?:((value:A)=>void)):void}interface Right{run(observer?:((value:B)=>void)):void}declare let left:Left;declare let right:Right;left=right;right=left;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), s.checker.diagnostics.items[0].code);
+}
+
+test "checker: excess-property checks resolve nested generic object shapes" {
+    const s = try newSetup("type Shape<T>={nested:{known:T extends string?number:boolean}};declare function take<T>(value:Shape<T>):void;function use<T>():void{take<T>({nested:{known:null as any,extra:true}});}");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2353), s.checker.diagnostics.items[0].code);
+}
+
+test "checker: callback provenance follows repeated and expanded generic rest positions" {
+    const s = try newSetup("type One<T>={set(...values:T[]):void};type Two<T>={set(...values:T[]):void};type Three<T>={set(...values:[number,T]):void};type Four<T>={set(...values:[number,T]):void};declare let left:One<(value:unknown)=>void>;declare let right:Two<(value:string)=>void>;left=right;right=left;declare let first:Three<(value:unknown)=>void>;declare let second:Four<(value:string)=>void>;first=second;second=first;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: callback assertion signatures retain void return assignability" {
+    const s = try newSetup("interface Left{run:(listener:(value:unknown)=>void)=>void}interface Right{run:(observer:(value:unknown)=>asserts value is string)=>void}declare let left:Left;declare let right:Right;left=right;right=left;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }

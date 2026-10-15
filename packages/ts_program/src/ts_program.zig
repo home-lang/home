@@ -18463,3 +18463,57 @@ test "Program: alias dependencies retain module local declaration ownership" {
     defer imported.deinit();
     try T.expect(imported.importedFor(program.fileById(unrelated).owner) == null);
 }
+
+test "Program: callback provenance survives serial and parallel source owners" {
+    for ([_]usize{ 1, 2 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const owner =
+            \\export interface A{a:number}
+            \\export interface B extends A{b:number}
+            \\export interface Left{run(listener:(value:A)=>value is A):void}
+            \\export interface Right{run(observer:(value:B)=>value is B):void}
+            \\export type One<T>={set(value:T):void};
+            \\export type Two<T>={set(value:T):void};
+            \\export type Shape<T>={nested:{known:T extends string?number:boolean}};
+        ;
+        const main =
+            \\import type {Left,Right,One,Two,Shape} from "./owner";
+            \\declare let left:Left;declare let right:Right;
+            \\left=right;right=left;
+            \\declare let genericLeft:One<(value:unknown)=>void>;
+            \\declare let genericRight:Two<(value:string)=>void>;
+            \\genericLeft=genericRight;genericRight=genericLeft;
+            \\declare function take<T>(value:Shape<T>):void;
+            \\function use<T>():void{take<T>({nested:{known:null as any,extra:true}});}
+        ;
+        try vfs.addFile("/owner.ts", owner);
+        try vfs.addFile("/first.ts", main);
+        try vfs.addFile("/second.ts", main);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/owner.ts", owner);
+        const first = try program.add("/first.ts", main);
+        const second = try program.add("/second.ts", main);
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable } };
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        for ([_]FileId{ first, second }) |id| {
+            const diagnostics = program.fileById(id).compilation.?.diagnostics.items;
+            if (diagnostics.len != 3) for (diagnostics) |diagnostic| {
+                std.debug.print("callback owner workers={d} TS{d} line={d} pos={d}: {s}\n", .{ workers, diagnostic.code, diagnostic.line, diagnostic.pos, diagnostic.message });
+            };
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            var assignments: usize = 0;
+            var excess: usize = 0;
+            for (diagnostics) |diagnostic| {
+                if (diagnostic.code == 2322) assignments += 1;
+                if (diagnostic.code == 2353) excess += 1;
+            }
+            try T.expectEqual(@as(usize, 2), assignments);
+            try T.expectEqual(@as(usize, 1), excess);
+        }
+    }
+}

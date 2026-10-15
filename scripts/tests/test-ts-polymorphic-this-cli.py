@@ -89,6 +89,12 @@ cyclic_prefix='interface Shape{'+cyclic_members+'}declare const self:()=>any;dec
 CASES['cyclic-receiver-excess-positive']=({'main.ts':cyclic_prefix+'take({'+cyclic_values+'});'},[])
 CASES['cyclic-receiver-excess-negative']=({'main.ts':cyclic_prefix+'take({'+cyclic_values+',extra:true});'},[2353])
 
+CASES.update({
+    'callback-method-result-negative': ({'main.ts':'interface Left{run(cb:(n:number)=>void):string}interface Right{run(cb:(n:number)=>void):number}declare const left:Left;const wrong:Right=left;'}, [2322]),
+    'callback-method-tail-negative': ({'main.ts':'interface Left{run(cb:(n:number)=>void,flag:string):void}interface Right{run(cb:(n:number)=>void,flag:number):void}declare const left:Left;const wrong:Right=left;'}, [2322]),
+    'nested-conditional-excess-negative': ({'main.ts':'type PickValue<T>={known:T extends string?number:boolean};declare function take<T>(value:PickValue<T>):void;function use<T>():void{take<T>({known:null as any,extra:true});}'}, [2353]),
+})
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -148,6 +154,6 @@ def main() -> None:
         (root/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     report['passed']=not report['failures'];(root/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     if not report['passed']:raise SystemExit('Failed: '+', '.join(report['failures']))
-    print(f"All {len(report['observations'])} polymorphic this observations passed")
+    print(f"All {len(report['observations'])} native CLI observations passed")
 
 if __name__=='__main__':main()
