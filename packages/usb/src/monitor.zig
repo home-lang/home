@@ -2,7 +2,9 @@
 // Tracks device connections, data transfers, and suspicious activity
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const usb = @import("usb.zig");
+const Io = std.Io;
 
 /// USB event type
 pub const EventType = enum {
@@ -32,10 +34,30 @@ pub const Event = struct {
         port_number: u8,
         details: []const u8,
     ) Event {
+        return initWithIo(compat.io(), event_type, device_id, port_number, details);
+    }
+
+    pub fn initWithIo(
+        io: Io,
+        event_type: EventType,
+        device_id: usb.DeviceID,
+        port_number: u8,
+        details: []const u8,
+    ) Event {
+        return initAt(compat.nowSeconds(io), event_type, device_id, port_number, details);
+    }
+
+    pub fn initAt(
+        timestamp: i64,
+        event_type: EventType,
+        device_id: usb.DeviceID,
+        port_number: u8,
+        details: []const u8,
+    ) Event {
         var event: Event = undefined;
         event.event_type = event_type;
         event.device_id = device_id;
-        event.timestamp = std.time.timestamp();
+        event.timestamp = timestamp;
         event.port_number = port_number;
         event.bytes_transferred = 0;
 
@@ -53,6 +75,7 @@ pub const Event = struct {
 
 /// Transfer statistics
 pub const TransferStats = struct {
+    io: Io,
     bytes_read: std.atomic.Value(u64),
     bytes_written: std.atomic.Value(u64),
     read_operations: std.atomic.Value(u64),
@@ -60,7 +83,12 @@ pub const TransferStats = struct {
     last_activity: std.atomic.Value(i64),
 
     pub fn init() TransferStats {
+        return initWithIo(compat.io());
+    }
+
+    pub fn initWithIo(io: Io) TransferStats {
         return .{
+            .io = io,
             .bytes_read = std.atomic.Value(u64).init(0),
             .bytes_written = std.atomic.Value(u64).init(0),
             .read_operations = std.atomic.Value(u64).init(0),
@@ -72,13 +100,13 @@ pub const TransferStats = struct {
     pub fn recordRead(self: *TransferStats, bytes: u64) void {
         _ = self.bytes_read.fetchAdd(bytes, .monotonic);
         _ = self.read_operations.fetchAdd(1, .monotonic);
-        self.last_activity.store(std.time.timestamp(), .release);
+        self.last_activity.store(compat.nowSeconds(self.io), .release);
     }
 
     pub fn recordWrite(self: *TransferStats, bytes: u64) void {
         _ = self.bytes_written.fetchAdd(bytes, .monotonic);
         _ = self.write_operations.fetchAdd(1, .monotonic);
-        self.last_activity.store(std.time.timestamp(), .release);
+        self.last_activity.store(compat.nowSeconds(self.io), .release);
     }
 
     pub fn getTotalBytes(self: *const TransferStats) u64 {
@@ -105,10 +133,14 @@ pub const MonitorSession = struct {
     suspicious_count: u32,
 
     pub fn init(device_id: usb.DeviceID) MonitorSession {
+        return initWithIo(compat.io(), device_id);
+    }
+
+    pub fn initWithIo(io: Io, device_id: usb.DeviceID) MonitorSession {
         return .{
             .device_id = device_id,
-            .start_time = std.time.timestamp(),
-            .stats = TransferStats.init(),
+            .start_time = compat.nowSeconds(io),
+            .stats = TransferStats.initWithIo(io),
             .suspicious_count = 0,
         };
     }
@@ -118,7 +150,15 @@ pub const MonitorSession = struct {
     }
 
     pub fn getDuration(self: *const MonitorSession) i64 {
-        return std.time.timestamp() - self.start_time;
+        return self.getDurationWithIo(self.stats.io);
+    }
+
+    pub fn getDurationWithIo(self: *const MonitorSession, io: Io) i64 {
+        return self.getDurationAt(compat.nowSeconds(io));
+    }
+
+    pub fn getDurationAt(self: *const MonitorSession, current_time: i64) i64 {
+        return current_time - self.start_time;
     }
 
     pub fn isSuspicious(self: *const MonitorSession) bool {
@@ -132,19 +172,25 @@ pub const Monitor = struct {
     sessions: std.AutoHashMap(usb.DeviceID, MonitorSession),
     max_events: usize,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    io: Io,
+    mutex: Io.Mutex,
 
     // Thresholds for suspicious activity detection
     max_transfer_rate: u64, // bytes/sec
     max_operations_per_sec: u64,
 
     pub fn init(allocator: std.mem.Allocator, max_events: usize) Monitor {
+        return initWithIo(allocator, compat.io(), max_events);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, max_events: usize) Monitor {
         return .{
             .events = std.ArrayList(Event).empty,
             .sessions = std.AutoHashMap(usb.DeviceID, MonitorSession).init(allocator),
             .max_events = max_events,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .io = io,
+            .mutex = .init,
             .max_transfer_rate = 100 * 1024 * 1024, // 100 MB/s
             .max_operations_per_sec = 10000,
         };
@@ -156,8 +202,10 @@ pub const Monitor = struct {
     }
 
     pub fn logEvent(self: *Monitor, event: Event) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (self.max_events == 0) return;
 
         // Rotate events if at capacity
         if (self.events.items.len >= self.max_events) {
@@ -168,14 +216,22 @@ pub const Monitor = struct {
     }
 
     pub fn startSession(self: *Monitor, device_id: usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const session = MonitorSession.init(device_id);
-        try self.sessions.put(device_id, session);
+        const session = MonitorSession.initWithIo(self.io, device_id);
+        const gop = try self.sessions.getOrPut(device_id);
+        const previous = if (gop.found_existing) gop.value_ptr.* else null;
+        gop.value_ptr.* = session;
+        errdefer if (previous) |old| {
+            gop.value_ptr.* = old;
+        } else {
+            _ = self.sessions.remove(device_id);
+        };
 
         // Log connection event
-        const event = Event.init(
+        const event = Event.initWithIo(
+            self.io,
             .device_connected,
             device_id,
             0,
@@ -188,12 +244,13 @@ pub const Monitor = struct {
     }
 
     pub fn endSession(self: *Monitor, device_id: *const usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.sessions.get(device_id.*)) |session| {
             // Log disconnection event
-            const event = Event.init(
+            const event = Event.initWithIo(
+                self.io,
                 .device_disconnected,
                 device_id.*,
                 0,
@@ -215,8 +272,8 @@ pub const Monitor = struct {
         is_read: bool,
         bytes: u64,
     ) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.sessions.getPtr(device_id.*)) |session| {
             if (is_read) {
@@ -233,7 +290,8 @@ pub const Monitor = struct {
                 if (ops_per_sec > self.max_operations_per_sec) {
                     session.recordSuspiciousActivity();
 
-                    const event = Event.init(
+                    const event = Event.initWithIo(
+                        self.io,
                         .suspicious_activity,
                         device_id.*,
                         0,
@@ -248,17 +306,21 @@ pub const Monitor = struct {
         }
     }
 
-    pub fn getEventCount(self: *const Monitor) usize {
+    pub fn getEventCount(self: *Monitor) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.events.items.len;
     }
 
-    pub fn getActiveSessionCount(self: *const Monitor) usize {
+    pub fn getActiveSessionCount(self: *Monitor) usize {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.sessions.count();
     }
 
     pub fn getSuspiciousDeviceCount(self: *Monitor) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var count: usize = 0;
         var iter = self.sessions.valueIterator();
@@ -319,4 +381,40 @@ test "monitor session" {
     // End session
     try monitor.endSession(&dev);
     try testing.expectEqual(@as(usize, 0), monitor.getActiveSessionCount());
+}
+
+fn populateMonitorForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var monitor = Monitor.initWithIo(allocator, std.testing.io, 2);
+    defer monitor.deinit();
+
+    const first = usb.DeviceID.init(0x046D, 0xC52B, "first", .hid, "Vendor", "Mouse");
+    const second = usb.DeviceID.init(0x05AC, 0x8242, "second", .hid, "Vendor", "Keyboard");
+    try monitor.startSession(first);
+    try monitor.startSession(second);
+    try std.testing.expectEqual(@as(usize, 2), monitor.getActiveSessionCount());
+    try std.testing.expectEqual(@as(usize, 2), monitor.getEventCount());
+}
+
+test "monitor session updates release every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        populateMonitorForAllocationFailure,
+        .{},
+    );
+}
+
+test "monitor supports explicit timestamps and a zero-sized event history" {
+    const testing = std.testing;
+    const device = usb.DeviceID.init(0x046D, 0xC52B, "serial", .hid, "Vendor", "Mouse");
+    const event = Event.initAt(1234, .device_connected, device, 1, "connected");
+    try testing.expectEqual(@as(i64, 1234), event.timestamp);
+
+    var session = MonitorSession.initWithIo(testing.io, device);
+    session.start_time = 1000;
+    try testing.expectEqual(@as(i64, 250), session.getDurationAt(1250));
+
+    var monitor = Monitor.initWithIo(testing.allocator, testing.io, 0);
+    defer monitor.deinit();
+    try monitor.logEvent(event);
+    try testing.expectEqual(@as(usize, 0), monitor.getEventCount());
 }

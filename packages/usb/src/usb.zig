@@ -170,4 +170,8 @@ test {
     std.testing.refAllDecls(auth.Authenticator);
     std.testing.refAllDecls(policy);
     std.testing.refAllDecls(policy.PolicyEngine);
+    std.testing.refAllDecls(monitor);
+    std.testing.refAllDecls(monitor.Monitor);
+    std.testing.refAllDecls(badusb);
+    std.testing.refAllDecls(badusb.Detector);
 }

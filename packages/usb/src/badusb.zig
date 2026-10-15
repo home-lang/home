@@ -2,7 +2,9 @@
 // Detects and prevents USB-based attacks (keystroke injection, firmware attacks, etc.)
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const usb = @import("usb.zig");
+const Io = std.Io;
 
 /// BadUSB attack type
 pub const AttackType = enum {
@@ -64,8 +66,16 @@ pub const DeviceProfile = struct {
     }
 
     pub fn recordConnection(self: *DeviceProfile) void {
+        self.recordConnectionAt(compat.nowSeconds(compat.io()));
+    }
+
+    pub fn recordConnectionWithIo(self: *DeviceProfile, io: Io) void {
+        self.recordConnectionAt(compat.nowSeconds(io));
+    }
+
+    pub fn recordConnectionAt(self: *DeviceProfile, current_time: i64) void {
         self.connection_count += 1;
-        self.last_connection = std.time.timestamp();
+        self.last_connection = current_time;
     }
 
     pub fn addObservedClass(self: *DeviceProfile, device_class: usb.DeviceClass) void {
@@ -81,7 +91,8 @@ pub const DeviceProfile = struct {
 pub const Detector = struct {
     profiles: std.AutoHashMap(usb.DeviceID, DeviceProfile),
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    io: Io,
+    mutex: Io.Mutex,
 
     // Detection thresholds
     max_keystroke_rate: f64, // keystrokes/sec
@@ -89,10 +100,15 @@ pub const Detector = struct {
     class_switch_threshold: u32, // max class changes
 
     pub fn init(allocator: std.mem.Allocator) Detector {
+        return initWithIo(allocator, compat.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io) Detector {
         return .{
             .profiles = std.AutoHashMap(usb.DeviceID, DeviceProfile).init(allocator),
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .io = io,
+            .mutex = .init,
             .max_keystroke_rate = 100.0, // Humans typically < 10 keys/sec
             .max_reconnect_rate = 0.1, // 1 connection per 10 seconds
             .class_switch_threshold = 1, // No class switching allowed
@@ -104,21 +120,50 @@ pub const Detector = struct {
     }
 
     pub fn analyzeDevice(self: *Detector, device_id: *const usb.DeviceID) !DetectionResult {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        const gop = try self.profiles.getOrPut(device_id.*);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = DeviceProfile.init(device_id.*);
+        var profile = self.findProfile(device_id);
+        if (profile == null) {
+            const gop = try self.profiles.getOrPut(device_id.*);
+            if (!gop.found_existing) gop.value_ptr.* = DeviceProfile.init(device_id.*);
+            profile = gop.value_ptr;
         }
 
-        const profile = gop.value_ptr;
-        profile.recordConnection();
+        const current_time = compat.nowSeconds(self.io);
+        const previous_connection = profile.?.last_connection;
+        profile.?.recordConnectionAt(current_time);
+
+        // Check for class switching before reconnect timing. A changed class is
+        // part of the hash-map key, so identity lookup must intentionally use
+        // DeviceID.eql (vendor/product/serial) rather than structural equality.
+        profile.?.addObservedClass(device_id.device_class);
+        if (profile.?.hasMultipleClasses()) {
+            return DetectionResult.init(
+                true,
+                .class_switching,
+                0.95,
+                "Device switched device class after connection",
+            );
+        }
+
+        if (device_id.device_class == .hid) {
+            const result = self.detectKeystrokeInjection(profile.?);
+            if (result.is_attack) return result;
+        }
 
         // Check for rapid enumeration
-        if (profile.connection_count > 1) {
-            const time_since_last = std.time.timestamp() - profile.last_connection;
+        if (profile.?.connection_count > 1) {
+            const time_since_last = current_time - previous_connection;
             if (time_since_last < 10) {
+                if (time_since_last <= 0) {
+                    return DetectionResult.init(
+                        true,
+                        .rapid_enumeration,
+                        0.9,
+                        "Device connecting too rapidly",
+                    );
+                }
                 const rate = 1.0 / @as(f64, @floatFromInt(time_since_last));
                 if (rate > self.max_reconnect_rate) {
                     return DetectionResult.init(
@@ -128,25 +173,6 @@ pub const Detector = struct {
                         "Device connecting too rapidly",
                     );
                 }
-            }
-        }
-
-        // Check for class switching
-        profile.addObservedClass(device_id.device_class);
-        if (profile.hasMultipleClasses()) {
-            return DetectionResult.init(
-                true,
-                .class_switching,
-                0.95,
-                "Device switched device class after connection",
-            );
-        }
-
-        // Check for HID attack patterns
-        if (device_id.device_class == .hid) {
-            const result = try self.detectKeystrokeInjection(profile);
-            if (result.is_attack) {
-                return result;
             }
         }
 
@@ -162,23 +188,14 @@ pub const Detector = struct {
         return DetectionResult.init(false, .unknown, 0.0, "Device appears safe");
     }
 
-    fn detectKeystrokeInjection(self: *Detector, profile: *DeviceProfile) !DetectionResult {
-        // Simulate keystroke rate analysis
-        // In production, would analyze actual input timing
-        _ = self;
-
-        // New HID devices are suspicious if they start typing immediately
-        if (profile.connection_count == 1) {
-            const time_since_connect = std.time.timestamp() - profile.last_connection;
-            if (time_since_connect < 2) {
-                // Device typing within 2 seconds of connection is suspicious
-                return DetectionResult.init(
-                    true,
-                    .keystroke_injection,
-                    0.8,
-                    "HID device typing immediately after connection",
-                );
-            }
+    fn detectKeystrokeInjection(self: *Detector, profile: *DeviceProfile) DetectionResult {
+        if (profile.keystroke_rate > self.max_keystroke_rate) {
+            return DetectionResult.init(
+                true,
+                .keystroke_injection,
+                0.8,
+                "HID device typing too rapidly",
+            );
         }
 
         return DetectionResult.init(false, .unknown, 0.0, "");
@@ -204,26 +221,44 @@ pub const Detector = struct {
         keystroke_count: u32,
         time_window: f64,
     ) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        if (time_window <= 0) return error.InvalidTimeWindow;
 
-        if (self.profiles.getPtr(device_id.*)) |profile| {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (self.findProfile(device_id)) |profile| {
             profile.keystroke_rate = @as(f64, @floatFromInt(keystroke_count)) / time_window;
         }
     }
 
     pub fn getProfile(self: *Detector, device_id: *const usb.DeviceID) ?DeviceProfile {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        return self.profiles.get(device_id.*);
+        const profile = self.findProfile(device_id) orelse return null;
+        return profile.*;
     }
 
     pub fn clearProfile(self: *Detector, device_id: *const usb.DeviceID) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        _ = self.profiles.remove(device_id.*);
+        var iter = self.profiles.iterator();
+        while (iter.next()) |entry| {
+            if (entry.key_ptr.eql(device_id)) {
+                const key = entry.key_ptr.*;
+                _ = self.profiles.remove(key);
+                return;
+            }
+        }
+    }
+
+    fn findProfile(self: *Detector, device_id: *const usb.DeviceID) ?*DeviceProfile {
+        var iter = self.profiles.iterator();
+        while (iter.next()) |entry| {
+            if (entry.key_ptr.eql(device_id)) return entry.value_ptr;
+        }
+        return null;
     }
 };
 
@@ -243,8 +278,12 @@ pub const Protection = struct {
     auto_block: bool,
 
     pub fn init(allocator: std.mem.Allocator) Protection {
+        return initWithIo(allocator, compat.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io) Protection {
         return .{
-            .detector = Detector.init(allocator),
+            .detector = Detector.initWithIo(allocator, io),
             .enabled = true,
             .auto_block = true,
         };
@@ -336,4 +375,37 @@ test "protection system" {
 
     // Should not block safe devices
     try testing.expect(!protection.shouldBlock(&result));
+}
+
+fn populateDetectorForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var detector = Detector.initWithIo(allocator, std.testing.io);
+    defer detector.deinit();
+
+    const first = usb.DeviceID.init(0x046D, 0xC52B, "first", .hid, "Vendor", "Mouse");
+    const second = usb.DeviceID.init(0x0781, 0x5567, "second", .mass_storage, "Vendor", "Drive");
+    try std.testing.expect(!(try detector.analyzeDevice(&first)).is_attack);
+    try std.testing.expect(!(try detector.analyzeDevice(&second)).is_attack);
+}
+
+test "BadUSB profiles release every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        populateDetectorForAllocationFailure,
+        .{},
+    );
+}
+
+test "BadUSB detects measured keystroke injection and rejects invalid windows" {
+    const testing = std.testing;
+    var detector = Detector.initWithIo(testing.allocator, testing.io);
+    defer detector.deinit();
+
+    const device = usb.DeviceID.init(0x046D, 0xC52B, "serial", .hid, "Vendor", "Keyboard");
+    try testing.expect(!(try detector.analyzeDevice(&device)).is_attack);
+    try testing.expectError(error.InvalidTimeWindow, detector.recordKeystroke(&device, 1, 0));
+    try detector.recordKeystroke(&device, 250, 1);
+
+    const result = try detector.analyzeDevice(&device);
+    try testing.expect(result.is_attack);
+    try testing.expectEqual(AttackType.keystroke_injection, result.attack_type);
 }
