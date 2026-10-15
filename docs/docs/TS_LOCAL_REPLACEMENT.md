@@ -1370,3 +1370,34 @@ remain unchanged apart from verified whitespace-only formatting. Evidence:
 `bench/vs_tsgo/evidence/20261015-local-tsc-numeric-compound.tar.gz` contains
 **2,958 verified payloads**, SHA-256
 `8ef0f84d2cef612421a6531961baaa1769f6353bbcb67c470aaa5742c5ab2c38`.
+
+## Explicitly annotated default parameters under isolated declarations
+
+A source-text heuristic incorrectly reported TS9025 for every annotated
+parameter with a default that did not spell `undefined`. Native TypeScript
+accepts these annotations, including constructor/method parameters and defaults
+before required parameters. The checker now uses the existing annotated
+parameter path directly. Inferred asserted defaults before required parameters
+still report TS9025 when strict null checks require it.
+
+The native-versus-Home contract passes **72 observations** across strictness,
+JS/declaration emit modes, generic parameters, rest/optional followers and
+constructors/methods. Restoring the heuristic makes the regression report four
+false diagnostics. The unchanged 370-input ts-auth graph loses exactly **72
+TS9025 reports**, with no added diagnostic locations. Home still reports **445
+diagnostics at 190 distinct code/location pairs** while native exits zero;
+project and whole-tree replacement remain unqualified.
+
+The contract compares codes/locations and successful exits. For the one
+TS9025-producing declaration-emit control, native exits one and Home exits two;
+that existing declaration-error exit-status discrepancy remains unqualified.
+The production build peaks at **2,791 MB** under the unchanged **3,840 MB**
+guard.
+
+All **4,624 checker tests, 305 Program tests and eleven existing Release CLI
+suites** pass. The table's positive and negative comparisons still pass with
+306 unchanged original inputs. Final validation peaks at **2,288 MB**, and all
+**4,192 frozen inputs** remain unchanged. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-annotated-default.tar.gz` contains
+**3,174 verified payloads**, SHA-256
+`83f14d1c4449b197e66ae6047c0294bb9a3999595be38157dd7faaa89b64ea5c`.

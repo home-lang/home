@@ -11349,18 +11349,10 @@ pub const Checker = struct {
     }
 
     fn checkIsolatedDeclarationsFunctionParameters(self: *Checker, fn_node: NodeId) CheckError!void {
-        const f = hir_mod.fnDeclOf(self.hir, fn_node);
         const params = hir_mod.fnParams(self.hir, fn_node);
         for (params, 0..) |param, param_index| {
             if (self.isThisParameter(param)) continue;
             const p = hir_mod.parameterOf(self.hir, param);
-            if (!f.flags.is_setter and
-                self.strict_flags.strict_null_checks and
-                self.parameterSourceRequiresImplicitUndefined(param))
-            {
-                try self.reportIsolatedDeclarationsParameterAddsUndefined(param, p.name);
-                continue;
-            }
             if (p.type_annotation != hir_mod.none_node_id) continue;
             if (p.default_value != hir_mod.none_node_id) {
                 try self.checkIsolatedDeclarationsFunctionDefaultValue(p.default_value);
@@ -11441,64 +11433,6 @@ pub const Checker = struct {
         if (default_value == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(default_value) == .literal_undefined) return true;
         return self.nodeSourceTextIs(default_value, "undefined");
-    }
-
-    fn parameterSourceRequiresImplicitUndefined(self: *Checker, param: NodeId) bool {
-        const src = self.source orelse return false;
-        if (param == hir_mod.none_node_id or self.hir.kindOf(param) != .parameter) return false;
-        const p = hir_mod.parameterOf(self.hir, param);
-        const start = if (p.name != hir_mod.none_node_id)
-            self.hir.spanOf(p.name).start
-        else
-            self.hir.spanOf(param).start;
-        if (start >= src.len) return false;
-
-        var i: usize = start;
-        var colon: ?usize = null;
-        var eq: ?usize = null;
-        var depth_paren: usize = 0;
-        var depth_bracket: usize = 0;
-        var depth_brace: usize = 0;
-        var depth_angle: usize = 0;
-        while (i < src.len) : (i += 1) {
-            const ch = src[i];
-            if (ch == '\n' or ch == '\r') break;
-            if (depth_paren == 0 and depth_bracket == 0 and depth_brace == 0 and depth_angle == 0) {
-                if (ch == ',' or ch == ')') break;
-                if (ch == ':' and colon == null) {
-                    colon = i;
-                    continue;
-                }
-                if (ch == '=') {
-                    eq = i;
-                    break;
-                }
-            }
-            switch (ch) {
-                '(' => depth_paren += 1,
-                ')' => {
-                    if (depth_paren == 0) break;
-                    depth_paren -= 1;
-                },
-                '[' => depth_bracket += 1,
-                ']' => {
-                    if (depth_bracket > 0) depth_bracket -= 1;
-                },
-                '{' => depth_brace += 1,
-                '}' => {
-                    if (depth_brace > 0) depth_brace -= 1;
-                },
-                '<' => depth_angle += 1,
-                '>' => {
-                    if (depth_angle > 0) depth_angle -= 1;
-                },
-                else => {},
-            }
-        }
-        const colon_pos = colon orelse return false;
-        const eq_pos = eq orelse return false;
-        if (colon_pos >= eq_pos) return false;
-        return !self.sourceSliceMentionsIdentifier(src[colon_pos + 1 .. eq_pos], "undefined");
     }
 
     fn sourceSliceMentionsIdentifier(self: *Checker, slice: []const u8, ident: []const u8) bool {
@@ -246869,26 +246803,18 @@ test "checker: TS9011 for exported function, method, and constructor parameters"
     try T.expect(found_f);
 }
 
-test "checker: TS9025 for defaulted annotated parameters that need implicit undefined" {
+test "checker: isolated declarations preserve explicitly annotated default parameters" {
     const source =
-        \\export function bad(p: number = 1): void {}
-        \\export function ok(q: number | undefined = 1): void {}
+        \\export function trailing(p: number = 1): void {}
+        \\export function leading(p: number = 1, q: number): void {}
+        \\export function explicit(q: number | undefined = 1): void {}
+        \\export class C { constructor(value: number = 1) {} method(value: string = "ok"): void {} }
     ;
     const s = try newSetup(source);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .isolated_declarations = true, .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.isolated_declarations_parameter_adds_undefined) {
-            found = true;
-            try T.expectEqualStrings("Declaration emit for this parameter requires implicitly adding undefined to its type. This is not supported with --isolatedDeclarations.", d.message);
-            const pos = d.pos orelse s.checker.hir.spanOf(d.node).start;
-            try T.expect(std.mem.startsWith(u8, source[pos..], "p"));
-        }
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: TS9011 for exported parameter defaulted to undefined under isolatedDeclarations" {
@@ -246916,7 +246842,7 @@ test "checker: TS9011 for exported parameter defaulted to undefined under isolat
 
 test "checker: TS9025 is strict-null-checks gated" {
     const s = try newSetup(
-        \\export function loose(p: number = 1): void {}
+        \\type T = number; export function loose(p = (value = 1 as T, required: number): void => {}): void {}
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .isolated_declarations = true });
