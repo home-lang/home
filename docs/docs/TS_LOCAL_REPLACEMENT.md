@@ -1488,3 +1488,10 @@ unchanged. Evidence:
 **3,579 verified payloads**, SHA-256
 `1b08f90b0525040a570ff2830b46356fdc42baf89c3ed148028daaf46618352d`.
 Real-project source and diagnostic text are excluded.
+
+Before publication, origin/main advanced with native runtime binding changes
+(`9839b1033`). The fix was rebased without conflicts. All TypeScript compiler
+and contract inputs are unchanged; build.zig and packages/runtime/src/main.zig
+reflect that incoming runtime change. The standalone compiler build and Program
+suite remain cache-valid, and a fresh table positive/negative replay passes
+(peak **1,028 MB**). The archived freeze describes the pre-rebase validation.
