@@ -823,6 +823,14 @@ pub const TypeRefPayload = struct {
     /// `[A, B]` here; `name` is `C`).
     qualifier_start: u32,
     qualifier_len: u32,
+    /// Module identity and quote position for `import("mod").Type`.
+    /// Keep this distinct from a lexical type named `Type`, including when
+    /// the module string is empty or the exported name is `unknown`.
+    import_module: ?StringId = null,
+    import_module_pos: u32 = 0,
+    import_name_pos: u32 = 0,
+    import_module_quote: u8 = '"',
+    import_qualified: bool = false,
 };
 
 /// `T | U | V`.
@@ -2585,6 +2593,28 @@ pub const Builder = struct {
         for (qualifier) |q| self.hir.setParent(q, id);
         for (args) |a| self.hir.setParent(a, id);
         return id;
+    }
+
+    pub fn addImportType(
+        self: *Builder,
+        span: Span,
+        module: StringId,
+        module_pos: u32,
+        module_quote: u8,
+        qualified: bool,
+        name_pos: u32,
+        name: StringId,
+        qualifier: []const NodeId,
+        args: []const NodeId,
+    ) !NodeId {
+        const node = try self.addTypeRef(span, name, qualifier, args);
+        const payload = &self.hir.type_ref_payloads.items[self.hir.payloads.items[node]];
+        payload.import_module = module;
+        payload.import_module_pos = module_pos;
+        payload.import_module_quote = module_quote;
+        payload.import_qualified = qualified;
+        payload.import_name_pos = name_pos;
+        return node;
     }
 
     pub fn addUnionType(self: *Builder, span: Span, members: []const NodeId) !NodeId {

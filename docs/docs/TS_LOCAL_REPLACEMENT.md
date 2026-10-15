@@ -1773,3 +1773,95 @@ Final compiler SHA-256:
 Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-callback-relations.tar.gz`,
 **4,602 verified payloads**, SHA-256
 `2b9815e00b86bc0625ca2ff8c89eee1802ff5f8b6b0f70cd5000b80b8fdde2ba`. Real-project source and diagnostic prose are excluded.
+
+## Import types, module queries, and declaration output (2026-10-15)
+
+Import-type HIR nodes now retain their module, qualification, original quote and
+member position. `import("./owner").Token` resolves through that module's exact
+export route, including barrels, rather than through a lexical `Token` or a
+same-named type parameter. Top-level namespace routes now match the empty path;
+they no longer discard valid declaration shapes and silently recover as `any`.
+Missing modules, members and script-file imports preserve their diagnostics.
+
+Dependency discovery now follows inline import types and literal dynamic
+imports, including no-substitution templates. A Program control starts with
+only the consumers, loads the declaration owner, and checks incompatible object
+members and function arguments with both one and two workers. Dynamic module
+specifiers resolve through the Program's filesystem and ambient modules; a
+`node:*` specifier is no longer mistaken for a missing Node global. `typeof
+import(...)` uses the same runtime export namespace, retaining callable and
+class signatures. Direct generic imports retain defaults, arity and constraints.
+
+Declaration output retains `import(...)` and `typeof import(...)`, generic
+parameters with their constraints, defaults, variance and `const` modifiers,
+interface inheritance, and exported namespace bodies. Nested namespace members
+use their enclosing ambient context rather than repeating invalid `declare`
+modifiers. Native consumers validate the emitted files with `skipLibCheck: false`
+and minimal `noLib` globals. Valid consumers pass, while the negative consumer
+reports the same **eleven diagnostics and locations** for both compilers' output.
+The earlier full-ESNext library mismatch is retained separately, not suppressed
+or counted as a passing declaration check.
+
+The final source passes **6,627 unit tests**: 4,649 checker, 315 Program,
+213 driver, 917 parser/precedence, 504 emitter, 13 HIR and 16 cache tests.
+The production build, **82 native import observations with Bun libraries**,
+**60 observations without optional Bun libraries**, and all **six declaration
+emit/consumer observations** pass against installed TypeScript 7.0.2. Codes,
+counts, locations, statuses and input stability are checked; diagnostic prose
+is not claimed identical. All **eighteen existing CLI regression suites** pass,
+including the 72 callback and 114 receiver observations from the preceding batch.
+
+The owned table entrypoint remains verified with **49 source files and all
+306 compiler inputs unchanged**. Native and Home list exactly the same input
+files, both positive runs pass, and the planted negative remains one TS2322 at
+line 3, column 42. Publication repeats these controls after synchronizing
+unrelated upstream changes through `3fbd25fb3`. All seven unit
+artifacts and the production build pass again, and the compiler binary is
+unchanged. The frozen source inventory grows from **4,278 to
+4,283 inputs** with the recorded upstream updates.
+
+On ts-auth's unchanged **370-input graph** (369 compiler files plus its config),
+native exits zero and Home exits one. Home's list of compiler files matches
+native's. Diagnostics decrease from **287 to 283 raw reports**, and from
+**32 to 28 distinct code/location pairs**, with **four removed and none added**:
+
+- TS2304 for `AccessToken` in `src/guards/token-guard.ts`, line 169.
+- TS2304 for `OAuthTokens` in `src/oauth/providers/twitter.ts`, line 47.
+- TS2591 for `node:fs/promises` in `src/session/handlers.ts`, lines 120 and 133.
+
+The project and whole-tree replacement remain **unqualified**. Native rejects a
+number passed to Node's `unlink` with TS2345; Home still accepts that argument
+through both static and dynamic ambient imports. These failing controls remain
+in the evidence, and `--include-known-gaps` reproduces the dynamic control with
+the new import runner. A separate full-ESNext check also retains **37
+standard-library diagnostics**, unchanged from the published compiler; native
+passes that check. Neither discovery is counted toward passing qualification.
+
+The final build/import validation peaks at **2,800 MB**, the complete unit run
+at **2,292 MB**, the broader replay at **1,431 MB**, and publication at
+**1,197 MB**, all below the unchanged **3,840 MB** ceiling. Compiler and native
+reference hashes, project graphs and source inputs remain stable across the
+recorded phases. Completed failed-build cache artifacts are removed; source,
+successful binaries and evidence are retained.
+
+Discovery evidence includes the original false acceptances, the test resolver
+correction, native-derived expectation corrections, the declaration failures,
+and the library audit's tuple/list normalization correction and verified rerun.
+Repository-wide Pickier still exits one with **1,858 errors and
+694 warnings**, matching the published baseline, with no finding
+in a changed compiler or runner file. The report is checked separately after
+this evidence section is written.
+
+The new runners are `scripts/tests/test-ts-import-type-cli.py` and
+`scripts/tests/test-ts-import-type-declaration-cli.py`; both run under
+`scripts/run-bounded.pl`. The first accepts the shared harness's optional
+`--bun-node-modules` argument and explicit `--include-known-gaps` discovery flag.
+The second audits the complete declaration output set and verifies that native
+consumer checks produce no files or input changes.
+
+Final compiler SHA-256:
+`9e5b0be664931ddcbb778f490b12d6748298edb9d981bae1ecbcd940fd437fdd`.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-import-types.tar.gz`,
+**5,612 verified payloads**, SHA-256
+`d3e3c6b6d911d985e7fe646dfcc533320ffef5e7d807dab291d8a7e65fd22eb8`. Real-project source and diagnostic prose are excluded.

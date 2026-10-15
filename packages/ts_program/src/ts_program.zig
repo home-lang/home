@@ -4039,16 +4039,32 @@ pub const Program = struct {
                 try out.append(gpa, .{ .specifier = specifier, .order = c.hir.spanOf(statement).start });
             }
         }
-        const require_name = c.interner.lookup("require") orelse return;
         var node: hir_mod_ns.NodeId = 1;
         while (node < c.hir.nodeCount()) : (node += 1) {
+            if (c.hir.kindOf(node) == .type_ref) {
+                const ref = hir_mod_ns.typeRefOf(&c.hir, node);
+                if (ref.import_module) |module| try out.append(gpa, .{
+                    .specifier = c.interner.get(module),
+                    .order = c.hir.spanOf(node).start,
+                    .position = ref.import_module_pos,
+                });
+                continue;
+            }
             if (c.hir.kindOf(node) != .call_expr) continue;
             const call = hir_mod_ns.callOf(&c.hir, node);
-            if (call.callee == hir_mod_ns.none_node_id or
-                c.hir.kindOf(call.callee) != .identifier or
-                hir_mod_ns.identifierOf(&c.hir, call.callee).name != require_name) continue;
+            if (call.callee == hir_mod_ns.none_node_id) continue;
+            var callee = call.callee;
+            if (c.hir.kindOf(callee) == .member_access) {
+                const member = hir_mod_ns.memberOf(&c.hir, callee);
+                if (!std.mem.eql(u8, c.interner.get(member.name), "defer")) continue;
+                callee = member.object;
+            }
+            if (c.hir.kindOf(callee) != .identifier) continue;
+            const callee_name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, callee).name);
+            const dynamic_import = std.mem.eql(u8, callee_name, "import");
+            if (!dynamic_import and (callee != call.callee or !std.mem.eql(u8, callee_name, "require"))) continue;
             const arguments = hir_mod_ns.callArgs(&c.hir, node);
-            if (arguments.len != 1) continue;
+            if (arguments.len == 0 or (!dynamic_import and arguments.len != 1)) continue;
             const specifier = staticStringLiteralLike(c, arguments[0]) orelse continue;
             if (specifier.len == 0) continue;
             try out.append(gpa, .{
@@ -18514,6 +18530,46 @@ test "Program: callback provenance survives serial and parallel source owners" {
             }
             try T.expectEqual(@as(usize, 2), assignments);
             try T.expectEqual(@as(usize, 1), excess);
+        }
+    }
+}
+
+test "Program: import types and dynamic imports load exact declaration owners" {
+    for ([_]usize{ 1, 2 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const owner = "export interface Token{value:string}export async function remove(path:string):Promise<void>{}";
+        const main = "export class Guard{async get():Promise<import('./owner').Token>{return {value:'ok'};}}const bad:import('./owner').Token={value:1};export async function use():Promise<void>{const {remove}=await import('./owner');await remove(1);}";
+        try vfs.addFile("/owner.ts", owner);
+        try vfs.addFile("/first.ts", main);
+        try vfs.addFile("/second.ts", main);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const first = try program.add("/first.ts", main);
+        const second = try program.add("/second.ts", main);
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        try T.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        for ([_]FileId{ first, second }) |id| {
+            const file = program.fileById(id);
+            try T.expectEqual(@as(usize, 1), file.imports.items.len);
+            const diagnostics = file.compilation.?.diagnostics.items;
+            if (diagnostics.len != 2) for (diagnostics) |diagnostic| {
+                std.debug.print("import owner workers={d} TS{d} pos={d}: {s}\n", .{ workers, diagnostic.code, diagnostic.pos, diagnostic.message });
+            };
+            try T.expectEqual(@as(usize, 2), diagnostics.len);
+            var assignments: usize = 0;
+            var arguments: usize = 0;
+            for (diagnostics) |diagnostic| {
+                if (diagnostic.code == 2322) assignments += 1;
+                if (diagnostic.code == 2345) arguments += 1;
+            }
+            try T.expectEqual(@as(usize, 1), assignments);
+            try T.expectEqual(@as(usize, 1), arguments);
         }
     }
 }

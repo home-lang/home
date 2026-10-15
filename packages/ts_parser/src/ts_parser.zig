@@ -207,10 +207,11 @@ pub const Parser = struct {
     gpa: std.mem.Allocator,
     tokens: []const Token,
     cursor: u32,
-    pending_type_gt: u8,
-    pending_type_gt_pos: u32,
-    pending_type_gt_line: u32,
-    pending_type_gt_flags: TokenFlags,
+    pending_type_angle: u8,
+    pending_type_angle_kind: TokenKind,
+    pending_type_angle_pos: u32,
+    pending_type_angle_line: u32,
+    pending_type_angle_flags: TokenFlags,
     pending_type_eq: bool,
     pending_type_eq_pos: u32,
     pending_type_eq_line: u32,
@@ -425,10 +426,11 @@ pub const Parser = struct {
             .gpa = gpa,
             .tokens = tokens,
             .cursor = 0,
-            .pending_type_gt = 0,
-            .pending_type_gt_pos = 0,
-            .pending_type_gt_line = 1,
-            .pending_type_gt_flags = .{},
+            .pending_type_angle = 0,
+            .pending_type_angle_kind = .greater_than,
+            .pending_type_angle_pos = 0,
+            .pending_type_angle_line = 1,
+            .pending_type_angle_flags = .{},
             .pending_type_eq = false,
             .pending_type_eq_pos = 0,
             .pending_type_eq_line = 1,
@@ -548,17 +550,17 @@ pub const Parser = struct {
     }
 
     fn peek(self: *const Parser) Token {
-        if (self.pending_type_gt > 0) return self.pendingTypeGreaterToken(0);
+        if (self.pending_type_angle > 0) return self.pendingTypeAngleToken(0);
         if (self.pending_type_eq) return self.pendingTypeEqualToken();
         return self.tokens[self.cursor];
     }
 
     fn peekAt(self: *const Parser, offset: u32) Token {
-        if (self.pending_type_gt > 0) {
-            if (offset < self.pending_type_gt) return self.pendingTypeGreaterToken(offset);
-            if (self.pending_type_eq and offset == self.pending_type_gt) return self.pendingTypeEqualToken();
+        if (self.pending_type_angle > 0) {
+            if (offset < self.pending_type_angle) return self.pendingTypeAngleToken(offset);
+            if (self.pending_type_eq and offset == self.pending_type_angle) return self.pendingTypeEqualToken();
             const eq_offset: u32 = if (self.pending_type_eq) 1 else 0;
-            const p_after_pending = self.cursor + (offset - self.pending_type_gt - eq_offset);
+            const p_after_pending = self.cursor + (offset - self.pending_type_angle - eq_offset);
             if (p_after_pending >= self.tokens.len) return self.tokens[self.tokens.len - 1];
             return self.tokens[p_after_pending];
         }
@@ -608,10 +610,10 @@ pub const Parser = struct {
     }
 
     fn advance(self: *Parser) Token {
-        if (self.pending_type_gt > 0) {
-            const tok = self.pendingTypeGreaterToken(0);
-            self.pending_type_gt -= 1;
-            self.pending_type_gt_pos += 1;
+        if (self.pending_type_angle > 0) {
+            const tok = self.pendingTypeAngleToken(0);
+            self.pending_type_angle -= 1;
+            self.pending_type_angle_pos += 1;
             return tok;
         }
         if (self.pending_type_eq) {
@@ -637,13 +639,13 @@ pub const Parser = struct {
         }) catch {};
     }
 
-    fn pendingTypeGreaterToken(self: *const Parser, offset: u32) Token {
-        const pos = self.pending_type_gt_pos + offset;
+    fn pendingTypeAngleToken(self: *const Parser, offset: u32) Token {
+        const pos = self.pending_type_angle_pos + offset;
         return .{
             .span = .{ .start = pos, .end = pos + 1 },
-            .kind = .greater_than,
-            .flags = self.pending_type_gt_flags,
-            .line = self.pending_type_gt_line,
+            .kind = self.pending_type_angle_kind,
+            .flags = self.pending_type_angle_flags,
+            .line = self.pending_type_angle_line,
         };
     }
 
@@ -665,6 +667,24 @@ pub const Parser = struct {
             kind == .greater_greater_greater_equal;
     }
 
+    /// In a type argument list `Foo<<T>() => T>`, the scanner's `<<`
+    /// contains the outer argument opener and the inner function's opener.
+    /// Split it here so expression-position shifts keep their original token.
+    fn consumeTypeLess(self: *Parser, what: []const u8) ParseError!Token {
+        if (self.peek().kind != .less_less) return self.expect(.less_than, what);
+        const raw = self.advance();
+        self.pending_type_angle_kind = .less_than;
+        self.pending_type_angle = 1;
+        self.pending_type_angle_pos = raw.span.start + 1;
+        self.pending_type_angle_line = raw.line;
+        self.pending_type_angle_flags = raw.flags;
+        self.pending_type_angle_flags.preceded_by_newline = false;
+        var first = raw;
+        first.kind = .less_than;
+        first.span.end = first.span.start + 1;
+        return first;
+    }
+
     fn consumeTypeGreater(self: *Parser, what: []const u8) ParseError!Token {
         const tok = self.peek();
         switch (tok.kind) {
@@ -684,10 +704,11 @@ pub const Parser = struct {
             },
             .greater_greater => {
                 const raw = self.advance();
-                self.pending_type_gt = 1;
-                self.pending_type_gt_pos = raw.span.start + 1;
-                self.pending_type_gt_line = raw.line;
-                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_angle_kind = .greater_than;
+                self.pending_type_angle = 1;
+                self.pending_type_angle_pos = raw.span.start + 1;
+                self.pending_type_angle_line = raw.line;
+                self.pending_type_angle_flags = raw.flags;
                 return .{
                     .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
                     .kind = .greater_than,
@@ -697,10 +718,11 @@ pub const Parser = struct {
             },
             .greater_greater_equal => {
                 const raw = self.advance();
-                self.pending_type_gt = 1;
-                self.pending_type_gt_pos = raw.span.start + 1;
-                self.pending_type_gt_line = raw.line;
-                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_angle_kind = .greater_than;
+                self.pending_type_angle = 1;
+                self.pending_type_angle_pos = raw.span.start + 1;
+                self.pending_type_angle_line = raw.line;
+                self.pending_type_angle_flags = raw.flags;
                 self.pending_type_eq = true;
                 self.pending_type_eq_pos = raw.span.start + 2;
                 self.pending_type_eq_line = raw.line;
@@ -714,10 +736,11 @@ pub const Parser = struct {
             },
             .greater_greater_greater => {
                 const raw = self.advance();
-                self.pending_type_gt = 2;
-                self.pending_type_gt_pos = raw.span.start + 1;
-                self.pending_type_gt_line = raw.line;
-                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_angle_kind = .greater_than;
+                self.pending_type_angle = 2;
+                self.pending_type_angle_pos = raw.span.start + 1;
+                self.pending_type_angle_line = raw.line;
+                self.pending_type_angle_flags = raw.flags;
                 return .{
                     .span = .{ .start = raw.span.start, .end = raw.span.start + 1 },
                     .kind = .greater_than,
@@ -727,10 +750,11 @@ pub const Parser = struct {
             },
             .greater_greater_greater_equal => {
                 const raw = self.advance();
-                self.pending_type_gt = 2;
-                self.pending_type_gt_pos = raw.span.start + 1;
-                self.pending_type_gt_line = raw.line;
-                self.pending_type_gt_flags = raw.flags;
+                self.pending_type_angle_kind = .greater_than;
+                self.pending_type_angle = 2;
+                self.pending_type_angle_pos = raw.span.start + 1;
+                self.pending_type_angle_line = raw.line;
+                self.pending_type_angle_flags = raw.flags;
                 self.pending_type_eq = true;
                 self.pending_type_eq_pos = raw.span.start + 3;
                 self.pending_type_eq_line = raw.line;
@@ -15396,7 +15420,7 @@ pub const Parser = struct {
     /// Parse `<A, B<C>>` in type-argument position. Returns owned
     /// slice of parsed type nodes.
     fn parseTypeArgumentList(self: *Parser) ParseError![]NodeId {
-        const open = try self.expect(.less_than, "'<' to open type arguments");
+        const open = try self.consumeTypeLess("'<' to open type arguments");
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         errdefer args.deinit(self.gpa);
         if (self.peek().kind == .greater_than) {
@@ -15488,6 +15512,9 @@ pub const Parser = struct {
         // type positions can still be checked. Mirrors tsc — which
         // emits a TS1141 per offending `import(T)` rather than
         // bailing the whole file (`importTypeGeneric.ts`).
+        var import_module: ?hir_mod.StringId = null;
+        var import_module_pos: u32 = 0;
+        var import_module_quote: u8 = '"';
         const specifier_is_invalid = self.peek().kind != .string_literal;
         if (specifier_is_invalid) {
             const tok = self.peek();
@@ -15504,7 +15531,10 @@ pub const Parser = struct {
                 _ = self.advance();
             }
         } else {
-            _ = self.advance();
+            const module_token = self.advance();
+            import_module = try self.internStringLiteral(module_token);
+            import_module_pos = module_token.span.start;
+            import_module_quote = self.source[module_token.span.start];
         }
         if (self.match(.comma)) {
             try self.reportImportTypeOptionsGrammarDiagnostics();
@@ -15524,7 +15554,9 @@ pub const Parser = struct {
         defer qualifier.deinit(self.gpa);
         var name_id = self.interner.intern("unknown") catch return error.OutOfMemory;
 
-        if (self.match(.dot)) {
+        var import_name_pos: u32 = 0;
+        const import_qualified = self.match(.dot);
+        if (import_qualified) {
             const first = try self.expectIdentifierLike();
             name_id = try self.internToken(first);
             var prev_tok = first;
@@ -15536,12 +15568,13 @@ pub const Parser = struct {
                 name_id = try self.internToken(next_tok);
                 prev_tok = next_tok;
             }
+            import_name_pos = prev_tok.span.start;
         }
 
         var args: std.ArrayListUnmanaged(NodeId) = .empty;
         defer args.deinit(self.gpa);
-        if (self.peek().kind == .less_than) {
-            _ = self.advance();
+        if (self.peek().kind == .less_than or self.peek().kind == .less_less) {
+            _ = try self.consumeTypeLess("'<' to open import type arguments");
             while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
                 if (self.peek().kind == .invalid) {
                     const bad = self.advance();
@@ -15570,8 +15603,13 @@ pub const Parser = struct {
                 &.{},
             );
         }
-        return try self.builder.addTypeRef(
+        return try self.builder.addImportType(
             .{ .start = import_tok.span.start, .end = end_pos },
+            import_module.?,
+            import_module_pos,
+            import_module_quote,
+            import_qualified,
+            import_name_pos,
             name_id,
             qualifier.items,
             args.items,
@@ -15832,8 +15870,8 @@ pub const Parser = struct {
         // args for `B`. Without this guard we eagerly consume `<T>` as
         // args and then trip up on the trailing `;`. Mirrors the
         // analogous check in `parseArrayTypePostfix` for `[`.
-        if (self.peek().kind == .less_than and !self.peek().flags.preceded_by_newline) {
-            _ = self.advance();
+        if ((self.peek().kind == .less_than or self.peek().kind == .less_less) and !self.peek().flags.preceded_by_newline) {
+            _ = try self.consumeTypeLess("'<' to open type arguments");
             while (self.peek().kind != .greater_than and self.peek().kind != .eof) {
                 // TS1140 — see the same gate in `parseTypeArgumentList`
                 // below. This path is the qualified-name type-reference
@@ -16691,7 +16729,7 @@ pub const Parser = struct {
         }
         // Force-advance to the verified continuation token even if
         // structural recovery failed.
-        self.pending_type_gt = 0;
+        self.pending_type_angle = 0;
         self.pending_type_eq = false;
         self.cursor = after_gt;
         return args.toOwnedSlice(self.gpa);
@@ -20200,10 +20238,11 @@ pub const Parser = struct {
                 if (self.peek().kind == .less_than) {
                     const saved_cursor = self.cursor;
                     const saved_diag_len = self.diagnostics.items.len;
-                    const saved_pending_type_gt = self.pending_type_gt;
-                    const saved_pending_type_gt_pos = self.pending_type_gt_pos;
-                    const saved_pending_type_gt_line = self.pending_type_gt_line;
-                    const saved_pending_type_gt_flags = self.pending_type_gt_flags;
+                    const saved_pending_type_angle = self.pending_type_angle;
+                    const saved_pending_type_angle_kind = self.pending_type_angle_kind;
+                    const saved_pending_type_angle_pos = self.pending_type_angle_pos;
+                    const saved_pending_type_angle_line = self.pending_type_angle_line;
+                    const saved_pending_type_angle_flags = self.pending_type_angle_flags;
                     const saved_pending_type_eq = self.pending_type_eq;
                     const saved_pending_type_eq_pos = self.pending_type_eq_pos;
                     const saved_pending_type_eq_line = self.pending_type_eq_line;
@@ -20219,10 +20258,11 @@ pub const Parser = struct {
                             self.gpa.free(parsed);
                             self.cursor = saved_cursor;
                             self.diagnostics.items.len = saved_diag_len;
-                            self.pending_type_gt = saved_pending_type_gt;
-                            self.pending_type_gt_pos = saved_pending_type_gt_pos;
-                            self.pending_type_gt_line = saved_pending_type_gt_line;
-                            self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                            self.pending_type_angle = saved_pending_type_angle;
+                            self.pending_type_angle_kind = saved_pending_type_angle_kind;
+                            self.pending_type_angle_pos = saved_pending_type_angle_pos;
+                            self.pending_type_angle_line = saved_pending_type_angle_line;
+                            self.pending_type_angle_flags = saved_pending_type_angle_flags;
                             self.pending_type_eq = saved_pending_type_eq;
                             self.pending_type_eq_pos = saved_pending_type_eq_pos;
                             self.pending_type_eq_line = saved_pending_type_eq_line;
@@ -20231,10 +20271,11 @@ pub const Parser = struct {
                     } else |_| {
                         self.cursor = saved_cursor;
                         self.diagnostics.items.len = saved_diag_len;
-                        self.pending_type_gt = saved_pending_type_gt;
-                        self.pending_type_gt_pos = saved_pending_type_gt_pos;
-                        self.pending_type_gt_line = saved_pending_type_gt_line;
-                        self.pending_type_gt_flags = saved_pending_type_gt_flags;
+                        self.pending_type_angle = saved_pending_type_angle;
+                        self.pending_type_angle_kind = saved_pending_type_angle_kind;
+                        self.pending_type_angle_pos = saved_pending_type_angle_pos;
+                        self.pending_type_angle_line = saved_pending_type_angle_line;
+                        self.pending_type_angle_flags = saved_pending_type_angle_flags;
                         self.pending_type_eq = saved_pending_type_eq;
                         self.pending_type_eq_pos = saved_pending_type_eq_pos;
                         self.pending_type_eq_line = saved_pending_type_eq_line;
@@ -36920,9 +36961,7 @@ test "parser: ambient variables retain strict binding diagnostics" {
 
 test "parser: contextual keyword index parameters retain index signature structure" {
     inline for (.{ "symbol", "string", "number", "type", "readonly", "get", "async", "declare" }) |name| {
-        const source = try std.fmt.allocPrint(T.allocator,
-            "interface I {{ [{s}: string]: number; }} type A = {{ readonly [{s}: number]: string; }}; class C {{ [{s}: string]: boolean; }}",
-            .{ name, name, name });
+        const source = try std.fmt.allocPrint(T.allocator, "interface I {{ [{s}: string]: number; }} type A = {{ readonly [{s}: number]: string; }}; class C {{ [{s}: string]: boolean; }}", .{ name, name, name });
         defer T.allocator.free(source);
         const setup = try newTestSetup(source);
         defer destroyTestSetup(setup);
@@ -36935,4 +36974,43 @@ test "parser: contextual keyword index parameters retain index signature structu
         try T.expectEqualStrings(name, setup.interner.get(index.key_name));
         try T.expectEqual(@as(u32, 0), countDiag(setup, 1169));
     }
+}
+
+test "parser: import type nodes retain module identity and member positions" {
+    const source = "type Imported=import('./owner').Inner.Token<number>;type Plain=Token;type Bare=typeof import(\"./owner\");type Named=import('./owner').unknown;";
+    var s = try newTestSetup(source);
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const declarations = hir_mod.blockStmts(&s.hir, root);
+    const imported_node = hir_mod.typeAliasOf(&s.hir, declarations[0]).aliased;
+    const imported = hir_mod.typeRefOf(&s.hir, imported_node);
+    try T.expectEqualStrings("./owner", s.interner.get(imported.import_module.?));
+    try T.expectEqual(@as(u8, '\''), source[imported.import_module_pos]);
+    try T.expectEqualStrings("Token", source[imported.import_name_pos .. imported.import_name_pos + 5]);
+    try T.expect(imported.import_qualified);
+    try T.expectEqual(@as(u32, 1), imported.qualifier_len);
+    try T.expectEqual(@as(u32, 1), imported.args_len);
+    const plain = hir_mod.typeRefOf(&s.hir, hir_mod.typeAliasOf(&s.hir, declarations[1]).aliased);
+    try T.expect(plain.import_module == null);
+    const bare_typeof = hir_mod.typeofTypeOf(&s.hir, hir_mod.typeAliasOf(&s.hir, declarations[2]).aliased);
+    const bare = hir_mod.typeRefOf(&s.hir, bare_typeof.operand);
+    try T.expect(bare.import_module != null and !bare.import_qualified);
+    const named = hir_mod.typeRefOf(&s.hir, hir_mod.typeAliasOf(&s.hir, declarations[3]).aliased);
+    try T.expect(named.import_qualified);
+    try T.expectEqualStrings("unknown", s.interner.get(named.name));
+}
+
+test "parser: adjacent type argument and generic function openers split without changing shifts" {
+    const source = "type Extends<A,B>=[A] extends [B]?true:false;type R<X,Y>=Extends<<T>()=>T extends X?true:false,<T>()=>T extends Y?true:false>;type I=import('./owner').Box<<T>()=>T>;const shifted=4<<1;";
+    var setup = try newTestSetup(source);
+    defer destroyTestSetup(setup);
+    const root = try setup.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    const declarations = hir_mod.blockStmts(&setup.hir, root);
+    const reference = hir_mod.typeAliasOf(&setup.hir, declarations[1]).aliased;
+    const args = hir_mod.typeRefArgs(&setup.hir, reference);
+    try T.expectEqual(@as(usize, 2), args.len);
+    for (args) |argument| try T.expect(setup.hir.kindOf(argument) == .fn_type);
+    const shift = hir_mod.varDeclOf(&setup.hir, declarations[3]).init;
+    try T.expectEqual(hir_mod.BinOp.shl, hir_mod.binopOf(&setup.hir, shift).op);
 }

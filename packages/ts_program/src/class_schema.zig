@@ -1024,11 +1024,11 @@ pub const Builder = struct {
             .type_ref => {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
-                var qualified_unresolved = ref.qualifier_len != 0;
+                var qualified_unresolved = ref.qualifier_len != 0 or ref.import_module != null;
                 defer if (qualified_unresolved and context.allow_opaque) {
                     context.declaration.contextual_only = true;
                 };
-                if (ref.qualifier_len == 0) {
+                if (ref.import_module == null and ref.qualifier_len == 0) {
                     if (std.mem.eql(u8, name, "this")) return self.expression(.polymorphic_this);
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                     for (context.declaration.parameters) |*param| {
@@ -1044,7 +1044,7 @@ pub const Builder = struct {
                         }
                     }
                 }
-                const primitive = if (ref.qualifier_len == 0) std.StaticStringMap(u32).initComptime(.{
+                const primitive = if (ref.import_module == null and ref.qualifier_len == 0) std.StaticStringMap(u32).initComptime(.{
                     .{ "any", Primitive.any },               .{ "unknown", Primitive.unknown }, .{ "never", Primitive.never },
                     .{ "string", Primitive.string_t },       .{ "number", Primitive.number_t }, .{ "boolean", Primitive.boolean_t },
                     .{ "undefined", Primitive.undefined_t }, .{ "null", Primitive.null_t },     .{ "void", Primitive.void_t },
@@ -1053,7 +1053,7 @@ pub const Builder = struct {
                 if (primitive) |value| return self.expression(.{ .primitive = value });
                 const args = try self.arena.alloc(*const schema.Expression, ref.args_len);
                 for (hir.typeRefArgs(&c.hir, node), args) |arg, *out| out.* = try self.lower(context, arg);
-                switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
+                switch (if (ref.import_module != null or ref.qualifier_len != 0) try self.resolveQualified(context.source, node, ref) else try self.resolve(context.source, node, ref.name)) {
                     .declaration => |key| {
                         const target = try self.declaration(key);
                         const projection_only = ref.qualifier_len != 0 and
@@ -1088,6 +1088,7 @@ pub const Builder = struct {
                     },
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
+                        if (ref.import_module != null) return self.expression(.unsupported);
                         // Built-in object shapes live in each checker's local
                         // type pool. Transfer their stable spelling and let the
                         // consumer materialize the same canonical shape.
@@ -1375,6 +1376,10 @@ pub const Builder = struct {
     fn resolveQualified(self: *Builder, source: usize, node: hir.NodeId, ref: hir.TypeRefPayload) error{OutOfMemory}!Resolution {
         const c = self.sources[source].compilation;
         const qualifiers = hir.typeRefQualifier(&c.hir, node);
+        if (ref.import_module) |module| {
+            if (qualifiers.len != 0 or !ref.import_qualified) return .unsupported;
+            return self.resolveImported(source, c.interner.get(module), c.interner.get(ref.name));
+        }
         if (qualifiers.len != 1 or c.hir.kindOf(qualifiers[0]) != .identifier) return .unsupported;
         const namespace_name = hir.identifierOf(&c.hir, qualifiers[0]).name;
         const bound = self.scopedSymbol(source, qualifiers[0], namespace_name) orelse return .unsupported;

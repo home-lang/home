@@ -63,6 +63,7 @@ pub const Emitter = struct {
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     options: Options,
     depth: u32,
+    namespace_depth: u32,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -79,6 +80,7 @@ pub const Emitter = struct {
             .diagnostics = .empty,
             .options = options,
             .depth = 0,
+            .namespace_depth = 0,
         };
     }
 
@@ -100,6 +102,7 @@ pub const Emitter = struct {
             .diagnostics = .empty,
             .options = options,
             .depth = 0,
+            .namespace_depth = 0,
         };
     }
 
@@ -170,8 +173,12 @@ pub const Emitter = struct {
 
     fn emitFn(self: *Emitter, node: NodeId, top_level: bool) !void {
         const f = hir_mod.fnDeclOf(self.hir, node);
-        if (top_level) try self.write("declare function ");
+        if (top_level) {
+            if (self.namespace_depth == 0) try self.write("declare ");
+            try self.write("function ");
+        }
         if (f.name != hir_mod.none_node_id) try self.emitIdentifier(f.name);
+        try self.emitTypeParameters(hir_mod.fnTypeParams(self.hir, node));
         try self.write("(");
         const params = hir_mod.fnParams(self.hir, node);
         for (params, 0..) |p, i| {
@@ -258,8 +265,10 @@ pub const Emitter = struct {
 
     fn emitClass(self: *Emitter, node: NodeId) !void {
         const c = hir_mod.classOf(self.hir, node);
-        try self.write("declare class ");
+        if (self.namespace_depth == 0) try self.write("declare ");
+        try self.write("class ");
         if (c.name != hir_mod.none_node_id) try self.emitIdentifier(c.name);
+        try self.emitTypeParameters(self.hir.childSlice(c.type_params_start, c.type_params_len));
         if (c.extends != hir_mod.none_node_id) {
             try self.write(" extends ");
             try self.emitExpressionAsRef(c.extends);
@@ -298,6 +307,15 @@ pub const Emitter = struct {
         const i = hir_mod.interfaceOf(self.hir, node);
         try self.write("interface ");
         try self.emitIdentifier(i.name);
+        try self.emitTypeParameters(self.hir.childSlice(i.type_params_start, i.type_params_len));
+        const bases = hir_mod.interfaceExtends(self.hir, node);
+        if (bases.len != 0) {
+            try self.write(" extends ");
+            for (bases, 0..) |base, index| {
+                if (index != 0) try self.write(", ");
+                try self.emitTypeNode(base);
+            }
+        }
         try self.write(" {");
         const members = hir_mod.interfaceMembers(self.hir, node);
         if (members.len == 0) {
@@ -333,6 +351,7 @@ pub const Emitter = struct {
         const t = hir_mod.typeAliasOf(self.hir, node);
         try self.write("type ");
         try self.emitIdentifier(t.name);
+        try self.emitTypeParameters(self.hir.childSlice(t.type_params_start, t.type_params_len));
         try self.write(" = ");
         if (t.aliased != hir_mod.none_node_id) {
             try self.emitTypeNode(t.aliased);
@@ -344,7 +363,8 @@ pub const Emitter = struct {
 
     fn emitEnum(self: *Emitter, node: NodeId) !void {
         const e = hir_mod.enumOf(self.hir, node);
-        try self.write("declare enum ");
+        if (self.namespace_depth == 0) try self.write("declare ");
+        try self.write("enum ");
         try self.emitIdentifier(e.name);
         try self.write(" {");
         const members = hir_mod.enumMembers(self.hir, node);
@@ -370,7 +390,8 @@ pub const Emitter = struct {
 
     fn emitNamespace(self: *Emitter, node: NodeId) !void {
         const n = hir_mod.namespaceOf(self.hir, node);
-        try self.write("declare namespace ");
+        if (self.namespace_depth == 0) try self.write("declare ");
+        try self.write("namespace ");
         try self.emitIdentifier(n.name);
         try self.write(" {");
         const body = hir_mod.namespaceBody(self.hir, node);
@@ -379,6 +400,8 @@ pub const Emitter = struct {
             return;
         }
         self.depth += 1;
+        self.namespace_depth += 1;
+        defer self.namespace_depth -= 1;
         for (body) |s| {
             if (!self.shouldEmit(s)) continue;
             try self.write(self.options.newline);
@@ -393,11 +416,12 @@ pub const Emitter = struct {
     fn emitVarDecl(self: *Emitter, node: NodeId) !void {
         const v = hir_mod.varDeclOf(self.hir, node);
         const kw: []const u8 = switch (self.hir.kindOf(node)) {
-            .var_decl => "declare var ",
-            .let_decl => "declare let ",
-            .const_decl => "declare const ",
+            .var_decl => "var ",
+            .let_decl => "let ",
+            .const_decl => "const ",
             else => unreachable,
         };
+        if (self.namespace_depth == 0) try self.write("declare ");
         try self.write(kw);
         if (v.name != hir_mod.none_node_id) try self.emitIdentifier(v.name);
         if (v.type_annotation != hir_mod.none_node_id) {
@@ -485,6 +509,7 @@ pub const Emitter = struct {
             .interface_decl => try self.emitInterface(node),
             .type_alias_decl => try self.emitTypeAlias(node),
             .enum_decl => try self.emitEnum(node),
+            .namespace_decl => try self.emitNamespace(node),
             .var_decl, .let_decl, .const_decl => try self.emitVarDecl(node),
             else => {},
         }
@@ -497,16 +522,46 @@ pub const Emitter = struct {
     }
 
     /// Emit an HIR type node back as TypeScript syntax.
+    fn emitTypeParameters(self: *Emitter, parameters: []const NodeId) anyerror!void {
+        if (parameters.len == 0) return;
+        try self.write("<");
+        for (parameters, 0..) |node, index| {
+            if (index != 0) try self.write(", ");
+            const parameter = hir_mod.typeParameterOf(self.hir, node);
+            if (parameter.is_const) try self.write("const ");
+            if (parameter.variance & 1 != 0) try self.write("in ");
+            if (parameter.variance & 2 != 0) try self.write("out ");
+            try self.write(self.interner.get(parameter.name));
+            if (parameter.constraint != hir_mod.none_node_id) {
+                try self.write(" extends ");
+                try self.emitTypeNode(parameter.constraint);
+            }
+            if (parameter.default != hir_mod.none_node_id) {
+                try self.write(" = ");
+                try self.emitTypeNode(parameter.default);
+            }
+        }
+        try self.write(">");
+    }
+
     fn emitTypeNode(self: *Emitter, node: NodeId) anyerror!void {
         switch (self.hir.kindOf(node)) {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, node);
                 const qualifier = hir_mod.typeRefQualifier(self.hir, node);
+                if (r.import_module) |module| {
+                    try self.write("import(");
+                    try self.write(&.{r.import_module_quote});
+                    try self.write(self.interner.get(module));
+                    try self.write(&.{r.import_module_quote});
+                    try self.write(")");
+                    if (r.import_qualified) try self.write(".");
+                }
                 for (qualifier) |q| {
                     try self.emitIdentifier(q);
                     try self.write(".");
                 }
-                try self.write(self.interner.get(r.name));
+                if (r.import_module == null or r.import_qualified) try self.write(self.interner.get(r.name));
                 const args = hir_mod.typeRefArgs(self.hir, node);
                 if (args.len > 0) {
                     try self.write("<");
@@ -553,7 +608,9 @@ pub const Emitter = struct {
             .typeof_type => {
                 const t = hir_mod.typeofTypeOf(self.hir, node);
                 try self.write("typeof ");
-                try self.emitIdentifier(t.operand);
+                if (self.hir.kindOf(t.operand) == .type_ref) {
+                    try self.emitTypeNode(t.operand);
+                } else try self.emitIdentifier(t.operand);
             },
             .indexed_access_type => {
                 const ia = hir_mod.indexedAccessTypeOf(self.hir, node);
@@ -606,6 +663,7 @@ pub const Emitter = struct {
             .fn_type, .constructor_type => {
                 const ft = hir_mod.fnTypeOf(self.hir, node);
                 if (ft.is_constructor) try self.write("new ");
+                try self.emitTypeParameters(self.hir.childSlice(ft.type_params_start, ft.type_params_len));
                 try self.write("(");
                 const params_start = ft.params_start;
                 const params_len = ft.params_len;
@@ -887,5 +945,42 @@ test "d.ts: namespace declaration" {
     const out = try emitTest("namespace Math { let pi: number = 3.14; }");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "declare namespace Math") != null);
-    try T.expect(std.mem.indexOf(u8, out, "declare let pi: number;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "let pi: number;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "declare let pi") == null);
+}
+
+test "d.ts: import type module identities survive declaration emission" {
+    const out = try emitTest("export type Item = import('./owner').Inner.Token<number>; export type Module = typeof import(\"./owner\"); export type Named = import('./owner').unknown;");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "import('./owner').Inner.Token<number>") != null);
+    try T.expect(std.mem.indexOf(u8, out, "typeof import(\"./owner\")") != null);
+    try T.expect(std.mem.indexOf(u8, out, "import('./owner').unknown") != null);
+}
+
+test "d.ts: generic declarations keep constraints defaults modifiers and inheritance" {
+    const out = try emitTest("export interface Box<out T extends string=string>{readonly value:T}export interface Child<T extends string=string> extends Box<T>{}export type Alias<T extends string=string>=Box<T>;export class Guard<T extends string=string>{get<U extends T>(value:U):U{return value;}}export function identity<const T extends string>(value:T):T{return value;}export type Callback=<T extends string>(value:T)=>T;");
+    defer T.allocator.free(out);
+    for ([_][]const u8{
+        "interface Box<out T extends string = string>",
+        "interface Child<T extends string = string> extends Box<T>",
+        "type Alias<T extends string = string> = Box<T>",
+        "class Guard<T extends string = string>",
+        "get<U extends T>(value: U): U;",
+        "function identity<const T extends string>(value: T): T;",
+        "type Callback = <T extends string>(value: T) => T;",
+    }) |expected| try T.expect(std.mem.indexOf(u8, out, expected) != null);
+}
+
+test "d.ts: exported nested namespaces retain declarations without repeated ambient modifiers" {
+    const out = try emitTest("export namespace Outer{export namespace Inner{export interface Item<T=string>{value:T}export function take(value:string):string{return value;}export class Guard{}export const tag:string='ok';export enum Kind{One}}}");
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "export declare namespace Outer") != null);
+    try T.expect(std.mem.indexOf(u8, out, "export namespace Inner") != null);
+    try T.expect(std.mem.indexOf(u8, out, "interface Item<T = string>") != null);
+    try T.expect(std.mem.indexOf(u8, out, "export function take(value: string): string;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "export class Guard") != null);
+    try T.expect(std.mem.indexOf(u8, out, "export const tag: string;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "export enum Kind") != null);
+    try T.expect(std.mem.indexOf(u8, out, "declare function") == null);
+    try T.expect(std.mem.indexOf(u8, out, "declare class") == null);
 }

@@ -31032,6 +31032,13 @@ pub const Checker = struct {
         }
     }
 
+    fn staticModuleSpecifier(self: *Checker, node: NodeId) CheckError!?hir_mod.StringId {
+        if (self.hir.kindOf(node) == .literal_string) return hir_mod.literalStringOf(self.hir, node).value;
+        if (self.hir.kindOf(node) == .template_literal and hir_mod.templateLiteralExprs(self.hir, node).len == 0)
+            return self.templateLiteralConcreteString(node);
+        return null;
+    }
+
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (!self.sourceHasVirtualFilenameSections()) {
             const spec = self.string_interner.get(specifier);
@@ -59666,6 +59673,7 @@ pub const Checker = struct {
     }
 
     fn reportExternalFileIsNotAModule(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
+        if (self.diagnosticExists(node, TsCodes.file_is_not_a_module)) return true;
         if (self.programAmbientModuleExists(spec)) return false;
         const resolver = self.external_resolver orelse return false;
         const containing = if (self.importer_path.len > 0)
@@ -67398,7 +67406,8 @@ pub const Checker = struct {
         // tsc anchors TS2307 on the opening quote of the module
         // specifier inside `import("ÃÂ¢ÃÂÃÂ¦")`, not on the `import`
         // keyword. Mirror that for exact-baseline parity.
-        const quote_pos = self.moduleSpecifierQuotePos(node, spec);
+        const ref = hir_mod.typeRefOf(self.hir, node);
+        const quote_pos: ?u32 = if (ref.import_module != null) ref.import_module_pos else self.moduleSpecifierQuotePos(node, spec);
         if (self.moduleResolutionIsClassic() and !std.mem.startsWith(u8, spec, ".")) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -67434,6 +67443,10 @@ pub const Checker = struct {
     /// against the source: find the `import(...)` closing paren and verify
     /// no member access (`.`) follows.
     fn importTypeIsBareModuleType(self: *Checker, node: NodeId) bool {
+        if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, node);
+            if (ref.import_module != null) return !ref.import_qualified;
+        }
         const src = self.source orelse return false;
         const sp = self.hir.spanOf(node);
         if (sp.start >= sp.end or sp.end > src.len) return false;
@@ -67653,6 +67666,17 @@ pub const Checker = struct {
     }
 
     fn importTypeModuleExists(self: *Checker, anchor: NodeId, spec: []const u8) CheckError!bool {
+        if (self.programAmbientModuleExists(spec)) return true;
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (self.external_resolver) |resolver| {
+                const containing = if (self.importer_path.len > 0) self.importer_path else "/__root__.ts";
+                if (resolver.resolve(spec, containing) != null) return true;
+                if (resolver.moduleExport(spec, containing, "")) |info| {
+                    if (info.ambient_module) return true;
+                }
+                return try self.hasExplicitAmbientModuleName(anchor, spec);
+            }
+        }
         if (std.mem.startsWith(u8, spec, ".")) {
             if (!self.sourceHasVirtualFilenameSections()) return true;
             const from = self.virtualSectionFilenameForNode(anchor) orelse return true;
@@ -67676,6 +67700,9 @@ pub const Checker = struct {
     }
 
     fn importTypeModuleSpecifier(self: *Checker, node: NodeId) ?[]const u8 {
+        if (node != hir_mod.none_node_id and self.hir.kindOf(node) == .type_ref) {
+            if (hir_mod.typeRefOf(self.hir, node).import_module) |module| return self.string_interner.get(module);
+        }
         const src = self.source orelse return null;
         const sp = self.hir.spanOf(node);
         if (sp.start >= sp.end or sp.end > src.len) return null;
@@ -79689,9 +79716,16 @@ pub const Checker = struct {
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
                 if (try self.reportMissingImportTypeModule(type_node)) |code| {
+                    for (hir_mod.typeRefArgs(self.hir, type_node)) |argument| _ = try self.lowererLowerWithTypeParams(argument);
                     return self.diagnosedAnyRecovery(type_node, code);
                 }
                 if (self.importTypeModuleSpecifier(type_node)) |import_spec| {
+                    if (!self.sourceHasVirtualFilenameSections() and
+                        try self.reportExternalFileIsNotAModule(type_node, import_spec))
+                    {
+                        for (hir_mod.typeRefArgs(self.hir, type_node)) |argument| _ = try self.lowererLowerWithTypeParams(argument);
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.file_is_not_a_module);
+                    }
                     // A bare `import("mod")` (no `.Member`, not `typeof`)
                     // used directly as a type refers to a module's value
                     // namespace, which carries no type meaning unless the
@@ -79707,6 +79741,9 @@ pub const Checker = struct {
                         return self.diagnosedAnyRecovery(type_node, TsCodes.module_does_not_refer_to_type);
                     }
                     if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
+                    if (!self.importTypeIsBareModuleType(type_node)) {
+                        if (try self.programImportTypeMember(type_node, import_spec)) |t| return t;
+                    }
                     if (r.qualifier_len == 0 and
                         self.importTypeIsBareModuleType(type_node) and
                         self.importTypeModuleExportAssignmentHasTypeMeaning(type_node, import_spec))
@@ -80709,12 +80746,25 @@ pub const Checker = struct {
                             try self.reportImportTypeNotAValue(tt.operand, import_spec);
                             return self.diagnosedAnyRecovery(tt.operand, TsCodes.module_does_not_refer_to_value);
                         }
-                        const import_ref = hir_mod.typeRefOf(self.hir, tt.operand);
-                        if (self.external_resolver) |resolver| {
-                            const containing = if (self.importer_path.len > 0) self.importer_path else "/__root__.ts";
-                            if (resolver.moduleExport(import_spec, containing, self.string_interner.get(import_ref.name))) |info| {
-                                if (info.exported_value) return types.Primitive.any;
+                        if (!self.sourceHasVirtualFilenameSections() and self.external_resolver != null) {
+                            if (try self.reportMissingImportTypeModule(tt.operand)) |code| return self.diagnosedAnyRecovery(tt.operand, code);
+                            if (try self.reportExternalFileIsNotAModule(tt.operand, import_spec)) return self.diagnosedAnyRecovery(tt.operand, TsCodes.file_is_not_a_module);
+                            const import_ref = hir_mod.typeRefOf(self.hir, tt.operand);
+                            const specifier = self.string_interner.intern(import_spec) catch return error.OutOfMemory;
+                            if (try self.moduleNamespaceTypeForSpecifier(specifier, tt.operand)) |namespace| {
+                                if (self.importTypeIsBareModuleType(tt.operand)) return namespace;
+                                var current = namespace;
+                                for (hir_mod.typeRefQualifier(self.hir, tt.operand), 0..) |qualifier, index| {
+                                    const name = hir_mod.identifierOf(self.hir, qualifier).name;
+                                    if (self.typeIsAnyLike(current)) return self.recordUnmodeledAny(tt.operand);
+                                    current = (try self.lookupObjectMember(current, name)) orelse
+                                        return self.reportProgramImportTypeMissingExport(tt.operand, import_spec, hir_mod.typeRefQualifier(self.hir, tt.operand)[0..index], name, self.hir.spanOf(qualifier).start);
+                                }
+                                if (self.typeIsAnyLike(current)) return self.recordUnmodeledAny(tt.operand);
+                                return (try self.lookupObjectMember(current, import_ref.name)) orelse
+                                    try self.reportProgramImportTypeMissingExport(tt.operand, import_spec, hir_mod.typeRefQualifier(self.hir, tt.operand), import_ref.name, self.qualifiedTypeRefLeafNamePos(tt.operand));
                             }
+                            return self.recordUnmodeledAny(tt.operand);
                         }
                     }
                     if (try self.virtualCommonJsImportTypeMember(tt.operand, .value)) |import_value_t| return import_value_t;
@@ -82385,6 +82435,10 @@ pub const Checker = struct {
     /// span start for the final `.`. Returns null when the span / `.`
     /// can't be located (the caller falls back to the type-ref start).
     fn qualifiedTypeRefLeafNamePos(self: *Checker, type_node: NodeId) ?u32 {
+        if (self.hir.kindOf(type_node) == .type_ref) {
+            const ref = hir_mod.typeRefOf(self.hir, type_node);
+            if (ref.import_module != null and ref.import_qualified) return ref.import_name_pos;
+        }
         const src = self.source orelse return null;
         const span = self.hir.spanOf(type_node);
         if (span.start >= src.len or span.end > src.len or span.end <= span.start) return null;
@@ -83086,6 +83140,7 @@ pub const Checker = struct {
         namespace_path: []const hir_mod.StringId,
         expected: []const u8,
     ) bool {
+        if (namespace_path.len == 0) return expected.len == 0;
         var parts = std.mem.splitScalar(u8, expected, '.');
         for (namespace_path) |name| {
             const part = parts.next() orelse return false;
@@ -111615,6 +111670,66 @@ pub const Checker = struct {
         };
     }
 
+    fn reportProgramImportTypeMissingExport(self: *Checker, node: NodeId, spec: []const u8, qualifiers: []const NodeId, name: hir_mod.StringId, pos: ?u32) CheckError!TypeId {
+        if (!self.diagnosticExists(node, TsCodes.namespace_no_exported_member)) {
+            var namespace: std.ArrayListUnmanaged(u8) = .empty;
+            defer namespace.deinit(self.gpa);
+            try namespace.appendSlice(self.gpa, spec);
+            for (qualifiers) |qualifier| {
+                try namespace.append(self.gpa, '.');
+                try namespace.appendSlice(self.gpa, self.string_interner.get(hir_mod.identifierOf(self.hir, qualifier).name));
+            }
+            const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Namespace '{s}' has no exported member '{s}'.", .{ namespace.items, self.string_interner.get(name) });
+            try self.reportAt(node, pos, TsCodes.namespace_no_exported_member, message);
+        }
+        for (hir_mod.typeRefArgs(self.hir, node)) |argument| _ = try self.lowererLowerWithTypeParams(argument);
+        return self.diagnosedAnyRecovery(node, TsCodes.namespace_no_exported_member);
+    }
+
+    fn programImportTypeMember(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
+        const ref = hir_mod.typeRefOf(self.hir, node);
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (hir_mod.typeRefQualifier(self.hir, node)) |qualifier| {
+            if (self.hir.kindOf(qualifier) != .identifier) return null;
+            try path.append(self.gpa, hir_mod.identifierOf(self.hir, qualifier).name);
+        }
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(ref.name)) or
+                !self.programNamespacePathMatches(path.items, entry.namespace_path)) continue;
+            if (!try self.programExportRouteMatches(node, spec, entry.target_path, entry.ambient_module_name)) continue;
+            if (entry.contextual_only or entry.projection_only) return try self.recordUnmodeledAny(node);
+            return self.programDeclarationTypeReference(entry.declaration, node);
+        }
+        if (path.items.len == 0) {
+            for (self.program_exported_classes) |class| {
+                if (class.local_only or !std.mem.eql(u8, class.exportedName(), self.string_interner.get(ref.name))) continue;
+                if (!try self.programExportRouteMatches(node, spec, class.target_path, class.ambient_module_name)) continue;
+                if (try self.programGenericClassReference(class, node)) |instance| return instance;
+                return try self.syntheticProgramClassInstanceType(class, ref.name);
+            }
+            if (try self.ambientModuleExportTypeForSpec(spec, ref.name)) |typ| return typ;
+        } else if (try self.ambientModuleExportTypeByPathForSpec(spec, path.items, ref.name)) |typ| return typ;
+        if (path.items.len != 0) {
+            // Exact routed namespace declarations establish that this namespace
+            // exists even when its requested leaf does not. Do not resolve a
+            // missing import member through an unrelated lexical namespace.
+            for (self.program_exported_types) |entry| {
+                if (!self.programNamespacePathMatches(path.items, entry.namespace_path)) continue;
+                if (!try self.programExportRouteMatches(node, spec, entry.target_path, entry.ambient_module_name)) continue;
+                return try self.reportProgramImportTypeMissingExport(node, spec, hir_mod.typeRefQualifier(self.hir, node), ref.name, self.qualifiedTypeRefLeafNamePos(node));
+            }
+            return try self.recordUnmodeledAny(node);
+        }
+        if (self.externalModuleExportInfo(node, spec, ref.name)) |info| {
+            if (info.exported_type) return try self.recordUnmodeledAny(node);
+            if (!info.ambient_module or info.ambient_module_exports_known) {
+                return try self.reportProgramImportTypeMissingExport(node, spec, &.{}, ref.name, self.qualifiedTypeRefLeafNamePos(node));
+            }
+        }
+        return null;
+    }
+
     fn programExportedTypeForLocal(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (self.program_exported_types.len == 0 or self.nameHasEnclosingTypeParameter(name, anchor)) return null;
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
@@ -117720,27 +117835,39 @@ pub const Checker = struct {
                 if (try self.virtualCommonJsRequireCallType(c.callee, args)) |require_t| {
                     break :blk try self.optionalChainResult(require_t, call_is_optional_chain);
                 }
-                if (self.isDynamicImportCallee(c.callee) and args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) {
-                    if (self.effectiveVerbatimModuleSyntax() and
-                        self.effectiveModuleKindIs("commonjs") and
-                        !self.virtualSectionIsJsLike(node))
-                    {
-                        try self.report(
-                            node,
-                            TsCodes.esm_in_commonjs_verbatim_module,
-                            "ECMAScript imports and exports cannot be written in a CommonJS file under 'verbatimModuleSyntax'. Adjust the 'type' field in the nearest 'package.json' to make this file an ECMAScript module, or adjust your 'verbatimModuleSyntax', 'module', and 'moduleResolution' settings in TypeScript.",
-                        );
-                    }
-                    const lit = hir_mod.literalStringOf(self.hir, args[0]);
-                    const spec = self.string_interner.get(lit.value);
-                    if (!try self.reportAtTypesPackageImport(args[0], spec)) {
-                        if (self.isKnownNodeBuiltinSpecifier(spec) and !try self.hasExplicitAmbientModuleName(args[0], spec)) {
-                            try self.reportCannotFindNodeName(args[0], lit.value);
-                        } else if (try self.isKnownAmbientModuleName(args[0], spec)) {
-                            // Ambient declarations for a `node:*` module own the resolved import.
-                        } else {
-                            _ = try self.checkNodeEsmRelativeImportExtensionDiagnostic(args[0], spec, true);
-                            try self.checkImportingTsExtensionSpecifier(args[0], spec, false);
+                if (self.isDynamicImportCallee(c.callee) and args.len > 0) {
+                    if (try self.staticModuleSpecifier(args[0])) |specifier| {
+                        if (self.effectiveVerbatimModuleSyntax() and
+                            self.effectiveModuleKindIs("commonjs") and
+                            !self.virtualSectionIsJsLike(node))
+                        {
+                            try self.report(
+                                node,
+                                TsCodes.esm_in_commonjs_verbatim_module,
+                                "ECMAScript imports and exports cannot be written in a CommonJS file under 'verbatimModuleSyntax'. Adjust the 'type' field in the nearest 'package.json' to make this file an ECMAScript module, or adjust your 'verbatimModuleSyntax', 'module', and 'moduleResolution' settings in TypeScript.",
+                            );
+                        }
+                        const spec = self.string_interner.get(specifier);
+                        if (!try self.reportAtTypesPackageImport(args[0], spec)) {
+                            if (self.external_resolver != null and !self.sourceHasVirtualFilenameSections()) {
+                                // A module specifier is not a Node global name.
+                                // Program ambient exports and filesystem resolution
+                                // own dynamic imports just as they own static ones.
+                                if (!try self.importTypeModuleExists(args[0], spec)) {
+                                    const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot find module '{s}' or its corresponding type declarations.", .{spec});
+                                    try self.reportOnce(args[0], TsCodes.cannot_find_module, message);
+                                } else {
+                                    _ = try self.checkNodeEsmRelativeImportExtensionDiagnostic(args[0], spec, true);
+                                    try self.checkImportingTsExtensionSpecifier(args[0], spec, false);
+                                }
+                            } else if (self.isKnownNodeBuiltinSpecifier(spec) and !try self.hasExplicitAmbientModuleName(args[0], spec)) {
+                                try self.reportCannotFindNodeName(args[0], specifier);
+                            } else if (try self.isKnownAmbientModuleName(args[0], spec)) {
+                                // Ambient declarations for a `node:*` module own the resolved import.
+                            } else {
+                                _ = try self.checkNodeEsmRelativeImportExtensionDiagnostic(args[0], spec, true);
+                                try self.checkImportingTsExtensionSpecifier(args[0], spec, false);
+                            }
                         }
                     }
                 }
@@ -117824,23 +117951,23 @@ pub const Checker = struct {
                         }
                     }
                     try self.checkNoLibDynamicImportPromiseValue(node);
-                    const import_t = if (args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) blk_import: {
-                        const lit = hir_mod.literalStringOf(self.hir, args[0]);
+                    const import_t = if (args.len > 0) blk_import: {
+                        const specifier = (try self.staticModuleSpecifier(args[0])) orelse break :blk_import types.Primitive.any;
                         // A dynamic `import("./m")` of a CommonJS-style
                         // `export = <value>` module yields the ESM-interop
                         // namespace `{ default: <value> }` (esModuleInterop).
                         // Mirrors `modulePreserve4`'s `await import("./d")`.
-                        const export_t = (try self.virtualExportAssignmentExpressionType(node, lit.value)) orelse
-                            (try self.virtualExportAssignmentTargetStaticType(node, lit.value));
+                        const export_t = (try self.virtualExportAssignmentExpressionType(node, specifier)) orelse
+                            (try self.virtualExportAssignmentTargetStaticType(node, specifier));
                         if (export_t) |target_t| break :blk_import try self.commonJsInteropNamespaceType(target_t);
-                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
+                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(specifier, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
                     break :blk try self.buildStructuralPromise(import_t);
                 }
                 if (self.isDeferredDynamicImportCall(node)) {
-                    const import_t = if (args.len > 0 and self.hir.kindOf(args[0]) == .literal_string) blk_import: {
-                        const lit = hir_mod.literalStringOf(self.hir, args[0]);
-                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(lit.value, node)) orelse types.Primitive.any;
+                    const import_t = if (args.len > 0) blk_import: {
+                        const specifier = (try self.staticModuleSpecifier(args[0])) orelse break :blk_import types.Primitive.any;
+                        break :blk_import (try self.moduleNamespaceTypeForSpecifier(specifier, node)) orelse types.Primitive.any;
                     } else types.Primitive.any;
                     // `import.defer()` has the same promise/namespace
                     // protocol as `import()`. Preserving that shape gives
@@ -153715,6 +153842,7 @@ pub const Checker = struct {
             },
             .type_ref => blk: {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
+                if (self.importTypeModuleSpecifier(type_node) != null) break :blk false;
                 for (hir_mod.typeRefArgs(self.hir, type_node)) |arg| {
                     if (self.typeAnnotationContainsUnresolvedRef(arg)) break :blk true;
                 }
