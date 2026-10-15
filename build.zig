@@ -927,6 +927,9 @@ pub fn build(b: *std.Build) void {
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
+    const io_collections_pkg = createPackage(b, "packages/collections/src/lib.zig", target, optimize, zig_test_framework);
+    const io_pkg = createPackage(b, "packages/io/src/lib.zig", target, optimize, zig_test_framework);
+    io_pkg.addImport("collections", io_collections_pkg);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
@@ -1514,6 +1517,16 @@ pub fn build(b: *std.Build) void {
     cache_tests.root_module.addImport("ir_cache", cache_pkg);
     const run_cache_tests = b.addRunArtifact(cache_tests);
 
+    const io_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/io/tests/io_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    io_tests.root_module.addImport("io", io_pkg);
+    const run_io_tests = b.addRunArtifact(io_tests);
+
     // ARM64 assembler tests (issue #5)
     const arm64_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1840,6 +1853,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_lto_tests.step, test_filter, "lto");
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
+    dependOnTest(test_step, &run_io_tests.step, test_filter, "io_package");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");

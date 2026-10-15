@@ -4,12 +4,10 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
-// Try to import collections, fall back to inline HashMap for standalone testing
-const HashMap = if (@import("builtin").is_test)
-    @import("hash_map_inline.zig").HashMap
-else
-    @import("collections").HashMap;
+const HashMap = @import("collections").HashMap;
+const PropertyMap = HashMap([]const u8, []const u8);
 
 /// Represents a parsed INI file
 pub const IniFile = struct {
@@ -21,15 +19,44 @@ pub const IniFile = struct {
         allocator: Allocator,
         name: []const u8,
         // Map of property key -> property value
-        properties: HashMap([]const u8, []const u8),
+        properties: PropertyMap,
         // Nested blocks (for Generals' complex Object blocks)
         blocks: std.ArrayList(Block),
 
         pub const Block = struct {
             name: []const u8,
             tag: []const u8, // ModuleTag_01, etc.
-            properties: HashMap([]const u8, []const u8),
+            properties: PropertyMap,
             sub_blocks: std.ArrayList(Block),
+
+            pub fn init(allocator: Allocator, name: []const u8, tag: []const u8) !Block {
+                const owned_name = try allocator.dupe(u8, name);
+                errdefer allocator.free(owned_name);
+                const owned_tag = try allocator.dupe(u8, tag);
+                errdefer allocator.free(owned_tag);
+                const sub_blocks = try std.ArrayList(Block).initCapacity(allocator, 2);
+                return .{
+                    .name = owned_name,
+                    .tag = owned_tag,
+                    .properties = PropertyMap.init(allocator),
+                    .sub_blocks = sub_blocks,
+                };
+            }
+
+            pub fn deinit(self: *Block, allocator: Allocator) void {
+                allocator.free(self.name);
+                allocator.free(self.tag);
+
+                var prop_iter = self.properties.iterator();
+                while (prop_iter.next()) |entry| {
+                    allocator.free(entry.key);
+                    allocator.free(entry.value);
+                }
+                self.properties.deinit();
+
+                for (self.sub_blocks.items) |*sub| sub.deinit(allocator);
+                self.sub_blocks.deinit(allocator);
+            }
         };
 
         pub fn init(allocator: Allocator, name: []const u8) !Section {
@@ -41,7 +68,7 @@ pub const IniFile = struct {
             return Section{
                 .allocator = allocator,
                 .name = name_copy,
-                .properties = HashMap([]const u8, []const u8).init(allocator),
+                .properties = PropertyMap.init(allocator),
                 .blocks = blocks,
             };
         }
@@ -59,26 +86,9 @@ pub const IniFile = struct {
 
             // Free all blocks
             for (self.blocks.items) |*block| {
-                deinitBlock(self.allocator, block);
+                block.deinit(self.allocator);
             }
             self.blocks.deinit(self.allocator);
-        }
-
-        fn deinitBlock(allocator: Allocator, block: *Block) void {
-            allocator.free(block.name);
-            allocator.free(block.tag);
-
-            var prop_iter = block.properties.iterator();
-            while (prop_iter.next()) |entry| {
-                allocator.free(entry.key);
-                allocator.free(entry.value);
-            }
-            block.properties.deinit();
-
-            for (block.sub_blocks.items) |*sub| {
-                deinitBlock(allocator, sub);
-            }
-            block.sub_blocks.deinit(allocator);
         }
 
         pub fn get(self: *const Section, key: []const u8) ?[]const u8 {
@@ -103,12 +113,14 @@ pub const IniFile = struct {
             if (self.get(key)) |value| {
                 if (std.mem.eql(u8, value, "Yes") or std.mem.eql(u8, value, "yes") or
                     std.mem.eql(u8, value, "True") or std.mem.eql(u8, value, "true") or
-                    std.mem.eql(u8, value, "1")) {
+                    std.mem.eql(u8, value, "1"))
+                {
                     return true;
                 }
                 if (std.mem.eql(u8, value, "No") or std.mem.eql(u8, value, "no") or
                     std.mem.eql(u8, value, "False") or std.mem.eql(u8, value, "false") or
-                    std.mem.eql(u8, value, "0")) {
+                    std.mem.eql(u8, value, "0"))
+                {
                     return false;
                 }
             }
@@ -135,7 +147,12 @@ pub const IniFile = struct {
 
     /// Parse an INI file from a file path
     pub fn parseFile(allocator: Allocator, path: []const u8) !IniFile {
-        const content = try std.fs.cwd().readFileAlloc(path, allocator, .unlimited);
+        return parseFileWithIo(allocator, Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// Parse an INI file using the caller's I/O implementation.
+    pub fn parseFileWithIo(allocator: Allocator, io: Io, path: []const u8) !IniFile {
+        const content = try Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
         defer allocator.free(content);
 
         return try parse(allocator, content);
@@ -162,11 +179,8 @@ pub const IniFile = struct {
             // Section header: Object AmericaParachute
             if (std.mem.startsWith(u8, line, "Object ")) {
                 const section_name = std.mem.trim(u8, line[7..], &std.ascii.whitespace);
-                const section_name_copy = try allocator.dupe(u8, section_name);
-                errdefer allocator.free(section_name_copy);
                 const section = try Section.init(allocator, section_name);
-                try ini.sections.put(section_name_copy, section);
-                current_section = ini.sections.getPtr(section_name_copy);
+                current_section = try ini.putSection(section_name, section);
                 current_block_stack.clearRetainingCapacity();
                 continue;
             }
@@ -186,11 +200,11 @@ pub const IniFile = struct {
             // Block start (e.g., "Draw = W3DModelDraw ModuleTag_01")
             if (std.mem.indexOf(u8, line, " = ") != null and
                 current_section != null and
-                !std.mem.startsWith(u8, std.mem.trim(u8, line, &std.ascii.whitespace), "  ")) {
-
+                !std.mem.startsWith(u8, std.mem.trim(u8, line, &std.ascii.whitespace), "  "))
+            {
                 const equals_pos = std.mem.indexOf(u8, line, " = ").?;
                 const key = std.mem.trim(u8, line[0..equals_pos], &std.ascii.whitespace);
-                const rest = std.mem.trim(u8, line[equals_pos + 3..], &std.ascii.whitespace);
+                const rest = std.mem.trim(u8, line[equals_pos + 3 ..], &std.ascii.whitespace);
 
                 // Check if this starts a block (has two parts after =)
                 var parts = std.mem.splitSequence(u8, rest, " ");
@@ -198,23 +212,21 @@ pub const IniFile = struct {
                 const block_tag = parts.next() orelse "";
 
                 if (block_tag.len > 0) {
-                    // This is a block declaration
-                    const block = Section.Block{
-                        .name = try allocator.dupe(u8, key),
-                        .tag = try allocator.dupe(u8, block_tag),
-                        .properties = HashMap([]const u8, []const u8).init(allocator),
-                        .sub_blocks = try std.ArrayList(Section.Block).initCapacity(allocator, 2),
-                    };
+                    var block = try Section.Block.init(allocator, key, block_tag);
+                    var owns_block = true;
+                    errdefer if (owns_block) block.deinit(allocator);
 
                     if (current_block_stack.items.len > 0) {
                         // Nested block
                         const parent = current_block_stack.items[current_block_stack.items.len - 1];
                         try parent.sub_blocks.append(allocator, block);
+                        owns_block = false;
                         const added_block = &parent.sub_blocks.items[parent.sub_blocks.items.len - 1];
                         try current_block_stack.append(allocator, added_block);
                     } else if (current_section) |sec| {
                         // Top-level block
                         try sec.blocks.append(allocator, block);
+                        owns_block = false;
                         const added_block = &sec.blocks.items[sec.blocks.items.len - 1];
                         try current_block_stack.append(allocator, added_block);
                     }
@@ -229,21 +241,15 @@ pub const IniFile = struct {
                 // Handle both "=" and whitespace separators
                 if (std.mem.indexOf(u8, trimmed, " = ")) |equals_pos| {
                     const key = std.mem.trim(u8, trimmed[0..equals_pos], &std.ascii.whitespace);
-                    const value = std.mem.trim(u8, trimmed[equals_pos + 3..], &std.ascii.whitespace);
+                    const value = std.mem.trim(u8, trimmed[equals_pos + 3 ..], &std.ascii.whitespace);
 
                     if (current_block_stack.items.len > 0) {
                         // Property in a block
                         const block = current_block_stack.items[current_block_stack.items.len - 1];
-                        try block.properties.put(
-                            try allocator.dupe(u8, key),
-                            try allocator.dupe(u8, value)
-                        );
+                        try putProperty(allocator, &block.properties, key, value);
                     } else {
                         // Property in section
-                        try sec.properties.put(
-                            try allocator.dupe(u8, key),
-                            try allocator.dupe(u8, value)
-                        );
+                        try putProperty(allocator, &sec.properties, key, value);
                     }
                 } else {
                     // Handle "Key Value" format (whitespace separated)
@@ -255,15 +261,9 @@ pub const IniFile = struct {
 
                         if (current_block_stack.items.len > 0) {
                             const block = current_block_stack.items[current_block_stack.items.len - 1];
-                            try block.properties.put(
-                                try allocator.dupe(u8, key),
-                                try allocator.dupe(u8, value)
-                            );
+                            try putProperty(allocator, &block.properties, key, value);
                         } else {
-                            try sec.properties.put(
-                                try allocator.dupe(u8, key),
-                                try allocator.dupe(u8, value)
-                            );
+                            try putProperty(allocator, &sec.properties, key, value);
                         }
                     }
                 }
@@ -271,6 +271,40 @@ pub const IniFile = struct {
         }
 
         return ini;
+    }
+
+    fn putSection(self: *IniFile, name: []const u8, section: Section) !*Section {
+        var owned_section = section;
+        var transferred = false;
+        errdefer if (!transferred) owned_section.deinit();
+
+        if (self.sections.getPtr(name)) |existing| {
+            existing.deinit();
+            existing.* = owned_section;
+            transferred = true;
+            return existing;
+        }
+
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        try self.sections.put(owned_name, owned_section);
+        transferred = true;
+        return self.sections.getPtr(owned_name).?;
+    }
+
+    fn putProperty(allocator: Allocator, properties: *PropertyMap, key: []const u8, value: []const u8) !void {
+        if (properties.getPtr(key)) |existing| {
+            const owned_value = try allocator.dupe(u8, value);
+            allocator.free(existing.*);
+            existing.* = owned_value;
+            return;
+        }
+
+        const owned_key = try allocator.dupe(u8, key);
+        errdefer allocator.free(owned_key);
+        const owned_value = try allocator.dupe(u8, value);
+        errdefer allocator.free(owned_value);
+        try properties.put(owned_key, owned_value);
     }
 
     pub fn getSection(self: *const IniFile, name: []const u8) ?Section {
@@ -298,13 +332,6 @@ test "INI Parser: basic section and properties" {
 
     var ini = try IniFile.parse(allocator, ini_content);
     defer ini.deinit();
-
-    // Debug: print number of sections and section names
-    std.debug.print("\nSections count: {}\n", .{ini.sections.size()});
-    var iter = ini.sections.iterator();
-    while (iter.next()) |entry| {
-        std.debug.print("Section found: '{s}'\n", .{entry.key});
-    }
 
     const section = ini.getSection("TestUnit");
     try std.testing.expect(section != null);
@@ -344,8 +371,12 @@ test "INI Parser: nested blocks" {
 
 test "INI Parser: parse file" {
     const allocator = std.testing.allocator;
-
-    const test_file = "/tmp/test.ini";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const test_file = try std.fs.path.join(allocator, &.{ root, "test.ini" });
+    defer allocator.free(test_file);
     const ini_content =
         \\Object Tank
         \\  Health = 100
@@ -360,15 +391,10 @@ test "INI Parser: parse file" {
         \\End
     ;
 
-    // Write test file
-    {
-        const file = try std.fs.cwd().createFile(test_file, .{});
-        defer file.close();
-        try file.writeAll(ini_content);
-    }
+    try Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = test_file, .data = ini_content });
 
     // Parse it
-    var ini = try IniFile.parseFile(allocator, test_file);
+    var ini = try IniFile.parseFileWithIo(allocator, std.testing.io, test_file);
     defer ini.deinit();
 
     // Check tank
@@ -387,7 +413,4 @@ test "INI Parser: parse file" {
         try std.testing.expectEqual(@as(?i32, 25), inf.getInt("Health"));
         try std.testing.expectEqual(@as(?bool, false), inf.getBool("CanFire"));
     }
-
-    // Cleanup
-    try std.fs.cwd().deleteFile(test_file);
 }
