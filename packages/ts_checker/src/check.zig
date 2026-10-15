@@ -4456,11 +4456,13 @@ pub const CheckedTypes = struct {
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
+    substituted_interface_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    substituted_interface_display_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
 
     // Checker borrows these values from its arena, source, interner, or
     // program inputs. CheckedTypes owns independent copies of every slice.
-    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "qualified_alias_diagnostic_names", "alias_type_args", "builtin_object_names" };
+    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "qualified_alias_diagnostic_names", "alias_type_args", "substituted_interface_display_args", "builtin_object_names" };
     const owned_slices = .{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences", "pattern_index_signatures", "symbolic_tuple_layouts" };
     const nested_containers = .{ "overloads", "class_constructor_overload_sigs", "overload_decls", "class_private_members", "class_protected_members", "class_static_private_members", "class_static_protected_members", "class_instance_member_names", "class_static_member_names", "class_abstract_members", "class_abstract_members_order", "class_abstract_property_origins", "class_property_members", "class_accessor_members", "class_getter_members", "class_static_getter_members", "class_method_members", "class_private_method_members", "class_static_private_method_members", "class_private_set_only_accessors", "class_static_private_set_only_accessors" };
 
@@ -5223,6 +5225,9 @@ pub const Checker = struct {
     /// ("Type 'string' is not assignable to type 'number'.") by
     /// comparing the differing argument pair. Arena-owned.
     alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId),
+    /// Display-only interface arguments; never authorize semantic refresh.
+    substituted_interface_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    substituted_interface_display_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     /// Flow-synthesized `{}` types produced by truthy / non-nullish
     /// narrowing from `unknown`. They render like ordinary empty object
     /// types, but TS2638 treats this specific checker sentinel as a
@@ -6497,6 +6502,10 @@ pub const Checker = struct {
     /// the program's provenance registry.
     pub fn importProgramTypeMetadata(self: *Checker, sources: []const *const CheckedTypes) CheckError!void {
         for (sources) |source| {
+            var display_names = source.substituted_interface_display_names.iterator();
+            while (display_names.next()) |entry| try self.substituted_interface_display_names.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            var display_args = source.substituted_interface_display_args.iterator();
+            while (display_args.next()) |entry| try self.substituted_interface_display_args.put(self.gpa, entry.key_ptr.*, try self.diag_arena.allocator().dupe(TypeId, entry.value_ptr.*));
             var namespace_types = source.global_namespace_type_exports.iterator();
             while (namespace_types.next()) |entry| {
                 try self.global_namespace_type_exports.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
@@ -6864,6 +6873,8 @@ pub const Checker = struct {
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
+        self.substituted_interface_display_names.deinit(self.gpa);
+        self.substituted_interface_display_args.deinit(self.gpa);
         self.unknown_empty_object_types.deinit(self.gpa);
         self.builtin_object_names.deinit(self.gpa);
         var ov_it = self.overloads.valueIterator();
@@ -57075,15 +57086,54 @@ pub const Checker = struct {
             if (self.class_decl_by_instance.get(t)) |decl| {
                 try self.class_decl_by_instance.put(self.gpa, new_obj, decl);
             }
-            if (self.interfaceDeclarationForTypeIdentity(t)) |decl| {
+            const interface_declaration = self.interfaceDeclarationForTypeIdentity(t);
+            if (interface_declaration) |decl| {
                 try self.generic_interface_decl_by_instance.put(self.gpa, new_obj, decl);
             }
+            try self.recordSubstitutedInterfaceDisplay(t, new_obj, interface_declaration, subs);
             if (self.program_type_display_names.get(t)) |name| {
                 try self.program_type_display_names.put(self.gpa, new_obj, name);
             }
             return new_obj;
         }
         return t;
+    }
+
+    fn recordSubstitutedInterfaceDisplay(
+        self: *Checker,
+        source: TypeId,
+        result: TypeId,
+        declaration: ?NodeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        if (source == result) return;
+        const local_declaration = if (declaration) |decl| if (self.nodeBelongsToCurrentHir(decl)) decl else null else null;
+        const name = self.substituted_interface_display_names.get(source) orelse
+            (if (local_declaration) |decl| self.declarationName(decl) else null) orelse return;
+        const info = if (local_declaration) |decl| self.generic_interfaces_by_decl.get(decl) else null;
+        const parameters = if (info) |generic| generic.params else &.{};
+        const source_args = self.substituted_interface_display_args.get(source) orelse self.alias_type_args.get(source) orelse parameters;
+        if (info != null and source_args.len != parameters.len) return;
+        const arguments = try self.diag_arena.allocator().dupe(TypeId, source_args);
+        for (arguments) |*argument| argument.* = try self.substituteTypeWithFreshMemo(argument.*, subs);
+        try self.substituted_interface_display_names.put(self.gpa, result, name);
+        try self.substituted_interface_display_args.put(self.gpa, result, arguments);
+    }
+
+    fn allocSubstitutedInterfaceDisplay(self: *Checker, t: TypeId) CheckError!?[]const u8 {
+        const name = self.substituted_interface_display_names.get(t) orelse return null;
+        const arguments = self.substituted_interface_display_args.get(t) orelse return null;
+        if (arguments.len == 0) return self.string_interner.get(name);
+        const arena = self.diag_arena.allocator();
+        var buffer: std.ArrayListUnmanaged(u8) = .empty;
+        try buffer.appendSlice(arena, self.string_interner.get(name));
+        try buffer.append(arena, '<');
+        for (arguments, 0..) |argument, index| {
+            if (index != 0) try buffer.appendSlice(arena, ", ");
+            try buffer.appendSlice(arena, (try self.allocSimpleTypeName(argument)) orelse return null);
+        }
+        try buffer.append(arena, '>');
+        return buffer.items;
     }
 
     const SubstitutedAliasDisplay = struct {
@@ -168800,6 +168850,7 @@ pub const Checker = struct {
             var origin = self.program_contextual_type_origins.get(current);
             while (origin) |context| : (origin = context.next) try pending.appendSlice(self.gpa, context.args);
             if (self.alias_type_args.get(current)) |arguments| try pending.appendSlice(self.gpa, arguments);
+            if (self.substituted_interface_display_args.get(current)) |arguments| try pending.appendSlice(self.gpa, arguments);
             const flags = self.interner.pool.flagsOf(current);
             if (flags.is_union) {
                 try pending.appendSlice(self.gpa, self.interner.unionMembers(current));
@@ -169297,9 +169348,11 @@ pub const Checker = struct {
             if (self.class_decl_by_instance.get(t)) |decl| {
                 try self.class_decl_by_instance.put(self.gpa, new_obj, decl);
             }
-            if (self.interfaceDeclarationForTypeIdentity(t)) |decl| {
+            const interface_declaration = self.interfaceDeclarationForTypeIdentity(t);
+            if (interface_declaration) |decl| {
                 try self.generic_interface_decl_by_instance.put(self.gpa, new_obj, decl);
             }
+            try self.recordSubstitutedInterfaceDisplay(t, new_obj, interface_declaration, subs);
             if (self.program_type_display_names.get(t)) |name| {
                 try self.program_type_display_names.put(self.gpa, new_obj, name);
             }
@@ -195994,6 +196047,7 @@ pub const Checker = struct {
                 if (if (expand_string_named_export) null else self.alias_display_names.get(t)) |display| {
                     break :blk display;
                 }
+                if (try self.allocSubstitutedInterfaceDisplay(t)) |display| break :blk display;
                 if (try self.allocPromiseDisplayName(t)) |display| {
                     break :blk display;
                 }
@@ -202029,7 +202083,7 @@ fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
     var label = [_]u8{ 'A', 'l', 'i', 'a', 's' };
     var args = [_]TypeId{ types.Primitive.string_t, types.Primitive.number_t };
     inline for (CheckedTypes.borrowed_slices) |name| {
-        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+        if (comptime std.mem.eql(u8, name, "alias_type_args") or std.mem.eql(u8, name, "substituted_interface_display_args")) {
             try @field(s.checker, name).put(allocator, types.Primitive.string_t, &args);
         } else {
             try @field(s.checker, name).put(allocator, types.Primitive.string_t, &label);
@@ -202055,7 +202109,7 @@ fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
     @memset(&label, '!');
     args[0] = types.Primitive.never;
     inline for (CheckedTypes.borrowed_slices) |name| {
-        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+        if (comptime std.mem.eql(u8, name, "alias_type_args") or std.mem.eql(u8, name, "substituted_interface_display_args")) {
             try T.expectEqualSlices(TypeId, &.{ types.Primitive.string_t, types.Primitive.number_t }, @field(result, name).get(types.Primitive.string_t).?);
         } else {
             try T.expectEqualStrings("Alias", @field(result, name).get(types.Primitive.string_t).?);
@@ -292337,4 +292391,27 @@ test "checker: callable display owns parameters across optional union interning"
     try T.expect(before != s.ti.pool.member_pool.items.ptr);
     try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
     try T.expect(std.mem.indexOf(u8, display, "x1?: symbol") != null);
+}
+
+
+test "checker: substituted interface display keeps declared identity" {
+    const s = try newSetup("interface Item<T> { value: T; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const declaration = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const info = s.checker.generic_interfaces_by_decl.get(declaration).?;
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, info.params[0], types.Primitive.number_t);
+    const result = try s.checker.substituteType(info.body, &substitutions);
+    try T.expectEqual(declaration, s.checker.interfaceDeclarationForTypeIdentity(result).?);
+    const display = (try s.checker.allocSimpleTypeName(result)) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("Item<number>", display);
+    var replace_number: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer replace_number.deinit(T.allocator);
+    try replace_number.put(T.allocator, types.Primitive.number_t, types.Primitive.string_t);
+    // Imported displays remain usable without a declaration in this HIR.
+    _ = s.checker.generic_interface_decl_by_instance.remove(result);
+    const chained = try s.checker.substituteType(result, &replace_number);
+    try T.expectEqualStrings("Item<string>", (try s.checker.allocSimpleTypeName(chained)).?);
 }

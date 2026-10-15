@@ -958,3 +958,25 @@ traces are restored before publication.
 Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-object-display-identity.tar.gz` contains
 twelve verified payloads, SHA-256
 `a270452bd1a4d0e47bf173486d6899cbf6cee49d51ffdd876af2c9c7ee080287`.
+
+## Substituted interface display provenance
+
+Substitution retained interface declaration identity but lost its display name:
+`Item<T>` became `{ value: number; }` after mapping T to number. The checker now
+retains display-only names and argument IDs and renders them on demand. Existing
+named and alias displays take precedence, preserving `NumberToNumber` diagnostics.
+The metadata does not authorize semantic member refresh and survives checked
+ownership transfer with remapped type and string IDs. Capture and transfer
+allocation-failure tests cover its owned argument slices.
+
+The new regression fails before the fix and verifies `Item<number>` plus a later
+`Item<string>` substitution without a local declaration mapping. All **4,607
+checker tests** pass in the final isolated run, peaking at **2,275 MB**. The
+optimized compiler builds, but the DOM comparison still exceeds the unchanged
+3,840 MB ceiling (**4,364 MB** observed). A symbolic sample shows substantial
+recursive substitution remains. Library discovery is still unpublished and the
+complete replacement goal remains open.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-interface-display-provenance.tar.gz`
+contains eleven verified payloads, SHA-256
+`20b5fe6b42e0c6b569d13f246d8ff675b7fe76132d1db9f7b35c2a71f9413427`.
