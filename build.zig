@@ -581,6 +581,7 @@ pub fn build(b: *std.Build) void {
     const env_pkg = createPackage(b, "packages/env/src/env.zig", target, optimize, zig_test_framework);
     env_pkg.link_libc = true;
     const syscall_pkg = createPackage(b, "packages/syscall/src/syscall.zig", target, optimize, zig_test_framework);
+    const syscall_fs_pkg = createPackage(b, "packages/syscall/src/fs.zig", target, optimize, zig_test_framework);
     const signal_pkg = createPackage(b, "packages/signal/src/signal.zig", target, optimize, zig_test_framework);
     const mac_pkg = createPackage(b, "packages/mac/src/mac.zig", target, optimize, zig_test_framework);
     const tpm_pkg = createPackage(b, "packages/tpm/src/tpm.zig", target, optimize, zig_test_framework);
@@ -1681,6 +1682,12 @@ pub fn build(b: *std.Build) void {
 
     const run_syscall_tests = b.addRunArtifact(syscall_tests);
 
+    const syscall_fs_tests = b.addTest(.{
+        .root_module = syscall_fs_pkg,
+    });
+
+    const run_syscall_fs_tests = b.addRunArtifact(syscall_fs_tests);
+
     // Signal tests
     const signal_tests = b.addTest(.{
         .root_module = signal_pkg,
@@ -1927,6 +1934,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_image_tests.step, test_filter, "image");
     dependOnTest(test_step, &run_env_tests.step, test_filter, "env");
     dependOnTest(test_step, &run_syscall_tests.step, test_filter, "syscall");
+    dependOnTest(test_step, &run_syscall_fs_tests.step, test_filter, "syscall_fs");
     dependOnTest(test_step, &run_signal_tests.step, test_filter, "signal");
     dependOnTest(test_step, &run_cloud_tests.step, test_filter, "cloud");
     dependOnTest(test_step, &run_mac_tests.step, test_filter, "mac");

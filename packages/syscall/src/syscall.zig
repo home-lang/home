@@ -201,3 +201,7 @@ test "resource limits" {
         try testing.expect(limit.hard > 0);
     }
 }
+
+test {
+    std.testing.refAllDecls(fs);
+}

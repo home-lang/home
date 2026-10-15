@@ -3,6 +3,15 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
+const Io = std.Io;
+const Dir = Io.Dir;
+const File = Io.File;
+
+const has_posix_metadata = switch (builtin.os.tag) {
+    .windows, .wasi => false,
+    else => true,
+};
 
 pub const FileType = enum {
     regular,
@@ -98,154 +107,379 @@ pub const FileStat = struct {
     blocks: u64,
 };
 
-// Get file status
-pub fn stat(path: []const u8) !FileStat {
-    const s = try std.fs.cwd().statFile(path);
+fn fileTypeFromKind(kind: File.Kind) FileType {
+    return switch (kind) {
+        .file => .regular,
+        .directory => .directory,
+        .sym_link => .symlink,
+        .block_device => .block_device,
+        .character_device => .character_device,
+        .named_pipe => .fifo,
+        .unix_domain_socket => .socket,
+        else => .unknown,
+    };
+}
+
+fn timestampNanoseconds(timestamp: Io.Timestamp) i128 {
+    return timestamp.toNanoseconds();
+}
+
+fn permissionsReadOnly(permissions: File.Permissions) bool {
+    return if (comptime builtin.os.tag == .windows)
+        permissions.toAttributes().READONLY
+    else
+        permissions.readOnly();
+}
+
+const PosixMetadata = struct {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    atime: i128,
+    mtime: i128,
+    ctime: i128,
+    inode: u64,
+    nlink: u64,
+    dev: u64,
+    rdev: u64,
+    blksize: u64,
+    blocks: u64,
+};
+
+fn linuxDevice(major: u32, minor: u32) u64 {
+    return (@as(u64, major & 0xfffff000) << 32) |
+        (@as(u64, major & 0x00000fff) << 8) |
+        (@as(u64, minor & 0xffffff00) << 12) |
+        @as(u64, minor & 0x000000ff);
+}
+
+fn statLinux(path_z: [:0]const u8, follow_symlinks: bool) !PosixMetadata {
+    const linux = std.os.linux;
+    const flags: u32 = linux.AT.NO_AUTOMOUNT |
+        @as(u32, if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW);
+
+    while (true) {
+        var result = std.mem.zeroes(linux.Statx);
+        switch (linux.errno(linux.statx(Dir.cwd().handle, path_z, flags, .BASIC_STATS, &result))) {
+            .SUCCESS => {
+                const actual: u32 = @bitCast(result.mask);
+                const required: u32 = @bitCast(linux.STATX.BASIC_STATS);
+                if ((actual & required) != required) return error.Unexpected;
+                return .{
+                    .mode = result.mode,
+                    .uid = result.uid,
+                    .gid = result.gid,
+                    .atime = @as(i128, result.atime.sec) * std.time.ns_per_s + result.atime.nsec,
+                    .mtime = @as(i128, result.mtime.sec) * std.time.ns_per_s + result.mtime.nsec,
+                    .ctime = @as(i128, result.ctime.sec) * std.time.ns_per_s + result.ctime.nsec,
+                    .inode = result.ino,
+                    .nlink = result.nlink,
+                    .dev = linuxDevice(result.dev_major, result.dev_minor),
+                    .rdev = linuxDevice(result.rdev_major, result.rdev_minor),
+                    .blksize = result.blksize,
+                    .blocks = result.blocks,
+                };
+            },
+            .INTR => continue,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .LOOP => return error.SymLinkLoop,
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NOMEM => return error.SystemResources,
+            .ILSEQ => return error.BadPathName,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+fn statPosix(path: []const u8, follow_symlinks: bool) !PosixMetadata {
+    if (comptime !has_posix_metadata) unreachable;
+
+    var path_buffer: [std.posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buffer.len) return error.NameTooLong;
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.BadPathName;
+    @memcpy(path_buffer[0..path.len], path);
+    path_buffer[path.len] = 0;
+    const path_z: [:0]const u8 = path_buffer[0..path.len :0];
+    if (comptime builtin.os.tag == .linux) return statLinux(path_z, follow_symlinks);
+
+    const fstatat = if (std.posix.lfs64_abi) std.posix.system.fstatat64 else std.posix.system.fstatat;
+    const flags: u32 = if (follow_symlinks) 0 else std.posix.AT.SYMLINK_NOFOLLOW;
+
+    while (true) {
+        var result = std.mem.zeroes(std.posix.Stat);
+        switch (std.posix.errno(fstatat(Dir.cwd().handle, path_z, &result, flags))) {
+            .SUCCESS => {
+                const atime = result.atime();
+                const mtime = result.mtime();
+                const ctime = result.ctime();
+                return .{
+                    .mode = @intCast(result.mode),
+                    .uid = @intCast(result.uid),
+                    .gid = @intCast(result.gid),
+                    .atime = @as(i128, atime.sec) * std.time.ns_per_s + atime.nsec,
+                    .mtime = @as(i128, mtime.sec) * std.time.ns_per_s + mtime.nsec,
+                    .ctime = @as(i128, ctime.sec) * std.time.ns_per_s + ctime.nsec,
+                    .inode = @intCast(result.ino),
+                    .nlink = @intCast(result.nlink),
+                    .dev = @intCast(result.dev),
+                    .rdev = @intCast(result.rdev),
+                    .blksize = @intCast(result.blksize),
+                    .blocks = @intCast(result.blocks),
+                };
+            },
+            .INTR => continue,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .LOOP => return error.SymLinkLoop,
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NOMEM => return error.SystemResources,
+            .ILSEQ => return error.BadPathName,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+fn statWithOptions(io: Io, path: []const u8, follow_symlinks: bool) !FileStat {
+    const portable = try Dir.cwd().statFile(io, path, .{ .follow_symlinks = follow_symlinks });
+
+    if (comptime has_posix_metadata) {
+        const raw = try statPosix(path, follow_symlinks);
+        return .{
+            .file_type = fileTypeFromKind(portable.kind),
+            .permissions = .fromMode(@intCast(raw.mode)),
+            .size = portable.size,
+            .uid = raw.uid,
+            .gid = raw.gid,
+            .atime = raw.atime,
+            .mtime = raw.mtime,
+            .ctime = raw.ctime,
+            .inode = raw.inode,
+            .nlink = raw.nlink,
+            .dev = raw.dev,
+            .rdev = raw.rdev,
+            .blksize = raw.blksize,
+            .blocks = raw.blocks,
+        };
+    }
 
     return .{
-        .file_type = switch (s.kind) {
-            .file => .regular,
-            .directory => .directory,
-            .sym_link => .symlink,
-            .block_device => .block_device,
-            .character_device => .character_device,
-            .named_pipe => .fifo,
-            .unix_domain_socket => .socket,
-            else => .unknown,
+        .file_type = fileTypeFromKind(portable.kind),
+        .permissions = .{
+            .owner_read = true,
+            .owner_write = !permissionsReadOnly(portable.permissions),
+            .owner_execute = false,
+            .group_read = true,
+            .group_write = !permissionsReadOnly(portable.permissions),
+            .group_execute = false,
+            .other_read = true,
+            .other_write = !permissionsReadOnly(portable.permissions),
+            .other_execute = false,
         },
-        .permissions = FilePermissions.fromMode(@intCast(s.mode)),
-        .size = s.size,
-        .uid = if (builtin.os.tag != .windows) @intCast(s.uid) else 0,
-        .gid = if (builtin.os.tag != .windows) @intCast(s.gid) else 0,
-        .atime = s.atime,
-        .mtime = s.mtime,
-        .ctime = s.ctime,
-        .inode = s.inode,
-        .nlink = if (builtin.os.tag != .windows) s.nlink else 1,
-        .dev = if (builtin.os.tag != .windows) s.dev else 0,
-        .rdev = if (builtin.os.tag != .windows) s.rdev else 0,
-        .blksize = if (builtin.os.tag != .windows) @intCast(s.blksize) else 0,
-        .blocks = if (builtin.os.tag != .windows) @intCast(s.blocks) else 0,
+        .size = portable.size,
+        .uid = 0,
+        .gid = 0,
+        .atime = timestampNanoseconds(portable.atime orelse .zero),
+        .mtime = timestampNanoseconds(portable.mtime),
+        .ctime = timestampNanoseconds(portable.ctime),
+        .inode = @bitCast(portable.inode),
+        .nlink = portable.nlink,
+        .dev = 0,
+        .rdev = 0,
+        .blksize = portable.block_size,
+        .blocks = if (portable.block_size == 0) 0 else std.math.divCeil(u64, portable.size, portable.block_size) catch 0,
     };
+}
+
+// Get file status
+pub fn stat(path: []const u8) !FileStat {
+    return statWithIo(compat.io(), path);
+}
+
+pub fn statWithIo(io: Io, path: []const u8) !FileStat {
+    return statWithOptions(io, path, true);
 }
 
 // Check if file exists
 pub fn exists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    return existsWithIo(compat.io(), path);
+}
+
+pub fn existsWithIo(io: Io, path: []const u8) bool {
+    Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
 // Check if path is a directory
 pub fn isDirectory(path: []const u8) !bool {
-    const s = try stat(path);
+    return isDirectoryWithIo(compat.io(), path);
+}
+
+pub fn isDirectoryWithIo(io: Io, path: []const u8) !bool {
+    const s = try statWithIo(io, path);
     return s.file_type == .directory;
 }
 
 // Check if path is a file
 pub fn isFile(path: []const u8) !bool {
-    const s = try stat(path);
+    return isFileWithIo(compat.io(), path);
+}
+
+pub fn isFileWithIo(io: Io, path: []const u8) !bool {
+    const s = try statWithIo(io, path);
     return s.file_type == .regular;
 }
 
 // Check if path is a symlink
 pub fn isSymlink(path: []const u8) !bool {
-    const s = try stat(path);
+    return isSymlinkWithIo(compat.io(), path);
+}
+
+pub fn isSymlinkWithIo(io: Io, path: []const u8) !bool {
+    const s = try statWithOptions(io, path, false);
     return s.file_type == .symlink;
 }
 
 // Create directory
 pub fn mkdir(path: []const u8, mode: u32) !void {
-    try std.fs.cwd().makeDir(path);
-    if (builtin.os.tag != .windows) {
-        try chmod(path, mode);
-    }
+    return mkdirWithIo(compat.io(), path, mode);
+}
+
+pub fn mkdirWithIo(io: Io, path: []const u8, mode: u32) !void {
+    const permissions: File.Permissions = if (comptime builtin.os.tag == .windows)
+        .default_dir
+    else
+        .fromMode(@intCast(mode));
+    try Dir.cwd().createDir(io, path, permissions);
 }
 
 // Create directory recursively
 pub fn mkdirAll(path: []const u8, mode: u32) !void {
-    try std.fs.cwd().makePath(path);
-    if (builtin.os.tag != .windows) {
-        try chmod(path, mode);
-    }
+    return mkdirAllWithIo(compat.io(), path, mode);
+}
+
+pub fn mkdirAllWithIo(io: Io, path: []const u8, mode: u32) !void {
+    const permissions: File.Permissions = if (comptime builtin.os.tag == .windows)
+        .default_dir
+    else
+        .fromMode(@intCast(mode));
+    _ = try Dir.cwd().createDirPathStatus(io, path, permissions);
 }
 
 // Remove file
 pub fn unlink(path: []const u8) !void {
-    try std.fs.cwd().deleteFile(path);
+    return unlinkWithIo(compat.io(), path);
+}
+
+pub fn unlinkWithIo(io: Io, path: []const u8) !void {
+    try Dir.cwd().deleteFile(io, path);
 }
 
 // Remove directory
 pub fn rmdir(path: []const u8) !void {
-    try std.fs.cwd().deleteDir(path);
+    return rmdirWithIo(compat.io(), path);
+}
+
+pub fn rmdirWithIo(io: Io, path: []const u8) !void {
+    try Dir.cwd().deleteDir(io, path);
 }
 
 // Remove directory recursively
 pub fn rmAll(path: []const u8) !void {
-    try std.fs.cwd().deleteTree(path);
+    return rmAllWithIo(compat.io(), path);
+}
+
+pub fn rmAllWithIo(io: Io, path: []const u8) !void {
+    try Dir.cwd().deleteTree(io, path);
 }
 
 // Change file permissions (Unix-specific)
 pub fn chmod(path: []const u8, mode: u32) !void {
-    if (builtin.os.tag == .windows) {
+    return chmodWithIo(compat.io(), path, mode);
+}
+
+pub fn chmodWithIo(io: Io, path: []const u8, mode: u32) !void {
+    if (comptime builtin.os.tag == .windows) {
         return error.OperationNotSupported;
     }
-
-    const path_z = try std.posix.toPosixPath(path);
-    try std.posix.chmod(&path_z, mode);
+    try Dir.cwd().setFilePermissions(io, path, .fromMode(@intCast(mode)), .{});
 }
 
 // Change file owner (Unix-specific)
 pub fn chown(path: []const u8, uid: u32, gid: u32) !void {
-    if (builtin.os.tag == .windows) {
+    return chownWithIo(compat.io(), path, uid, gid);
+}
+
+pub fn chownWithIo(io: Io, path: []const u8, uid: u32, gid: u32) !void {
+    if (comptime builtin.os.tag == .windows) {
         return error.OperationNotSupported;
     }
-
-    const path_z = try std.posix.toPosixPath(path);
-    try std.posix.chown(&path_z, uid, gid);
+    try Dir.cwd().setFileOwner(io, path, @intCast(uid), @intCast(gid), .{});
 }
 
 // Rename file
 pub fn rename(old_path: []const u8, new_path: []const u8) !void {
-    try std.fs.cwd().rename(old_path, new_path);
+    return renameWithIo(compat.io(), old_path, new_path);
+}
+
+pub fn renameWithIo(io: Io, old_path: []const u8, new_path: []const u8) !void {
+    try Dir.rename(.cwd(), old_path, .cwd(), new_path, io);
 }
 
 // Create symlink
 pub fn symlink(target: []const u8, link_path: []const u8) !void {
-    try std.fs.cwd().symLink(target, link_path, .{});
+    return symlinkWithIo(compat.io(), target, link_path);
+}
+
+pub fn symlinkWithIo(io: Io, target: []const u8, link_path: []const u8) !void {
+    try Dir.cwd().symLink(io, target, link_path, .{});
 }
 
 // Read symlink
 pub fn readlink(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return try std.fs.cwd().readLink(path, allocator);
+    return readlinkWithIo(compat.io(), allocator, path);
+}
+
+pub fn readlinkWithIo(io: Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const scratch = try allocator.alloc(u8, Dir.max_path_bytes);
+    defer allocator.free(scratch);
+    const len = try Dir.cwd().readLink(io, path, scratch);
+    return allocator.dupe(u8, scratch[0..len]);
 }
 
 // Create hard link
 pub fn link(old_path: []const u8, new_path: []const u8) !void {
-    if (builtin.os.tag == .windows) {
-        return error.OperationNotSupported;
-    }
+    return linkWithIo(compat.io(), old_path, new_path);
+}
 
-    const old_z = try std.posix.toPosixPath(old_path);
-    const new_z = try std.posix.toPosixPath(new_path);
-
-    const c = struct {
-        extern "c" fn link([*:0]const u8, [*:0]const u8) c_int;
-    };
-
-    const result = c.link(&old_z, &new_z);
-    if (result != 0) {
-        return error.LinkFailed;
-    }
+pub fn linkWithIo(io: Io, old_path: []const u8, new_path: []const u8) !void {
+    try Dir.hardLink(.cwd(), old_path, .cwd(), new_path, io, .{});
 }
 
 // Get current working directory
 pub fn getcwd(allocator: std.mem.Allocator) ![]u8 {
-    return try std.process.getCwdAlloc(allocator);
+    return getcwdWithIo(compat.io(), allocator);
+}
+
+pub fn getcwdWithIo(io: Io, allocator: std.mem.Allocator) ![]u8 {
+    const sentinel_path = try std.process.currentPathAlloc(io, allocator);
+    defer allocator.free(sentinel_path);
+    return allocator.dupe(u8, sentinel_path);
 }
 
 // Change current working directory
 pub fn chdir(path: []const u8) !void {
-    try std.process.changeCurDir(path);
+    return chdirWithIo(compat.io(), path);
+}
+
+pub fn chdirWithIo(io: Io, path: []const u8) !void {
+    const dir = try Dir.cwd().openDir(io, path, .{});
+    defer dir.close(io);
+    try std.process.setCurrentDir(io, dir);
 }
 
 // List directory entries
@@ -255,54 +489,59 @@ pub const DirectoryEntry = struct {
 };
 
 pub fn listDir(allocator: std.mem.Allocator, path: []const u8) ![]DirectoryEntry {
-    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
-    defer dir.close();
+    return listDirWithIo(compat.io(), allocator, path);
+}
+
+pub fn listDirWithIo(io: Io, allocator: std.mem.Allocator, path: []const u8) ![]DirectoryEntry {
+    const dir = try Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
 
     var entries = std.ArrayList(DirectoryEntry).empty;
     errdefer {
-        for (entries.items) |entry| {
-            allocator.free(entry.name);
-        }
+        for (entries.items) |entry| allocator.free(entry.name);
         entries.deinit(allocator);
     }
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         const name = try allocator.dupe(u8, entry.name);
-        const file_type: FileType = switch (entry.kind) {
-            .file => .regular,
-            .directory => .directory,
-            .sym_link => .symlink,
-            .block_device => .block_device,
-            .character_device => .character_device,
-            .named_pipe => .fifo,
-            .unix_domain_socket => .socket,
-            else => .unknown,
-        };
-
-        try entries.append(allocator, .{
+        entries.append(allocator, .{
             .name = name,
-            .file_type = file_type,
-        });
+            .file_type = fileTypeFromKind(entry.kind),
+        }) catch |err| {
+            allocator.free(name);
+            return err;
+        };
     }
 
     return try entries.toOwnedSlice(allocator);
 }
 
+pub fn freeDirectoryEntries(allocator: std.mem.Allocator, entries: []DirectoryEntry) void {
+    for (entries) |entry| allocator.free(entry.name);
+    allocator.free(entries);
+}
+
 // Truncate file
 pub fn truncate(path: []const u8, length: u64) !void {
-    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
-    defer file.close();
+    return truncateWithIo(compat.io(), path, length);
+}
 
-    try file.setEndPos(length);
+pub fn truncateWithIo(io: Io, path: []const u8, length: u64) !void {
+    const file = try Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+    defer file.close(io);
+    try file.setLength(io, length);
 }
 
 // Sync file to disk
 pub fn sync(path: []const u8) !void {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    return syncWithIo(compat.io(), path);
+}
 
-    try file.sync();
+pub fn syncWithIo(io: Io, path: []const u8) !void {
+    const file = try Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    try file.sync(io);
 }
 
 test "file permissions" {
@@ -322,17 +561,97 @@ test "file permissions" {
     try testing.expectEqual(@as(u32, 0o755), perms.toMode());
 }
 
-test "file exists" {
+test "filesystem operations use explicit Io and preserve metadata" {
     const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = testing.io;
 
-    // Test with a file that should exist
-    try testing.expect(exists("/") or exists("C:\\"));
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    // Test with a file that shouldn't exist
-    try testing.expect(!exists("/nonexistent_file_12345.txt"));
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+
+    const single_dir = try std.fs.path.join(allocator, &.{ root, "single" });
+    defer allocator.free(single_dir);
+    const nested_dir = try std.fs.path.join(allocator, &.{ root, "nested", "child" });
+    defer allocator.free(nested_dir);
+    const nested_parent = try std.fs.path.join(allocator, &.{ root, "nested" });
+    defer allocator.free(nested_parent);
+    const file_path = try std.fs.path.join(allocator, &.{ root, "file.txt" });
+    defer allocator.free(file_path);
+    const renamed_path = try std.fs.path.join(allocator, &.{ root, "renamed.txt" });
+    defer allocator.free(renamed_path);
+    const hard_link_path = try std.fs.path.join(allocator, &.{ root, "hard-link.txt" });
+    defer allocator.free(hard_link_path);
+    const sym_link_path = try std.fs.path.join(allocator, &.{ root, "symbolic-link.txt" });
+    defer allocator.free(sym_link_path);
+
+    try mkdirWithIo(io, single_dir, 0o755);
+    try testing.expect(try isDirectoryWithIo(io, single_dir));
+    try mkdirAllWithIo(io, nested_dir, 0o750);
+    try testing.expect(try isDirectoryWithIo(io, nested_dir));
+
+    try Dir.cwd().writeFile(io, .{ .sub_path = file_path, .data = "hello, Home" });
+    try testing.expect(existsWithIo(io, file_path));
+    try testing.expect(try isFileWithIo(io, file_path));
+
+    try chmodWithIo(io, file_path, 0o600);
+    const initial_stat = try statWithIo(io, file_path);
+    try testing.expectEqual(@as(u64, 11), initial_stat.size);
+    try testing.expect(initial_stat.permissions.owner_read);
+    try testing.expect(initial_stat.permissions.owner_write);
+    try testing.expect(!initial_stat.permissions.group_read);
+    if (comptime has_posix_metadata) {
+        try testing.expect(initial_stat.inode > 0);
+        try testing.expect(initial_stat.nlink > 0);
+        try testing.expect(initial_stat.blksize > 0);
+    }
+
+    const entries = try listDirWithIo(io, allocator, root);
+    defer freeDirectoryEntries(allocator, entries);
+    var found_file = false;
+    var found_single = false;
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, "file.txt")) {
+            found_file = entry.file_type == .regular;
+        } else if (std.mem.eql(u8, entry.name, "single")) {
+            found_single = entry.file_type == .directory;
+        }
+    }
+    try testing.expect(found_file);
+    try testing.expect(found_single);
+
+    try truncateWithIo(io, file_path, 5);
+    try syncWithIo(io, file_path);
+    try testing.expectEqual(@as(u64, 5), (try statWithIo(io, file_path)).size);
+
+    try renameWithIo(io, file_path, renamed_path);
+    try testing.expect(!existsWithIo(io, file_path));
+    try testing.expect(existsWithIo(io, renamed_path));
+
+    try linkWithIo(io, renamed_path, hard_link_path);
+    try testing.expectEqual((try statWithIo(io, renamed_path)).inode, (try statWithIo(io, hard_link_path)).inode);
+
+    if (comptime builtin.os.tag != .windows) {
+        try symlinkWithIo(io, "renamed.txt", sym_link_path);
+        try testing.expect(try isSymlinkWithIo(io, sym_link_path));
+        try testing.expect(try isFileWithIo(io, sym_link_path));
+        const target = try readlinkWithIo(io, allocator, sym_link_path);
+        defer allocator.free(target);
+        try testing.expectEqualStrings("renamed.txt", target);
+        try unlinkWithIo(io, sym_link_path);
+    }
+
+    try unlinkWithIo(io, hard_link_path);
+    try unlinkWithIo(io, renamed_path);
+    try rmdirWithIo(io, single_dir);
+    try rmAllWithIo(io, nested_parent);
+    try testing.expect(!existsWithIo(io, single_dir));
+    try testing.expect(!existsWithIo(io, nested_dir));
 }
 
-test "getcwd" {
+test "default Io wrappers" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
@@ -340,4 +659,6 @@ test "getcwd" {
     defer allocator.free(cwd);
 
     try testing.expect(cwd.len > 0);
+    try testing.expect(exists(cwd));
+    try testing.expect(try isDirectory(cwd));
 }
