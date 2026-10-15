@@ -931,6 +931,7 @@ pub fn build(b: *std.Build) void {
     const io_pkg = createPackage(b, "packages/io/src/lib.zig", target, optimize, zig_test_framework);
     io_pkg.addImport("collections", io_collections_pkg);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
+    const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
     const http_pkg = createPackage(b, "packages/http/src/http.zig", target, optimize, zig_test_framework);
@@ -1527,6 +1528,11 @@ pub fn build(b: *std.Build) void {
     io_tests.root_module.addImport("io", io_pkg);
     const run_io_tests = b.addRunArtifact(io_tests);
 
+    const toml_tests = b.addTest(.{
+        .root_module = toml_pkg,
+    });
+    const run_toml_tests = b.addRunArtifact(toml_tests);
+
     // ARM64 assembler tests (issue #5)
     const arm64_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1854,6 +1860,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_io_tests.step, test_filter, "io_package");
+    dependOnTest(test_step, &run_toml_tests.step, test_filter, "toml");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");

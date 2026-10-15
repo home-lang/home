@@ -1,0 +1,11 @@
+[package]
+name = "home-toml"
+version = "0.1.0"
+authors = ["Home Contributors"]
+description = "TOML parser and serializer for Home"
+license = "MIT"
+
+[dependencies]
+
+[scripts]
+test = "zig build test"

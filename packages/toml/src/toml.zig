@@ -16,6 +16,11 @@
 /// const port = toml.get("server.port").?.integer;
 /// ```
 const std = @import("std");
+const Io = std.Io;
+
+fn defaultIo() Io {
+    return Io.Threaded.global_single_threaded.io();
+}
 
 /// TOML value types
 pub const Value = union(enum) {
@@ -133,12 +138,12 @@ pub const Value = union(enum) {
 /// TOML table (ordered map)
 pub const Table = struct {
     allocator: std.mem.Allocator,
-    entries: std.StringArrayHashMap(Value),
+    entries: std.StringArrayHashMapUnmanaged(Value),
 
     pub fn init(allocator: std.mem.Allocator) Table {
         return .{
             .allocator = allocator,
-            .entries = std.StringArrayHashMap(Value).init(allocator),
+            .entries = .empty,
         };
     }
 
@@ -149,7 +154,7 @@ pub const Table = struct {
             var val = entry.value_ptr.*;
             val.deinit(self.allocator);
         }
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     pub fn put(self: *Table, key: []const u8, value: Value) !void {
@@ -163,7 +168,7 @@ pub const Table = struct {
         }
         const owned_key = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(owned_key);
-        try self.entries.put(owned_key, value);
+        try self.entries.put(self.allocator, owned_key, value);
     }
 
     pub fn get(self: *const Table, path: []const u8) ?*const Value {
@@ -296,11 +301,18 @@ pub const Toml = struct {
 
     /// Parse TOML from file
     pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !Toml {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return parseFileWithIo(allocator, defaultIo(), path);
+    }
 
+    /// Parse TOML from a file using the caller-provided I/O implementation.
+    pub fn parseFileWithIo(allocator: std.mem.Allocator, io: Io, path: []const u8) !Toml {
         // Cap at 64 MiB so a malicious/huge TOML file can't exhaust memory.
-        const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
+        const content = try Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            allocator,
+            .limited(64 * 1024 * 1024),
+        );
         defer allocator.free(content);
 
         return parse(allocator, content);
@@ -349,25 +361,31 @@ pub const Toml = struct {
 
     /// Serialize to TOML string
     pub fn serialize(self: *const Toml, allocator: std.mem.Allocator) ![]u8 {
-        var list = std.ArrayList(u8).init(allocator);
-        errdefer list.deinit();
+        var output: Io.Writer.Allocating = .init(allocator);
+        errdefer output.deinit();
 
-        try serializeTable(&list, &self.root, &.{});
+        serializeTable(&output, &self.root, &.{}) catch |err| switch (err) {
+            // Allocating writers have no external sink; WriteFailed can only
+            // mean their backing allocation failed.
+            error.WriteFailed => return error.OutOfMemory,
+            else => return err,
+        };
 
-        return list.toOwnedSlice();
+        return output.toOwnedSlice();
     }
 
-    fn serializeTable(list: *std.ArrayList(u8), table: *const Table, prefix: []const []const u8) !void {
+    fn serializeTable(output: *Io.Writer.Allocating, table: *const Table, prefix: []const []const u8) !void {
+        const writer = &output.writer;
         // First, write simple key-value pairs
         var it = table.entries.iterator();
         while (it.next()) |entry| {
             const val = entry.value_ptr;
             if (val.* != .table and val.* != .array) {
-                try serializeValue(list, entry.key_ptr.*, val);
+                try serializeValue(writer, entry.key_ptr.*, val);
             } else if (val.* == .array) {
                 const arr = val.array;
                 if (arr.len > 0 and arr[0] != .table) {
-                    try serializeValue(list, entry.key_ptr.*, val);
+                    try serializeValue(writer, entry.key_ptr.*, val);
                 }
             }
         }
@@ -378,118 +396,108 @@ pub const Toml = struct {
             const val = entry.value_ptr;
             if (val.* == .table) {
                 // Build full path
-                var full_path = std.ArrayList([]const u8).init(list.allocator);
+                var full_path = std.array_list.Managed([]const u8).init(output.allocator);
                 defer full_path.deinit();
                 for (prefix) |p| try full_path.append(p);
                 try full_path.append(entry.key_ptr.*);
 
-                try list.appendSlice("\n[");
+                try writer.writeAll("\n[");
                 for (full_path.items, 0..) |p, i| {
-                    if (i > 0) try list.append('.');
-                    try list.appendSlice(p);
+                    if (i > 0) try writer.writeByte('.');
+                    try writer.writeAll(p);
                 }
-                try list.appendSlice("]\n");
+                try writer.writeAll("]\n");
 
-                try serializeTable(list, &val.table, full_path.items);
+                try serializeTable(output, &val.table, full_path.items);
             } else if (val.* == .array) {
                 const arr = val.array;
                 if (arr.len > 0 and arr[0] == .table) {
                     // Array of tables
                     for (arr) |item| {
-                        try list.appendSlice("\n[[");
+                        try writer.writeAll("\n[[");
                         for (prefix) |p| {
-                            try list.appendSlice(p);
-                            try list.append('.');
+                            try writer.writeAll(p);
+                            try writer.writeByte('.');
                         }
-                        try list.appendSlice(entry.key_ptr.*);
-                        try list.appendSlice("]]\n");
+                        try writer.writeAll(entry.key_ptr.*);
+                        try writer.writeAll("]]\n");
 
-                        var empty_prefix: []const []const u8 = &.{};
-                        try serializeTable(list, &item.table, empty_prefix);
+                        const empty_prefix: []const []const u8 = &.{};
+                        try serializeTable(output, &item.table, empty_prefix);
                     }
                 }
             }
         }
     }
 
-    fn serializeValue(list: *std.ArrayList(u8), key: []const u8, value: *const Value) !void {
-        try list.appendSlice(key);
-        try list.appendSlice(" = ");
+    fn serializeValue(writer: *Io.Writer, key: []const u8, value: *const Value) !void {
+        try writer.writeAll(key);
+        try writer.writeAll(" = ");
 
         switch (value.*) {
             .string => |s| {
-                try list.append('"');
+                try writer.writeByte('"');
                 for (s) |c| {
                     switch (c) {
-                        '\n' => try list.appendSlice("\\n"),
-                        '\r' => try list.appendSlice("\\r"),
-                        '\t' => try list.appendSlice("\\t"),
-                        '\\' => try list.appendSlice("\\\\"),
-                        '"' => try list.appendSlice("\\\""),
-                        else => try list.append(c),
+                        '\n' => try writer.writeAll("\\n"),
+                        '\r' => try writer.writeAll("\\r"),
+                        '\t' => try writer.writeAll("\\t"),
+                        '\\' => try writer.writeAll("\\\\"),
+                        '"' => try writer.writeAll("\\\""),
+                        else => try writer.writeByte(c),
                     }
                 }
-                try list.append('"');
+                try writer.writeByte('"');
             },
             .integer => |i| {
-                var buf: [32]u8 = undefined;
-                const slice = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
-                try list.appendSlice(slice);
+                try writer.print("{d}", .{i});
             },
             .float => |f| {
                 if (std.math.isNan(f)) {
-                    try list.appendSlice("nan");
+                    try writer.writeAll("nan");
                 } else if (std.math.isInf(f)) {
-                    if (f < 0) try list.append('-');
-                    try list.appendSlice("inf");
+                    if (f < 0) try writer.writeByte('-');
+                    try writer.writeAll("inf");
                 } else {
-                    var buf: [64]u8 = undefined;
-                    const slice = std.fmt.bufPrint(&buf, "{d}", .{f}) catch unreachable;
-                    try list.appendSlice(slice);
+                    try writer.print("{d}", .{f});
                 }
             },
             .boolean => |b| {
-                try list.appendSlice(if (b) "true" else "false");
+                try writer.writeAll(if (b) "true" else "false");
             },
             .datetime => |dt| {
-                try dt.format(list.writer());
+                try dt.format(writer);
             },
             .array => |arr| {
-                try list.append('[');
+                try writer.writeByte('[');
                 for (arr, 0..) |item, idx| {
-                    if (idx > 0) try list.appendSlice(", ");
-                    var dummy_key: []const u8 = "";
-                    _ = dummy_key;
+                    if (idx > 0) try writer.writeAll(", ");
                     switch (item) {
                         .string => |s| {
-                            try list.append('"');
-                            try list.appendSlice(s);
-                            try list.append('"');
+                            try writer.writeByte('"');
+                            try writer.writeAll(s);
+                            try writer.writeByte('"');
                         },
                         .integer => |i| {
-                            var buf: [32]u8 = undefined;
-                            const slice = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
-                            try list.appendSlice(slice);
+                            try writer.print("{d}", .{i});
                         },
                         .float => |f| {
-                            var buf: [64]u8 = undefined;
-                            const slice = std.fmt.bufPrint(&buf, "{d}", .{f}) catch unreachable;
-                            try list.appendSlice(slice);
+                            try writer.print("{d}", .{f});
                         },
                         .boolean => |b| {
-                            try list.appendSlice(if (b) "true" else "false");
+                            try writer.writeAll(if (b) "true" else "false");
                         },
                         else => {},
                     }
                 }
-                try list.append(']');
+                try writer.writeByte(']');
             },
             .table => {
-                try list.appendSlice("{ }");
+                try writer.writeAll("{ }");
             },
         }
 
-        try list.append('\n');
+        try writer.writeByte('\n');
     }
 };
 
@@ -571,7 +579,7 @@ const Parser = struct {
                     return ParseError.DuplicateKey;
                 }
 
-                try current_table.entries.put(key, value);
+                try current_table.entries.put(self.allocator, key, value);
             }
         }
 
@@ -618,7 +626,7 @@ const Parser = struct {
     }
 
     fn parseTablePath(self: *Parser) ParseError![]u8 {
-        var path = std.ArrayList(u8).init(self.allocator);
+        var path = std.array_list.Managed(u8).init(self.allocator);
         errdefer path.deinit();
 
         self.skipWhitespace();
@@ -630,13 +638,13 @@ const Parser = struct {
             if (c == '"') {
                 // Quoted key
                 const str = try self.parseBasicString();
+                defer self.allocator.free(str);
                 try path.appendSlice(str);
-                self.allocator.free(str);
             } else if (c == '\'') {
                 // Literal key
                 const str = try self.parseLiteralString();
+                defer self.allocator.free(str);
                 try path.appendSlice(str);
-                self.allocator.free(str);
             } else if (std.ascii.isAlphanumeric(c) or c == '_' or c == '-') {
                 // Bare key
                 const start = self.pos;
@@ -769,7 +777,7 @@ const Parser = struct {
     fn parseBasicString(self: *Parser) ParseError![]u8 {
         self.pos += 1; // Skip opening quote
 
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = std.array_list.Managed(u8).init(self.allocator);
         errdefer result.deinit();
 
         while (self.pos < self.input.len) {
@@ -834,7 +842,7 @@ const Parser = struct {
             self.pos += 2;
         }
 
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = std.array_list.Managed(u8).init(self.allocator);
         errdefer result.deinit();
 
         while (self.pos < self.input.len) {
@@ -974,7 +982,7 @@ const Parser = struct {
     fn parseArray(self: *Parser) ParseError![]Value {
         self.pos += 1; // Skip [
 
-        var items = std.ArrayList(Value).init(self.allocator);
+        var items = std.array_list.Managed(Value).init(self.allocator);
         errdefer {
             for (items.items) |*item| {
                 var mut_item = item.*;
@@ -986,7 +994,8 @@ const Parser = struct {
         self.skipWhitespaceAndComments();
 
         while (self.pos < self.input.len and self.input[self.pos] != ']') {
-            const value = try self.parseValue();
+            var value = try self.parseValue();
+            errdefer value.deinit(self.allocator);
             try items.append(value);
 
             self.skipWhitespaceAndComments();
@@ -1017,7 +1026,6 @@ const Parser = struct {
             self.skipWhitespace();
 
             if (self.pos >= self.input.len or self.input[self.pos] != '=') {
-                self.allocator.free(key);
                 return ParseError.UnexpectedCharacter;
             }
             self.pos += 1;
@@ -1030,7 +1038,7 @@ const Parser = struct {
                 mut_val.deinit(self.allocator);
             }
 
-            try table.entries.put(key, value);
+            try table.entries.put(self.allocator, key, value);
 
             self.skipWhitespace();
 
@@ -1088,7 +1096,7 @@ const Parser = struct {
                 }
             } else if (c == 'Z' or c == '+') {
                 self.pos += 1;
-            } else if (std.ascii.isDigit(c) or c == '_') {
+            } else if (std.ascii.isAlphanumeric(c) or c == '_') {
                 self.pos += 1;
             } else {
                 break;
@@ -1103,7 +1111,7 @@ const Parser = struct {
         }
 
         // Remove underscores for parsing
-        var clean = std.ArrayList(u8).init(self.allocator);
+        var clean = std.array_list.Managed(u8).init(self.allocator);
         defer clean.deinit();
 
         for (token) |c| {
@@ -1225,9 +1233,10 @@ const Parser = struct {
                     return ParseError.InvalidTable;
                 }
             } else {
-                var new_table = Table.init(self.allocator);
+                const new_table = Table.init(self.allocator);
                 const key = self.allocator.dupe(u8, segment) catch return ParseError.OutOfMemory;
-                current.entries.put(key, .{ .table = new_table }) catch return ParseError.OutOfMemory;
+                errdefer self.allocator.free(key);
+                current.entries.put(self.allocator, key, .{ .table = new_table }) catch return ParseError.OutOfMemory;
                 current = &current.entries.getPtr(segment).?.table;
             }
         }
@@ -1238,7 +1247,7 @@ const Parser = struct {
     fn getOrCreateArrayTable(self: *Parser, root: *Table, path: []const u8) ParseError!*Table {
         var current = root;
         var path_iter = std.mem.splitSequence(u8, path, ".");
-        var segments = std.ArrayList([]const u8).init(self.allocator);
+        var segments = std.array_list.Managed([]const u8).init(self.allocator);
         defer segments.deinit();
 
         while (path_iter.next()) |segment| {
@@ -1263,9 +1272,10 @@ const Parser = struct {
                     return ParseError.InvalidTable;
                 }
             } else {
-                var new_table = Table.init(self.allocator);
+                const new_table = Table.init(self.allocator);
                 const key = self.allocator.dupe(u8, segment) catch return ParseError.OutOfMemory;
-                current.entries.put(key, .{ .table = new_table }) catch return ParseError.OutOfMemory;
+                errdefer self.allocator.free(key);
+                current.entries.put(self.allocator, key, .{ .table = new_table }) catch return ParseError.OutOfMemory;
                 current = &current.entries.getPtr(segment).?.table;
             }
         }
@@ -1286,10 +1296,12 @@ const Parser = struct {
             }
         } else {
             // Create new array with one table
-            var arr = self.allocator.alloc(Value, 1) catch return ParseError.OutOfMemory;
+            const arr = self.allocator.alloc(Value, 1) catch return ParseError.OutOfMemory;
+            errdefer self.allocator.free(arr);
             arr[0] = .{ .table = Table.init(self.allocator) };
             const key = self.allocator.dupe(u8, last_segment) catch return ParseError.OutOfMemory;
-            current.entries.put(key, .{ .array = arr }) catch return ParseError.OutOfMemory;
+            errdefer self.allocator.free(key);
+            current.entries.put(self.allocator, key, .{ .array = arr }) catch return ParseError.OutOfMemory;
             return &current.entries.getPtr(last_segment).?.array[0].table;
         }
     }
@@ -1419,4 +1431,50 @@ test "parse comments" {
     defer toml.deinit();
 
     try std.testing.expectEqualStrings("value", toml.getString("key").?);
+}
+
+fn exerciseTomlAllocations(allocator: std.mem.Allocator) !void {
+    var toml = try Toml.parse(allocator,
+        \\name = "home"
+        \\numbers = [1, 2, 3]
+        \\point = { x = 10, y = 20 }
+        \\[server]
+        \\host = "localhost"
+        \\port = 8080
+    );
+    defer toml.deinit();
+
+    const serialized = try toml.serialize(allocator);
+    defer allocator.free(serialized);
+}
+
+test "parse and serialize release every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        exerciseTomlAllocations,
+        .{},
+    );
+}
+
+test "parseFile supports explicit and default IO" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "home.toml" });
+    defer allocator.free(path);
+    try Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = path,
+        .data = "name = \"home\"\nversion = 1\n",
+    });
+
+    var explicit = try Toml.parseFileWithIo(allocator, std.testing.io, path);
+    defer explicit.deinit();
+    try std.testing.expectEqualStrings("home", explicit.getString("name").?);
+
+    var implicit = try Toml.parseFile(allocator, path);
+    defer implicit.deinit();
+    try std.testing.expectEqual(@as(i64, 1), implicit.getInteger("version").?);
 }
