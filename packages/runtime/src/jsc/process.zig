@@ -412,7 +412,7 @@ const install_glue =
     \\    versions: { node: info.node },
     \\    release: { name: "node" },
     \\    config: {
-    \\      variables: { v8_enable_i18n_support: 1, asan: 0 },
+    \\      variables: { v8_enable_i18n_support: 1, v8_enable_temporal_support: typeof globalThis.Temporal !== "undefined" ? 1 : 0, asan: 0 },
     \\      target_defaults: { default_configuration: "Release" },
     \\    },
     \\    features: { debug: false },

@@ -38,6 +38,7 @@ const tmpdir = require('./tmpdir');
 const bits = ['arm64', 'loong64', 'mips', 'mipsel', 'ppc64', 'riscv64', 's390x', 'x64']
   .includes(process.arch) ? 64 : 32;
 const hasIntl = !!process.config.variables.v8_enable_i18n_support;
+const hasTemporal = !!process.config.variables.v8_enable_temporal_support;
 
 const {
   atob,
@@ -1078,6 +1079,7 @@ const common = {
   getPrintedStackTrace,
   getTTYfd,
   hasIntl,
+  hasTemporal,
   hasCrypto,
   hasOpenSSL,
   hasQuic,
