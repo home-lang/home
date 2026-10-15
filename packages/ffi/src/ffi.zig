@@ -13,6 +13,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const bindgen = @import("bindgen.zig");
+
 // Primitive C types cannot be exported with ordinary identifiers because the
 // names would shadow Zig primitives. Escaped declarations preserve the public
 // `ffi.c_int`-style API while retaining the target's actual C ABI widths.
@@ -539,4 +541,8 @@ test "FFI module owns libc linkage and safely reallocates C memory" {
     try testing.expectEqualStrings("home", bytes[0..4]);
     @memset(bytes[4..], 0x5a);
     try testing.expectEqual(@as(u8, 0x5a), bytes[15]);
+}
+
+test {
+    _ = bindgen;
 }

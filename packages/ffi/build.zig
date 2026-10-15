@@ -41,11 +41,22 @@ pub fn build(b: *std.Build) void {
 
     const run_ffi_tests = b.addRunArtifact(ffi_tests);
 
+    const bindgen_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bindgen.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_bindgen_tests = b.addRunArtifact(bindgen_tests);
+
     const test_compile_step = b.step("test-compile", "Compile FFI tests without running them");
     test_compile_step.dependOn(&ffi_tests.step);
+    test_compile_step.dependOn(&bindgen_tests.step);
 
     const test_step = b.step("test", "Run FFI tests");
     test_step.dependOn(&run_ffi_tests.step);
+    test_step.dependOn(&run_bindgen_tests.step);
 
     // ========================================================================
     // Examples

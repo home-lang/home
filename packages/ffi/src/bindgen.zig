@@ -1,4 +1,9 @@
 const std = @import("std");
+const Io = std.Io;
+
+fn defaultIo() Io {
+    return Io.Threaded.global_single_threaded.io();
+}
 
 /// Bindings generator for C headers
 ///
@@ -11,11 +16,11 @@ const std = @import("std");
 /// - Support macros (limited)
 pub const BindingsGenerator = struct {
     allocator: std.mem.Allocator,
-    output: std.ArrayList(u8),
+    output: std.array_list.Managed(u8),
     types: std.StringHashMap(TypeInfo),
-    functions: std.ArrayList(FunctionInfo),
-    enums: std.ArrayList(EnumInfo),
-    structs: std.ArrayList(StructInfo),
+    functions: std.array_list.Managed(FunctionInfo),
+    enums: std.array_list.Managed(EnumInfo),
+    structs: std.array_list.Managed(StructInfo),
     config: Config,
 
     pub const Config = struct {
@@ -43,7 +48,7 @@ pub const BindingsGenerator = struct {
     pub const FunctionInfo = struct {
         name: []const u8,
         return_type: []const u8,
-        parameters: []Parameter,
+        parameters: []const Parameter,
         is_variadic: bool,
 
         pub const Parameter = struct {
@@ -54,7 +59,7 @@ pub const BindingsGenerator = struct {
 
     pub const EnumInfo = struct {
         name: []const u8,
-        values: []EnumValue,
+        values: []const EnumValue,
 
         pub const EnumValue = struct {
             name: []const u8,
@@ -64,7 +69,7 @@ pub const BindingsGenerator = struct {
 
     pub const StructInfo = struct {
         name: []const u8,
-        fields: []Field,
+        fields: []const Field,
         is_packed: bool,
 
         pub const Field = struct {
@@ -77,11 +82,11 @@ pub const BindingsGenerator = struct {
     pub fn init(allocator: std.mem.Allocator, config: Config) BindingsGenerator {
         return .{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
+            .output = std.array_list.Managed(u8).init(allocator),
             .types = std.StringHashMap(TypeInfo).init(allocator),
-            .functions = std.ArrayList(FunctionInfo).init(allocator),
-            .enums = std.ArrayList(EnumInfo).init(allocator),
-            .structs = std.ArrayList(StructInfo).init(allocator),
+            .functions = std.array_list.Managed(FunctionInfo).init(allocator),
+            .enums = std.array_list.Managed(EnumInfo).init(allocator),
+            .structs = std.array_list.Managed(StructInfo).init(allocator),
             .config = config,
         };
     }
@@ -96,6 +101,11 @@ pub const BindingsGenerator = struct {
 
     /// Parse C header file
     pub fn parseHeader(self: *BindingsGenerator, header_path: []const u8) !void {
+        return self.parseHeaderWithIo(defaultIo(), header_path);
+    }
+
+    /// Parse a C header using the caller-provided I/O implementation.
+    pub fn parseHeaderWithIo(self: *BindingsGenerator, io: Io, header_path: []const u8) !void {
         if (self.config.verbose) {
             std.debug.print("Parsing header: {s}\n", .{header_path});
         }
@@ -106,10 +116,12 @@ pub const BindingsGenerator = struct {
         // 3. Convert to our internal representation
 
         // Simplified: just read the file
-        const file = try std.fs.cwd().openFile(header_path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+        const content = try Io.Dir.cwd().readFileAlloc(
+            io,
+            header_path,
+            self.allocator,
+            .limited(10 * 1024 * 1024),
+        );
         defer self.allocator.free(content);
 
         // Basic parsing (would use proper C parser in production)
@@ -470,4 +482,63 @@ pub fn generateLibmBindings(allocator: std.mem.Allocator) ![]const u8 {
     });
 
     return try generator.generate();
+}
+
+fn exerciseGeneratorAllocations(allocator: std.mem.Allocator) !void {
+    var generator = BindingsGenerator.init(allocator, .{
+        .library_name = "allocation-audit",
+        .c_standard = "c17",
+        .include_paths = &.{},
+        .prefix = null,
+        .generate_wrappers = true,
+        .verbose = false,
+    });
+    defer generator.deinit();
+
+    try generator.addType("int", "c_int");
+    try generator.addFunction(.{
+        .name = "checked_call",
+        .return_type = "?*anyopaque",
+        .parameters = &.{.{ .name = "value", .type_name = "c_int" }},
+        .is_variadic = false,
+    });
+
+    const generated = try generator.generate();
+    defer allocator.free(generated);
+}
+
+test "bindings generator releases every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        exerciseGeneratorAllocations,
+        .{},
+    );
+}
+
+test "bindings generator reads headers through explicit and default IO" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "sample.h" });
+    defer allocator.free(path);
+    try Io.Dir.cwd().writeFile(std.testing.io, .{
+        .sub_path = path,
+        .data = "extern int checked_call(int value);\n",
+    });
+
+    var generator = BindingsGenerator.init(allocator, .{
+        .library_name = "sample",
+        .c_standard = "c17",
+        .include_paths = &.{},
+        .prefix = null,
+        .generate_wrappers = false,
+        .verbose = false,
+    });
+    defer generator.deinit();
+
+    try generator.parseHeaderWithIo(std.testing.io, path);
+    try generator.parseHeader(path);
 }
