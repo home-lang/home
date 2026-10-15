@@ -1,12 +1,11 @@
 // Networking Library for Home Language
-// Provides TCP/UDP sockets using POSIX APIs directly
-//
-// NOTE: This is experimental - Zig 0.16-dev has significant networking API changes
-// Some functionality may require updates as the Zig std evolves
+// Provides TCP/UDP sockets through Zig's injectable std.Io networking APIs.
 
 const std = @import("std");
 const posix = std.posix;
+const net = std.Io.net;
 const Allocator = std.mem.Allocator;
+const compat = @import("compat.zig");
 
 // ==================== Core Types ====================
 
@@ -63,12 +62,12 @@ pub const Address = union(enum) {
 
     /// Parse IPv6 from string "::1" or "2001:db8::1"
     pub fn parseIp6(ip_str: []const u8, port: u16) !Address {
-        var addr: [16]u8 = [_]u8{0} ** 16;
+        var addr: [16]u8 = @splat(0);
 
         // Handle :: notation (zero compression)
         if (std.mem.indexOf(u8, ip_str, "::")) |double_colon_pos| {
-            var before = ip_str[0..double_colon_pos];
-            var after = ip_str[double_colon_pos + 2 ..];
+            const before = ip_str[0..double_colon_pos];
+            const after = ip_str[double_colon_pos + 2 ..];
 
             var before_parts = std.mem.splitScalar(u8, before, ':');
             var i: usize = 0;
@@ -82,12 +81,12 @@ pub const Address = union(enum) {
 
             var after_parts = std.mem.splitScalar(u8, after, ':');
             var j: usize = 15;
-            var after_list = std.ArrayList(u16).init(std.heap.page_allocator);
-            defer after_list.deinit();
+            var after_list: std.ArrayList(u16) = .empty;
+            defer after_list.deinit(std.heap.page_allocator);
             while (after_parts.next()) |part| {
                 if (part.len == 0) continue;
                 const value = try std.fmt.parseInt(u16, part, 16);
-                try after_list.append(value);
+                try after_list.append(std.heap.page_allocator, value);
             }
             var k = after_list.items.len;
             while (k > 0) {
@@ -118,7 +117,7 @@ pub const Address = union(enum) {
     }
 
     pub fn localhost6(port: u16) Address {
-        var addr = [_]u8{0} ** 16;
+        var addr: [16]u8 = @splat(0);
         addr[15] = 1; // ::1
         return initIp6(addr, port);
     }
@@ -129,7 +128,7 @@ pub const Address = union(enum) {
     }
 
     pub fn any6(port: u16) Address {
-        return initIp6([_]u8{0} ** 16, port);
+        return initIp6(@splat(0), port);
     }
 
     /// Get port number
@@ -148,8 +147,37 @@ pub const Address = union(enum) {
         };
     }
 
+    /// Convert to Zig's injectable I/O address representation.
+    pub fn toIo(self: Address) net.IpAddress {
+        return switch (self) {
+            .ipv4 => |address| .{ .ip4 = .{
+                .bytes = address.addr,
+                .port = address.port,
+            } },
+            .ipv6 => |address| .{ .ip6 = .{
+                .bytes = address.addr,
+                .port = address.port,
+                .flow = address.flowinfo,
+                .interface = .{ .index = address.scope_id },
+            } },
+        };
+    }
+
+    /// Convert from Zig's injectable I/O address representation.
+    pub fn fromIo(address: net.IpAddress) Address {
+        return switch (address) {
+            .ip4 => |ip4| initIp4(ip4.bytes, ip4.port),
+            .ip6 => |ip6| .{ .ipv6 = .{
+                .port = ip6.port,
+                .addr = ip6.bytes,
+                .flowinfo = ip6.flow,
+                .scope_id = ip6.interface.index,
+            } },
+        };
+    }
+
     /// Convert to posix sockaddr
-    fn toSockAddr(self: Address) posix.sockaddr {
+    pub fn toSockAddr(self: Address) posix.sockaddr {
         var addr: posix.sockaddr = undefined;
         switch (self) {
             .ipv4 => |ipv4| {
@@ -172,38 +200,11 @@ pub const Address = union(enum) {
     }
 
     /// Get sockaddr size
-    fn getSockAddrSize(self: Address) usize {
+    pub fn getSockAddrSize(self: Address) usize {
         return switch (self) {
             .ipv4 => @sizeOf(posix.sockaddr.in),
             .ipv6 => @sizeOf(posix.sockaddr.in6),
         };
-    }
-
-    /// Create from posix sockaddr
-    fn fromSockAddr(addr: *const posix.sockaddr) Address {
-        switch (addr.family) {
-            posix.AF.INET => {
-                const addr_in = @as(*const posix.sockaddr.in, @ptrCast(@alignCast(addr)));
-                var ip: [4]u8 = undefined;
-                @memcpy(&ip, &addr_in.addr);
-                return .{ .ipv4 = .{
-                    .port = std.mem.bigToNative(u16, addr_in.port),
-                    .addr = ip,
-                } };
-            },
-            posix.AF.INET6 => {
-                const addr_in6 = @as(*const posix.sockaddr.in6, @ptrCast(@alignCast(addr)));
-                var ip: [16]u8 = undefined;
-                @memcpy(&ip, &addr_in6.addr);
-                return .{ .ipv6 = .{
-                    .port = std.mem.bigToNative(u16, addr_in6.port),
-                    .addr = ip,
-                    .flowinfo = addr_in6.flowinfo,
-                    .scope_id = addr_in6.scope_id,
-                } };
-            },
-            else => unreachable,
-        }
     }
 
     /// Format as string (caller owns memory)
@@ -235,34 +236,54 @@ pub const Address = union(enum) {
 // ==================== TCP Client ====================
 
 pub const TcpStream = struct {
-    socket: posix.socket_t,
+    io: std.Io,
+    stream: net.Stream,
+    local_address: Address,
+    remote_address: Address,
+    read_timeout: std.Io.Timeout = .none,
 
     /// Connect to address
     pub fn connect(address: Address) !TcpStream {
-        const sock = try posix.socket(address.getFamily(), posix.SOCK.STREAM, 0);
-        errdefer posix.close(sock);
+        return connectWithIo(compat.io(), address);
+    }
 
-        const addr = address.toSockAddr();
-        try posix.connect(sock, &addr, @intCast(address.getSockAddrSize()));
-
-        return TcpStream{ .socket = sock };
+    /// Connect using an explicitly supplied I/O implementation.
+    pub fn connectWithIo(io: std.Io, address: Address) !TcpStream {
+        const remote_address = address.toIo();
+        const stream = try remote_address.connect(io, .{
+            .mode = .stream,
+            .protocol = .tcp,
+        });
+        return .{
+            .io = io,
+            .stream = stream,
+            .local_address = .fromIo(stream.socket.address),
+            .remote_address = address,
+        };
     }
 
     /// Close connection
     pub fn close(self: *TcpStream) void {
-        posix.close(self.socket);
+        self.stream.close(self.io);
     }
 
     /// Read bytes (returns number read)
     pub fn read(self: *TcpStream, buffer: []u8) !usize {
-        return try posix.read(self.socket, buffer);
+        var data = [1][]u8{buffer};
+        if (self.read_timeout == .none) return self.stream.read(self.io, &data);
+
+        const result = try self.io.operateTimeout(.{ .net_read = .{
+            .socket_handle = self.stream.socket.handle,
+            .data = &data,
+        } }, self.read_timeout);
+        return compat.netReadLength(try result.net_read);
     }
 
     /// Read exact number of bytes
     pub fn readAll(self: *TcpStream, buffer: []u8) !void {
         var total: usize = 0;
         while (total < buffer.len) {
-            const n = try posix.read(self.socket, buffer[total..]);
+            const n = try self.read(buffer[total..]);
             if (n == 0) return error.EndOfStream;
             total += n;
         }
@@ -272,7 +293,13 @@ pub const TcpStream = struct {
     pub fn write(self: *TcpStream, bytes: []const u8) !void {
         var written: usize = 0;
         while (written < bytes.len) {
-            const n = try posix.write(self.socket, bytes[written..]);
+            const data = [1][]const u8{bytes[written..]};
+            const result = try self.io.operate(.{ .net_write = .{
+                .socket_handle = self.stream.socket.handle,
+                .data = &data,
+            } });
+            const n = try result.net_write;
+            if (n == 0) return error.WriteZero;
             written += n;
         }
     }
@@ -290,111 +317,90 @@ pub const TcpStream = struct {
 
     /// Set read timeout (milliseconds)
     pub fn setReadTimeout(self: *TcpStream, timeout_ms: u64) !void {
-        const timeout = posix.timeval{
-            .tv_sec = @intCast(timeout_ms / 1000),
-            .tv_usec = @intCast((timeout_ms % 1000) * 1000),
-        };
-        try posix.setsockopt(
-            self.socket,
-            posix.SOL.SOCKET,
-            posix.SO.RCVTIMEO,
-            std.mem.asBytes(&timeout),
-        );
+        const milliseconds = std.math.cast(i64, timeout_ms) orelse return error.InvalidTimeout;
+        self.read_timeout = compat.timeoutMilliseconds(milliseconds);
     }
 
     /// Get local address
     pub fn localAddress(self: *TcpStream) !Address {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-        try posix.getsockname(self.socket, &addr, &len);
-        return Address.fromSockAddr(&addr);
+        return self.local_address;
     }
 
     /// Get remote address
     pub fn remoteAddress(self: *TcpStream) !Address {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-        try posix.getpeername(self.socket, &addr, &len);
-        return Address.fromSockAddr(&addr);
+        return self.remote_address;
     }
 };
 
 // ==================== TCP Server ====================
 
 pub const TcpListener = struct {
-    socket: posix.socket_t,
+    io: std.Io,
+    server: net.Server,
     address: Address,
 
     /// Bind to address and listen
     pub fn bind(address: Address) !TcpListener {
-        const sock = try posix.socket(address.getFamily(), posix.SOCK.STREAM, 0);
-        errdefer posix.close(sock);
+        return bindWithIo(compat.io(), address);
+    }
 
-        // Set SO_REUSEADDR
-        const enable: c_int = 1;
-        try posix.setsockopt(
-            sock,
-            posix.SOL.SOCKET,
-            posix.SO.REUSEADDR,
-            std.mem.asBytes(&enable),
-        );
-
-        // For IPv6, also set IPV6_V6ONLY to false for dual-stack support
-        if (address.getFamily() == posix.AF.INET6) {
-            const v6only: c_int = 0;
-            posix.setsockopt(
-                sock,
-                posix.IPPROTO.IPV6,
-                26, // IPV6_V6ONLY
-                std.mem.asBytes(&v6only),
-            ) catch {};
-        }
-
-        const addr = address.toSockAddr();
-        try posix.bind(sock, &addr, @intCast(address.getSockAddrSize()));
-
-        try posix.listen(sock, 128);
-
-        return TcpListener{
-            .socket = sock,
-            .address = address,
+    /// Bind using an explicitly supplied I/O implementation.
+    pub fn bindWithIo(io: std.Io, address: Address) !TcpListener {
+        const io_address = address.toIo();
+        const server = try io_address.listen(io, .{
+            .kernel_backlog = 128,
+            // std.Io enables SO_REUSEPORT together with SO_REUSEADDR here,
+            // which would allow another listener to claim the same live port.
+            .reuse_address = false,
+        });
+        return .{
+            .io = io,
+            .server = server,
+            .address = .fromIo(server.socket.address),
         };
     }
 
     /// Bind to any address
     pub fn bindAny(port: u16) !TcpListener {
-        return try bind(Address.any(port));
+        return bind(Address.any(port));
+    }
+
+    pub fn bindAnyWithIo(io: std.Io, port: u16) !TcpListener {
+        return bindWithIo(io, Address.any(port));
     }
 
     /// Bind to localhost
     pub fn bindLocalhost(port: u16) !TcpListener {
-        return try bind(Address.localhost(port));
+        return bind(Address.localhost(port));
+    }
+
+    pub fn bindLocalhostWithIo(io: std.Io, port: u16) !TcpListener {
+        return bindWithIo(io, Address.localhost(port));
     }
 
     /// Close listener
     pub fn deinit(self: *TcpListener) void {
-        posix.close(self.socket);
+        self.server.deinit(self.io);
     }
 
     /// Accept connection
     pub fn accept(self: *TcpListener) !TcpConnection {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-
-        const client_sock = try posix.accept(self.socket, &addr, &len, 0);
-
-        return TcpConnection{
-            .stream = TcpStream{ .socket = client_sock },
-            .address = Address.fromSockAddr(&addr),
+        const stream = try self.server.accept(self.io);
+        const remote_address: Address = .fromIo(stream.socket.address);
+        return .{
+            .stream = .{
+                .io = self.io,
+                .stream = stream,
+                .local_address = self.address,
+                .remote_address = remote_address,
+            },
+            .address = remote_address,
         };
     }
 
     /// Get local address
     pub fn localAddress(self: *TcpListener) !Address {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-        try posix.getsockname(self.socket, &addr, &len);
-        return Address.fromSockAddr(&addr);
+        return self.address;
     }
 };
 
@@ -411,85 +417,79 @@ pub const TcpConnection = struct {
 // ==================== UDP Socket ====================
 
 pub const UdpSocket = struct {
-    socket: posix.socket_t,
+    io: std.Io,
+    socket: net.Socket,
+    read_timeout: std.Io.Timeout = .none,
 
     /// Bind to address
     pub fn bind(address: Address) !UdpSocket {
-        const sock = try posix.socket(address.getFamily(), posix.SOCK.DGRAM, 0);
-        errdefer posix.close(sock);
+        return bindWithIo(compat.io(), address);
+    }
 
-        const addr = address.toSockAddr();
-        try posix.bind(sock, &addr, @intCast(address.getSockAddrSize()));
-
-        return UdpSocket{ .socket = sock };
+    /// Bind using an explicitly supplied I/O implementation.
+    pub fn bindWithIo(io: std.Io, address: Address) !UdpSocket {
+        const io_address = address.toIo();
+        return .{
+            .io = io,
+            .socket = try io_address.bind(io, .{
+                .mode = .dgram,
+                .protocol = .udp,
+            }),
+        };
     }
 
     /// Bind to any address
     pub fn bindAny(port: u16) !UdpSocket {
-        return try bind(Address.any(port));
+        return bind(Address.any(port));
+    }
+
+    pub fn bindAnyWithIo(io: std.Io, port: u16) !UdpSocket {
+        return bindWithIo(io, Address.any(port));
     }
 
     /// Bind to localhost
     pub fn bindLocalhost(port: u16) !UdpSocket {
-        return try bind(Address.localhost(port));
+        return bind(Address.localhost(port));
+    }
+
+    pub fn bindLocalhostWithIo(io: std.Io, port: u16) !UdpSocket {
+        return bindWithIo(io, Address.localhost(port));
     }
 
     /// Close socket
     pub fn close(self: *UdpSocket) void {
-        posix.close(self.socket);
+        self.socket.close(self.io);
     }
 
     /// Send datagram
     pub fn sendTo(self: *UdpSocket, data: []const u8, address: Address) !usize {
-        const addr = address.toSockAddr();
-        return try posix.sendto(
-            self.socket,
-            data,
-            0,
-            &addr,
-            @intCast(address.getSockAddrSize()),
-        );
+        const destination = address.toIo();
+        try self.socket.send(self.io, &destination, data);
+        return data.len;
     }
 
     /// Receive datagram
     pub fn recvFrom(self: *UdpSocket, buffer: []u8) !struct { size: usize, address: Address } {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-
-        const size = try posix.recvfrom(
-            self.socket,
-            buffer,
-            0,
-            &addr,
-            &len,
-        );
+        const message = if (self.read_timeout == .none)
+            try self.socket.receive(self.io, buffer)
+        else
+            try self.socket.receiveTimeout(self.io, buffer, self.read_timeout);
 
         return .{
-            .size = size,
-            .address = Address.fromSockAddr(&addr),
+            .size = message.data.len,
+            .address = .fromIo(message.from),
         };
     }
 
     /// Set read timeout
     pub fn setReadTimeout(self: *UdpSocket, timeout_ms: u64) !void {
-        const timeout = posix.timeval{
-            .tv_sec = @intCast(timeout_ms / 1000),
-            .tv_usec = @intCast((timeout_ms % 1000) * 1000),
-        };
-        try posix.setsockopt(
-            self.socket,
-            posix.SOL.SOCKET,
-            posix.SO.RCVTIMEO,
-            std.mem.asBytes(&timeout),
-        );
+        const milliseconds = std.math.cast(i64, timeout_ms) orelse return error.InvalidTimeout;
+        self.read_timeout = compat.timeoutMilliseconds(milliseconds);
     }
 
     /// Get local address
     pub fn localAddress(self: *UdpSocket) !Address {
-        var addr: posix.sockaddr = undefined;
-        var len: posix.socklen_t = @sizeOf(posix.sockaddr);
-        try posix.getsockname(self.socket, &addr, &len);
-        return Address.fromSockAddr(&addr);
+        return .fromIo(self.socket.address);
     }
 };
 
@@ -497,16 +497,24 @@ pub const UdpSocket = struct {
 
 /// Check if port is available
 pub fn isPortAvailable(port: u16) bool {
-    var listener = TcpListener.bindAny(port) catch return false;
+    return isPortAvailableWithIo(compat.io(), port);
+}
+
+pub fn isPortAvailableWithIo(io: std.Io, port: u16) bool {
+    var listener = TcpListener.bindAnyWithIo(io, port) catch return false;
     listener.deinit();
     return true;
 }
 
 /// Find available port in range
 pub fn findAvailablePort(start: u16, end: u16) ?u16 {
+    return findAvailablePortWithIo(compat.io(), start, end);
+}
+
+pub fn findAvailablePortWithIo(io: std.Io, start: u16, end: u16) ?u16 {
     var port = start;
     while (port <= end) : (port += 1) {
-        if (isPortAvailable(port)) return port;
+        if (isPortAvailableWithIo(io, port)) return port;
     }
     return null;
 }
@@ -531,17 +539,17 @@ test "Address - localhost and any" {
 
     const local = Address.localhost(8080);
     try testing.expectEqual(@as(u16, 8080), local.getPort());
-    try testing.expectEqual(@as(u8, 127), local.addr[0]);
+    try testing.expectEqual(@as(u8, 127), local.ipv4.addr[0]);
 
     const any = Address.any(9000);
     try testing.expectEqual(@as(u16, 9000), any.getPort());
-    try testing.expectEqual(@as(u8, 0), any.addr[0]);
+    try testing.expectEqual(@as(u8, 0), any.ipv4.addr[0]);
 }
 
 test "TcpListener - bind and local address" {
     const testing = std.testing;
 
-    var listener = try TcpListener.bindLocalhost(0);
+    var listener = try TcpListener.bindLocalhostWithIo(std.testing.io, 0);
     defer listener.deinit();
 
     const addr = try listener.localAddress();
@@ -553,7 +561,7 @@ test "TCP - client server echo" {
     const testing = std.testing;
 
     // Start server
-    var listener = try TcpListener.bindLocalhost(0);
+    var listener = try TcpListener.bindLocalhostWithIo(std.testing.io, 0);
     defer listener.deinit();
 
     const addr = try listener.localAddress();
@@ -574,11 +582,8 @@ test "TCP - client server echo" {
     const thread = try std.Thread.spawn(.{}, ServerThread.run, .{&listener});
     defer thread.join();
 
-    // Give server time to start
-    std.time.sleep(10 * std.time.ns_per_ms);
-
     // Connect client
-    var client = try TcpStream.connect(Address.localhost(port));
+    var client = try TcpStream.connectWithIo(std.testing.io, Address.localhost(port));
     defer client.close();
 
     // Send and receive
@@ -594,10 +599,10 @@ test "TCP - client server echo" {
 test "UDP - send and receive" {
     const testing = std.testing;
 
-    var socket1 = try UdpSocket.bindLocalhost(0);
+    var socket1 = try UdpSocket.bindLocalhostWithIo(std.testing.io, 0);
     defer socket1.close();
 
-    var socket2 = try UdpSocket.bindLocalhost(0);
+    var socket2 = try UdpSocket.bindLocalhostWithIo(std.testing.io, 0);
     defer socket2.close();
 
     const addr1 = try socket1.localAddress();
@@ -615,23 +620,45 @@ test "UDP - send and receive" {
     try testing.expectEqual(addr1.getPort(), result.address.getPort());
 }
 
+test "TCP and UDP read timeouts remain observable" {
+    const testing = std.testing;
+
+    var listener = try TcpListener.bindLocalhostWithIo(testing.io, 0);
+    defer listener.deinit();
+
+    var client = try TcpStream.connectWithIo(testing.io, Address.localhost(listener.address.getPort()));
+    defer client.close();
+    var connection = try listener.accept();
+    defer connection.close();
+
+    try client.setReadTimeout(1);
+    var tcp_buffer: [1]u8 = undefined;
+    try testing.expectError(error.Timeout, client.read(&tcp_buffer));
+
+    var socket = try UdpSocket.bindLocalhostWithIo(testing.io, 0);
+    defer socket.close();
+    try socket.setReadTimeout(1);
+    var udp_buffer: [1]u8 = undefined;
+    try testing.expectError(error.Timeout, socket.recvFrom(&udp_buffer));
+}
+
 test "Port availability" {
     const testing = std.testing;
 
-    var listener = try TcpListener.bindLocalhost(0);
+    var listener = try TcpListener.bindLocalhostWithIo(std.testing.io, 0);
     defer listener.deinit();
 
     const addr = try listener.localAddress();
     const port = addr.getPort();
 
     // Port should not be available
-    try testing.expect(!isPortAvailable(port));
+    try testing.expect(!isPortAvailableWithIo(std.testing.io, port));
 }
 
 test "Find available port" {
     const testing = std.testing;
 
-    const port = findAvailablePort(50000, 50100);
+    const port = findAvailablePortWithIo(std.testing.io, 50000, 50100);
     try testing.expect(port != null);
 
     if (port) |p| {

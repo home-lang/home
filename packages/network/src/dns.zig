@@ -2,167 +2,56 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native_os = builtin.os.tag;
 const network = @import("network.zig");
+const compat = @import("compat.zig");
+const net = std.Io.net;
 const Address = network.Address;
 const Allocator = std.mem.Allocator;
 
 /// DNS resolver for hostname lookups
 pub const DnsResolver = struct {
     allocator: Allocator,
+    io: std.Io,
 
     pub fn init(allocator: Allocator) DnsResolver {
-        return .{ .allocator = allocator };
+        return initWithIo(compat.io(), allocator);
+    }
+
+    pub fn initWithIo(io: std.Io, allocator: Allocator) DnsResolver {
+        return .{ .allocator = allocator, .io = io };
     }
 
     /// Lookup hostname and return all addresses (A and AAAA records)
     pub fn lookup(self: *DnsResolver, hostname: []const u8) ![]Address {
-        if (comptime native_os == .linux) {
-            // DNS resolution requires libc on Linux
-            return error.DnsLookupFailed;
-        } else {
-            // Use libc getaddrinfo for DNS resolution
-            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-            hints.family = std.c.AF.UNSPEC; // Allow both IPv4 and IPv6
-            hints.socktype = std.c.SOCK.STREAM;
-
-            var result: ?*std.c.addrinfo = null;
-            const ret = std.c.getaddrinfo(
-                hostname.ptr,
-                null,
-                &hints,
-                &result,
-            );
-
-            if (ret != 0) {
-                return error.DnsLookupFailed;
-            }
-
-            defer if (result) |res| std.c.freeaddrinfo(res);
-
-            // Count results
-            var count: usize = 0;
-            var current = result;
-            while (current) |node| : (current = node.next) {
-                count += 1;
-            }
-
-            if (count == 0) {
-                return error.NoAddressFound;
-            }
-
-            // Allocate and populate addresses
-            var addresses = try self.allocator.alloc(Address, count);
-            errdefer self.allocator.free(addresses);
-            var i: usize = 0;
-
-            current = result;
-            while (current) |node| : (current = node.next) {
-                const addr = node.addr orelse continue;
-
-                addresses[i] = switch (addr.family) {
-                    std.c.AF.INET => blk: {
-                        const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
-                        var ip: [4]u8 = undefined;
-                        @memcpy(&ip, &addr_in.addr);
-                        break :blk Address.initIp4(ip, 0);
-                    },
-                    std.c.AF.INET6 => blk: {
-                        const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
-                        var ip: [16]u8 = undefined;
-                        @memcpy(&ip, &addr_in6.addr);
-                        break :blk Address.initIp6(ip, 0);
-                    },
-                    else => continue,
-                };
-
-                i += 1;
-            }
-
-            return addresses[0..i];
-        }
+        return self.lookupFamily(hostname, null);
     }
 
     /// Lookup and return only IPv4 addresses (A records)
     pub fn lookupIpv4(self: *DnsResolver, hostname: []const u8) ![]Address {
-        if (comptime native_os == .linux) {
-            _ = self;
-            _ = hostname;
-            return error.DnsLookupFailed;
-        } else {
-            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-            hints.family = std.c.AF.INET; // IPv4 only
-            hints.socktype = std.c.SOCK.STREAM;
-
-            var result: ?*std.c.addrinfo = null;
-            const ret = std.c.getaddrinfo(
-                hostname.ptr,
-                null,
-                &hints,
-                &result,
-            );
-
-            if (ret != 0) {
-                return error.DnsLookupFailed;
-            }
-
-            defer if (result) |res| std.c.freeaddrinfo(res);
-
-            var addresses = std.ArrayList(Address).init(self.allocator);
-            errdefer addresses.deinit();
-            var current = result;
-            while (current) |node| : (current = node.next) {
-                const addr = node.addr orelse continue;
-                if (addr.family != std.c.AF.INET) continue;
-
-                const addr_in = @as(*const std.c.sockaddr.in, @ptrCast(@alignCast(addr)));
-                var ip: [4]u8 = undefined;
-                @memcpy(&ip, &addr_in.addr);
-                try addresses.append(Address.initIp4(ip, 0));
-            }
-
-            return addresses.toOwnedSlice();
-        }
+        return self.lookupFamily(hostname, .ip4);
     }
 
     /// Lookup and return only IPv6 addresses (AAAA records)
     pub fn lookupIpv6(self: *DnsResolver, hostname: []const u8) ![]Address {
-        if (comptime native_os == .linux) {
-            _ = self;
-            _ = hostname;
-            return error.DnsLookupFailed;
-        } else {
-            var hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo);
-            hints.family = std.c.AF.INET6; // IPv6 only
-            hints.socktype = std.c.SOCK.STREAM;
+        return self.lookupFamily(hostname, .ip6);
+    }
 
-            var result: ?*std.c.addrinfo = null;
-            const ret = std.c.getaddrinfo(
-                hostname.ptr,
-                null,
-                &hints,
-                &result,
-            );
+    fn lookupFamily(self: *DnsResolver, hostname: []const u8, family: ?net.IpAddress.Family) ![]Address {
+        const host_name = try net.HostName.init(hostname);
+        var results_buffer: [16]net.HostName.LookupResult = undefined;
+        var results: std.Io.Queue(net.HostName.LookupResult) = .init(&results_buffer);
+        try host_name.lookup(self.io, &results, .{ .port = 0, .family = family });
 
-            if (ret != 0) {
-                return error.DnsLookupFailed;
-            }
-
-            defer if (result) |res| std.c.freeaddrinfo(res);
-
-            var addresses = std.ArrayList(Address).init(self.allocator);
-            errdefer addresses.deinit();
-            var current = result;
-            while (current) |node| : (current = node.next) {
-                const addr = node.addr orelse continue;
-                if (addr.family != std.c.AF.INET6) continue;
-
-                const addr_in6 = @as(*const std.c.sockaddr.in6, @ptrCast(@alignCast(addr)));
-                var ip: [16]u8 = undefined;
-                @memcpy(&ip, &addr_in6.addr);
-                try addresses.append(Address.initIp6(ip, 0));
-            }
-
-            return addresses.toOwnedSlice();
+        var addresses: std.ArrayList(Address) = .empty;
+        errdefer addresses.deinit(self.allocator);
+        while (results.getOneUncancelable(self.io)) |result| switch (result) {
+            .address => |address| try addresses.append(self.allocator, .fromIo(address)),
+            .canonical_name => {},
+        } else |err| switch (err) {
+            error.Closed => {},
         }
+
+        if (addresses.items.len == 0) return error.NoAddressFound;
+        return addresses.toOwnedSlice(self.allocator);
     }
 
     /// Lookup and connect to first available address
@@ -180,7 +69,7 @@ pub const DnsResolver = struct {
                 .ipv6 => |*ipv6| ipv6.port = port,
             }
 
-            const stream = network.TcpStream.connect(addr_with_port) catch |err| {
+            const stream = network.TcpStream.connectWithIo(self.io, addr_with_port) catch |err| {
                 last_error = err;
                 continue;
             };
@@ -196,7 +85,7 @@ pub const DnsResolver = struct {
         if (comptime native_os == .linux) {
             return error.ReverseLookupFailed;
         } else {
-            var hostname_buf: [1024]u8 = [_]u8{0} ** 1024;
+            var hostname_buf: [1024]u8 = @splat(0);
 
             const addr = address.toSockAddr();
             const addr_len = @as(std.c.socklen_t, @intCast(address.getSockAddrSize()));
@@ -227,9 +116,13 @@ pub const AsyncDnsResolver = struct {
     resolver: DnsResolver,
 
     pub fn init(allocator: Allocator) AsyncDnsResolver {
+        return initWithIo(compat.io(), allocator);
+    }
+
+    pub fn initWithIo(io: std.Io, allocator: Allocator) AsyncDnsResolver {
         return .{
             .allocator = allocator,
-            .resolver = DnsResolver.init(allocator),
+            .resolver = DnsResolver.initWithIo(io, allocator),
         };
     }
 
@@ -300,7 +193,7 @@ test "DNS - localhost lookup" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var resolver = DnsResolver.init(allocator);
+    var resolver = DnsResolver.initWithIo(std.testing.io, allocator);
     const addresses = try resolver.lookup("localhost");
     defer allocator.free(addresses);
 

@@ -935,6 +935,7 @@ pub fn build(b: *std.Build) void {
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
+    const network_pool_pkg = createPackage(b, "packages/network/src/pool.zig", target, optimize, zig_test_framework);
     const http_pkg = createPackage(b, "packages/http/src/http.zig", target, optimize, zig_test_framework);
 
     // Cloud infrastructure package
@@ -2041,6 +2042,15 @@ pub fn build(b: *std.Build) void {
     const ipv6_tests = b.addTest(.{ .root_module = ipv6_pkg });
     const run_ipv6_tests = b.addRunArtifact(ipv6_tests);
     dependOnTest(test_step, &run_ipv6_tests.step, test_filter, "ipv6");
+
+    // Core network and connection pool tests
+    const network_tests = b.addTest(.{ .root_module = network_pkg });
+    const run_network_tests = b.addRunArtifact(network_tests);
+    dependOnTest(test_step, &run_network_tests.step, test_filter, "network");
+
+    const network_pool_tests = b.addTest(.{ .root_module = network_pool_pkg });
+    const run_network_pool_tests = b.addRunArtifact(network_pool_tests);
+    dependOnTest(test_step, &run_network_pool_tests.step, test_filter, "network_pool");
 
     // Device Tree Binary tests
     const dtb_tests = b.addTest(.{ .root_module = dtb_pkg });
