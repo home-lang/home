@@ -1019,3 +1019,31 @@ obsolete generated compiler images after live-process and open-file checks.
 Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-installed-libraries-event-maps.tar.gz` contains
 **5,936** verified payloads, SHA-256
 `1cfa42cdd3d3c058e8e9f3a4c12f6855aee2ec6aade842b76f5339d64ca0efc5`. Real-project source files are excluded.
+
+## Cached import provenance capacity
+
+Owner imports previously reserved provenance capacity for the entire source
+graph even when its identities were already cached. Re-importing the regression
+graph doubled the canonical map from 256 to 512 slots without adding types.
+The registry now reserves only for absent source origins before the payload
+transaction, retaining stale-owner validation and allocation-failure rollback.
+
+All 10 focused owner tests, 212 driver tests and 299 Program tests pass. The
+negative control with the old reservation fails at the expected 256-versus-512
+capacity assertion. The combined full-suite run peaks at 2,291 MB.
+
+The stripped release trace builds at 2,825 MB. The table replay still exceeds
+the unchanged 3,840 MB guard (5,454 MB observed between polls): 31 library
+providers complete and 441 owner imports occur before the stop, while the
+current provider has about 12,000 types. All 306 input hashes remain unchanged.
+This fixes a proven over-allocation; whole-owner metadata transfer still needs
+further memory qualification. No table replacement is claimed.
+
+The production release builds at **2,818 MB** and passes all eight installed-library
+observations plus 50 declaration/build/watch observations against TypeScript
+7.0.2. The combined contract run peaks at **1,582 MB**.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-provenance-capacity.tar.gz`
+contains **194** verified payloads, SHA-256
+`c6044318fe58ae20a0c39ea53091f0480ea094f1b38b7304d1a1172f3e7f6fd8`.
+Real-project sources are excluded.

@@ -193,8 +193,16 @@ pub const Registry = struct {
         }
         const slot = try self.target_types.getOrPut(self.allocator, target);
         if (!slot.found_existing) slot.value_ptr.* = .{};
-        try slot.value_ptr.canonical.ensureUnusedCapacity(self.allocator, source_count);
-        try slot.value_ptr.origins.ensureTotalCapacity(self.allocator, target_count + source_count);
+        // Imported diamonds may already have every source identity. Reserve
+        // only for new origins: reserving the complete source again can grow
+        // both tables even when the payload transaction adds no types.
+        var new_origins: u32 = 0;
+        for (checker.Primitive.first_dynamic..source_count) |index| {
+            const origin = self.typeOrigin(view.types, owner, @intCast(index));
+            if (!slot.value_ptr.canonical.contains(origin)) new_origins += 1;
+        }
+        try slot.value_ptr.canonical.ensureUnusedCapacity(self.allocator, new_origins);
+        try slot.value_ptr.origins.ensureTotalCapacity(self.allocator, target_count + new_origins);
         const first = self.nodes.items.len;
         errdefer self.cancelDeclarations(first);
         var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .source_types = view.types, .target_types = target };
@@ -464,6 +472,33 @@ test "source owners: transitive imports preserve original type identity without 
     defer repeated.deinit();
     try T.expectEqualDeep(completed, poolLengths(&destination.pool));
     try T.expectEqual(try indirect.types.ids.typeId(intermediate.object), try repeated.types.ids.typeId(intermediate.object));
+}
+
+test "source owners: cached imports retain provenance capacity" {
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    var original = try Fixture.init();
+    defer original.deinit();
+    // Enough distinct identities to make reserving them twice grow the map.
+    for (0..128) |_| _ = try original.types.internObjectType(&.{});
+    const owner = try registry.register(original.view());
+    var target = try checker.Interner.init(T.allocator);
+    defer target.deinit();
+    var names = try strings.Interner.init(T.allocator);
+    defer names.deinit();
+    var first = try registry.importOwner(&target, &names, owner);
+    defer first.deinit();
+    const before = registry.target_types.get(&target).?;
+    const canonical_capacity = before.canonical.capacity();
+    const origins_capacity = before.origins.capacity;
+    const lengths = poolLengths(&target.pool);
+    var repeated = try registry.importOwner(&target, &names, owner);
+    defer repeated.deinit();
+    const after = registry.target_types.get(&target).?;
+    try T.expectEqual(canonical_capacity, after.canonical.capacity());
+    try T.expectEqual(origins_capacity, after.origins.capacity);
+    try T.expectEqualDeep(lengths, poolLengths(&target.pool));
+    try T.expectEqual(try first.types.ids.typeId(original.object), try repeated.types.ids.typeId(original.object));
 }
 
 test "source owners: cached imports still roll back failed metadata and reject stale dependencies" {
