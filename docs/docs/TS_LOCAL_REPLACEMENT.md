@@ -1221,3 +1221,29 @@ contains **2,892** verified payloads, SHA-256
 `66f25529b492eb6f866af2a420f6b1ab77f471c8683479a16c6bfaf4cd9d9164`.
 Final validation peaks at **2,276 MB**; the 4,190-input source freeze is unchanged.
 Real-project source and diagnostic text are excluded.
+
+## Generic index values preserve universal sources
+
+The checker-specific generic index guard rejected `any` and `never` sources
+when the target index value was a constrained type parameter. This rejected
+`Row[] | any[]` produced by `map.get(key) ?? []` in a generic class. Both
+sources now retain their normal assignability. A separate array shortcut no
+longer treats an `unknown` source element as universally assignable. Concrete
+values and `unknown` still cannot flow into an arbitrary constrained subtype.
+The native comparison retains both negative TS2322 diagnostics at identical
+locations, while `any[]` and `never[]` are accepted. Separate negative controls
+fail the fallback and unknown-source assertions when their fixes are removed.
+
+All **4,619 checker tests, 303 Program tests and ten Release CLI suites** pass.
+The production build/replay peaks at **2,790 MB**, retaining the unchanged
+**3,840 MB** guard. All 306 table inputs remain unchanged. The table project
+now reports **four** Home-only diagnostics: two TS2741, one TS2322 and one
+TS7006, down from five. Native TypeScript exits zero; Home exits one.
+A small imported alias/contextual-method probe reproduces the remaining
+search-method mismatch. Table and whole-tree replacement remain unqualified.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-generic-index-universal.tar.gz`
+contains **2,895** verified payloads, SHA-256
+`9299f29769727c3a1fb35d071e940928ef36db5a14efebca1809742abab30d59`.
+Final validation peaks at **2,168 MB**; the 4,190-input source freeze is unchanged.
+Real-project source and diagnostic text are excluded.

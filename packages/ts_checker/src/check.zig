@@ -96485,7 +96485,9 @@ pub const Checker = struct {
     }
 
     fn genericIndexSignatureValueMismatch(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
-        if (source_t == target_t) return false;
+        // These sources retain their ordinary assignability even when an
+        // index target is a constrained generic parameter.
+        if (source_t == target_t or source_t == types.Primitive.any or source_t == types.Primitive.never) return false;
         if (target_t < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target_t).is_type_parameter and
             !self.isThisTypeParameter(target_t))
@@ -139532,7 +139534,7 @@ pub const Checker = struct {
         else
             self.interner.objectNumberIndex(target_t);
         if (source_elem == types.Primitive.none or target_elem == types.Primitive.none) return null;
-        if (source_elem == types.Primitive.any or source_elem == types.Primitive.unknown or
+        if (source_elem == types.Primitive.any or
             target_elem == types.Primitive.any or target_elem == types.Primitive.unknown)
         {
             return true;
@@ -292511,4 +292513,35 @@ test "checker: negative discriminant comparison retains broad array lengths" {
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: strict empty array fallback preserves generic class row types" {
+    const s = try newSetup(
+        \\class Driver<Row extends Record<string, unknown>> {
+        \\  readonly data = new Map<string, Row[]>();
+        \\  search(key: string): { hits: Row[] } {
+        \\    const source = this.data.get(key) ?? [];
+        \\    return { hits: source.slice(0) };
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: generic index values accept any and never but reject concrete and unknown sources" {
+    const s = try newSetup(
+        \\function f<T extends { id: number }>(anyRows: any[], neverRows: never[], concrete: { id: number }[], unknownRows: unknown[]) {
+        \\  const a: T[] = anyRows;
+        \\  const b: T[] = neverRows;
+        \\  const badConcrete: T[] = concrete;
+        \\  const badUnknown: T[] = unknownRows;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
 }
