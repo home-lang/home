@@ -933,3 +933,28 @@ Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-aggregate-display-ownership
 ten verified payloads, SHA-256
 `1e51c90c4b7b3506f76f05fd1fff8c46b40aab7f5bd83b68d0c2c159b08768db`. Debug diagnostic builds temporarily disabled allocator stack capture
 to obtain symbolic traces; the production allocator configuration is unchanged.
+
+## Alias argument identity and anonymous display ownership
+
+Alias-display substitution bypassed the complete mapper-independence proof used
+by ordinary substitution. An unrelated recursive argument could therefore be
+rebuilt and structurally rendered. The no-cycle path now uses the same complete
+proof, preserving unaffected identity while still substituting dependent
+arguments. A regression fails before the fix and verifies both unchanged
+`Box<Concrete>` arguments and the required `Box<number>` update.
+
+A new symbolic DOM replay then identified stale anonymous-object members during
+recursive generic-signature display. That renderer now owns its member snapshot.
+Its forced-relocation regression fails before the fix and passes afterward. A
+signature-parameter control passes unchanged because parameters use a separate
+pool. All **4,606 checker tests** pass, including an isolated final run peaking
+at **2,279 MB** under the unchanged 3,840 MB ceiling.
+
+The optimized compiler builds, but full DOM checking still exceeds the guard
+(**3,983 MB** observed). Discovery remains unpublished, and the complete local
+replacement goal remains open. Diagnostic allocator settings used for symbolic
+traces are restored before publication.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-object-display-identity.tar.gz` contains
+twelve verified payloads, SHA-256
+`a270452bd1a4d0e47bf173486d6899cbf6cee49d51ffdd876af2c9c7ee080287`.

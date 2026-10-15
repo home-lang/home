@@ -56958,6 +56958,12 @@ pub const Checker = struct {
     ) CheckError!TypeId {
         if (subs.get(t)) |s| return s;
         if (t >= self.interner.pool.typeCount()) return t;
+        // Alias arguments may contain a concrete recursive graph unrelated
+        // to this mapper. Preserve that identity instead of rebuilding it
+        // and eagerly rendering an unchanged argument's structural surface.
+        const initial_flags = self.interner.pool.flagsOf(t);
+        if ((initial_flags.is_object_type or initial_flags.is_signature) and
+            try self.substitutionGraphUnchanged(t, subs)) return t;
         if (visited.contains(t)) return t;
         try visited.put(self.gpa, t, {});
         const flags = self.interner.pool.flagsOf(t);
@@ -195572,7 +195578,10 @@ pub const Checker = struct {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type) return null;
-        const members = self.interner.objectMembers(t);
+        // Generic signature rendering may materialize object types and
+        // relocate object_member_pool while this outer shape is displayed.
+        const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(t));
+        defer self.gpa.free(members);
         if (members.len == 0) return "{}";
         const call_id = self.string_interner.intern("__call") catch 0;
         const construct_id = self.string_interner.intern("__construct") catch 0;
@@ -292261,4 +292270,71 @@ test "checker: intersection display owns members across recursive signature inte
     try T.expect(before != s.ti.pool.member_pool.items.ptr);
     try T.expect(std.mem.indexOf(u8, display, "symbol") != null);
     try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
+}
+
+test "checker: alias display substitution preserves unrelated recursive argument identity" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const next = try s.sint.intern("next");
+    const concrete = try s.ti.internObjectType(&.{.{ .name = next, .type = types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(concrete)];
+    s.ti.pool.object_member_pool.items[payload.members_start].type = concrete;
+    const alias = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("value"), .type = parameter, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const arguments = try s.checker.diag_arena.allocator().dupe(TypeId, &.{concrete});
+    try s.checker.alias_type_args.put(T.allocator, alias, arguments);
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, parameter, types.Primitive.number_t);
+    var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer visited.deinit(T.allocator);
+    const before = s.ti.pool.typeCount();
+    try T.expect((try s.checker.substitutedAliasDisplayText(alias, "Box<Concrete>", &substitutions, &visited)) == null);
+    try T.expectEqual(before, s.ti.pool.typeCount());
+    const dependent_args = try s.checker.diag_arena.allocator().dupe(TypeId, &.{parameter});
+    try s.checker.alias_type_args.put(T.allocator, alias, dependent_args);
+    visited.clearRetainingCapacity();
+    const changed = (try s.checker.substitutedAliasDisplayText(alias, "Box<T>", &substitutions, &visited)) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("Box<number>", changed.text);
+    try T.expectEqual(types.Primitive.number_t, changed.args[0]);
+}
+
+
+test "checker: anonymous object display owns members across generic resolution" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const value = try s.sint.intern("value");
+    const body = try s.ti.internObjectType(&.{.{ .name = value, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const definition = try s.ti.reserveGenericDefinition();
+    try s.ti.completeGenericDefinition(definition, &.{parameter}, body);
+    const instance = try s.ti.internInstantiation(definition, &.{types.Primitive.number_t});
+    const signature = try s.ti.internSignature(&.{instance}, types.Primitive.boolean_t, false);
+    const outer = try s.ti.internObjectType(&.{
+        .{ .name = try s.sint.intern("run"), .type = signature, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try s.sint.intern("tail"), .type = types.Primitive.symbol_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    while (s.ti.pool.object_member_pool.items.len < s.ti.pool.object_member_pool.capacity) {
+        s.ti.pool.object_member_pool.appendAssumeCapacity(.{ .name = value, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false });
+    }
+    const before = s.ti.pool.object_member_pool.items.ptr;
+    const display = (try s.checker.allocAnonymousObjectName(outer)) orelse return error.TestUnexpectedResult;
+    try T.expect(before != s.ti.pool.object_member_pool.items.ptr);
+    try T.expect(std.mem.indexOf(u8, display, "value: number") != null);
+    try T.expect(std.mem.indexOf(u8, display, "tail: symbol") != null);
+}
+
+
+test "checker: callable display owns parameters across optional union interning" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const optional = try s.ti.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.undefined_t });
+    const signature = try s.ti.internSignature(&.{ optional, types.Primitive.symbol_t }, types.Primitive.boolean_t, false);
+    try s.checker.signature_display_min_args.put(T.allocator, signature, 0);
+    while (s.ti.pool.member_pool.items.len < s.ti.pool.member_pool.capacity) s.ti.pool.member_pool.appendAssumeCapacity(types.Primitive.string_t);
+    const before = s.ti.pool.member_pool.items.ptr;
+    const display = (try s.checker.allocCallableSignatureName(signature)) orelse return error.TestUnexpectedResult;
+    try T.expect(before != s.ti.pool.member_pool.items.ptr);
+    try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
+    try T.expect(std.mem.indexOf(u8, display, "x1?: symbol") != null);
 }
