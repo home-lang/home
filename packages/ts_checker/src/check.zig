@@ -5070,6 +5070,8 @@ pub const Checker = struct {
     /// never overflow the native stack even if evaluation produced a
     /// self-referential structural shape.
     type_name_depth: u32 = 0,
+    /// Active structural displays must terminate when their TypeId recurs.
+    type_name_in_progress: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Types currently being expanded as signature parameter/return
     /// constituents. Recursive array aliases can point their numeric
     /// index back to the same type, so diagnostic rendering needs the
@@ -6509,6 +6511,14 @@ pub const Checker = struct {
             var namespace_types = source.global_namespace_type_exports.iterator();
             while (namespace_types.next()) |entry| {
                 try self.global_namespace_type_exports.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                const exported = entry.value_ptr.*;
+                if (exported >= types.Primitive.first_dynamic and exported < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(exported).is_object_type and
+                    !self.interner.pool.flagsOf(exported).is_union and
+                    !self.interner.pool.flagsOf(exported).is_intersection)
+                {
+                    try self.qualified_alias_diagnostic_names.put(self.gpa, exported, self.string_interner.get(entry.key_ptr.*));
+                }
             }
             var generic_signatures = source.generic_signature_params.iterator();
             while (generic_signatures.next()) |entry| {
@@ -6830,6 +6840,7 @@ pub const Checker = struct {
         self.circ_ctx_stack.deinit(self.gpa);
         self.object_index_compat_checked.deinit(self.gpa);
         self.object_property_merge_checked.deinit(self.gpa);
+        self.type_name_in_progress.deinit(self.gpa);
         self.signature_constituent_display_in_progress.deinit(self.gpa);
         self.resolving_value_types.deinit(self.gpa);
         self.namespace_value_in_progress.deinit(self.gpa);
@@ -164799,7 +164810,8 @@ pub const Checker = struct {
                 try self.inferFromPair(p_str, a_str, subs);
             }
             if (p_str != types.Primitive.none and a_str == types.Primitive.none and a_num == types.Primitive.none and
-                !self.implicit_index_excluded_types.contains(arg_t)) {
+                !self.implicit_index_excluded_types.contains(arg_t))
+            {
                 const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(arg_t));
                 defer self.gpa.free(members);
                 for (members) |member| {
@@ -195950,6 +195962,9 @@ pub const Checker = struct {
         // the object itself) would otherwise overflow the native stack
         // here. Bail to an opaque name rather than crash.
         if (self.type_name_depth >= max_type_name_depth) return "...";
+        const active = try self.type_name_in_progress.getOrPut(self.gpa, t);
+        if (active.found_existing) return self.alias_display_names.get(t) orelse "...";
+        defer _ = self.type_name_in_progress.remove(t);
         self.type_name_depth += 1;
         defer self.type_name_depth -= 1;
         if (self.noInferInnerType(t)) |inner| return self.allocSimpleTypeName(inner);
@@ -292359,7 +292374,6 @@ test "checker: alias display substitution preserves unrelated recursive argument
     try T.expectEqual(types.Primitive.number_t, changed.args[0]);
 }
 
-
 test "checker: anonymous object display owns members across generic resolution" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -292384,7 +292398,6 @@ test "checker: anonymous object display owns members across generic resolution" 
     try T.expect(std.mem.indexOf(u8, display, "tail: symbol") != null);
 }
 
-
 test "checker: callable display owns parameters across optional union interning" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -292398,7 +292411,6 @@ test "checker: callable display owns parameters across optional union interning"
     try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
     try T.expect(std.mem.indexOf(u8, display, "x1?: symbol") != null);
 }
-
 
 test "checker: substituted interface display keeps declared identity" {
     const s = try newSetup("interface Item<T> { value: T; }");
@@ -292422,7 +292434,6 @@ test "checker: substituted interface display keeps declared identity" {
     try T.expectEqualStrings("Item<string>", (try s.checker.allocSimpleTypeName(chained)).?);
 }
 
-
 test "checker: unrelated substitution preserves recursive event map operators" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -292432,7 +292443,7 @@ test "checker: unrelated substitution preserves recursive event map operators" {
     const map = try s.ti.internObjectType(&.{.{ .name = event, .type = root, .is_optional = false, .is_readonly = false, .is_method = false }});
     const key = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("K"), try s.ti.internKeyof(map), types.Primitive.none, .bivariant);
     const indexed = try s.ti.internIndexedAccess(map, key);
-    const signature = try s.ti.internSignature(&.{key, indexed}, types.Primitive.void_t, false);
+    const signature = try s.ti.internSignature(&.{ key, indexed }, types.Primitive.void_t, false);
     try s.checker.recordGenericSignatureParams(signature, &.{key});
     const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(root)];
     s.ti.pool.object_member_pool.items[payload.members_start].type = signature;
@@ -292450,4 +292461,36 @@ test "checker: unrelated substitution preserves recursive event map operators" {
     try T.expect(replaced != wrapper);
     const value = s.ti.objectMember(replaced, event).?;
     try T.expectEqual(types.Primitive.number_t, try s.checker.resolveGenericType(value));
+}
+
+test "checker: recursive callable object names stop at repeated type identities" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const object = try s.ti.internObjectType(&.{});
+    const signature = try s.ti.internSignature(&.{object}, object, false);
+    try s.ti.completeFreshObjectType(object, &.{
+        .{ .name = try s.sint.intern("__call"), .type = signature, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try s.sint.intern("next"), .type = object, .is_optional = false, .is_readonly = false, .is_method = false },
+    });
+    const display = (try s.checker.allocSimpleTypeName(object)) orelse return error.TestUnexpectedResult;
+    try T.expect(display.len < 100);
+    try T.expect(std.mem.indexOf(u8, display, "...") != null);
+    try T.expectEqual(@as(usize, 0), s.checker.type_name_in_progress.count());
+    const plain = (try s.checker.allocSimpleTypeName(types.Primitive.number_t)) orelse return error.TestUnexpectedResult;
+    try T.expectEqualStrings("number", plain);
+}
+
+test "checker: imported namespace objects retain qualified diagnostic names" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const object = try s.ti.internObjectType(&.{});
+    const signature = try s.ti.internSignature(&.{object}, object, false);
+    try s.ti.completeFreshObjectType(object, &.{.{ .name = try s.sint.intern("__call"), .type = signature, .is_optional = false, .is_readonly = false, .is_method = false }});
+    var source: CheckedTypes = .{};
+    defer source.deinit(T.allocator);
+    const qualified = try s.sint.intern("Temporal.PlainDate");
+    try source.global_namespace_type_exports.put(T.allocator, qualified, object);
+    try s.checker.importProgramTypeMetadata(&.{&source});
+    s.checker.setProgramExportedClasses(&.{});
+    try T.expectEqualStrings("Temporal.PlainDate", (try s.checker.allocSimpleTypeName(object)).?);
 }

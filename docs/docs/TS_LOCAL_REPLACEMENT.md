@@ -1047,3 +1047,39 @@ Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-provenance-capacity.tar.gz`
 contains **194** verified payloads, SHA-256
 `c6044318fe58ae20a0c39ea53091f0480ea094f1b38b7304d1a1172f3e7f6fd8`.
 Real-project sources are excluded.
+
+## Recursive imported namespace diagnostics
+
+A symbolic profile localizes the table memory runaway to eager union display
+construction in `Intl.FormattableTemporalObject`. Imported namespace objects
+such as `Temporal.PlainDate` lost their qualified diagnostic names and expanded
+as structural callables. Recursive signature rendering then allocated over
+7 GB of logical live memory before the process guard stopped it. Comparing
+libc and the production allocator reproduced the same boundary; allocator
+selection alone was not a fix.
+
+Type-name rendering now stops repeated TypeIds on the active display path.
+Imported namespace object names also survive in the persistent diagnostic-only
+map, including the later exported-class setup that resets temporary program
+state. Both regressions fail at their expected assertions without the respective
+fixes: excessive recursive display length and a callable shape instead of
+`Temporal.PlainDate`. All **4,610 checker tests** pass, peaking at **2,031 MB**.
+
+The symbolic full-graph replay passes Intl and DOM, completing **119 files**
+before its 180-second deadline with **1.05 GB** last logged live allocation.
+The production compiler builds at **2,780 MB**, but the complete 306-file table
+graph still crosses the unchanged 3,840 MB ceiling (**3,851 MB** observed).
+All input hashes are unchanged after both stops. The original diagnostic-name
+runaway is removed; the table project and whole local replacement remain
+unqualified pending further memory and semantic validation.
+
+Integration passes **299 Program, 212 driver and 51 CLI tests**, plus eight
+stream checks. All **ten Release CLI suites** pass against TypeScript 7.0.2;
+the combined integration/contract run peaks at **2,169 MB**. Final Zig formatting
+changes are verified as whitespace-only against the exact tested source.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-recursive-namespace-display.tar.gz`
+contains **2,919** verified payloads, SHA-256
+`4e42c2b2e81f40830699fca2188c8f0035f16f9c33d0105518a5f0e9c7f15d11`.
+Synthetic controls, stack samples and input-integrity summaries are retained;
+real-project source files are excluded.
