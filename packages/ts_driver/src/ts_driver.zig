@@ -363,8 +363,8 @@ pub const CompileOptions = struct {
     /// fixture and package declaration files remain checked.
     skip_default_lib_check: bool = false,
     /// Canonical directory exposed by the compiler host for bundled
-    /// `lib.*.d.ts` files. Empty preserves the Program's local ancestor
-    /// lookup for callers that have not installed a compiler-host library.
+    /// `lib.*.d.ts` files. Empty lets Program discover project-installed
+    /// TypeScript libraries, with local ancestor lookup for standalone fixtures.
     default_library_path: []const u8 = "",
     /// Compiler option `alwaysStrict`: parse the file under strict-mode
     /// early-error rules even when it has no `"use strict"` prologue.
@@ -8797,19 +8797,28 @@ test "driver: skipLibCheck suppresses computed key grammar and keeps index metad
         "export type Bad = { [\"\" + \"\"](): void; };",
     }) |source| {
         const checked = try compileSource(T.allocator, source, .{ .no_emit = true, .is_declaration_file = true });
-        defer { checked.deinit(); T.allocator.destroy(checked); }
+        defer {
+            checked.deinit();
+            T.allocator.destroy(checked);
+        }
         var found = false;
         for (checked.diagnostics.items) |diagnostic| {
             if (diagnostic.code == 1169 or diagnostic.code == 1170) found = true;
         }
         try T.expect(found);
         const skipped = try compileSource(T.allocator, source, .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true });
-        defer { skipped.deinit(); T.allocator.destroy(skipped); }
+        defer {
+            skipped.deinit();
+            T.allocator.destroy(skipped);
+        }
         try T.expectEqual(@as(usize, 0), skipped.diagnostics.items.len);
         try T.expect(skipped.checked_types_ready);
     }
     const indexed = try compileSource(T.allocator, "export interface Definitions { [symbol: string]: number; }", .{ .no_emit = true, .is_declaration_file = true, .skip_lib_check = true });
-    defer { indexed.deinit(); T.allocator.destroy(indexed); }
+    defer {
+        indexed.deinit();
+        T.allocator.destroy(indexed);
+    }
     try T.expectEqual(@as(usize, 0), indexed.diagnostics.items.len);
     const name = indexed.interner.lookup("Definitions").?;
     const object = indexed.checked_types.type_names.get(name).?;

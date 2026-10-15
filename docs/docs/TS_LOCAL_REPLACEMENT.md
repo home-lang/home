@@ -980,3 +980,42 @@ complete replacement goal remains open.
 Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-interface-display-provenance.tar.gz`
 contains eleven verified payloads, SHA-256
 `20b5fe6b42e0c6b569d13f246d8ff675b7fe76132d1db9f7b35c2a71f9413427`.
+
+## Installed libraries and recursive event-map substitution
+
+Home now discovers the nearest project-installed TypeScript library directory,
+including traditional `typescript/lib` and TypeScript 7 native platform packages.
+Real paths preserve symlinked dependency ownership. Explicit compiler-host paths
+take precedence, references stay within the selected installation, and `noLib`
+and `skipDefaultLibCheck` retain their intended behavior.
+
+Full DOM loading exposed needless recursive event-map substitution: the
+independence proof rejected every `keyof` and indexed-access node regardless of
+its operands. Checking `MessageEventTarget` manufactured about 78,000 types. The
+proof now follows those operands, preserving mapper-independent graphs while
+still substituting real dependencies. The reduced regression fails before the
+fix, preserves the original identity afterward, and checks a dependent operand.
+
+The production compiler passes all eight installed-library observations against
+TypeScript 7.0.2, including valid and invalid assignments with explicit and
+target-default libraries. Both compilers load identical **63-file and 94-file**
+graphs with matching library hashes. The initial combined run peaks at
+**2,752 MB**, below the unchanged 3,840 MB guard. All ten Release CLI suites and
+nine existing Debug suites pass. The separate Debug full-DOM contract exceeds
+its 90-second deadline and is retained as incomplete.
+
+Validation also passes **4,608 checker, 299 Program, 211 driver and 51 CLI tests**,
+plus eight stream checks. A native TypeScript watch test exposed a readiness
+race: output could appear before watchers were installed. The contract now
+waits for watch readiness before editing; both compilers pass the rerun.
+
+The real table graph remains **306 files** with native exit zero, but Home still
+exceeds the memory guard (**4,810 MB** observed). Post-stop hashes confirm all
+graph inputs and project sources are unchanged. The table project and the
+complete local replacement goal remain unqualified. Cleanup removed
+**1,333,145,320 bytes** of inactive cache objects and **967,360,416 bytes** of
+obsolete generated compiler images after live-process and open-file checks.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-installed-libraries-event-maps.tar.gz` contains
+**5,936** verified payloads, SHA-256
+`1cfa42cdd3d3c058e8e9f3a4c12f6855aee2ec6aade842b76f5339d64ca0efc5`. Real-project source files are excluded.

@@ -207,6 +207,14 @@ def main() -> None:
                             time.sleep(0.05)
                         raise AssertionError(log_path.read_text())
                     await_declaration("answer: number")
+                    # Emission can finish before the compiler installs its
+                    # watchers. Wait for readiness before making the edit.
+                    ready_deadline = time.monotonic() + 30
+                    while "Watching for file changes." not in log_path.read_text():
+                        assert process.poll() is None, log_path.read_text()
+                        if time.monotonic() >= ready_deadline:
+                            raise AssertionError(log_path.read_text())
+                        time.sleep(0.05)
                     (directory / "index.ts").write_text('export const answer: string = "updated";\n')
                     await_declaration("answer: string")
                 finally:

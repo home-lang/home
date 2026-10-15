@@ -168856,7 +168856,13 @@ pub const Checker = struct {
                 try pending.appendSlice(self.gpa, self.interner.unionMembers(current));
             } else if (flags.is_intersection) {
                 try pending.appendSlice(self.gpa, self.interner.intersectionMembers(current));
-            } else if (flags.is_conditional or flags.is_mapped or flags.is_keyof or flags.is_indexed_access or flags.is_template_literal or flags.is_string_mapping) {
+            } else if (flags.is_keyof) {
+                const operand = self.directKeyofOperand(current) orelse return false;
+                try pending.append(self.gpa, operand);
+            } else if (flags.is_indexed_access) {
+                const indexed = self.indexedAccessPayloadOrNull(current) orelse return false;
+                try pending.appendSlice(self.gpa, &.{ indexed.object, indexed.index });
+            } else if (flags.is_conditional or flags.is_mapped or flags.is_template_literal or flags.is_string_mapping) {
                 return false;
             } else if (flags.is_instantiation) {
                 const reference = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(current)];
@@ -292414,4 +292420,34 @@ test "checker: substituted interface display keeps declared identity" {
     _ = s.checker.generic_interface_decl_by_instance.remove(result);
     const chained = try s.checker.substituteType(result, &replace_number);
     try T.expectEqualStrings("Item<string>", (try s.checker.allocSimpleTypeName(chained)).?);
+}
+
+
+test "checker: unrelated substitution preserves recursive event map operators" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const outer = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const event = try s.sint.intern("event");
+    const root = try s.ti.internObjectType(&.{.{ .name = event, .type = types.Primitive.none, .is_optional = false, .is_readonly = false, .is_method = true }});
+    const map = try s.ti.internObjectType(&.{.{ .name = event, .type = root, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const key = try s.ti.internFreshTypeParameterWithVariance(try s.sint.intern("K"), try s.ti.internKeyof(map), types.Primitive.none, .bivariant);
+    const indexed = try s.ti.internIndexedAccess(map, key);
+    const signature = try s.ti.internSignature(&.{key, indexed}, types.Primitive.void_t, false);
+    try s.checker.recordGenericSignatureParams(signature, &.{key});
+    const payload = s.ti.pool.object_type_payloads.items[s.ti.pool.payloadOf(root)];
+    s.ti.pool.object_member_pool.items[payload.members_start].type = signature;
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, outer, types.Primitive.number_t);
+    const before = s.ti.pool.typeCount();
+    try T.expectEqual(root, try s.checker.substituteType(root, &substitutions));
+    try T.expectEqual(before, s.ti.pool.typeCount());
+    // A real dependency inside an indexed operand must defeat the proof.
+    const dependent = try s.ti.internObjectType(&.{.{ .name = event, .type = outer, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const access = try s.ti.internIndexedAccess(dependent, try s.ti.internStringLiteral(event));
+    const wrapper = try s.ti.internObjectType(&.{.{ .name = event, .type = access, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const replaced = try s.checker.substituteType(wrapper, &substitutions);
+    try T.expect(replaced != wrapper);
+    const value = s.ti.objectMember(replaced, event).?;
+    try T.expectEqual(types.Primitive.number_t, try s.checker.resolveGenericType(value));
 }

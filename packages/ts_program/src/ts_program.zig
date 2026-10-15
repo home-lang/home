@@ -384,6 +384,8 @@ pub const Program = struct {
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
     sources: std.StringHashMapUnmanaged([]const u8),
+    /// Installed compiler libraries selected once for the project closure.
+    installed_library_path: ?[]const u8 = null,
 
     pub fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) Program {
         return .{
@@ -399,6 +401,7 @@ pub const Program = struct {
     }
 
     pub fn deinit(self: *Program) void {
+        if (self.installed_library_path) |path| self.gpa.free(path);
         for (self.files.items) |f| {
             self.dropCompilation(f);
             f.imports.deinit(self.gpa);
@@ -1314,7 +1317,10 @@ pub const Program = struct {
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
         if (per_file.skip_default_lib_check and
-            pathIsInsideDirectory(f.path, per_file.default_library_path))
+            pathIsInsideDirectory(f.path, if (per_file.default_library_path.len != 0)
+                per_file.default_library_path
+            else
+                self.installed_library_path orelse ""))
         {
             per_file.skip_lib_check = true;
         }
@@ -3888,6 +3894,15 @@ pub const Program = struct {
         workers: ?usize,
     ) ProgramError!usize {
         self.deduplicate_packages = options.deduplicate_packages;
+        if (options.default_library_path.len == 0 and self.installed_library_path == null) {
+            const containing_file = if (options.pub_tsconfig) |cfg|
+                compilerOptionContainingFile(cfg, self.files.items)
+            else if (self.files.items.len != 0)
+                self.files.items[0].path
+            else
+                "";
+            self.installed_library_path = try self.findInstalledLibraryDirectory(containing_file);
+        }
         const had_checked_sources = for (self.files.items) |f| {
             if (f.compilation) |c| {
                 if (c.check_state == .checked) break true;
@@ -4524,6 +4539,71 @@ pub const Program = struct {
         return file_name;
     }
 
+    /// Select the nearest installed compiler, never individual files from a
+    /// mixture of compiler versions. Resolve through real paths so symlinked
+    /// Bun/pnpm installations find their own optional platform dependency.
+    fn findInstalledLibraryDirectory(self: *Program, containing_file: []const u8) error{OutOfMemory}!?[]const u8 {
+        var dir = std.fs.path.dirname(containing_file) orelse "";
+        while (true) {
+            const package = try std.fs.path.join(self.gpa, &.{ dir, "node_modules/typescript/package.json" });
+            defer self.gpa.free(package);
+            if (self.resolver.fs.fileExists(package)) {
+                const canonical = self.resolver.fs.realpath(self.gpa, package) catch try self.gpa.dupe(u8, package);
+                defer self.gpa.free(canonical);
+                const package_dir = std.fs.path.dirname(canonical) orelse return null;
+                const legacy_lib = try std.fs.path.join(self.gpa, &.{ package_dir, "lib" });
+                const marker = std.fs.path.join(self.gpa, &.{ legacy_lib, "lib.d.ts" }) catch |err| {
+                    self.gpa.free(legacy_lib);
+                    return err;
+                };
+                defer self.gpa.free(marker);
+                if (self.resolver.fs.fileExists(marker)) return legacy_lib;
+                self.gpa.free(legacy_lib);
+
+                const platform = switch (builtin.os.tag) {
+                    .macos => "darwin",
+                    .windows => "win32",
+                    .linux => "linux",
+                    .freebsd => "freebsd",
+                    .netbsd => "netbsd",
+                    .openbsd => "openbsd",
+                    else => return null,
+                };
+                const arch = switch (builtin.cpu.arch) {
+                    .aarch64 => "arm64",
+                    .x86_64 => "x64",
+                    .arm => "arm",
+                    .riscv64 => "riscv64",
+                    .powerpc64le => "ppc64",
+                    .s390x => "s390x",
+                    .loongarch64 => "loong64",
+                    else => return null,
+                };
+                const platform_package = try std.fmt.allocPrint(self.gpa, "node_modules/@typescript/typescript-{s}-{s}/package.json", .{ platform, arch });
+                defer self.gpa.free(platform_package);
+                var platform_dir = package_dir;
+                while (true) {
+                    const candidate = try std.fs.path.join(self.gpa, &.{ platform_dir, platform_package });
+                    defer self.gpa.free(candidate);
+                    if (self.resolver.fs.fileExists(candidate)) {
+                        const real = self.resolver.fs.realpath(self.gpa, candidate) catch try self.gpa.dupe(u8, candidate);
+                        defer self.gpa.free(real);
+                        return try std.fs.path.join(self.gpa, &.{ std.fs.path.dirname(real) orelse return null, "lib" });
+                    }
+                    const parent = std.fs.path.dirname(platform_dir) orelse "";
+                    if (platform_dir.len == 0 or std.mem.eql(u8, parent, platform_dir)) break;
+                    platform_dir = parent;
+                }
+                // A broken nearest installation must not borrow a parent's libs.
+                return null;
+            }
+            const parent = std.fs.path.dirname(dir) orelse "";
+            if (dir.len == 0 or std.mem.eql(u8, parent, dir)) break;
+            dir = parent;
+        }
+        return null;
+    }
+
     fn resolveLibFilePath(
         self: *Program,
         containing_file: []const u8,
@@ -4531,8 +4611,9 @@ pub const Program = struct {
         default_library_path: []const u8,
     ) error{OutOfMemory}!?[]u8 {
         if (file_name.len == 0) return null;
-        if (default_library_path.len != 0) {
-            const candidate = try std.fs.path.join(self.gpa, &.{ default_library_path, file_name });
+        const library_path = if (default_library_path.len != 0) default_library_path else self.installed_library_path orelse "";
+        if (library_path.len != 0) {
+            const candidate = try std.fs.path.join(self.gpa, &.{ library_path, file_name });
             if (self.resolver.fs.fileExists(candidate)) return candidate;
             self.gpa.free(candidate);
             return null;
@@ -5896,7 +5977,7 @@ test "Program: imported inherited callable types retain members and infer result
     });
     const compilation = program.fileById(consumer_id).compilation.?;
     if (compilation.diagnostics.items.len != 3) for (compilation.diagnostics.items) |diagnostic| {
-        std.debug.print("Imported inherited callable TS{d}: {s}\n", .{diagnostic.code, diagnostic.message});
+        std.debug.print("Imported inherited callable TS{d}: {s}\n", .{ diagnostic.code, diagnostic.message });
     };
     try T.expectEqual(@as(usize, 3), compilation.diagnostics.items.len);
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
@@ -9266,6 +9347,116 @@ test "Program: loadImportClosure skips implicit @types when compilerOptions.type
     const added = try p.loadImportClosure(ts_driver.optionsFromConfig(&cfg));
     try T.expectEqual(@as(usize, 0), added);
     try T.expect(p.lookupPath("/proj/node_modules/@types/node/index.d.ts") == null);
+}
+
+test "Program: installed libraries select the nearest compiler and preserve reference closure" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"types":[],"lib":["dom"],"skipDefaultLibCheck":true}}
+    );
+    cfg.file_path = "/proj/sub/tsconfig.json";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/sub/main.ts", "declare const value: RequestInit; const ok: string = value.method;\n");
+    try vfs.addFile("/proj/sub/node_modules/typescript/package.json", "{}");
+    try vfs.addFile("/proj/sub/node_modules/typescript/lib/lib.d.ts", "");
+    try vfs.addFile("/proj/sub/node_modules/typescript/lib/lib.dom.d.ts", "/// <reference lib=\"es5\" />\ninterface RequestInit { method: string }\ndeclare const broken: MissingLibraryType;\n");
+    try vfs.addFile("/proj/sub/node_modules/typescript/lib/lib.es5.d.ts", "interface InstalledBase {}\n");
+    try vfs.addFile("/proj/node_modules/typescript/package.json", "{}");
+    try vfs.addFile("/proj/node_modules/typescript/lib/lib.d.ts", "");
+    try vfs.addFile("/proj/node_modules/typescript/lib/lib.dom.d.ts", "interface RequestInit { method: number }\n");
+    try vfs.addFile("/proj/sub/lib.dom.d.ts", "interface RequestInit { method: boolean }\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/sub/main.ts", try vfs.fs().readFile(arena.allocator(), "/proj/sub/main.ts"));
+    const options = ts_driver.optionsFromConfig(&cfg);
+    try T.expectEqual(@as(usize, 2), try program.loadImportClosure(options));
+    try T.expect(program.lookupPath("/proj/sub/node_modules/typescript/lib/lib.es5.d.ts") != null);
+    try T.expect(program.lookupPath("/proj/node_modules/typescript/lib/lib.dom.d.ts") == null);
+    try T.expect(program.lookupPath("/proj/sub/lib.dom.d.ts") == null);
+    try program.compileAll(options);
+    for (program.files.items) |file| try T.expectEqual(@as(usize, 0), file.compilation.?.diagnostics.items.len);
+}
+
+test "Program: noLib and explicit host paths override installed libraries" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"types":[],"lib":["dom"],"noLib":true}}
+    );
+    cfg.file_path = "/proj/tsconfig.json";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/typescript/package.json", "{}");
+    try vfs.addFile("/proj/node_modules/typescript/lib/lib.d.ts", "");
+    try vfs.addFile("/proj/node_modules/typescript/lib/lib.dom.d.ts", "interface Installed {}\n");
+    try vfs.addFile("/host/lib.dom.d.ts", "interface Host {}\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", "export {};\n");
+    var options = ts_driver.optionsFromConfig(&cfg);
+    try T.expectEqual(@as(usize, 0), try program.loadImportClosure(options));
+    cfg.compiler_options.no_lib = false;
+    options.default_library_path = "/host";
+    try T.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try T.expect(program.lookupPath("/host/lib.dom.d.ts") != null);
+    try T.expect(program.lookupPath("/proj/node_modules/typescript/lib/lib.dom.d.ts") == null);
+}
+
+test "Program: native compiler libraries follow symlinked package dependencies" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/node_modules/typescript/package.json", "{}");
+    try vfs.addRealPath("/proj/node_modules/typescript/package.json", "/store/typescript/package.json");
+    const platform = switch (builtin.os.tag) {
+        .macos => "darwin",
+        .windows => "win32",
+        .linux => "linux",
+        .freebsd => "freebsd",
+        .netbsd => "netbsd",
+        .openbsd => "openbsd",
+        else => return error.SkipZigTest,
+    };
+    const arch = switch (builtin.cpu.arch) {
+        .aarch64 => "arm64",
+        .x86_64 => "x64",
+        .arm => "arm",
+        .riscv64 => "riscv64",
+        .powerpc64le => "ppc64",
+        .s390x => "s390x",
+        .loongarch64 => "loong64",
+        else => return error.SkipZigTest,
+    };
+    const package = try std.fmt.allocPrint(T.allocator, "/store/node_modules/@typescript/typescript-{s}-{s}/package.json", .{ platform, arch });
+    defer T.allocator.free(package);
+    try vfs.addFile(package, "{}");
+    try vfs.addRealPath(package, "/platform/package.json");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const directory = (try program.findInstalledLibraryDirectory("/proj/main.ts")) orelse return error.TestUnexpectedResult;
+    defer T.allocator.free(directory);
+    try T.expectEqualStrings("/platform/lib", directory);
+}
+
+test "Program: installed library selection never borrows missing files from a parent" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/sub/node_modules/typescript/package.json", "{}");
+    try vfs.addFile("/proj/sub/node_modules/typescript/lib/lib.d.ts", "");
+    try vfs.addFile("/proj/node_modules/typescript/lib/lib.dom.d.ts", "interface WrongVersion {}\n");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    program.installed_library_path = try program.findInstalledLibraryDirectory("/proj/sub/main.ts");
+    try T.expect(try program.resolveLibFilePath("/proj/sub/main.ts", "lib.dom.d.ts", "") == null);
 }
 
 test "Program: loadImportClosure follows compilerOptions.lib (TS1422 reason)" {
