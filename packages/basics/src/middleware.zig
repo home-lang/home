@@ -1,10 +1,9 @@
-const Basics = @import("basics");
-const std = @import("std"); // Used for network/time functionality
+const std = @import("std");
 const http_router = @import("http_router.zig");
+const compat = @import("compat.zig");
 
 /// Enhanced Middleware System for Home
 /// Provides comprehensive middleware for web applications
-
 pub const MiddlewareContext = struct {
     allocator: std.mem.Allocator,
     data: std.StringHashMap([]const u8),
@@ -38,29 +37,27 @@ pub const CorsOptions = struct {
     max_age: u32 = 86400, // 24 hours
 };
 
-pub fn cors(options: CorsOptions) http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            _ = req;
-            _ = try res.setHeader("Access-Control-Allow-Origin", options.allow_origin);
-            _ = try res.setHeader("Access-Control-Allow-Methods", options.allow_methods);
-            _ = try res.setHeader("Access-Control-Allow-Headers", options.allow_headers);
+pub fn cors(comptime options: CorsOptions) http_router.Middleware {
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                _ = req;
+                _ = try res.setHeader("Access-Control-Allow-Origin", options.allow_origin);
+                _ = try res.setHeader("Access-Control-Allow-Methods", options.allow_methods);
+                _ = try res.setHeader("Access-Control-Allow-Headers", options.allow_headers);
 
-            if (options.allow_credentials) {
-                _ = try res.setHeader("Access-Control-Allow-Credentials", "true");
+                if (options.allow_credentials) {
+                    _ = try res.setHeader("Access-Control-Allow-Credentials", "true");
+                }
+
+                var max_age_buf: [20]u8 = undefined;
+                const max_age = try std.fmt.bufPrint(&max_age_buf, "{d}", .{options.max_age});
+                _ = try res.setHeaderCopy("Access-Control-Max-Age", max_age);
+
+                try next.call();
             }
-
-            // setHeader stores the value by reference, so we MUST NOT
-            // free the string before the response is sent. Leave it
-            // allocated — caller's allocator arena / response lifetime
-            // is expected to reclaim it. (Previously this used `defer
-            // free`, leaving the header pointing at freed memory.)
-            const max_age_str = try std.fmt.allocPrint(res.allocator, "{d}", .{options.max_age});
-            _ = try res.setHeader("Access-Control-Max-Age", max_age_str);
-
-            try next();
-        }
-    }.middleware;
+        }.middleware,
+    };
 }
 
 /// Logger Middleware with configurable format
@@ -70,15 +67,15 @@ pub const LogFormat = enum {
     verbose,
 };
 
-pub fn logger(format: LogFormat) http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            const start = std.time.nanoTimestamp();
+pub fn logger(comptime format: LogFormat) http_router.Middleware {
+    return .{ .handle_fn = struct {
+        fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+            const io = compat.io();
+            const start = std.Io.Clock.awake.now(io);
 
-            try next();
+            try next.call();
 
-            const end = std.time.nanoTimestamp();
-            const duration_ms = @divTrunc(end - start, std.time.ns_per_ms);
+            const duration_ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
 
             switch (format) {
                 .minimal => {
@@ -97,7 +94,7 @@ pub fn logger(format: LogFormat) http_router.Middleware {
                     });
                 },
                 .verbose => {
-                    const timestamp = std.time.timestamp();
+                    const timestamp = compat.timestamp(io);
                     std.debug.print("[{d}] {s} {s} - Status: {d} - Duration: {d}ms\n", .{
                         timestamp,
                         req.method.toString(),
@@ -108,24 +105,26 @@ pub fn logger(format: LogFormat) http_router.Middleware {
                 },
             }
         }
-    }.middleware;
+    }.middleware };
 }
 
 /// Body Parser Middleware for JSON
 pub fn jsonBodyParser() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            _ = res;
-            const content_type = req.header("Content-Type");
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                _ = res;
+                const content_type = req.header("Content-Type");
 
-            if (content_type != null and std.mem.indexOf(u8, content_type.?, "application/json") != null) {
-                // Body is already in req.body_data
-                // In production, this would parse and validate JSON
+                if (content_type != null and std.mem.indexOf(u8, content_type.?, "application/json") != null) {
+                    // Body is already in req.body_data
+                    // In production, this would parse and validate JSON
+                }
+
+                try next.call();
             }
-
-            try next();
-        }
-    }.middleware;
+        }.middleware,
+    };
 }
 
 /// Rate Limiter Middleware
@@ -137,9 +136,10 @@ pub const RateLimitConfig = struct {
 
 pub const RateLimiter = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: RateLimitConfig,
     requests: std.StringHashMap(RequestInfo),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     const RequestInfo = struct {
         count: u32,
@@ -147,11 +147,16 @@ pub const RateLimiter = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, config: RateLimitConfig) RateLimiter {
+        return initWithIo(compat.io(), allocator, config);
+    }
+
+    pub fn initWithIo(io_context: std.Io, allocator: std.mem.Allocator, config: RateLimitConfig) RateLimiter {
         return .{
             .allocator = allocator,
+            .io = io_context,
             .config = config,
             .requests = std.StringHashMap(RequestInfo).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
     }
 
@@ -160,149 +165,166 @@ pub const RateLimiter = struct {
     }
 
     pub fn middleware(self: *RateLimiter) http_router.Middleware {
-        return struct {
-            fn mw(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-                const ip = req.header("X-Forwarded-For") orelse req.header("X-Real-IP") orelse "unknown";
+        return .{
+            .context = self,
+            .handle_fn = struct {
+                fn mw(raw_context: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                    const limiter: *RateLimiter = @ptrCast(@alignCast(raw_context.?));
+                    const ip = req.header("X-Forwarded-For") orelse req.header("X-Real-IP") orelse "unknown";
 
-                const limiter = @fieldParentPtr(RateLimiter, "middleware", @This());
-                limiter.mutex.lock();
-                defer limiter.mutex.unlock();
+                    const is_limited = blk: {
+                        limiter.mutex.lockUncancelable(limiter.io);
+                        defer limiter.mutex.unlock(limiter.io);
 
-                const now = std.time.milliTimestamp();
-                const entry = limiter.requests.getPtr(ip);
+                        const now = std.Io.Clock.real.now(limiter.io).toMilliseconds();
+                        const entry = limiter.requests.getPtr(ip);
 
-                if (entry) |info| {
-                    const window_elapsed = now - info.window_start;
+                        if (entry) |info| {
+                            const window_elapsed = now - info.window_start;
 
-                    if (window_elapsed > limiter.config.window_ms) {
-                        // Reset window
-                        info.count = 1;
-                        info.window_start = now;
-                    } else if (info.count >= limiter.config.max_requests) {
-                        // Rate limit exceeded
+                            if (window_elapsed > limiter.config.window_ms) {
+                                info.count = 1;
+                                info.window_start = now;
+                            } else if (info.count >= limiter.config.max_requests) {
+                                break :blk true;
+                            } else {
+                                info.count += 1;
+                            }
+                        } else {
+                            try limiter.requests.put(ip, .{
+                                .count = 1,
+                                .window_start = now,
+                            });
+                        }
+                        break :blk false;
+                    };
+
+                    if (is_limited) {
                         res.status_code = 429;
                         try res.send(limiter.config.message);
                         return;
-                    } else {
-                        info.count += 1;
                     }
-                } else {
-                    try limiter.requests.put(ip, .{
-                        .count = 1,
-                        .window_start = now,
-                    });
-                }
 
-                try next();
-            }
-        }.mw;
+                    try next.call();
+                }
+            }.mw,
+        };
     }
 };
 
 /// Compression Middleware (gzip)
 pub fn compression() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            const accept_encoding = req.header("Accept-Encoding");
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                const accept_encoding = req.header("Accept-Encoding");
 
-            if (accept_encoding != null and std.mem.indexOf(u8, accept_encoding.?, "gzip") != null) {
-                _ = try res.setHeader("Content-Encoding", "gzip");
-                // In production: compress response body
+                if (accept_encoding != null and std.mem.indexOf(u8, accept_encoding.?, "gzip") != null) {
+                    _ = try res.setHeader("Content-Encoding", "gzip");
+                    // In production: compress response body
+                }
+
+                try next.call();
             }
-
-            try next();
-        }
-    }.middleware;
+        }.middleware,
+    };
 }
 
 /// Security Headers Middleware
 pub fn securityHeaders() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            _ = req;
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                _ = req;
 
-            // Prevent XSS attacks
-            _ = try res.setHeader("X-Content-Type-Options", "nosniff");
-            _ = try res.setHeader("X-Frame-Options", "DENY");
-            _ = try res.setHeader("X-XSS-Protection", "1; mode=block");
+                // Prevent XSS attacks
+                _ = try res.setHeader("X-Content-Type-Options", "nosniff");
+                _ = try res.setHeader("X-Frame-Options", "DENY");
+                _ = try res.setHeader("X-XSS-Protection", "1; mode=block");
 
-            // HSTS (HTTP Strict Transport Security)
-            _ = try res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+                // HSTS (HTTP Strict Transport Security)
+                _ = try res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
 
-            // Content Security Policy
-            _ = try res.setHeader("Content-Security-Policy", "default-src 'self'");
+                // Content Security Policy
+                _ = try res.setHeader("Content-Security-Policy", "default-src 'self'");
 
-            try next();
-        }
-    }.middleware;
+                try next.call();
+            }
+        }.middleware,
+    };
 }
 
 /// Request ID Middleware
 pub fn requestId() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            // Generate UUID for request tracking
-            var buf: [36]u8 = undefined;
-            const id = try std.fmt.bufPrint(&buf, "{s}-{d}", .{ "req", std.time.timestamp() });
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                // Generate UUID for request tracking
+                var buf: [36]u8 = undefined;
+                const id = try std.fmt.bufPrint(&buf, "{s}-{d}", .{ "req", compat.timestamp(compat.io()) });
 
-            try req.headers.put("X-Request-ID", id);
-            _ = try res.setHeader("X-Request-ID", id);
+                try req.setHeaderCopy("X-Request-ID", id);
+                _ = try res.setHeaderCopy("X-Request-ID", id);
 
-            try next();
-        }
-    }.middleware;
+                try next.call();
+            }
+        }.middleware,
+    };
 }
 
 /// Timeout Middleware
-pub fn timeout(duration_ms: u64) http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            _ = req;
-            _ = duration_ms;
+pub fn timeout(comptime duration_ms: u64) http_router.Middleware {
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                _ = req;
+                _ = res;
+                _ = duration_ms;
 
-            // In production: implement timeout using async/await
-            // For now, just call next
-            try next();
+                // In production: implement timeout using async/await
+                // For now, just call next
+                try next.call();
 
-            // If timeout exceeded:
-            // res.status_code = 408;
-            // try res.send("Request Timeout");
-        }
-    }.middleware;
+                // If timeout exceeded:
+                // res.status_code = 408;
+                // try res.send("Request Timeout");
+            }
+        }.middleware,
+    };
 }
 
 /// ETag Middleware for caching
 pub fn etag() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            try next();
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                try next.call();
 
-            // Generate ETag from response body
-            if (res.body_content.items.len > 0) {
-                const hash = std.hash.Wyhash.hash(0, res.body_content.items);
-                // The response header map stores the slice pointer directly —
-                // handing it a scope-freed buffer would leave a dangling read.
-                // Response lifetime is responsible for the allocation.
-                const etag_value = try std.fmt.allocPrint(res.allocator, "\"{d}\"", .{hash});
+                // Generate ETag from response body
+                if (res.body_content.items.len > 0) {
+                    const hash = std.hash.Wyhash.hash(0, res.body_content.items);
+                    var etag_buf: [24]u8 = undefined;
+                    const etag_value = try std.fmt.bufPrint(&etag_buf, "\"{d}\"", .{hash});
 
-                _ = try res.setHeader("ETag", etag_value);
+                    _ = try res.setHeaderCopy("ETag", etag_value);
 
-                // Check If-None-Match header
-                const if_none_match = req.header("If-None-Match");
-                if (if_none_match != null and std.mem.eql(u8, if_none_match.?, etag_value)) {
-                    res.status_code = 304; // Not Modified
-                    res.body_content.clearRetainingCapacity();
+                    // Check If-None-Match header
+                    const if_none_match = req.header("If-None-Match");
+                    if (if_none_match != null and std.mem.eql(u8, if_none_match.?, etag_value)) {
+                        res.status_code = 304; // Not Modified
+                        res.body_content.clearRetainingCapacity();
+                    }
                 }
             }
-        }
-    }.middleware;
+        }.middleware,
+    };
 }
 
 /// Error Handler Middleware
 pub fn errorHandler() http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            next() catch |err| {
+    return .{ .handle_fn = struct {
+        fn middleware(_: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+            next.call() catch |err| {
                 std.log.err("Error handling request {s} {s}: {}", .{
                     req.method.toString(),
                     req.path,
@@ -313,5 +335,25 @@ pub fn errorHandler() http_router.Middleware {
                 try res.json("{\"error\": \"Internal Server Error\"}");
             };
         }
-    }.middleware;
+    }.middleware };
+}
+
+test "middleware constructors expose the complete surface" {
+    _ = cors(.{});
+    _ = logger(.minimal);
+    _ = jsonBodyParser();
+    _ = compression();
+    _ = securityHeaders();
+    _ = requestId();
+    _ = timeout(1000);
+    _ = etag();
+    _ = errorHandler();
+
+    var limiter = RateLimiter.initWithIo(std.testing.io, std.testing.allocator, .{});
+    defer limiter.deinit();
+    _ = limiter.middleware();
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

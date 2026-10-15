@@ -1,10 +1,8 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const native_os = builtin.os.tag;
+const compat = @import("compat.zig");
 
 /// HTTP Router for Home - Express.js/Laravel-style routing
 /// Provides high-level routing with middleware support
-
 pub const Method = enum {
     GET,
     POST,
@@ -46,6 +44,7 @@ pub const Request = struct {
     params: std.StringHashMap([]const u8),
     query: std.StringHashMap([]const u8),
     headers: std.StringHashMap([]const u8),
+    owned_header_values: std.ArrayList([]u8),
     body_data: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, method: Method, path: []const u8) Request {
@@ -56,6 +55,7 @@ pub const Request = struct {
             .params = std.StringHashMap([]const u8).init(allocator),
             .query = std.StringHashMap([]const u8).init(allocator),
             .headers = std.StringHashMap([]const u8).init(allocator),
+            .owned_header_values = .empty,
             .body_data = &[_]u8{},
         };
     }
@@ -64,6 +64,8 @@ pub const Request = struct {
         self.params.deinit();
         self.query.deinit();
         self.headers.deinit();
+        for (self.owned_header_values.items) |value| self.allocator.free(value);
+        self.owned_header_values.deinit(self.allocator);
     }
 
     pub fn param(self: *Request, key: []const u8) ?[]const u8 {
@@ -78,6 +80,14 @@ pub const Request = struct {
         return self.headers.get(key);
     }
 
+    pub fn setHeaderCopy(self: *Request, key: []const u8, value: []const u8) !void {
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+        try self.owned_header_values.append(self.allocator, value_copy);
+        errdefer _ = self.owned_header_values.pop();
+        try self.headers.put(key, value_copy);
+    }
+
     pub fn body(self: *Request) []const u8 {
         return self.body_data;
     }
@@ -88,6 +98,7 @@ pub const Response = struct {
     allocator: std.mem.Allocator,
     status_code: u16,
     headers: std.StringHashMap([]const u8),
+    owned_header_values: std.ArrayList([]u8),
     body_content: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) Response {
@@ -95,12 +106,15 @@ pub const Response = struct {
             .allocator = allocator,
             .status_code = 200,
             .headers = std.StringHashMap([]const u8).init(allocator),
+            .owned_header_values = .empty,
             .body_content = std.ArrayList(u8).empty,
         };
     }
 
     pub fn deinit(self: *Response) void {
         self.headers.deinit();
+        for (self.owned_header_values.items) |value| self.allocator.free(value);
+        self.owned_header_values.deinit(self.allocator);
         self.body_content.deinit(self.allocator);
     }
 
@@ -111,6 +125,15 @@ pub const Response = struct {
 
     pub fn setHeader(self: *Response, key: []const u8, value: []const u8) !*Response {
         try self.headers.put(key, value);
+        return self;
+    }
+
+    pub fn setHeaderCopy(self: *Response, key: []const u8, value: []const u8) !*Response {
+        const value_copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(value_copy);
+        try self.owned_header_values.append(self.allocator, value_copy);
+        errdefer _ = self.owned_header_values.pop();
+        try self.headers.put(key, value_copy);
         return self;
     }
 
@@ -137,8 +160,24 @@ pub const Response = struct {
 /// Handler function type
 pub const Handler = *const fn (*Request, *Response) anyerror!void;
 
-/// Middleware function type
-pub const Middleware = *const fn (*Request, *Response, *const fn () anyerror!void) anyerror!void;
+pub const Next = struct {
+    context: *anyopaque,
+    call_fn: *const fn (*anyopaque) anyerror!void,
+
+    pub fn call(self: Next) !void {
+        try self.call_fn(self.context);
+    }
+};
+
+/// Middleware handler with optional caller-owned state.
+pub const Middleware = struct {
+    context: ?*anyopaque = null,
+    handle_fn: *const fn (?*anyopaque, *Request, *Response, Next) anyerror!void,
+
+    pub fn handle(self: Middleware, req: *Request, res: *Response, next: Next) !void {
+        try self.handle_fn(self.context, req, res, next);
+    }
+};
 
 /// Route definition
 pub const Route = struct {
@@ -315,15 +354,35 @@ pub const Router = struct {
             return;
         }
 
-        const middleware = self.middleware_stack.items[idx];
-        const next = struct {
-            fn call() !void {
-                // This would be replaced with actual context
-            }
-        }.call;
+        const Continuation = struct {
+            router: *Router,
+            index: usize,
+            request: *Request,
+            response: *Response,
+            route_handler: Handler,
 
-        try middleware(req, res, next);
-        try self.executeMiddleware(idx + 1, req, res, handler);
+            fn call(raw_context: *anyopaque) !void {
+                const context: *@This() = @ptrCast(@alignCast(raw_context));
+                try context.router.executeMiddleware(
+                    context.index,
+                    context.request,
+                    context.response,
+                    context.route_handler,
+                );
+            }
+        };
+        var continuation = Continuation{
+            .router = self,
+            .index = idx + 1,
+            .request = req,
+            .response = res,
+            .route_handler = handler,
+        };
+
+        try self.middleware_stack.items[idx].handle(req, res, .{
+            .context = &continuation,
+            .call_fn = Continuation.call,
+        });
     }
 };
 
@@ -452,48 +511,27 @@ pub const RouteGroup = struct {
 };
 
 /// Common middleware functions
-
 /// CORS middleware
 pub fn cors() Middleware {
-    return struct {
-        fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {
+    return .{ .handle_fn = struct {
+        fn middleware(_: ?*anyopaque, req: *Request, res: *Response, next: Next) !void {
             _ = req;
             _ = try res.setHeader("Access-Control-Allow-Origin", "*");
             _ = try res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
             _ = try res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-            try next();
+            try next.call();
         }
-    }.middleware;
+    }.middleware };
 }
 
 /// Logger middleware
 pub fn logger() Middleware {
-    return struct {
-        fn getNanoTimestamp() u64 {
-            if (comptime native_os == .windows) {
-                const ntdll = std.os.windows.ntdll;
-                var counter: i64 = undefined;
-                var freq: i64 = undefined;
-                _ = ntdll.RtlQueryPerformanceCounter(&counter);
-                _ = ntdll.RtlQueryPerformanceFrequency(&freq);
-                return @intCast(@divFloor(@as(u128, @intCast(counter)) * std.time.ns_per_s, @as(u128, @intCast(freq))));
-            } else if (comptime native_os == .linux) {
-                const linux = std.os.linux;
-                var ts: linux.timespec = .{ .sec = 0, .nsec = 0 };
-                _ = linux.clock_gettime(.MONOTONIC, &ts);
-                return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-            } else {
-                var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
-                _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-                return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-            }
-        }
-
-        fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {
-            const start = getNanoTimestamp();
-            try next();
-            const end = getNanoTimestamp();
-            const duration_ms = (end - start) / std.time.ns_per_ms;
+    return .{ .handle_fn = struct {
+        fn middleware(_: ?*anyopaque, req: *Request, res: *Response, next: Next) !void {
+            const io = compat.io();
+            const start = std.Io.Clock.awake.now(io);
+            try next.call();
+            const duration_ms = start.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
 
             std.debug.print("{s} {s} - {d} ({d}ms)\n", .{
                 req.method.toString(),
@@ -502,17 +540,75 @@ pub fn logger() Middleware {
                 duration_ms,
             });
         }
-    }.middleware;
+    }.middleware };
 }
 
 /// Body parser middleware (JSON)
 pub fn bodyParser() Middleware {
-    return struct {
-        fn middleware(req: *Request, res: *Response, next: *const fn () anyerror!void) !void {
-            _ = req;
-            _ = res;
-            // In production: parse req.body_data as JSON
-            try next();
+    return .{
+        .handle_fn = struct {
+            fn middleware(_: ?*anyopaque, req: *Request, res: *Response, next: Next) !void {
+                _ = req;
+                _ = res;
+                // In production: parse req.body_data as JSON
+                try next.call();
+            }
+        }.middleware,
+    };
+}
+
+fn headerCopyAllocationProbe(allocator: std.mem.Allocator) !void {
+    var request = Request.init(allocator, .GET, "/");
+    defer request.deinit();
+    try request.setHeaderCopy("X-Request-ID", "first");
+    try request.setHeaderCopy("X-Request-ID", "replacement");
+    try std.testing.expectEqualStrings("replacement", request.header("X-Request-ID").?);
+
+    var response = Response.init(allocator);
+    defer response.deinit();
+    _ = try response.setHeaderCopy("Set-Cookie", "first");
+    _ = try response.setHeaderCopy("Set-Cookie", "replacement");
+    try std.testing.expectEqualStrings("replacement", response.headers.get("Set-Cookie").?);
+}
+
+test "copied headers release every allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        headerCopyAllocationProbe,
+        .{},
+    );
+}
+
+test "middleware next preserves nesting order" {
+    const Chain = struct {
+        fn first(_: ?*anyopaque, _: *Request, res: *Response, next: Next) !void {
+            try res.send("a");
+            try next.call();
+            try res.send("d");
         }
-    }.middleware;
+
+        fn second(_: ?*anyopaque, _: *Request, res: *Response, next: Next) !void {
+            try res.send("b");
+            try next.call();
+            try res.send("c");
+        }
+
+        fn handler(_: *Request, res: *Response) !void {
+            try res.send("h");
+        }
+    };
+
+    var router = Router.init(std.testing.allocator);
+    defer router.deinit();
+    try router.use(.{ .handle_fn = Chain.first });
+    try router.use(.{ .handle_fn = Chain.second });
+    try router.get("/", Chain.handler);
+
+    var request = Request.init(std.testing.allocator, .GET, "/");
+    defer request.deinit();
+    var response = Response.init(std.testing.allocator);
+    defer response.deinit();
+
+    try router.handle(&request, &response);
+    try std.testing.expectEqualStrings("abhcd", response.body_content.items);
 }

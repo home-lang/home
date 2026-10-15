@@ -1,10 +1,9 @@
 const std = @import("std");
 const http_router = @import("http_router.zig");
-const crypto = @import("crypto.zig");
+const compat = @import("compat.zig");
 
 /// Session and Cookie Management for Home
 /// Provides secure session handling with multiple backend stores
-
 /// Cookie Options
 pub const CookieOptions = struct {
     max_age: ?i64 = null, // seconds
@@ -63,21 +62,20 @@ pub const Cookie = struct {
         // leak per-attribute allocPrint strings when join() succeeds
         // (the old implementation appended allocated strings to an
         // ArrayList that was deinit'd without freeing its items).
-        var buf = std.ArrayList(u8).init(self.allocator);
-        errdefer buf.deinit();
-        const w = buf.writer();
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(self.allocator);
 
-        try w.print("{s}={s}", .{ self.name, self.value });
+        try buf.print(self.allocator, "{s}={s}", .{ self.name, self.value });
 
-        if (self.options.max_age) |age| try w.print("; Max-Age={d}", .{age});
-        if (self.options.expires) |exp| try w.print("; Expires={d}", .{exp});
-        try w.print("; Path={s}", .{self.options.path});
-        if (self.options.domain) |domain| try w.print("; Domain={s}", .{domain});
-        if (self.options.secure) try w.writeAll("; Secure");
-        if (self.options.http_only) try w.writeAll("; HttpOnly");
-        try w.print("; SameSite={s}", .{self.options.same_site.toString()});
+        if (self.options.max_age) |age| try buf.print(self.allocator, "; Max-Age={d}", .{age});
+        if (self.options.expires) |exp| try buf.print(self.allocator, "; Expires={d}", .{exp});
+        try buf.print(self.allocator, "; Path={s}", .{self.options.path});
+        if (self.options.domain) |domain| try buf.print(self.allocator, "; Domain={s}", .{domain});
+        if (self.options.secure) try buf.appendSlice(self.allocator, "; Secure");
+        if (self.options.http_only) try buf.appendSlice(self.allocator, "; HttpOnly");
+        try buf.print(self.allocator, "; SameSite={s}", .{self.options.same_site.toString()});
 
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(self.allocator);
     }
 
     /// Parse cookie from Cookie header
@@ -119,8 +117,14 @@ pub const CookieManager = struct {
     }
 
     pub fn set(self: *CookieManager, name: []const u8, value: []const u8, options: CookieOptions) !void {
-        const cookie = try Cookie.init(self.allocator, name, value, options);
-        try self.cookies.put(name, cookie);
+        var cookie = try Cookie.init(self.allocator, name, value, options);
+        errdefer cookie.deinit();
+
+        if (self.cookies.fetchRemove(name)) |old| {
+            var previous = old.value;
+            previous.deinit();
+        }
+        try self.cookies.put(cookie.name, cookie);
     }
 
     pub fn get(self: *CookieManager, name: []const u8) ?*Cookie {
@@ -128,9 +132,9 @@ pub const CookieManager = struct {
     }
 
     pub fn delete(self: *CookieManager, name: []const u8) void {
-        if (self.cookies.getPtr(name)) |cookie| {
+        if (self.cookies.fetchRemove(name)) |removed| {
+            var cookie = removed.value;
             cookie.deinit();
-            _ = self.cookies.remove(name);
         }
     }
 };
@@ -138,6 +142,7 @@ pub const CookieManager = struct {
 /// Session Data
 pub const SessionData = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     id: []const u8,
     data: std.StringHashMap([]const u8),
     created_at: i64,
@@ -145,9 +150,14 @@ pub const SessionData = struct {
     expires_at: i64,
 
     pub fn init(allocator: std.mem.Allocator, id: []const u8, ttl: i64) !SessionData {
-        const now = std.time.timestamp();
+        return initWithIo(compat.io(), allocator, id, ttl);
+    }
+
+    pub fn initWithIo(io_context: std.Io, allocator: std.mem.Allocator, id: []const u8, ttl: i64) !SessionData {
+        const now = compat.timestamp(io_context);
         return .{
             .allocator = allocator,
+            .io = io_context,
             .id = try allocator.dupe(u8, id),
             .data = std.StringHashMap([]const u8).init(allocator),
             .created_at = now,
@@ -181,11 +191,11 @@ pub const SessionData = struct {
             errdefer self.allocator.free(key_copy);
             try self.data.put(key_copy, value_copy);
         }
-        self.last_accessed = std.time.timestamp();
+        self.last_accessed = compat.timestamp(self.io);
     }
 
     pub fn get(self: *SessionData, key: []const u8) ?[]const u8 {
-        self.last_accessed = std.time.timestamp();
+        self.last_accessed = compat.timestamp(self.io);
         return self.data.get(key);
     }
 
@@ -194,15 +204,15 @@ pub const SessionData = struct {
             self.allocator.free(kv.key);
             self.allocator.free(kv.value);
         }
-        self.last_accessed = std.time.timestamp();
+        self.last_accessed = compat.timestamp(self.io);
     }
 
     pub fn isExpired(self: *SessionData) bool {
-        return std.time.timestamp() > self.expires_at;
+        return compat.timestamp(self.io) >= self.expires_at;
     }
 
     pub fn touch(self: *SessionData, ttl: i64) void {
-        const now = std.time.timestamp();
+        const now = compat.timestamp(self.io);
         self.last_accessed = now;
         self.expires_at = now + ttl;
     }
@@ -240,14 +250,20 @@ pub const SessionStore = struct {
 /// Memory Session Store
 pub const MemorySessionStore = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     sessions: std.StringHashMap(SessionData),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) MemorySessionStore {
+        return initWithIo(compat.io(), allocator);
+    }
+
+    pub fn initWithIo(io_context: std.Io, allocator: std.mem.Allocator) MemorySessionStore {
         return .{
             .allocator = allocator,
+            .io = io_context,
             .sessions = std.StringHashMap(SessionData).init(allocator),
-            .mutex = .{},
+            .mutex = .init,
         };
     }
 
@@ -274,26 +290,26 @@ pub const MemorySessionStore = struct {
 
     fn getImpl(ptr: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8) !?SessionData {
         const self: *MemorySessionStore = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        if (self.sessions.get(session_id)) |session| {
+        if (self.sessions.getPtr(session_id)) |session| {
             if (session.isExpired()) {
                 return null;
             }
             // Create a copy. Seed with a large TTL so the constructor's
             // computed expires_at (which we overwrite below anyway) never
             // expires the copy before we've filled it in.
-            var copy = try SessionData.init(allocator, session.id, std.math.maxInt(i32));
+            var copy = try SessionData.initWithIo(self.io, allocator, session.id, std.math.maxInt(i32));
             errdefer copy.deinit();
-            copy.created_at = session.created_at;
-            copy.last_accessed = session.last_accessed;
-            copy.expires_at = session.expires_at;
 
             var iter = session.data.iterator();
             while (iter.next()) |entry| {
                 try copy.set(entry.key_ptr.*, entry.value_ptr.*);
             }
+            copy.created_at = session.created_at;
+            copy.last_accessed = session.last_accessed;
+            copy.expires_at = session.expires_at;
             return copy;
         }
         return null;
@@ -301,27 +317,32 @@ pub const MemorySessionStore = struct {
 
     fn setImpl(ptr: *anyopaque, session: *SessionData) !void {
         const self: *MemorySessionStore = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Create a copy for storage
-        var copy = try SessionData.init(self.allocator, session.id, 0);
-        copy.created_at = session.created_at;
-        copy.last_accessed = session.last_accessed;
-        copy.expires_at = session.expires_at;
+        var copy = try SessionData.initWithIo(self.io, self.allocator, session.id, 0);
+        errdefer copy.deinit();
 
         var iter = session.data.iterator();
         while (iter.next()) |entry| {
             try copy.set(entry.key_ptr.*, entry.value_ptr.*);
         }
+        copy.created_at = session.created_at;
+        copy.last_accessed = session.last_accessed;
+        copy.expires_at = session.expires_at;
 
-        try self.sessions.put(session.id, copy);
+        if (self.sessions.fetchRemove(copy.id)) |old| {
+            var previous = old.value;
+            previous.deinit();
+        }
+        try self.sessions.put(copy.id, copy);
     }
 
     fn destroyImpl(ptr: *anyopaque, session_id: []const u8) !void {
         const self: *MemorySessionStore = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.sessions.fetchRemove(session_id)) |kv| {
             var session = kv.value;
@@ -331,16 +352,16 @@ pub const MemorySessionStore = struct {
 
     fn cleanupImpl(ptr: *anyopaque) !void {
         const self: *MemorySessionStore = @ptrCast(@alignCast(ptr));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
-        var to_remove = std.ArrayList([]const u8).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove: std.ArrayList([]const u8) = .empty;
+        defer to_remove.deinit(self.allocator);
 
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
             if (entry.value_ptr.isExpired()) {
-                try to_remove.append(entry.key_ptr.*);
+                try to_remove.append(self.allocator, entry.key_ptr.*);
             }
         }
 
@@ -367,12 +388,18 @@ pub const SessionConfig = struct {
 
 pub const SessionManager = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: SessionConfig,
     store: SessionStore,
 
     pub fn init(allocator: std.mem.Allocator, config: SessionConfig, store: SessionStore) SessionManager {
+        return initWithIo(compat.io(), allocator, config, store);
+    }
+
+    pub fn initWithIo(io_context: std.Io, allocator: std.mem.Allocator, config: SessionConfig, store: SessionStore) SessionManager {
         return .{
             .allocator = allocator,
+            .io = io_context,
             .config = config,
             .store = store,
         };
@@ -381,7 +408,7 @@ pub const SessionManager = struct {
     /// Generate secure session ID
     fn generateSessionId(self: *SessionManager) ![]const u8 {
         var random_bytes: [32]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        try compat.randomSecure(self.io, &random_bytes);
 
         // Create HMAC with secret
         var hmac_bytes: [32]u8 = undefined;
@@ -390,9 +417,9 @@ pub const SessionManager = struct {
         // Base64 encode
         var encoded: [64]u8 = undefined;
         const encoder = std.base64.standard.Encoder;
-        const len = encoder.encode(&encoded, &hmac_bytes);
+        const encoded_slice = encoder.encode(&encoded, &hmac_bytes);
 
-        return try self.allocator.dupe(u8, encoded[0..len]);
+        return try self.allocator.dupe(u8, encoded_slice);
     }
 
     /// Get or create session from request
@@ -404,10 +431,12 @@ pub const SessionManager = struct {
             defer cookies.deinit();
 
             if (cookies.get(self.config.cookie_name)) |session_id| {
-                if (try self.store.get(self.allocator, session_id)) |session| {
+                if (try self.store.get(self.allocator, session_id)) |stored_session| {
+                    var session = stored_session;
                     if (!session.isExpired()) {
                         return session;
                     }
+                    session.deinit();
                 }
             }
         }
@@ -416,7 +445,7 @@ pub const SessionManager = struct {
         const session_id = try self.generateSessionId();
         defer self.allocator.free(session_id);
 
-        return try SessionData.init(self.allocator, session_id, self.config.ttl);
+        return try SessionData.initWithIo(self.io, self.allocator, session_id, self.config.ttl);
     }
 
     /// Save session and set cookie
@@ -439,7 +468,7 @@ pub const SessionManager = struct {
         const cookie_header = try cookie.serialize();
         defer self.allocator.free(cookie_header);
 
-        _ = try res.setHeader("Set-Cookie", cookie_header);
+        _ = try res.setHeaderCopy("Set-Cookie", cookie_header);
     }
 
     /// Destroy session
@@ -461,7 +490,7 @@ pub const SessionManager = struct {
         const cookie_header = try cookie.serialize();
         defer self.allocator.free(cookie_header);
 
-        _ = try res.setHeader("Set-Cookie", cookie_header);
+        _ = try res.setHeaderCopy("Set-Cookie", cookie_header);
     }
 
     /// Cleanup expired sessions
@@ -472,18 +501,139 @@ pub const SessionManager = struct {
 
 /// Session Middleware
 pub fn sessionMiddleware(manager: *SessionManager) http_router.Middleware {
-    return struct {
-        fn middleware(req: *http_router.Request, res: *http_router.Response, next: *const fn () anyerror!void) !void {
-            var session = try manager.getSession(req);
-            defer session.deinit();
+    return .{
+        .context = manager,
+        .handle_fn = struct {
+            fn middleware(raw_context: ?*anyopaque, req: *http_router.Request, res: *http_router.Response, next: http_router.Next) !void {
+                const session_manager: *SessionManager = @ptrCast(@alignCast(raw_context.?));
+                var session = try session_manager.getSession(req);
+                defer session.deinit();
 
-            // Store session ID in request headers for handlers to access
-            try req.headers.put("X-Session-ID", session.id);
+                // Store session ID in request headers for handlers to access
+                try req.setHeaderCopy("X-Session-ID", session.id);
 
-            try next();
+                try next.call();
 
-            // Save session after handler completes
-            try manager.saveSession(res, &session);
+                // Save session after handler completes
+                try session_manager.saveSession(res, &session);
+            }
+        }.middleware,
+    };
+}
+
+fn cookieAllocationProbe(allocator: std.mem.Allocator) !void {
+    var manager = CookieManager.init(allocator);
+    defer manager.deinit();
+
+    try manager.set("session", "first", .{});
+    try manager.set("session", "replacement", .{ .secure = true });
+
+    const cookie = manager.get("session").?;
+    try std.testing.expectEqualStrings("replacement", cookie.value);
+    const serialized = try cookie.serialize();
+    defer allocator.free(serialized);
+    try std.testing.expectEqualStrings(
+        "session=replacement; Path=/; Secure; HttpOnly; SameSite=Lax",
+        serialized,
+    );
+
+    manager.delete("session");
+    try std.testing.expect(manager.get("session") == null);
+}
+
+test "cookie replacement and serialization release every allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        cookieAllocationProbe,
+        .{},
+    );
+}
+
+fn memoryStoreAllocationProbe(allocator: std.mem.Allocator) !void {
+    var memory = MemorySessionStore.initWithIo(std.testing.io, allocator);
+    defer memory.deinit();
+    var store = memory.store();
+
+    var session = try SessionData.initWithIo(std.testing.io, allocator, "owned-session-id", 3600);
+    defer session.deinit();
+    try session.set("user", "first");
+    try store.set(&session);
+
+    try session.set("user", "replacement");
+    try store.set(&session);
+
+    var stored = (try store.get(allocator, "owned-session-id")).?;
+    defer stored.deinit();
+    try std.testing.expectEqualStrings("replacement", stored.get("user").?);
+    try std.testing.expectEqual(session.created_at, stored.created_at);
+    try std.testing.expectEqual(session.expires_at, stored.expires_at);
+
+    try store.destroy("owned-session-id");
+    try std.testing.expect((try store.get(allocator, "owned-session-id")) == null);
+}
+
+test "memory store owns replacements and releases partial copies" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        memoryStoreAllocationProbe,
+        .{},
+    );
+}
+
+test "session IDs require secure entropy" {
+    var memory = MemorySessionStore.initWithIo(std.Io.failing, std.testing.allocator);
+    defer memory.deinit();
+    const store = memory.store();
+    var manager = SessionManager.initWithIo(
+        std.Io.failing,
+        std.testing.allocator,
+        .{ .secret = "test secret" },
+        store,
+    );
+
+    try std.testing.expectError(error.EntropyUnavailable, manager.generateSessionId());
+}
+
+test "sessions expire at their deadline" {
+    var session = try SessionData.initWithIo(std.Io.failing, std.testing.allocator, "deadline", 0);
+    defer session.deinit();
+    try std.testing.expect(session.isExpired());
+}
+
+test "session middleware keeps generated headers alive" {
+    const Route = struct {
+        fn handler(req: *http_router.Request, res: *http_router.Response) !void {
+            try std.testing.expect(req.header("X-Session-ID") != null);
+            try res.send("ok");
         }
-    }.middleware;
+    };
+
+    var memory = MemorySessionStore.initWithIo(std.testing.io, std.testing.allocator);
+    defer memory.deinit();
+    const store = memory.store();
+    var manager = SessionManager.initWithIo(
+        std.testing.io,
+        std.testing.allocator,
+        .{ .secret = "test secret" },
+        store,
+    );
+
+    var router = http_router.Router.init(std.testing.allocator);
+    defer router.deinit();
+    try router.use(sessionMiddleware(&manager));
+    try router.get("/", Route.handler);
+
+    var request = http_router.Request.init(std.testing.allocator, .GET, "/");
+    defer request.deinit();
+    var response = http_router.Response.init(std.testing.allocator);
+    defer response.deinit();
+
+    try router.handle(&request, &response);
+    try std.testing.expectEqualStrings("ok", response.body_content.items);
+    try std.testing.expect(request.header("X-Session-ID").?.len > 0);
+    try std.testing.expect(std.mem.startsWith(u8, response.headers.get("Set-Cookie").?, "home_session="));
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
