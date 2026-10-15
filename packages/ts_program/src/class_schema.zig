@@ -604,6 +604,19 @@ pub const Builder = struct {
         return null;
     }
 
+    fn declarationSymbol(c: *const driver.Compilation, node: hir.NodeId, name: hir.StringId, value: bool) ?*binder.Symbol {
+        var current = c.hir.parentOf(node);
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            for (c.module.scopes.items) |scope| {
+                if (scope.introducing_node != current) continue;
+                const symbol = (if (value) scope.values.get(name) else scope.types.get(name)) orelse return null;
+                return if (std.mem.indexOfScalar(hir.NodeId, symbol.decls.items, node) != null) symbol else null;
+            }
+        }
+        const symbol = (if (value) c.module.root.values.get(name) else c.module.root.types.get(name)) orelse return null;
+        return if (std.mem.indexOfScalar(hir.NodeId, symbol.decls.items, node) != null) symbol else null;
+    }
+
     pub fn declaration(self: *Builder, key: Key) error{OutOfMemory}!*schema.Declaration {
         if (self.declarations.get(key)) |existing| return existing;
         const source = self.sources[key.source];
@@ -639,7 +652,7 @@ pub const Builder = struct {
         var overload_declarations: ?[]const hir.NodeId = null;
         if ((kind == .fn_decl or kind == .interface_decl) and info.name != 0 and c.hir.kindOf(info.name) == .identifier) {
             const name = hir.identifierOf(&c.hir, info.name).name;
-            const symbol = if (kind == .fn_decl) c.module.root.values.get(name) else c.module.root.types.get(name);
+            const symbol = declarationSymbol(c, key.node, name, kind == .fn_decl);
             if (symbol) |bound| {
                 if (bound.decls.items.len != 1 and std.mem.indexOfScalar(hir.NodeId, bound.decls.items, key.node) != null) {
                     if (kind == .fn_decl) {
@@ -712,7 +725,37 @@ pub const Builder = struct {
             try self.interfaceBody(context, key.node)
         else
             try self.classBody(context, key.node);
+        if (def.is_class) {
+            def.is_abstract_class = hir.classOf(&c.hir, key.node).is_abstract;
+            def.constructors = try self.classConstructors(context, key.node);
+        }
         return def;
+    }
+
+    fn classConstructors(self: *Builder, context: Context, node: hir.NodeId) !?*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        var overloads: usize = 0;
+        for (hir.classMembers(&c.hir, node)) |member| {
+            if (c.hir.kindOf(member) != .fn_decl and c.hir.kindOf(member) != .fn_expr and c.hir.kindOf(member) != .arrow_fn) continue;
+            const function = hir.fnDeclOf(&c.hir, member);
+            if (function.flags.is_constructor and function.body == 0) overloads += 1;
+        }
+        var signatures: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
+        for (hir.classMembers(&c.hir, node)) |member| {
+            if (c.hir.kindOf(member) != .fn_decl and c.hir.kindOf(member) != .fn_expr and c.hir.kindOf(member) != .arrow_fn) continue;
+            const function = hir.fnDeclOf(&c.hir, member);
+            if (!function.flags.is_constructor or (overloads != 0 and function.body != 0)) continue;
+            const signature = try self.functionType(context, &.{}, hir.fnParams(&c.hir, member), 0, true);
+            var constructor = signature.function;
+            constructor.construct_visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public;
+            constructor.result = try self.expression(.{ .primitive = Primitive.any });
+            try signatures.append(self.arena, try self.expression(.{ .function = constructor }));
+        }
+        if (signatures.items.len == 1) return signatures.items[0];
+        if (signatures.items.len > 1) return self.expression(.{ .intersection = try signatures.toOwnedSlice(self.arena) });
+        // An implicit derived constructor needs its base's source-owned graph.
+        if (hir.classOf(&c.hir, node).extends != 0) return null;
+        return self.expression(.{ .function = .{ .parameters = &.{}, .result = try self.expression(.{ .primitive = Primitive.any }), .is_construct = true } });
     }
 
     fn functionOverloadType(
@@ -1310,19 +1353,30 @@ pub const Builder = struct {
             else
                 .external;
         }
-        for (hir.blockStmts(&c.hir, c.root)) |statement| {
-            if (c.hir.kindOf(statement) != .import_decl) continue;
+        const imported = importForSymbol(c, bound) orelse return .unsupported;
+        return self.resolveImported(source, c.interner.get(hir.importOf(&c.hir, imported.node).module), imported.name);
+    }
+
+    const ImportedBinding = struct { node: hir.NodeId, name: []const u8, namespace: bool = false };
+
+    fn importForSymbol(c: *const driver.Compilation, symbol: *const binder.Symbol) ?ImportedBinding {
+        var found: ?ImportedBinding = null;
+        for (symbol.decls.items) |declaration_node| {
+            const statement = c.hir.parentOf(declaration_node);
+            if (statement == hir.none_node_id or c.hir.kindOf(statement) != .import_decl) return null;
             const import = hir.importOf(&c.hir, statement);
-            if (import.default_binding != 0 and c.hir.kindOf(import.default_binding) == .identifier and
-                hir.identifierOf(&c.hir, import.default_binding).name == name)
-                return self.resolveImported(source, c.interner.get(import.module), "default");
-            for (hir.importNamed(&c.hir, statement)) |specifier| {
-                const value = hir.importSpecifierOf(&c.hir, specifier);
-                if (value.local != name) continue;
-                return self.resolveImported(source, c.interner.get(import.module), c.interner.get(value.imported));
-            }
+            const candidate: ImportedBinding = if (c.hir.kindOf(declaration_node) == .import_specifier)
+                .{ .node = statement, .name = c.interner.get(hir.importSpecifierOf(&c.hir, declaration_node).imported) }
+            else if (import.namespace_binding == declaration_node)
+                .{ .node = statement, .name = "", .namespace = true }
+            else if (import.default_binding == declaration_node and !import.is_require_equals)
+                .{ .node = statement, .name = "default" }
+            else
+                return null;
+            if (found != null) return null;
+            found = candidate;
         }
-        return .unsupported;
+        return found;
     }
 
     fn scopedSymbol(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) ?*binder.Symbol {
@@ -1403,14 +1457,9 @@ pub const Builder = struct {
             else
                 .unsupported;
         }
-        for (hir.blockStmts(&c.hir, c.root)) |statement| {
-            if (c.hir.kindOf(statement) != .import_decl) continue;
-            const import = hir.importOf(&c.hir, statement);
-            if (import.namespace_binding == 0 or c.hir.kindOf(import.namespace_binding) != .identifier) continue;
-            if (hir.identifierOf(&c.hir, import.namespace_binding).name != namespace_name) continue;
-            return self.resolveImported(source, c.interner.get(import.module), c.interner.get(ref.name));
-        }
-        return .unsupported;
+        const imported = importForSymbol(c, bound) orelse return .unsupported;
+        if (!imported.namespace) return .unsupported;
+        return self.resolveImported(source, c.interner.get(hir.importOf(&c.hir, imported.node).module), c.interner.get(ref.name));
     }
 
     fn declarationHasName(c: *const driver.Compilation, node: hir.NodeId, name: hir.StringId) bool {
@@ -1425,14 +1474,21 @@ pub const Builder = struct {
     }
 
     fn resolveImported(self: *Builder, source: usize, specifier: []const u8, name: []const u8) error{OutOfMemory}!Resolution {
-        const target = self.resolver.resolve(specifier, self.sources[source].path) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return .unsupported,
-        };
-        if (self.resolveDirectExport(target.path, name)) |direct| return direct;
-        const resolved = self.query.resolve(target.path, name) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return .unsupported,
+        const resolved = if (try self.query.hasAmbientModule(specifier))
+            self.query.resolveModule(specifier, self.sources[source].path, name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            }
+        else filesystem: {
+            const target = self.resolver.resolve(specifier, self.sources[source].path) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            };
+            if (self.resolveDirectExport(target.path, name)) |direct| return direct;
+            break :filesystem self.query.resolve(target.path, name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            };
         };
         if (!resolved.complete or resolved.ambiguous) return .unsupported;
         const origin = resolved.type orelse return .unsupported;

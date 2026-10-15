@@ -6,6 +6,7 @@ const hir = @import("hir");
 const driver = @import("ts_driver");
 const resolver_mod = @import("ts_resolver");
 const schemas = @import("class_schema.zig");
+const export_origins = @import("export_origins.zig");
 
 pub const Source = schemas.Source;
 const Binding = struct { source: usize, name: []const u8 };
@@ -23,6 +24,7 @@ pub const Graph = struct {
     arena: std.heap.ArenaAllocator,
     values: []const driver.ProgramExportedValue = &.{},
     types: []const driver.ProgramExportedType = &.{},
+    ambient_modules: []const driver.ProgramAmbientModule = &.{},
 
     pub fn init(gpa: std.mem.Allocator) Graph {
         return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
@@ -38,6 +40,7 @@ fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
         .interface_decl => hir.interfaceOf(&c.hir, node).name,
         .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
         .class_decl => hir.classOf(&c.hir, node).name,
+        .namespace_decl => hir.namespaceOf(&c.hir, node).name,
         .fn_decl => hir.fnDeclOf(&c.hir, node).name,
         .var_decl, .let_decl, .const_decl => hir.varDeclOf(&c.hir, node).name,
         else => return null,
@@ -63,6 +66,11 @@ fn appendNamespaceValueRoute(
     for (hir.namespaceBody(&c.hir, node)) |raw| {
         const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else if (ambient) raw else continue;
         if (member == hir.none_node_id) continue;
+        if (declarationName(c, member)) |name| {
+            const visible = try builder.query.resolveInNamespace(source.path, node, name);
+            const origin = visible.value orelse visible.type_only_value orelse visible.namespace orelse continue;
+            if (!visible.complete or visible.ambiguous or !std.mem.eql(u8, origin.path, source.path) or origin.position != c.hir.spanOf(member).start) continue;
+        }
         if (c.hir.kindOf(member) == .namespace_decl) {
             const namespace = hir.namespaceOf(&c.hir, member);
             if (c.hir.kindOf(namespace.name) != .identifier) continue;
@@ -114,6 +122,9 @@ fn appendNamespaceTypeRoute(
         switch (c.hir.kindOf(member)) {
             .interface_decl, .type_alias_decl, .class_decl => {
                 const name = declarationName(c, member) orelse continue;
+                const visible = try builder.query.resolveInNamespace(source.path, namespace_node, name);
+                const origin = visible.type orelse continue;
+                if (!visible.complete or visible.ambiguous or !std.mem.eql(u8, origin.path, source.path) or origin.position != c.hir.spanOf(member).start) continue;
                 const declaration = try builder.declaration(.{ .source = source_index, .node = member });
                 const support = try supported.getOrPut(arena, declaration);
                 if (!support.found_existing) {
@@ -162,6 +173,169 @@ fn appendNamespaceTypeRoute(
     }
 }
 
+fn scopeFor(c: *const driver.Compilation, node: hir.NodeId) ?*const @import("binder").Scope {
+    for (c.module.scopes.items) |scope| if (scope.introducing_node == node) return scope;
+    return null;
+}
+
+fn originKey(by_path: *const std.StringHashMapUnmanaged(usize), declarations: *const std.AutoHashMapUnmanaged(Position, hir.NodeId), origin: export_origins.Origin) ?schemas.Key {
+    const source = by_path.get(origin.path) orelse return null;
+    const node = declarations.get(.{ .source = source, .position = origin.position }) orelse return null;
+    return .{ .source = source, .node = node };
+}
+
+fn collectAmbientModules(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    builder: *schemas.Builder,
+    supported: *std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool),
+    sources: []const Source,
+    by_path: *const std.StringHashMapUnmanaged(usize),
+    declarations: *const std.AutoHashMapUnmanaged(Position, hir.NodeId),
+    values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
+    types: *std.ArrayListUnmanaged(driver.ProgramExportedType),
+) ![]const driver.ProgramAmbientModule {
+    const ModuleOwner = struct { source: usize, node: hir.NodeId };
+    var modules: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ModuleOwner)) = .empty;
+    for (sources, 0..) |source, index| {
+        const c = source.compilation;
+        if (c.hir.kindOf(c.root) != .block_stmt or @import("ts_program.zig").Program.boundSourceIsExternalModule(c)) continue;
+        for (hir.blockStmts(&c.hir, c.root)) |node| {
+            if (c.hir.kindOf(node) != .namespace_decl) continue;
+            const namespace = hir.namespaceOf(&c.hir, node);
+            const span = c.hir.spanOf(namespace.name);
+            if (span.start >= c.source.len or (c.source[span.start] != '"' and c.source[span.start] != '\'')) continue;
+            const name = switch (c.hir.kindOf(namespace.name)) {
+                .identifier => c.interner.get(hir.identifierOf(&c.hir, namespace.name).name),
+                .literal_string => c.interner.get(hir.literalStringOf(&c.hir, namespace.name).value),
+                else => continue,
+            };
+            const owners = try modules.getOrPut(arena, name);
+            if (!owners.found_existing) owners.value_ptr.* = .empty;
+            try owners.value_ptr.append(arena, .{ .source = index, .node = node });
+        }
+    }
+    var result: std.ArrayListUnmanaged(driver.ProgramAmbientModule) = .empty;
+    var iterator = modules.iterator();
+    while (iterator.next()) |entry| {
+        const specifier = entry.key_ptr.*;
+        const owners = entry.value_ptr.items;
+        const host = sources[owners[0].source];
+        const public_names = try builder.query.exportNamesForModule(specifier, host.path);
+        // Export-name closure is independent of resolving each alias target.
+        const complete = public_names.complete;
+        var names: std.StringHashMapUnmanaged(void) = .empty;
+        for (public_names.names) |name| try names.put(arena, name, {});
+        for (owners) |owner| {
+            const c = sources[owner.source].compilation;
+            const scope = scopeFor(c, owner.node) orelse continue;
+            inline for (.{ "types", "values", "namespaces" }) |field| {
+                var bindings = @field(scope, field).keyIterator();
+                while (bindings.next()) |name| try names.put(arena, c.interner.get(name.*), {});
+            }
+        }
+        const rendered = try std.fmt.allocPrint(arena, "\"{s}\"", .{specifier});
+        var facts: std.ArrayListUnmanaged(driver.ProgramAmbientModuleExport) = .empty;
+        var named = names.keyIterator();
+        while (named.next()) |name| {
+            const resolved = try builder.query.resolveModule(specifier, host.path, name.*);
+            const known = resolved.complete and !resolved.ambiguous and
+                (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null);
+            var local = false;
+            var renamed: []const u8 = "";
+            for (owners) |owner| {
+                const c = sources[owner.source].compilation;
+                const scope = scopeFor(c, owner.node) orelse continue;
+                const id = c.interner.lookup(name.*) orelse continue;
+                inline for (.{ "types", "values", "namespaces" }) |field| {
+                    if (@field(scope, field).get(id)) |symbol| for (symbol.decls.items) |declaration_node| {
+                        const parent = c.hir.parentOf(declaration_node);
+                        // A named default declaration does not make its
+                        // internal name an ordinary private import candidate.
+                        if (parent != 0 and c.hir.kindOf(parent) == .export_decl and hir.exportOf(&c.hir, parent).is_default) continue;
+                        local = true;
+                    };
+                }
+                for (hir.namespaceBody(&c.hir, owner.node)) |statement| {
+                    if (c.hir.kindOf(statement) != .export_decl) continue;
+                    const export_info = hir.exportOf(&c.hir, statement);
+                    if (c.interner.get(export_info.module).len != 0) continue;
+                    for (hir.exportNamed(&c.hir, statement)) |alias| {
+                        const item = hir.importSpecifierOf(&c.hir, alias);
+                        if (item.imported == id and item.local != id and renamed.len == 0) renamed = c.interner.get(item.local);
+                    }
+                }
+            }
+            const value = resolved.value orelse resolved.type_only_value;
+            try facts.append(arena, .{ .name = name.*, .facts = .{
+                .module_name = rendered,
+                .exported_type = known and resolved.type != null,
+                .exported_value = known and value != null,
+                .namespace_meaning = if (known) resolved.namespace != null else null,
+                .declares_local = local,
+                .local_exported_as = renamed,
+                .runtime_value = if (known) resolved.value != null else null,
+                .generic_function = if (value) |found| found.generic_function else false,
+                .call_only_function = if (value) |found| found.call_only_function else false,
+                .type_only_export = if (resolved.restriction) |restriction| restriction.kind == .export_type else false,
+                .type_only_import = if (resolved.restriction) |restriction| restriction.kind == .import_type else false,
+                .export_path = if (resolved.restriction) |restriction| restriction.path else "",
+                .export_pos = if (resolved.restriction) |restriction| restriction.position else 0,
+                .namespace_module_path = if (resolved.namespace) |namespace| if (namespace.kind == .namespace) namespace.path else "" else "",
+                .ambient_module = true,
+                .ambient_module_exports_known = known,
+                .module_is_external = true,
+            } });
+            if (!known) continue;
+            if (resolved.type) |origin| if (originKey(by_path, declarations, origin)) |key| {
+                const c = sources[key.source].compilation;
+                if (c.hir.kindOf(key.node) != .namespace_decl) {
+                    const declaration = try builder.declaration(key);
+                    const support = try supported.getOrPut(arena, declaration);
+                    if (!support.found_existing) support.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+                    try types.append(arena, .{ .target_path = host.path, .ambient_module_name = specifier, .export_name = name.*, .declaration = declaration, .contextual_only = declaration.contextual_only, .projection_only = !support.value_ptr.* });
+                }
+            };
+            if (value) |origin| {
+                if (originKey(by_path, declarations, origin)) |key| {
+                    const c = sources[key.source].compilation;
+                    if (c.hir.kindOf(key.node) != .namespace_decl) {
+                        const declaration = try builder.declaration(key);
+                        const support = try supported.getOrPut(arena, declaration);
+                        if (!support.found_existing) support.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+                        var value_declaration = declaration;
+                        if (declaration.is_class) {
+                            const expression = try arena.create(driver.ProgramClassSchema.Expression);
+                            expression.* = .{ .typeof_class = declaration };
+                            const wrapper = try arena.create(driver.ProgramClassSchema.Declaration);
+                            wrapper.* = .{ .path = declaration.path, .position = declaration.position, .name = declaration.name, .body = expression, .value_side = true };
+                            value_declaration = wrapper;
+                        }
+                        try values.append(arena, .{ .target_path = host.path, .ambient_module_name = specifier, .export_name = name.*, .kind = if (declaration.is_function) .function else .variable, .declaration = value_declaration, .runtime_value = resolved.value != null, .projection_only = !support.value_ptr.* });
+                    }
+                }
+            }
+            if (resolved.namespace) |origin| {
+                const namespace_values_start = values.items.len;
+                if (originKey(by_path, declarations, origin)) |key| {
+                    const c = sources[key.source].compilation;
+                    if (c.hir.kindOf(key.node) == .namespace_decl) {
+                        const first_value = values.items.len;
+                        const first_type = types.items.len;
+                        try appendNamespaceValueRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, values);
+                        try appendNamespaceTypeRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, types);
+                        for (values.items[first_value..]) |*route| route.ambient_module_name = specifier;
+                        for (types.items[first_type..]) |*route| route.ambient_module_name = specifier;
+                    }
+                }
+                if (resolved.value != null and values.items.len == namespace_values_start) try values.append(arena, .{ .target_path = host.path, .ambient_module_name = specifier, .export_name = name.*, .kind = .variable });
+            }
+        }
+        try result.append(arena, .{ .specifier = specifier, .rendered_name = rendered, .exports = try facts.toOwnedSlice(arena), .complete = complete });
+    }
+    return result.toOwnedSlice(arena);
+}
+
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Graph {
     var result = Graph.init(gpa);
     errdefer result.deinit();
@@ -177,43 +351,12 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     @memset(importers, .empty);
     var values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     var types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
-    // A script may own several distinct ambient modules. Route their exact
-    // declarations with the module name, never as file-level exports. An
-    // external module's string-named declarations are augmentations instead.
-    for (sources, 0..) |source, index| {
-        const c = source.compilation;
-        if (c.root == hir.none_node_id or c.hir.kindOf(c.root) != .block_stmt) continue;
-        var external = false;
-        for (hir.blockStmts(&c.hir, c.root)) |node| {
-            if (c.hir.kindOf(node) == .import_decl or c.hir.kindOf(node) == .export_decl) external = true;
-        }
-        if (external) continue;
-        for (hir.blockStmts(&c.hir, c.root)) |node| {
-            if (c.hir.kindOf(node) != .namespace_decl) continue;
-            const namespace = hir.namespaceOf(&c.hir, node);
-            if (namespace.name == hir.none_node_id) continue;
-            const name_span = c.hir.spanOf(namespace.name);
-            if (name_span.start >= c.source.len or (c.source[name_span.start] != '"' and c.source[name_span.start] != '\'')) continue;
-            const name_id = switch (c.hir.kindOf(namespace.name)) {
-                .identifier => hir.identifierOf(&c.hir, namespace.name).name,
-                .literal_string => hir.literalStringOf(&c.hir, namespace.name).value,
-                else => continue,
-            };
-            const module_name = c.interner.get(name_id);
-            const first_value = values.items.len;
-            const first_type = types.items.len;
-            try appendNamespaceValueRoute(gpa, arena, &builder, &supported, index, source, node, source.path, "", &values);
-            try appendNamespaceTypeRoute(gpa, arena, &builder, &supported, index, source, node, source.path, "", &types);
-            for (values.items[first_value..]) |*entry| entry.ambient_module_name = module_name;
-            for (types.items[first_type..]) |*entry| entry.ambient_module_name = module_name;
-        }
-    }
     for (sources, 0..) |source, index| {
         try by_path.put(arena, source.path, index);
         const c = source.compilation;
         for (c.hir.kinds.items, 0..) |kind, node| {
             switch (kind) {
-                .fn_decl, .var_decl, .let_decl, .const_decl, .interface_decl, .type_alias_decl, .namespace_decl => try declarations.put(arena, .{ .source = index, .position = c.hir.spanOf(@intCast(node)).start }, @intCast(node)),
+                .fn_decl, .var_decl, .let_decl, .const_decl, .interface_decl, .type_alias_decl, .class_decl, .namespace_decl => try declarations.put(arena, .{ .source = index, .position = c.hir.spanOf(@intCast(node)).start }, @intCast(node)),
                 else => {},
             }
         }
@@ -222,6 +365,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             try pending.append(arena, .{ .source = index, .name = if (symbol.flags.is_default_export) "default" else c.interner.get(symbol.name) });
         }
     }
+    result.ambient_modules = try collectAmbientModules(gpa, arena, &builder, &supported, sources, &by_path, &declarations, &values, &types);
     for (sources, 0..) |source, index| {
         const c = source.compilation;
         if (c.root == 0 or c.hir.kindOf(c.root) != .block_stmt) continue;
@@ -269,7 +413,8 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             const origin = (if (space == 1) origins.value orelse origins.type_only_value else origins.type) orelse continue;
             const owner = by_path.get(origin.path) orelse continue;
             const node = declarations.get(.{ .source = owner, .position = origin.position }) orelse continue;
-            if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl) continue;
+            if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl or
+                sources[owner].compilation.hir.kindOf(node) == .class_decl) continue;
             const declaration = try builder.declaration(.{ .source = owner, .node = node });
             const entry = try supported.getOrPut(arena, declaration);
             if (!entry.found_existing) entry.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);

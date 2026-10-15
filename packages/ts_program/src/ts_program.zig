@@ -1466,7 +1466,7 @@ pub const Program = struct {
         };
     }
 
-    fn boundSourceIsExternalModule(c: *const ts_driver.Compilation) bool {
+    pub fn boundSourceIsExternalModule(c: *const ts_driver.Compilation) bool {
         if (c.root == hir_mod_ns.none_node_id) return false;
         for (hir_mod_ns.blockStmts(&c.hir, c.root)) |stmt| {
             if (boundCommonJsDefinePropertyExport(c, stmt)) return true;
@@ -1616,6 +1616,7 @@ pub const Program = struct {
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_exported_values = declarations.values;
         shared_options.program_exported_types = declarations.types;
+        shared_options.program_ambient_modules = declarations.ambient_modules;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
@@ -1789,6 +1790,7 @@ pub const Program = struct {
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_exported_values = declarations.values;
         shared_options.program_exported_types = declarations.types;
+        shared_options.program_ambient_modules = declarations.ambient_modules;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
@@ -1956,6 +1958,16 @@ pub const Program = struct {
             const compilation = file.compilation orelse continue;
             for (compilation.module.symbols.items) |symbol| {
                 if (symbol.flags.is_import) return self.collectProgramDeclarations();
+            }
+            // Inline import types and dynamic ambient imports have no bound
+            // import symbol and no filesystem edge, but need the same graph.
+            if (std.mem.indexOf(u8, compilation.source, "import") != null or
+                std.mem.indexOf(u8, compilation.source, "require") != null)
+            {
+                var references: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
+                defer references.deinit(self.gpa);
+                try appendStaticModuleReferences(self.gpa, compilation, &references);
+                if (references.items.len != 0) return self.collectProgramDeclarations();
             }
         }
         return declaration_graph.Graph.init(self.gpa);
@@ -3678,6 +3690,7 @@ pub const Program = struct {
         shared_options.program_exported_classes = program_exported_classes;
         shared_options.program_exported_values = declarations.values;
         shared_options.program_exported_types = declarations.types;
+        shared_options.program_ambient_modules = declarations.ambient_modules;
         shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
@@ -12838,11 +12851,6 @@ test "Program: imported Normalize returns preserve filtered source members" {
         .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
     });
     const compilation = p.fileById(consumer_id).compilation.?;
-    if (compilation.diagnostics.items.len != 2) for (compilation.diagnostics.items) |diagnostic| {
-        std.debug.print("Normalize diagnostic TS{d}: {s}\n", .{ diagnostic.code, diagnostic.message });
-    };
-    try expectCompilationLacksDiagnosticCode(compilation, 2411);
-    try expectCompilationLacksDiagnosticCode(compilation, 7006);
     try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
@@ -18020,6 +18028,9 @@ test "Program: class-only ambient module aliases retain constructors and instanc
     _ = try p.add("/api.d.ts", "declare module 'class-api' { class Item { constructor(value: string); value: string; } }");
     try p.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
     const compilation = p.fileById(app).compilation.?;
+    if (compilation.diagnostics.items.len != 2) for (compilation.diagnostics.items) |diagnostic| {
+        std.debug.print("ambient constructor TS{d} pos={d}: {s}\n", .{ diagnostic.code, diagnostic.pos, diagnostic.message });
+    };
     try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
@@ -18571,5 +18582,42 @@ test "Program: import types and dynamic imports load exact declaration owners" {
             try T.expectEqual(@as(usize, 1), assignments);
             try T.expectEqual(@as(usize, 1), arguments);
         }
+    }
+}
+
+test "Program: reexported ambient classes retain constructor signatures" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var source_exports = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer source_exports.arena.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app = try program.add("/main.ts", "import {Alias} from 'owner';new Alias(1);");
+    _ = try program.add("/types.d.ts", "declare module 'leaf'{export class Item{constructor(path:string);value:string;}}declare module 'owner'{export {Item as Alias} from 'leaf';}");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable } });
+    const compilation = program.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2345), compilation.diagnostics.items[0].code);
+}
+
+test "Program: bare ambient import types and dynamic imports do not skip the declaration graph" {
+    for ([_]usize{ 1, 2 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var source_exports = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer source_exports.arena.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const app = try program.add("/main.ts", "export {};declare const take:typeof import('owner').take;take(1);export async function use():Promise<void>{const module=await import('owner');module.take(1);}");
+        _ = try program.add("/types.d.ts", "declare module 'owner'{function take(path:string):void;}");
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable } };
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        const compilation = program.fileById(app).compilation.?;
+        try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+        for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2345), diagnostic.code);
     }
 }

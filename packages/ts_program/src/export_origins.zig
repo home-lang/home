@@ -1,6 +1,6 @@
 //! Resolve an exported name to its actual declaration origins.
 //!
-//! Worklist states are (file, name, export/local lookup, value visibility).
+//! Worklist states are (file, scope, name, export/local lookup, value visibility).
 //! Visiting each state once terminates cycles without imposing a depth limit
 //! or confusing two barrel paths to one declaration with two declarations.
 //! This does not transfer TypeIds: all HIR/symbol inspection stays in its owner.
@@ -75,6 +75,7 @@ pub const Restriction = struct {
 
 const State = struct {
     path: []const u8,
+    scope: hir.NodeId = 0,
     name: []const u8,
     local: bool = false,
     values: bool = true,
@@ -94,12 +95,13 @@ const StateContext = struct {
         h.update(state.path);
         h.update(&.{0});
         h.update(state.name);
+        h.update(std.mem.asBytes(&state.scope));
         h.update(&.{ @intFromBool(state.local), @intFromBool(state.values) });
         return h.final();
     }
 
     pub fn eql(_: StateContext, a: State, b: State) bool {
-        return a.local == b.local and a.values == b.values and
+        return a.scope == b.scope and a.local == b.local and a.values == b.values and
             std.mem.eql(u8, a.path, b.path) and std.mem.eql(u8, a.name, b.name);
     }
 };
@@ -115,7 +117,7 @@ const ExportEdge = struct {
     node: hir.NodeId,
     specifier: hir.NodeId = 0,
     order: usize,
-    kind: enum { named, namespace, default, local },
+    kind: enum { named, namespace, default, local, implicit },
 
     fn lessThan(c: *const driver.Compilation, a: ExportEdge, b: ExportEdge) bool {
         if (a.order != b.order) return a.order < b.order;
@@ -128,6 +130,7 @@ const SourceIndex = struct {
     exports: std.AutoHashMapUnmanaged(hir.StringId, std.ArrayListUnmanaged(ExportEdge)) = .empty,
     defaults: std.ArrayListUnmanaged(ExportEdge) = .empty,
     stars: std.ArrayListUnmanaged(hir.NodeId) = .empty,
+    unknown_exports: bool = false,
 
     fn addImport(self: *SourceIndex, arena: std.mem.Allocator, name: hir.StringId, edge: ImportEdge) !void {
         // Match the existing source-order lookup even for invalid duplicate
@@ -144,12 +147,17 @@ const SourceIndex = struct {
     }
 };
 
+const ScopedOwner = struct { path: []const u8, node: hir.NodeId, default_visible: bool = true };
+const IndexKey = struct { owner: *const driver.Compilation, scope: hir.NodeId };
+
 pub const Query = struct {
     gpa: std.mem.Allocator,
     resolver: *resolver_mod.Resolver,
     files: std.StringHashMapUnmanaged(Entry) = .empty,
     index_arena: std.heap.ArenaAllocator,
-    indexes: std.AutoHashMapUnmanaged(*const driver.Compilation, *const SourceIndex) = .empty,
+    indexes: std.AutoHashMapUnmanaged(IndexKey, *const SourceIndex) = .empty,
+    ambient_indexed: std.AutoHashMapUnmanaged(*const driver.Compilation, void) = .empty,
+    ambient_modules: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ScopedOwner)) = .empty,
     pending: std.ArrayListUnmanaged(State) = .empty,
     visited: std.HashMapUnmanaged(State, void, StateContext, 80) = .empty,
     result: Origins = .{},
@@ -162,6 +170,8 @@ pub const Query = struct {
 
     pub fn deinit(self: *Query) void {
         self.indexes.deinit(self.gpa);
+        self.ambient_indexed.deinit(self.gpa);
+        self.ambient_modules.deinit(self.gpa);
         self.index_arena.deinit();
         self.pending.deinit(self.gpa);
         self.visited.deinit(self.gpa);
@@ -199,21 +209,101 @@ pub const Query = struct {
         return c;
     }
 
+    fn statements(c: *const driver.Compilation, scope: hir.NodeId) []const hir.NodeId {
+        return if (scope == 0) hir.blockStmts(&c.hir, c.root) else hir.namespaceBody(&c.hir, scope);
+    }
+
+    fn boundScope(c: *const driver.Compilation, scope: hir.NodeId) ?*const @import("binder").Scope {
+        if (scope == 0) return c.module.root;
+        for (c.module.scopes.items) |candidate| if (candidate.introducing_node == scope) return candidate;
+        return null;
+    }
+
+    fn indexAmbientModules(self: *Query) !void {
+        const arena = self.index_arena.allocator();
+        var files = self.files.iterator();
+        while (files.next()) |entry| {
+            const c = entry.value_ptr.compilation;
+            if (self.ambient_indexed.contains(c)) continue;
+            if (c.hir.kindOf(c.root) != .block_stmt) continue;
+            const body = hir.blockStmts(&c.hir, c.root);
+            const external = program.Program.boundSourceIsExternalModule(c);
+            if (!external) for (body) |node| {
+                if (c.hir.kindOf(node) != .namespace_decl) continue;
+                const module_decl = hir.namespaceOf(&c.hir, node);
+                if (module_decl.name == 0) continue;
+                const span = c.hir.spanOf(module_decl.name);
+                if (span.start >= c.source.len or (c.source[span.start] != '"' and c.source[span.start] != '\'')) continue;
+                const name = switch (c.hir.kindOf(module_decl.name)) {
+                    .identifier => c.interner.get(hir.identifierOf(&c.hir, module_decl.name).name),
+                    .literal_string => c.interner.get(hir.literalStringOf(&c.hir, module_decl.name).value),
+                    else => continue,
+                };
+                const modules = try self.ambient_modules.getOrPut(self.gpa, name);
+                if (!modules.found_existing) modules.value_ptr.* = .empty;
+                // Allocation failure must not leave a duplicate on retry.
+                var present = false;
+                for (modules.value_ptr.items) |owner| if (owner.node == node and std.mem.eql(u8, owner.path, entry.key_ptr.*)) {
+                    present = true;
+                    break;
+                };
+                if (!present) try modules.value_ptr.append(arena, .{ .path = entry.key_ptr.*, .node = node });
+            };
+            try self.ambient_indexed.put(self.gpa, c, {});
+        }
+    }
+
+    pub fn hasAmbientModule(self: *Query, name: []const u8) !bool {
+        try self.indexAmbientModules();
+        return self.ambient_modules.contains(name);
+    }
+
+    fn enqueueModule(self: *Query, specifier: []const u8, from: []const u8, state: State) !void {
+        try self.indexAmbientModules();
+        if (self.ambient_modules.get(specifier)) |owners| {
+            for (owners.items) |owner| {
+                var next = state;
+                next.path = owner.path;
+                next.scope = owner.node;
+                try self.enqueue(next);
+            }
+        } else if (try self.target(specifier, from)) |path| {
+            var next = state;
+            next.path = path;
+            next.scope = 0;
+            try self.enqueue(next);
+        }
+    }
+
+    fn moduleNamespace(self: *Query, specifier: []const u8, from: []const u8, values: bool, restriction: ?Restriction) !void {
+        try self.indexAmbientModules();
+        if (self.ambient_modules.get(specifier)) |owners| {
+            for (owners.items) |owner| self.namespace(owner.path, owner.node, values, restriction);
+        } else if (try self.target(specifier, from)) |path| self.namespace(path, 0, values, restriction);
+    }
+
     fn enqueue(self: *Query, state: State) !void {
         const entry = try self.visited.getOrPut(self.gpa, state);
         if (!entry.found_existing) try self.pending.append(self.gpa, state);
     }
 
-    /// Snapshot only the prepared owner's root bindings. The index contains
+    /// Snapshot the prepared owner's selected scope bindings. The index contains
     /// unresolved edges, not cached answers: every query still traverses all
     /// relevant alias/star paths with its own visibility and cycle state.
-    fn index(self: *Query, c: *const driver.Compilation) !*const SourceIndex {
-        if (self.indexes.get(c)) |existing| return existing;
+    fn index(self: *Query, c: *const driver.Compilation, scope: hir.NodeId) !*const SourceIndex {
+        const key: IndexKey = .{ .owner = c, .scope = scope };
+        if (self.indexes.get(key)) |existing| return existing;
         const arena = self.index_arena.allocator();
         const result = try arena.create(SourceIndex);
         result.* = .{};
         var declarations: std.AutoHashMapUnmanaged(hir.NodeId, ExportEdge) = .empty;
-        for (hir.blockStmts(&c.hir, c.root), 0..) |node, order| {
+        const body = statements(c, scope);
+        var implicit = scope != 0 and (c.is_declaration_file or hir.namespaceOf(&c.hir, scope).is_ambient);
+        for (body) |node| if (c.hir.kindOf(node) == .export_decl) {
+            const export_info = hir.exportOf(&c.hir, node);
+            if (export_info.decl == 0 or export_info.is_export_equals) implicit = false;
+        };
+        for (body, 0..) |node, order| {
             if (builtin.is_test) self.stats.source_statements += 1;
             if (c.hir.kindOf(node) == .import_decl) {
                 const import = hir.importOf(&c.hir, node);
@@ -228,8 +318,12 @@ pub const Query = struct {
                 }
                 continue;
             }
-            if (c.hir.kindOf(node) != .export_decl) continue;
+            if (c.hir.kindOf(node) != .export_decl) {
+                if (implicit) try declarations.put(arena, node, .{ .node = node, .order = order, .kind = .implicit });
+                continue;
+            }
             const ex = hir.exportOf(&c.hir, node);
+            if (ex.is_export_equals) result.unknown_exports = true;
             for (hir.exportNamed(&c.hir, node)) |specifier| {
                 if (c.hir.kindOf(specifier) != .import_specifier) continue;
                 try result.addExport(arena, c, hir.importSpecifierOf(&c.hir, specifier).local, .{ .node = node, .specifier = specifier, .order = order, .kind = .named });
@@ -251,11 +345,11 @@ pub const Query = struct {
         // This handles destructured/comma declarations and merged symbols
         // without comparing each symbol against every export statement.
         inline for (.{ "values", "types", "namespaces" }) |field| {
-            var symbols = @field(c.module.root, field).iterator();
+            var symbols = @field(boundScope(c, scope).?, field).iterator();
             while (symbols.next()) |entry| {
                 for (entry.value_ptr.*.decls.items) |decl| {
                     var current = decl;
-                    while (current != 0 and current != c.root) : (current = c.hir.parentOf(current)) {
+                    while (current != 0 and current != (if (scope == 0) c.root else scope)) : (current = c.hir.parentOf(current)) {
                         if (declarations.get(current)) |edge| try result.addExport(arena, c, entry.key_ptr.*, edge);
                     }
                 }
@@ -266,7 +360,7 @@ pub const Query = struct {
         var exports = result.exports.valueIterator();
         while (exports.next()) |edges| std.mem.sort(ExportEdge, edges.items, c, ExportEdge.lessThan);
         std.mem.sort(ExportEdge, result.defaults.items, c, ExportEdge.lessThan);
-        try self.indexes.put(self.gpa, c, result);
+        try self.indexes.put(self.gpa, key, result);
         return result;
     }
 
@@ -289,6 +383,111 @@ pub const Query = struct {
         self.visited.clearRetainingCapacity();
         self.result = .{};
         try self.enqueue(.{ .path = path, .name = name });
+        return self.finish();
+    }
+
+    pub fn resolveModule(self: *Query, specifier: []const u8, from: []const u8, name: []const u8) !Origins {
+        self.pending.clearRetainingCapacity();
+        self.visited.clearRetainingCapacity();
+        self.result = .{};
+        try self.enqueueModule(specifier, from, .{ .path = from, .name = name });
+        return self.finish();
+    }
+
+    pub fn resolveInNamespace(self: *Query, path: []const u8, scope: hir.NodeId, name: []const u8) !Origins {
+        self.pending.clearRetainingCapacity();
+        self.visited.clearRetainingCapacity();
+        self.result = .{};
+        try self.enqueue(.{ .path = path, .scope = scope, .name = name });
+        return self.finish();
+    }
+
+    pub const ExportNames = struct { names: []const []const u8, complete: bool };
+    const ScopeContext = struct {
+        pub fn hash(_: ScopeContext, owner: ScopedOwner) u64 {
+            return std.hash.Wyhash.hash(@as(u64, owner.node) * 2 + @intFromBool(owner.default_visible), owner.path);
+        }
+        pub fn eql(_: ScopeContext, left: ScopedOwner, right: ScopedOwner) bool {
+            return left.node == right.node and left.default_visible == right.default_visible and std.mem.eql(u8, left.path, right.path);
+        }
+    };
+
+    fn appendModuleScopes(self: *Query, pending: *std.ArrayListUnmanaged(ScopedOwner), specifier: []const u8, from: []const u8) !bool {
+        try self.indexAmbientModules();
+        if (self.ambient_modules.get(specifier)) |owners| {
+            try pending.appendSlice(self.gpa, owners.items);
+            return true;
+        }
+        if (try self.target(specifier, from)) |path| {
+            try pending.append(self.gpa, .{ .path = path, .node = 0 });
+            return true;
+        }
+        return false;
+    }
+
+    pub fn exportNamesForModule(self: *Query, specifier: []const u8, from: []const u8) !ExportNames {
+        var pending: std.ArrayListUnmanaged(ScopedOwner) = .empty;
+        defer pending.deinit(self.gpa);
+        const found = try self.appendModuleScopes(&pending, specifier, from);
+        return self.exportNames(&pending, found);
+    }
+
+    pub fn exportNamesInNamespace(self: *Query, path: []const u8, scope: hir.NodeId) !ExportNames {
+        var pending: std.ArrayListUnmanaged(ScopedOwner) = .empty;
+        defer pending.deinit(self.gpa);
+        try pending.append(self.gpa, .{ .path = path, .node = scope });
+        return self.exportNames(&pending, true);
+    }
+
+    fn exportNames(self: *Query, pending: *std.ArrayListUnmanaged(ScopedOwner), initially_complete: bool) !ExportNames {
+        var complete = initially_complete;
+        var visited: std.HashMapUnmanaged(ScopedOwner, void, ScopeContext, 80) = .empty;
+        defer visited.deinit(self.gpa);
+        var names: std.StringHashMapUnmanaged(void) = .empty;
+        defer names.deinit(self.gpa);
+        var cursor: usize = 0;
+        while (cursor < pending.items.len) : (cursor += 1) {
+            const owner = pending.items[cursor];
+            const previous = try visited.getOrPut(self.gpa, owner);
+            if (previous.found_existing) continue;
+            const c = try self.compilation(owner.path) orelse {
+                complete = false;
+                continue;
+            };
+            if (c.hir.kindOf(c.root) != .block_stmt) {
+                complete = false;
+                continue;
+            }
+            const bindings = try self.index(c, owner.node);
+            if (bindings.unknown_exports or c.has_syntactic_parse_diagnostics) complete = false;
+            var exported_names = bindings.exports.keyIterator();
+            while (exported_names.next()) |name| {
+                const text = c.interner.get(name.*);
+                if (!owner.default_visible and std.mem.eql(u8, text, "default")) continue;
+                try names.put(self.gpa, text, {});
+            }
+            if (owner.default_visible and bindings.defaults.items.len != 0) try names.put(self.gpa, "default", {});
+            for (bindings.stars.items) |node| {
+                const export_info = hir.exportOf(&c.hir, node);
+                const first = pending.items.len;
+                if (!try self.appendModuleScopes(pending, c.interner.get(export_info.module), owner.path)) complete = false;
+                for (pending.items[first..]) |*target_owner| target_owner.default_visible = false;
+            }
+        }
+        const arena = self.index_arena.allocator();
+        const result = try arena.alloc([]const u8, names.count());
+        var iterator = names.keyIterator();
+        var output_index: usize = 0;
+        while (iterator.next()) |name| : (output_index += 1) result[output_index] = name.*;
+        std.mem.sort([]const u8, result, {}, struct {
+            fn less(_: void, left: []const u8, right: []const u8) bool {
+                return std.mem.lessThan(u8, left, right);
+            }
+        }.less);
+        return .{ .names = result, .complete = complete };
+    }
+
+    fn finish(self: *Query) !Origins {
         var cursor: usize = 0;
         while (cursor < self.pending.items.len) : (cursor += 1) {
             const state = self.pending.items[cursor];
@@ -310,16 +509,19 @@ pub const Query = struct {
         return self.result;
     }
 
-    fn namespace(self: *Query, path: []const u8, values: bool, restriction: ?Restriction) void {
-        const origin: Origin = .{ .path = path, .position = 0, .kind = .namespace };
+    fn namespace(self: *Query, path: []const u8, scope: hir.NodeId, values: bool, restriction: ?Restriction) void {
+        const origin: Origin = .{ .path = path, .position = if (scope == 0) 0 else self.files.get(path).?.compilation.hir.spanOf(scope).start, .kind = if (scope == 0) .namespace else .declaration };
         self.result.include("namespace", origin);
         if (values) self.result.include("value", origin) else self.result.include("type_only_value", origin);
         if (self.result.restriction == null) self.result.restriction = restriction;
     }
 
     fn local(self: *Query, c: *const driver.Compilation, state: State) !void {
-        const name = c.interner.lookup(state.name) orelse return;
-        const bindings = try self.index(c);
+        const name = c.interner.lookup(state.name) orelse {
+            self.result.complete = false;
+            return;
+        };
+        const bindings = try self.index(c, state.scope);
         if (bindings.imports.get(name)) |edge| {
             const import = hir.importOf(&c.hir, edge.node);
             const specifier = c.interner.get(import.module);
@@ -327,19 +529,18 @@ pub const Query = struct {
                 self.result.complete = false;
                 return;
             }
-            const path = try self.target(specifier, state.path) orelse return;
             switch (edge.kind) {
-                .default => try self.enqueue(.{
-                    .path = path,
+                .default => try self.enqueueModule(specifier, state.path, .{
+                    .path = state.path,
                     .name = "default",
                     .values = state.values and !import.is_type_only,
                     .restriction = restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(edge.node).start),
                 }),
-                .namespace => self.namespace(path, state.values and !import.is_type_only, restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(edge.node).start)),
+                .namespace => try self.moduleNamespace(specifier, state.path, state.values and !import.is_type_only, restrictionFor(state, import.is_type_only, .import_type, c.hir.spanOf(edge.node).start)),
                 .named => {
                     const spec = hir.importSpecifierOf(&c.hir, edge.specifier);
-                    try self.enqueue(.{
-                        .path = path,
+                    try self.enqueueModule(specifier, state.path, .{
+                        .path = state.path,
                         .name = c.interner.get(spec.imported),
                         .values = state.values and !import.is_type_only and !spec.is_type_only,
                         .restriction = restrictionFor(state, import.is_type_only or spec.is_type_only, .import_type, c.hir.spanOf(edge.specifier).start),
@@ -348,9 +549,11 @@ pub const Query = struct {
             }
             return;
         }
+        var found_local = false;
         inline for (.{ .{ "values", "value" }, .{ "types", "type" }, .{ "namespaces", "namespace" } }) |fields| {
-            if (@field(c.module.root, fields[0]).get(name)) |symbol| resolved_symbol: {
+            if (@field(boundScope(c, state.scope).?, fields[0]).get(name)) |symbol| resolved_symbol: {
                 if (symbol.flags.is_import or symbol.decls.items.len == 0) break :resolved_symbol;
+                found_local = true;
                 var origin: Origin = .{
                     .path = state.path,
                     .position = c.hir.spanOf(symbol.decls.items[0]).start,
@@ -368,10 +571,13 @@ pub const Query = struct {
                 if (self.result.restriction == null) self.result.restriction = state.restriction;
             }
         }
+        // A declared alias can target a global or an invalid/recovered name.
+        // Failure to resolve that target is not proof the export is absent.
+        if (!found_local) self.result.complete = false;
     }
 
     fn exported(self: *Query, c: *const driver.Compilation, state: State) !void {
-        const bindings = try self.index(c);
+        const bindings = try self.index(c, state.scope);
         const wanted = c.interner.lookup(state.name);
         const is_default = std.mem.eql(u8, state.name, "default");
         const edges = if (is_default)
@@ -381,26 +587,27 @@ pub const Query = struct {
         else
             &.{};
         for (edges) |edge| {
+            if (edge.kind == .implicit) {
+                try self.enqueue(.{ .path = state.path, .scope = state.scope, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction });
+                continue;
+            }
             const export_info = hir.exportOf(&c.hir, edge.node);
             const specifier = c.interner.get(export_info.module);
             switch (edge.kind) {
                 .named => {
                     const spec = hir.importSpecifierOf(&c.hir, edge.specifier);
-                    const path = if (specifier.len > 0)
-                        try self.target(specifier, state.path) orelse continue
-                    else
-                        state.path;
-                    try self.enqueue(.{
-                        .path = path,
+                    const next: State = .{
+                        .path = state.path,
+                        .scope = state.scope,
                         .name = c.interner.get(spec.imported),
                         .local = specifier.len == 0,
                         .values = state.values and !export_info.is_type_only and !spec.is_type_only,
                         .restriction = restrictionFor(state, export_info.is_type_only or spec.is_type_only, .export_type, c.hir.spanOf(edge.specifier).start),
-                    });
+                    };
+                    if (specifier.len > 0) try self.enqueueModule(specifier, state.path, next) else try self.enqueue(next);
                 },
                 .namespace => {
-                    const path = try self.target(specifier, state.path) orelse continue;
-                    self.namespace(path, state.values and !export_info.is_type_only, restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(edge.node).start));
+                    try self.moduleNamespace(specifier, state.path, state.values and !export_info.is_type_only, restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(edge.node).start));
                 },
                 .default => {
                     const kind = c.hir.kindOf(export_info.decl);
@@ -413,6 +620,7 @@ pub const Query = struct {
                     if (declared_name != 0 and c.hir.kindOf(declared_name) == .identifier) {
                         try self.enqueue(.{
                             .path = state.path,
+                            .scope = state.scope,
                             .name = c.interner.get(hir.identifierOf(&c.hir, declared_name).name),
                             .local = true,
                             .values = state.values,
@@ -423,6 +631,7 @@ pub const Query = struct {
                     if (kind == .identifier) {
                         try self.enqueue(.{
                             .path = state.path,
+                            .scope = state.scope,
                             .name = c.interner.get(hir.identifierOf(&c.hir, export_info.decl).name),
                             .local = true,
                             .values = state.values,
@@ -438,16 +647,16 @@ pub const Query = struct {
                         if (self.result.restriction == null) self.result.restriction = state.restriction;
                     }
                 },
-                .local => try self.enqueue(.{ .path = state.path, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction }),
+                .implicit => unreachable,
+                .local => try self.enqueue(.{ .path = state.path, .scope = state.scope, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction }),
             }
         }
         if (edges.len != 0 or is_default) return;
         for (bindings.stars.items) |node| {
             const export_info = hir.exportOf(&c.hir, node);
             const specifier = c.interner.get(export_info.module);
-            const path = try self.target(specifier, state.path) orelse continue;
-            try self.enqueue(.{
-                .path = path,
+            try self.enqueueModule(specifier, state.path, .{
+                .path = state.path,
                 .name = state.name,
                 .values = state.values and !export_info.is_type_only,
                 .restriction = restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(node).start),
@@ -683,4 +892,95 @@ test "export origins: index allocation failures do not leak or own borrowed comp
         }
     };
     try T.checkAllAllocationFailures(T.allocator, Probe.run, .{ &resolver, c });
+}
+
+test "export origins: ambient module imports keep sibling scopes and reexport owners distinct" {
+    const source = "declare module 'left'{export type Path=string;}declare module 'right'{export type Path=number;}declare module 'api-left'{import type {Path} from 'left';export {Path};}declare module 'api-right'{import type {Path} from 'right';export {Path};}declare module 'barrel'{export type {Path} from 'api-left';}";
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const c = try program.compileModuleForExportFacts(T.allocator, "/types.d.ts", source);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    try query.borrow("/types.d.ts", c);
+    const left = try query.resolveModule("left", "/main.ts", "Path");
+    const right = try query.resolveModule("right", "/main.ts", "Path");
+    try T.expect(left.complete and left.type != null);
+    try T.expect(right.complete and right.type != null);
+    try T.expect(!left.sameDeclaration(right));
+    try T.expect(left.sameDeclaration(try query.resolveModule("api-left", "/main.ts", "Path")));
+    try T.expect(right.sameDeclaration(try query.resolveModule("api-right", "/main.ts", "Path")));
+    try T.expect(left.sameDeclaration(try query.resolveModule("barrel", "/main.ts", "Path")));
+}
+
+test "export origins: ambient export lists control visibility and cycles terminate" {
+    const source = "declare module 'owner'{type Hidden=string;type Visible=number;export {Visible};}declare module 'implicit'{type Hidden=string;export interface Public{}}declare module 'one'{export * from 'two';export * from 'owner';}declare module 'two'{export * from 'one';}";
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const c = try program.compileModuleForExportFacts(T.allocator, "/types.d.ts", source);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    try query.borrow("/types.d.ts", c);
+    const hidden = try query.resolveModule("owner", "/main.ts", "Hidden");
+    try T.expect(hidden.complete and hidden.type == null);
+    const visible = try query.resolveModule("owner", "/main.ts", "Visible");
+    try T.expect(visible.complete and visible.type != null);
+    const implicit = try query.resolveModule("implicit", "/main.ts", "Hidden");
+    try T.expect(implicit.complete and implicit.type != null);
+    try T.expect(visible.sameDeclaration(try query.resolveModule("one", "/main.ts", "Visible")));
+}
+
+test "export origins: scoped export enumeration and aliases survive allocation failures" {
+    const source = "declare module 'owner'{type Hidden=string;type Visible=number;export {Visible};}declare module 'api'{export * from 'owner';export default function take(value:string):void;}";
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const c = try program.compileModuleForExportFacts(T.allocator, "/types.d.ts", source);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const Probe = struct {
+        fn run(gpa: std.mem.Allocator, r: *resolver_mod.Resolver, owner: *driver.Compilation) !void {
+            var query = Query.init(gpa, r);
+            defer query.deinit();
+            try query.borrow("/types.d.ts", owner);
+            const names = try query.exportNamesForModule("api", "/main.ts");
+            try T.expect(names.complete);
+            try T.expectEqual(@as(usize, 2), names.names.len);
+            try T.expectEqualStrings("Visible", names.names[0]);
+            try T.expectEqualStrings("default", names.names[1]);
+            const visible = try query.resolveModule("api", "/main.ts", "Visible");
+            try T.expect(visible.complete and visible.type != null);
+            const hidden = try query.resolveModule("api", "/main.ts", "Hidden");
+            try T.expect(hidden.complete and hidden.type == null);
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{ &resolver, c });
+}
+
+test "export origins: unresolved local aliases do not prove missing exports" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.d.ts", "export {Unknown};");
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const alias = try query.resolve("/owner.d.ts", "Unknown");
+    try T.expect(!alias.complete and alias.type == null and alias.value == null);
+    const absent = try query.resolve("/owner.d.ts", "Absent");
+    try T.expect(absent.complete and absent.type == null and absent.value == null);
 }

@@ -1865,3 +1865,81 @@ Final compiler SHA-256:
 Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-import-types.tar.gz`,
 **5,612 verified payloads**, SHA-256
 `d3e3c6b6d911d985e7fe646dfcc533320ffef5e7d807dab291d8a7e65fd22eb8`. Real-project source and diagnostic prose are excluded.
+
+## Scoped ambient exports and constructor contracts (2026-10-15)
+
+Imported declarations now resolve their bindings in the owning module scope.
+Export indexes and traversal states include that scope, preserving sibling
+aliases, re-exports, overloads and cycles. Program export facts distinguish
+public and private declarations, renamed exports, defaults, runtime values and
+erased aliases. Bare ambient import types and dynamic imports also admit the
+declaration graph when there is no static import binding or filesystem edge.
+
+An exported class retains both its type and value meanings under
+`verbatimModuleSyntax`. Erased class and function aliases produce TS1485, while
+an erased interface produces TS1484. Export-name closure is independent of
+resolving each alias target: an unresolved global/recovered target stays
+unknown, and another undeclared export still produces TS2305. These distinctions
+fix the class re-export regressions found by the ts-auth replay and avoid
+misreporting its global `Buffer` alias as an absent export.
+
+Supported constructor graphs now preserve overloads, optional/rest parameters,
+generic inputs, constraints, defaults and inferred instance arguments.
+Inheritance over an imported constructor applies omitted generic defaults.
+Constructor and instance declarations have distinct cache identities;
+constructor inputs and instance members share their owning parameter identities.
+Private/protected checks retain the declaration's path and position through
+aliases, dynamic imports and type queries. Overload-list ownership also remains
+safe if a later allocation fails. Imported derived classes without a declared
+constructor and unsupported parameter graphs retain the existing fallback;
+this batch does not qualify those paths.
+
+The final compiler passes **6,633 compiler unit tests**: 4,649 checker,
+321 Program, 213 driver, 917 parser/precedence, 504 emitter, 13 HIR and 16 cache
+tests. All **61 scoped native cases (122 observations)** pass, as do **138
+observations with the optional Bun controls**, the preceding **82 import
+observations**, all **six declaration emit/consumer observations**, and all
+**eighteen existing CLI regression suites**. Codes, counts, locations, statuses
+and input stability are compared; identical diagnostic prose is not claimed.
+The shared native harness now enables verbatim syntax for `verbatim-` controls.
+The new runner is `scripts/tests/test-ts-ambient-owner-cli.py`.
+
+The owned table entrypoint remains verified: **49 source files, 306 matching
+compiler inputs**, passing positive runs and the same planted TS2322 at line 3,
+column 42. Ts-auth retains the same **370-input graph** including its config;
+both compilers list the same 369 compiler files. Native exits zero and Home exits
+one with **283 raw diagnostics and 28 distinct code/location pairs**, unchanged
+from the published import-type compiler, with **none added or removed**.
+The first wider replay's class re-export, Buffer and inherited-field regressions
+remain in the evidence alongside their corrected runs.
+
+Whole-tree replacement remains **unqualified**. Cross-file global arguments and
+merged-global members still lose checks: native reports TS2345 and TS2741 while
+Home accepts those controls. Static and dynamic Node `unlink(1)` also remain
+false acceptances against native TS2345. The full-ESNext library audit retains
+**37 diagnostics**, with native passing and all library inputs unchanged.
+`--include-known-gaps` reproduces the global controls; these failures are kept
+separate from passing qualification gates.
+
+The source is synchronized through `b0189c7a9`. Rebuilding the final candidate
+from the synchronized checkout leaves its binary unchanged. All **4,305 frozen
+source and validation inputs** remain stable. Disk pressure interrupted the first final
+unit run at the unchanged 512 MB critical floor. Cleanup removed
+**5,693,016,608 bytes** of completed intermediate test objects and
+**284,137,872 bytes** of failed-test artifacts. Every retained test executable
+was hash-verified. The recovered run repeats the unit stage and reuses the
+completed broader suites/project audit after verifying unchanged source,
+compiler and reference hashes. Its maximum recorded candidate/final footprint
+is **2,916 MB**, below the unchanged **3,840 MB** ceiling.
+
+Repository-wide Pickier retains **1,858 errors and 694 warnings**, with no
+finding in a changed compiler or runner file. This report is checked separately
+after the evidence section is written. Real-project source and diagnostic prose
+are excluded from the evidence archive.
+
+Final compiler SHA-256:
+`3100e1a32e9821a9005ee3f66167cd25931a1557950d561aac9903910ad35b15`.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-ambient-owners.tar.gz`,
+**8,595 verified payloads**, SHA-256
+`3719934fd576fe48d4bb79b657803ea65f31eaa6cee1810814202fa2617a761b`.

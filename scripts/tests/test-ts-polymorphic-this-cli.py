@@ -134,6 +134,7 @@ def main() -> None:
                 (d/'node_modules').mkdir();(d/'node_modules/typescript').symlink_to(package,target_is_directory=True)
             for file,source in files.items():(d/file).write_text(source+'\n')
             options={'strict':True,'noEmit':True,'skipLibCheck':not name.startswith('checked-declaration-'),'types':[],'target':'ESNext','module':'ESNext','moduleResolution':'Bundler'}
+            if name.startswith('verbatim-'):options['verbatimModuleSyntax']=True
             if declaration_control:options['noLib']=True
             elif name.startswith('bun-namespace'):options.update(types=['bun'],lib=['ESNext','DOM'])
             else:options['lib']=['ESNext']

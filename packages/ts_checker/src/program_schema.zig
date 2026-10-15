@@ -30,6 +30,7 @@ pub const Function = struct {
     this_type: ?*const Expression = null,
     predicate: ?TypePredicate = null,
     is_construct: bool = false,
+    construct_visibility: types.MemberVisibility = .public,
 };
 pub const Reference = struct {
     declaration: *const Declaration,
@@ -163,8 +164,14 @@ pub const Declaration = struct {
     parameters: []Parameter = &.{},
     body: ?*const Expression = null,
     is_class: bool = false,
+    /// Constructor parameter graphs are independent of the instance surface.
+    /// Their placeholder return type is replaced with the imported instance.
+    constructors: ?*const Expression = null,
+    is_abstract_class: bool = false,
     is_interface: bool = false,
     is_function: bool = false,
+    /// Keep a class constructor value distinct from its instance declaration.
+    value_side: bool = false,
     /// This declaration preserves a callable shell by degrading at least one
     /// untransferable leaf. It is valid only as contextual function input.
     contextual_only: bool = false,

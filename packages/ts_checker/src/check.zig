@@ -673,10 +673,10 @@ pub const ProgramClassSchema = @import("program_schema.zig");
 
 const ProgramDeclarationContext = struct {
     pub fn hash(_: ProgramDeclarationContext, key: *const ProgramClassSchema.Declaration) u64 {
-        return std.hash.Wyhash.hash(key.position, key.path);
+        return std.hash.Wyhash.hash(@as(u64, key.position) * 2 + @intFromBool(key.value_side), key.path);
     }
     pub fn eql(_: ProgramDeclarationContext, a: *const ProgramClassSchema.Declaration, b: *const ProgramClassSchema.Declaration) bool {
-        return a.position == b.position and std.mem.eql(u8, a.path, b.path);
+        return a.value_side == b.value_side and a.position == b.position and std.mem.eql(u8, a.path, b.path);
     }
 };
 
@@ -737,6 +737,8 @@ pub const ProgramExportedValue = struct {
     namespace_path: []const u8 = "",
     export_name: []const u8,
     kind: ProgramExportedValueKind,
+    /// Erased aliases remain available to type queries, not runtime namespaces.
+    runtime_value: bool = true,
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
     declaration: ?*const ProgramClassSchema.Declaration = null,
@@ -758,6 +760,18 @@ pub const ProgramExportedType = struct {
     declaration: *const ProgramClassSchema.Declaration,
     contextual_only: bool = false,
     projection_only: bool = false,
+};
+
+pub const ProgramAmbientModuleExport = struct {
+    name: []const u8,
+    facts: ExternalResolver.ModuleExport,
+};
+
+pub const ProgramAmbientModule = struct {
+    specifier: []const u8,
+    rendered_name: []const u8,
+    exports: []const ProgramAmbientModuleExport,
+    complete: bool,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -5975,6 +5989,7 @@ pub const Checker = struct {
     /// instance. This supports on-demand projection of a transferable member
     /// when an unrelated sibling kept the whole class on its safe fallback.
     program_class_declarations: std.AutoHashMapUnmanaged(TypeId, *const ProgramClassSchema.Declaration) = .empty,
+    program_constructor_owners: std.AutoHashMapUnmanaged(TypeId, *const ProgramClassSchema.Declaration) = .empty,
     /// Temporary identity used while lowering one projected class member.
     /// Exact self references resolve to the already materialized receiver,
     /// avoiding recursive expansion of the unsupported sibling graph.
@@ -6008,6 +6023,7 @@ pub const Checker = struct {
     conditional_type_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
     program_exported_types: []const ProgramExportedType = &.{},
+    program_ambient_modules: []const ProgramAmbientModule = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
@@ -6704,6 +6720,10 @@ pub const Checker = struct {
         self.program_exported_types = values;
     }
 
+    pub fn setProgramAmbientModules(self: *Checker, modules: []const ProgramAmbientModule) void {
+        self.program_ambient_modules = modules;
+    }
+
     pub fn setProgramAmbientModuleInterfaceExports(self: *Checker, exports: []const ProgramAmbientModuleInterfaceExport) void {
         self.program_ambient_module_interface_exports = exports;
     }
@@ -6777,6 +6797,7 @@ pub const Checker = struct {
         self.program_record_alias_annotations.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
         self.program_class_declarations.deinit(self.gpa);
+        self.program_constructor_owners.deinit(self.gpa);
         self.program_contextual_class_receivers.deinit(self.gpa);
         self.program_local_class_names.deinit(self.gpa);
         self.generic_instances.deinit(self.gpa);
@@ -57495,7 +57516,7 @@ pub const Checker = struct {
 
     fn classExtendsStaticType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
         if (self.class_extends_static_type_cache.get(extends_expr)) |cached| return cached;
-        const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
+        var result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
@@ -57565,8 +57586,36 @@ pub const Checker = struct {
             },
             else => null,
         };
+        const needs_defaults = switch (self.hir.kindOf(extends_expr)) {
+            .identifier, .member_access => true,
+            .type_ref => hir_mod.typeRefOf(self.hir, extends_expr).args_len == 0,
+            else => false,
+        };
+        if (needs_defaults) if (result) |resolved| {
+            result = try self.instantiateProgramClassHeritageDefaults(resolved);
+        };
         if (result) |resolved| self.class_extends_static_type_cache.put(self.gpa, extends_expr, resolved) catch {};
         return result;
+    }
+
+    fn instantiateProgramClassHeritageDefaults(self: *Checker, static_type: TypeId) CheckError!TypeId {
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectConstructSignatures(static_type, &signatures);
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        for (signatures.items) |signature| {
+            if (!self.program_constructor_owners.contains(signature)) continue;
+            const parameters = self.generic_signature_params.get(signature) orelse continue;
+            for (parameters) |parameter| {
+                if (!self.interner.pool.flagsOf(parameter).is_type_parameter) return static_type;
+                const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
+                if (payload.default == types.Primitive.none) return static_type;
+                try substitutions.put(self.gpa, parameter, try self.substituteTypeNoCycles(payload.default, &substitutions));
+            }
+        }
+        if (substitutions.count() == 0) return static_type;
+        return self.substituteTypeNoCycles(static_type, &substitutions);
     }
 
     fn classExtendsCallStaticType(self: *Checker, extends_expr: NodeId) CheckError!TypeId {
@@ -62956,6 +63005,11 @@ pub const Checker = struct {
                         });
                         continue;
                     }
+                    if (info.ambient_module and self.programAmbientModuleHasDefaultExport(spec)) {
+                        const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Module '\"{s}\"' has no exported member '{s}'. Did you mean to use 'import {s} from \"{s}\"' instead?", .{ spec, requested, requested, spec });
+                        try self.report(spec_node, TsCodes.no_exported_member_default_import_suggestion, message);
+                        continue;
+                    }
                 }
             }
             const ambient_module_name = if (external_status == .missing)
@@ -63026,6 +63080,7 @@ pub const Checker = struct {
     }
 
     fn externalModuleExportInfo(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) ?ExternalResolver.ModuleExport {
+        if (self.programAmbientModuleExportInfo(spec, name)) |facts| return facts;
         const resolver = self.external_resolver orelse return null;
         const containing = if (self.importer_path.len > 0)
             self.importer_path
@@ -63059,8 +63114,8 @@ pub const Checker = struct {
 
     fn moduleExportRuntimeStatus(info: ExternalResolver.ModuleExport) ModuleExportRuntimeStatus {
         if (info.ambient_const_enum) return .ambient_const_enum;
-        if (info.exported_value) return .value;
-        if (info.type_only_export) return .type_only_alias;
+        if (info.runtime_value orelse info.exported_value) return .value;
+        if (info.type_only_export or info.type_only_import) return .type_only_alias;
         if (info.exported_type) return .type_only_decl;
         if (info.ambient_module and !info.ambient_module_exports_known) return .unknown;
         return .missing;
@@ -64753,6 +64808,9 @@ pub const Checker = struct {
     }
 
     fn programAmbientModuleInterfaceExportType(self: *Checker, spec: []const u8, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.programAmbientModuleExportInfo(spec, name)) |facts| {
+            if (facts.ambient_module_exports_known and !facts.exported_type) return null;
+        }
         if (self.program_ambient_module_interface_exports.len == 0) return null;
         const name_text = self.string_interner.get(name);
         for (self.program_ambient_module_interface_exports) |exported| {
@@ -64785,6 +64843,9 @@ pub const Checker = struct {
     }
 
     fn programAmbientModuleInterfaceExportsName(self: *Checker, spec: []const u8, name: hir_mod.StringId) bool {
+        if (self.programAmbientModuleExportInfo(spec, name)) |facts| {
+            if (facts.ambient_module_exports_known) return facts.exported_type and !facts.exported_value;
+        }
         const name_text = self.string_interner.get(name);
         for (self.program_ambient_module_interface_exports) |exported| {
             if (!self.moduleNameMatchesSpecifier(exported.specifier, spec)) continue;
@@ -64793,7 +64854,38 @@ pub const Checker = struct {
         return false;
     }
 
+    fn programAmbientModuleHasDefaultExport(self: *Checker, spec: []const u8) bool {
+        for (self.program_ambient_modules) |module| {
+            if (!std.mem.eql(u8, module.specifier, spec)) continue;
+            for (module.exports) |exported| {
+                if (std.mem.eql(u8, exported.name, "default") and
+                    (exported.facts.exported_value or exported.facts.exported_type)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn programAmbientModuleExportInfo(self: *Checker, spec: []const u8, name: hir_mod.StringId) ?ExternalResolver.ModuleExport {
+        const text = self.string_interner.get(name);
+        for (self.program_ambient_modules) |module| {
+            if (!std.mem.eql(u8, module.specifier, spec)) continue;
+            for (module.exports) |exported| if (std.mem.eql(u8, exported.name, text)) return exported.facts;
+            return .{
+                .module_name = module.rendered_name,
+                .exported_type = false,
+                .exported_value = false,
+                .runtime_value = if (module.complete) false else null,
+                .namespace_meaning = if (module.complete) false else null,
+                .ambient_module = true,
+                .ambient_module_exports_known = module.complete,
+                .module_is_external = true,
+            };
+        }
+        return null;
+    }
+
     fn programAmbientModuleExists(self: *Checker, spec: []const u8) bool {
+        for (self.program_ambient_modules) |module| if (std.mem.eql(u8, module.specifier, spec)) return true;
         for (self.program_exported_classes) |class| {
             if (!class.local_only and class.ambient_module_name.len != 0 and self.moduleNameMatchesSpecifier(class.ambient_module_name, spec)) return true;
         }
@@ -80751,6 +80843,9 @@ pub const Checker = struct {
                             if (try self.reportExternalFileIsNotAModule(tt.operand, import_spec)) return self.diagnosedAnyRecovery(tt.operand, TsCodes.file_is_not_a_module);
                             const import_ref = hir_mod.typeRefOf(self.hir, tt.operand);
                             const specifier = self.string_interner.intern(import_spec) catch return error.OutOfMemory;
+                            if (import_ref.qualifier_len == 0 and !self.importTypeIsBareModuleType(tt.operand)) {
+                                if (try self.programExportedValueTypeForImportPath(tt.operand, specifier, import_ref.name)) |value| return value;
+                            }
                             if (try self.moduleNamespaceTypeForSpecifier(specifier, tt.operand)) |namespace| {
                                 if (self.importTypeIsBareModuleType(tt.operand)) return namespace;
                                 var current = namespace;
@@ -113460,6 +113555,10 @@ pub const Checker = struct {
         }
         for (self.program_exported_classes) |class| {
             if (class.local_only or class.ambient_module_name.len == 0 or !self.moduleNameMatchesSpecifier(class.ambient_module_name, spec)) continue;
+            const exported_name = self.string_interner.intern(class.exportedName()) catch return error.OutOfMemory;
+            if (self.programAmbientModuleExportInfo(spec, exported_name)) |facts| {
+                if (facts.ambient_module_exports_known and facts.runtime_value == false) continue;
+            }
             const name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
             try self.appendOrReplaceObjectMember(&members, .{
                 .name = self.string_interner.intern(class.exportedName()) catch return error.OutOfMemory,
@@ -113480,6 +113579,7 @@ pub const Checker = struct {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         for (self.program_exported_values) |value| {
+            if (!value.runtime_value) continue;
             if (!std.mem.eql(u8, value.ambient_module_name, ambient_module)) continue;
             if (!std.mem.eql(u8, value.target_path, path)) continue;
             if (std.mem.eql(u8, value.namespace_path, namespace_path)) {
@@ -113556,6 +113656,7 @@ pub const Checker = struct {
         try self.removeProgramEntriesFrom(&self.program_contextual_types, watermark, true, false);
         try self.removeProgramEntriesFrom(&self.program_contextual_member_projections, watermark, false, true);
         try self.removeProgramEntriesFrom(&self.program_class_declarations, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_constructor_owners, watermark, true, false);
         try self.removeProgramEntriesFrom(&self.program_contextual_class_receivers, watermark, false, true);
         try self.removeProgramEntriesFrom(&self.program_expression_parameters, watermark, false, true);
         try self.removeProgramEntriesFrom(&self.program_declaration_type_parameters, watermark, true, false);
@@ -113627,6 +113728,7 @@ pub const Checker = struct {
         self.program_contextual_type_origins.clearRetainingCapacity();
         self.program_contextual_member_projections.clearRetainingCapacity();
         self.program_class_declarations.clearRetainingCapacity();
+        self.program_constructor_owners.clearRetainingCapacity();
         self.program_contextual_class_receivers.clearRetainingCapacity();
         self.program_expression_parameters.clearRetainingCapacity();
         self.program_declaration_type_parameters.clearRetainingCapacity();
@@ -114013,7 +114115,10 @@ pub const Checker = struct {
     }
 
     fn programSchemaDeclarationOrigin(self: *Checker, declaration: *const ProgramClassSchema.Declaration) CheckError!hir_mod.StringId {
-        const text = try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ declaration.path.len, declaration.path, declaration.position });
+        const text = if (declaration.value_side)
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "value:{d}:{s}:{d}", .{ declaration.path.len, declaration.path, declaration.position })
+        else
+            try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ declaration.path.len, declaration.path, declaration.position });
         return self.string_interner.intern(text) catch error.OutOfMemory;
     }
 
@@ -114768,6 +114873,11 @@ pub const Checker = struct {
                     this_type,
                 );
                 try self.recordSignatureMinArgs(sig, optional);
+                if (function.is_construct) try self.recordConstructorSignatureVisibility(sig, switch (function.construct_visibility) {
+                    .public => .public_,
+                    .protected => .protected_,
+                    .private => .private_,
+                });
                 var active_this_declarations: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
                 defer active_this_declarations.deinit(self.gpa);
                 for (params, 0..) |param_t, param_index| {
@@ -114912,7 +115022,7 @@ pub const Checker = struct {
         }
     }
 
-    fn programExpressionParameter(self: *Checker, parameter: *const ProgramClassSchema.Parameter) ProgramTypeError!TypeId {
+    fn programExpressionParameter(self: *Checker, parameter: *const ProgramClassSchema.Parameter) CheckError!TypeId {
         if (self.program_expression_parameters.get(parameter)) |existing| return existing;
         const type_id = self.interner.internFreshTypeParameterWithFlags(
             self.string_interner.intern(parameter.name) catch return error.OutOfMemory,
@@ -115128,15 +115238,15 @@ pub const Checker = struct {
         defer class_params.deinit(self.gpa);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
-        for (exported_class.type_parameter_names) |param_name_text| {
+        for (exported_class.type_parameter_names, 0..) |param_name_text, index| {
             const param_name = self.string_interner.intern(param_name_text) catch return error.OutOfMemory;
-            const param_t = self.interner.internFreshTypeParameterWithFlags(
-                param_name,
-                types.Primitive.unknown,
-                types.Primitive.none,
-                .bivariant,
-                false,
-            ) catch return error.OutOfMemory;
+            // Constructor inputs and instance members must share the owner's
+            // parameter identities, including repeated class-value requests.
+            const param_t = if (exported_class.schema) |schema| blk: {
+                if (schema.declaration.parameters.len == exported_class.type_parameter_names.len)
+                    break :blk try self.programExpressionParameter(&schema.declaration.parameters[index]);
+                break :blk self.interner.internFreshTypeParameterWithFlags(param_name, types.Primitive.unknown, types.Primitive.none, .bivariant, false) catch return error.OutOfMemory;
+            } else self.interner.internFreshTypeParameterWithFlags(param_name, types.Primitive.unknown, types.Primitive.none, .bivariant, false) catch return error.OutOfMemory;
             try self.recordNarrow(param_name, param_t);
             try class_params.append(self.gpa, param_t);
         }
@@ -115202,10 +115312,21 @@ pub const Checker = struct {
         }
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
-        const construct_sig = self.interner.internSignature(&construct_params, instance_t, true) catch return error.OutOfMemory;
+        var construct_sig = self.interner.internSignature(&construct_params, instance_t, true) catch return error.OutOfMemory;
         try self.rest_signatures.put(self.gpa, construct_sig, {});
         try self.recordSignatureMinArgs(construct_sig, &.{true});
         if (class_params.items.len > 0) try self.recordGenericSignatureParams(construct_sig, class_params.items);
+        if (exported_class.schema) |schema| {
+            if (schema.declaration.constructors) |constructors| {
+                if (try ProgramClassSchema.Schema.expressionSupported(constructors, self.gpa)) {
+                    const donor = self.lowerProgramExpression(constructors, schema.declaration, class_params.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.UnsupportedProgramType => null,
+                    };
+                    if (donor) |signature| construct_sig = try self.programClassConstructResult(signature, instance_t, class_params.items, schema.declaration);
+                }
+            }
+        }
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
         const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
@@ -115266,10 +115387,47 @@ pub const Checker = struct {
         if (local_name) |binding| {
             try self.class_instance_types.put(self.gpa, binding, instance_t);
             try self.class_static_types.put(self.gpa, binding, static_t);
+            try self.registerProgramClassConstructors(binding, construct_sig);
             try self.putTypeName(binding, instance_t);
             if (class_params.items.len > 0) try self.registerSyntheticProgramClassGeneric(binding, class_params.items, instance_t);
         }
         return static_t;
+    }
+
+    fn registerProgramClassConstructors(self: *Checker, binding: hir_mod.StringId, signature: TypeId) CheckError!void {
+        var constructors: std.ArrayListUnmanaged(TypeId) = .empty;
+        errdefer constructors.deinit(self.gpa);
+        try self.collectConstructSignatures(signature, &constructors);
+        if (constructors.items.len != 0) try self.class_constructor_sigs.put(self.gpa, binding, constructors.items[0]);
+        // Keep ownership transfer at the end of this helper: later failures
+        // in class registration must not free a list already owned by a map.
+        if (constructors.items.len > 1) {
+            const entry = try self.class_constructor_overload_sigs.getOrPut(self.gpa, binding);
+            if (entry.found_existing) entry.value_ptr.deinit(self.gpa);
+            entry.value_ptr.* = constructors;
+        } else {
+            if (self.class_constructor_overload_sigs.fetchRemove(binding)) |old| {
+                var list = old.value;
+                list.deinit(self.gpa);
+            }
+            constructors.deinit(self.gpa);
+        }
+    }
+
+    fn programClassConstructResult(self: *Checker, donor: TypeId, instance: TypeId, parameters: []const TypeId, owner: *const ProgramClassSchema.Declaration) CheckError!TypeId {
+        if (self.interner.pool.flagsOf(donor).is_intersection) {
+            var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer signatures.deinit(self.gpa);
+            for (self.interner.intersectionMembers(donor)) |member| try signatures.append(self.gpa, try self.programClassConstructResult(member, instance, parameters, owner));
+            return self.interner.internIntersection(signatures.items) catch return error.OutOfMemory;
+        }
+        const signature = self.interner.internSignatureWithAbstract(self.interner.signatureParams(donor), instance, true, owner.is_abstract_class) catch return error.OutOfMemory;
+        try self.program_constructor_owners.put(self.gpa, signature, owner);
+        if (self.signature_min_args.get(donor)) |count| try self.signature_min_args.put(self.gpa, signature, count);
+        try self.recordConstructorSignatureVisibility(signature, self.constructorSignatureVisibility(donor));
+        if (self.rest_signatures.contains(donor)) try self.rest_signatures.put(self.gpa, signature, {});
+        if (parameters.len != 0) try self.recordGenericSignatureParams(signature, parameters);
+        return signature;
     }
 
     fn registerSyntheticProgramClassGeneric(
@@ -132524,8 +132682,11 @@ pub const Checker = struct {
 
         const construct_member_id = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         for (self.interner.objectMembers(t)) |member| {
-            if (member.name == construct_member_id and self.interner.isSignature(member.type)) {
+            if (member.name != construct_member_id) continue;
+            if (self.interner.isSignature(member.type)) {
                 try out.append(self.gpa, member.type);
+            } else if (self.interner.pool.flagsOf(member.type).is_intersection) {
+                try self.collectConstructSignatures(member.type, out);
             }
         }
     }
@@ -132759,6 +132920,34 @@ pub const Checker = struct {
                 break;
             }
             if (selected_sig == construct_sigs.items[0]) selected_sig = effective_sig;
+        }
+        // Program-owned class values can arrive through aliases, queries or
+        // dynamic namespaces without a local class declaration/name table.
+        if (self.program_constructor_owners.get(selected_decl_sig)) |owner| {
+            const visibility = self.constructorSignatureVisibility(selected_decl_sig);
+            const class_name = if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier)
+                hir_mod.identifierOf(self.hir, callee_node).name
+            else
+                self.class_name_by_static.get(callee_t) orelse self.string_interner.intern("class") catch return error.OutOfMemory;
+            var inside_owner = false;
+            if (std.mem.eql(u8, owner.path, self.importer_path)) {
+                var parent = self.hir.parentOf(node);
+                while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                    if ((self.hir.kindOf(parent) == .class_decl or self.hir.kindOf(parent) == .class_expr) and
+                        self.hir.spanOf(parent).start == owner.position)
+                    {
+                        inside_owner = true;
+                        break;
+                    }
+                }
+            }
+            if (visibility != .public_ and !inside_owner and
+                (visibility == .private_ or !self.nodeIsInsideSubclassOf(node, class_name)))
+            {
+                const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Constructor of class '{s}' is {s} and only accessible within the class declaration.", .{ self.string_interner.get(class_name), self.constructorVisibilityName(visibility) });
+                try self.report(node, if (visibility == .private_) TsCodes.constructor_is_private else TsCodes.constructor_is_protected, message);
+                return self.interner.signatureReturn(selected_sig) orelse types.Primitive.any;
+            }
         }
         const selected_is_abstract_construct = self.signatureIsAbstractConstruct(selected_sig);
         if (selected_is_abstract_construct and
@@ -199864,6 +200053,7 @@ pub const Checker = struct {
         if (self.constructor_signature_visibility.get(donor_sig)) |visibility| {
             try self.recordConstructorSignatureVisibility(target_sig, visibility);
         }
+        if (self.program_constructor_owners.get(donor_sig)) |owner| try self.program_constructor_owners.put(self.gpa, target_sig, owner);
         try self.copySignatureParamNameOccurrences(target_sig, donor_sig);
     }
 
