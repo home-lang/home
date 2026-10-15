@@ -1499,8 +1499,9 @@ suite remain cache-valid, and a fresh table positive/negative replay passes
 ## First member writes establish flow facts
 
 Member assignment previously updated flow only when a guard or earlier fact
-already existed for the path. A first write such as `this.state = state ??
-this.makeState()` therefore left the following read at `string | null`.
+already existed for the path. A first write such as
+`this.state = state ?? this.makeState()` therefore left the following read at
+`string | null`.
 Successful writes to existing member and computed-property paths now establish
 a flow fact after invalidating descendant paths. Literal writes respect declared primitive
 widening, rejected writes retain the declared slot type, and existing scope
@@ -1617,3 +1618,87 @@ bindgen migration). After rebasing, checker, driver, Program and the release
 build remain cache-valid. The binary hash is unchanged, so the fresh table
 controls above still describe the published executable. Both rebase validations
 are included in the rebase archive.
+
+## Polymorphic receiver ownership survives nested types and imports
+
+Named classes and interfaces now keep their own polymorphic `this` when nested
+inside another receiver. Explicit arguments such as `Box<this>` still capture
+the enclosing receiver. This removes outer-receiver contamination from nested
+Request/AbortSignal types. Receiver binding happens on the callable signature
+before contextual typing and inference; optional calls bind the non-nullish
+receiver. Inferred results are no longer rewritten a second time.
+
+Interfaces share a declaration-owned receiver across their members and merged
+declarations. Checked-owner transfer preserves its ownership and generic-default
+metadata. Global interface merging updates the owning receiver constraint with
+all contributing members; aliases expose that body without taking ownership.
+Generic receiver defaults, lexical non-generic defaults, explicit constraints,
+callback `this`, tuples and fluent intersection returns have native controls.
+
+Recursive callback comparisons terminate through a coinductive relation guard
+while retaining ordinary property and index checks. Contextual typing distinguishes
+receiver binders and visible enclosing parameters from unresolved inference
+parameters. Nested generic methods retain their own binders. Recursive references
+exclude identity substitutions and retain the original body when crossing a
+binder scope removes every free substitution; no empty-environment substitution
+reference is manufactured. Instantiation and resource limits remain unchanged.
+
+The real table replay caught a 300-second performance regression after the
+receiver graph became recursive. Sampling pointed to repeated conditional-type
+queries in excess-property checking. Those queries now traverse each identity
+once in breadth-first order, retaining their 32-level policy and propagating
+allocation errors. Controls cover cyclic receivers, changing graphs, the depth
+boundary, shared paths, and fresh literals with and without an excess property.
+
+The final source passes **4,641 checker tests, 213 driver tests and 313 Program
+tests**, the production build and **108 native CLI observations** against the
+installed TypeScript 7.0.2 executable. Codes and locations match; diagnostic
+prose is not claimed identical. The Program controls include serial and
+parallel imports, alias-only consumers, transitive aliases, generic parameter
+shadows and module-local declaration ownership. All **sixteen prior Release
+CLI suites** also pass.
+
+The table positive and planted-negative controls pass with **49 source files
+and all 306 original compiler inputs unchanged**. The negative remains TS2322
+at line 3, column 42. The final positive replay takes approximately **13 seconds**
+from its log timestamps, compared with the failed candidate's 300-second timeout.
+
+On ts-auth's unchanged **370-input** graph, native exits zero and Home exits one
+with **287 raw diagnostics at 32 distinct code/location pairs**, down from
+302 diagnostics at 47 pairs in the published compiler. **Fifteen pairs disappear
+and none appear**. The project and whole-tree replacement remain **unqualified**.
+
+Discovery evidence retains the recursive callback stack overflow, the failed
+Debug probes, the debug-symbol build stopped at the memory ceiling, intermediate
+heritage and callback regressions, the overstrict internal-ID test assertions,
+the disk admission refusal, and the table timeout. Final controls check semantic
+types and negative diagnostics while allowing legitimate conditional reduction.
+Generated completed test caches were removed to restore disk headroom; source
+files and retained compiler binaries were preserved.
+
+Final validation peaks at **2,926 MB** and the broader replay at **1,381 MB**,
+below the unchanged **3,840 MB** ceiling. The full run's **4,261 frozen inputs**
+remain unchanged. Before publication, the unrelated syscall migration through
+`8a7795655` adds one source to that inventory; checker, driver, Program
+and production build checks remain cache-valid, and the binary stays SHA-256
+`b6e89e6c1a6704e3d03b44d641d4a14709345d6a877e42f78d8057458286b48f`. The broader replay leaves all **4,262 frozen inputs** unchanged.
+
+Repository-wide Pickier exits one with **1,858 errors and 695 warnings**,
+including intentional error fixtures and existing documentation findings. No
+finding points to a changed compiler or runner file. Its pre-existing multiline
+code-span warning in this report was corrected, and the targeted report lint
+passes.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-polymorphic-this.tar.gz` contains **5,716 verified payloads**,
+SHA-256 `d7769b4fa52711dd4b683da4cc7c0481c5f6d62bc0f4722f163e77b527de52a9`. Real-project source and diagnostic text are excluded.
+
+Before the final push, origin/main advanced by two more commits through
+`e25fd5215` covering basic filesystem, time and INI helpers. Rebase
+was conflict-free. Checker, driver, Program and production build checks remain
+cache-valid, and the compiler hash is unchanged. Fresh table positive and
+negative controls pass with all 306 inputs unchanged, peaking at **1,105 MB**.
+The rebase changes only the recorded unrelated inputs and adds one source to
+the freeze (**4,263 inputs**).
+
+Rebase evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-polymorphic-this-rebase.tar.gz`, **12 verified payloads**,
+SHA-256 `142c835b86248fb146c97b2b10363e6916796b0e6f1dbc5e12fad595b26e3684`.

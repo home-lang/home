@@ -1046,16 +1046,40 @@ pub const Program = struct {
         return null;
     }
 
+    fn globalDependencyIsModuleLocal(compilation: *const ts_driver.Compilation, declaration: hir_mod_ns.NodeId, name: hir_mod_ns.StringId) bool {
+        if (!compilation.module.root.types.contains(name) or !boundSourceIsExternalModule(compilation)) return false;
+        var current = compilation.hir.parentOf(declaration);
+        while (current != hir_mod_ns.none_node_id) : (current = compilation.hir.parentOf(current)) {
+            for (compilation.module.scopes.items) |scope| {
+                if (scope != compilation.module.root and scope.introducing_node == current and scope.types.contains(name)) return false;
+            }
+        }
+        return true;
+    }
+
     fn boundGlobalDeclaredTypeName(owner: BoundGlobal) ?hir_mod_ns.StringId {
         const compilation = owner.file.compilation orelse return null;
         for (owner.symbol.decls.items) |decl| {
             const kind = compilation.hir.kindOf(decl);
+            if (kind == .type_alias_decl) {
+                const alias = hir_mod_ns.typeAliasOf(&compilation.hir, decl);
+                if (compilation.hir.kindOf(alias.aliased) != .type_ref) continue;
+                const reference = hir_mod_ns.typeRefOf(&compilation.hir, alias.aliased);
+                if (reference.qualifier_len != 0) continue;
+                const shadows_global = for (compilation.hir.childSlice(alias.type_params_start, alias.type_params_len)) |parameter| {
+                    if (compilation.hir.kindOf(parameter) != .type_parameter) continue;
+                    if (hir_mod_ns.typeParameterOf(&compilation.hir, parameter).name == reference.name) break true;
+                } else false;
+                if (!shadows_global and !globalDependencyIsModuleLocal(compilation, decl, reference.name)) return reference.name;
+                continue;
+            }
             if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
             const variable = hir_mod_ns.varDeclOf(&compilation.hir, decl);
             if (variable.type_annotation == hir_mod_ns.none_node_id or
                 compilation.hir.kindOf(variable.type_annotation) != .type_ref) continue;
             const reference = hir_mod_ns.typeRefOf(&compilation.hir, variable.type_annotation);
-            if (reference.qualifier_len == 0 and reference.args_len == 0) return reference.name;
+            if (reference.qualifier_len == 0 and reference.args_len == 0 and
+                !globalDependencyIsModuleLocal(compilation, decl, reference.name)) return reference.name;
         }
         return null;
     }
@@ -1158,9 +1182,9 @@ pub const Program = struct {
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
             if (fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) try required.put(self.gpa, key, {});
         }
-        // A global variable can refer to an augmented interface in another
-        // owner (Number: NumberConstructor, Object: ObjectConstructor). Its
-        // annotation is a dependency even when the consumer spells only the value.
+        // Variables and named aliases can refer to an augmented declaration
+        // in another owner. That declaration is a dependency even when the
+        // consumer spells only the value or alias name.
         while (true) {
             const before = required.count();
             for (globals.entries.keys(), globals.entries.values()) |key, owners| {
@@ -1278,6 +1302,9 @@ pub const Program = struct {
             }
             if (key.space != .type) continue;
             var merged_type: ?ts_driver.TypeId = null;
+            var is_polymorphic_this_boundary = false;
+            var this_binders: std.ArrayListUnmanaged(ts_driver.TypeId) = .empty;
+            defer this_binders.deinit(self.gpa);
             var generic_declarations: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding.GenericDeclaration) = .empty;
             defer generic_declarations.deinit(self.gpa);
             for (owners.items) |owner| {
@@ -1285,6 +1312,21 @@ pub const Program = struct {
                 const imported = result.importedFor(owner.file.owner) orelse continue;
                 const owner_type = importedBoundGlobalType(imported, owner) orelse continue;
                 const provider = owner.file.compilation.?;
+                var owns_receiver = false;
+                for (owner.symbol.decls.items) |decl| {
+                    switch (provider.hir.kindOf(decl)) {
+                        .interface_decl, .class_decl, .class_expr => owns_receiver = true,
+                        else => {},
+                    }
+                }
+                is_polymorphic_this_boundary = is_polymorphic_this_boundary or owns_receiver;
+                // An alias can expose a declaration's body, but does not own
+                // its receiver or get to replace that receiver's constraint.
+                if (owns_receiver) {
+                    if (imported.types.checked.declaration_this_types.get(owner_type)) |this_type| {
+                        if (std.mem.indexOfScalar(ts_driver.TypeId, this_binders.items, this_type) == null) try this_binders.append(self.gpa, this_type);
+                    }
+                }
                 for (owner.symbol.decls.items) |decl| {
                     const kind = provider.hir.kindOf(decl);
                     if (kind == .interface_decl) {
@@ -1329,11 +1371,20 @@ pub const Program = struct {
                 else
                     owner_type;
             }
-            if (merged_type) |global_type| try result.types.append(self.gpa, .{
-                .name = key.name,
-                .type = global_type,
-                .generic_declarations = try result.metadata_arena.allocator().dupe(ts_driver.ProgramGlobalBinding.GenericDeclaration, generic_declarations.items),
-            });
+            if (merged_type) |global_type| {
+                // Every declaration-owned receiver sees the complete global
+                // interface, including members contributed by another owner.
+                for (this_binders.items) |this_type| {
+                    const pool = &compilation.type_interner.pool;
+                    pool.type_parameter_payloads.items[pool.payloadOf(this_type)].constraint = global_type;
+                }
+                try result.types.append(self.gpa, .{
+                    .name = key.name,
+                    .type = global_type,
+                    .is_polymorphic_this_boundary = is_polymorphic_this_boundary,
+                    .generic_declarations = try result.metadata_arena.allocator().dupe(ts_driver.ProgramGlobalBinding.GenericDeclaration, generic_declarations.items),
+                });
+            }
         }
         for (result.values.items) |*binding| {
             const declared_name = binding.declared_type_name orelse continue;
@@ -18299,4 +18350,116 @@ test "Program: a later global declaration can add a generic default" {
     const compilation = program.fileById(app).compilation.?;
     try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
+test "Program: polymorphic this boundaries and defaults survive global owner import" {
+    for ([_]usize{ 1, 2 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const globals =
+            \\interface Inner { inner:number; self():this; }
+            \\interface Outer { outer:number; nested:Inner; }
+            \\interface Base { base:number; get<T=this>():T; capture<T=this>(value:this):T; }
+            \\declare const outer:Outer;
+            \\type Alias=Base;
+        ;
+        const consumer =
+            \\export {};
+            \\interface Derived extends Base { extra:string; }
+            \\declare const derived:Derived;
+            \\const nested=outer.nested.self();
+            \\const good:Inner=nested;
+            \\const wrong:string=nested;
+            \\const lexical=derived.get();
+            \\const base:Base=lexical;
+            \\const badDerived:Derived=lexical;
+            \\const captured:Derived=derived.capture(derived);
+            \\const added:string=lexical.added;
+            \\const wrongAdded:number=lexical.added;
+            \\declare const aliased:Alias;
+            \\const addedAlias:string=aliased.get().added;
+            \\const wrongAlias:number=aliased.get().added;
+        ;
+        try vfs.addFile("/globals.d.ts", globals);
+        try vfs.addFile("/more.d.ts", "interface Base{added:string}");
+        const alias_consumer = "export {};declare const base:Alias;const result=base.get();const good:string=result.added;const wrong:number=result.added;";
+        try vfs.addFile("/alias-consumer.ts", alias_consumer);
+        try vfs.addFile("/consumer.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/globals.d.ts", globals);
+        _ = try program.add("/more.d.ts", "interface Base{added:string}");
+        const alias_id = try program.add("/alias-consumer.ts", alias_consumer);
+        const id = try program.add("/consumer.ts", consumer);
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        const diagnostics = program.fileById(id).compilation.?.diagnostics.items;
+        if (diagnostics.len != 4) for (diagnostics) |diagnostic| {
+            std.debug.print("this global TS{d} line {d} pos {d}: {s}\n", .{ diagnostic.code, diagnostic.line, diagnostic.pos, diagnostic.message });
+        };
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        const alias_diagnostics = program.fileById(alias_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), alias_diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), alias_diagnostics[0].code);
+    }
+}
+
+test "Program: alias dependencies preserve transitive augmentations and parameter shadows" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const aliased = try program.add("/aliased.ts", "export {};declare const base:Alias;const good:string=base.get().added;const wrong:number=base.get().added;");
+    const shadowed = try program.add("/shadowed.ts", "export {};declare const value:Shadow<string>;const good:string=value;const wrong:number=value;");
+    _ = try program.add("/base.d.ts", "interface Base{get<T=this>():T}type Middle=Base;type Alias=Middle;type Shadow<Base>=Base;");
+    const augmentation = try program.add("/augmentation.d.ts", "interface Base{added:string}");
+    const unused = try program.add("/unused.d.ts", "interface Unused{unrelated:string}");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    for ([_]FileId{ aliased, shadowed }) |id| {
+        const diagnostics = program.fileById(id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    }
+    var globals = try program.collectBoundGlobals();
+    defer globals.deinit(T.allocator);
+    var alias_imports = try program.importProgramGlobals(program.fileById(aliased), &globals);
+    defer alias_imports.deinit();
+    try T.expect(alias_imports.importedFor(program.fileById(augmentation).owner) != null);
+    var shadow_imports = try program.importProgramGlobals(program.fileById(shadowed), &globals);
+    defer shadow_imports.deinit();
+    try T.expect(shadow_imports.importedFor(program.fileById(augmentation).owner) == null);
+    try T.expect(shadow_imports.importedFor(program.fileById(unused).owner) == null);
+}
+
+test "Program: alias dependencies retain module local declaration ownership" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app = try program.add("/main.ts", "export {};declare const value:Alias;const good:number=value.local;const wrong:string=value.local;value.global;");
+    _ = try program.add("/module.d.ts", "export {};declare class Base{local:number}declare global{type Alias=Base}");
+    const unrelated = try program.add("/unrelated.d.ts", "interface Base{global:string}");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    var assignments: usize = 0;
+    var missing: usize = 0;
+    for (diagnostics) |diagnostic| {
+        if (diagnostic.code == 2322) assignments += 1;
+        if (diagnostic.code == 2339) missing += 1;
+    }
+    try T.expectEqual(@as(usize, 1), assignments);
+    try T.expectEqual(@as(usize, 1), missing);
+    var globals = try program.collectBoundGlobals();
+    defer globals.deinit(T.allocator);
+    var imported = try program.importProgramGlobals(program.fileById(app), &globals);
+    defer imported.deinit();
+    try T.expect(imported.importedFor(program.fileById(unrelated).owner) == null);
 }
