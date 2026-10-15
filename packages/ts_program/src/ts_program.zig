@@ -839,6 +839,12 @@ pub const Program = struct {
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.redirect_target != null) continue;
                 try self.appendGlobalProviderOrder(owner.file.id, globals, states, order);
+                if (boundGlobalDeclaredTypeName(owner)) |type_name| {
+                    for (globals.lookup(type_name, .type)) |dependency| {
+                        if (dependency.file == file or dependency.file.redirect_target != null) continue;
+                        try self.appendGlobalProviderOrder(dependency.file.id, globals, states, order);
+                    }
+                }
             }
         }
         states[file_index] = 2;
@@ -1060,11 +1066,14 @@ pub const Program = struct {
     ) ProgramError!ts_driver.TypeId {
         if (first == second) return first;
         const pool = &compilation.type_interner.pool;
-        if (first >= pool.typeCount() or second >= pool.typeCount() or
-            !pool.flagsOf(first).is_object_type or !pool.flagsOf(second).is_object_type)
-        {
-            return first;
-        }
+        if (first >= pool.typeCount() or second >= pool.typeCount()) return first;
+        const first_flags = pool.flagsOf(first);
+        const second_flags = pool.flagsOf(second);
+        if (first_flags.is_signature and second_flags.is_object_type)
+            return self.mergeNamespaceIntoGlobalValue(compilation, first, second);
+        if (second_flags.is_signature and first_flags.is_object_type)
+            return self.mergeNamespaceIntoGlobalValue(compilation, second, first);
+        if (!first_flags.is_object_type or !second_flags.is_object_type) return first;
         var members: std.ArrayListUnmanaged(@TypeOf(compilation.type_interner.objectMembers(first)[0])) = .empty;
         defer members.deinit(self.gpa);
         try members.appendSlice(self.gpa, compilation.type_interner.objectMembers(first));
@@ -1093,6 +1102,48 @@ pub const Program = struct {
         ) catch return error.OutOfMemory;
     }
 
+    const OwnerGlobalRoots = struct {
+        types: std.ArrayListUnmanaged(ts_driver.TypeId) = .empty,
+        names: std.ArrayListUnmanaged(hir_mod_ns.StringId) = .empty,
+        declarations: std.ArrayListUnmanaged(hir_mod_ns.NodeId) = .empty,
+
+        fn deinit(self: *OwnerGlobalRoots, gpa: std.mem.Allocator) void {
+            self.types.deinit(gpa);
+            self.names.deinit(gpa);
+            self.declarations.deinit(gpa);
+        }
+
+        fn add(self: *OwnerGlobalRoots, gpa: std.mem.Allocator, key: BoundGlobals.Key, owner: BoundGlobal) !void {
+            const provider = owner.file.compilation orelse return;
+            try self.names.append(gpa, key.name);
+            if (boundGlobalDeclaredTypeName(owner)) |name| try self.names.append(gpa, name);
+            for (owner.symbol.decls.items) |decl| {
+                try self.declarations.append(gpa, decl);
+                const kind = provider.hir.kindOf(decl);
+                const declared = provider.hir.typeOf(decl);
+                if (declared != ts_driver.Primitive.none) try self.types.append(gpa, declared);
+                if (provider.checked_types.class_static_type_by_node.get(decl)) |static_type| try self.types.append(gpa, static_type);
+                if (provider.checked_types.namespace_value_object_types.get(decl)) |value_type| try self.types.append(gpa, value_type);
+                if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                    const variable = hir_mod_ns.varDeclOf(&provider.hir, decl);
+                    if (boundPatternIdentifierType(provider, variable.name, owner.symbol.name)) |binding_type| try self.types.append(gpa, binding_type);
+                }
+            }
+            // Import-equals aliases can export a namespace surface without
+            // carrying the namespace-declaration flag on their bound symbol.
+            {
+                const prefix = provider.interner.get(key.name);
+                var exports = provider.checked_types.global_namespace_type_exports.iterator();
+                while (exports.next()) |entry| {
+                    const path = provider.interner.get(entry.key_ptr.*);
+                    if (!std.mem.startsWith(u8, path, prefix) or path.len <= prefix.len or path[prefix.len] != '.') continue;
+                    try self.names.append(gpa, entry.key_ptr.*);
+                    try self.types.append(gpa, entry.value_ptr.*);
+                }
+            }
+        }
+    };
+
     fn importProgramGlobals(self: *Program, file: *File, globals: *const BoundGlobals) ProgramError!ImportedProgramGlobals {
         var result: ImportedProgramGlobals = .{ .gpa = self.gpa };
         errdefer result.deinit();
@@ -1100,17 +1151,47 @@ pub const Program = struct {
         if (globals.entries.count() == 0) return result;
         var references: ?GlobalReferenceNames = null;
         defer if (references) |*facts| facts.deinit(self.gpa);
+        var required: std.AutoHashMapUnmanaged(BoundGlobals.Key, void) = .empty;
+        defer required.deinit(self.gpa);
+        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) try required.put(self.gpa, key, {});
+        }
+        // A global variable can refer to an augmented interface in another
+        // owner (Number: NumberConstructor, Object: ObjectConstructor). Its
+        // annotation is a dependency even when the consumer spells only the value.
+        while (true) {
+            const before = required.count();
+            for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+                if (!required.contains(key)) continue;
+                for (owners.items) |owner| {
+                    if (boundGlobalDeclaredTypeName(owner)) |name| {
+                        const dependency: BoundGlobals.Key = .{ .name = name, .space = .type };
+                        if (globals.entries.contains(dependency)) try required.put(self.gpa, dependency, {});
+                    }
+                }
+            }
+            if (required.count() == before) break;
+        }
 
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
-            if (!fileNeedsImportedGlobal(file, key, owners.items, self.gpa, &references)) continue;
+            if (!required.contains(key)) continue;
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.owner == .none or
                     result.importedFor(owner.file.owner) != null) continue;
+                var roots: OwnerGlobalRoots = .{};
+                defer roots.deinit(self.gpa);
+                for (globals.entries.keys(), globals.entries.values()) |needed_key, needed_owners| {
+                    if (!required.contains(needed_key)) continue;
+                    for (needed_owners.items) |needed| {
+                        if (needed.file == owner.file) try roots.add(self.gpa, needed_key, needed);
+                    }
+                }
                 self.owners_mutex.lock();
-                var imported = self.owners.importOwner(
+                var imported = self.owners.importOwnerReachable(
                     &compilation.type_interner,
                     &compilation.interner,
                     owner.file.owner,
+                    .{ .types = roots.types.items, .names = roots.names.items, .declarations = roots.declarations.items },
                 ) catch |err| {
                     self.owners_mutex.unlock();
                     return switch (err) {
@@ -1136,6 +1217,7 @@ pub const Program = struct {
         var namespace_paths: std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void) = .empty;
         defer namespace_paths.deinit(self.gpa);
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (!required.contains(key)) continue;
             if (key.space != .value) continue;
             for (owners.items) |owner| {
                 const provider = owner.file.compilation orelse continue;
@@ -1148,6 +1230,7 @@ pub const Program = struct {
         }
 
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (!required.contains(key)) continue;
             if (key.space == .value) {
                 var merged_namespace: ?ts_driver.TypeId = null;
                 var binding: ?ts_driver.ProgramGlobalBinding = null;
@@ -1206,6 +1289,15 @@ pub const Program = struct {
                 .name = key.name,
                 .type = global_type,
             });
+        }
+        for (result.values.items) |*binding| {
+            const declared_name = binding.declared_type_name orelse continue;
+            for (result.types.items) |type_binding| {
+                if (type_binding.name == declared_name) {
+                    binding.type = type_binding.type;
+                    break;
+                }
+            }
         }
         return result;
     }
@@ -17911,4 +18003,45 @@ test "Program: declaration globals import referenced owners and implicit languag
     var reflected_imports = try program.importProgramGlobals(program.fileById(reflected), &globals);
     defer reflected_imports.deinit();
     try T.expect(reflected_imports.importedFor(program.fileById(unused).owner) != null);
+}
+
+test "Program: selected global imports exclude unrelated types within a required owner" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app = try program.add("/main.ts", "declare const box: Used; const good: number = box.value; const wrong: string = box.value;");
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(T.allocator);
+    try source.appendSlice(T.allocator, "interface Used { value: number; }\n");
+    for (0..64) |index| {
+        const declaration = try std.fmt.allocPrint(T.allocator, "interface Unused{d} {{ field: string; }}\n", .{index});
+        defer T.allocator.free(declaration);
+        try source.appendSlice(T.allocator, declaration);
+    }
+    const provider = try program.add("/globals.d.ts", source.items);
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const compilation = program.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    const owner_types = program.fileById(provider).compilation.?.type_interner.pool.typeCount();
+    try T.expect(compilation.type_interner.pool.typeCount() + 32 < owner_types);
+}
+
+test "Program: selected global values retain cross-owner constructor interface augmentations" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app = try program.add("/main.ts", "const good: boolean = Number.isFinite(1); const wrong: string = Number.isFinite(1);");
+    _ = try program.add("/base.d.ts", "interface NumberConstructor { (value?: any): number; } declare var Number: NumberConstructor;");
+    _ = try program.add("/modern.d.ts", "interface NumberConstructor { isFinite(value: unknown): boolean; }");
+    try program.compileAll(.{ .strict = true, .no_emit = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
 }

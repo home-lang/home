@@ -253,6 +253,175 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
     };
 }
 
+/// Requested owner-local identities. Payload and metadata dependencies are
+/// expanded together before any destination state is prepared.
+pub const Roots = struct {
+    types: []const check.TypeId = &.{},
+    names: []const @import("hir").StringId = &.{},
+    declarations: []const @import("hir").NodeId = &.{},
+};
+
+const Table = std.meta.FieldEnum(check.CheckedTypes);
+
+pub const Selection = struct {
+    allocator: std.mem.Allocator,
+    payloads: transfer.Reachability,
+    checked_source: *const check.CheckedTypes,
+    names: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    declarations: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    rows: std.enums.EnumArray(Table, std.ArrayListUnmanaged(bool)) = .initFill(.empty),
+    selected_rows: usize = 0,
+    payload_cursor: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator, source: *const @import("interner.zig").Interner, checked: *const check.CheckedTypes, roots: Roots) Error!Selection {
+        @setEvalBranchQuota(50000);
+        var self: Selection = .{ .allocator = allocator, .payloads = try transfer.Reachability.init(allocator, source), .checked_source = checked };
+        errdefer self.deinit();
+        for (roots.names) |name| try self.addName(name);
+        for (roots.declarations) |node| try self.addDeclaration(node);
+        try self.payloads.include(roots.types);
+        inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| {
+            const field = @field(Table, name);
+            const list = self.rows.getPtr(field);
+            try list.resize(allocator, @field(checked, name).count());
+            @memset(list.items, false);
+        }
+        while (true) {
+            const before = self.payloads.ids.items.len + self.names.count() + self.declarations.count() + self.selected_rows;
+            while (self.payload_cursor < self.payloads.ids.items.len) : (self.payload_cursor += 1) {
+                const id = self.payloads.ids.items[self.payload_cursor];
+                try self.addDeclaration(source.typeSymbol(id));
+                const flags = source.pool.flagsOf(id);
+                if (flags.is_object_type and !flags.is_union and !flags.is_intersection and !flags.is_tuple and !flags.is_signature) {
+                    for (source.objectMembers(id)) |member_value| try self.addDeclaration(member_value.decl_node);
+                }
+            }
+            inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| {
+                const field = @field(Table, name);
+                const shape = comptime tableShape(field);
+                const included = self.rows.getPtr(field).items;
+                var entries = @field(checked, name).iterator();
+                var index: usize = 0;
+                while (entries.next()) |entry| : (index += 1) {
+                    if (included[index]) continue;
+                    const reverse_name = comptime shape.key == .string_id and shape.value == .type_id;
+                    if (!self.matches(shape.key, entry.key_ptr.*) and
+                        !(reverse_name and self.matches(shape.value, entry.value_ptr.*))) continue;
+                    included[index] = true;
+                    self.selected_rows += 1;
+                    try self.collect(shape.key, entry.key_ptr.*);
+                    try self.collect(shape.value, entry.value_ptr.*);
+                    // Only declaration identity names participate in selection.
+                    // Parameter/member spellings still transfer, but must not
+                    // select unrelated same-spelled globals.
+                    if (comptime shape.key == .string_id) try self.addName(entry.key_ptr.*);
+                    if (comptime field == .class_name_by_instance or field == .class_name_by_static or
+                        field == .named_type_by_id or field == .enum_nominal_names or
+                        field == .substituted_interface_display_names or field == .synthetic_program_class_origins or
+                        field == .class_parent or field == .interface_extends_visibility_class)
+                    {
+                        try self.addName(entry.value_ptr.*);
+                    }
+                }
+            }
+            const after = self.payloads.ids.items.len + self.names.count() + self.declarations.count() + self.selected_rows;
+            if (after == before) break;
+        }
+        return self;
+    }
+
+    pub fn deinit(self: *Selection) void {
+        self.payloads.deinit();
+        self.names.deinit(self.allocator);
+        self.declarations.deinit(self.allocator);
+        inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| self.rows.getPtr(@field(Table, name)).deinit(self.allocator);
+    }
+
+    fn addName(self: *Selection, name: u32) Error!void {
+        if (name != 0) try self.names.put(self.allocator, name, {});
+    }
+
+    fn addDeclaration(self: *Selection, node: u32) Error!void {
+        if (node != 0 and node != @import("hir").none_node_id) try self.declarations.put(self.allocator, node, {});
+    }
+
+    fn matches(self: *const Selection, comptime shape: Shape, value: anytype) bool {
+        return switch (shape) {
+            .scalar => false,
+            .type_id => value >= @import("types.zig").Primitive.first_dynamic and self.payloads.contains(value),
+            .node_id => self.declarations.contains(value),
+            .string_id => self.names.contains(value),
+            .fields => |fields| blk: {
+                inline for (fields) |field| if (self.matches(field.shape, @field(value, field.name))) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn collect(self: *Selection, comptime shape: Shape, value: anytype) Error!void {
+        switch (shape) {
+            .scalar, .string_id => {},
+            .type_id => try self.payloads.include(&.{value}),
+            .node_id => try self.addDeclaration(value),
+            .slice => |element| for (value) |item| try self.collect(element.*, item),
+            .list => |element| for (value.items) |item| try self.collect(element.*, item),
+            .map => |mapping| {
+                var entries = value.iterator();
+                while (entries.next()) |entry| {
+                    try self.collect(mapping.key, entry.key_ptr.*);
+                    try self.collect(mapping.value, entry.value_ptr.*);
+                }
+            },
+            .fields => |fields| inline for (fields) |field| try self.collect(field.shape, @field(value, field.name)),
+        }
+    }
+};
+
+/// Prepare a single selected semantic graph transaction. The source metadata
+/// must remain immutable during selection and copying.
+pub fn appendReachable(target: *@import("interner.zig").Interner, source: *const @import("interner.zig").Interner, checked: *const check.CheckedTypes, names: transfer.Names, roots: Roots) Error!Imported {
+    var selection = try Selection.init(target.gpa, source, checked, roots);
+    defer selection.deinit();
+    return appendSelection(target, source, checked, names, &selection);
+}
+
+pub fn appendSelection(target: *@import("interner.zig").Interner, source: *const @import("interner.zig").Interner, checked: *const check.CheckedTypes, names: transfer.Names, selection: *const Selection) Error!Imported {
+    if (selection.payloads.source != source or selection.checked_source != checked or selection.payloads.failed) return error.InvalidTypeGraph;
+    var pending = try transfer.prepareReachable(target, source, names, selection.payloads.ids.items);
+    defer pending.deinit();
+    const copied = try cloneSelected(target.gpa, checked, pending.ids(), names, selection);
+    return .{ .ids = pending.commit(), .checked = copied };
+}
+
+fn cloneSelected(allocator: std.mem.Allocator, source: *const check.CheckedTypes, ids: transfer.Relocation, names: transfer.Names, selection: *const Selection) Error!check.CheckedTypes {
+    @setEvalBranchQuota(50000);
+    const copier: Copier = .{ .allocator = allocator, .ids = ids, .names = names };
+    var result: check.CheckedTypes = .{};
+    errdefer result.deinit(allocator);
+    inline for (comptime std.meta.fieldNames(check.CheckedTypes)) |name| {
+        const shape = comptime tableShape(@field(Table, name));
+        const included = selection.rows.get(@field(Table, name)).items;
+        const destination = &@field(result, name);
+        var count: u32 = 0;
+        for (included) |yes| if (yes) {
+            count += 1;
+        };
+        try destination.ensureTotalCapacity(allocator, count);
+        var entries = @field(source, name).iterator();
+        var index: usize = 0;
+        while (entries.next()) |entry| : (index += 1) {
+            if (!included[index]) continue;
+            const key = try copier.copy(@TypeOf(entry.key_ptr.*), shape.key, entry.key_ptr.*);
+            errdefer release(allocator, @TypeOf(key), shape.key, key);
+            if (destination.contains(key)) return error.MetadataCollision;
+            const value = try copier.copy(@TypeOf(entry.value_ptr.*), shape.value, entry.value_ptr.*);
+            destination.putAssumeCapacityNoClobber(key, value);
+        }
+    }
+    return result;
+}
+
 /// Clone a single owner's metadata into the destination identifier spaces.
 /// Retain this record separately from all other owners, even if keys compare
 /// equal. The caller must keep the mapped type pool and provenance alive.
@@ -691,4 +860,85 @@ test "checked transfer: failures after payload preparation cancel every new type
     var result = try append(&target, &source, &checked, names.callbacks());
     defer result.deinit();
     try T.expectEqual(try result.ids.typeId(27), result.checked.type_names.get(2027).?);
+}
+
+test "checked transfer: reachable metadata includes hidden dependencies without unrelated identities" {
+    var source = try @import("interner.zig").Interner.initExclusive(T.allocator);
+    defer source.deinit();
+    var target = try @import("interner.zig").Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    var checked: check.CheckedTypes = .{};
+    defer checked.deinit(T.allocator);
+    const root = try source.internObjectType(&.{});
+    source.setTypeSymbol(root, 10);
+    const hidden = try source.internObjectType(&.{});
+    const predicate_target = try source.internObjectType(&.{});
+    const unrelated = try source.internObjectType(&.{});
+    try checked.type_names.put(T.allocator, 1, root);
+    try checked.type_names.put(T.allocator, 2, unrelated);
+    try checked.recursive_interface_targets.put(T.allocator, root, hidden);
+    try checked.type_names.put(T.allocator, 3, hidden);
+    try checked.generic_interfaces_by_decl.put(T.allocator, 10, .{ .params = try T.allocator.dupe(check.TypeId, &.{hidden}), .body = predicate_target, .body_node = 11, .is_type_alias = false });
+    try checked.signature_min_args.put(T.allocator, unrelated, 7);
+    var names: TestNames = .{};
+    var imported = try appendReachable(&target, &source, &checked, names.callbacks(), .{ .types = &.{root}, .names = &.{1}, .declarations = &.{10} });
+    defer imported.deinit();
+    const mapped_root = try imported.ids.typeId(root);
+    const mapped_hidden = try imported.ids.typeId(hidden);
+    try T.expectEqual(mapped_hidden, imported.checked.recursive_interface_targets.get(mapped_root).?);
+    try T.expectEqual(mapped_hidden, imported.checked.type_names.get(2003).?);
+    const info = imported.checked.generic_interfaces_by_decl.get(3010).?;
+    try T.expectEqual(try imported.ids.typeId(predicate_target), info.body);
+    try T.expectEqual(@as(u32, 3011), info.body_node);
+    try T.expectEqual(@as(usize, 2), imported.checked.type_names.count());
+    try T.expectEqual(@as(usize, 0), imported.checked.signature_min_args.count());
+    try T.expectError(error.InvalidTypeGraph, imported.ids.typeId(unrelated));
+}
+
+fn testSelectedAllocationFailures(allocator: std.mem.Allocator) !void {
+    var source = try sampleInterner();
+    defer source.deinit();
+    var checked = try sampleTables();
+    defer checked.deinit(T.allocator);
+    var target = try Interner.initExclusive(allocator);
+    defer target.deinit();
+    const old = try target.internNumberLiteral(-1);
+    while (target.pool.typeCount() < 127) _ = try target.internObjectType(&.{});
+    const before = poolLengths(&target.pool);
+    const keys = internKeyCount(&target);
+    var names: TestNames = .{};
+    var result = appendReachable(&target, &source, &checked, names.callbacks(), .{ .types = &.{27}, .names = &.{27}, .declarations = &.{27} }) catch |err| {
+        try T.expectEqualDeep(before, poolLengths(&target.pool));
+        try T.expectEqual(keys, internKeyCount(&target));
+        try T.expectEqual(@as(usize, 0), target.enum_literal_info.count());
+        try T.expectEqual(old, try target.internNumberLiteral(-1));
+        try expectTables(&checked, false);
+        return err;
+    };
+    defer result.deinit();
+    try expectTables(&result.checked, true);
+    try T.expectError(error.InvalidTypeGraph, result.ids.typeId(28));
+    checked.deinit(T.allocator);
+    try T.expect(result.checked.class_private_members.get(2027).?.contains(2027));
+}
+
+test "checked transfer: selected metadata rolls back every allocation and owns every table" {
+    try T.checkAllAllocationFailures(T.allocator, testSelectedAllocationFailures, .{});
+}
+
+test "checked transfer: selection rejects another metadata owner before mutation" {
+    var source = try sampleInterner();
+    defer source.deinit();
+    var checked = try sampleTables();
+    defer checked.deinit(T.allocator);
+    var other: check.CheckedTypes = .{};
+    defer other.deinit(T.allocator);
+    var selected = try Selection.init(T.allocator, &source, &checked, .{ .types = &.{27} });
+    defer selected.deinit();
+    var target = try Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    const before = poolLengths(&target.pool);
+    var names: TestNames = .{};
+    try T.expectError(error.InvalidTypeGraph, appendSelection(&target, &source, &other, names.callbacks(), &selected));
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
 }

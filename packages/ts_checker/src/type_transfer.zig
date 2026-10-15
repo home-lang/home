@@ -102,40 +102,12 @@ fn Element(comptime column: Column) type {
     return @typeInfo(@FieldType(@FieldType(types.Pool, @tagName(column)), "items")).pointer.child;
 }
 
-const Builder = struct {
+const SourceGraph = struct {
     source: *const interner.Interner,
-    target: *interner.Interner,
-    names: Names,
-    relocation: Relocation,
-    signatures: []types.TypeId,
-    // Borrowed results remain valid until the next operation on that buffer.
-    // Interner builders copy them into destination-owned storage before reuse.
-    type_scratch: std.ArrayListUnmanaged(types.TypeId) = .empty,
-    text_scratch: std.ArrayListUnmanaged(types.StringId) = .empty,
-    tuple_scratch: std.ArrayListUnmanaged(types.TupleElement) = .empty,
+    allocator: std.mem.Allocator,
+    signatures: []const types.TypeId = &.{},
 
-    fn deinit(self: *Builder) void {
-        self.type_scratch.deinit(self.target.gpa);
-        self.text_scratch.deinit(self.target.gpa);
-        self.tuple_scratch.deinit(self.target.gpa);
-    }
-
-    fn string(self: *Builder, id: types.StringId) Error!types.StringId {
-        return self.names.string(self.names.context, id);
-    }
-
-    fn node(self: *Builder, id: hir.NodeId) Error!hir.NodeId {
-        if (id == hir.none_node_id) return id;
-        const mapped = try self.names.declaration(self.names.context, id);
-        if (mapped == hir.none_node_id) return error.UnmappedName;
-        return mapped;
-    }
-
-    fn typeId(self: *Builder, id: types.TypeId) Error!types.TypeId {
-        return self.relocation.typeId(id);
-    }
-
-    fn payload(self: *Builder, comptime column: Column, id: types.TypeId) Error!Element(column) {
+    fn payload(self: SourceGraph, comptime column: Column, id: types.TypeId) Error!Element(column) {
         if (id >= self.source.pool.typeCount()) return error.InvalidTypeGraph;
         const index = self.source.pool.payloadOf(id);
         const values = @field(self.source.pool, @tagName(column)).items;
@@ -143,20 +115,14 @@ const Builder = struct {
         return values[index];
     }
 
-    fn slice(self: *Builder, comptime column: Column, start: u32, len: u32) Error![]const Element(column) {
+    fn slice(self: SourceGraph, comptime column: Column, start: u32, len: u32) Error![]const Element(column) {
         const values = @field(self.source.pool, @tagName(column)).items;
         if (start > values.len or len > values.len - start or (start == 0 and len != 0)) return error.InvalidTypeGraph;
         return values[start..][0..len];
     }
 
-    fn mappedTypes(self: *Builder, values: []const types.TypeId) Error![]const types.TypeId {
-        try self.type_scratch.resize(self.target.gpa, values.len);
-        for (values, self.type_scratch.items) |value, *mapped| mapped.* = try self.typeId(value);
-        return self.type_scratch.items;
-    }
-
-    fn dependencies(self: *Builder, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
-        const allocator = self.target.gpa;
+    fn dependencies(self: SourceGraph, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
+        const allocator = self.allocator;
         switch (try payloadColumn(self.source.pool.flagsOf(id))) {
             .literal_payloads, .object_type_payloads, .type_parameter_payloads, .generic_definition_payloads => {},
             .union_payloads => {
@@ -203,6 +169,146 @@ const Builder = struct {
             },
             else => return error.InvalidTypeGraph,
         }
+    }
+
+    fn reachableDependencies(self: SourceGraph, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
+        const allocator = self.allocator;
+        switch (try payloadColumn(self.source.pool.flagsOf(id))) {
+            .object_type_payloads => {
+                const value = try self.payload(.object_type_payloads, id);
+                for (try self.slice(.object_member_pool, value.members_start, value.members_len)) |member| try output.append(allocator, member.type);
+                try output.appendSlice(allocator, &.{ value.string_index_type, value.number_index_type, value.symbol_index_type });
+                for ([_]u32{ value.call_sig, value.construct_sig }) |signature| {
+                    if (signature == 0) continue;
+                    if (signature >= self.signatures.len or self.signatures[signature] == 0) return error.InvalidTypeGraph;
+                    try output.append(allocator, self.signatures[signature]);
+                }
+            },
+            .type_parameter_payloads => {
+                const value = try self.payload(.type_parameter_payloads, id);
+                try output.appendSlice(allocator, &.{ value.constraint, value.default });
+            },
+            .generic_definition_payloads => {
+                const value = try self.payload(.generic_definition_payloads, id);
+                try output.appendSlice(allocator, try self.slice(.type_arg_pool, value.parameters_start, value.parameters_len));
+                try output.append(allocator, value.body);
+            },
+            else => try self.dependencies(id, output),
+        }
+    }
+};
+
+/// Read-only payload closure. Each include may add roots discovered through
+/// checked metadata. No target type or provenance is allocated by this walk.
+pub const Reachability = struct {
+    allocator: std.mem.Allocator,
+    source: *const interner.Interner,
+    selected: []bool,
+    signatures: []types.TypeId,
+    ids: std.ArrayListUnmanaged(types.TypeId) = .empty,
+    edges: std.ArrayListUnmanaged(types.TypeId) = .empty,
+    cursor: usize = 0,
+    failed: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, source: *const interner.Interner) Error!Reachability {
+        const count = source.pool.typeCount();
+        if (count < types.Primitive.first_dynamic) return error.InvalidTypeGraph;
+        const selected = try allocator.alloc(bool, count);
+        errdefer allocator.free(selected);
+        @memset(selected, false);
+        const signatures = try allocator.alloc(types.TypeId, source.pool.signature_payloads.items.len);
+        errdefer allocator.free(signatures);
+        @memset(signatures, 0);
+        for (types.Primitive.first_dynamic..count) |index| {
+            const id: types.TypeId = @intCast(index);
+            if (try payloadColumn(source.pool.flagsOf(id)) != .signature_payloads) continue;
+            const payload = source.pool.payloadOf(id);
+            if (payload == 0 or payload >= signatures.len) return error.InvalidTypeGraph;
+            signatures[payload] = id;
+        }
+        return .{ .allocator = allocator, .source = source, .selected = selected, .signatures = signatures };
+    }
+
+    pub fn deinit(self: *Reachability) void {
+        self.allocator.free(self.selected);
+        self.allocator.free(self.signatures);
+        self.ids.deinit(self.allocator);
+        self.edges.deinit(self.allocator);
+    }
+
+    fn add(self: *Reachability, id: types.TypeId) Error!void {
+        if (id >= self.selected.len) return error.InvalidTypeGraph;
+        if (id < types.Primitive.first_dynamic or self.selected[id]) return;
+        try self.ids.append(self.allocator, id);
+        self.selected[id] = true;
+    }
+
+    pub fn include(self: *Reachability, roots: []const types.TypeId) Error!void {
+        if (self.failed) return error.InvalidTypeGraph;
+        errdefer self.failed = true;
+        for (roots) |id| try self.add(id);
+        const graph: SourceGraph = .{ .source = self.source, .allocator = self.allocator, .signatures = self.signatures };
+        while (self.cursor < self.ids.items.len) : (self.cursor += 1) {
+            self.edges.clearRetainingCapacity();
+            try graph.reachableDependencies(self.ids.items[self.cursor], &self.edges);
+            for (self.edges.items) |id| try self.add(id);
+        }
+    }
+
+    pub fn contains(self: *const Reachability, id: types.TypeId) bool {
+        return id < self.selected.len and (id < types.Primitive.first_dynamic or self.selected[id]);
+    }
+};
+
+const Builder = struct {
+    source: *const interner.Interner,
+    target: *interner.Interner,
+    names: Names,
+    relocation: Relocation,
+    signatures: []types.TypeId,
+    // Borrowed results remain valid until the next operation on that buffer.
+    // Interner builders copy them into destination-owned storage before reuse.
+    type_scratch: std.ArrayListUnmanaged(types.TypeId) = .empty,
+    text_scratch: std.ArrayListUnmanaged(types.StringId) = .empty,
+    tuple_scratch: std.ArrayListUnmanaged(types.TupleElement) = .empty,
+
+    fn deinit(self: *Builder) void {
+        self.type_scratch.deinit(self.target.gpa);
+        self.text_scratch.deinit(self.target.gpa);
+        self.tuple_scratch.deinit(self.target.gpa);
+    }
+
+    fn string(self: *Builder, id: types.StringId) Error!types.StringId {
+        return self.names.string(self.names.context, id);
+    }
+
+    fn node(self: *Builder, id: hir.NodeId) Error!hir.NodeId {
+        if (id == hir.none_node_id) return id;
+        const mapped = try self.names.declaration(self.names.context, id);
+        if (mapped == hir.none_node_id) return error.UnmappedName;
+        return mapped;
+    }
+
+    fn typeId(self: *Builder, id: types.TypeId) Error!types.TypeId {
+        return self.relocation.typeId(id);
+    }
+
+    fn payload(self: *Builder, comptime column: Column, id: types.TypeId) Error!Element(column) {
+        return (SourceGraph{ .source = self.source, .allocator = self.target.gpa }).payload(column, id);
+    }
+
+    fn slice(self: *Builder, comptime column: Column, start: u32, len: u32) Error![]const Element(column) {
+        return (SourceGraph{ .source = self.source, .allocator = self.target.gpa }).slice(column, start, len);
+    }
+
+    fn mappedTypes(self: *Builder, values: []const types.TypeId) Error![]const types.TypeId {
+        try self.type_scratch.resize(self.target.gpa, values.len);
+        for (values, self.type_scratch.items) |value, *mapped| mapped.* = try self.typeId(value);
+        return self.type_scratch.items;
+    }
+
+    fn dependencies(self: *Builder, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
+        return (SourceGraph{ .source = self.source, .allocator = self.target.gpa }).dependencies(id, output);
     }
 
     fn materialize(self: *Builder, id: types.TypeId) Error!types.TypeId {
@@ -425,6 +531,17 @@ pub fn append(target: *interner.Interner, source: *const interner.Interner, name
 /// Prepare payloads without publishing them, allowing semantic/provenance
 /// preparation to join the same transaction. Caller must commit or deinit.
 pub fn prepare(target: *interner.Interner, source: *const interner.Interner, names: Names) Error!Pending {
+    return prepareRoots(target, source, names, null);
+}
+
+/// Prepare only the payload graph reachable from roots. Unselected relocation
+/// slots remain unmapped. Callers must include roots referenced by the checked
+/// metadata they transfer; payload reachability alone is not semantic closure.
+pub fn prepareReachable(target: *interner.Interner, source: *const interner.Interner, names: Names, roots: []const types.TypeId) Error!Pending {
+    return prepareRoots(target, source, names, roots);
+}
+
+fn prepareRoots(target: *interner.Interner, source: *const interner.Interner, names: Names, roots: ?[]const types.TypeId) Error!Pending {
     if (target == source or target.pool.headers.items.ptr == source.pool.headers.items.ptr) return error.InvalidTypeGraph;
     const allocator = target.gpa;
     const count = source.pool.typeCount();
@@ -460,12 +577,17 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures };
     defer builder.deinit();
     errdefer rollback(target, lengths);
+    var reachable: ?Reachability = if (roots != null) try Reachability.init(allocator, source) else null;
+    defer if (reachable) |*closure| closure.deinit();
+    if (reachable) |*closure| try closure.include(roots.?);
+    const selected: ?[]const bool = if (reachable) |closure| closure.selected else null;
     const reused = try allocator.alloc(bool, count);
     defer allocator.free(reused);
     @memset(reused, false);
     if (names.reuse_type) |reuse| {
         for (types.Primitive.first_dynamic..count) |index| {
             const id: types.TypeId = @intCast(index);
+            if (selected) |included| if (!included[id]) continue;
             if (try reuse(names.context, id)) |existing| {
                 if (existing < types.Primitive.first_dynamic or existing >= relocation.destination_start or
                     try payloadColumn(source.pool.flagsOf(id)) != try payloadColumn(target.pool.flagsOf(existing))) return error.InvalidTypeGraph;
@@ -479,6 +601,7 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     // keys. Their constraints/members are filled only after all IDs resolve.
     for (types.Primitive.first_dynamic..count) |index| {
         const id: types.TypeId = @intCast(index);
+        if (selected) |included| if (!included[id]) continue;
         if (reused[id]) continue;
         switch (try payloadColumn(source.pool.flagsOf(id))) {
             .generic_definition_payloads => {
@@ -510,6 +633,7 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     defer edges.deinit(allocator);
     for (types.Primitive.first_dynamic..count) |root_index| {
         const root: types.TypeId = @intCast(root_index);
+        if (selected) |included| if (!included[root]) continue;
         if (relocation.ids[root] != 0) continue;
         try builder.dependencies(root, &edges);
         try stack.append(allocator, .{ .id = root, .start = 0, .len = edges.items.len });
@@ -536,9 +660,12 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
         }
     }
     for (types.Primitive.first_dynamic..count) |index| {
+        if (selected) |included| if (!included[index]) continue;
         if (!reused[index]) try builder.finalizeFresh(@intCast(index));
     }
     for (source.pool.signature_param_pool.items[1..]) |parameter| {
+        if (parameter.type >= count) return error.InvalidTypeGraph;
+        if (selected != null and parameter.type >= types.Primitive.first_dynamic and relocation.ids[parameter.type] == 0) continue;
         var mapped = parameter;
         mapped.name = try builder.string(parameter.name);
         mapped.type = try builder.typeId(parameter.type);
@@ -1132,4 +1259,87 @@ test "type transfer: deep forward references are iterative and unanchored key cy
     try T.expectError(error.InvalidTypeGraph, append(&target, &source, names.names()));
     try T.expectEqualDeep(before, poolLengths(&target.pool));
     try T.expectEqual(keys_before, keyCount(&target));
+}
+
+test "type transfer: reachable payloads preserve recursive generic and callable edges" {
+    var source = try interner.Interner.initExclusive(T.allocator);
+    defer source.deinit();
+    var target = try interner.Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    const root = try source.internObjectType(&.{});
+    const parameter = try source.internFreshTypeParameterWithFlags(1, root, types.Primitive.string_t, .covariant, false);
+    const signature = try source.internSignature(&.{parameter}, root, false);
+    const definition = try source.reserveGenericDefinition();
+    try source.completeGenericDefinition(definition, &.{parameter}, root);
+    const instance = try source.internInstantiation(definition, &.{types.Primitive.number_t});
+    try source.completeFreshObjectTypeWithIndex(root, &.{
+        .{ .name = 2, .type = root, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = 3, .type = instance, .is_optional = false, .is_readonly = false, .is_method = false },
+    }, types.Primitive.none, parameter, types.Primitive.none);
+    source.pool.object_type_payloads.items[source.pool.payloadOf(root)].call_sig = source.pool.payloadOf(signature);
+    const unrelated = try source.internObjectType(&.{});
+    source.setTypeSymbol(unrelated, 999);
+    for (0..128) |_| _ = try source.internObjectType(&.{});
+    // An unreachable declaration must not enter the provenance transaction.
+    var names: TestNames = .{ .reject_node = true };
+    var pending = try prepareReachable(&target, &source, names.names(), &.{root});
+    defer pending.deinit();
+    const mapped = pending.ids();
+    const mapped_root = try mapped.typeId(root);
+    try T.expectEqual(mapped_root, target.objectMember(mapped_root, 102).?);
+    try T.expectEqual(try mapped.typeId(parameter), target.objectNumberIndex(mapped_root));
+    const call = target.pool.object_type_payloads.items[target.pool.payloadOf(mapped_root)].call_sig;
+    try T.expectEqual(target.pool.payloadOf(try mapped.typeId(signature)), call);
+    try T.expectEqual(mapped_root, target.signatureReturn(try mapped.typeId(signature)).?);
+    try T.expectEqual(mapped_root, target.genericDefinition(try mapped.typeId(definition)).?.body);
+    try T.expectEqual(try mapped.typeId(instance), target.objectMember(mapped_root, 103).?);
+    try T.expectEqual(types.Primitive.first_dynamic + 5, target.pool.typeCount());
+    try T.expectError(error.InvalidTypeGraph, mapped.typeId(unrelated));
+    var ids = pending.commit();
+    defer ids.deinit();
+}
+
+test "type transfer: reachable preparation cancels and rejects invalid roots" {
+    var source = try interner.Interner.initExclusive(T.allocator);
+    defer source.deinit();
+    var target = try interner.Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    const root = try source.internObjectType(&.{});
+    var names: TestNames = .{};
+    const before = poolLengths(&target.pool);
+    {
+        var pending = try prepareReachable(&target, &source, names.names(), &.{root});
+        defer pending.deinit();
+        try T.expect(target.pool.typeCount() > types.Primitive.first_dynamic);
+    }
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+    try T.expectError(error.InvalidTypeGraph, prepareReachable(&target, &source, names.names(), &.{source.pool.typeCount()}));
+    try T.expectEqualDeep(before, poolLengths(&target.pool));
+}
+
+fn testReachableAllocationFailures(allocator: std.mem.Allocator) !void {
+    var source = try interner.Interner.initExclusive(T.allocator);
+    defer source.deinit();
+    const graph = try testGraph(&source);
+    const unrelated = try source.internObjectType(&.{});
+    for (0..64) |_| _ = try source.internObjectType(&.{});
+    var roots: [std.meta.fieldNames(TestGraph).len]types.TypeId = undefined;
+    inline for (comptime std.meta.fieldNames(TestGraph), 0..) |name, index| roots[index] = @field(graph, name);
+    var target = try interner.Interner.initExclusive(allocator);
+    defer target.deinit();
+    const before = poolLengths(&target.pool);
+    var names: TestNames = .{};
+    var pending = prepareReachable(&target, &source, names.names(), &roots) catch |err| {
+        try T.expectEqualDeep(before, poolLengths(&target.pool));
+        try T.expectEqual(@as(usize, 0), target.enum_literal_info.count());
+        try T.expectEqual(@as(usize, 0), keyCount(&target));
+        return err;
+    };
+    defer pending.deinit();
+    try expectGraph(&target, graph, pending.ids());
+    try T.expectError(error.InvalidTypeGraph, pending.ids().typeId(unrelated));
+}
+
+test "type transfer: reachable graph allocation failures roll back every payload kind" {
+    try T.checkAllAllocationFailures(T.allocator, testReachableAllocationFailures, .{});
 }

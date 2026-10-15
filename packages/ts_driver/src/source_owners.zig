@@ -180,14 +180,28 @@ pub const Registry = struct {
         target_strings: *strings.Interner,
         owner: OwnerId,
     ) Error!Imported {
+        return self.importOwnerRoots(target, target_strings, owner, null);
+    }
+
+    pub fn importOwnerReachable(self: *Registry, target: *checker.Interner, target_strings: *strings.Interner, owner: OwnerId, roots: checker.checked_transfer.Roots) Error!Imported {
+        return self.importOwnerRoots(target, target_strings, owner, roots);
+    }
+
+    fn importOwnerRoots(self: *Registry, target: *checker.Interner, target_strings: *strings.Interner, owner: OwnerId, roots: ?checker.checked_transfer.Roots) Error!Imported {
         const view = try self.source(owner);
         if (view.types == target) return error.InvalidTypeGraph;
         const source_count = view.types.pool.typeCount();
         const target_count = target.pool.typeCount();
         if (source_count > std.math.maxInt(u32) - target_count) return error.TypeIdOverflow;
+        var selection: ?checker.checked_transfer.Selection = if (roots) |requested|
+            try checker.checked_transfer.Selection.init(self.allocator, view.types, view.checked, requested)
+        else
+            null;
+        defer if (selection) |*selected| selected.deinit();
         // Verify transitive owners even when their payloads can be reused. A
         // cached destination ID does not make a tombstoned source revision live.
         for (checker.Primitive.first_dynamic..source_count) |index| {
+            if (selection) |*selected| if (!selected.payloads.selected[index]) continue;
             const origin = self.typeOrigin(view.types, owner, @intCast(index));
             _ = self.source(origin.owner) catch return error.UnmappedName;
         }
@@ -198,6 +212,7 @@ pub const Registry = struct {
         // both tables even when the payload transaction adds no types.
         var new_origins: u32 = 0;
         for (checker.Primitive.first_dynamic..source_count) |index| {
+            if (selection) |*selected| if (!selected.payloads.selected[index]) continue;
             const origin = self.typeOrigin(view.types, owner, @intCast(index));
             if (!slot.value_ptr.canonical.contains(origin)) new_origins += 1;
         }
@@ -206,12 +221,16 @@ pub const Registry = struct {
         const first = self.nodes.items.len;
         errdefer self.cancelDeclarations(first);
         var context = Context{ .registry = self, .owner = owner, .from = view.strings, .to = target_strings, .source_types = view.types, .target_types = target };
-        const imported = try checker.checked_transfer.append(target, view.types, view.checked, .{
+        const callbacks: checker.type_transfer.Names = .{
             .context = &context,
             .string = Context.string,
             .declaration = Context.node,
             .reuse_type = Context.reuseType,
-        });
+        };
+        const imported = if (selection) |*selected|
+            try checker.checked_transfer.appendSelection(target, view.types, view.checked, callbacks, selected)
+        else
+            try checker.checked_transfer.append(target, view.types, view.checked, callbacks);
         // Capacity was reserved before the payload transaction. Publication of
         // provenance cannot fail after checked_transfer commits the type graph.
         const state = self.target_types.getPtr(target).?;
@@ -220,8 +239,9 @@ pub const Registry = struct {
         @memset(state.origins.items[previous..], TypeOrigin{});
         for (checker.Primitive.first_dynamic..source_count) |index| {
             const id: checker.TypeId = @intCast(index);
-            const origin = self.typeOrigin(view.types, owner, id);
             const mapped = imported.ids.ids[id];
+            if (mapped == checker.Primitive.none) continue;
+            const origin = self.typeOrigin(view.types, owner, id);
             if (state.origins.items[mapped].owner == .none) state.origins.items[mapped] = origin;
             state.canonical.putAssumeCapacity(origin, mapped);
         }
@@ -374,7 +394,7 @@ fn keyCount(value: *const checker.Interner) usize {
     return result;
 }
 
-fn testImportAllocationFailures(allocator: std.mem.Allocator) !void {
+fn testImportAllocationFailures(allocator: std.mem.Allocator, selected: bool) !void {
     var fixture = try Fixture.init();
     defer fixture.deinit();
     var registry = Registry.init(allocator);
@@ -393,7 +413,7 @@ fn testImportAllocationFailures(allocator: std.mem.Allocator) !void {
     const keys = keyCount(&target);
     const nodes = registry.nodes.items.len;
     const mappings = registry.node_ids.count();
-    var imported = registry.importOwner(&target, &target_strings, owner) catch |err| {
+    var imported = (if (selected) registry.importOwnerReachable(&target, &target_strings, owner, .{ .types = &.{fixture.object}, .names = &.{fixture.name} }) else registry.importOwner(&target, &target_strings, owner)) catch |err| {
         try T.expectEqualDeep(before, poolLengths(&target.pool));
         try T.expectEqual(keys, keyCount(&target));
         try T.expectEqual(nodes, registry.nodes.items.len);
@@ -411,7 +431,8 @@ fn testImportAllocationFailures(allocator: std.mem.Allocator) !void {
 }
 
 test "source owners: import allocation failures roll back payloads semantics and new provenance together" {
-    try T.checkAllAllocationFailures(T.allocator, testImportAllocationFailures, .{});
+    try T.checkAllAllocationFailures(T.allocator, testImportAllocationFailures, .{false});
+    try T.checkAllAllocationFailures(T.allocator, testImportAllocationFailures, .{true});
 }
 
 test "source owners: invalid semantic nodes cancel prepared types and provenance and allow retry" {
@@ -532,6 +553,7 @@ test "source owners: cached imports still roll back failed metadata and reject s
     try T.expectEqualDeep(before, poolLengths(&target.pool));
     try registry.unregister(original_owner);
     try T.expectError(error.UnmappedName, registry.importOwner(&target, &names, intermediate_owner));
+    try T.expectError(error.UnmappedName, registry.importOwnerReachable(&target, &names, intermediate_owner, .{ .types = &.{try imported_original.types.ids.typeId(original.object)} }));
 }
 
 test "source owners: target address reuse and source revisions cannot inherit cached types" {
@@ -620,4 +642,31 @@ fn testCachedImportAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "source owners: cached import allocation failures preserve existing graph identities" {
     try T.checkAllAllocationFailures(T.allocator, testCachedImportAllocationFailures, .{});
+}
+
+test "source owners: selected imports publish only reachable provenance and compose with full imports" {
+    var fixture = try Fixture.init();
+    defer fixture.deinit();
+    const unrelated = try fixture.types.internObjectType(&.{});
+    var registry = Registry.init(T.allocator);
+    defer registry.deinit();
+    const owner = try registry.register(fixture.view());
+    var target = try checker.Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    var names = try strings.Interner.init(T.allocator);
+    defer names.deinit();
+    var selected = try registry.importOwnerReachable(&target, &names, owner, .{ .types = &.{fixture.object}, .names = &.{fixture.name}, .declarations = &.{fixture.decl} });
+    defer selected.deinit();
+    const mapped = try selected.types.ids.typeId(fixture.object);
+    try T.expectError(error.InvalidTypeGraph, selected.types.ids.typeId(unrelated));
+    try T.expectEqual(owner, (try registry.declaration(target.typeSymbol(mapped))).owner);
+    const count = target.pool.typeCount();
+    var repeated = try registry.importOwnerReachable(&target, &names, owner, .{ .types = &.{fixture.object} });
+    defer repeated.deinit();
+    try T.expectEqual(mapped, try repeated.types.ids.typeId(fixture.object));
+    try T.expectEqual(count, target.pool.typeCount());
+    var complete = try registry.importOwner(&target, &names, owner);
+    defer complete.deinit();
+    try T.expectEqual(mapped, try complete.types.ids.typeId(fixture.object));
+    try T.expectEqual(count + 1, target.pool.typeCount());
 }

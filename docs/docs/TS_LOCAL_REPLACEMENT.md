@@ -1128,3 +1128,43 @@ Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-declaration-owner-filter.ta
 contains **2,903** verified payloads, SHA-256
 `c73778975ebd37f63960d3a3a146b8a952820a1efe49de625ea15b48da07e9de`.
 Real-project sources and script text are excluded.
+
+## Reachable owner payloads and checked semantics
+
+The symbolic replay isolated continued growth in whole-owner imports: 161 files
+completed in 360 seconds with 2.31 GB last logged live allocation. Small consumers
+retained around 100,000 types after importing required globals. The importer now
+selects the transitive payload and checked-metadata graph for requested types,
+names and declarations. Recursive payloads, generic constraints, signatures,
+metadata-only dependencies and real declaration provenance stay connected;
+unrelated identities remain unmapped. Full-owner imports retain their existing
+API and compose with selected imports.
+
+Global variable annotations also select all interface augmentation owners, and
+provider ordering checks those dependencies before a consumer that contributes
+globals itself. This restores NumberConstructor/ObjectConstructor members from
+separate library declarations. Callable interface merges preserve call signatures.
+Negative controls fail at the expected same-owner reduction and constructor
+augmentation assertions when their respective fixes are removed.
+
+The production build and unchanged 306-input table graph complete under the
+unchanged 3,840 MB process guard (combined build/replay peak 2,770 MB). The earlier
+selected-import replay alone peaked at 972 MB. Native TypeScript exits zero;
+Home exits one with 44 diagnostics: 37 declaration conflicts and seven array,
+iterator or callback errors. Input hashes remain unchanged. Completing within
+the memory bound does not qualify semantic compatibility; the table project
+and the complete local replacement goal remain unqualified.
+
+All **4,616 checker, 213 driver, 302 Program and 51 CLI tests** pass,
+as do the eight stream checks and all **ten Release CLI comparison suites**.
+Selected registry imports exercise every allocation failure, reject stale
+transitive owners and retain canonical identities across selected/full imports.
+Metadata selection rejects a different source owner before target mutation.
+The combined validation run peaks at **2,228 MB**; all **4,190 frozen inputs**
+remain unchanged after negative controls and final validation.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-reachable-owner-transfer.tar.gz`
+contains **2,905** verified payloads, SHA-256
+`a64a545363f53094cf7eebb7ef6be77130fb2245483154022e8b1d5f48618221`.
+Real-project sources and diagnostic text remain local; only aggregate project
+outcomes are included.
