@@ -283,3 +283,9 @@ test "load default config" {
     try testing.expect(first != null);
     try testing.expectEqualStrings("Home OS", first.?.getName());
 }
+
+test {
+    std.testing.refAllDecls(secure);
+    std.testing.refAllDecls(secure.SecureBootDB);
+    std.testing.refAllDecls(secure.SecureBootVerifier);
+}

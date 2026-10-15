@@ -2,7 +2,9 @@
 // UEFI Secure Boot with signature verification
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const uefi = @import("uefi.zig");
+const Io = std.Io;
 
 /// Secure Boot status
 pub const SecureBootStatus = enum {
@@ -82,14 +84,20 @@ pub const SecureBootDB = struct {
     allowed_certificates: std.ArrayList(Certificate),
     forbidden_hashes: std.ArrayList([32]u8),
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    io: Io,
+    mutex: Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator) SecureBootDB {
+        return initWithIo(allocator, compat.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io) SecureBootDB {
         return .{
             .allowed_certificates = std.ArrayList(Certificate).empty,
             .forbidden_hashes = std.ArrayList([32]u8).empty,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .io = io,
+            .mutex = .init,
         };
     }
 
@@ -99,22 +107,22 @@ pub const SecureBootDB = struct {
     }
 
     pub fn addCertificate(self: *SecureBootDB, cert: Certificate) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         try self.allowed_certificates.append(self.allocator, cert);
     }
 
     pub fn addForbiddenHash(self: *SecureBootDB, hash: [32]u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         try self.forbidden_hashes.append(self.allocator, hash);
     }
 
     pub fn isCertificateAllowed(self: *SecureBootDB, cert: *const Certificate) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.allowed_certificates.items) |*allowed| {
             if (std.mem.eql(u8, allowed.data, cert.data)) {
@@ -126,8 +134,8 @@ pub const SecureBootDB = struct {
     }
 
     pub fn isHashForbidden(self: *SecureBootDB, hash: [32]u8) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.forbidden_hashes.items) |*forbidden| {
             if (std.mem.eql(u8, forbidden, &hash)) {
@@ -146,8 +154,12 @@ pub const SecureBootVerifier = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) SecureBootVerifier {
+        return initWithIo(allocator, compat.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io) SecureBootVerifier {
         return .{
-            .database = SecureBootDB.init(allocator),
+            .database = SecureBootDB.initWithIo(allocator, io),
             .status = .disabled,
             .allocator = allocator,
         };
@@ -175,6 +187,24 @@ pub const SecureBootVerifier = struct {
         binary: []const u8,
         signature: *const Signature,
     ) !bool {
+        return self.verifyBinaryWithIo(self.database.io, binary, signature);
+    }
+
+    pub fn verifyBinaryWithIo(
+        self: *SecureBootVerifier,
+        io: Io,
+        binary: []const u8,
+        signature: *const Signature,
+    ) !bool {
+        return self.verifyBinaryAt(Io.Clock.real.now(io).toSeconds(), binary, signature);
+    }
+
+    pub fn verifyBinaryAt(
+        self: *SecureBootVerifier,
+        current_time: i64,
+        binary: []const u8,
+        signature: *const Signature,
+    ) !bool {
         if (!self.isEnabled()) {
             return true; // Secure boot disabled, allow everything
         }
@@ -185,7 +215,7 @@ pub const SecureBootVerifier = struct {
                 return error.CertificateNotTrusted;
             }
 
-            if (!cert.isValid(std.time.timestamp())) {
+            if (!cert.isValid(current_time)) {
                 return error.CertificateExpired;
             }
         } else {
@@ -279,6 +309,23 @@ test "secure boot database" {
     try testing.expect(!db.isHashForbidden(other_hash));
 }
 
+fn populateDatabaseForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var db = SecureBootDB.initWithIo(allocator, std.testing.io);
+    defer db.deinit();
+
+    const cert_data: [64]u8 = @splat(0x01);
+    try db.addCertificate(Certificate.init(&cert_data, .rsa2048_sha256));
+    try db.addForbiddenHash(@splat(0xFF));
+}
+
+test "secure boot database releases every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        populateDatabaseForAllocationFailure,
+        .{},
+    );
+}
+
 test "secure boot verifier" {
     const testing = std.testing;
 
@@ -300,7 +347,7 @@ test "secure boot verifier" {
 test "signature verification" {
     const testing = std.testing;
 
-    var verifier = SecureBootVerifier.init(testing.allocator);
+    var verifier = SecureBootVerifier.initWithIo(testing.allocator, testing.io);
     defer verifier.deinit();
 
     const binary = "test binary data";
@@ -310,4 +357,30 @@ test "signature verification" {
     // Should succeed when disabled
     const result = try verifier.verifyBinary(binary, &signature);
     try testing.expect(result);
+
+    const cert_data: [64]u8 = @splat(0x02);
+    var cert = Certificate.init(&cert_data, .rsa2048_sha256);
+    cert.not_before = 1000;
+    cert.not_after = 2000;
+    try verifier.database.addCertificate(cert);
+    signature.certificate = &cert;
+    verifier.enable();
+
+    try testing.expect(try verifier.verifyBinaryAt(1500, binary, &signature));
+    try testing.expectError(
+        error.CertificateExpired,
+        verifier.verifyBinaryAt(2001, binary, &signature),
+    );
+
+    cert.not_before = 0;
+    cert.not_after = std.math.maxInt(i64);
+    try testing.expect(try verifier.verifyBinaryWithIo(testing.io, binary, &signature));
+
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(binary, &hash, .{});
+    try verifier.database.addForbiddenHash(hash);
+    try testing.expectError(
+        error.BinaryForbidden,
+        verifier.verifyBinaryAt(1500, binary, &signature),
+    );
 }
