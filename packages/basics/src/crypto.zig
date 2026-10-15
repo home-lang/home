@@ -1,4 +1,7 @@
 const std = @import("std");
+const compat = @import("compat.zig");
+
+pub const Advanced = @import("crypto/crypto.zig").Crypto;
 
 /// Cryptography utilities for Home
 /// Provides hashing, encoding, and basic encryption
@@ -137,19 +140,23 @@ pub const Hex = struct {
 
 /// Random number generation
 pub const Random = struct {
-    prng: std.rand.DefaultPrng,
+    prng: std.Random.DefaultPrng,
 
     /// Initialize with seed
     pub fn init(seed: u64) Random {
         return .{
-            .prng = std.rand.DefaultPrng.init(seed),
+            .prng = std.Random.DefaultPrng.init(seed),
         };
     }
 
     /// Initialize with random seed
     pub fn initRandom() Random {
+        return initRandomWithIo(compat.io());
+    }
+
+    pub fn initRandomWithIo(io: std.Io) Random {
         var seed: u64 = undefined;
-        std.crypto.random.bytes(std.mem.asBytes(&seed));
+        io.random(std.mem.asBytes(&seed));
         return init(seed);
     }
 
@@ -177,34 +184,82 @@ pub const Random = struct {
 /// Secure random for cryptographic use
 pub const SecureRandom = struct {
     /// Generate secure random bytes
-    pub fn bytes(buffer: []u8) void {
-        std.crypto.random.bytes(buffer);
+    pub fn bytes(buffer: []u8) std.Io.RandomSecureError!void {
+        return bytesWithIo(compat.io(), buffer);
+    }
+
+    pub fn bytesWithIo(io: std.Io, buffer: []u8) std.Io.RandomSecureError!void {
+        try io.randomSecure(buffer);
     }
 
     /// Generate secure random integer
-    pub fn int(comptime T: type) T {
+    pub fn int(comptime T: type) std.Io.RandomSecureError!T {
+        return intWithIo(compat.io(), T);
+    }
+
+    pub fn intWithIo(io: std.Io, comptime T: type) std.Io.RandomSecureError!T {
         var result: T = undefined;
-        std.crypto.random.bytes(std.mem.asBytes(&result));
+        try bytesWithIo(io, std.mem.asBytes(&result));
         return result;
     }
 
     /// Generate secure random integer in range [min, max] inclusive.
     /// If min == minInt(T) and max == maxInt(T), returns a full-range int.
-    pub fn intRange(comptime T: type, min: T, max: T) T {
-        if (min == std.math.minInt(T) and max == std.math.maxInt(T)) {
-            return int(T);
+    pub fn intRange(comptime T: type, min: T, max: T) std.Io.RandomSecureError!T {
+        return intRangeWithIo(compat.io(), T, min, max);
+    }
+
+    pub fn intRangeWithIo(io: std.Io, comptime T: type, min: T, max: T) std.Io.RandomSecureError!T {
+        std.debug.assert(min <= max);
+        const info = @typeInfo(T).int;
+        if (info.signedness == .signed) {
+            const Unsigned = @Int(.unsigned, info.bits);
+            const lo: Unsigned = @bitCast(min);
+            const hi: Unsigned = @bitCast(max);
+            const result = lo +% try uintAtMostWithIo(io, Unsigned, hi -% lo);
+            return @bitCast(result);
         }
-        const range = max - min + 1;
-        return min + @mod(int(T), range);
+        return min + try uintAtMostWithIo(io, T, max - min);
+    }
+
+    fn uintAtMostWithIo(io: std.Io, comptime T: type, max: T) std.Io.RandomSecureError!T {
+        if (max == std.math.maxInt(T)) return intWithIo(io, T);
+        return uintLessThanWithIo(io, T, max + 1);
+    }
+
+    fn uintLessThanWithIo(io: std.Io, comptime T: type, less_than: T) std.Io.RandomSecureError!T {
+        std.debug.assert(0 < less_than);
+        const bits = @typeInfo(T).int.bits;
+
+        var candidate = try intWithIo(io, T);
+        var product = std.math.mulWide(T, candidate, less_than);
+        var low: T = @truncate(product);
+        if (low < less_than) {
+            var threshold = -%less_than;
+            if (threshold >= less_than) {
+                threshold -= less_than;
+                if (threshold >= less_than) threshold %= less_than;
+            }
+            while (low < threshold) {
+                candidate = try intWithIo(io, T);
+                product = std.math.mulWide(T, candidate, less_than);
+                low = @truncate(product);
+            }
+        }
+        return @intCast(product >> bits);
     }
 
     /// Generate random hex string
     pub fn hex(allocator: std.mem.Allocator, length: usize) ![]u8 {
+        return hexWithIo(allocator, compat.io(), length);
+    }
+
+    pub fn hexWithIo(allocator: std.mem.Allocator, io: std.Io, length: usize) ![]u8 {
         const byte_len = (length + 1) / 2;
         const random_bytes = try allocator.alloc(u8, byte_len);
         defer allocator.free(random_bytes);
 
-        bytes(random_bytes);
+        try bytesWithIo(io, random_bytes);
 
         const full = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(random_bytes)});
         if (full.len == length) return full;
@@ -214,10 +269,14 @@ pub const SecureRandom = struct {
 
     /// Generate random base64 string
     pub fn base64(allocator: std.mem.Allocator, length: usize) ![]u8 {
+        return base64WithIo(allocator, compat.io(), length);
+    }
+
+    pub fn base64WithIo(allocator: std.mem.Allocator, io: std.Io, length: usize) ![]u8 {
         const random_bytes = try allocator.alloc(u8, length);
         defer allocator.free(random_bytes);
 
-        bytes(random_bytes);
+        try bytesWithIo(io, random_bytes);
 
         return Base64.encode(allocator, random_bytes);
     }
@@ -230,7 +289,8 @@ pub const Password = struct {
         // Using scrypt as a password hashing function
         var result: [32]u8 = undefined;
 
-        try std.crypto.pwhash.scrypt(
+        try std.crypto.pwhash.scrypt.kdf(
+            allocator,
             &result,
             password,
             salt,
@@ -242,9 +302,14 @@ pub const Password = struct {
 
     /// Verify password against hash
     pub fn verify(password: []const u8, salt: []const u8, expected_hash: []const u8) !bool {
+        return verifyWithAllocator(std.heap.page_allocator, password, salt, expected_hash);
+    }
+
+    pub fn verifyWithAllocator(allocator: std.mem.Allocator, password: []const u8, salt: []const u8, expected_hash: []const u8) !bool {
         var computed: [32]u8 = undefined;
 
-        try std.crypto.pwhash.scrypt(
+        try std.crypto.pwhash.scrypt.kdf(
+            allocator,
             &computed,
             password,
             salt,
@@ -260,8 +325,13 @@ pub const Password = struct {
 
     /// Generate a random salt
     pub fn generateSalt(allocator: std.mem.Allocator) ![]u8 {
+        return generateSaltWithIo(allocator, compat.io());
+    }
+
+    pub fn generateSaltWithIo(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
         const salt = try allocator.alloc(u8, 16);
-        SecureRandom.bytes(salt);
+        errdefer allocator.free(salt);
+        try SecureRandom.bytesWithIo(io, salt);
         return salt;
     }
 };
@@ -271,9 +341,13 @@ pub const UUID = struct {
     bytes: [16]u8,
 
     /// Generate a random UUID v4
-    pub fn v4() UUID {
+    pub fn v4() !UUID {
+        return v4WithIo(compat.io());
+    }
+
+    pub fn v4WithIo(io: std.Io) std.Io.RandomSecureError!UUID {
         var uuid: UUID = undefined;
-        SecureRandom.bytes(&uuid.bytes);
+        try SecureRandom.bytesWithIo(io, &uuid.bytes);
 
         // Set version to 4
         uuid.bytes[6] = (uuid.bytes[6] & 0x0f) | 0x40;

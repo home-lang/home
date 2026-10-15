@@ -1290,6 +1290,12 @@ pub fn build(b: *std.Build) void {
         craft_module.addImport("zig-test-framework", tf);
     }
 
+    const basics_crypto_module = b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/crypto.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Lexer tests
     const lexer_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1379,6 +1385,18 @@ pub fn build(b: *std.Build) void {
     }
 
     const run_craft_tests = b.addRunArtifact(craft_tests);
+
+    // Basics cryptography tests
+    const basics_crypto_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/basics/tests/crypto_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    basics_crypto_tests.root_module.addImport("basics_crypto", basics_crypto_module);
+
+    const run_basics_crypto_tests = b.addRunArtifact(basics_crypto_tests);
 
     // Package Manager tests
     const package_manager_tests = b.addTest(.{
@@ -1846,6 +1864,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_types_inference_tests.step, test_filter, "types_inference");
     dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
     dependOnTest(test_step, &run_craft_tests.step, test_filter, "craft");
+    dependOnTest(test_step, &run_basics_crypto_tests.step, test_filter, "basics_crypto");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");
     dependOnTest(test_step, &run_queue_tests.step, test_filter, "queue");
     dependOnTest(test_step, &run_ast_tests.step, test_filter, "ast");

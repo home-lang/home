@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("../compat.zig");
 
 /// Cryptography module - secure hashing, encryption, signing
 pub const Crypto = struct {
@@ -25,22 +26,18 @@ pub const Crypto = struct {
 
     /// Secure random number generation
     pub const Random = struct {
-        rng: std.rand.DefaultPrng,
+        rng: std.Random.DefaultPrng,
 
-        pub fn init() Random {
+        pub fn init() !Random {
+            return initWithIo(compat.io());
+        }
+
+        pub fn initWithIo(io: std.Io) std.Io.RandomSecureError!Random {
             var seed: u64 = undefined;
-            std.posix.getrandom(std.mem.asBytes(&seed)) catch {
-                // Fallback: XOR timestamp with address-space entropy to reduce
-                // predictability.  Still not cryptographically secure, but much
-                // harder to guess than a bare timestamp.
-                const ms = std.time.milliTimestamp();
-                const ts: u64 = if (ms < 0) 0 else @intCast(ms);
-                const addr: u64 = @intFromPtr(&seed);
-                seed = ts ^ (addr *% 0x9E3779B97F4A7C15); // golden ratio hash
-            };
+            try io.randomSecure(std.mem.asBytes(&seed));
 
             return .{
-                .rng = std.rand.DefaultPrng.init(seed),
+                .rng = std.Random.DefaultPrng.init(seed),
             };
         }
 
@@ -199,13 +196,18 @@ pub const Crypto = struct {
         pub const Signature = std.crypto.sign.Ed25519.Signature;
 
         pub fn generateKeyPair() !KeyPair {
+            return generateKeyPairWithIo(compat.io());
+        }
+
+        pub fn generateKeyPairWithIo(io: std.Io) !KeyPair {
             var seed: [32]u8 = undefined;
-            try std.posix.getrandom(&seed);
-            return try KeyPair.create(seed);
+            try io.randomSecure(&seed);
+            return try KeyPair.generateDeterministic(seed);
         }
 
         pub fn sign(message: []const u8, secret_key: SecretKey) !Signature {
-            return try secret_key.sign(message, null);
+            const key_pair = try KeyPair.fromSecretKey(secret_key);
+            return try key_pair.sign(message, null);
         }
 
         pub fn verify(
@@ -219,24 +221,28 @@ pub const Crypto = struct {
 
     /// X25519 key exchange (Diffie-Hellman)
     pub const X25519 = struct {
-        pub const PublicKey = std.crypto.dh.X25519.PublicKey;
-        pub const SecretKey = std.crypto.dh.X25519.SecretKey;
+        const Algorithm = std.crypto.dh.X25519;
+
+        pub const PublicKey = [Algorithm.public_length]u8;
+        pub const SecretKey = [Algorithm.secret_length]u8;
 
         pub fn generateKeyPair() !struct { secret: SecretKey, public: PublicKey } {
-            var seed: [32]u8 = undefined;
-            try std.posix.getrandom(&seed);
+            return generateKeyPairWithIo(compat.io());
+        }
 
-            const secret = SecretKey.fromBytes(seed);
-            const public = try secret.publicKey();
+        pub fn generateKeyPairWithIo(io: std.Io) !struct { secret: SecretKey, public: PublicKey } {
+            var seed: [Algorithm.seed_length]u8 = undefined;
+            try io.randomSecure(&seed);
+            const key_pair = try compat.x25519KeyPair(seed);
 
-            return .{ .secret = secret, .public = public };
+            return .{ .secret = key_pair.secret_key, .public = key_pair.public_key };
         }
 
         pub fn computeSharedSecret(
             our_secret: SecretKey,
             their_public: PublicKey,
         ) ![32]u8 {
-            return try std.crypto.dh.X25519.scalarmult(our_secret.bytes, their_public.bytes);
+            return try Algorithm.scalarmult(our_secret, their_public);
         }
     };
 
@@ -252,6 +258,6 @@ pub const Crypto = struct {
 
     /// Secure memory wiping
     pub fn secureZero(buffer: []u8) void {
-        std.crypto.utils.secureZero(u8, buffer);
+        std.crypto.secureZero(u8, buffer);
     }
 };
