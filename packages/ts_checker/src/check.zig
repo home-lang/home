@@ -116630,16 +116630,30 @@ pub const Checker = struct {
                     if (self.identifierRootedMemberKey(a.target)) |key| {
                         const had_exact_narrow = self.lookupMemberNarrow(key) != null;
                         const had_descendant_narrow = try self.shadowMemberNarrowsForAssignment(key.obj_name, key.prop_name);
-                        if ((had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
-                            try self.recordMemberNarrow(key, assignment_result_t);
+                        // A first write establishes flow just as a write
+                        // replacing a prior guard does. Descendant paths were
+                        // invalidated above before publishing the new value.
+                        if (((a.op == null and try self.memberAssignmentCanCreateFlow(node, a.target)) or had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                            const flow_t = if (a.op == null)
+                                try self.memberAssignmentFlowType(node, target_t, assignment_result_t)
+                            else
+                                assignment_result_t;
+                            try self.recordMemberNarrow(key, flow_t);
                         }
                     }
                 } else if (target_kind == .element_access) {
                     if (try self.elementAccessNarrowKey(a.target)) |key| {
                         const had_exact_narrow = self.lookupMemberNarrow(key) != null;
                         const had_descendant_narrow = try self.shadowMemberNarrowsForAssignment(key.obj_name, key.prop_name);
-                        if ((had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
-                            try self.recordMemberNarrow(key, assignment_result_t);
+                        // A first write establishes flow just as a write
+                        // replacing a prior guard does. Descendant paths were
+                        // invalidated above before publishing the new value.
+                        if (((a.op == null and try self.memberAssignmentCanCreateFlow(node, a.target)) or had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                            const flow_t = if (a.op == null)
+                                try self.memberAssignmentFlowType(node, target_t, assignment_result_t)
+                            else
+                                assignment_result_t;
+                            try self.recordMemberNarrow(key, flow_t);
                         }
                     }
                 }
@@ -197886,6 +197900,27 @@ pub const Checker = struct {
             return self.interner.internArrayType(self.string_interner, types.Primitive.never) catch return error.OutOfMemory;
         }
         return try self.flowTypeForAssignmentValue(rhs_node, fallback);
+    }
+
+    fn memberAssignmentCanCreateFlow(self: *Checker, assignment: NodeId, target: NodeId) CheckError!bool {
+        if (self.assignmentWasRejected(assignment)) return false;
+        const span = self.hir.spanOf(assignment);
+        for (self.diagnostics.items) |diagnostic| {
+            const position = self.diagnosticStart(diagnostic);
+            if (position < span.start or position > span.end) continue;
+            if (diagnostic.category == .error_) return false;
+        }
+        if (self.hir.kindOf(target) == .member_access) {
+            return (try self.identifierRootedMemberStaticType(target)) != null;
+        }
+        return self.hir.kindOf(target) == .element_access;
+    }
+
+    fn memberAssignmentFlowType(self: *Checker, assignment: NodeId, target: TypeId, value: TypeId) CheckError!TypeId {
+        if (self.assignmentWasRejected(assignment)) return target;
+        const widened = self.widenLiteralType(value);
+        if (widened != value and try self.checkerAssignableTo(widened, target)) return widened;
+        return value;
     }
 
     fn assignmentFlowValueFitsTarget(self: *Checker, source: TypeId, target: TypeId) CheckError!bool {
@@ -292581,4 +292616,45 @@ test "checker: unary minus of an optional numeric default keeps number type" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), s.checker.diagnostics.items[0].code);
+}
+
+test "checker: assignment narrows nullable this members before object construction" {
+    const s = try newSetup("class C { state: string | null = null; make(): string { return 'ok'; } run(state?: string): void { this.state = state ?? this.make(); const good: string = this.state; const wrong: number = this.state; } }");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), s.checker.diagnostics.items[0].code);
+}
+
+test "checker: member assignment narrows reset at branches writes and function boundaries" {
+    const source =
+        \\class C {
+        \\ state: string | null = null;
+        \\ assign(): void { this.state = 'ok'; const good: string = this.state; this.state = null; const wrong: string = this.state; }
+        \\ branch(flag: boolean): void { if (flag) { this.state = 'ok'; } const wrong: string = this.state; }
+        \\ other(): void { const wrong: string = this.state; }
+        \\}
+        \\function f(obj: {value: string | null}, value: string): void { obj.value = value; const good: string = obj.value; obj.value = null; const wrong: string = obj.value; }
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |d| try T.expectEqual(@as(u32, 2322), d.code);
+}
+
+test "checker: member assignment flow respects declared widening and rejected writes" {
+    const source =
+        \\function wide(obj: { value: string }): void { obj.value = 'ok'; const wrong: 'ok' = obj.value; }
+        \\function invalid(obj: { value: string | null }): void { obj.value = 123; const wrong: string = obj.value; }
+        \\function parent(obj: { inner: { value: string | null } }): void { obj.inner.value = 'ok'; obj.inner = { value: null }; const wrong: string = obj.inner.value; }
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |d| try T.expectEqual(@as(u32, 2322), d.code);
 }

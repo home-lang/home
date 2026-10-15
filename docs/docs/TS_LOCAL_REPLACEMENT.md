@@ -1495,3 +1495,50 @@ and contract inputs are unchanged; build.zig and packages/runtime/src/main.zig
 reflect that incoming runtime change. The standalone compiler build and Program
 suite remain cache-valid, and a fresh table positive/negative replay passes
 (peak **1,028 MB**). The archived freeze describes the pre-rebase validation.
+
+## First member writes establish flow facts
+
+Member assignment previously updated flow only when a guard or earlier fact
+already existed for the path. A first write such as `this.state = state ??
+this.makeState()` therefore left the following read at `string | null`.
+Successful writes to existing member and computed-property paths now establish
+a flow fact after invalidating descendant paths. Literal writes respect declared primitive
+widening, rejected writes retain the declared slot type, and existing scope
+boundaries still isolate branches and deferred functions.
+
+The **28-observation** native comparison covers this/object/computed writes,
+null resets, rejected assignments, parent/root replacement, literal unions,
+branches, loops, deferred closures and URLSearchParams object construction.
+All diagnostics match native codes and locations. The unchanged 370-input
+ts-auth graph loses **five TS2345 and one TS2769 reports**, with none added.
+Native exits zero; Home reports **300 diagnostics at 45 distinct code/location
+pairs**. Project and whole-tree replacement remain unqualified.
+
+The production build peaks at **2,821 MB**, under the unchanged **3,840 MB**
+guard.
+
+The first full validation caught three regressions where rejected expando or
+enum writes hid later missing-property/readonly diagnostics. Fresh flow facts
+now require a successful assignment and, for member syntax, an existing member.
+The 36 focused expando controls, ambient-enum control and nullable assignment
+controls pass after this correction; the failed full run is retained.
+
+The tightened implementation retains the same six-error project reduction and
+passes all **28 native observations** again. Its final build peaks at **2,746
+MB** and project/contract replay at **1,241 MB**. The full regression suite is
+rerun against this final admission rule.
+
+All **4,627 checker tests** pass with the tightened admission rule, including
+the three controls that failed in the first full run.
+
+All **308 Program tests and fourteen existing Release CLI suites** pass on the
+final source. Final validation peaks at **2,346 MB**, and all **4,195 frozen
+inputs** remain unchanged. The original full-run failures remain in evidence
+alongside the passing final run.
+
+The table positive and planted-negative checks still pass with all 306 original
+inputs unchanged. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-member-write.tar.gz` contains
+**3,652 verified payloads**, SHA-256
+`14ea32666c20c94653c03463c4d94ef364319986ff0dd12b6ac1df38bba34b50`.
+Real-project source and diagnostic text are excluded.
