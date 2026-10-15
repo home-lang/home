@@ -166,6 +166,30 @@ pub const Interpreter = struct {
         }, args, &self.global_env);
     }
 
+    /// Register and execute non-test top-level declarations without running
+    /// inline `it` blocks or invoking `main`. Test harnesses use this before
+    /// selecting exactly one discovered test to execute.
+    pub fn prepare(self: *Interpreter) InterpreterError!void {
+        try self.registerBuiltins();
+        for (self.program.statements) |statement| switch (statement) {
+            .ItTestDecl => {},
+            else => try self.executeStatement(statement, &self.global_env),
+        };
+    }
+
+    /// Execute an inline test body in a fresh child scope. A return statement
+    /// completes the test body, matching the interpreter's `ItTestDecl`
+    /// semantics; all other control-flow and runtime errors propagate.
+    pub fn executeTestBlock(self: *Interpreter, block: *ast.BlockStmt) InterpreterError!void {
+        self.executeStatement(.{ .BlockStmt = block }, &self.global_env) catch |err| {
+            if (err == error.Return) {
+                self.return_value = null;
+                return;
+            }
+            return err;
+        };
+    }
+
     pub fn deinit(self: *Interpreter) void {
         // Arena allocator frees all allocated memory at once
         // This includes all strings, arrays, struct fields, AND the environment's HashMap

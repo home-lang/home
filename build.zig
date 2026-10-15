@@ -940,6 +940,10 @@ pub fn build(b: *std.Build) void {
     const test_runner_pkg = createPackage(b, "packages/testing/src/test_runner.zig", target, optimize, zig_test_framework);
     test_runner_pkg.addImport("ast", ast_pkg);
     test_runner_pkg.addImport("interpreter", interpreter_pkg);
+    const test_executor_pkg = createPackage(b, "packages/testing/src/test_executor.zig", target, optimize, zig_test_framework);
+    test_executor_pkg.addImport("ast", ast_pkg);
+    test_executor_pkg.addImport("interpreter", interpreter_pkg);
+    test_executor_pkg.addImport("test_discovery", test_discovery_pkg);
     const fuzz_pkg = createPackage(b, "packages/fuzz/src/fuzz.zig", target, optimize, zig_test_framework);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
@@ -1675,6 +1679,24 @@ pub fn build(b: *std.Build) void {
     const run_test_runner_unit_tests = b.addRunArtifact(test_runner_unit_tests);
     run_test_runner_tests.step.dependOn(&run_test_runner_unit_tests.step);
 
+    const test_executor_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/testing/tests/test_executor_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_executor_tests.root_module.addImport("test_executor", test_executor_pkg);
+    test_executor_tests.root_module.addImport("test_discovery", test_discovery_pkg);
+    test_executor_tests.root_module.addImport("ast", ast_pkg);
+    test_executor_tests.root_module.addImport("lexer", lexer_pkg);
+    test_executor_tests.root_module.addImport("parser", parser_pkg);
+    const run_test_executor_tests = b.addRunArtifact(test_executor_tests);
+
+    const test_executor_unit_tests = b.addTest(.{ .root_module = test_executor_pkg });
+    const run_test_executor_unit_tests = b.addRunArtifact(test_executor_unit_tests);
+    run_test_executor_tests.step.dependOn(&run_test_executor_unit_tests.step);
+
     const fuzz_package_unit_tests = b.addTest(.{ .root_module = fuzz_pkg });
     const run_fuzz_package_unit_tests = b.addRunArtifact(fuzz_package_unit_tests);
 
@@ -2049,6 +2071,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_test_discovery_tests.step, test_filter, "test_declaration_discovery");
     dependOnTest(test_step, &run_assertions_tests.step, test_filter, "testing_assertions");
     dependOnTest(test_step, &run_test_runner_tests.step, test_filter, "testing_runner");
+    dependOnTest(test_step, &run_test_executor_tests.step, test_filter, "testing_executor");
     dependOnTest(test_step, &run_fuzz_package_tests.step, test_filter, "fuzz_package");
     dependOnTest(test_step, &run_toml_tests.step, test_filter, "toml");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");

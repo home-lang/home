@@ -1,7 +1,8 @@
 const std = @import("std");
 const ast = @import("ast");
 const Interpreter = @import("interpreter").Interpreter;
-const test_discovery = @import("test_discovery.zig");
+const test_discovery = @import("test_discovery");
+const Io = std.Io;
 
 /// Result of executing a single test
 pub const TestExecutionResult = struct {
@@ -10,12 +11,13 @@ pub const TestExecutionResult = struct {
     duration_ms: u64,
     error_message: ?[]const u8 = null,
     file_path: []const u8,
-    line: u32,
+    line: usize,
 
     pub fn deinit(self: *TestExecutionResult, allocator: std.mem.Allocator) void {
         if (self.error_message) |msg| {
             allocator.free(msg);
         }
+        self.* = undefined;
     }
 };
 
@@ -34,7 +36,7 @@ pub const TestSuiteResult = struct {
             .passed = 0,
             .failed = 0,
             .duration_ms = 0,
-            .results = std.ArrayList(TestExecutionResult).init(allocator),
+            .results = .empty,
             .allocator = allocator,
         };
     }
@@ -43,10 +45,12 @@ pub const TestSuiteResult = struct {
         for (self.results.items) |*result| {
             result.deinit(self.allocator);
         }
-        self.results.deinit();
+        self.results.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn addResult(self: *TestSuiteResult, result: TestExecutionResult) !void {
+        try self.results.append(self.allocator, result);
         self.total += 1;
         if (result.success) {
             self.passed += 1;
@@ -54,7 +58,6 @@ pub const TestSuiteResult = struct {
             self.failed += 1;
         }
         self.duration_ms += result.duration_ms;
-        try self.results.append(result);
     }
 };
 
@@ -64,11 +67,25 @@ pub fn executeTests(
     program: *ast.Program,
     discovered_tests: *test_discovery.TestDiscoveryResult,
 ) !TestSuiteResult {
+    return executeTestsWithIo(
+        allocator,
+        Io.Threaded.global_single_threaded.io(),
+        program,
+        discovered_tests,
+    );
+}
+
+pub fn executeTestsWithIo(
+    allocator: std.mem.Allocator,
+    io: Io,
+    program: *ast.Program,
+    discovered_tests: *test_discovery.TestDiscoveryResult,
+) !TestSuiteResult {
     var suite_result = TestSuiteResult.init(allocator);
     errdefer suite_result.deinit();
 
     for (discovered_tests.tests.items) |test_item| {
-        var result = try executeTest(allocator, program, test_item);
+        var result = try executeTest(allocator, io, program, test_item);
         // If append fails, free result's owned error message rather
         // than dropping it on the floor.
         errdefer result.deinit(allocator);
@@ -80,29 +97,17 @@ pub fn executeTests(
 
 fn executeTest(
     allocator: std.mem.Allocator,
+    io: Io,
     program: *ast.Program,
     test_item: test_discovery.DiscoveredTest,
 ) !TestExecutionResult {
-    const start_time = std.time.milliTimestamp();
+    const start_time = Io.Clock.awake.now(io);
 
     // Validate test function if it's a FnDecl
     switch (test_item.decl) {
         .fn_decl => |fn_decl| {
             test_discovery.validateTestFunction(fn_decl) catch |err| {
-                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-                const error_msg = try std.fmt.allocPrint(
-                    allocator,
-                    "Invalid test function: {s}",
-                    .{@errorName(err)},
-                );
-                return .{
-                    .name = test_item.name,
-                    .success = false,
-                    .duration_ms = duration,
-                    .error_message = error_msg,
-                    .file_path = test_item.file_path,
-                    .line = test_item.line,
-                };
+                return failedResult(allocator, io, start_time, test_item, "Invalid test function", err);
             };
         },
         .it_decl => {
@@ -111,99 +116,63 @@ fn executeTest(
     }
 
     // Create interpreter instance
-    var interpreter = Interpreter.init(allocator);
-    defer interpreter.deinit();
+    const runtime = try Interpreter.init(allocator, program);
+    defer runtime.deinit();
+    runtime.setVerboseTests(false);
 
-    // Execute the program to register all functions
-    interpreter.interpret(program) catch |err| {
-        const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-        const error_msg = try std.fmt.allocPrint(
-            allocator,
-            "Failed to initialize: {s}",
-            .{@errorName(err)},
-        );
-        return .{
-            .name = test_item.name,
-            .success = false,
-            .duration_ms = duration,
-            .error_message = error_msg,
-            .file_path = test_item.file_path,
-            .line = test_item.line,
-        };
+    // Register declarations while deliberately leaving every inline test body
+    // untouched. Each discovered test must execute in isolation below.
+    runtime.prepare() catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return failedResult(allocator, io, start_time, test_item, "Failed to initialize", err);
     };
 
     // Execute the test based on its type
     switch (test_item.decl) {
         .fn_decl => |fn_decl| {
-            // Call the test function
-            const call_expr = try ast.CallExpr.init(
-                allocator,
-                try createIdentifierExpr(allocator, test_item.name),
-                &.{},
-                fn_decl.node.loc,
-            );
-            defer allocator.destroy(call_expr);
-
-            const expr = try allocator.create(ast.Expr);
-            defer allocator.destroy(expr);
-            expr.* = .{ .CallExpr = call_expr };
-
-            // Execute the test
-            _ = interpreter.visitExpr(expr) catch |err| {
-                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-                const error_msg = try std.fmt.allocPrint(
-                    allocator,
-                    "Test failed: {s}",
-                    .{@errorName(err)},
-                );
-                return .{
-                    .name = test_item.name,
-                    .success = false,
-                    .duration_ms = duration,
-                    .error_message = error_msg,
-                    .file_path = test_item.file_path,
-                    .line = test_item.line,
-                };
+            _ = runtime.executeFunction(fn_decl, &.{}) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return failedResult(allocator, io, start_time, test_item, "Test failed", err);
             };
         },
         .it_decl => |it_decl| {
-            // Execute the it() test block directly
-            const block_stmt = ast.Stmt{ .BlockStmt = it_decl.body };
-            interpreter.visitStmt(block_stmt) catch |err| {
-                const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
-                const error_msg = try std.fmt.allocPrint(
-                    allocator,
-                    "Test failed: {s}",
-                    .{@errorName(err)},
-                );
-                return .{
-                    .name = test_item.name,
-                    .success = false,
-                    .duration_ms = duration,
-                    .error_message = error_msg,
-                    .file_path = test_item.file_path,
-                    .line = test_item.line,
-                };
+            runtime.executeTestBlock(it_decl.body) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                return failedResult(allocator, io, start_time, test_item, "Test failed", err);
             };
         },
     }
 
-    const duration = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
     return .{
         .name = test_item.name,
         .success = true,
-        .duration_ms = duration,
+        .duration_ms = elapsedMilliseconds(io, start_time),
         .error_message = null,
         .file_path = test_item.file_path,
         .line = test_item.line,
     };
 }
 
-fn createIdentifierExpr(allocator: std.mem.Allocator, name: []const u8) !*ast.Expr {
-    const ident = try ast.Identifier.init(allocator, name, .{ .line = 0, .column = 0 });
-    const expr = try allocator.create(ast.Expr);
-    expr.* = .{ .Identifier = ident };
-    return expr;
+fn failedResult(
+    allocator: std.mem.Allocator,
+    io: Io,
+    start_time: Io.Timestamp,
+    test_item: test_discovery.DiscoveredTest,
+    prefix: []const u8,
+    err: anyerror,
+) !TestExecutionResult {
+    return .{
+        .name = test_item.name,
+        .success = false,
+        .duration_ms = elapsedMilliseconds(io, start_time),
+        .error_message = try std.fmt.allocPrint(allocator, "{s}: {s}", .{ prefix, @errorName(err) }),
+        .file_path = test_item.file_path,
+        .line = test_item.line,
+    };
+}
+
+fn elapsedMilliseconds(io: Io, start_time: Io.Timestamp) u64 {
+    return @intCast(start_time.durationTo(Io.Clock.awake.now(io)).toMilliseconds());
 }
 
 /// Prints test execution results
@@ -268,4 +237,8 @@ pub fn printResults(suite_result: *TestSuiteResult, writer: anytype) !void {
     } else {
         try writer.print("\n{s}All tests passed!{s}\n", .{ "\x1b[32m", "\x1b[0m" });
     }
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
