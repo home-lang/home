@@ -911,3 +911,25 @@ inactive generated cache objects after checking process and open-file references
 Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-interface-recheck-cycle.tar.gz` contains eight
 verified payloads, SHA-256
 `d6506c2b30611fed8a8aae6b80b5a0ac032c7652907732b88f9835fd62df2f87`.
+
+## Aggregate display input ownership
+
+A symbolic debugger replay located the full-DOM crash in `allocSimpleTypeName`: a
+union member slice became stale when recursive callable rendering interned new
+union types. Union and intersection renderers now own their member snapshots
+across recursive display calls. Both regressions fail before their fixes, force
+backing-buffer relocation, and verify that both callable displays survive.
+All **4,603 checker tests** pass, including an isolated final run that peaks at
+**2,283 MB** under the unchanged 3,840 MB ceiling.
+
+The optimized compiler builds successfully, but the full-DOM comparison still
+exceeds the memory ceiling (**4,091 MB** observed before termination). A later
+symbolic sample identifies eager structural alias-display expansion during
+generic substitution as the next investigation target. Library discovery stays
+unpublished, and neither the table project nor the complete local replacement
+goal is qualified by these results.
+
+Evidence: `bench/vs_tsgo/evidence/20261014-local-tsc-aggregate-display-ownership.tar.gz` contains
+ten verified payloads, SHA-256
+`1e51c90c4b7b3506f76f05fd1fff8c46b40aab7f5bd83b68d0c2c159b08768db`. Debug diagnostic builds temporarily disabled allocator stack capture
+to obtain symbolic traces; the production allocator configuration is unchanged.

@@ -196310,7 +196310,11 @@ pub const Checker = struct {
                     var all_template_display_members = true;
                     var all_string_literal_members = true;
                     var all_anonymous_object_members = true;
-                    const union_members = self.interner.unionMembers(t);
+                    // Rendering a callable member can resolve generic types
+                    // and grow member_pool. Own the outer union before that
+                    // recursion invalidates the interner's borrowed slice.
+                    const union_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+                    defer self.gpa.free(union_members);
                     for (union_members) |member| {
                         if (member == types.Primitive.null_t) {
                             has_null = true;
@@ -196465,7 +196469,9 @@ pub const Checker = struct {
                     var int_buf: std.ArrayListUnmanaged(u8) = .empty;
                     const arena_i = self.diag_arena.allocator();
                     var first_i = true;
-                    for (self.interner.intersectionMembers(t)) |member| {
+                    const intersection_members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(t));
+                    defer self.gpa.free(intersection_members);
+                    for (intersection_members) |member| {
                         if (self.intersectionDisplayMemberIsPrimitive(member)) continue;
                         // A synthetic ThisType<T> marker (`{ __home_this_type?: T }`)
                         // must render as `ThisType<T>` — tsc keeps the alias name in
@@ -196484,7 +196490,7 @@ pub const Checker = struct {
                         try int_buf.appendSlice(arena_i, member_name);
                         if (needs_parens) try int_buf.append(arena_i, ')');
                     }
-                    for (self.interner.intersectionMembers(t)) |member| {
+                    for (intersection_members) |member| {
                         if (!self.intersectionDisplayMemberIsPrimitive(member)) continue;
                         const member_name = (try self.allocSimpleTypeName(member)) orelse break :blk null;
                         if (!first_i) try int_buf.appendSlice(arena_i, " & ");
@@ -292211,4 +292217,48 @@ test "checker: rechecking generic merged interfaces preserves an acyclic predece
             current = previous;
         }
     }
+}
+
+test "checker: union display owns members across recursive signature interning" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const optional = try s.ti.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.undefined_t });
+    const signature = try s.ti.internSignature(&.{optional}, types.Primitive.boolean_t, false);
+    try s.checker.signature_display_min_args.put(T.allocator, signature, 0);
+    const callable = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("__call"), .type = signature, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const later_signature = try s.ti.internSignature(&.{types.Primitive.bigint_t}, types.Primitive.symbol_t, false);
+    const later_callable = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("__call"), .type = later_signature, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const outer = try s.ti.internUnion(&.{ callable, later_callable });
+    // The optional parameter display interns string | number. Make that
+    // append relocate the backing member buffer during the outer display.
+    while (s.ti.pool.member_pool.items.len < s.ti.pool.member_pool.capacity) {
+        s.ti.pool.member_pool.appendAssumeCapacity(types.Primitive.string_t);
+    }
+    const before = s.ti.pool.member_pool.items.ptr;
+    const display = (try s.checker.allocSimpleTypeName(outer)) orelse return error.TestUnexpectedResult;
+    try T.expect(before != s.ti.pool.member_pool.items.ptr);
+    try T.expect(std.mem.indexOf(u8, display, "symbol") != null);
+    try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
+}
+
+test "checker: intersection display owns members across recursive signature interning" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const optional = try s.ti.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.undefined_t });
+    const signature = try s.ti.internSignature(&.{optional}, types.Primitive.boolean_t, false);
+    try s.checker.signature_display_min_args.put(T.allocator, signature, 0);
+    const callable = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("__call"), .type = signature, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const later_signature = try s.ti.internSignature(&.{types.Primitive.bigint_t}, types.Primitive.symbol_t, false);
+    const later_callable = try s.ti.internObjectType(&.{.{ .name = try s.sint.intern("__call"), .type = later_signature, .is_optional = false, .is_readonly = false, .is_method = false }});
+    const outer = try s.ti.internIntersection(&.{ callable, later_callable });
+    // The optional parameter display interns string | number. Make that
+    // append relocate the backing member buffer during the outer display.
+    while (s.ti.pool.member_pool.items.len < s.ti.pool.member_pool.capacity) {
+        s.ti.pool.member_pool.appendAssumeCapacity(types.Primitive.string_t);
+    }
+    const before = s.ti.pool.member_pool.items.ptr;
+    const display = (try s.checker.allocSimpleTypeName(outer)) orelse return error.TestUnexpectedResult;
+    try T.expect(before != s.ti.pool.member_pool.items.ptr);
+    try T.expect(std.mem.indexOf(u8, display, "symbol") != null);
+    try T.expect(std.mem.indexOf(u8, display, "string | number") != null);
 }
