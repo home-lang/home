@@ -601,8 +601,18 @@ pub const ScriptObjectExpando = struct {
 /// not owner transfer: callers must separately install any semantic metadata
 /// required by the type before publishing a binding.
 pub const ProgramGlobalBinding = struct {
+    /// Relocated binders for a generic type-space root. These belong to the
+    /// same owner graph as `type`; declaration HIR never crosses this boundary.
+    pub const GenericDeclaration = struct {
+        parameters: []const TypeId,
+        defaults: []const TypeId,
+        body: TypeId,
+        is_type_alias: bool = false,
+    };
+
     name: hir_mod.StringId,
     type: TypeId,
+    generic_declarations: []const GenericDeclaration = &.{},
     /// Bare declared type name for values whose annotation refers to a
     /// mergeable program-global type. A receiving source may contribute a
     /// later interface declaration; in that case its completed local merge
@@ -4451,6 +4461,7 @@ pub const CheckedTypes = struct {
     jsdoc_constraint_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    source_ordered_union_members: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     substituted_interface_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
@@ -4459,7 +4470,7 @@ pub const CheckedTypes = struct {
 
     // Checker borrows these values from its arena, source, interner, or
     // program inputs. CheckedTypes owns independent copies of every slice.
-    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "qualified_alias_diagnostic_names", "alias_type_args", "substituted_interface_display_args", "builtin_object_names" };
+    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "source_ordered_union_members", "qualified_alias_diagnostic_names", "alias_type_args", "substituted_interface_display_args", "builtin_object_names" };
     const owned_slices = .{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences", "pattern_index_signatures", "symbolic_tuple_layouts" };
     const nested_containers = .{ "overloads", "class_constructor_overload_sigs", "overload_decls", "class_private_members", "class_protected_members", "class_static_private_members", "class_static_protected_members", "class_instance_member_names", "class_static_member_names", "class_abstract_members", "class_abstract_members_order", "class_abstract_property_origins", "class_property_members", "class_accessor_members", "class_getter_members", "class_static_getter_members", "class_method_members", "class_private_method_members", "class_static_private_method_members", "class_private_set_only_accessors", "class_static_private_set_only_accessors" };
 
@@ -5067,6 +5078,9 @@ pub const Checker = struct {
     /// never overflow the native stack even if evaluation produced a
     /// self-referential structural shape.
     type_name_depth: u32 = 0,
+    /// Acyclic structural graphs can branch exponentially within the depth
+    /// limit. Bound diagnostic expansion as well as recursion depth.
+    type_name_work: usize = 0,
     /// Active structural displays must terminate when their TypeId recurs.
     type_name_in_progress: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Types currently being expanded as signature parameter/return
@@ -5209,6 +5223,7 @@ pub const Checker = struct {
     /// diagnostic-only: unlike alias names, they must not participate in
     /// declaration identity or relation checks.
     diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    source_ordered_union_members: std.AutoHashMapUnmanaged(TypeId, []const TypeId),
     /// Namespace-qualified names for non-generic aliases, used only while
     /// rendering diagnostics. Keeping these separate from
     /// `alias_display_names` prevents a qualified display name from becoming
@@ -6114,6 +6129,7 @@ pub const Checker = struct {
             .alias_display_names = .empty,
             .string_named_export_types = .empty,
             .diagnostic_union_display_names = .empty,
+            .source_ordered_union_members = .empty,
             .qualified_alias_diagnostic_names = .empty,
             .type_alias_bodies = .empty,
             .alias_type_args = .empty,
@@ -6573,6 +6589,53 @@ pub const Checker = struct {
         }
     }
 
+    /// Materialize a program-global generic only when its binding is used.
+    /// Implicit library roots are also imported for boxed/array lookup; eagerly
+    /// instantiating every such root duplicates unused library graphs per file.
+    fn ensureProgramGenericType(self: *Checker, name: hir_mod.StringId) CheckError!void {
+        bindings: for (self.program_global_types) |binding| {
+            if (binding.name != name) continue;
+            if (binding.generic_declarations.len == 0 or self.generic_aliases.contains(binding.name)) continue;
+            if (self.module) |module| {
+                if (module.root.types.get(binding.name)) |symbol| {
+                    for (symbol.decls.items) |decl| {
+                        if (decl < self.hir.nodeCount() and self.rootHasTopLevelExternalModuleMarker(decl)) continue :bindings;
+                    }
+                }
+            }
+            const first = binding.generic_declarations[0];
+            const params = try self.gpa.dupe(TypeId, first.parameters);
+            errdefer self.gpa.free(params);
+            for (params, first.defaults) |canonical, default| {
+                if (default == types.Primitive.none) continue;
+                const target = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(canonical)];
+                if (target.default == types.Primitive.none) target.default = default;
+            }
+            var body = first.body;
+            for (binding.generic_declarations[1..]) |declaration| {
+                if (declaration.parameters.len != params.len) continue;
+                var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer subs.deinit(self.gpa);
+                for (declaration.parameters, params) |current, canonical| {
+                    if (current != canonical) try subs.put(self.gpa, current, canonical);
+                }
+                for (declaration.defaults, params) |default, canonical| {
+                    if (default == types.Primitive.none) continue;
+                    const effective = try self.substituteType(default, &subs);
+                    const target = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(canonical)];
+                    if (target.default == types.Primitive.none) target.default = effective;
+                }
+                const next = if (subs.count() == 0) declaration.body else try self.substituteType(declaration.body, &subs);
+                body = try self.mergeInterfaceDeclarationTypePreservingIndexes(body, next);
+            }
+            try self.generic_aliases.put(self.gpa, binding.name, .{
+                .params = params,
+                .body = body,
+                .is_type_alias = first.is_type_alias,
+            });
+        }
+    }
+
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
         self.ambient_global_namespace_roots = roots;
     }
@@ -6878,6 +6941,7 @@ pub const Checker = struct {
         self.alias_display_names.deinit(self.gpa);
         self.string_named_export_types.deinit(self.gpa);
         self.diagnostic_union_display_names.deinit(self.gpa);
+        self.source_ordered_union_members.deinit(self.gpa);
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
@@ -67780,6 +67844,9 @@ pub const Checker = struct {
         try self.interface_lower_in_progress.put(self.gpa, node, {});
         defer _ = self.interface_lower_in_progress.remove(node);
         const it = hir_mod.interfaceOf(self.hir, node);
+        if (self.declarationIsRootStatement(node) and !self.rootHasTopLevelExternalModuleMarker(node)) {
+            if (self.declarationName(node)) |name| try self.ensureProgramGenericType(name);
+        }
         const members = hir_mod.interfaceMembers(self.hir, node);
         try self.checkTsOnlyDeclInJs(node, "interface", it.name);
         try self.checkHeritagePrivateNames(node, self.declarationName(node), false);
@@ -68206,7 +68273,7 @@ pub const Checker = struct {
                                 // them (`StringTo<any>` still behaves as
                                 // `StringTo<T>`).
                                 const prev_decl = self.last_iface_decl_for_name.get(id.name) orelse hir_mod.none_node_id;
-                                const is_real_merge = prev_decl != node and prev_decl != hir_mod.none_node_id;
+                                const is_real_merge = prev_decl != node and (prev_decl != hir_mod.none_node_id or program_existing != null);
                                 const is_self_recheck = prev_decl == node;
                                 if (is_self_recheck or is_real_merge) {
                                     var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -68215,7 +68282,7 @@ pub const Checker = struct {
                                         if (cur_p != first_p) try subs.put(self.gpa, cur_p, first_p);
                                     }
                                     if (subs.count() > 0) unified_t = self.substituteType(iface_t, &subs) catch iface_t;
-                                    if (is_self_recheck) {
+                                    {
                                         for (param_ids.items, first.params) |cur_p, first_p| {
                                             if (cur_p >= self.interner.pool.typeCount() or
                                                 first_p >= self.interner.pool.typeCount() or
@@ -68234,8 +68301,14 @@ pub const Checker = struct {
                                             const first_payload = &self.interner.pool.type_parameter_payloads.items[
                                                 self.interner.pool.payloadOf(first_p)
                                             ];
-                                            first_payload.constraint = constraint;
-                                            first_payload.default = default;
+                                            if (is_self_recheck) first_payload.constraint = constraint;
+                                            // A later declaration may add a default, but
+                                            // omitting it does not remove a prior default.
+                                            if (default != types.Primitive.none and
+                                                (is_self_recheck or first_payload.default == types.Primitive.none))
+                                            {
+                                                first_payload.default = default;
+                                            }
                                         }
                                     }
                                     keep_first_params = true;
@@ -76335,7 +76408,7 @@ pub const Checker = struct {
             try self.reportGenericTypeRequiresBetweenArgs(node, name, info);
             return true;
         }
-        if (self.genericAliasHasMissingRequiredArgs(info, supplied)) {
+        if ((info.params.len > 0 and supplied > info.params.len) or self.genericAliasHasMissingRequiredArgs(info, supplied)) {
             try self.reportGenericTypeRequiresArgs(node, name, info);
             return true;
         }
@@ -76753,6 +76826,11 @@ pub const Checker = struct {
     fn typeRefNameAcceptsTypeArgsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId, raw: []const u8) bool {
         if (self.generic_aliases.contains(name)) return true;
         if (self.visibleTypeDeclarationAcceptsTypeArgsAt(anchor, name)) return true;
+        if (!self.visibleTypeDeclarationExistsAt(anchor, name)) {
+            for (self.program_global_types) |binding| {
+                if (binding.name == name and binding.generic_declarations.len != 0) return true;
+            }
+        }
         if (std.mem.eql(u8, raw, "Array") or
             std.mem.eql(u8, raw, "ReadonlyArray") or
             std.mem.eql(u8, raw, "Record") or
@@ -79638,6 +79716,7 @@ pub const Checker = struct {
                     // `localScopedTypeForNameAt` / localTypes1.
                     if (try self.localAliasReferenceAt(type_node, r.name)) |t| return t;
                     if (self.localScopedTypeForNameAt(r.name, type_node)) |t| return t;
+                    try self.ensureProgramGenericType(r.name);
                     const scoped_generic_info = try self.scopedGenericInterfaceInfo(type_node, r.name);
                     if (scoped_generic_info orelse self.generic_aliases.get(r.name)) |info| {
                         if (try self.reportGenericAliasInvalidTypeArgCount(type_node, r.name, info, 0)) {
@@ -80083,6 +80162,7 @@ pub const Checker = struct {
                     // spuriously fires TS2403 on sibling declarations).
                     if (try self.lowerBuiltinHomomorphicUtility(type_node)) |t| return t;
                     if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
+                    try self.ensureProgramGenericType(r.name);
                     const scoped_generic_info = try self.scopedGenericInterfaceInfo(type_node, r.name);
                     if (scoped_generic_info orelse self.generic_aliases.get(r.name)) |info| {
                         if (!self.genericTypeAliasVisibleAt(type_node, r.name)) {
@@ -95930,6 +96010,17 @@ pub const Checker = struct {
         const source_flags = self.interner.pool.flagsOf(source_t);
         const target_flags = self.interner.pool.flagsOf(target_t);
         if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection) return null;
+        if (target_flags.is_union) {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(target_t));
+            defer self.gpa.free(members);
+            for (members) |member| {
+                if (try self.namedObjectSourceToStringIndexTarget(source_t, member)) |ok| {
+                    if (ok) return true;
+                }
+            }
+            // Other constituents still use their ordinary relation rules.
+            return null;
+        }
         if (!target_flags.is_object_type or target_flags.is_union or target_flags.is_intersection) return null;
         if (self.interner.objectMembers(target_t).len != 0) return null;
         if (self.interner.objectStringIndex(source_t) != types.Primitive.none or
@@ -106614,9 +106705,12 @@ pub const Checker = struct {
 
     fn registerSourceOrderedUnionDisplayName(self: *Checker, union_t: TypeId, members: []const TypeId) CheckError!void {
         if (union_t < types.Primitive.first_dynamic or union_t >= self.interner.pool.typeCount()) return;
-        if (self.diagnostic_union_display_names.contains(union_t)) return;
-        const display = (try self.allocDiagnosticUnionDisplayName(members)) orelse return;
-        try self.diagnostic_union_display_names.put(self.gpa, union_t, display);
+        if (self.source_ordered_union_members.contains(union_t)) return;
+        // Keep the written order without rendering entire structural graphs
+        // during type lowering. Only a diagnostic that displays this union
+        // needs its textual representation.
+        const ordered = try self.diag_arena.allocator().dupe(TypeId, members);
+        try self.source_ordered_union_members.put(self.gpa, union_t, ordered);
     }
 
     fn allocDiagnosticUnionDisplayName(self: *Checker, members: []const TypeId) CheckError!?[]const u8 {
@@ -151888,6 +151982,7 @@ pub const Checker = struct {
         arg_t: TypeId,
         argument_resolved: bool,
     ) CheckError!void {
+        if (self.skip_declaration_validation and self.whole_file_is_declaration_file) return;
         if (arg_node == hir_mod.none_node_id) return;
         if (arg_t == types.Primitive.any or arg_t == types.Primitive.never) return;
         // A successfully resolved `unknown` argument is not an error-recovery
@@ -192058,6 +192153,12 @@ pub const Checker = struct {
     fn allocObjectShapeMemberTypeName(self: *Checker, t: TypeId) CheckError!?[]const u8 {
         const display_t = try self.collapseRedundantLiteralUnionForDisplay(t);
         if (self.diagnostic_union_display_names.get(display_t)) |display| return display;
+        if (self.source_ordered_union_members.get(display_t)) |members| {
+            if (try self.allocDiagnosticUnionDisplayName(members)) |display| {
+                try self.diagnostic_union_display_names.put(self.gpa, display_t, display);
+                return display;
+            }
+        }
         if (self.class_name_by_instance.get(display_t)) |class_name| {
             const bare_name = self.string_interner.get(class_name);
             if (self.alias_display_names.get(display_t)) |display| {
@@ -195012,7 +195113,10 @@ pub const Checker = struct {
         const sig_payload_idx = self.interner.pool.payloadOf(t);
         if (sig_payload_idx >= self.interner.pool.signature_payloads.items.len) return null;
         const sig = self.interner.pool.signature_payloads.items[sig_payload_idx];
-        const params = self.interner.signatureParams(t);
+        // Formatting constraints and nested parameter/return types can lower
+        // deferred types and grow the interner's shared type-argument pool.
+        const params = try self.gpa.dupe(TypeId, self.interner.signatureParams(t));
+        defer self.gpa.free(params);
         var sig_buf: std.ArrayListUnmanaged(u8) = .empty;
         const arena = self.diag_arena.allocator();
         if (sig.is_construct) try sig_buf.appendSlice(arena, "new ");
@@ -195984,7 +196088,9 @@ pub const Checker = struct {
         // slipped through (e.g. an interned object whose member type is
         // the object itself) would otherwise overflow the native stack
         // here. Bail to an opaque name rather than crash.
-        if (self.type_name_depth >= max_type_name_depth) return "...";
+        if (self.type_name_depth == 0) self.type_name_work = 0;
+        if (self.type_name_depth >= max_type_name_depth or self.type_name_work >= 2048) return "...";
+        self.type_name_work += 1;
         const active = try self.type_name_in_progress.getOrPut(self.gpa, t);
         if (active.found_existing) return self.alias_display_names.get(t) orelse "...";
         defer _ = self.type_name_in_progress.remove(t);
@@ -202148,7 +202254,7 @@ fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
     var label = [_]u8{ 'A', 'l', 'i', 'a', 's' };
     var args = [_]TypeId{ types.Primitive.string_t, types.Primitive.number_t };
     inline for (CheckedTypes.borrowed_slices) |name| {
-        if (comptime std.mem.eql(u8, name, "alias_type_args") or std.mem.eql(u8, name, "substituted_interface_display_args")) {
+        if (comptime @TypeOf(@field(s.checker, name).get(types.Primitive.string_t).?) == []const TypeId) {
             try @field(s.checker, name).put(allocator, types.Primitive.string_t, &args);
         } else {
             try @field(s.checker, name).put(allocator, types.Primitive.string_t, &label);
@@ -202174,7 +202280,7 @@ fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
     @memset(&label, '!');
     args[0] = types.Primitive.never;
     inline for (CheckedTypes.borrowed_slices) |name| {
-        if (comptime std.mem.eql(u8, name, "alias_type_args") or std.mem.eql(u8, name, "substituted_interface_display_args")) {
+        if (comptime @TypeOf(@field(s.checker, name).get(types.Primitive.string_t).?) == []const TypeId) {
             try T.expectEqualSlices(TypeId, &.{ types.Primitive.string_t, types.Primitive.number_t }, @field(result, name).get(types.Primitive.string_t).?);
         } else {
             try T.expectEqualStrings("Alias", @field(result, name).get(types.Primitive.string_t).?);
@@ -292657,4 +292763,69 @@ test "checker: member assignment flow respects declared widening and rejected wr
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 4), s.checker.diagnostics.items.len);
     for (s.checker.diagnostics.items) |d| try T.expectEqual(@as(u32, 2322), d.code);
+}
+
+test "checker: required generic parameters reject excess type arguments" {
+    const s = try newSetup("interface Box<T> { value:T; } type Wrong=Box<string,number>; type Wrapped<T>={value:T}; type Invalid=Wrapped<string,number>;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2314), diagnostic.code);
+}
+
+test "checker: skipLibCheck omits declaration constraint validation" {
+    for ([_]bool{ false, true }) |skip| {
+        const s = try newSetup("interface Box<T extends string> { value:T; } declare const invalid:Box<number>;");
+        defer destroySetup(s);
+        s.checker.setIsDeclarationFile(true);
+        s.checker.setSkipDeclarationValidation(skip);
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (skip) 0 else 1), s.checker.diagnostics.items.len);
+        if (!skip) try T.expectEqual(@as(u32, 2344), s.checker.diagnostics.items[0].code);
+    }
+}
+
+test "checker: source union order renders only when a diagnostic requests it" {
+    const s = try newSetup("type Value = { text:string } | { count:number };\n");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expect(s.checker.source_ordered_union_members.count() > 0);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostic_union_display_names.count());
+    const decl = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const value = s.hir.typeOf(decl);
+    const display = (try s.checker.allocObjectShapeMemberTypeName(value)).?;
+    try T.expectEqualStrings("{ text: string; } | { count: number; }", display);
+    try T.expect(s.checker.diagnostic_union_display_names.contains(value));
+}
+
+test "checker: diagnostic names bound expansion of shared acyclic structural graphs" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const a = try s.sint.intern("a");
+    const b = try s.sint.intern("b");
+    const c = try s.sint.intern("c");
+    var typ = types.Primitive.number_t;
+    for (0..12) |_| {
+        typ = try s.ti.internObjectType(&.{
+            .{ .name = a, .type = typ, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = b, .type = typ, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = c, .type = typ, .is_optional = false, .is_readonly = false, .is_method = false },
+        });
+    }
+    const display = (try s.checker.allocSimpleTypeName(typ)).?;
+    try T.expect(std.mem.indexOf(u8, display, "...") != null);
+    try T.expect(display.len < 65536);
+    try T.expectEqual(@as(usize, 0), s.checker.type_name_in_progress.count());
+    try T.expectEqual(@as(u32, 0), s.checker.type_name_depth);
+    try T.expectEqualStrings("number", (try s.checker.allocSimpleTypeName(types.Primitive.number_t)).?);
+}
+
+test "checker: implicit string indexes participate in target unions" {
+    const s = try newSetup("declare const values: { [key:string]: string } | undefined; declare function take(value: { [key:string]: string } | { length:number; [n:number]:string }): void; take(values ?? {}); const bad = { flag: true }; take(bad);");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2345), s.checker.diagnostics.items[0].code);
 }

@@ -1542,3 +1542,78 @@ inputs unchanged. Evidence:
 **3,652 verified payloads**, SHA-256
 `14ea32666c20c94653c03463c4d94ef364319986ff0dd12b6ac1df38bba34b50`.
 Real-project source and diagnostic text are excluded.
+
+## Global generic declarations survive owner import
+
+Program-global type bindings now carry their declaration-owned generic binders,
+defaults and bodies into each consumer. Previously only the structural body
+crossed the owner boundary: `ArrayLike<number>` could report TS2315 and
+`Array.from(bytes)` could retain a free element parameter. Imported interfaces,
+aliases and classes now preserve defaults and constraints; interface merging
+alpha-substitutes binders and retains defaults added by a later declaration.
+Local type declarations continue to shadow globals. Generic metadata is
+materialized when the binding is used, avoiding eager copies of unused library
+generic graphs. Required generic declarations also reject excess arguments.
+
+The installed Bun graph exposed additional root causes while validating this
+change. `skipLibCheck` now skips declaration-only constraint validation while
+application constraints remain checked. Source-order union display metadata
+stores type identities and renders text only on demand. Signature formatting
+copies parameter identities before recursive formatting can grow their shared
+pool, fixing a captured segmentation fault. Diagnostic rendering also bounds
+acyclic graph expansion to 2,048 type visits; this affects text only. The copied
+union metadata participates in checked-owner transfer and allocation-failure
+coverage. The transfer OOM fixture disables in-place buffer growth so its
+failure indexes remain deterministic across allocator layouts.
+
+The first table replay exposed four errors at `Object.entries(filters ?? {})`.
+The implicit string-index relation now participates in union targets, retaining
+the ordinary checks for incompatible record values and other constituents.
+The final table positive and planted-negative controls both pass with all
+**306 original inputs unchanged**. The negative is still TS2322 at line 3,
+column 42.
+
+The final source passes **4,632 checker tests, 213 driver tests and 310 Program
+tests**, the production build and **64 native CLI observations**. The new
+contracts cover installed Array/ArrayLike/Iterable inference, mapper parameters,
+explicit type arguments, generic defaults and constraints, declaration merging,
+local shadowing, aliases/classes, arity, optional dictionary fallbacks, and Bun
+namespace loading with positive and negative controls. Codes and locations are
+compared; diagnostic prose is not claimed identical. Validation peaks at
+**2,795 MB**, below the unchanged **3,840 MB** ceiling.
+
+On the unchanged **370-input** ts-auth graph, native exits zero and Home exits
+one with **302 raw diagnostics at 47 distinct code/location pairs**. Relative
+to the preceding member-write compiler, **18 pairs disappear and 20 appear**.
+The more precise imported types remove free generic-element failures but expose
+remaining structural callback, Request/signal, typed-array and iterator
+relations. This project and whole-tree replacement remain **unqualified**.
+Resource-guard stops, the formatter crash, the bounded Debug timeout, the
+initial OOM fixture failure and the failed intermediate table comparison are
+retained as failed discovery evidence, separate from successful comparisons.
+
+All **fifteen prior Release CLI suites** pass. The broader replay peaks at
+**2,200 MB**, and all **4,204 frozen compiler and contract inputs** remain
+unchanged. Repository-wide Pickier exits one with 1,858 errors and 696 warnings,
+including intentional error fixtures and existing documentation warnings; its
+one new extra-blank-line warning was corrected. No lint error points to a changed
+compiler or runner file.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-global-generic.tar.gz` contains **4,577 verified payloads**,
+SHA-256 `46a5ff2dbd5a951a1a73d76faeae49d741ec417a1f24119f7535257d276aca44`. Real-project source and diagnostic text are excluded.
+
+Before publication, origin/main advanced by five commits through `1c34849ff`
+covering dependency caching, I/O and package lockfiles. Rebase was conflict-free.
+The twelve changed frozen inputs all belong to those incoming changes; no
+TypeScript compiler or contract source changed. Checker, driver, Program and
+production build steps are cache-valid; the release binary remains SHA-256
+`2d3592823a1f1cb5446618b40df1cd870e0731194534c87cc8ae9284eed3180e`. Fresh table positive/negative checks pass with
+all 306 inputs unchanged, peaking at **1,160 MB**. The main archive records the
+pre-rebase freeze. Rebase evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-global-generic-rebase.tar.gz`, **15
+verified payloads**, SHA-256 `363406bf7ad1f80aa34989435c6f9aea635804c34c8860a7b807aeb4dbe9eaa2`.
+
+The first push met another concurrent origin/main update (`598a55757`, FFI
+bindgen migration). After rebasing, checker, driver, Program and the release
+build remain cache-valid. The binary hash is unchanged, so the fresh table
+controls above still describe the published executable. Both rebase validations
+are included in the rebase archive.

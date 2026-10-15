@@ -142,7 +142,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .generic_aliases => .{ .key = string_id, .value = alias },
         .generic_interfaces_by_decl => .{ .key = node_id, .value = alias },
         .generic_fns => .{ .key = string_id, .value = type_slice },
-        .generic_signature_params, .alias_type_args, .substituted_interface_display_args => .{ .key = type_id, .value = type_slice },
+        .generic_signature_params, .alias_type_args, .substituted_interface_display_args, .source_ordered_union_members => .{ .key = type_id, .value = type_slice },
         .generic_interface_decl_by_instance,
         .signature_decl_nodes,
         .type_parameter_decl_nodes,
@@ -895,7 +895,17 @@ test "checked transfer: reachable metadata includes hidden dependencies without 
     try T.expectError(error.InvalidTypeGraph, imported.ids.typeId(unrelated));
 }
 
-fn testSelectedAllocationFailures(allocator: std.mem.Allocator) !void {
+fn testSelectedAllocationFailures(failing_allocator: std.mem.Allocator) !void {
+    // In-place remapping depends on the backing allocator's address layout.
+    // Always move growing buffers so allocation-failure indexes cover the
+    // same sequence on every invocation, including after other tests ran.
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = failing_allocator.vtable.alloc,
+        .resize = std.mem.Allocator.noResize,
+        .remap = std.mem.Allocator.noRemap,
+        .free = failing_allocator.vtable.free,
+    };
+    const allocator: std.mem.Allocator = .{ .ptr = failing_allocator.ptr, .vtable = &vtable };
     var source = try sampleInterner();
     defer source.deinit();
     var checked = try sampleTables();

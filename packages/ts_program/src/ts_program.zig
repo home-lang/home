@@ -343,6 +343,7 @@ const BoundGlobals = struct {
 /// relocation maps and copied metadata live only through the check call.
 const ImportedProgramGlobals = struct {
     gpa: std.mem.Allocator,
+    metadata_arena: std.heap.ArenaAllocator,
     imports: std.ArrayListUnmanaged(source_owners.Imported) = .empty,
     import_owners: std.ArrayListUnmanaged(source_owners.OwnerId) = .empty,
     checked: std.ArrayListUnmanaged(*const ts_driver.CheckedTypes) = .empty,
@@ -356,6 +357,7 @@ const ImportedProgramGlobals = struct {
         self.checked.deinit(self.gpa);
         self.values.deinit(self.gpa);
         self.types.deinit(self.gpa);
+        self.metadata_arena.deinit();
     }
 
     fn importedFor(self: *const ImportedProgramGlobals, owner: source_owners.OwnerId) ?*const source_owners.Imported {
@@ -1145,7 +1147,7 @@ pub const Program = struct {
     };
 
     fn importProgramGlobals(self: *Program, file: *File, globals: *const BoundGlobals) ProgramError!ImportedProgramGlobals {
-        var result: ImportedProgramGlobals = .{ .gpa = self.gpa };
+        var result: ImportedProgramGlobals = .{ .gpa = self.gpa, .metadata_arena = std.heap.ArenaAllocator.init(self.gpa) };
         errdefer result.deinit();
         const compilation = file.compilation orelse return result;
         if (globals.entries.count() == 0) return result;
@@ -1276,10 +1278,52 @@ pub const Program = struct {
             }
             if (key.space != .type) continue;
             var merged_type: ?ts_driver.TypeId = null;
+            var generic_declarations: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding.GenericDeclaration) = .empty;
+            defer generic_declarations.deinit(self.gpa);
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.owner == .none) continue;
                 const imported = result.importedFor(owner.file.owner) orelse continue;
                 const owner_type = importedBoundGlobalType(imported, owner) orelse continue;
+                const provider = owner.file.compilation.?;
+                for (owner.symbol.decls.items) |decl| {
+                    const kind = provider.hir.kindOf(decl);
+                    if (kind == .interface_decl) {
+                        const generic = provider.checked_types.generic_interfaces_by_decl.get(decl) orelse continue;
+                        const parameters = try result.metadata_arena.allocator().alloc(ts_driver.TypeId, generic.params.len);
+                        for (generic.params, parameters) |parameter, *target| target.* = imported.types.ids.typeId(parameter) catch return error.EmitError;
+                        const defaults = try result.metadata_arena.allocator().alloc(ts_driver.TypeId, generic.params.len);
+                        for (generic.params, defaults) |parameter, *target| {
+                            const raw = provider.type_interner.pool.type_parameter_payloads.items[provider.type_interner.pool.payloadOf(parameter)].default;
+                            target.* = imported.types.ids.typeId(raw) catch return error.EmitError;
+                        }
+                        const body = imported.types.ids.typeId(provider.hir.typeOf(decl)) catch return error.EmitError;
+                        try generic_declarations.append(self.gpa, .{ .parameters = parameters, .defaults = defaults, .body = body });
+                        break;
+                    }
+                    const nodes = switch (kind) {
+                        .type_alias_decl => blk: {
+                            const alias = hir_mod_ns.typeAliasOf(&provider.hir, decl);
+                            break :blk provider.hir.childSlice(alias.type_params_start, alias.type_params_len);
+                        },
+                        .class_decl, .class_expr => blk: {
+                            const class = hir_mod_ns.classOf(&provider.hir, decl);
+                            break :blk provider.hir.childSlice(class.type_params_start, class.type_params_len);
+                        },
+                        else => continue,
+                    };
+                    if (nodes.len == 0) continue;
+                    const parameters = try result.metadata_arena.allocator().alloc(ts_driver.TypeId, nodes.len);
+                    for (nodes, parameters) |parameter, *target| target.* = imported.types.ids.typeId(provider.hir.typeOf(parameter)) catch return error.EmitError;
+                    const defaults = try result.metadata_arena.allocator().alloc(ts_driver.TypeId, nodes.len);
+                    for (nodes, defaults) |parameter, *target| {
+                        const typ = provider.hir.typeOf(parameter);
+                        const raw = provider.type_interner.pool.type_parameter_payloads.items[provider.type_interner.pool.payloadOf(typ)].default;
+                        target.* = imported.types.ids.typeId(raw) catch return error.EmitError;
+                    }
+                    const body = imported.types.ids.typeId(provider.hir.typeOf(decl)) catch return error.EmitError;
+                    try generic_declarations.append(self.gpa, .{ .parameters = parameters, .defaults = defaults, .body = body, .is_type_alias = kind == .type_alias_decl });
+                    break;
+                }
                 merged_type = if (merged_type) |current|
                     try self.mergeImportedGlobalTypes(compilation, current, owner_type)
                 else
@@ -1288,6 +1332,7 @@ pub const Program = struct {
             if (merged_type) |global_type| try result.types.append(self.gpa, .{
                 .name = key.name,
                 .type = global_type,
+                .generic_declarations = try result.metadata_arena.allocator().dupe(ts_driver.ProgramGlobalBinding.GenericDeclaration, generic_declarations.items),
             });
         }
         for (result.values.items) |*binding| {
@@ -18180,4 +18225,78 @@ test "Program: imported abstract bases preserve protected annotated fields" {
         try T.expectEqual(@as(usize, 1), diagnostics.len);
         try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
     }
+}
+
+test "Program: global generic roots preserve inference defaults constraints and local shadowing" {
+    for ([_]usize{ 1, 2 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const owner =
+            \\interface ArrayLike<T> { readonly length: number; readonly [n: number]: T; }
+            \\interface Box<T extends string = 'default'> { value: T; }
+            \\type Wrapped<T = number> = { item: T };
+            \\interface Maker { from<T>(value: ArrayLike<T>): T[]; }
+            \\declare const maker: Maker;
+        ;
+        const consumer =
+            \\export {};
+            \\declare const input: { length: number; [n: number]: number };
+            \\const result = maker.from(input);
+            \\const good: number = result[0];
+            \\const wrong: string = result[0];
+            \\declare const box: Box;
+            \\const exact: 'default' = box.value;
+            \\const bad: number = box.value;
+            \\declare const wrapped: Wrapped;
+            \\const item: number = wrapped.item;
+            \\const badItem: string = wrapped.item;
+            \\type Invalid = Box<number>;
+            \\function local() { interface Box { value: boolean; } const value: Box = { value: true }; const good: boolean = value.value; }
+        ;
+        try vfs.addFile("/globals.d.ts", owner);
+        try vfs.addFile("/consumer.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/globals.d.ts", owner);
+        const consumer_id = try program.add("/consumer.ts", consumer);
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true };
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        const compilation = program.fileById(consumer_id).compilation.?;
+        if (compilation.diagnostics.items.len != 4) for (compilation.diagnostics.items) |diagnostic| {
+            std.debug.print("TS{d}: {s}\n", .{ diagnostic.code, diagnostic.message });
+        };
+        try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+        var assignments: usize = 0;
+        var constraints: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 2322) assignments += 1;
+            if (diagnostic.code == 2344) constraints += 1;
+        }
+        try T.expectEqual(@as(usize, 3), assignments);
+        try T.expectEqual(@as(usize, 1), constraints);
+    }
+}
+
+test "Program: a later global declaration can add a generic default" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const first = "interface Box<T>{first:T;}";
+    const second = "interface Box<T=string>{second:T;}";
+    const main = "export {};declare const box:Box;const first:string=box.first;const second:string=box.second;const wrong:number=box.second;";
+    try vfs.addFile("/first.d.ts", first);
+    try vfs.addFile("/second.d.ts", second);
+    try vfs.addFile("/main.ts", main);
+    _ = try program.add("/first.d.ts", first);
+    _ = try program.add("/second.d.ts", second);
+    const app = try program.add("/main.ts", main);
+    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const compilation = program.fileById(app).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
 }
