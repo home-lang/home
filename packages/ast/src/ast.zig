@@ -2519,6 +2519,7 @@ pub const Program = struct {
                     }
                 }
                 allocator.free(decl.params);
+                deinitAttributes(decl.attributes, allocator);
                 deinitBlockStmt(decl.body, allocator);
                 allocator.destroy(decl);
             },
@@ -2541,6 +2542,7 @@ pub const Program = struct {
                     allocator.free(decl.methods);
                 }
                 allocator.free(decl.fields);
+                deinitAttributes(decl.attributes, allocator);
                 allocator.destroy(decl);
             },
             .EnumDecl => |decl| {
@@ -2555,10 +2557,20 @@ pub const Program = struct {
                 if (decl.methods.len > 0) {
                     allocator.free(decl.methods);
                 }
+                deinitAttributes(decl.attributes, allocator);
+                allocator.destroy(decl);
+            },
+            .UnionDecl => |decl| {
+                for (decl.variants) |variant| {
+                    if (variant.type_name) |type_name| allocator.free(type_name);
+                }
+                allocator.free(decl.variants);
+                deinitAttributes(decl.attributes, allocator);
                 allocator.destroy(decl);
             },
             .TypeAliasDecl => |decl| {
                 if (decl.target_type_owned) allocator.free(decl.target_type);
+                deinitAttributes(decl.attributes, allocator);
                 allocator.destroy(decl);
             },
             .TraitDecl => |decl| {
@@ -2664,6 +2676,14 @@ pub const Program = struct {
             .ContinueStmt => |cs| allocator.destroy(cs),
             else => {},
         }
+    }
+
+    fn deinitAttributes(attributes: []const Attribute, allocator: std.mem.Allocator) void {
+        for (attributes) |attribute| {
+            var owned = attribute;
+            owned.deinit(allocator);
+        }
+        if (attributes.len > 0) allocator.free(attributes);
     }
 
     fn deinitPattern(pattern: *Pattern, allocator: std.mem.Allocator) void {

@@ -12,7 +12,7 @@ pub const DiscoveredTest = struct {
     name: []const u8,
     decl: TestDeclType,
     file_path: []const u8,
-    line: u32,
+    line: usize,
 
     pub fn deinit(self: *DiscoveredTest, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -27,7 +27,7 @@ pub const TestDiscoveryResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) TestDiscoveryResult {
         return .{
-            .tests = std.ArrayList(DiscoveredTest).init(allocator),
+            .tests = .empty,
             .allocator = allocator,
         };
     }
@@ -36,11 +36,12 @@ pub const TestDiscoveryResult = struct {
         for (self.tests.items) |*test_item| {
             test_item.deinit(self.allocator);
         }
-        self.tests.deinit();
+        self.tests.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn addTest(self: *TestDiscoveryResult, test_item: DiscoveredTest) !void {
-        try self.tests.append(test_item);
+        try self.tests.append(self.allocator, test_item);
     }
 };
 

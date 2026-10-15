@@ -16,11 +16,14 @@ pub const Attribute = struct {
     }
 
     pub fn deinit(self: *Attribute, allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
+        // Attribute names and literal payloads are token lexemes borrowed
+        // from the parser's source buffer. The argument nodes and their
+        // backing slice are the owned pieces.
         for (self.args) |arg| {
-            allocator.destroy(arg);
+            ast.Program.deinitExpr(arg, allocator);
         }
-        allocator.free(self.args);
+        if (self.args.len > 0) allocator.free(self.args);
+        self.* = undefined;
     }
 
     /// Check if this is a specific attribute by name
@@ -55,7 +58,8 @@ pub const AttributeList = struct {
             var mut_attr = attr;
             mut_attr.deinit(allocator);
         }
-        allocator.free(self.attributes);
+        if (self.attributes.len > 0) allocator.free(self.attributes);
+        self.* = undefined;
     }
 
     /// Check if any attribute has the given name

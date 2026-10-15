@@ -934,6 +934,8 @@ pub fn build(b: *std.Build) void {
     const io_pkg = createPackage(b, "packages/io/src/lib.zig", target, optimize, zig_test_framework);
     io_pkg.addImport("collections", io_collections_pkg);
     const test_file_discovery_pkg = createPackage(b, "packages/testing/src/test_file_discovery.zig", target, optimize, zig_test_framework);
+    const test_discovery_pkg = createPackage(b, "packages/testing/src/test_discovery.zig", target, optimize, zig_test_framework);
+    test_discovery_pkg.addImport("ast", ast_pkg);
     const fuzz_pkg = createPackage(b, "packages/fuzz/src/fuzz.zig", target, optimize, zig_test_framework);
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
@@ -1625,6 +1627,19 @@ pub fn build(b: *std.Build) void {
     test_file_discovery_tests.root_module.addImport("test_file_discovery", test_file_discovery_pkg);
     const run_test_file_discovery_tests = b.addRunArtifact(test_file_discovery_tests);
 
+    const test_discovery_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/testing/tests/test_discovery_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_discovery_tests.root_module.addImport("test_discovery", test_discovery_pkg);
+    test_discovery_tests.root_module.addImport("ast", ast_pkg);
+    test_discovery_tests.root_module.addImport("lexer", lexer_pkg);
+    test_discovery_tests.root_module.addImport("parser", parser_pkg);
+    const run_test_discovery_tests = b.addRunArtifact(test_discovery_tests);
+
     const fuzz_package_unit_tests = b.addTest(.{ .root_module = fuzz_pkg });
     const run_fuzz_package_unit_tests = b.addRunArtifact(fuzz_package_unit_tests);
 
@@ -1996,6 +2011,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_io_tests.step, test_filter, "io_package");
     dependOnTest(test_step, &run_test_file_discovery_tests.step, test_filter, "test_file_discovery");
+    dependOnTest(test_step, &run_test_discovery_tests.step, test_filter, "test_declaration_discovery");
     dependOnTest(test_step, &run_fuzz_package_tests.step, test_filter, "fuzz_package");
     dependOnTest(test_step, &run_toml_tests.step, test_filter, "toml");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
