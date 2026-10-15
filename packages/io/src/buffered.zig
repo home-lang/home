@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 /// Default buffer size (8KB)
 pub const DEFAULT_BUFFER_SIZE = 8192;
@@ -22,6 +23,7 @@ pub fn BufferedReader(comptime ReaderType: type) type {
 
         /// Initialize a buffered reader with custom buffer size
         pub fn init(allocator: Allocator, reader: ReaderType, buffer_size: usize) !Self {
+            if (buffer_size == 0) return error.InvalidBufferSize;
             const buffer = try allocator.alloc(u8, buffer_size);
             return Self{
                 .unbuffered_reader = reader,
@@ -171,6 +173,7 @@ pub fn BufferedWriter(comptime WriterType: type) type {
 
         /// Initialize a buffered writer with custom buffer size
         pub fn init(allocator: Allocator, writer: WriterType, buffer_size: usize) !Self {
+            if (buffer_size == 0) return error.InvalidBufferSize;
             const buffer = try allocator.alloc(u8, buffer_size);
             return Self{
                 .unbuffered_writer = writer,
@@ -256,37 +259,86 @@ pub fn BufferedWriter(comptime WriterType: type) type {
 
 // ==================== Convenience Functions ====================
 
-/// Create a buffered reader that wraps std.fs.File
-pub fn FileBufferedReader(allocator: Allocator, file: std.fs.File) !BufferedReader(std.fs.File) {
-    return try BufferedReader(std.fs.File).initDefault(allocator, file);
+pub const FileReader = struct {
+    io: Io,
+    file: Io.File,
+
+    pub fn read(self: *FileReader, destination: []u8) !usize {
+        return self.file.readStreaming(self.io, &.{destination}) catch |err| switch (err) {
+            error.EndOfStream => 0,
+            else => return err,
+        };
+    }
+};
+
+pub const FileWriter = struct {
+    io: Io,
+    file: Io.File,
+
+    pub fn writeAll(self: *FileWriter, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(self.io, bytes);
+    }
+};
+
+/// Create a buffered reader that wraps an `std.Io.File` using explicit I/O.
+pub fn FileBufferedReaderWithIo(allocator: Allocator, io: Io, file: Io.File) !BufferedReader(FileReader) {
+    return BufferedReader(FileReader).initDefault(allocator, .{ .io = io, .file = file });
 }
 
-/// Create a buffered writer that wraps std.fs.File
-pub fn FileBufferedWriter(allocator: Allocator, file: std.fs.File) !BufferedWriter(std.fs.File) {
-    return try BufferedWriter(std.fs.File).initDefault(allocator, file);
+/// Compatibility entry point using the process-wide single-threaded I/O backend.
+pub fn FileBufferedReader(allocator: Allocator, file: Io.File) !BufferedReader(FileReader) {
+    return FileBufferedReaderWithIo(allocator, Io.Threaded.global_single_threaded.io(), file);
+}
+
+/// Create a buffered writer that wraps an `std.Io.File` using explicit I/O.
+pub fn FileBufferedWriterWithIo(allocator: Allocator, io: Io, file: Io.File) !BufferedWriter(FileWriter) {
+    return BufferedWriter(FileWriter).initDefault(allocator, .{ .io = io, .file = file });
+}
+
+/// Compatibility entry point using the process-wide single-threaded I/O backend.
+pub fn FileBufferedWriter(allocator: Allocator, file: Io.File) !BufferedWriter(FileWriter) {
+    return FileBufferedWriterWithIo(allocator, Io.Threaded.global_single_threaded.io(), file);
 }
 
 // ==================== Tests ====================
 
+const TestFile = struct {
+    allocator: Allocator,
+    temporary_directory: std.testing.TmpDir,
+    path: []const u8,
+
+    fn init(allocator: Allocator, name: []const u8) !TestFile {
+        var temporary_directory = std.testing.tmpDir(.{});
+        errdefer temporary_directory.cleanup();
+        const root = try temporary_directory.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+        defer allocator.free(root);
+        const path = try std.fs.path.join(allocator, &.{ root, name });
+        return .{
+            .allocator = allocator,
+            .temporary_directory = temporary_directory,
+            .path = path,
+        };
+    }
+
+    fn deinit(self: *TestFile) void {
+        self.allocator.free(self.path);
+        self.temporary_directory.cleanup();
+    }
+};
+
 test "BufferedReader - basic read" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    // Create a test file
-    const test_path = "test_buffered_read.txt";
+    var test_file = try TestFile.init(allocator, "buffered-read.txt");
+    defer test_file.deinit();
     const test_content = "Hello, Buffered World!";
 
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = test_file.path, .data = test_content });
 
-    // Write test data
-    try std.fs.cwd().writeFile(.{ .sub_path = test_path, .data = test_content });
+    const file = try Io.Dir.cwd().openFile(testing.io, test_file.path, .{});
+    defer file.close(testing.io);
 
-    // Read with buffering
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
-
-    var buf_reader = try FileBufferedReader(allocator, file);
+    var buf_reader = try FileBufferedReaderWithIo(allocator, testing.io, file);
     defer buf_reader.deinit();
 
     const content = try buf_reader.readAll();
@@ -298,19 +350,16 @@ test "BufferedReader - basic read" {
 test "BufferedReader - read line by line" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_lines.txt";
+    var test_file = try TestFile.init(allocator, "buffered-lines.txt");
+    defer test_file.deinit();
     const test_content = "Line 1\nLine 2\nLine 3";
 
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = test_file.path, .data = test_content });
 
-    try std.fs.cwd().writeFile(.{ .sub_path = test_path, .data = test_content });
+    const file = try Io.Dir.cwd().openFile(testing.io, test_file.path, .{});
+    defer file.close(testing.io);
 
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
-
-    var buf_reader = try FileBufferedReader(allocator, file);
+    var buf_reader = try FileBufferedReaderWithIo(allocator, testing.io, file);
     defer buf_reader.deinit();
 
     // Read first line
@@ -339,19 +388,16 @@ test "BufferedReader - read line by line" {
 test "BufferedReader - read until delimiter" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_delim.txt";
+    var test_file = try TestFile.init(allocator, "buffered-delimiter.txt");
+    defer test_file.deinit();
     const test_content = "apple,banana,cherry";
 
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = test_file.path, .data = test_content });
 
-    try std.fs.cwd().writeFile(.{ .sub_path = test_path, .data = test_content });
+    const file = try Io.Dir.cwd().openFile(testing.io, test_file.path, .{});
+    defer file.close(testing.io);
 
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
-
-    var buf_reader = try FileBufferedReader(allocator, file);
+    var buf_reader = try FileBufferedReaderWithIo(allocator, testing.io, file);
     defer buf_reader.deinit();
 
     const word1 = try buf_reader.readUntilDelimiter(',');
@@ -366,19 +412,16 @@ test "BufferedReader - read until delimiter" {
 test "BufferedWriter - basic write" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_write.txt";
+    var test_file = try TestFile.init(allocator, "buffered-write.txt");
+    defer test_file.deinit();
     const test_content = "Buffered write test!";
-
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Write with buffering
     {
-        const file = try std.fs.cwd().createFile(test_path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().createFile(testing.io, test_file.path, .{});
+        defer file.close(testing.io);
 
-        var buf_writer = try FileBufferedWriter(allocator, file);
+        var buf_writer = try FileBufferedWriterWithIo(allocator, testing.io, file);
         defer buf_writer.deinit();
 
         try buf_writer.writeAll(test_content);
@@ -386,7 +429,7 @@ test "BufferedWriter - basic write" {
     }
 
     // Read back and verify
-    const content = try std.fs.cwd().readFileAlloc(test_path, allocator, @enumFromInt(1024));
+    const content = try Io.Dir.cwd().readFileAlloc(testing.io, test_file.path, allocator, .limited(1024));
     defer allocator.free(content);
 
     try testing.expectEqualStrings(test_content, content);
@@ -395,18 +438,15 @@ test "BufferedWriter - basic write" {
 test "BufferedWriter - write lines" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_write_lines.txt";
-
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    var test_file = try TestFile.init(allocator, "buffered-write-lines.txt");
+    defer test_file.deinit();
 
     // Write lines
     {
-        const file = try std.fs.cwd().createFile(test_path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().createFile(testing.io, test_file.path, .{});
+        defer file.close(testing.io);
 
-        var buf_writer = try FileBufferedWriter(allocator, file);
+        var buf_writer = try FileBufferedWriterWithIo(allocator, testing.io, file);
         defer buf_writer.deinit();
 
         try buf_writer.writeLine("First line");
@@ -415,7 +455,7 @@ test "BufferedWriter - write lines" {
     }
 
     // Read back and verify
-    const content = try std.fs.cwd().readFileAlloc(test_path, allocator, @enumFromInt(1024));
+    const content = try Io.Dir.cwd().readFileAlloc(testing.io, test_file.path, allocator, .limited(1024));
     defer allocator.free(content);
 
     try testing.expectEqualStrings("First line\nSecond line\nThird line\n", content);
@@ -424,19 +464,16 @@ test "BufferedWriter - write lines" {
 test "BufferedWriter - auto flush on deinit" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_auto_flush.txt";
+    var test_file = try TestFile.init(allocator, "buffered-auto-flush.txt");
+    defer test_file.deinit();
     const test_content = "Auto flush!";
-
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
 
     // Write without explicit flush
     {
-        const file = try std.fs.cwd().createFile(test_path, .{});
-        defer file.close();
+        const file = try Io.Dir.cwd().createFile(testing.io, test_file.path, .{});
+        defer file.close(testing.io);
 
-        var buf_writer = try FileBufferedWriter(allocator, file);
+        var buf_writer = try FileBufferedWriterWithIo(allocator, testing.io, file);
         defer buf_writer.deinit(); // Should auto-flush
 
         try buf_writer.writeAll(test_content);
@@ -444,7 +481,7 @@ test "BufferedWriter - auto flush on deinit" {
     }
 
     // Read back and verify
-    const content = try std.fs.cwd().readFileAlloc(test_path, allocator, @enumFromInt(1024));
+    const content = try Io.Dir.cwd().readFileAlloc(testing.io, test_file.path, allocator, .limited(1024));
     defer allocator.free(content);
 
     try testing.expectEqualStrings(test_content, content);
@@ -453,19 +490,16 @@ test "BufferedWriter - auto flush on deinit" {
 test "BufferedReader - handle CRLF newlines" {
     const testing = std.testing;
     const allocator = testing.allocator;
-
-    const test_path = "test_buffered_crlf.txt";
+    var test_file = try TestFile.init(allocator, "buffered-crlf.txt");
+    defer test_file.deinit();
     const test_content = "Line 1\r\nLine 2\r\nLine 3";
 
-    std.fs.cwd().deleteFile(test_path) catch {};
-    defer std.fs.cwd().deleteFile(test_path) catch {};
+    try Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = test_file.path, .data = test_content });
 
-    try std.fs.cwd().writeFile(.{ .sub_path = test_path, .data = test_content });
+    const file = try Io.Dir.cwd().openFile(testing.io, test_file.path, .{});
+    defer file.close(testing.io);
 
-    const file = try std.fs.cwd().openFile(test_path, .{});
-    defer file.close();
-
-    var buf_reader = try FileBufferedReader(allocator, file);
+    var buf_reader = try FileBufferedReaderWithIo(allocator, testing.io, file);
     defer buf_reader.deinit();
 
     const line1 = try buf_reader.readLine();
@@ -477,4 +511,24 @@ test "BufferedReader - handle CRLF newlines" {
     try testing.expect(line2 != null);
     defer allocator.free(line2.?);
     try testing.expectEqualStrings("Line 2", line2.?);
+}
+
+test "buffered IO rejects zero-sized buffers" {
+    const EmptyReader = struct {
+        pub fn read(_: *@This(), _: []u8) !usize {
+            return 0;
+        }
+    };
+    const EmptyWriter = struct {
+        pub fn writeAll(_: *@This(), _: []const u8) !void {}
+    };
+
+    try std.testing.expectError(
+        error.InvalidBufferSize,
+        BufferedReader(EmptyReader).init(std.testing.allocator, .{}, 0),
+    );
+    try std.testing.expectError(
+        error.InvalidBufferSize,
+        BufferedWriter(EmptyWriter).init(std.testing.allocator, .{}, 0),
+    );
 }

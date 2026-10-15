@@ -40,6 +40,37 @@ test "configured async runtime performs file IO" {
     try std.testing.expectEqualStrings(contents, actual);
 }
 
+test "public buffered file adapters round trip" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "buffered.txt" });
+    defer allocator.free(path);
+
+    {
+        const file = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{});
+        defer file.close(std.testing.io);
+        var writer = try home_io.FileBufferedWriterWithIo(allocator, std.testing.io, file);
+        defer writer.deinit();
+        try writer.writeLine("buffered");
+        try writer.writeAll("IO");
+        try writer.flush();
+    }
+
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
+    defer file.close(std.testing.io);
+    var reader = try home_io.FileBufferedReaderWithIo(allocator, std.testing.io, file);
+    defer reader.deinit();
+    const line = (try reader.readLine()).?;
+    defer allocator.free(line);
+    try std.testing.expectEqualStrings("buffered", line);
+    const remaining = try reader.readAll();
+    defer allocator.free(remaining);
+    try std.testing.expectEqualStrings("IO", remaining);
+}
+
 test "INI files use explicit IO and replace duplicate owned values" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

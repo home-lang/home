@@ -7,6 +7,12 @@ pub const fs = @import("async_io.zig").fs;
 // Utilities
 pub const BinaryReader = @import("binary_reader.zig").BinaryReader;
 pub const IniFile = @import("ini_parser.zig").IniFile;
+pub const BufferedReader = @import("buffered.zig").BufferedReader;
+pub const BufferedWriter = @import("buffered.zig").BufferedWriter;
+pub const FileBufferedReader = @import("buffered.zig").FileBufferedReader;
+pub const FileBufferedReaderWithIo = @import("buffered.zig").FileBufferedReaderWithIo;
+pub const FileBufferedWriter = @import("buffered.zig").FileBufferedWriter;
+pub const FileBufferedWriterWithIo = @import("buffered.zig").FileBufferedWriterWithIo;
 
 // String utilities
 pub const String = @import("string.zig");
