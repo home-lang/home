@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// Date and time utilities for Home
 pub const DateTime = struct {
@@ -7,9 +8,13 @@ pub const DateTime = struct {
 
     /// Get current date/time
     pub fn now() DateTime {
-        const now_ns = std.time.nanoTimestamp();
+        return nowWithIo(compat.io());
+    }
+
+    pub fn nowWithIo(io: std.Io) DateTime {
+        const now_ns = std.Io.Clock.real.now(io).toNanoseconds();
         return .{
-            .timestamp = @divTrunc(now_ns, std.time.ns_per_s),
+            .timestamp = @intCast(@divTrunc(now_ns, std.time.ns_per_s)),
             .nanoseconds = @intCast(@mod(now_ns, std.time.ns_per_s)),
         };
     }
@@ -249,7 +254,7 @@ pub const Duration = struct {
     }
 
     pub fn fromMilliseconds(ms: i64) Duration {
-        const seconds = @divTrunc(ms, 1000);
+        const seconds = @divFloor(ms, 1000);
         const nanos = @mod(ms, 1000) * std.time.ns_per_ms;
         return .{ .seconds = seconds, .nanoseconds = @intCast(nanos) };
     }
@@ -290,14 +295,22 @@ pub const Duration = struct {
 
 /// Timer for measuring elapsed time
 pub const Timer = struct {
-    start_ns: i128,
+    io: std.Io,
+    start_ns: i96,
 
     pub fn start() Timer {
-        return .{ .start_ns = std.time.nanoTimestamp() };
+        return startWithIo(compat.io());
+    }
+
+    pub fn startWithIo(io: std.Io) Timer {
+        return .{
+            .io = io,
+            .start_ns = std.Io.Clock.awake.now(io).toNanoseconds(),
+        };
     }
 
     pub fn elapsed(self: Timer) Duration {
-        const now = std.time.nanoTimestamp();
+        const now = std.Io.Clock.awake.now(self.io).toNanoseconds();
         const elapsed_ns = now - self.start_ns;
         const seconds = @divTrunc(elapsed_ns, std.time.ns_per_s);
         const nanoseconds = @mod(elapsed_ns, std.time.ns_per_s);
@@ -308,12 +321,12 @@ pub const Timer = struct {
     }
 
     pub fn elapsedMillis(self: Timer) i64 {
-        const now = std.time.nanoTimestamp();
+        const now = std.Io.Clock.awake.now(self.io).toNanoseconds();
         return @intCast(@divTrunc(now - self.start_ns, std.time.ns_per_ms));
     }
 
     pub fn reset(self: *Timer) void {
-        self.start_ns = std.time.nanoTimestamp();
+        self.start_ns = std.Io.Clock.awake.now(self.io).toNanoseconds();
     }
 };
 
@@ -359,8 +372,16 @@ fn calculateDaysSinceEpoch(year: u32, month: u8, day: u8) i64 {
 
 /// Sleep for a duration
 pub fn sleep(duration: Duration) void {
-    const ns = duration.seconds * std.time.ns_per_s + duration.nanoseconds;
-    std.time.sleep(@intCast(ns));
+    sleepWithIo(compat.io(), duration) catch |err| switch (err) {
+        error.InvalidDuration => @panic("cannot sleep for a negative duration"),
+        error.Canceled => unreachable,
+    };
+}
+
+pub fn sleepWithIo(io: std.Io, duration: Duration) (std.Io.Cancelable || error{InvalidDuration})!void {
+    const ns = @as(i96, duration.seconds) * std.time.ns_per_s + duration.nanoseconds;
+    if (ns < 0) return error.InvalidDuration;
+    try std.Io.sleep(io, .fromNanoseconds(ns), .awake);
 }
 
 /// Parse ISO 8601 date string (basic implementation)
@@ -388,3 +409,22 @@ pub const TimeZone = struct {
     pub const CET: i32 = 1 * 3600; // UTC+1
     pub const JST: i32 = 9 * 3600; // UTC+9
 };
+
+test "date and timer clocks use explicit I/O" {
+    const testing = std.testing;
+    const now = DateTime.nowWithIo(testing.io);
+    try testing.expect(now.timestamp > 0);
+    try testing.expect(now.nanoseconds < std.time.ns_per_s);
+
+    var timer = Timer.startWithIo(testing.io);
+    try sleepWithIo(testing.io, Duration.fromMilliseconds(0));
+    try testing.expect(timer.elapsed().toMilliseconds() >= 0);
+    timer.reset();
+    try testing.expect(timer.elapsedMillis() >= 0);
+}
+
+test "negative millisecond durations remain negative" {
+    const duration = Duration.fromMilliseconds(-1);
+    try std.testing.expectEqual(@as(i64, -1), duration.toMilliseconds());
+    try std.testing.expectError(error.InvalidDuration, sleepWithIo(std.testing.io, duration));
+}

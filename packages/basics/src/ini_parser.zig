@@ -3,6 +3,7 @@
 // Format: [Section]\nkey=value\n; comments
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const Allocator = std.mem.Allocator;
 
 pub const IniValue = union(enum) {
@@ -179,13 +180,14 @@ pub const IniFile = struct {
     }
 
     pub fn parseFile(allocator: Allocator, path: []const u8) !IniFile {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+        return parseFileWithIo(compat.io(), allocator, path);
+    }
 
-        const content = try file.readToEndAlloc(allocator, 10 * 1024 * 1024); // 10MB max
+    pub fn parseFileWithIo(io: std.Io, allocator: Allocator, path: []const u8) !IniFile {
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024));
         defer allocator.free(content);
 
-        return try parse(allocator, content);
+        return parse(allocator, content);
     }
 
     pub fn getSection(self: *const IniFile, name: []const u8) ?*const IniSection {
@@ -334,4 +336,26 @@ test "IniParser - C&C Generals format" {
     const delay = ini.getInt("Weapon AVCrusaderTankGun", "DelayBetweenShots");
     try std.testing.expect(delay != null);
     try std.testing.expectEqual(@as(i64, 2000), delay.?);
+}
+
+test "IniParser - parseFile uses explicit and default I/O" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "settings.ini",
+        .data = "[server]\nport=8080\nenabled=true\n",
+    });
+    const path = try tmp.dir.realPathFileAlloc(testing.io, "settings.ini", testing.allocator);
+    defer testing.allocator.free(path);
+
+    var explicit = try IniFile.parseFileWithIo(testing.io, testing.allocator, path);
+    defer explicit.deinit();
+    try testing.expectEqual(@as(?i64, 8080), explicit.getInt("server", "port"));
+    try testing.expectEqual(@as(?bool, true), explicit.getBool("server", "enabled"));
+
+    var default = try IniFile.parseFile(testing.allocator, path);
+    defer default.deinit();
+    try testing.expectEqual(@as(?i64, 8080), default.getInt("server", "port"));
 }

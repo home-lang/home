@@ -1317,6 +1317,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const basics_datetime_module = b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/datetime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const basics_ini_parser_module = b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/ini_parser.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Lexer tests
     const lexer_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1441,6 +1453,16 @@ pub fn build(b: *std.Build) void {
     basics_filesystem_tests.root_module.addImport("basics_filesystem", basics_filesystem_module);
 
     const run_basics_filesystem_tests = b.addRunArtifact(basics_filesystem_tests);
+
+    const basics_datetime_tests = b.addTest(.{
+        .root_module = basics_datetime_module,
+    });
+    const run_basics_datetime_tests = b.addRunArtifact(basics_datetime_tests);
+
+    const basics_ini_parser_tests = b.addTest(.{
+        .root_module = basics_ini_parser_module,
+    });
+    const run_basics_ini_parser_tests = b.addRunArtifact(basics_ini_parser_tests);
 
     // Package Manager tests
     const package_manager_tests = b.addTest(.{
@@ -1930,6 +1952,8 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_basics_session_tests.step, test_filter, "basics_session");
     dependOnTest(test_step, &run_basics_middleware_tests.step, test_filter, "basics_middleware");
     dependOnTest(test_step, &run_basics_filesystem_tests.step, test_filter, "basics_filesystem");
+    dependOnTest(test_step, &run_basics_datetime_tests.step, test_filter, "basics_datetime");
+    dependOnTest(test_step, &run_basics_ini_parser_tests.step, test_filter, "basics_ini_parser");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");
     dependOnTest(test_step, &run_queue_tests.step, test_filter, "queue");
     dependOnTest(test_step, &run_ast_tests.step, test_filter, "ast");
