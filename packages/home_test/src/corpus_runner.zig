@@ -904,6 +904,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer allocator.free(metadata);
     std.debug.print("[home-bun-suite] results: {s}\n", .{journal.directory});
     var result = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, "home-corpus-suite", args, .{
+        .suite_file_count = inputs.items.len,
         .corpus_project_root = context.execution_cwd orelse project,
         .junit_path = junit,
         .case_metadata_path = metadata,

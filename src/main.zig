@@ -2565,7 +2565,10 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     }
 
-    if (!(try nativeCorpusContext(args)).explicit and !(try nativeCorpusUsesMixedRoots(allocator, args))) if (argTargetsBunCorpus(args)) |target| {
+    // A native invocation owns its working directory, including children
+    // spawned by corpus tests. The coordinator already selects the corpus
+    // context before launching its native child.
+    if (!envFlagSet("HOME_NATIVE_VM") and !(try nativeCorpusContext(args)).explicit and !(try nativeCorpusUsesMixedRoots(allocator, args))) if (argTargetsBunCorpus(args)) |target| {
         const corpus_path = switch (target) {
             .root => |path| path,
             .directory => |directory| directory.corpus_path,

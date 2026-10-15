@@ -24,3 +24,16 @@ if BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1 BUN_DEV_SERVER_TEST_RUNNER=1 "$home_exe"
   exit 1
 fi
 grep -q "could not resolve application config file './missing.ts'" missing.log
+
+cat > pages/index.ts <<'EOF'
+function productionFailure() {
+  throw new Error('Home original production source');
+}
+export default productionFailure();
+EOF
+if BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE=1 BUN_DEV_SERVER_TEST_RUNNER=1 "$home_exe" build --app ./app.ts --sourcemap --outdir ./failure-dist >failure.log 2>&1; then
+  echo "expected a production module error to fail" >&2
+  exit 1
+fi
+grep -q "throw new Error('Home original production source')" failure.log
+grep -q 'pages/index.ts:2' failure.log

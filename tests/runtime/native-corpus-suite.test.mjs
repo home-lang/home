@@ -33,6 +33,15 @@ function journal(result) {
   return rows
 }
 try {
+  const fixtureCwd = join(folder, 'fixture-cwd')
+  mkdirSync(fixtureCwd)
+  const fixtureTest = join(fixtureCwd, 'test.js')
+  writeFileSync(fixtureTest, `import {test,expect} from 'bun:test';test('native fixture cwd',()=>expect(process.cwd()).toBe(${JSON.stringify(realpathSync(fixtureCwd))}));`)
+  writeFileSync(files[0], `import {test,expect} from 'bun:test';test('spawned native fixture cwd',()=>{const child=Bun.spawnSync({cmd:[process.execPath,'test',${JSON.stringify(fixtureTest)}],cwd:${JSON.stringify(fixtureCwd)},env:process.env});expect(child.signalCode).toBeUndefined();expect(child.exitCode).toBe(0);});`)
+  const spawnedCwd = invoke('spawned-cwd', [files[0], '--reporter=dots'])
+  assert.equal(spawnedCwd.status, 0, spawnedCwd.stderr)
+  assert.equal(journal(spawnedCwd).find(row => row.event === 'completed').counts.passed, 1)
+
   for (const [index, file] of files.entries()) writeFileSync(file, `import {test,expect} from 'bun:test'; test('case ${index}',()=>{console.log('SUITE_BODY:${index}');expect(true).toBe(true);});`)
   const collected = []
   for (let shard = 1; shard <= 2; shard++) {
@@ -160,6 +169,14 @@ try {
   assert.deepEqual(changedBodies(changed.stdout), ['1'])
   assert.deepEqual(changedBodies(changed.stdout), changedBodies(changedDirect.stdout))
   assert.equal(journal(changed).find(row => row.event === 'completed').counts.passed, 1)
+  const changedLink = join(temp, 'linked')
+  symlinkSync(temp, changedLink, 'dir')
+  const changedAliases = files.map(file => join(changedLink, relative(temp, file)))
+  const changedAlias = invoke('changed-symlink-alias', [...changedAliases, '--changed=HEAD'])
+  assert.equal(changedAlias.status, 0, changedAlias.stderr)
+  assert.deepEqual(changedBodies(changedAlias.stdout), ['1'])
+  assert.equal(journal(changedAlias).find(row => row.event === 'completed').counts.passed, 1)
+  rmSync(changedLink)
   git(['add', 'packages'])
   git(['commit', '-qm', 'fixture: update dependency'])
   const clean = invoke('changed-clean', [...files, '--changed=HEAD'])

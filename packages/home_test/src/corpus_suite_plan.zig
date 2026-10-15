@@ -1,5 +1,21 @@
 const std = @import("std");
 
+/// A suite executes every inventoried file in one native process. Its outer
+/// capture budget must cover those files without changing any test deadline.
+pub fn captureTimeout(file_count: usize, per_file_ms: i64) error{InvalidSuiteBudget}!i64 {
+    if (file_count == 0 or per_file_ms <= 0 or file_count > std.math.maxInt(i64)) return error.InvalidSuiteBudget;
+    return std.math.mul(i64, @intCast(file_count), per_file_ms) catch error.InvalidSuiteBudget;
+}
+
+test "suite capture budget scales with distinct sources and rejects invalid sizes" {
+    try std.testing.expectEqual(@as(i64, 120_000), try captureTimeout(1, 120_000));
+    try std.testing.expectEqual(@as(i64, 2_880_000), try captureTimeout(24, 120_000));
+    try std.testing.expectError(error.InvalidSuiteBudget, captureTimeout(0, 120_000));
+    try std.testing.expectError(error.InvalidSuiteBudget, captureTimeout(1, 0));
+    try std.testing.expectError(error.InvalidSuiteBudget, captureTimeout(std.math.maxInt(usize), 120_000));
+    try std.testing.expectError(error.InvalidSuiteBudget, captureTimeout(2, std.math.maxInt(i64)));
+}
+
 pub const SuiteContext = struct {
     execution_cwd: ?[]const u8,
     case_source_base: ?[]const u8,

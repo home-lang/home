@@ -26,6 +26,14 @@ pub const Result = struct {
     module_graph_files: []const []const u8 = &.{},
 };
 
+fn canonicalPathAlloc(allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error![]u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Unresolved entries must still be compared by their original path.
+        else => allocator.dupe(u8, path),
+    };
+}
+
 /// Filter `test_files` in place to only the entries whose module graph
 /// reaches a changed file. On success, `test_files` is compacted (preserving
 /// order) and the new length is returned via `Result.test_files`.
@@ -169,10 +177,13 @@ pub fn filter(
         if (!source.path.isFile()) continue;
         // All scanned entry points are absolute, and the resolver emits
         // absolute file paths as well.
-        path_to_index.putAssumeCapacity(path_text, @intCast(idx));
-        // Copy out of the bundler's arena so the caller can use these paths
-        // after the BundleV2 heap is gone.
-        graph_files.appendAssumeCapacity(try allocator.dupe(u8, path_text));
+        // Git and entry points can name the same file through different
+        // symlink spellings (for example /var and /private/var on macOS).
+        // Compare filesystem identities while retaining the caller's test
+        // paths for execution and reporting.
+        const canonical = try canonicalPathAlloc(allocator, path_text);
+        graph_files.appendAssumeCapacity(canonical);
+        path_to_index.putAssumeCapacity(canonical, @intCast(idx));
     }
 
     for (import_records, 0..) |records, idx| {
@@ -191,7 +202,9 @@ pub fn filter(
     const slot_to_source = try allocator.alloc(?u32, test_files.len);
     defer allocator.free(slot_to_source);
     for (test_files, slot_to_source) |tf, *out| {
-        out.* = path_to_index.get(tf.slice());
+        const canonical = try canonicalPathAlloc(allocator, tf.slice());
+        defer allocator.free(canonical);
+        out.* = path_to_index.get(canonical);
     }
 
     // BFS backward from every changed file that participates in the graph.
@@ -203,7 +216,8 @@ pub fn filter(
     {
         var it = changed_files.map.iterator();
         while (it.next()) |entry| {
-            const changed_path = entry.key_ptr.*;
+            const changed_path = try canonicalPathAlloc(allocator, entry.key_ptr.*);
+            defer allocator.free(changed_path);
             if (path_to_index.get(changed_path)) |idx| {
                 if (!affected.isSet(idx)) {
                     affected.set(idx);
@@ -226,7 +240,9 @@ pub fn filter(
     // test files that failed to enter the graph for any reason).
     var write: usize = 0;
     for (test_files, slot_to_source) |tf, maybe_source| {
-        const keep = changed_files.contains(tf.slice()) or
+        const canonical = try canonicalPathAlloc(allocator, tf.slice());
+        defer allocator.free(canonical);
+        const keep = changed_files.contains(tf.slice()) or changed_files.contains(canonical) or
             (if (maybe_source) |src| affected.isSet(src) else false);
 
         if (keep) {

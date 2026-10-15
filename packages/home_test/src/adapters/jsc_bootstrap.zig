@@ -5887,6 +5887,9 @@ pub const HomeCapturedOptions = struct {
     // Ordinary captured invocations retain their inherited launch context.
     corpus_project_root: ?[]const u8 = null,
     corpus_file: ?corpus_launch.File = null,
+    // Distinct source count supplied by the native suite inventory, not an
+    // override of the upstream test/file launch profile.
+    suite_file_count: usize = 0,
     setup_operation: ?corpus_launch.SetupOperation = null,
     services: corpus_launch.Services = .{},
     corpus_validation_root: ?[]const u8 = null,
@@ -5953,7 +5956,10 @@ pub fn runHomeCapturedWithOptions(
         validation_file.relative_path = options.corpus_validation_relative_path orelse validation_file.relative_path;
         try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, validation_file, options.corpus_validation_root orelse options.corpus_project_root orelse return error.MissingCorpusProject);
     };
-    const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
+    const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else if (options.suite_file_count > 0)
+        try @import("../corpus_suite_plan.zig").captureTimeout(options.suite_file_count, home_corpus_child_timeout_ms)
+    else
+        home_corpus_child_timeout_ms;
     if (options.record) |record| try record.journal.start(record, invocation.argv, timeout_ms, options.corpus_project_root, &invocation.environ_map);
     var core_before = if (options.core_tracker) |tracker| try tracker.snapshot() else null;
     defer if (core_before) |*snapshot| snapshot.deinit();
