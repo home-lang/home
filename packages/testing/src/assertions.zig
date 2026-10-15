@@ -51,13 +51,13 @@ pub const Assert = struct {
     }
 
     /// Assert that an expression returns an error
-    pub fn expectError(comptime E: type, result: anytype) !void {
+    pub fn expectError(expected_error: anyerror, result: anytype) !void {
         if (result) |_| {
             std.debug.print("Assertion failed: expected error, got success\n", .{});
             return error.AssertionFailed;
         } else |err| {
-            if (@TypeOf(err) != E) {
-                std.debug.print("Assertion failed: expected error type {}, got {}\n", .{ E, @TypeOf(err) });
+            if (err != expected_error) {
+                std.debug.print("Assertion failed: expected error {s}, got {s}\n", .{ @errorName(expected_error), @errorName(err) });
                 return error.AssertionFailed;
             }
         }
@@ -137,6 +137,7 @@ pub const Fixture = struct {
     setup_fn: ?*const fn (*Fixture) anyerror!void = null,
     teardown_fn: ?*const fn (*Fixture) anyerror!void = null,
     data: ?*anyopaque = null,
+    data_destroy_fn: ?*const fn (std.mem.Allocator, *anyopaque) void = null,
 
     pub fn init(allocator: std.mem.Allocator) Fixture {
         return .{
@@ -156,11 +157,23 @@ pub const Fixture = struct {
         }
     }
 
+    pub fn deinit(self: *Fixture) void {
+        self.clearData();
+        self.* = undefined;
+    }
+
     pub fn setData(self: *Fixture, data: anytype) !void {
         const T = @TypeOf(data);
         const ptr = try self.allocator.create(T);
         ptr.* = data;
+        self.clearData();
         self.data = ptr;
+        self.data_destroy_fn = struct {
+            fn destroy(allocator: std.mem.Allocator, erased: *anyopaque) void {
+                const typed: *T = @ptrCast(@alignCast(erased));
+                allocator.destroy(typed);
+            }
+        }.destroy;
     }
 
     pub fn getData(self: *Fixture, comptime T: type) ?*T {
@@ -169,12 +182,19 @@ pub const Fixture = struct {
         }
         return null;
     }
+
+    fn clearData(self: *Fixture) void {
+        if (self.data) |data| self.data_destroy_fn.?(self.allocator, data);
+        self.data = null;
+        self.data_destroy_fn = null;
+    }
 };
 
 /// Mock/Stub framework
 pub const Mock = struct {
     calls: std.ArrayList(Call),
     allocator: std.mem.Allocator,
+    io: std.Io,
 
     pub const Call = struct {
         function_name: []const u8,
@@ -183,9 +203,14 @@ pub const Mock = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) Mock {
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io());
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: std.Io) Mock {
         return .{
-            .calls = std.ArrayList(Call).init(allocator),
+            .calls = .empty,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -194,14 +219,20 @@ pub const Mock = struct {
             self.allocator.free(call.function_name);
             self.allocator.free(call.args);
         }
-        self.calls.deinit();
+        self.calls.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn recordCall(self: *Mock, function_name: []const u8, args: []const u8) !void {
-        try self.calls.append(.{
-            .function_name = try self.allocator.dupe(u8, function_name),
-            .args = try self.allocator.dupe(u8, args),
-            .timestamp = std.time.timestamp(),
+        const owned_name = try self.allocator.dupe(u8, function_name);
+        errdefer self.allocator.free(owned_name);
+        const owned_args = try self.allocator.dupe(u8, args);
+        errdefer self.allocator.free(owned_args);
+
+        try self.calls.append(self.allocator, .{
+            .function_name = owned_name,
+            .args = owned_args,
+            .timestamp = std.Io.Clock.real.now(self.io).toSeconds(),
         });
     }
 
@@ -229,7 +260,7 @@ pub const Mock = struct {
             self.allocator.free(call.function_name);
             self.allocator.free(call.args);
         }
-        self.calls.clearAndFree();
+        self.calls.clearAndFree(self.allocator);
     }
 };
 
