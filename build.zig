@@ -558,6 +558,8 @@ pub fn build(b: *std.Build) void {
         }
     }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
+    const cache_driver_pkg = createPackage(b, "packages/cache/src/cache.zig", target, optimize, zig_test_framework);
+    const incremental_cache_pkg = createPackage(b, "packages/cache/src/incremental.zig", target, optimize, zig_test_framework);
     const threading_futex_pkg = createPackage(b, "packages/runtime/src/threading/Futex.zig", target, optimize, zig_test_framework);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
     threading_pkg.addImport("threading_futex", threading_futex_pkg);
@@ -1503,6 +1505,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    cache_tests.root_module.addImport("cache", cache_driver_pkg);
+    cache_tests.root_module.addImport("incremental_cache", incremental_cache_pkg);
     cache_tests.root_module.addImport("ir_cache", cache_pkg);
     const run_cache_tests = b.addRunArtifact(cache_tests);
 

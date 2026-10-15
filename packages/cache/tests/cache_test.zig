@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const cache_pkg = @import("cache");
+const incremental_cache = @import("incremental_cache");
 const ir_cache = @import("ir_cache");
 
 // Cache system tests
@@ -8,10 +9,83 @@ const ir_cache = @import("ir_cache");
 
 test "cache - basic compilation" {
     testing.refAllDecls(cache_pkg);
+    testing.refAllDecls(incremental_cache);
     testing.refAllDecls(cache_pkg.Cache);
     testing.refAllDecls(cache_pkg.MemoryCacheDriver);
     testing.refAllDecls(cache_pkg.FilesystemCacheDriver);
     testing.refAllDecls(cache_pkg.RedisCacheDriver);
+}
+
+test "incremental source cache owns registrations and metadata" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const cache_dir = try std.fs.path.join(allocator, &.{ root, "source-cache" });
+    defer allocator.free(cache_dir);
+    const source_path = try std.fs.path.join(allocator, &.{ root, "entry.home" });
+    defer allocator.free(source_path);
+    const artifact_path = try std.fs.path.join(allocator, &.{ root, "entry.ir" });
+    defer allocator.free(artifact_path);
+
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = source_path, .data = "return 1" });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = artifact_path, .data = "owned-ir" });
+
+    var compiler = try incremental_cache.IncrementalCompiler.init(allocator, cache_dir, testing.io);
+    defer compiler.deinit();
+    try compiler.registerModule(source_path, &.{}, .{ .ir_path = artifact_path });
+    try testing.expect(!try compiler.needsRecompilation(source_path));
+
+    try compiler.saveMetadata(source_path, "type-metadata");
+    const metadata = (try compiler.loadMetadata(source_path)).?;
+    defer allocator.free(metadata);
+    try testing.expectEqualStrings("type-metadata", metadata);
+
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = source_path, .data = "return 2" });
+    try testing.expect(try compiler.needsRecompilation(source_path));
+    try compiler.registerModule(source_path, &.{}, .{ .ir_path = artifact_path });
+    try testing.expect(!try compiler.needsRecompilation(source_path));
+    try testing.expectEqual(@as(usize, 1), compiler.getStats().cached_modules);
+
+    try compiler.cleanCache(0);
+    try testing.expect(compiler.getCachedArtifacts(source_path) == null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, artifact_path, .{}));
+}
+
+test "incremental source cache invalidates transitive dependents" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const cache_dir = try std.fs.path.join(allocator, &.{ root, "source-cache" });
+    defer allocator.free(cache_dir);
+    const dependency_path = try std.fs.path.join(allocator, &.{ root, "dependency.home" });
+    defer allocator.free(dependency_path);
+    const dependent_path = try std.fs.path.join(allocator, &.{ root, "dependent.home" });
+    defer allocator.free(dependent_path);
+    const dependency_ir = try std.fs.path.join(allocator, &.{ root, "dependency.ir" });
+    defer allocator.free(dependency_ir);
+    const dependent_ir = try std.fs.path.join(allocator, &.{ root, "dependent.ir" });
+    defer allocator.free(dependent_ir);
+
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = dependency_path, .data = "dependency" });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = dependent_path, .data = "dependent" });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = dependency_ir, .data = "dependency-ir" });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = dependent_ir, .data = "dependent-ir" });
+
+    var compiler = try incremental_cache.IncrementalCompiler.init(allocator, cache_dir, testing.io);
+    defer compiler.deinit();
+    try compiler.registerModule(dependency_path, &.{}, .{ .ir_path = dependency_ir });
+    try compiler.registerModule(dependent_path, &.{dependency_path}, .{ .ir_path = dependent_ir });
+    try testing.expect(!try compiler.needsRecompilation(dependent_path));
+
+    try compiler.invalidate(dependency_path);
+    try testing.expect(compiler.getCachedArtifacts(dependency_path) == null);
+    try testing.expect(compiler.getCachedArtifacts(dependent_path) == null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, dependency_ir, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, dependent_ir, .{}));
 }
 
 test "cache - shipped memory driver" {
