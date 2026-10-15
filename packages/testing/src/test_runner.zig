@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast");
 const interpreter = @import("interpreter");
+const Io = std.Io;
 
 /// Test execution framework
 pub const TestRunner = struct {
@@ -8,6 +9,8 @@ pub const TestRunner = struct {
     tests: std.ArrayList(TestCase),
     results: std.ArrayList(TestResult),
     config: Config,
+    io: Io,
+    program: *const ast.Program,
 
     pub const Config = struct {
         parallel: bool = false,
@@ -30,6 +33,7 @@ pub const TestRunner = struct {
         status: Status,
         duration_ms: u64,
         message: ?[]const u8 = null,
+        message_allocator: ?std.mem.Allocator = null,
 
         pub const Status = enum {
             Passed,
@@ -37,25 +41,39 @@ pub const TestRunner = struct {
             Skipped,
             Timeout,
         };
+
+        pub fn deinit(self: *TestResult) void {
+            if (self.message) |message| self.message_allocator.?.free(message);
+            self.* = undefined;
+        }
     };
 
-    pub fn init(allocator: std.mem.Allocator, config: Config) TestRunner {
+    const ThreadContext = struct {
+        runner: *TestRunner,
+        worker_allocator: std.mem.Allocator,
+        next_index: usize = 0,
+        first_error: ?anyerror = null,
+        mutex: Io.Mutex = .init,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, io: Io, program: *const ast.Program, config: Config) TestRunner {
         return .{
             .allocator = allocator,
-            .tests = std.ArrayList(TestCase).init(allocator),
-            .results = std.ArrayList(TestResult).init(allocator),
+            .tests = .empty,
+            .results = .empty,
             .config = config,
+            .io = io,
+            .program = program,
         };
     }
 
     pub fn deinit(self: *TestRunner) void {
-        self.tests.deinit();
+        self.tests.deinit(self.allocator);
         for (self.results.items) |*result| {
-            if (result.message) |msg| {
-                self.allocator.free(msg);
-            }
+            result.deinit();
         }
-        self.results.deinit();
+        self.results.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Add test case
@@ -67,7 +85,7 @@ pub const TestRunner = struct {
             }
         }
 
-        try self.tests.append(test_case);
+        try self.tests.append(self.allocator, test_case);
     }
 
     /// Run all tests
@@ -82,8 +100,9 @@ pub const TestRunner = struct {
     /// Run tests sequentially
     fn runSequential(self: *TestRunner) !void {
         for (self.tests.items) |test_case| {
-            const result = try self.runSingleTest(test_case);
-            try self.results.append(result);
+            var result = try self.runSingleTest(self.allocator, test_case);
+            errdefer result.deinit();
+            try self.results.append(self.allocator, result);
 
             if (self.config.verbose) {
                 self.printTestResult(&result);
@@ -97,121 +116,107 @@ pub const TestRunner = struct {
 
     /// Run tests in parallel
     fn runParallel(self: *TestRunner) !void {
+        if (self.tests.items.len == 0) return;
+        if (self.config.max_threads == 0) return error.InvalidThreadCount;
+
         const thread_count = @min(self.config.max_threads, self.tests.items.len);
-        var threads = try self.allocator.alloc(std.Thread, thread_count);
+        const threads = try self.allocator.alloc(std.Thread, thread_count);
         defer self.allocator.free(threads);
-
-        var test_index: usize = 0;
-        var test_mutex = std.Thread.Mutex{};
-
-        const ThreadContext = struct {
-            runner: *TestRunner,
-            test_index: *usize,
-            mutex: *std.Thread.Mutex,
-        };
 
         var ctx = ThreadContext{
             .runner = self,
-            .test_index = &test_index,
-            .mutex = &test_mutex,
+            .worker_allocator = std.heap.smp_allocator,
         };
 
+        var spawned: usize = 0;
+        var joined = false;
+        errdefer if (!joined) for (threads[0..spawned]) |thread| thread.join();
         for (threads) |*thread| {
             thread.* = try std.Thread.spawn(.{}, runTestWorker, .{&ctx});
+            spawned += 1;
         }
 
         for (threads) |thread| {
             thread.join();
         }
+        joined = true;
+
+        if (ctx.first_error) |err| return err;
     }
 
-    fn runTestWorker(ctx: *const anyopaque) void {
-        const context: *ThreadContext = @ptrCast(@alignCast(ctx));
-
+    fn runTestWorker(context: *ThreadContext) void {
         while (true) {
-            context.mutex.lock();
-            const index = context.test_index.*;
-            if (index >= context.runner.tests.items.len) {
-                context.mutex.unlock();
-                break;
+            context.mutex.lockUncancelable(context.runner.io);
+            if (context.first_error != null) {
+                context.mutex.unlock(context.runner.io);
+                return;
             }
-            context.test_index.* += 1;
-            context.mutex.unlock();
+
+            const index = context.next_index;
+            if (index >= context.runner.tests.items.len) {
+                context.mutex.unlock(context.runner.io);
+                return;
+            }
+            context.next_index += 1;
+            context.mutex.unlock(context.runner.io);
 
             const test_case = context.runner.tests.items[index];
-            const result = context.runner.runSingleTest(test_case) catch continue;
+            var result = context.runner.runSingleTest(context.worker_allocator, test_case) catch |err| {
+                context.mutex.lockUncancelable(context.runner.io);
+                if (context.first_error == null) context.first_error = err;
+                context.mutex.unlock(context.runner.io);
+                return;
+            };
 
-            context.mutex.lock();
-            context.runner.results.append(result) catch {};
-            context.mutex.unlock();
+            context.mutex.lockUncancelable(context.runner.io);
+            context.runner.results.append(context.runner.allocator, result) catch |err| {
+                result.deinit();
+                if (context.first_error == null) context.first_error = err;
+                context.mutex.unlock(context.runner.io);
+                return;
+            };
+            context.mutex.unlock(context.runner.io);
         }
     }
 
     /// Run a single test
-    fn runSingleTest(self: *TestRunner, test_case: TestCase) !TestResult {
-        const start_time = std.time.milliTimestamp();
+    fn runSingleTest(self: *TestRunner, work_allocator: std.mem.Allocator, test_case: TestCase) !TestResult {
+        const start_time = Io.Clock.awake.now(self.io);
 
         // Create interpreter instance for test execution
-        var interp = interpreter.Interpreter.init(self.allocator);
+        const interp = try interpreter.Interpreter.init(work_allocator, self.program);
         defer interp.deinit();
+        interp.setVerboseTests(false);
+        try interp.interpret();
 
         // Execute test function
-        const status = blk: {
-            // Set timeout
-            var timeout_timer = try std.time.Timer.start();
-
-            // Create test context
-            const test_ctx = TestContext.init(self.allocator);
-            defer test_ctx.deinit();
-
-            // Execute the test function
-            const result = interp.executeFunction(test_case.fn_decl, &.{}) catch |err| {
-                const msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "Test failed with error: {}",
-                    .{err},
-                );
-                return TestResult{
-                    .test_case = test_case,
-                    .status = .Failed,
-                    .duration_ms = @intCast(std.time.milliTimestamp() - start_time),
-                    .message = msg,
-                };
+        _ = interp.executeFunction(test_case.fn_decl, &.{}) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            const message = try std.fmt.allocPrint(
+                work_allocator,
+                "Test failed with error: {s}",
+                .{@errorName(err)},
+            );
+            return .{
+                .test_case = test_case,
+                .status = .Failed,
+                .duration_ms = elapsedMilliseconds(self.io, start_time),
+                .message = message,
+                .message_allocator = work_allocator,
             };
-
-            _ = result;
-
-            // Check timeout
-            if (timeout_timer.read() > self.config.timeout_ms * std.time.ns_per_ms) {
-                break :blk .Timeout;
-            }
-
-            // Check assertions
-            if (test_ctx.failed) {
-                const msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "Assertion failed: {s}",
-                    .{test_ctx.failure_message orelse "unknown"},
-                );
-                return TestResult{
-                    .test_case = test_case,
-                    .status = .Failed,
-                    .duration_ms = @intCast(std.time.milliTimestamp() - start_time),
-                    .message = msg,
-                };
-            }
-
-            break :blk .Passed;
         };
 
-        const duration_ms = @as(u64, @intCast(std.time.milliTimestamp() - start_time));
+        const duration_ms = elapsedMilliseconds(self.io, start_time);
 
-        return TestResult{
+        return .{
             .test_case = test_case,
-            .status = status,
+            .status = if (duration_ms > self.config.timeout_ms) .Timeout else .Passed,
             .duration_ms = duration_ms,
-            .message = null,
         };
+    }
+
+    fn elapsedMilliseconds(io: Io, start: Io.Timestamp) u64 {
+        return @intCast(start.durationTo(Io.Clock.awake.now(io)).toMilliseconds());
     }
 
     /// Print test result
@@ -295,11 +300,17 @@ pub const TestContext = struct {
         if (self.failure_message) |msg| {
             self.allocator.free(msg);
         }
+        self.* = undefined;
     }
 
     pub fn fail(self: *TestContext, message: []const u8) void {
+        const owned = self.allocator.dupe(u8, message) catch {
+            self.failed = true;
+            return;
+        };
+        if (self.failure_message) |previous| self.allocator.free(previous);
         self.failed = true;
-        self.failure_message = self.allocator.dupe(u8, message) catch null;
+        self.failure_message = owned;
     }
 };
 
@@ -323,11 +334,11 @@ pub const Assertions = struct {
         }
     }
 
-    pub fn expectError(comptime E: type, result: anytype) !void {
+    pub fn expectError(expected_error: anyerror, result: anytype) !void {
         if (result) |_| {
             return error.AssertionFailed;
         } else |err| {
-            if (@TypeOf(err) != E) {
+            if (err != expected_error) {
                 return error.AssertionFailed;
             }
         }
@@ -337,8 +348,9 @@ pub const Assertions = struct {
 test "TestRunner basic" {
     const testing = std.testing;
     const allocator = testing.allocator;
+    const program = ast.Program{ .statements = &.{} };
 
-    var runner = TestRunner.init(allocator, .{});
+    var runner = TestRunner.init(allocator, testing.io, &program, .{});
     defer runner.deinit();
 
     // Test would add test cases and run them

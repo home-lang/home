@@ -155,6 +155,17 @@ pub const Interpreter = struct {
         self.verbose_tests = verbose;
     }
 
+    /// Execute one parsed function declaration in the interpreter's global
+    /// environment. Call `interpret` first so sibling declarations and
+    /// built-ins are available to the function body.
+    pub fn executeFunction(self: *Interpreter, function: *ast.FnDecl, args: []const *const ast.Expr) InterpreterError!Value {
+        return self.callUserFunction(.{
+            .name = function.name,
+            .params = function.params,
+            .body = function.body,
+        }, args, &self.global_env);
+    }
+
     pub fn deinit(self: *Interpreter) void {
         // Arena allocator frees all allocated memory at once
         // This includes all strings, arrays, struct fields, AND the environment's HashMap
