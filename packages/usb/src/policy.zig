@@ -2,7 +2,9 @@
 // Port control, class-based restrictions, and security policies
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const usb = @import("usb.zig");
+const Io = std.Io;
 
 /// USB policy action
 pub const PolicyAction = enum {
@@ -78,16 +80,22 @@ pub const PolicyEngine = struct {
     ports: std.ArrayList(Port),
     enforcement: EnforcementLevel,
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    io: Io,
+    mutex: Io.Mutex,
     class_device_count: std.AutoHashMap(usb.DeviceClass, u32),
 
     pub fn init(allocator: std.mem.Allocator, enforcement: EnforcementLevel) PolicyEngine {
+        return initWithIo(allocator, compat.io(), enforcement);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, enforcement: EnforcementLevel) PolicyEngine {
         return .{
             .class_policies = std.AutoHashMap(usb.DeviceClass, ClassPolicy).init(allocator),
             .ports = std.ArrayList(Port).empty,
             .enforcement = enforcement,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .io = io,
+            .mutex = .init,
             .class_device_count = std.AutoHashMap(usb.DeviceClass, u32).init(allocator),
         };
     }
@@ -99,22 +107,22 @@ pub const PolicyEngine = struct {
     }
 
     pub fn addClassPolicy(self: *PolicyEngine, policy: ClassPolicy) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         try self.class_policies.put(policy.device_class, policy);
     }
 
     pub fn addPort(self: *PolicyEngine, port: Port) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         try self.ports.append(self.allocator, port);
     }
 
     pub fn getPortByNumber(self: *PolicyEngine, port_number: u8) ?*Port {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.ports.items) |*port| {
             if (port.number == port_number) return port;
@@ -123,8 +131,8 @@ pub const PolicyEngine = struct {
     }
 
     pub fn disablePort(self: *PolicyEngine, port_number: u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.ports.items) |*port| {
             if (port.number == port_number) {
@@ -137,8 +145,8 @@ pub const PolicyEngine = struct {
     }
 
     pub fn enablePort(self: *PolicyEngine, port_number: u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         for (self.ports.items) |*port| {
             if (port.number == port_number) {
@@ -150,8 +158,8 @@ pub const PolicyEngine = struct {
     }
 
     pub fn checkDevicePolicy(self: *PolicyEngine, device: *const usb.DeviceID) !PolicyAction {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Get policy for this device class
         const policy = self.class_policies.get(device.device_class) orelse {
@@ -175,8 +183,11 @@ pub const PolicyEngine = struct {
     }
 
     pub fn registerDevice(self: *PolicyEngine, device: *const usb.DeviceID, port_number: u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const count = self.class_device_count.get(device.device_class) orelse 0;
+        try self.class_device_count.put(device.device_class, count + 1);
 
         // Update port
         for (self.ports.items) |*port| {
@@ -186,15 +197,11 @@ pub const PolicyEngine = struct {
                 break;
             }
         }
-
-        // Update class count
-        const count = self.class_device_count.get(device.device_class) orelse 0;
-        try self.class_device_count.put(device.device_class, count + 1);
     }
 
     pub fn unregisterDevice(self: *PolicyEngine, device: *const usb.DeviceID, port_number: u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Update port
         for (self.ports.items) |*port| {
@@ -205,16 +212,14 @@ pub const PolicyEngine = struct {
         }
 
         // Update class count
-        if (self.class_device_count.get(device.device_class)) |count| {
-            if (count > 0) {
-                try self.class_device_count.put(device.device_class, count - 1);
-            }
+        if (self.class_device_count.getPtr(device.device_class)) |count| {
+            if (count.* > 0) count.* -= 1;
         }
     }
 
     pub fn getClassDeviceCount(self: *PolicyEngine, device_class: usb.DeviceClass) u32 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         return self.class_device_count.get(device_class) orelse 0;
     }
@@ -291,4 +296,23 @@ test "port control" {
     // Enable port 2
     try engine.enablePort(2);
     try testing.expectEqual(PortStatus.enabled, port2.status);
+}
+
+fn populatePolicyForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var engine = PolicyEngine.initWithIo(allocator, std.testing.io, .enforcing);
+    defer engine.deinit();
+
+    try engine.addClassPolicy(ClassPolicy.init(.hid, .allow).withMaxDevices(2));
+    try engine.addPort(Port.init(1));
+    const device = usb.DeviceID.init(0x046D, 0xC52B, "serial", .hid, "Vendor", "Mouse");
+    try engine.registerDevice(&device, 1);
+    try std.testing.expectEqual(@as(u32, 1), engine.getClassDeviceCount(.hid));
+}
+
+test "policy updates release every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        populatePolicyForAllocationFailure,
+        .{},
+    );
 }

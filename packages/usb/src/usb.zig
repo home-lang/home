@@ -164,3 +164,10 @@ test "device equality" {
     try testing.expect(dev1.eql(&dev2));
     try testing.expect(!dev1.eql(&dev3));
 }
+
+test {
+    std.testing.refAllDecls(auth);
+    std.testing.refAllDecls(auth.Authenticator);
+    std.testing.refAllDecls(policy);
+    std.testing.refAllDecls(policy.PolicyEngine);
+}

@@ -2,7 +2,9 @@
 // Provides whitelist/blacklist management and device authorization
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const usb = @import("usb.zig");
+const Io = std.Io;
 
 /// Device authorization mode
 pub const AuthMode = enum {
@@ -21,10 +23,18 @@ pub const AuthRule = struct {
     created_at: i64,
 
     pub fn init(device_id: usb.DeviceID, allowed: bool, reason: []const u8) AuthRule {
+        return initWithIo(compat.io(), device_id, allowed, reason);
+    }
+
+    pub fn initWithIo(io: Io, device_id: usb.DeviceID, allowed: bool, reason: []const u8) AuthRule {
+        return initAt(compat.nowSeconds(io), device_id, allowed, reason);
+    }
+
+    pub fn initAt(created_at: i64, device_id: usb.DeviceID, allowed: bool, reason: []const u8) AuthRule {
         var rule: AuthRule = undefined;
         rule.device_id = device_id;
         rule.allowed = allowed;
-        rule.created_at = std.time.timestamp();
+        rule.created_at = created_at;
 
         @memset(&rule.reason, 0);
         @memcpy(rule.reason[0..reason.len], reason);
@@ -45,16 +55,22 @@ pub const Authenticator = struct {
     blacklist: std.ArrayList(usb.DeviceID),
     rules: std.ArrayList(AuthRule),
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex,
+    io: Io,
+    mutex: Io.Mutex,
 
     pub fn init(allocator: std.mem.Allocator, mode: AuthMode) Authenticator {
+        return initWithIo(allocator, compat.io(), mode);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, mode: AuthMode) Authenticator {
         return .{
             .mode = mode,
             .whitelist = std.ArrayList(usb.DeviceID).empty,
             .blacklist = std.ArrayList(usb.DeviceID).empty,
             .rules = std.ArrayList(AuthRule).empty,
             .allocator = allocator,
-            .mutex = std.Thread.Mutex{},
+            .io = io,
+            .mutex = .init,
         };
     }
 
@@ -65,8 +81,8 @@ pub const Authenticator = struct {
     }
 
     pub fn addToWhitelist(self: *Authenticator, device: usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Check if already in whitelist
         for (self.whitelist.items) |*dev| {
@@ -74,15 +90,16 @@ pub const Authenticator = struct {
         }
 
         try self.whitelist.append(self.allocator, device);
+        errdefer _ = self.whitelist.pop();
 
         // Add rule
-        const rule = AuthRule.init(device, true, "Whitelisted device");
+        const rule = AuthRule.initWithIo(self.io, device, true, "Whitelisted device");
         try self.rules.append(self.allocator, rule);
     }
 
     pub fn addToBlacklist(self: *Authenticator, device: usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Check if already in blacklist
         for (self.blacklist.items) |*dev| {
@@ -90,15 +107,16 @@ pub const Authenticator = struct {
         }
 
         try self.blacklist.append(self.allocator, device);
+        errdefer _ = self.blacklist.pop();
 
         // Add rule
-        const rule = AuthRule.init(device, false, "Blacklisted device");
+        const rule = AuthRule.initWithIo(self.io, device, false, "Blacklisted device");
         try self.rules.append(self.allocator, rule);
     }
 
     pub fn removeFromWhitelist(self: *Authenticator, device: *const usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var i: usize = 0;
         while (i < self.whitelist.items.len) {
@@ -111,8 +129,8 @@ pub const Authenticator = struct {
     }
 
     pub fn removeFromBlacklist(self: *Authenticator, device: *const usb.DeviceID) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         var i: usize = 0;
         while (i < self.blacklist.items.len) {
@@ -125,8 +143,8 @@ pub const Authenticator = struct {
     }
 
     pub fn isAuthorized(self: *Authenticator, device: *const usb.DeviceID) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         return switch (self.mode) {
             .allow_all => true,
@@ -147,22 +165,22 @@ pub const Authenticator = struct {
     }
 
     pub fn setMode(self: *Authenticator, mode: AuthMode) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         self.mode = mode;
     }
 
     pub fn getWhitelistCount(self: *Authenticator) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         return self.whitelist.items.len;
     }
 
     pub fn getBlacklistCount(self: *Authenticator) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         return self.blacklist.items.len;
     }
@@ -232,4 +250,32 @@ test "mode switching" {
     // Add to whitelist
     try auth.addToWhitelist(dev);
     try testing.expect(auth.isAuthorized(&dev));
+}
+
+fn populateAuthenticatorForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var auth = Authenticator.initWithIo(allocator, std.testing.io, .whitelist);
+    defer auth.deinit();
+
+    const allowed = usb.DeviceID.init(0x046D, 0xC52B, "allowed", .hid, "Vendor", "Mouse");
+    const denied = usb.DeviceID.init(0x0781, 0x5567, "denied", .mass_storage, "Vendor", "Drive");
+    try auth.addToWhitelist(allowed);
+    try auth.addToBlacklist(denied);
+    try std.testing.expectEqual(@as(usize, 1), auth.getWhitelistCount());
+    try std.testing.expectEqual(@as(usize, 1), auth.getBlacklistCount());
+    try std.testing.expectEqual(@as(usize, 2), auth.rules.items.len);
+}
+
+test "authenticator updates remain coherent across every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        populateAuthenticatorForAllocationFailure,
+        .{},
+    );
+}
+
+test "authorization rule accepts an explicit timestamp" {
+    const dev = usb.DeviceID.init(0x046D, 0xC52B, "serial", .hid, "Vendor", "Mouse");
+    const rule = AuthRule.initAt(1234, dev, true, "test rule");
+    try std.testing.expectEqual(@as(i64, 1234), rule.created_at);
+    try std.testing.expectEqualStrings("test rule", rule.getReason());
 }
