@@ -114852,6 +114852,43 @@ pub const Checker = struct {
         return null;
     }
 
+    // A class can contain an inferred field that needs its owner's checker
+    // while an annotated sibling is independently transferable. Keep the
+    // legacy field fallback, but retain complete, supported member types.
+    fn programClassOwnMember(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?types.ObjectMember {
+        if (declaration.contextual_only or declaration.parameters.len != args.len) return null;
+        var own = declaration.body orelse return null;
+        // classBody stores the own surface last after any heritage clauses.
+        if (own.* == .intersection) {
+            if (own.intersection.len == 0) return null;
+            own = own.intersection[own.intersection.len - 1];
+        }
+        if (own.* != .object) return null;
+        for (own.object) |member| {
+            if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+            if (!try ProgramClassSchema.Schema.expressionSupported(member.type, self.gpa)) return null;
+            const member_t = self.lowerProgramExpression(member.type, declaration, args) catch |err| switch (err) {
+                error.UnsupportedProgramType => return null,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            return .{
+                .name = member_name,
+                .type = member_t,
+                .is_optional = member.optional,
+                .is_readonly = member.readonly,
+                .is_method = member.method,
+                .visibility = member.visibility,
+                .declaration_origin = if (member.visibility == .public) 0 else try self.programSchemaDeclarationOrigin(declaration),
+            };
+        }
+        return null;
+    }
+
     fn syntheticProgramClassStaticType(
         self: *Checker,
         exported_class: ProgramExportedClass,
@@ -114902,6 +114939,14 @@ pub const Checker = struct {
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
             const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+            if (!exported_class.schema_member_projection_only) {
+                if (exported_class.schema) |schema| {
+                    if (try self.programClassOwnMember(schema.declaration, class_params.items, member_name)) |projected| {
+                        try instance_members.append(self.gpa, projected);
+                        continue;
+                    }
+                }
+            }
             const member_t = try self.programExportedClassMemberType(member.type_name);
             try instance_members.append(self.gpa, .{
                 .name = member_name,

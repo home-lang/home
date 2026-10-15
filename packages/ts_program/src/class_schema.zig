@@ -791,7 +791,11 @@ pub const Builder = struct {
                         .literal_string => c.interner.get(hir.literalStringOf(&c.hir, property.key).value),
                         else => return self.expression(.unsupported),
                     };
-                    if (std.mem.startsWith(u8, name, "#") or property.is_method) return self.expression(.unsupported);
+                    if (property.is_method) return self.expression(.unsupported);
+                    if (std.mem.startsWith(u8, name, "#")) {
+                        try members.append(self.arena, .{ .name = name, .type = try self.expression(.unsupported), .visibility = .private });
+                        continue;
+                    }
                     // Inferred fields and computed methods require the owner's
                     // checked type, not a guess from an initializer expression.
                     const value = property.type_annotation;
@@ -1460,7 +1464,7 @@ pub const Builder = struct {
 };
 
 const T = std.testing;
-const TestFile = struct { path: []const u8, text: []const u8 };
+const TestFile = struct { path: []const u8, text: []const u8, syntax_target_es2015: bool = false };
 const TestGraph = struct {
     vfs: resolver_mod.VirtualFs,
     resolver: resolver_mod.Resolver,
@@ -1473,7 +1477,7 @@ const TestGraph = struct {
         errdefer graph.deinit();
         for (files) |file| {
             try graph.vfs.addFile(file.path, file.text);
-            const compilation = try driver.prepareSource(T.allocator, file.text, .{});
+            const compilation = try driver.prepareSource(T.allocator, file.text, .{ .syntax_target_es2015 = file.syntax_target_es2015 });
             errdefer {
                 compilation.deinit();
                 T.allocator.destroy(compilation);
@@ -2331,4 +2335,19 @@ test "class schema: collection shares declarations and survives collector releas
     try T.expectEqual(@as(usize, 3), base.shared_graph.?.references);
     try T.expect(try base.isSupported(T.allocator));
     try T.expect(try derived.isSupported(T.allocator));
+}
+
+test "class schema: private inferred fields retain independently typed sibling methods" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .syntax_target_es2015 = true, .text =
+        \\export class Driver<T> { readonly #data = []; search(): Promise<T[]> { return [] as any; } }
+    }});
+    defer graph.deinit();
+    const driver_schema = try graph.class(0, "Driver");
+    defer driver_schema.deinit(T.allocator);
+    try T.expect(!try driver_schema.isSupported(T.allocator));
+    const members = driver_schema.declaration.body.?.object;
+    try T.expectEqual(@as(usize, 2), members.len);
+    try T.expect(members[0].type.* == .unsupported);
+    try T.expectEqualStrings("search", members[1].name);
+    try T.expect(members[1].type.* == .function);
 }

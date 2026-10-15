@@ -18078,3 +18078,31 @@ test "Program: declaration post-pass diagnostics honor library skip options in s
         }
     }
 }
+
+test "Program: inferred imported generic method results survive unrelated inferred fields" {
+    for ([_]bool{ false, true }) |parallel| {
+        for ([_][]const u8{ "data", "#data" }) |field| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const owner = try std.fmt.allocPrint(T.allocator, "export interface Result<R> {{ hits: R[] }} export class Driver<R> {{ readonly {s} = []; search(): Result<R> {{ return {{ hits: [] as R[] }}; }} }}", .{field});
+            defer T.allocator.free(owner);
+            const main = "import { Driver } from './driver.js'; interface Product { id: number } const driver = new Driver<Product>(); const result = driver.search(); result.hits.map(row => { const good: number = row.id; const wrong: string = row.id; row.missing; return good; });";
+            try vfs.addFile("/proj/driver.ts", owner);
+            try vfs.addFile("/proj/main.ts", main);
+            _ = try program.add("/proj/driver.ts", owner);
+            const app = try program.add("/proj/main.ts", main);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true }, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable } };
+            if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+            const compilation = program.fileById(app).compilation.?;
+            try expectCompilationLacksDiagnosticCode(compilation, 7006);
+            try expectCompilationHasDiagnosticCode(compilation, 2322);
+            try expectCompilationHasDiagnosticCode(compilation, 2339);
+            try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+        }
+    }
+}

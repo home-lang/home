@@ -1308,3 +1308,35 @@ Final validation peaks at **2,183 MB**. Formatting is whitespace-only relative
 to the tested source; all 4,190 frozen inputs remain unchanged. Earlier
 negative-control failures are retained; real-project sources and diagnostic
 text are excluded.
+
+## Independently transferable imported class members
+
+An imported class with inferred fields previously lost its annotated method
+signatures when its entire source schema could not be transferred. Private
+fields also discarded the whole class body during schema collection. The
+collector now retains a private field as an unsupported member, and the
+synthetic class fallback transfers each independently supported own member
+with its original generic arguments, visibility, optionality and readonly
+metadata. Unsupported or contextual-only member graphs retain their fallback.
+
+The production table entrypoint now passes with both native TypeScript and
+home-tsc. All **306 original inputs** remain unchanged. A planted invalid
+`perPage` value produces **TS2322 at line 3, column 42** in both compilers.
+The build and project replay peak at **2,861 MB** under the unchanged
+**3,840 MB** guard. This qualifies the tested table noEmit entrypoint; the
+remaining project inventory, compiler API uses, emit, build and watch modes
+still require qualification.
+
+A disabled-fix control restores TS7006 in the new Program regression. Focused
+installed-library controls cover public/private Map fields with direct and
+Map-based bodies, matching native diagnostic codes and locations in all
+**30 observations**. All **4,622 checker tests and 305 Program tests** pass. The reusable CLI
+contract passes **24 observations** covering direct and barrel imports beside
+inferred fields.
+
+All **eleven Release CLI suites** pass. Final validation peaks at **2,374 MB**,
+and all **4,191 frozen inputs** remain unchanged. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-class-field-final.tar.gz` contains
+**3,017 verified payloads**, SHA-256
+`bc8cc18be2c33406b79ef07181eacf7197bb4cd9b14d33b062b96fb8f6e24895`.
+Real-project source and diagnostic text are excluded from the archive.
