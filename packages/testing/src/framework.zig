@@ -1,8 +1,10 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// Comprehensive testing framework with coverage, benchmarking, and property testing
 pub const TestFramework = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     tests: std.ArrayList(TestCase),
     suites: std.ArrayList(TestSuite),
     coverage: Coverage,
@@ -37,7 +39,7 @@ pub const TestFramework = struct {
         failed: bool = false,
         assertions: usize = 0,
         failures: std.ArrayList(Failure),
-        start_time: i64,
+        start_time: Io.Timestamp,
 
         pub const Failure = struct {
             message: []const u8,
@@ -46,11 +48,15 @@ pub const TestFramework = struct {
         };
 
         pub fn init(allocator: std.mem.Allocator, name: []const u8) TestContext {
+            return TestContext.initWithIo(allocator, Io.Threaded.global_single_threaded.io(), name);
+        }
+
+        pub fn initWithIo(allocator: std.mem.Allocator, io: Io, name: []const u8) TestContext {
             return .{
                 .allocator = allocator,
                 .name = name,
-                .failures = std.ArrayList(Failure).init(allocator),
-                .start_time = std.time.milliTimestamp(),
+                .failures = .empty,
+                .start_time = Io.Clock.awake.now(io),
             };
         }
 
@@ -60,7 +66,8 @@ pub const TestFramework = struct {
             for (self.failures.items) |f| {
                 self.allocator.free(f.message);
             }
-            self.failures.deinit();
+            self.failures.deinit(self.allocator);
+            self.* = undefined;
         }
 
         /// Assert that condition is true
@@ -72,7 +79,7 @@ pub const TestFramework = struct {
                 // ownership semantics (freed by deinit).
                 const msg = try self.allocator.dupe(u8, message);
                 errdefer self.allocator.free(msg);
-                try self.failures.append(.{
+                try self.failures.append(self.allocator, .{
                     .message = msg,
                     .file = "unknown",
                     .line = 0,
@@ -91,7 +98,7 @@ pub const TestFramework = struct {
                     .{ expected, actual },
                 );
                 errdefer self.allocator.free(msg);
-                try self.failures.append(.{
+                try self.failures.append(self.allocator, .{
                     .message = msg,
                     .file = "unknown",
                     .line = 0,
@@ -110,7 +117,7 @@ pub const TestFramework = struct {
                     .{expected},
                 );
                 errdefer self.allocator.free(msg);
-                try self.failures.append(.{
+                try self.failures.append(self.allocator, .{
                     .message = msg,
                     .file = "unknown",
                     .line = 0,
@@ -133,7 +140,7 @@ pub const TestFramework = struct {
                     .{@errorName(expected_error)},
                 );
                 errdefer self.allocator.free(msg);
-                try self.failures.append(.{
+                try self.failures.append(self.allocator, .{
                     .message = msg,
                     .file = "unknown",
                     .line = 0,
@@ -147,7 +154,7 @@ pub const TestFramework = struct {
                         .{ @errorName(expected_error), @errorName(err) },
                     );
                     errdefer self.allocator.free(msg);
-                    try self.failures.append(.{
+                    try self.failures.append(self.allocator, .{
                         .message = msg,
                         .file = "unknown",
                         .line = 0,
@@ -162,7 +169,7 @@ pub const TestFramework = struct {
             // Dupe for consistent ownership — deinit frees all messages.
             const msg = try self.allocator.dupe(u8, message);
             errdefer self.allocator.free(msg);
-            try self.failures.append(.{
+            try self.failures.append(self.allocator, .{
                 .message = msg,
                 .file = "unknown",
                 .line = 0,
@@ -200,9 +207,10 @@ pub const TestFramework = struct {
             var it = self.files.valueIterator();
             while (it.next()) |fc| {
                 fc.lines.deinit();
-                fc.branches.deinit();
+                fc.branches.deinit(self.allocator);
             }
             self.files.deinit();
+            self.* = undefined;
         }
 
         pub fn recordLine(self: *Coverage, file: []const u8, line: u32) !void {
@@ -211,7 +219,7 @@ pub const TestFramework = struct {
                 file_cov.value_ptr.* = FileCoverage{
                     .path = file,
                     .lines = std.AutoHashMap(u32, u32).init(self.allocator),
-                    .branches = std.ArrayList(FileCoverage.BranchCoverage).init(self.allocator),
+                    .branches = .empty,
                 };
             }
 
@@ -275,16 +283,33 @@ pub const TestFramework = struct {
             iterations: usize,
             func: *const fn () void,
         ) !Benchmark {
-            _ = allocator;
+            return runWithIo(
+                allocator,
+                Io.Threaded.global_single_threaded.io(),
+                name,
+                iterations,
+                func,
+            );
+        }
 
-            var timer = try std.time.Timer.start();
+        pub fn runWithIo(
+            allocator: std.mem.Allocator,
+            io: Io,
+            name: []const u8,
+            iterations: usize,
+            func: *const fn () void,
+        ) !Benchmark {
+            _ = allocator;
+            if (iterations == 0) return error.InvalidIterations;
+
+            const start = Io.Clock.awake.now(io);
 
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
                 func();
             }
 
-            const elapsed = timer.read();
+            const elapsed: u64 = @intCast(start.durationTo(Io.Clock.awake.now(io)).toNanoseconds());
 
             return Benchmark{
                 .name = name,
@@ -311,27 +336,35 @@ pub const TestFramework = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) TestFramework {
+        return TestFramework.initWithIo(allocator, Io.Threaded.global_single_threaded.io(), config);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, config: Config) TestFramework {
         return .{
             .allocator = allocator,
-            .tests = std.ArrayList(TestCase).init(allocator),
-            .suites = std.ArrayList(TestSuite).init(allocator),
+            .io = io,
+            .tests = .empty,
+            .suites = .empty,
             .coverage = Coverage.init(allocator),
             .config = config,
         };
     }
 
     pub fn deinit(self: *TestFramework) void {
-        self.tests.deinit();
-        self.suites.deinit();
+        for (self.suites.items) |*suite| suite.tests.deinit(self.allocator);
+        self.tests.deinit(self.allocator);
+        self.suites.deinit(self.allocator);
         self.coverage.deinit();
+        self.* = undefined;
     }
 
     pub fn registerTest(self: *TestFramework, test_case: TestCase) !void {
-        try self.tests.append(test_case);
+        try self.tests.append(self.allocator, test_case);
     }
 
+    /// Takes ownership of `suite.tests` after a successful append.
     pub fn registerSuite(self: *TestFramework, suite: TestSuite) !void {
-        try self.suites.append(suite);
+        try self.suites.append(self.allocator, suite);
     }
 
     pub fn run(self: *TestFramework) !TestResults {
@@ -343,7 +376,7 @@ pub const TestFramework = struct {
             .duration_ms = 0,
         };
 
-        const start_time = std.time.milliTimestamp();
+        const start_time = Io.Clock.awake.now(self.io);
 
         // Run standalone tests
         for (self.tests.items) |test_case| {
@@ -353,21 +386,13 @@ pub const TestFramework = struct {
             }
 
             results.total += 1;
-            var ctx = TestContext.init(self.allocator, test_case.name);
+            var ctx = TestContext.initWithIo(self.allocator, self.io, test_case.name);
             defer ctx.deinit();
 
             test_case.func(&ctx) catch |err| {
+                if (err == error.OutOfMemory) return err;
                 ctx.failed = true;
-                const msg = try std.fmt.allocPrint(
-                    self.allocator,
-                    "Test threw error: {s}",
-                    .{@errorName(err)},
-                );
-                try ctx.failures.append(.{
-                    .message = msg,
-                    .file = "unknown",
-                    .line = 0,
-                });
+                try appendError(&ctx, "Test threw error", err);
             };
 
             if (ctx.failed) {
@@ -395,46 +420,34 @@ pub const TestFramework = struct {
                 }
 
                 results.total += 1;
-                var ctx = TestContext.init(self.allocator, test_case.name);
+                var ctx = TestContext.initWithIo(self.allocator, self.io, test_case.name);
                 defer ctx.deinit();
 
                 // Run setup
                 if (suite.setup) |setup| {
                     setup(&ctx) catch |err| {
+                        if (err == error.OutOfMemory) return err;
                         ctx.failed = true;
-                        const msg = try std.fmt.allocPrint(
-                            self.allocator,
-                            "Setup threw error: {s}",
-                            .{@errorName(err)},
-                        );
-                        try ctx.failures.append(.{
-                            .message = msg,
-                            .file = "unknown",
-                            .line = 0,
-                        });
+                        try appendError(&ctx, "Setup threw error", err);
                     };
                 }
 
                 // Run test
                 if (!ctx.failed) {
                     test_case.func(&ctx) catch |err| {
+                        if (err == error.OutOfMemory) return err;
                         ctx.failed = true;
-                        const msg = try std.fmt.allocPrint(
-                            self.allocator,
-                            "Test threw error: {s}",
-                            .{@errorName(err)},
-                        );
-                        try ctx.failures.append(.{
-                            .message = msg,
-                            .file = "unknown",
-                            .line = 0,
-                        });
+                        try appendError(&ctx, "Test threw error", err);
                     };
                 }
 
                 // Run teardown
                 if (suite.teardown) |teardown| {
-                    teardown(&ctx) catch {};
+                    teardown(&ctx) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        ctx.failed = true;
+                        try appendError(&ctx, "Teardown threw error", err);
+                    };
                 }
 
                 if (ctx.failed) {
@@ -445,9 +458,19 @@ pub const TestFramework = struct {
             }
         }
 
-        results.duration_ms = @intCast(std.time.milliTimestamp() - start_time);
+        results.duration_ms = @intCast(start_time.durationTo(Io.Clock.awake.now(self.io)).toMilliseconds());
 
         return results;
+    }
+
+    fn appendError(ctx: *TestContext, prefix: []const u8, err: anyerror) !void {
+        const message = try std.fmt.allocPrint(ctx.allocator, "{s}: {s}", .{ prefix, @errorName(err) });
+        errdefer ctx.allocator.free(message);
+        try ctx.failures.append(ctx.allocator, .{
+            .message = message,
+            .file = "unknown",
+            .line = 0,
+        });
     }
 
     pub const TestResults = struct {
@@ -474,3 +497,7 @@ pub const TestFramework = struct {
         }
     };
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}
