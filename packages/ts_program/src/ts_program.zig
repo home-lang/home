@@ -18154,3 +18154,30 @@ test "Program: default-exported interface aliases retain their structural type" 
     try expectCompilationHasDiagnosticCode(compilation, 2322);
     try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
 }
+
+test "Program: imported abstract bases preserve protected annotated fields" {
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const types_source = "export interface Config { value: string }";
+        const base = "import type { Config } from './types.js';\nexport abstract class Base {\n protected config: Config;\n protected inferred = 'x';\n constructor(config: Config) { this.config = config; }\n abstract run(): string;\n}";
+        const main = "import { Base } from './base.js';\nexport class Derived extends Base { run(): string { const good: string = this.config.value; const wrong: number = this.config.value; return good; } }";
+        try vfs.addFile("/proj/types.ts", types_source);
+        try vfs.addFile("/proj/base.ts", base);
+        try vfs.addFile("/proj/main.ts", main);
+        _ = try program.add("/proj/types.ts", types_source);
+        _ = try program.add("/proj/base.ts", base);
+        const app = try program.add("/proj/main.ts", main);
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict_flags = .{ .strict_null_checks = true }, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+        const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    }
+}

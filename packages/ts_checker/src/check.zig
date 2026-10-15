@@ -56207,6 +56207,9 @@ pub const Checker = struct {
                     }
                     break :blk inherited_t;
                 }
+                // Imported constructor presence may otherwise recover as any
+                // before its declaration-owned instance surface is requested.
+                if (try self.programExportedClassInstanceTypeForImportedName(id.name, extends_expr)) |t| break :blk t;
                 if (try self.resolveForwardClassInstanceType(extends_expr, id.name)) |t| break :blk t;
                 if (self.lowerBuiltinObjectType(self.string_interner.get(id.name))) |t| break :blk t;
                 if (try self.jsConstructorInstanceTypeForHeritage(extends_expr, id.name)) |t| {
@@ -114850,12 +114853,10 @@ pub const Checker = struct {
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
             const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
-            if (!exported_class.schema_member_projection_only) {
-                if (exported_class.schema) |schema| {
-                    if (try self.programClassOwnMember(schema.declaration, class_params.items, member_name)) |projected| {
-                        try instance_members.append(self.gpa, projected);
-                        continue;
-                    }
+            if (exported_class.schema) |schema| {
+                if (try self.programClassOwnMember(schema.declaration, class_params.items, member_name)) |projected| {
+                    try instance_members.append(self.gpa, projected);
+                    continue;
                 }
             }
             const member_t = try self.programExportedClassMemberType(member.type_name);

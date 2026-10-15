@@ -1449,3 +1449,42 @@ original inputs unchanged. Evidence:
 `e386d58d3138b515b07831bb20a532c8eba39ab285e3b48cd66e9c9526d949ce`.
 Initial failed controls are retained; real-project source and diagnostic text
 are excluded.
+
+## Imported base instance fields
+
+Bare identifier heritage resolved constructor presence before requesting an
+imported class's declaration-owned instance surface. The resulting `any` base
+contributed no fields to the derived class. Heritage now requests the imported
+instance after local shadowing checks and before fallback. Independently
+supported annotated members also transfer for projection-only class schemas;
+the whole-object schema admission boundary remains in place.
+
+The **36-observation** contract covers direct, renamed and barrel imports,
+generic bases with defaults, valid protected reads, wrong result assignments
+and rejected protected access outside the class. Serial/parallel Program tests
+require the inherited field's exact string type and a retained TS2322.
+
+The unchanged 370-input ts-auth graph loses **38 TS2339, four TS4113 and three
+TS2347 reports**. Three TS2345 reports are newly exposed at URLSearchParams
+object arguments after inherited members acquire their types; the base class
+already reported the same argument-shape discrepancy. Native exits
+zero; Home reports **306 diagnostics at 51 distinct code/location pairs**.
+Those errors and whole-tree replacement remain unqualified. Production build
+peaks at **2,798 MB**, and project/contract replay at **1,271 MB**, under the
+unchanged **3,840 MB** guard.
+
+Both disabled-fix controls fail: removing heritage lookup produces missing-field
+errors; disabling exact member projection loses the planted wrong-assignment
+error. All **4,624 checker tests** pass on the restored source.
+
+All **308 Program tests and thirteen existing Release CLI suites** pass.
+Final validation peaks at **2,261 MB**, and all **4,194 frozen inputs** remain
+unchanged. The prior public-import and parameter-default contracts remain
+green with this compiler.
+
+The table positive and planted-negative checks pass with all 306 original inputs
+unchanged. Evidence:
+`bench/vs_tsgo/evidence/20261015-local-tsc-inherited-field.tar.gz` contains
+**3,579 verified payloads**, SHA-256
+`1b08f90b0525040a570ff2830b46356fdc42baf89c3ed148028daaf46618352d`.
+Real-project source and diagnostic text are excluded.
