@@ -1168,3 +1168,31 @@ contains **2,905** verified payloads, SHA-256
 `a64a545363f53094cf7eebb7ef6be77130fb2245483154022e8b1d5f48618221`.
 Real-project sources and diagnostic text remain local; only aggregate project
 outcomes are included.
+
+## Declaration post-pass skip options
+
+Program-level global-variable, interface-member and ambient-export diagnostic
+passes now apply the same per-file declaration skip rule as the checker.
+`skipLibCheck` suppresses diagnostics in declaration files;
+`skipDefaultLibCheck` limits suppression to the default-library directory.
+Declarations remain available for cross-file comparisons and application typing.
+The regression covers serial/parallel execution, both skip options, application
+errors and package declarations outside the default-library directory. Removing
+the global-variable post-pass guard fails the expected diagnostic-count assertion.
+
+All **303 Program tests, 51 CLI tests, eight stream checks and ten Release CLI
+comparison suites** pass. The 4,190 compiler inputs remain unchanged after the
+negative control and final validation. The production build/replay peaks at
+**2,831 MB** under the unchanged **3,840 MB** guard.
+
+The unchanged 306-input table project now has **seven** Home-only application
+diagnostics, down from 44: two TS2322, one TS2339, two TS7006 and two TS2741.
+All 37 declaration conflicts are removed. Native TypeScript exits zero; Home
+exits one. Table and whole-tree replacement remain unqualified while array,
+iterator and callback compatibility is resolved.
+
+Evidence: `bench/vs_tsgo/evidence/20261015-local-tsc-declaration-postpass.tar.gz`
+contains **2,894** verified payloads, SHA-256
+`e52b8ca8b2b4b77ac913f9f1c6ca5624aff0ad348d6d5e6330ed3b5e89cd5bf4`.
+Final validation peaks at **2,161 MB**. Real-project sources and diagnostic
+text are excluded from the archive.

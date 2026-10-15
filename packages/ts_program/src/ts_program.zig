@@ -1419,6 +1419,14 @@ pub const Program = struct {
         return !rootBindsValueName(c, "module");
     }
 
+    fn skipDeclarationDiagnostics(self: *const Program, file: *const File, options: ts_driver.CompileOptions) bool {
+        return file.is_declaration and (options.skip_lib_check or
+            (options.skip_default_lib_check and pathIsInsideDirectory(file.path, if (options.default_library_path.len != 0)
+                options.default_library_path
+            else
+                self.installed_library_path orelse "")));
+    }
+
     /// All execution modes share the same per-file identity and lifecycle.
     /// A failed check cannot leave a partially checked source available for
     /// retry; successful preparation preserves the actual binder/HIR owner.
@@ -1428,14 +1436,7 @@ pub const Program = struct {
         per_file.is_tsx = f.is_tsx;
         per_file.package_type_module = f.package_type_module;
         per_file.is_declaration_file = f.is_declaration;
-        if (per_file.skip_default_lib_check and
-            pathIsInsideDirectory(f.path, if (per_file.default_library_path.len != 0)
-                per_file.default_library_path
-            else
-                self.installed_library_path orelse ""))
-        {
-            per_file.skip_lib_check = true;
-        }
+        if (self.skipDeclarationDiagnostics(f, options)) per_file.skip_lib_check = true;
         per_file.file_id = f.id;
         per_file.suppress_import_helper_diagnostics = true;
         if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
@@ -1543,9 +1544,9 @@ pub const Program = struct {
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
-        try self.appendProgramGlobalDeclareVarDiagnostics();
-        try self.appendProgramGlobalInterfaceMemberDiagnostics();
-        try self.appendMergedAmbientModuleExportDiagnostics();
+        try self.appendProgramGlobalDeclareVarDiagnostics(options);
+        try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
+        try self.appendMergedAmbientModuleExportDiagnostics(options);
     }
 
     fn dependencyOrder(self: *const Program) ProgramError![]const usize {
@@ -1719,7 +1720,7 @@ pub const Program = struct {
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
 
-        try self.appendProgramGlobalInterfaceMemberDiagnostics();
+        try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
     }
 
@@ -3607,9 +3608,9 @@ pub const Program = struct {
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
-        try self.appendProgramGlobalDeclareVarDiagnostics();
-        try self.appendProgramGlobalInterfaceMemberDiagnostics();
-        try self.appendMergedAmbientModuleExportDiagnostics();
+        try self.appendProgramGlobalDeclareVarDiagnostics(options);
+        try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
+        try self.appendMergedAmbientModuleExportDiagnostics(options);
     }
 
     fn compileFilesInDependencyBatches(
@@ -4818,7 +4819,7 @@ pub const Program = struct {
         is_block_scoped: bool,
     };
 
-    fn appendMergedAmbientModuleExportDiagnostics(self: *Program) ProgramError!void {
+    fn appendMergedAmbientModuleExportDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         var bindings: std.ArrayListUnmanaged(ProgramAmbientExportBinding) = .empty;
         defer bindings.deinit(self.gpa);
         for (self.files.items, 0..) |f, file_index| {
@@ -4831,8 +4832,8 @@ pub const Program = struct {
                     !std.mem.eql(u8, binding.module_name, previous.module_name) or
                     !std.mem.eql(u8, binding.name, previous.name) or
                     (!binding.is_block_scoped and !previous.is_block_scoped)) continue;
-                try self.appendAmbientExportRedeclareDiagnostic(previous);
-                try self.appendAmbientExportRedeclareDiagnostic(binding);
+                if (!self.skipDeclarationDiagnostics(self.files.items[previous.file_index], options)) try self.appendAmbientExportRedeclareDiagnostic(previous);
+                if (!self.skipDeclarationDiagnostics(self.files.items[binding.file_index], options)) try self.appendAmbientExportRedeclareDiagnostic(binding);
             }
         }
     }
@@ -4937,7 +4938,7 @@ pub const Program = struct {
         }
     }
 
-    fn appendProgramGlobalDeclareVarDiagnostics(self: *Program) ProgramError!void {
+    fn appendProgramGlobalDeclareVarDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         var seen: std.StringHashMapUnmanaged(ProgramDeclareVar) = .empty;
         defer {
             var it = seen.iterator();
@@ -4971,6 +4972,7 @@ pub const Program = struct {
                 }
                 const prior = gop.value_ptr.*;
                 if (std.mem.eql(u8, prior.type_text, decl.type_text)) continue;
+                if (self.skipDeclarationDiagnostics(f, options)) continue;
                 if (diagnosticExistsAt(c, 2403, @intCast(offset + leading + decl.name_start))) continue;
                 const msg = try std.fmt.allocPrint(
                     self.gpa,
@@ -4990,7 +4992,7 @@ pub const Program = struct {
         }
     }
 
-    fn appendProgramGlobalInterfaceMemberDiagnostics(self: *Program) ProgramError!void {
+    fn appendProgramGlobalInterfaceMemberDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         var members: std.ArrayListUnmanaged(ProgramGlobalInterfaceMember) = .empty;
         defer members.deinit(self.gpa);
 
@@ -5030,8 +5032,8 @@ pub const Program = struct {
                     member.is_method == previous.is_method or
                     !std.mem.eql(u8, member.interface_name, previous.interface_name) or
                     !std.mem.eql(u8, member.member_name, previous.member_name)) continue;
-                try self.appendProgramGlobalInterfaceMemberDiagnostic(previous, member);
-                try self.appendProgramGlobalInterfaceMemberDiagnostic(member, previous);
+                if (!self.skipDeclarationDiagnostics(self.files.items[previous.file_index], options)) try self.appendProgramGlobalInterfaceMemberDiagnostic(previous, member);
+                if (!self.skipDeclarationDiagnostics(self.files.items[member.file_index], options)) try self.appendProgramGlobalInterfaceMemberDiagnostic(member, previous);
             }
         }
     }
@@ -18044,4 +18046,35 @@ test "Program: selected global values retain cross-owner constructor interface a
     const diagnostics = program.fileById(app).compilation.?.diagnostics.items;
     try T.expectEqual(@as(usize, 1), diagnostics.len);
     try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+}
+
+test "Program: declaration post-pass diagnostics honor library skip options in serial and parallel modes" {
+    for ([_]bool{ false, true }) |parallel| {
+        for (0..3) |mode| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/app.ts", "const wrong: string = 1;");
+            _ = try program.add("/lib/base.d.ts", "declare var repeated: string;\ninterface Shared { value: string; }\ndeclare module 'ambient' { export const duplicate: string; }");
+            _ = try program.add("/lib/extra.d.ts", "declare var repeated: number;\ninterface Shared { value(): string; }\ndeclare module 'ambient' { export const duplicate: number; }");
+            _ = try program.add("/package/base.d.ts", "declare var packageRepeated: string;");
+            _ = try program.add("/package/extra.d.ts", "declare var packageRepeated: number;");
+            const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = mode == 1, .skip_default_lib_check = mode == 2, .default_library_path = "/lib" };
+            if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+            var app_errors: usize = 0;
+            var declaration_errors: usize = 0;
+            var package_errors: usize = 0;
+            for (program.files.items) |file| for (file.compilation.?.diagnostics.items) |diagnostic| {
+                if (std.mem.startsWith(u8, file.path, "/package/")) {
+                    package_errors += 1;
+                } else if (file.is_declaration) declaration_errors += 1 else if (diagnostic.code == 2322) app_errors += 1;
+            };
+            try T.expectEqual(@as(usize, 1), app_errors);
+            if (mode != 0) try T.expectEqual(@as(usize, 0), declaration_errors) else try T.expect(declaration_errors >= 3);
+            if (mode == 1) try T.expectEqual(@as(usize, 0), package_errors) else try T.expect(package_errors > 0);
+        }
+    }
 }
