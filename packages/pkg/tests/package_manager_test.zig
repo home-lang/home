@@ -2,6 +2,102 @@ const std = @import("std");
 const testing = std.testing;
 const pkg = @import("package_manager");
 
+fn addWorkspacePatternsForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var workspace = pkg.Workspace.initWithIo(allocator, testing.io, "/unused");
+    defer workspace.deinit();
+    try workspace.addPattern("packages/*");
+    try workspace.addPattern("apps/*");
+    try workspace.addPattern("packages/*");
+}
+
+fn findWorkspacePackage(workspace: *pkg.Workspace, name: []const u8) ?*pkg.WorkspacePackage {
+    for (workspace.packages.items) |*candidate| {
+        if (std.mem.eql(u8, candidate.name, name)) return candidate;
+    }
+    return null;
+}
+
+test "Workspace: owns patterns across allocation failures" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        addWorkspacePatternsForAllocationFailure,
+        .{},
+    );
+}
+
+test "Workspace: discovers installs links and runs packages with explicit IO" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+
+    const package_a = try std.fs.path.join(allocator, &.{ root, "packages", "a" });
+    defer allocator.free(package_a);
+    const package_b = try std.fs.path.join(allocator, &.{ root, "packages", "b" });
+    defer allocator.free(package_b);
+    try std.Io.Dir.cwd().createDirPath(testing.io, package_a);
+    try std.Io.Dir.cwd().createDirPath(testing.io, package_b);
+
+    const config_a = try std.fs.path.join(allocator, &.{ package_a, "home.toml" });
+    defer allocator.free(config_a);
+    const config_b = try std.fs.path.join(allocator, &.{ package_b, "home.toml" });
+    defer allocator.free(config_b);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = config_a,
+        .data =
+        \\[dependencies]
+        \\b = "workspace:*"
+        \\external = "1.0.0"
+        \\duplicate = "first"
+        \\duplicate = "second"
+        \\[scripts]
+        \\mark = "printf alpha > marker.txt"
+        \\
+        ,
+    });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = config_b,
+        .data = "[dependencies]\n",
+    });
+
+    var workspace = pkg.Workspace.initWithIo(allocator, testing.io, root);
+    defer workspace.deinit();
+    const pattern = try allocator.dupe(u8, "packages/*");
+    defer allocator.free(pattern);
+    try workspace.addPattern(pattern);
+    @memset(pattern, 'x');
+    try workspace.addPattern("packages/*");
+    try testing.expectEqual(@as(usize, 1), workspace.patterns.items.len);
+
+    try workspace.discover();
+    try workspace.discover();
+    try testing.expectEqual(@as(usize, 2), workspace.packages.items.len);
+
+    try workspace.installAll();
+    try workspace.installAll();
+    const a = findWorkspacePackage(&workspace, "a") orelse return error.MissingWorkspacePackage;
+    try testing.expectEqualStrings("workspace:*", a.dependencies.get("b").?);
+    try testing.expectEqualStrings("1.0.0", a.dependencies.get("external").?);
+    try testing.expectEqualStrings("second", a.dependencies.get("duplicate").?);
+
+    try workspace.linkPackages();
+    const linked_b = try std.fs.path.join(allocator, &.{ package_a, "node_modules", "b" });
+    defer allocator.free(linked_b);
+    const linked_target = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, linked_b, allocator);
+    defer allocator.free(linked_target);
+    const expected_target = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, package_b, allocator);
+    defer allocator.free(expected_target);
+    try testing.expectEqualStrings(expected_target, linked_target);
+
+    try workspace.runAll("mark");
+    const marker = try std.fs.path.join(allocator, &.{ package_a, "marker.txt" });
+    defer allocator.free(marker);
+    const marker_contents = try std.Io.Dir.cwd().readFileAlloc(testing.io, marker, allocator, .limited(32));
+    defer allocator.free(marker_contents);
+    try testing.expectEqualStrings("alpha", marker_contents);
+}
+
 fn addLockfilePackagesForAllocationFailure(allocator: std.mem.Allocator) !void {
     var lockfile = pkg.Lockfile.init(allocator);
     defer lockfile.deinit();

@@ -1,43 +1,59 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// Workspace support for monorepos (Bun/pnpm style)
 pub const Workspace = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     root_dir: []const u8,
-    packages: std.ArrayList(WorkspacePackage),
-    patterns: std.ArrayList([]const u8),
+    packages: std.ArrayList(WorkspacePackage) = .empty,
+    patterns: std.ArrayList([]const u8) = .empty,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, root_dir: []const u8) Self {
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io(), root_dir);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, root_dir: []const u8) Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .root_dir = root_dir,
-            .packages = std.ArrayList(WorkspacePackage).init(allocator),
-            .patterns = std.ArrayList([]const u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.packages.items) |*pkg| {
-            pkg.deinit();
-        }
-        self.packages.deinit();
-        self.patterns.deinit();
+        self.clearPackages();
+        self.packages.deinit(self.allocator);
+        for (self.patterns.items) |pattern| self.allocator.free(pattern);
+        self.patterns.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Add a workspace pattern (e.g., "packages/*", "apps/*")
     pub fn addPattern(self: *Self, pattern: []const u8) !void {
-        try self.patterns.append(self.allocator, pattern);
+        for (self.patterns.items) |existing| {
+            if (std.mem.eql(u8, existing, pattern)) return;
+        }
+        const owned = try self.allocator.dupe(u8, pattern);
+        errdefer self.allocator.free(owned);
+        try self.patterns.append(self.allocator, owned);
     }
 
     /// Discover all packages in the workspace
     pub fn discover(self: *Self) !void {
         std.debug.print("🔍 Discovering workspace packages...\n", .{});
 
+        var discovered: std.ArrayList(WorkspacePackage) = .empty;
+        errdefer deinitPackages(self.allocator, &discovered);
         for (self.patterns.items) |pattern| {
-            try self.discoverPattern(pattern);
+            try self.discoverPattern(pattern, &discovered);
         }
+
+        self.clearPackages();
+        self.packages.deinit(self.allocator);
+        self.packages = discovered;
 
         std.debug.print("✓ Found {d} workspace packages\n\n", .{self.packages.items.len});
 
@@ -47,25 +63,25 @@ pub const Workspace = struct {
     }
 
     /// Discover packages matching a glob pattern
-    fn discoverPattern(self: *Self, pattern: []const u8) !void {
+    fn discoverPattern(self: *Self, pattern: []const u8, discovered: *std.ArrayList(WorkspacePackage)) !void {
         // Parse pattern: "packages/*" -> dir="packages", glob="*"
         const sep_idx = std.mem.lastIndexOf(u8, pattern, "/") orelse return;
         const dir = pattern[0..sep_idx];
         const glob = pattern[sep_idx + 1 ..];
 
         // Open directory
-        var dir_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, dir });
+        const dir_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, dir });
         defer self.allocator.free(dir_path);
 
-        var dir_handle = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        var dir_handle = Io.Dir.cwd().openDir(self.io, dir_path, .{ .iterate = true }) catch |err| {
             if (err == error.FileNotFound) return; // Pattern not found, skip
             return err;
         };
-        defer dir_handle.close();
+        defer dir_handle.close(self.io);
 
         // Iterate through entries
         var iter = dir_handle.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             if (entry.kind != .directory) continue;
 
             // Check if matches glob
@@ -73,6 +89,7 @@ pub const Workspace = struct {
 
             // Check for config file (home.toml, couch.toml, etc.)
             const pkg_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir, entry.name });
+            errdefer self.allocator.free(pkg_path);
             const config_names = [_][]const u8{ "home.toml", "couch.toml", "home.json", "couch.json", "couch.jsonc" };
             var found_config = false;
 
@@ -80,7 +97,7 @@ pub const Workspace = struct {
                 const config_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg_path, config_name });
                 defer self.allocator.free(config_path);
 
-                std.fs.cwd().access(config_path, .{}) catch continue;
+                Io.Dir.cwd().access(self.io, config_path, .{}) catch continue;
                 found_config = true;
                 break;
             }
@@ -91,15 +108,27 @@ pub const Workspace = struct {
             }
 
             // Add package
-            const pkg = WorkspacePackage{
+            const owned_name = try self.allocator.dupe(u8, entry.name);
+            errdefer self.allocator.free(owned_name);
+            var pkg = WorkspacePackage{
                 .allocator = self.allocator,
-                .name = try self.allocator.dupe(u8, entry.name),
+                .name = owned_name,
                 .path = pkg_path,
                 .dependencies = std.StringHashMap([]const u8).init(self.allocator),
             };
-
-            try self.packages.append(self.allocator, pkg);
+            errdefer pkg.dependencies.deinit();
+            try discovered.append(self.allocator, pkg);
         }
+    }
+
+    fn clearPackages(self: *Self) void {
+        for (self.packages.items) |*pkg| pkg.deinit();
+        self.packages.clearRetainingCapacity();
+    }
+
+    fn deinitPackages(allocator: std.mem.Allocator, packages: *std.ArrayList(WorkspacePackage)) void {
+        for (packages.items) |*pkg| pkg.deinit();
+        packages.deinit(allocator);
     }
 
     /// Install all workspace packages
@@ -114,13 +143,7 @@ pub const Workspace = struct {
             defer self.allocator.free(toml_path);
 
             // Read home.toml
-            const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {
-                std.debug.print("    ⚠️  Warning: Could not open {s}: {s}\n", .{ toml_path, @errorName(err) });
-                continue;
-            };
-            defer file.close();
-
-            const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+            const content = Io.Dir.cwd().readFileAlloc(self.io, toml_path, self.allocator, .limited(1024 * 1024)) catch |err| {
                 std.debug.print("    ⚠️  Warning: Could not read {s}: {s}\n", .{ toml_path, @errorName(err) });
                 continue;
             };
@@ -146,6 +169,9 @@ pub const Workspace = struct {
 
     /// Parse dependencies from TOML content
     fn parseDependencies(self: *Self, pkg: *WorkspacePackage, content: []const u8) !void {
+        var dependencies = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer deinitDependencies(self.allocator, &dependencies);
+
         // Simple TOML parser for [dependencies] section
         var in_dependencies = false;
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -184,12 +210,23 @@ pub const Workspace = struct {
                     // A real implementation would parse this properly
                 }
 
-                const name_copy = try self.allocator.dupe(u8, name);
                 const value_copy = try self.allocator.dupe(u8, value);
+                errdefer self.allocator.free(value_copy);
 
-                try pkg.dependencies.put(name_copy, value_copy);
+                if (dependencies.getEntry(name)) |entry| {
+                    self.allocator.free(entry.value_ptr.*);
+                    entry.value_ptr.* = value_copy;
+                    continue;
+                }
+
+                const name_copy = try self.allocator.dupe(u8, name);
+                errdefer self.allocator.free(name_copy);
+                try dependencies.put(name_copy, value_copy);
             }
         }
+
+        deinitDependencies(self.allocator, &pkg.dependencies);
+        pkg.dependencies = dependencies;
     }
 
     /// Link workspace packages to each other
@@ -214,7 +251,7 @@ pub const Workspace = struct {
             const node_modules_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "node_modules" });
             defer self.allocator.free(node_modules_path);
 
-            std.fs.cwd().makePath(node_modules_path) catch {};
+            try Io.Dir.cwd().createDirPath(self.io, node_modules_path);
 
             var dep_iter = pkg.dependencies.iterator();
             while (dep_iter.next()) |entry| {
@@ -231,11 +268,10 @@ pub const Workspace = struct {
                     defer self.allocator.free(link_path);
 
                     // Remove existing symlink if it exists
-                    std.fs.cwd().deleteFile(link_path) catch {};
-                    std.fs.cwd().deleteTree(link_path) catch {};
+                    try removePathIfExists(self.io, link_path);
 
                     // Create symlink
-                    std.fs.cwd().symLink(link_target, link_path, .{ .is_directory = true }) catch |err| {
+                    Io.Dir.cwd().symLink(self.io, link_target, link_path, .{ .is_directory = true }) catch |err| {
                         std.debug.print("    ⚠️  Warning: Could not link {s}: {s}\n", .{ dep_name, @errorName(err) });
                         continue;
                     };
@@ -261,13 +297,7 @@ pub const Workspace = struct {
             const toml_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.root_dir, pkg.path, "home.toml" });
             defer self.allocator.free(toml_path);
 
-            const file = std.fs.cwd().openFile(toml_path, .{}) catch |err| {
-                std.debug.print("    ⚠️  Warning: Could not open {s}: {s}\n", .{ toml_path, @errorName(err) });
-                continue;
-            };
-            defer file.close();
-
-            const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+            const content = Io.Dir.cwd().readFileAlloc(self.io, toml_path, self.allocator, .limited(1024 * 1024)) catch |err| {
                 std.debug.print("    ⚠️  Warning: Could not read {s}: {s}\n", .{ toml_path, @errorName(err) });
                 continue;
             };
@@ -285,28 +315,19 @@ pub const Workspace = struct {
                 std.debug.print("    $ {s}\n", .{cmd});
 
                 // Execute using sh -c
-                var child = std.process.Child.init(&[_][]const u8{ "sh", "-c", cmd }, self.allocator);
-                child.cwd = pkg_dir;
-                child.stdout_behavior = .Inherit;
-                child.stderr_behavior = .Inherit;
-
-                const term = child.spawnAndWait() catch |err| {
+                var child = std.process.spawn(self.io, .{
+                    .argv = &.{ "sh", "-c", cmd },
+                    .cwd = .{ .path = pkg_dir },
+                }) catch |err| {
+                    std.debug.print("    ❌ Error: {s}\n", .{@errorName(err)});
+                    continue;
+                };
+                const term = child.wait(self.io) catch |err| {
                     std.debug.print("    ❌ Error: {s}\n", .{@errorName(err)});
                     continue;
                 };
 
-                switch (term) {
-                    .Exited => |code| {
-                        if (code == 0) {
-                            std.debug.print("    ✓ Success\n", .{});
-                        } else {
-                            std.debug.print("    ❌ Exited with code {d}\n", .{code});
-                        }
-                    },
-                    else => {
-                        std.debug.print("    ❌ Process terminated abnormally\n", .{});
-                    },
-                }
+                if (term.success()) std.debug.print("    ✓ Success\n", .{}) else std.debug.print("    ❌ Process terminated: {any}\n", .{term});
             } else {
                 std.debug.print("    ⚠️  Script '{s}' not found\n", .{script_name});
             }
@@ -363,6 +384,24 @@ pub const Workspace = struct {
     }
 };
 
+fn deinitDependencies(allocator: std.mem.Allocator, dependencies: *std.StringHashMap([]const u8)) void {
+    var iterator = dependencies.iterator();
+    while (iterator.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        allocator.free(entry.value_ptr.*);
+    }
+    dependencies.deinit();
+}
+
+fn removePathIfExists(io: Io, path: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    cwd.deleteFile(io, path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        error.IsDir => try cwd.deleteTree(io, path),
+        else => return err,
+    };
+}
+
 /// A package within a workspace
 pub const WorkspacePackage = struct {
     allocator: std.mem.Allocator,
@@ -373,7 +412,8 @@ pub const WorkspacePackage = struct {
     pub fn deinit(self: *WorkspacePackage) void {
         self.allocator.free(self.name);
         self.allocator.free(self.path);
-        self.dependencies.deinit();
+        deinitDependencies(self.allocator, &self.dependencies);
+        self.* = undefined;
     }
 };
 

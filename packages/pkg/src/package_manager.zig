@@ -1,6 +1,7 @@
 const std = @import("std");
 const auth_mod = @import("auth.zig");
 const lockfile_mod = @import("lockfile.zig");
+const workspace_mod = @import("workspace.zig");
 const Io = std.Io;
 
 /// Test-and-test-and-set spinlock built from a u32 atomic. `std.atomic.Mutex`
@@ -23,6 +24,8 @@ const SpinMutex = struct {
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
 pub const Lockfile = lockfile_mod.Lockfile;
+pub const Workspace = workspace_mod.Workspace;
+pub const WorkspacePackage = workspace_mod.WorkspacePackage;
 
 /// Package manager for Home
 pub const PackageManager = struct {
