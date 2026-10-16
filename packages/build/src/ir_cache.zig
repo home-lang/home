@@ -35,11 +35,12 @@ pub const CacheHash = [32]u8;
 
 /// Generate cache key from source content and dependencies
 pub fn generateCacheKey(
+    allocator: std.mem.Allocator,
     source_content: []const u8,
     dependencies: []const CacheHash,
     compiler_version: []const u8,
     compile_flags: []const u8,
-) CacheHash {
+) !CacheHash {
     var hasher = crypto.hash.sha2.Sha256.init(.{});
 
     // Hash source content
@@ -47,12 +48,13 @@ pub fn generateCacheKey(
 
     // Hash dependencies in sorted order (for determinism)
     var sorted_deps_buf: [256]CacheHash = undefined;
-    const sorted_deps = if (dependencies.len <= sorted_deps_buf.len) blk: {
+    const sorted_deps: []CacheHash = if (dependencies.len <= sorted_deps_buf.len) blk: {
         @memcpy(sorted_deps_buf[0..dependencies.len], dependencies);
         break :blk sorted_deps_buf[0..dependencies.len];
-    } else dependencies;
+    } else try allocator.dupe(CacheHash, dependencies);
+    defer if (dependencies.len > sorted_deps_buf.len) allocator.free(sorted_deps);
 
-    std.mem.sort(CacheHash, @constCast(sorted_deps), {}, compareCacheHash);
+    std.mem.sort(CacheHash, sorted_deps, {}, compareCacheHash);
     for (sorted_deps) |dep_hash| {
         hasher.update(&dep_hash);
     }
@@ -695,16 +697,45 @@ test "cache key generation" {
     const version = "0.1.0";
     const flags = "-O3";
 
-    const key1 = generateCacheKey(source, &deps, version, flags);
-    const key2 = generateCacheKey(source, &deps, version, flags);
+    const key1 = try generateCacheKey(std.testing.allocator, source, &deps, version, flags);
+    const key2 = try generateCacheKey(std.testing.allocator, source, &deps, version, flags);
 
     try std.testing.expectEqual(key1, key2);
 
     // Different source should give different key
     const different_source = "const std = @import(\"basics\");";
-    const key3 = generateCacheKey(different_source, &deps, version, flags);
+    const key3 = try generateCacheKey(std.testing.allocator, different_source, &deps, version, flags);
 
     try std.testing.expect(!std.mem.eql(u8, &key1, &key3));
+}
+
+test "cache key generation preserves caller dependencies above the stack threshold" {
+    var dependencies: [257]CacheHash = undefined;
+    for (&dependencies, 0..) |*dependency, index| {
+        dependency.* = @splat(0);
+        dependency[0] = @intCast(index % 256);
+        dependency[1] = @intCast(index / 256);
+    }
+    const original = dependencies;
+
+    const key = try generateCacheKey(std.testing.allocator, "source", &dependencies, "1.0", "");
+    try std.testing.expect(std.mem.eql(CacheHash, &original, &dependencies));
+    try std.testing.expectEqual(key, try generateCacheKey(std.testing.allocator, "source", &original, "1.0", ""));
+
+    std.mem.reverse(CacheHash, &dependencies);
+    const reversed = dependencies;
+    const reversed_key = try generateCacheKey(std.testing.allocator, "source", &dependencies, "1.0", "");
+    try std.testing.expectEqual(key, reversed_key);
+    try std.testing.expect(std.mem.eql(CacheHash, &reversed, &dependencies));
+
+    // The stack boundary remains allocation-free; crossing it reports OOM
+    // without touching the caller's storage or returning a partial key.
+    var no_space: [0]u8 = .{};
+    var failing_allocator = std.heap.FixedBufferAllocator.init(&no_space);
+    const stack_key = try generateCacheKey(failing_allocator.allocator(), "source", dependencies[0..256], "1.0", "");
+    try std.testing.expectEqual(stack_key, try generateCacheKey(std.testing.allocator, "source", dependencies[0..256], "1.0", ""));
+    try std.testing.expectError(error.OutOfMemory, generateCacheKey(failing_allocator.allocator(), "source", &dependencies, "1.0", ""));
+    try std.testing.expect(std.mem.eql(CacheHash, &reversed, &dependencies));
 }
 
 test "hash to hex conversion" {
@@ -727,7 +758,7 @@ test "cache operations" {
 
     const source = "test source";
     const deps = [_]CacheHash{};
-    const key = generateCacheKey(source, &deps, "1.0", "");
+    const key = try generateCacheKey(allocator, source, &deps, "1.0", "");
 
     // Cache miss initially
     try std.testing.expect(cache.get(key) == null);

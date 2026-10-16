@@ -311,7 +311,8 @@ test "cache eviction" {
         var name_buf: [64]u8 = undefined;
         const name = try std.fmt.bufPrint(&name_buf, "module{d}", .{i});
 
-        const key = ir_cache.generateCacheKey(
+        const key = try ir_cache.generateCacheKey(
+            allocator,
             name,
             &[_]ir_cache.CacheHash{},
             "0.1.0",

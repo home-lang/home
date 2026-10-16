@@ -614,7 +614,8 @@ pub const ParallelBuilder = struct {
         }
 
         // Generate cache key
-        const cache_key = ir_cache.generateCacheKey(
+        const cache_key = try ir_cache.generateCacheKey(
+            self.allocator,
             source[0..source_len],
             dep_hashes.items,
             self.compiler_version,

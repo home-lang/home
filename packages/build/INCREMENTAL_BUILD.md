@@ -62,11 +62,14 @@ Content-addressed caching system that stores compiled IR and object files.
 
 **Usage:**
 ```zig
-var cache = try IRCache.init(allocator, ".home-cache");
+const io = std.Io.Threaded.global_single_threaded.io();
+var cache = try IRCache.init(allocator, ".home-cache", true, io);
 defer cache.deinit();
 
-// Generate cache key
-const key = generateCacheKey(
+// Sorting never changes the caller's dependency hashes. Large lists may
+// allocate a temporary copy, so allocation failure is propagated.
+const key = try generateCacheKey(
+    allocator,
     source_content,
     dep_hashes,
     "0.1.0",
@@ -80,7 +83,7 @@ if (cache.get(key)) |entry| {
 } else {
     // Cache miss - compile and store
     // ... compile ...
-    try cache.put(key, module_name, source_path, mtime, deps, ir_path, obj_path, compile_time);
+    try cache.put(key, module_name, source_path, mtime, deps, ir_content, object_content, compile_time);
 }
 ```
 
