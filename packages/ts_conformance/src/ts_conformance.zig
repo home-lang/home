@@ -5731,8 +5731,7 @@ fn buildVariantCorpusEntry(
         .target_emit_es5 = emit_target == .es5,
         .emit_target = emit_target,
         .compiler_target = selectedCompilerTarget(variant_source, variant_suffix),
-        .report_deprecated_target_es5 = options.exact_error_headers and
-            target_selection_explicit and emit_target == .es5,
+        .report_deprecated_target_es5 = target_selection_explicit and emit_target == .es5,
         .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(default_path, variant_source),
         .raw_source = raw_source,
         .baseline_module_resolution = variant_mr,
@@ -5779,6 +5778,43 @@ fn buildUpstreamDisabledCorpusEntry(
         .path = path,
         .upstream_skip = skip,
     };
+}
+
+/// A selected fixture must either be read completely or fail corpus loading.
+/// A short read can happen when a file changes after stat; treating it as an
+/// absent fixture would falsely improve the reported conformance aggregate.
+fn readFixtureBytes(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file: *std.Io.File,
+    size: usize,
+) ![]u8 {
+    const buf = try gpa.alloc(u8, size);
+    errdefer gpa.free(buf);
+    var read_total: usize = 0;
+    while (read_total < size) {
+        const n = try file.readPositionalAll(io, buf[read_total..], read_total);
+        if (n == 0) return error.UnexpectedEndOfFile;
+        read_total += n;
+    }
+    return buf;
+}
+
+test "conformance: selected fixture short reads fail instead of disappearing" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    {
+        var writer = try tmp.dir.createFile(io, "short.ts", .{ .truncate = true });
+        defer writer.close(io);
+        try writer.writeStreamingAll(io, "x");
+    }
+    var file = try tmp.dir.openFile(io, "short.ts", .{});
+    defer file.close(io);
+    const complete = try readFixtureBytes(T.allocator, io, &file, 1);
+    defer T.allocator.free(complete);
+    try T.expectEqualStrings("x", complete);
+    try T.expectError(error.UnexpectedEndOfFile, readFixtureBytes(T.allocator, io, &file, 2));
 }
 
 pub fn loadDirectoryWithOptions(
@@ -5829,28 +5865,13 @@ pub fn loadDirectoryWithOptions(
             };
             continue;
         }
-        // Open through the iterating root so paths are dir-relative.
+        // Open through the iterating root so paths are dir-relative. Never
+        // turn an I/O or allocation failure into a silently omitted fixture.
         const src = read_src: {
-            var file = entry.dir.openFile(io, entry.basename, .{}) catch continue;
+            var file = try entry.dir.openFile(io, entry.basename, .{});
             defer file.close(io);
-            const stat = file.stat(io) catch continue;
-            const file_size: usize = @intCast(stat.size);
-            const buf = gpa.alloc(u8, file_size) catch continue;
-            var read_total: usize = 0;
-            var read_failed = false;
-            while (read_total < file_size) {
-                const n = file.readPositionalAll(io, buf[read_total..], read_total) catch {
-                    read_failed = true;
-                    break;
-                };
-                if (n == 0) break;
-                read_total += n;
-            }
-            if (read_failed or read_total != file_size) {
-                gpa.free(buf);
-                continue;
-            }
-            break :read_src buf;
+            const stat = try file.stat(io);
+            break :read_src try readFixtureBytes(gpa, io, &file, @intCast(stat.size));
         };
         defer gpa.free(src);
         const variants = try fixture_variants.enumerate(gpa, src);
@@ -53955,6 +53976,23 @@ test "conformance: selected variant options do not depend on expected baseline a
         }
     }
     try T.expectEqual(@as(usize, 1), expected_only);
+}
+
+test "conformance: ES5 option diagnostic does not depend on comparison mode" {
+    const source = "// @target: es5\nexport {};\n";
+    for ([_]bool{ false, true }) |exact| {
+        const entry = try buildVariantCorpusEntry(
+            T.allocator,
+            .{ .exact_error_headers = exact },
+            "target.ts",
+            "target",
+            "(target=es5)",
+            try T.allocator.dupe(u8, source),
+        );
+        defer freeOwnedCorpusEntry(T.allocator, entry);
+        try T.expectEqual(ts_driver.EsTarget.es5, entry.emit_target);
+        try T.expect(entry.report_deprecated_target_es5);
+    }
 }
 
 test "conformance: upstream unsupported option classifier matches pinned runner" {

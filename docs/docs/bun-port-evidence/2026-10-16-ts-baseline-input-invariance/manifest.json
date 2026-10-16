@@ -60,5 +60,35 @@
     "root-file and virtual-file routing fidelity",
     "other expected-baseline and executable-input dependencies",
     "complete TypeScript corpus and Bun parity acceptance"
-  ]
+  ],
+  "follow_on": {
+    "source_sha256": "9dd5ca41b08d469b49f97b056bbda50e4ba7283e0ce870a29892553a337e810b",
+    "es5_comparison_mode": {
+      "red_before_fix": true,
+      "zig_017_reported_passed": 2,
+      "zig_018_reported_passed": 2,
+      "reported_total_per_run": 2,
+      "zig_017_peak_tree_footprint_mb": 438,
+      "zig_018_peak_tree_footprint_mb": 411,
+      "upstream_es5_fixture_status": "skipped; no passing-case credit"
+    },
+    "selected_fixture_short_read": {
+      "zig_017_reported_passed": 2,
+      "zig_018_reported_passed": 2,
+      "reported_total_per_run": 2,
+      "zig_017_peak_tree_footprint_mb": 280,
+      "zig_018_peak_tree_footprint_mb": 280
+    },
+    "configured_variant_loader_after_read_change": {
+      "zig_017_reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 317
+    },
+    "baseline_availability_after_read_change": {
+      "zig_017_reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 328
+    },
+    "full_corpus_complete": false
+  }
 }

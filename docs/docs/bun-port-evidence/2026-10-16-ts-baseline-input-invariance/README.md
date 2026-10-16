@@ -15,3 +15,11 @@ Verification on Zig `0.17.0-dev.2163+89ff10d56`, with one `run_bounded` process 
 - `zig fmt --check` on the edited source and Pickier on the two new evidence files passed. Repository-wide Pickier did **not** pass: it reported 1,858 errors and 725 warnings across unrelated files; no lint-success claim is made for the repository.
 
 Unresolved #841 work includes real package/library declarations, root-file and virtual-file routing, the remaining baseline/input dependencies and complete corpus evidence. Full Bun parity remains open in [#66](https://github.com/home-lang/home/issues/66).
+
+## Follow-on: comparison mode and fixture read failures
+
+The selected ES5 target previously enabled its TS5107 option diagnostic only when exact-baseline comparison was requested. That made the comparison mode an executable compiler input. The flag now follows the selected target alone. The new control failed on the coarse-comparison variant before the fix and passes for both comparison modes afterward. Upstream typescript-go skips selected ES5 fixtures, so this control establishes option-input invariance; it does **not** count an ES5 corpus fixture as a passing compiler case.
+
+Selected fixture reads also had four silent `catch continue` exits: open, stat, allocation and read failures. A short read could remove a fixture from the aggregate entirely. Those errors now fail corpus loading; a short read returns `UnexpectedEndOfFile`, and its partial buffer is freed. The file closes before variant enumeration. A deterministic one-byte-file/two-byte-read control covers the short-read path, while the configured-variant loader control covers the ordinary path. Loader failure is a failing run, not a per-fixture result; per-fixture failure records remain open work under #841/#832.
+
+The ES5 comparison-mode and short-read controls each report **2/2 passing tests** on pinned Zig 0.17 and Zig 0.18. Guarded tree-footprint peaks were 438/411 MB for ES5 and 280/280 MB for short-read controls (0.17/0.18). The ordinary configured-variant loader control reports **2/2** on 0.17 at 317 MB; the earlier baseline-availability control still reports **2/2** at 328 MB. All runs kept the 3,840 MB ceiling and ran serially. These focused results do not replace the unfinished full-corpus survey or the earlier 180-second broader-filter timeout.
