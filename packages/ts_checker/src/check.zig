@@ -120294,6 +120294,31 @@ pub const Checker = struct {
                     if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
                         break :blk try self.optionalChainResult(symbolic_t, element_is_optional_chain);
                     }
+                    // A key parameter can be constrained to every key of a
+                    // concrete receiver (K extends keyof Shape), or to a
+                    // subset of its literal keys. Keep the K-dependent
+                    // result rather than treating the index as an implicit
+                    // any. The constraint resolver requires *every* key to
+                    // exist, so an unrelated object still takes the normal
+                    // invalid-index diagnostic path.
+                    if (obj_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(obj_t).is_object_type and
+                        idx_t < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(idx_t).is_type_parameter)
+                    {
+                        if (self.typeParameterConstraint(idx_t)) |constraint| {
+                            if (constraint != idx_t) {
+                                if ((try self.resolveObjectIndexedAccessType(obj_t, constraint)) != null) {
+                                    const indexed_t = self.interner.internIndexedAccess(obj_t, idx_t) catch return error.OutOfMemory;
+                                    break :blk try self.optionalChainResult(indexed_t, element_is_optional_chain);
+                                }
+                                if (self.indexTypeHasKeysMissingFromObject(obj_t, constraint)) {
+                                    try self.reportTypeCannotIndexType(node, e.index, e.object, idx_t, obj_t);
+                                    break :blk types.Primitive.any;
+                                }
+                            }
+                        }
+                    }
                 }
                 if (self.checking_element_write_target and !self.nodeIsThisReference(e.object)) {
                     if (try self.symbolicGenericIndexedAccessType(obj_t, idx_t)) |symbolic_t| {
@@ -237042,6 +237067,41 @@ test "checker: generic indexed reads remain symbolic for object relations" {
         TsCodes.type_not_assignable,
         "Type 'T[K]' is not assignable to type 'object'.",
     ));
+}
+
+test "checker: keyof-constrained key reads a concrete class without implicit any" {
+    const s = try newSetup(
+        \\class Shape { name: string; width: number; height: number; visible: boolean; }
+        \\function read<K extends keyof Shape>(key: K) {
+        \\  const shape: Shape = { name: "x", width: 1, height: 2, visible: true };
+        \\  return shape[key];
+        \\}
+        \\function readTwo<K extends "width" | "height">(key: K) {
+        \\  const shape: Shape = { name: "x", width: 1, height: 2, visible: true };
+        \\  return shape[key];
+        \\}
+        \\function invalid<K extends keyof Shape>(key: K) {
+        \\  const other: { name: string } = { name: "x" };
+        \\  return other[key];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+    var valid_reads: usize = 0;
+    for (0..s.hir.nodeCount()) |raw_node| {
+        const node: NodeId = @intCast(raw_node);
+        if (s.hir.kindOf(node) != .element_access or
+            !std.mem.eql(u8, s.checker.nodeSourceTextOrEmpty(node), "shape[key]")) continue;
+        const result_t = s.hir.typeOf(node);
+        try T.expect(result_t < s.ti.pool.typeCount());
+        try T.expect(s.ti.pool.flagsOf(result_t).is_indexed_access);
+        valid_reads += 1;
+    }
+    try T.expectEqual(@as(usize, 2), valid_reads);
 }
 
 test "checker: keyof syntax preserves literal inference and reports unresolved operands" {

@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-17",
+  "issues": [832, 66],
+  "guard_max_mb": 3840,
+  "source": {
+    "path": "packages/ts_checker/src/check.zig",
+    "sha256": "3fed40253427bc53d27249259bf4d128fd3617909d66962c625a037d226f4f1d"
+  },
+  "original_fixture": {
+    "path": "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/keyof/keyofAndIndexedAccess.ts",
+    "sha256": "77944d631cb0ea23954825422ed03d6496eb3c5327518f4c0f3e4dfd6574d081"
+  },
+  "original_baseline": {
+    "path": "_submodules/typescript-go/_submodules/TypeScript/tests/baselines/reference/keyofAndIndexedAccess.errors.txt",
+    "sha256": "9a9423a814b6037ded2e09a402b1cb1307a1cf5349d2028d66c37b60f732e41d"
+  },
+  "controls": [
+    { "name": "focused checker regression Zig 0.17", "passed": 2, "total": 2, "peak_tree_mb": 1654 },
+    { "name": "focused checker regression Zig 0.18.0-dev.146", "passed": 2, "total": 2, "peak_tree_mb": 1673 },
+    { "name": "exact thirteen-case neighboring window", "passed": 12, "failed": 1, "skipped": 0, "remaining_failure": "keyofAndIndexedAccess2", "peak_tree_mb": 2053 },
+    { "name": "unfiltered checker Zig 0.17", "passed": 4650, "total": 4650, "peak_tree_mb": 2363 },
+    { "name": "unfiltered Program Zig 0.17", "passed": 321, "total": 321, "peak_tree_mb": 2168 },
+    { "name": "installed TypeScript 5.7.3 negative control", "expected_diagnostic": "TS2536" },
+    { "name": "targeted Pickier and Zig formatting", "status": "pass" },
+    { "name": "repository-wide Pickier", "status": "fail", "files_scanned": 83049, "unrelated_errors": 1858, "unrelated_warnings": 725, "peak_tree_mb": 835 }
+  ],
+  "not_claimed": [
+    "keyofAndIndexedAccess2 passes",
+    "conditionalTypes1 passes",
+    "all TypeScript conformance cases pass",
+    "all Bun tests pass"
+  ]
+}
