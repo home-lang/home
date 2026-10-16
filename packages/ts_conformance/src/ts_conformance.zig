@@ -5601,13 +5601,61 @@ fn selectedVariantBaselinePath(
         variant_suffix,
         file_suffix,
     });
+    errdefer gpa.free(path);
     var threaded = std.Io.Threaded.init(gpa, .{});
     defer threaded.deinit();
-    std.Io.Dir.cwd().access(threaded.io(), path, .{}) catch {
-        gpa.free(path);
-        return null;
+    std.Io.Dir.cwd().access(threaded.io(), path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            gpa.free(path);
+            return null;
+        }
+        return err;
     };
     return path;
+}
+
+test "conformance: invalid baseline root is not treated as a missing baseline" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    {
+        var source = try tmp.dir.createFile(io, "cases/fixture.ts", .{ .truncate = true });
+        defer source.close(io);
+        try source.writeStreamingAll(io, "export {};\n");
+    }
+    {
+        var blocker = try tmp.dir.createFile(io, "blocked", .{ .truncate = true });
+        blocker.close(io);
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const root = try tmp.dir.realPathFileAlloc(io, "blocked", T.allocator);
+    defer T.allocator.free(root);
+    for ([_]DirectoryLoadOptions{
+        .{ .baseline_root = root },
+        .{ .fallback_baseline_root = root },
+    }) |options| {
+        if (loadDirectoryWithOptions(T.allocator, cases, options)) |entries| {
+            defer {
+                for (entries) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+                T.allocator.free(entries);
+            }
+            try T.expect(false);
+        } else |err| {
+            try T.expectEqual(error.NotDir, err);
+        }
+    }
+    try tmp.dir.createDir(io, "empty-baselines", .default_dir);
+    const empty_root = try tmp.dir.realPathFileAlloc(io, "empty-baselines", T.allocator);
+    defer T.allocator.free(empty_root);
+    const entries = try loadDirectoryWithOptions(T.allocator, cases, .{ .baseline_root = empty_root });
+    defer {
+        for (entries) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(entries);
+    }
+    try T.expectEqual(@as(usize, 1), entries.len);
+    try T.expect(!entries[0].expects_error);
 }
 
 fn selectedVariantErrorBaselineIsNoContent(
@@ -5831,6 +5879,14 @@ pub fn loadDirectoryWithOptions(
     defer threaded.deinit();
     const io = threaded.io();
     const cwd = std.Io.Dir.cwd();
+    // An explicit baseline root must be a readable directory. A file or
+    // inaccessible root is not equivalent to a genuinely absent case file.
+    for ([_]?[]const u8{ options.baseline_root, options.fallback_baseline_root }) |root| {
+        if (root) |path| {
+            var baseline_dir = try cwd.openDir(io, path, .{});
+            baseline_dir.close(io);
+        }
+    }
     var dir = try cwd.openDir(io, dir_path, .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walk(gpa);

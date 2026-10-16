@@ -90,5 +90,21 @@
       "peak_tree_footprint_mb": 328
     },
     "full_corpus_complete": false
+  },
+  "baseline_root_follow_on": {
+    "source_sha256": "be49bc76b4473532242b48c007a02c47b3fadd31f7285e3af8f302acfc0d7e7e",
+    "invalid_root_control": {
+      "red_before_fix": "returned one corpus entry instead of NotDir; initial failing assertion leaked four test-owned allocations",
+      "reported_passed_per_run": 2,
+      "reported_total_per_run": 2,
+      "zig_017_peak_tree_footprint_mb": 335,
+      "zig_018_peak_tree_footprint_mb": 380
+    },
+    "baseline_availability_regression": {
+      "zig_017_reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 338
+    },
+    "full_corpus_complete": false
   }
 }
