@@ -168,28 +168,35 @@ pub const Cache = struct {
     }
 
     /// Store an entry. Idempotent — overwriting an existing key
-    /// frees the previous value first. Disk-backed caches also
-    /// write through to `<root>/<2hex>/<remaining>.cache`.
+    /// releases the previous value only after replacement can succeed.
+    /// Disk-backed caches also write through to
+    /// `<root>/<2hex>/<remaining>.cache`.
     pub fn put(self: *Cache, key: Key, value: CachedResult) CacheError!void {
         const hex = try keyToHex(self.gpa, key);
-        // We move ownership of the hex key into the map, so don't
-        // free it here. If the map already has an entry we drop
-        // the old key+value and use the new ones.
-        if (self.mem.fetchRemove(hex)) |old| {
-            self.gpa.free(old.key);
-            self.gpa.free(old.value.js);
+        errdefer self.gpa.free(hex);
+        const js_dupe = try self.gpa.dupe(u8, value.js);
+        errdefer self.gpa.free(js_dupe);
+
+        // getOrPut may grow the table, so do it before retiring an old
+        // value. An allocation failure leaves both the old entry and its
+        // owned key untouched.
+        const slot = try self.mem.getOrPut(self.gpa, hex);
+        if (slot.found_existing) {
+            self.gpa.free(hex);
+            self.gpa.free(slot.value_ptr.*.js);
+        } else {
+            slot.key_ptr.* = hex;
         }
-        const js_dupe = self.gpa.dupe(u8, value.js) catch return error.OutOfMemory;
-        try self.mem.put(self.gpa, hex, .{
+        slot.value_ptr.* = .{
             .js = js_dupe,
             .diagnostic_count = value.diagnostic_count,
             .has_errors = value.has_errors,
-        });
+        };
         if (self.root_path != null) {
             // Best-effort write-through. Disk failure does not
             // poison the in-memory state; subsequent gets will
             // still hit the cache for this process lifetime.
-            self.writeToDisk(hex, value) catch {};
+            self.writeToDisk(slot.key_ptr.*, value) catch {};
         }
     }
 
