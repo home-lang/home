@@ -17,6 +17,7 @@ fn resolveRegisteredVersionsForAllocationFailure(allocator: std.mem.Allocator) !
     try registry.addDependencies("foo", foo_v12, &.{.{ .name = borrowed_name, .constraint = constraint }});
     @memset(borrowed_name, 'x');
     try registry.addDependencies("foo", foo_v12, &.{.{ .name = "replacement-dependency", .constraint = constraint }});
+    try registry.addPackage("replacement-dependency", &.{foo_v1});
     const cloned_dependencies = try registry.getDependencies("foo", foo_v12);
     defer pkg.PackageRegistry.freeDependencies(allocator, cloned_dependencies);
     try testing.expectEqualStrings("replacement-dependency", cloned_dependencies[0].name);
@@ -25,11 +26,11 @@ fn resolveRegisteredVersionsForAllocationFailure(allocator: std.mem.Allocator) !
     defer resolver.deinit();
     try resolver.addDependency("root", .{ .name = "foo", .constraint = constraint });
     const solved_once = try resolver.resolve(&registry);
-    try testing.expectEqual(@as(usize, 1), solved_once.len);
+    try testing.expectEqual(@as(usize, 2), solved_once.len);
     allocator.free(solved_once);
     const solved = try resolver.resolve(&registry);
     defer allocator.free(solved);
-    try testing.expectEqual(@as(usize, 1), solved.len);
+    try testing.expectEqual(@as(usize, 2), solved.len);
     const foo = resolver.solution.get("foo") orelse return error.MissingResolvedPackage;
     try testing.expectEqual(@as(u32, 1), foo.version.major);
     try testing.expectEqual(@as(u32, 2), foo.version.minor);
@@ -58,14 +59,15 @@ test "AdvancedDependencyResolver: resolver and registry use independent allocato
         .name = "bar",
         .constraint = try Resolver.parseConstraint("^1.0.0"),
     }});
+    try registry.addPackage("bar", &.{.{ .major = 1, .minor = 0, .patch = 0 }});
 
     var resolver = Resolver.init(resolver_debug_allocator.allocator());
     defer resolver.deinit();
     try resolver.addConstraint("foo", try Resolver.parseConstraint("^1.0.0"));
     const result = try resolver.resolve(&registry);
     defer resolver_debug_allocator.allocator().free(result);
-    try testing.expectEqual(@as(usize, 1), result.len);
-    try testing.expectEqualStrings("bar", result[0].dependencies[0].name);
+    try testing.expectEqual(@as(usize, 2), result.len);
+    try testing.expectEqualStrings("bar", resolver.solution.get("foo").?.dependencies[0].name);
 }
 
 fn detectCycleForAllocationFailure(allocator: std.mem.Allocator) !void {
@@ -120,6 +122,130 @@ test "AdvancedDependencyResolver: rejects incompatible constraints without leaki
     try testing.expectEqual(@as(usize, 1), resolver.conflicts.items.len);
     try testing.expectError(error.ConflictingDependencies, resolver.resolve(&registry));
     try testing.expectEqual(@as(usize, 1), resolver.conflicts.items.len);
+}
+
+test "AdvancedDependencyResolver: resolves transitive and diamond dependencies" {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const v2 = Resolver.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    const exact1 = try Resolver.parseConstraint("1.0.0");
+    const exact2 = try Resolver.parseConstraint("2.0.0");
+
+    var registry = pkg.PackageRegistry.init(testing.allocator);
+    defer registry.deinit();
+    try registry.addPackage("app", &.{v1});
+    try registry.addPackage("left", &.{v1});
+    try registry.addPackage("right", &.{v1});
+    try registry.addPackage("shared", &.{ v1, v2 });
+    try registry.addDependencies("app", v1, &.{
+        .{ .name = "left", .constraint = exact1 },
+        .{ .name = "right", .constraint = exact1 },
+    });
+    try registry.addDependencies("left", v1, &.{.{ .name = "shared", .constraint = exact1 }});
+    try registry.addDependencies("right", v1, &.{.{ .name = "shared", .constraint = exact1 }});
+
+    var resolver = Resolver.init(testing.allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("app", exact1);
+    const result = try resolver.resolve(&registry);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 4), result.len);
+    try testing.expectEqual(v1, resolver.solution.get("shared").?.version);
+    try testing.expect(!exact2.satisfies(resolver.solution.get("shared").?.version));
+}
+
+test "AdvancedDependencyResolver: backtracks when a later dependency rejects the latest version" {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const v2 = Resolver.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    const exact1 = try Resolver.parseConstraint("1.0.0");
+    const exact2 = try Resolver.parseConstraint("2.0.0");
+
+    var registry = pkg.PackageRegistry.init(testing.allocator);
+    defer registry.deinit();
+    try registry.addPackage("a", &.{ v1, v2 });
+    try registry.addPackage("z", &.{v1});
+    try registry.addPackage("shared", &.{ v1, v2 });
+    try registry.addDependencies("a", v2, &.{.{ .name = "shared", .constraint = exact2 }});
+    try registry.addDependencies("a", v1, &.{.{ .name = "shared", .constraint = exact1 }});
+    try registry.addDependencies("z", v1, &.{.{ .name = "shared", .constraint = exact1 }});
+
+    var resolver = Resolver.init(testing.allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("a", try Resolver.parseConstraint(">=1.0.0"));
+    try resolver.addConstraint("z", exact1);
+    const result = try resolver.resolve(&registry);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 3), result.len);
+    try testing.expectEqual(v1, resolver.solution.get("a").?.version);
+    try testing.expectEqual(v1, resolver.solution.get("shared").?.version);
+}
+
+test "AdvancedDependencyResolver: reports missing transitive packages and registry cycles" {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const exact1 = try Resolver.parseConstraint("1.0.0");
+    var registry = pkg.PackageRegistry.init(testing.allocator);
+    defer registry.deinit();
+    try registry.addPackage("a", &.{v1});
+    try registry.addDependencies("a", v1, &.{.{ .name = "missing", .constraint = exact1 }});
+
+    var resolver = Resolver.init(testing.allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("a", exact1);
+    try testing.expectError(error.PackageNotFound, resolver.resolve(&registry));
+    try registry.addPackage("missing", &.{v1});
+    try registry.addDependencies("missing", v1, &.{.{ .name = "a", .constraint = exact1 }});
+    try testing.expectError(error.CircularDependency, resolver.resolve(&registry));
+}
+
+test "AdvancedDependencyResolver: rejects only the cyclic or missing candidate" {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const v2 = Resolver.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    var registry = pkg.PackageRegistry.init(testing.allocator);
+    defer registry.deinit();
+    try registry.addPackage("a", &.{ v1, v2 });
+    try registry.addDependencies("a", v2, &.{.{
+        .name = "missing",
+        .constraint = try Resolver.parseConstraint("1.0.0"),
+    }});
+    var resolver = Resolver.init(testing.allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("a", try Resolver.parseConstraint(">=1.0.0"));
+    const without_missing = try resolver.resolve(&registry);
+    defer testing.allocator.free(without_missing);
+    try testing.expectEqual(v1, resolver.solution.get("a").?.version);
+
+    try registry.addDependencies("a", v2, &.{.{
+        .name = "a",
+        .constraint = try Resolver.parseConstraint("2.0.0"),
+    }});
+    const without_cycle = try resolver.resolve(&registry);
+    defer testing.allocator.free(without_cycle);
+    try testing.expectEqual(v1, resolver.solution.get("a").?.version);
+}
+
+test "AdvancedDependencyResolver: records propagated constraints on a transitive conflict" {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const v2 = Resolver.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    var registry = pkg.PackageRegistry.init(testing.allocator);
+    defer registry.deinit();
+    try registry.addPackage("a", &.{v1});
+    try registry.addPackage("shared", &.{v1});
+    try registry.addDependencies("a", v1, &.{.{
+        .name = "shared",
+        .constraint = try Resolver.parseConstraint("2.0.0"),
+    }});
+    var resolver = Resolver.init(testing.allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("a", try Resolver.parseConstraint("1.0.0"));
+    try testing.expectError(error.ConflictingDependencies, resolver.resolve(&registry));
+    try testing.expectEqual(@as(usize, 1), resolver.conflicts.items.len);
+    try testing.expectEqualStrings("shared", resolver.conflicts.items[0].package_name);
+    try testing.expectEqual(@as(usize, 1), resolver.conflicts.items[0].constraints.len);
+    try testing.expectEqual(v2, resolver.conflicts.items[0].constraints[0].version);
 }
 
 test "AdvancedDependencyResolver: rejects extra version components" {

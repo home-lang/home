@@ -27,7 +27,12 @@ const SpinMutex = struct {
 
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
+/// Resolve the full registered dependency closure, retrying earlier version
+/// choices when a later constraint or dependency cycle rules them out. The
+/// returned slice is caller-owned; entries borrow the resolver's solution.
 pub const AdvancedDependencyResolver = dependency_resolver_mod.AdvancedDependencyResolver;
+/// In-memory version/dependency metadata consumed by the resolver. Version
+/// dependencies are owned by the registry and cloned into resolved results.
 pub const PackageRegistry = dependency_resolver_mod.PackageRegistry;
 pub const InstallSummary = progress_mod.InstallSummary;
 pub const LifecycleHooks = scripts_mod.LifecycleHooks;

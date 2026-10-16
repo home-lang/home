@@ -1,8 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Advanced dependency resolver with conflict detection and resolution
-/// Implements a PubGrub-like algorithm for version solving
+/// Dependency resolver with transitive constraint propagation and backtracking.
+/// This is a finite search over registry versions, not a PubGrub implementation.
 pub const AdvancedDependencyResolver = struct {
     allocator: Allocator,
     /// Dependency graph
@@ -295,45 +295,222 @@ pub const AdvancedDependencyResolver = struct {
     /// `deinit` call.
     pub fn resolve(self: *AdvancedDependencyResolver, registry: *PackageRegistry) ![]ResolvedVersion {
         self.clearResolution();
-        // Step 1: Detect circular dependencies
         if (try self.graph.detectCycles()) |cycle| {
             defer self.graph.freeCycle(cycle);
-            std.debug.print("Error: Circular dependency detected: ", .{});
-            for (cycle, 0..) |pkg, i| {
-                if (i > 0) std.debug.print(" -> ", .{});
-                std.debug.print("{s}", .{pkg});
-            }
-            std.debug.print("\n", .{});
             return error.CircularDependency;
         }
 
-        // Step 2: Topologically sort dependencies
-        const sorted = try self.topologicalSort();
-        defer self.allocator.free(sorted);
-
-        // Step 3: Resolve versions for each package
-        for (sorted) |package_name| {
-            try self.resolvePackage(package_name, registry);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var state = SearchState.init(allocator);
+        var nodes = self.graph.nodes.iterator();
+        while (nodes.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const node = entry.value_ptr.*;
+            // A local project root is an edge source, not a registry package.
+            if (!self.constraints.contains(name) and !registry.packages.contains(name) and
+                node.dependents.items.len == 0 and node.dependencies.items.len > 0) continue;
+            try state.requirements.put(name, .empty);
         }
-
-        // Step 4: Check for conflicts
-        if (self.conflicts.items.len > 0) {
-            std.debug.print("\nDependency conflicts detected:\n", .{});
-            for (self.conflicts.items) |conflict| {
-                std.debug.print("  {s}: {s}\n", .{ conflict.package_name, conflict.message });
+        var constraints = self.constraints.iterator();
+        while (constraints.next()) |entry| {
+            for (entry.value_ptr.items) |constraint| {
+                try state.addRequirement(entry.key_ptr.*, constraint);
             }
+        }
+        var failure: SearchFailure = .{};
+        defer failure.deinit(self.allocator);
+        if (!try self.search(registry, &state, &failure)) {
+            if (failure.conflict_name) |name| {
+                try self.recordConflict(name, failure.conflict_constraints.?);
+                return error.ConflictingDependencies;
+            }
+            if (failure.missing_name != null) return error.PackageNotFound;
+            if (failure.cycle) return error.CircularDependency;
             return error.ConflictingDependencies;
         }
+        errdefer self.clearResolution();
 
-        // Step 5: Return solution
         var result: std.ArrayList(ResolvedVersion) = .empty;
         errdefer result.deinit(self.allocator);
         var it = self.solution.iterator();
         while (it.next()) |entry| {
             try result.append(self.allocator, entry.value_ptr.*);
         }
+        std.sort.pdq(ResolvedVersion, result.items, {}, lessResolvedName);
 
         return try result.toOwnedSlice(self.allocator);
+    }
+
+    const SearchState = struct {
+        allocator: Allocator,
+        requirements: std.StringHashMap(std.ArrayList(VersionConstraint)),
+        selected: std.StringHashMap(SemanticVersion),
+
+        fn init(allocator: Allocator) SearchState {
+            return .{
+                .allocator = allocator,
+                .requirements = std.StringHashMap(std.ArrayList(VersionConstraint)).init(allocator),
+                .selected = std.StringHashMap(SemanticVersion).init(allocator),
+            };
+        }
+
+        fn clone(self: *const SearchState, allocator: Allocator) !SearchState {
+            var copy = SearchState.init(allocator);
+            var requirements = self.requirements.iterator();
+            while (requirements.next()) |entry| {
+                const list = try allocator.dupe(VersionConstraint, entry.value_ptr.items);
+                try copy.requirements.put(entry.key_ptr.*, .fromOwnedSlice(list));
+            }
+            var selected = self.selected.iterator();
+            while (selected.next()) |entry| try copy.selected.put(entry.key_ptr.*, entry.value_ptr.*);
+            return copy;
+        }
+
+        fn addRequirement(self: *SearchState, name: []const u8, constraint: VersionConstraint) !void {
+            if (self.requirements.getPtr(name)) |list| {
+                try list.append(self.allocator, constraint);
+            } else {
+                var list: std.ArrayList(VersionConstraint) = .empty;
+                try list.append(self.allocator, constraint);
+                try self.requirements.put(name, list);
+            }
+        }
+    };
+
+    const SearchFailure = struct {
+        conflict_name: ?[]u8 = null,
+        conflict_constraints: ?[]VersionConstraint = null,
+        missing_name: ?[]const u8 = null,
+        cycle: bool = false,
+
+        fn deinit(self: *SearchFailure, allocator: Allocator) void {
+            if (self.conflict_name) |name| allocator.free(name);
+            if (self.conflict_constraints) |constraints| allocator.free(constraints);
+        }
+
+        fn noteConflict(self: *SearchFailure, allocator: Allocator, name: []const u8, constraints: []const VersionConstraint) !void {
+            const owned_name = try allocator.dupe(u8, name);
+            errdefer allocator.free(owned_name);
+            const owned_constraints = try allocator.dupe(VersionConstraint, constraints);
+            if (self.conflict_name) |old| allocator.free(old);
+            if (self.conflict_constraints) |old| allocator.free(old);
+            self.conflict_name = owned_name;
+            self.conflict_constraints = owned_constraints;
+        }
+    };
+
+    fn search(self: *AdvancedDependencyResolver, registry: *PackageRegistry, state: *SearchState, failure: *SearchFailure) !bool {
+        var next: ?[]const u8 = null;
+        var requirements = state.requirements.iterator();
+        while (requirements.next()) |entry| {
+            const name = entry.key_ptr.*;
+            if (state.selected.get(name)) |version| {
+                for (entry.value_ptr.items) |constraint| {
+                    if (!constraint.satisfies(version)) {
+                        try failure.noteConflict(self.allocator, name, entry.value_ptr.items);
+                        return false;
+                    }
+                }
+            } else if (next == null or std.mem.order(u8, name, next.?) == .lt) {
+                next = name;
+            }
+        }
+
+        if (next == null) {
+            if (try self.selectedHasCycle(registry, state)) {
+                failure.cycle = true;
+                return false;
+            }
+            try self.commitSolution(registry, state);
+            return true;
+        }
+
+        const name = next.?;
+        const package = registry.packages.get(name) orelse {
+            failure.missing_name = name;
+            return false;
+        };
+        const versions = try state.allocator.dupe(SemanticVersion, package.versions);
+        std.sort.pdq(SemanticVersion, versions, {}, compareVersionsDesc);
+        var had_candidate = false;
+        for (versions) |version| {
+            var allowed = true;
+            for (state.requirements.get(name).?.items) |constraint| {
+                if (!constraint.satisfies(version)) {
+                    allowed = false;
+                    break;
+                }
+            }
+            if (!allowed) continue;
+            had_candidate = true;
+
+            // Every candidate owns a separate arena. A failed branch drops its
+            // requirements and selections together, including transitive edges.
+            var branch_arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer branch_arena.deinit();
+            var branch = try state.clone(branch_arena.allocator());
+            try branch.selected.put(name, version);
+            const dependencies = package.dependencies_by_version.get(version) orelse &.{};
+            for (dependencies) |dependency| {
+                try branch.addRequirement(dependency.name, dependency.constraint);
+            }
+            if (try self.search(registry, &branch, failure)) return true;
+        }
+        if (!had_candidate) try failure.noteConflict(self.allocator, name, state.requirements.get(name).?.items);
+        return false;
+    }
+
+    fn selectedHasCycle(self: *AdvancedDependencyResolver, registry: *PackageRegistry, state: *SearchState) !bool {
+        var graph = DependencyGraph.init(state.allocator);
+        defer graph.deinit();
+        var explicit = self.graph.nodes.iterator();
+        while (explicit.next()) |entry| {
+            try graph.addNode(entry.key_ptr.*);
+            for (entry.value_ptr.dependencies.items) |dependency| try graph.addEdge(entry.key_ptr.*, dependency);
+        }
+        var selected = state.selected.iterator();
+        while (selected.next()) |entry| {
+            const package = registry.packages.get(entry.key_ptr.*).?;
+            const dependencies = package.dependencies_by_version.get(entry.value_ptr.*) orelse &.{};
+            for (dependencies) |dependency| try graph.addEdge(entry.key_ptr.*, dependency);
+        }
+        if (try graph.detectCycles()) |cycle| {
+            graph.freeCycle(cycle);
+            return true;
+        }
+        return false;
+    }
+
+    fn commitSolution(self: *AdvancedDependencyResolver, registry: *PackageRegistry, state: *SearchState) !void {
+        errdefer self.clearResolution();
+        var selected = state.selected.iterator();
+        while (selected.next()) |entry| {
+            try self.commitPackage(registry, entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
+    fn commitPackage(self: *AdvancedDependencyResolver, registry: *PackageRegistry, name: []const u8, version: SemanticVersion) !void {
+        const dependencies = try registry.getDependenciesWithAllocator(self.allocator, name, version);
+        errdefer PackageRegistry.freeDependencies(self.allocator, dependencies);
+        const key = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(key);
+        try self.solution.put(key, .{ .package_name = key, .version = version, .dependencies = dependencies });
+    }
+
+    fn recordConflict(self: *AdvancedDependencyResolver, name: []const u8, incoming: []const VersionConstraint) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const constraints = try self.allocator.dupe(VersionConstraint, incoming);
+        errdefer self.allocator.free(constraints);
+        const message = try self.allocator.dupe(u8, "No version satisfies all constraints");
+        errdefer self.allocator.free(message);
+        try self.conflicts.append(self.allocator, .{ .package_name = owned_name, .constraints = constraints, .message = message });
+    }
+
+    fn lessResolvedName(_: void, a: ResolvedVersion, b: ResolvedVersion) bool {
+        return std.mem.order(u8, a.package_name, b.package_name) == .lt;
     }
 
     fn clearResolution(self: *AdvancedDependencyResolver) void {
@@ -349,124 +526,6 @@ pub const AdvancedDependencyResolver = struct {
             self.allocator.free(conflict.message);
         }
         self.conflicts.clearRetainingCapacity();
-    }
-
-    /// Topological sort of the dependency graph
-    fn topologicalSort(self: *AdvancedDependencyResolver) ![][]const u8 {
-        var result: std.ArrayList([]const u8) = .empty;
-        errdefer result.deinit(self.allocator);
-        var visited = std.StringHashMap(bool).init(self.allocator);
-        defer visited.deinit();
-
-        var it = self.graph.nodes.iterator();
-        while (it.next()) |entry| {
-            try self.topologicalSortHelper(entry.key_ptr.*, &visited, &result);
-        }
-
-        return try result.toOwnedSlice(self.allocator);
-    }
-
-    fn topologicalSortHelper(
-        self: *AdvancedDependencyResolver,
-        node: []const u8,
-        visited: *std.StringHashMap(bool),
-        result: *std.ArrayList([]const u8),
-    ) !void {
-        if (visited.get(node)) |v| {
-            if (v) return; // Already visited
-        }
-
-        try visited.put(node, true);
-
-        // Visit dependencies first
-        if (self.graph.nodes.get(node)) |pkg_node| {
-            for (pkg_node.dependencies.items) |dep| {
-                try self.topologicalSortHelper(dep.name, visited, result);
-            }
-        }
-
-        // Add to result
-        try result.append(self.allocator, node);
-    }
-
-    /// Resolve a single package
-    fn resolvePackage(self: *AdvancedDependencyResolver, package_name: []const u8, registry: *PackageRegistry) !void {
-        // Get all constraints for this package
-        const constraints = self.constraints.get(package_name) orelse {
-            // A project root participates in cycle detection but is not a
-            // registry package to resolve.
-            if (!registry.packages.contains(package_name)) {
-                const node = self.graph.nodes.get(package_name).?;
-                if (node.dependents.items.len == 0 and node.dependencies.items.len > 0) return;
-                return error.PackageNotFound;
-            }
-            // No constraints, use latest version.
-            const latest = try registry.getLatestVersion(package_name);
-            const deps = try registry.getDependenciesWithAllocator(self.allocator, package_name, latest);
-            errdefer PackageRegistry.freeDependencies(self.allocator, deps);
-            const solution_key = try self.allocator.dupe(u8, package_name);
-            errdefer self.allocator.free(solution_key);
-            try self.solution.put(solution_key, .{
-                .package_name = solution_key,
-                .version = latest,
-                .dependencies = deps,
-            });
-            return;
-        };
-
-        // Find a version that satisfies all constraints
-        const available_versions = try registry.getVersions(package_name);
-        defer registry.allocator.free(available_versions);
-
-        // Sort versions in descending order (prefer latest)
-        std.sort.pdq(SemanticVersion, available_versions, {}, compareVersionsDesc);
-
-        for (available_versions) |version| {
-            // Check if this version satisfies all constraints
-            var satisfies_all = true;
-            for (constraints.items) |constraint| {
-                if (!constraint.satisfies(version)) {
-                    satisfies_all = false;
-                    break;
-                }
-            }
-
-            if (satisfies_all) {
-                // Found a compatible version
-                const deps = try registry.getDependenciesWithAllocator(self.allocator, package_name, version);
-                errdefer PackageRegistry.freeDependencies(self.allocator, deps);
-
-                const solution_key = try self.allocator.dupe(u8, package_name);
-                errdefer self.allocator.free(solution_key);
-                try self.solution.put(solution_key, .{
-                    .package_name = solution_key,
-                    .version = version,
-                    .dependencies = deps,
-                });
-                return;
-            }
-        }
-
-        // No compatible version found - record conflict. Build each owned
-        // field first so we can clean up on partial allocation failure.
-        const conflict_name = try self.allocator.dupe(u8, package_name);
-        errdefer self.allocator.free(conflict_name);
-
-        const conflict_constraints = try self.allocator.dupe(VersionConstraint, constraints.items);
-        errdefer self.allocator.free(conflict_constraints);
-
-        const message = try std.fmt.allocPrint(
-            self.allocator,
-            "No version satisfies all constraints",
-            .{},
-        );
-        errdefer self.allocator.free(message);
-
-        try self.conflicts.append(self.allocator, .{
-            .package_name = conflict_name,
-            .constraints = conflict_constraints,
-            .message = message,
-        });
     }
 
     /// Compare versions for sorting (descending)
