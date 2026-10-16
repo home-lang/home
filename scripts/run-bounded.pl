@@ -321,18 +321,25 @@ sub tree_pids {
 }
 
 # Parse only a process header, never the aggregate or auxiliary totals.
-sub process_footprint_mb {
+sub process_footprint_record {
     my ($line) = @_;
-    return undef unless $line =~ /^\s*.+\[\d+\]:[^\n]*\bFootprint:\s+([\d.]+)\s*([KMGT]?B)/;
-    my ($n, $unit) = ($1, $2);
+    return unless $line =~ /^\s*.+\[(\d+)\]:[^\n]*\bFootprint:\s+([\d.]+)\s*([KMGT]?B)/;
+    my ($pid, $n, $unit) = ($1, $2, $3);
     my %mult = ('B' => 1/1048576, 'KB' => 1/1024, 'MB' => 1, 'GB' => 1024, 'TB' => 1048576);
-    return $n * $mult{$unit};
+    return ($pid, $n * $mult{$unit});
+}
+
+sub process_footprint_mb {
+    my ($pid, $mb) = process_footprint_record(@_);
+    return $mb;
 }
 
 # Sum phys_footprint over the tree. Returns undef when it could not measure,
 # which the caller treats as a failure to be counted -- never as zero.
+my %last_footprint_by_pid;
 sub tree_footprint_mb {
     my (@pids) = @_;
+    %last_footprint_by_pid = ();
     if (!@pids) { $probe_failure ||= "empty process tree"; return undef }
     my @args = map { ('-p', $_) } @pids;
     # A pid that exits between the ps snapshot and this call makes footprint
@@ -348,13 +355,23 @@ sub tree_footprint_mb {
     my $total = 0;
     my $found = 0;
     for (split /\n/, $snapshot) {
-        my $mb = process_footprint_mb($_);
+        my ($pid, $mb) = process_footprint_record($_);
         next unless defined $mb;
+        $last_footprint_by_pid{$pid} = $mb;
         $total += $mb;
         $found++;
     }
     $probe_failure = "no process footprint records" unless $found;
     return $found ? $total : undef;
+}
+
+sub report_largest_tree_process {
+    return unless %last_footprint_by_pid;
+    my ($largest) = sort {
+        $last_footprint_by_pid{$b} <=> $last_footprint_by_pid{$a}
+    } keys %last_footprint_by_pid;
+    printf STDERR "run-bounded: largest sampled tree process pid=%d footprint=%.1f MB (shared pages may be counted per process)\n",
+        $largest, $last_footprint_by_pid{$largest};
 }
 
 # Every pid ever seen in the tree, mapped to its native start identity (or
@@ -519,6 +536,7 @@ while (1) {
                 if ($host_bad >= $HOST_STREAK) {
                     printf STDERR "run-bounded: host out of memory (%d%% free-and-uncompressed, pressure %d) across %d samples; killing this run (tree %d MB)\n",
                         (defined $level ? $level : -1), (defined $pressure ? $pressure : -1), $host_bad, $mb;
+                    report_largest_tree_process();
                     reap_tree($pid);
                     exit 125;
                 }
@@ -530,6 +548,7 @@ while (1) {
             if ($mb > $max_mb) {
                 printf STDERR "run-bounded: tree footprint %d MB exceeded the %d MB runaway ceiling (host was at %d%%)\n",
                     $mb, $max_mb, (defined $level ? $level : -1);
+                report_largest_tree_process();
                 reap_tree($pid);
                 exit 125;
             }

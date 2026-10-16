@@ -67,5 +67,6 @@ with tempfile.TemporaryDirectory(prefix='home-kernel-footprint-') as temporary:
     text = log.read_text()
     assert result.returncode == 125, (result.returncode, text)
     assert 'tree footprint' in text and 'runaway ceiling' in text, text
+    assert re.search(r'largest sampled tree process pid=\d+ footprint=\d+(?:\.\d+)? MB', text), text
     assert 'could not measure memory' not in text, text
     print(f'kernel footprint allocation delta: {after-before} bytes; memory bound enforced')

@@ -6,8 +6,9 @@ import subprocess
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'scripts/run-bounded.pl').read_text()
+record = re.search(r'^sub process_footprint_record \{.*?^\}', source, re.M | re.S)
 match = re.search(r'^sub process_footprint_mb \{.*?^\}', source, re.M | re.S)
-assert match, 'supervisor parser not found'
+assert record and match, 'supervisor parser not found'
 # The first two headers and summary were captured from a real two-process
 # footprint probe. Auxiliary and aggregate lines must not add memory again.
 checks = r'''
@@ -26,6 +27,10 @@ for my $case (["0 B", 0], ["1048576 B", 1], ["512 KB", 0.5], ["12.5 MB", 12.5], 
     my $actual = process_footprint_mb("process with spaces [123]: 64-bit    Footprint: $input");
     die "unit conversion failed: $input" unless defined($actual) && $actual == $expected;
 }
+my ($pid, $mb) = process_footprint_record("process with spaces [123]: 64-bit Footprint: 12.5 MB");
+die "lost process attribution" unless $pid == 123 && $mb == 12.5;
+my @summary = process_footprint_record("Summary Footprint: 99 GB");
+die "invented summary process" if @summary;
 print "footprint parser: process headers counted once; summary/auxiliary totals ignored\n";
 '''
-subprocess.run(['perl', '-e', 'use strict; use warnings;\n' + match[0] + '\n' + checks], check=True)
+subprocess.run(['perl', '-e', 'use strict; use warnings;\n' + record[0] + '\n' + match[0] + '\n' + checks], check=True)
