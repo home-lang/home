@@ -1,8 +1,9 @@
-# Home Modern Testing Framework - Comprehensive Testing Complete ✅
+# Home Vitest-Compatible Testing Coverage
 
 ## Summary
 
-The Home modern testing framework has been **thoroughly tested** with a comprehensive test suite covering all functionality: matchers, framework features, mocks, snapshots, and lifecycle hooks.
+The Home Vitest-compatible framework is exercised by focused suites covering
+matchers, framework behavior, mocks, snapshots, ownership, and lifecycle hooks.
 
 ---
 
@@ -10,29 +11,30 @@ The Home modern testing framework has been **thoroughly tested** with a comprehe
 
 ### Test Files Created
 
-1. **`test_matchers.zig`** (513 lines)
-   - Tests all 32+ matchers
+1. **`test_matchers.zig`**
+   - Tests equality, truthiness, numeric, and string matchers
    - Covers equality, truthiness, numeric, string matchers
    - Tests negation functionality
 
-2. **`test_framework.zig`** (219 lines)
+2. **`test_framework.zig`**
    - Tests framework runner
    - Tests lifecycle hooks (beforeAll, afterAll, beforeEach, afterEach)
    - Tests nested suites
    - Tests configuration options
 
-3. **`test_mocks.zig`** (314 lines)
+3. **`test_mocks.zig`**
    - Tests mock creation and initialization
    - Tests return value mocking
    - Tests custom implementation
    - Tests call tracking and assertions
 
-4. **`test_snapshots.zig`** (169 lines)
+4. **`test_snapshots.zig`**
    - Tests snapshot creation
    - Tests snapshot matching
    - Tests snapshot updates
 
-**Total: 4 test suites, 1,215+ lines of test code**
+The compatibility suites are supplemented by `vitest_test.zig`, which covers
+ownership, allocation failures, retries, reporting, mocks, and thrown errors.
 
 ---
 
@@ -189,68 +191,20 @@ The Home modern testing framework has been **thoroughly tested** with a comprehe
 
 ### How to Run Tests
 
-#### Method 1: Individual Test Suites
+#### Method 1: Top-level build
 
 ```bash
-cd packages/testing
-
-# Compile and run individual tests
-zig build-exe tests/test_matchers.zig -o test_matchers
-./test_matchers
-
-zig build-exe tests/test_framework.zig -o test_framework
-./test_framework
-
-zig build-exe tests/test_mocks.zig -o test_mocks
-./test_mocks
-
-zig build-exe tests/test_snapshots.zig -o test_snapshots
-./test_snapshots
+./pantry/.bin/zig build test -Dfilter=testing_vitest -j1
 ```
 
-#### Method 2: Run All Tests
+#### Method 2: Standalone package graph
 
 ```bash
-cd packages/testing
-./run_tests.sh
+packages/testing/run_tests.sh -j1
 ```
 
-Expected output:
-```
-======================================================================
-  ION MODERN TESTING FRAMEWORK - COMPREHENSIVE TEST SUITE
-======================================================================
-
-📦 Running Test Suite: test_matchers
-----------------------------------------------------------------------
-[Test output...]
-✅ test_matchers: PASSED
-
-📦 Running Test Suite: test_framework
-----------------------------------------------------------------------
-[Test output...]
-✅ test_framework: PASSED
-
-📦 Running Test Suite: test_mocks
-----------------------------------------------------------------------
-[Test output...]
-✅ test_mocks: PASSED
-
-📦 Running Test Suite: test_snapshots
-----------------------------------------------------------------------
-[Test output...]
-✅ test_snapshots: PASSED
-
-======================================================================
-  FINAL RESULTS
-======================================================================
-
-Test Suites: 4 total, 4 passed, 0 failed
-
-✅ TEST SUITE PASSED
-
-All 4 test suites passed successfully!
-```
+Both commands run real Zig test artifacts. A successful standalone run is
+quiet; failures retain the compiler or test-runner diagnostics.
 
 ---
 
@@ -258,22 +212,22 @@ All 4 test suites passed successfully!
 
 ### Test Counts
 
-| Test Suite | Test Cases | Assertions | Lines |
-|------------|-----------|------------|-------|
-| Matchers | 30+ | 100+ | 513 |
-| Framework | 12+ | 20+ | 219 |
-| Mocks | 15+ | 30+ | 314 |
-| Snapshots | 8+ | 15+ | 169 |
-| **Total**|**65+**|**165+**|**1,215** |
+| Test Suite | Registered cases |
+|------------|-----------------:|
+| Matchers | 39 |
+| Framework | 11 |
+| Mocks | 13 |
+| Snapshots | 7 |
+| Focused module tests | 7 |
+| **Total** | **77** |
 
 ### Coverage Summary
 
-- ✅ **100%** of matchers tested
-- ✅ **100%** of framework features tested
-- ✅ **100%** of mock functionality tested
-- ✅ **100%** of snapshot functionality tested
-- ✅ **All** lifecycle hooks tested
-- ✅ **All** reporter types tested
+- ✅ Equality, numeric, string, mock, and thrown-error matchers
+- ✅ Nested suites, retries, filters, skip/TODO states, and lifecycle hooks
+- ✅ Mock return cycling, copied arguments, timestamps, and call assertions
+- ✅ Snapshot creation, matching, replacement, ownership, and allocation failure
+- ✅ Explicit writer injection and JSON reporting
 
 ---
 
@@ -359,8 +313,8 @@ fn testFirstMatch(expect: _testing.ModernTest.Expect) !void {
 Due to Zig reserving `test` as a keyword, the testing API uses `t` as the namespace:
 
 ```zig
-const testing = @import("testing/modern_test.zig");
-const t = testing.t;  // Use 't' not 'test'
+const testing = @import("vitest");
+const t = testing.t; // Use 't' because `test` is a Zig keyword.
 
 try t.describe("Suite", struct {
     fn run() !void {
@@ -386,11 +340,10 @@ This is documented in all examples and guides.
 
 5. `packages/testing/build_tests.zig`
 6. `packages/testing/run_tests.sh`
-7. `packages/testing/tests/run_all_tests.zig`
 
 ### Documentation
 
-8. `docs/TESTING_COMPLETE.md` (this file)
+7. `docs/docs/internal/TESTING_COMPLETE.md` (this file)
 
 ---
 
@@ -453,7 +406,8 @@ This is documented in all examples and guides.
 | Vitest | ✅ 30+ matchers | ✅ All hooks | ✅ Complete | ✅ Complete |
 | Pytest | ✅ 20+ matchers | ✅ Fixtures | ⚠️ Separate | ⚠️ Separate |
 
-**Home matches or exceeds test coverage of popular frameworks!**
+These gates make the implemented behavior reproducible without claiming
+feature parity beyond the cases that are actually registered.
 
 ---
 
@@ -461,29 +415,10 @@ This is documented in all examples and guides.
 
 ### Continuous Integration
 
-Add to CI pipeline:
+CI should invoke the same package graph used locally:
 
-```yaml
-# .github/workflows/test.yml
-name: Test
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-
-      - uses: actions/checkout@v2
-      - name: Setup Zig
-
-        uses: goto-bus-stop/setup-zig@v2
-
-      - name: Run tests
-
-        run: |
-          cd packages/testing
-          ./run_tests.sh
+```bash
+packages/testing/run_tests.sh -j1
 ```
 
 ### Test Maintenance
@@ -507,21 +442,18 @@ Potential areas for additional tests:
 
 ## Conclusion
 
-The Home modern testing framework has been **thoroughly tested** with:
+The Home Vitest-compatible framework is currently verified with:
 
-- ✅ **4 comprehensive test suites**
-- ✅ **65+ test cases**
-- ✅ **165+ assertions**
-- ✅ **1,215+ lines of test code**
-- ✅ **100% feature coverage**
-- ✅ **All matchers tested**
-- ✅ **All framework features tested**
-- ✅ **Mock/snapshot functionality tested**
+- ✅ **5 independently compiled test suites**
+- ✅ **77 registered test cases**
+- ✅ **Dual Zig 0.17/0.18 Debug and ReleaseFast verification**
+- ✅ **Matcher, framework, mock, snapshot, and ownership coverage**
 
-The framework is **producthome-ready**and**battle-tested**!
+The framework has a reproducible top-level and standalone verification path.
 
 ---
 
-**Status: COMPLETE AND TESTED** ✅
+**Status: ACTIVE AND TESTED** ✅
 
-All testing functionality has been implemented, documented, and thoroughly tested. The framework is ready for use in production Home projects.
+The framework remains active work; these gates cover the currently implemented
+surface without treating unimplemented future features as complete.
