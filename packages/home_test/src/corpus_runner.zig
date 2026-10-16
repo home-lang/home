@@ -858,37 +858,26 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     const root = try std.fs.path.resolve(allocator, &.{ cwd, corpus_path });
     defer allocator.free(root);
     const project = std.fs.path.dirname(root) orelse return error.InvalidCorpusRoot;
-    const Input = struct { path: [:0]u8, sha256: []u8 };
-    var inputs: std.ArrayList(Input) = .empty;
-    defer {
-        for (inputs.items) |input| {
-            allocator.free(input.path);
-            allocator.free(input.sha256);
-        }
-        inputs.deinit(allocator);
-    }
+    var inputs = corpus_suite_plan.SourceInventory.init(allocator);
+    defer inputs.deinit();
     var digest = std.crypto.hash.sha2.Sha256.init(.{});
     for (files) |file| {
         const absolute = try Io.Dir.cwd().realPathFileAlloc(io, file, allocator);
-        var duplicate = false;
-        for (inputs.items) |input| if (std.mem.eql(u8, input.path, absolute)) {
-            duplicate = true;
-            break;
-        };
-        if (duplicate) {
+        if (inputs.contains(absolute)) {
             allocator.free(absolute);
             continue;
         }
+        errdefer allocator.free(absolute);
         const bytes = try Io.Dir.cwd().readFileAlloc(io, absolute, allocator, .limited(1024 * 1024));
         defer allocator.free(bytes);
         const hash = corpus_journal.hashBytes(bytes);
-        try inputs.append(allocator, .{ .path = absolute, .sha256 = try allocator.dupe(u8, &hash) });
+        try inputs.appendOwned(absolute, hash);
         digest.update(absolute);
         digest.update(&.{0});
         digest.update(&hash);
         digest.update("\n");
     }
-    if (inputs.items.len == 0) return error.EmptyCorpusSuiteInventory;
+    if (inputs.items().len == 0) return error.EmptyCorpusSuiteInventory;
     var raw_hash: [32]u8 = undefined;
     digest.final(&raw_hash);
     const source_hash = std.fmt.bytesToHex(raw_hash, .lower);
@@ -896,7 +885,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer if (requested) |value| allocator.free(value);
     var journal = try corpus_journal.Journal.createForPurpose(allocator, io, requested, root, .suite);
     defer journal.deinit();
-    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .roots = context.roots, .inputs = inputs.items, .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0, .case_source_base = context.case_source_base orelse project });
+    try journal.append(.{ .event = "suite_plan", .contract = "home-native-suite-v1", .roots = context.roots, .inputs = inputs.items(), .source_sha256 = @as([]const u8, &source_hash), .case_credit = 0, .case_source_base = context.case_source_base orelse project });
     try journal.select("@suite");
     const junit = try journal.artifactPath(0, "junit.xml");
     defer allocator.free(junit);
@@ -904,7 +893,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     defer allocator.free(metadata);
     std.debug.print("[home-bun-suite] results: {s}\n", .{journal.directory});
     var result = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, "home-corpus-suite", args, .{
-        .suite_file_count = inputs.items.len,
+        .suite_file_count = inputs.items().len,
         .corpus_project_root = context.execution_cwd orelse project,
         .junit_path = junit,
         .case_metadata_path = metadata,
@@ -912,7 +901,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     });
     errdefer result.deinit(allocator);
     var source_unchanged = true;
-    for (inputs.items) |input| {
+    for (inputs.items()) |input| {
         const bytes = try Io.Dir.cwd().readFileAlloc(io, input.path, allocator, .limited(1024 * 1024));
         defer allocator.free(bytes);
         if (!std.mem.eql(u8, input.sha256, &corpus_journal.hashBytes(bytes))) source_unchanged = false;
@@ -937,7 +926,7 @@ pub fn runNativeSuite(io: Io, allocator: std.mem.Allocator, corpus_path: []const
     _ = try journal.completeWithCaseMetadata(0, result.term, result.timed_out, result.stdout, result.stderr, counts, result.output_complete, source_unchanged, junit, metadata, false);
     try journal.finish(.{
         .files = 1,
-        .source_files = inputs.items.len,
+        .source_files = inputs.items().len,
         .passed = counts.passed,
         .failed = counts.failed,
         .skipped = counts.skipped,

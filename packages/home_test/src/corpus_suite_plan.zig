@@ -73,6 +73,70 @@ pub const RootSet = struct {
     }
 };
 
+/// Owns the canonical source paths and copied hashes in a native suite
+/// inventory. `appendOwned` takes ownership of `path` only on success; a
+/// failed hash copy or list growth leaves the caller responsible for it.
+pub const SourceInventory = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayList(Entry) = .empty,
+
+    pub const Entry = struct {
+        path: [:0]u8,
+        sha256: []u8,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) SourceInventory {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *SourceInventory) void {
+        for (self.entries.items) |entry| {
+            self.allocator.free(entry.path);
+            self.allocator.free(entry.sha256);
+        }
+        self.entries.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn contains(self: *const SourceInventory, path: []const u8) bool {
+        for (self.entries.items) |entry| {
+            if (std.mem.eql(u8, entry.path, path)) return true;
+        }
+        return false;
+    }
+
+    pub fn appendOwned(self: *SourceInventory, path: [:0]u8, hash: [64]u8) !void {
+        const sha256 = try self.allocator.dupe(u8, &hash);
+        errdefer self.allocator.free(sha256);
+        try self.entries.append(self.allocator, .{ .path = path, .sha256 = sha256 });
+    }
+
+    pub fn items(self: *const SourceInventory) []const Entry {
+        return self.entries.items;
+    }
+};
+
+test "suite source inventory transfers paths only after allocation succeeds" {
+    for (0..3) |fail_index| {
+        var inventory = SourceInventory.init(std.testing.allocator);
+        defer inventory.deinit();
+        const path = try std.testing.allocator.dupeSentinel(u8, "/tmp/corpus/a.test.ts", 0);
+        const hash: [64]u8 = @splat('a');
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        inventory.allocator = failing.allocator();
+        const added = inventory.appendOwned(path, hash);
+        inventory.allocator = std.testing.allocator;
+        if (added) |_| {
+            try std.testing.expect(inventory.contains(path));
+            try std.testing.expectEqualStrings(&hash, inventory.items()[0].sha256);
+        } else |err| {
+            std.testing.allocator.free(path);
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(@as(usize, 0), inventory.items().len);
+        }
+    }
+}
+
 test "root set deduplicates canonical roots and owns every retained allocation" {
     var roots = RootSet.init(std.testing.allocator);
     defer roots.deinit();

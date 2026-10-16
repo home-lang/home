@@ -25,6 +25,7 @@ test {
     _ = home_test.corpus_vendor_prepare;
     _ = home_test.corpus_vendor;
     _ = home_test.corpus_runner;
+    _ = home_test.corpus_suite_plan;
     _ = home_test.result;
     _ = home_test.runner;
     _ = home_test.adapters.jsc_bootstrap;
