@@ -113757,9 +113757,10 @@ pub const Checker = struct {
     /// TypeScript's indexed-target relation first simplifies generic mapped
     /// accesses, then otherwise resolves `T[K]` for writing only when the base
     /// object and index constraints are no longer generic. When `T` was
-    /// replaced by a constraint, index signatures are excluded from that
-    /// lookup (`AccessFlags.NoIndexSignatures`) so a dictionary constraint
-    /// cannot make writes to an arbitrarily narrower instantiation sound.
+    /// replaced by a constraint, string and symbol index signatures are
+    /// excluded from that lookup (`AccessFlags.NoIndexSignatures`) so a
+    /// dictionary constraint cannot make writes to an arbitrarily narrower
+    /// instantiation sound. Number index signatures remain valid.
     fn indexedAccessWriteConstraintForEngine(context: *anyopaque, t: TypeId) anyerror!?TypeId {
         const self: *Checker = @ptrCast(@alignCast(context));
         const indexed = self.indexedAccessPayloadOrNull(t) orelse return null;
@@ -179982,16 +179983,22 @@ pub const Checker = struct {
             }
         }
         if (!obj_flags.is_object_type and !obj_flags.is_intersection) return null;
-        if (!options.no_index_signatures and index_t == types.Primitive.number_t) {
+        // `NoIndexSignatures` excludes string/symbol indexers for generic
+        // writes, but TypeScript still permits an applicable number indexer.
+        // Array<T>[number] must therefore remain resolvable through the
+        // constraint of a generic receiver.
+        if (index_t == types.Primitive.number_t) {
             const number_idx = self.interner.objectNumberIndex(obj);
             if (number_idx != types.Primitive.none) return number_idx;
-            if (try self.effectiveStringIndexType(obj)) |string_idx| return string_idx;
+            if (!options.no_index_signatures) {
+                if (try self.effectiveStringIndexType(obj)) |string_idx| return string_idx;
+            }
         }
 
         var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer keys.deinit(self.gpa);
         if (!self.collectKnownStringKeysFromIndexType(index_t, &keys) or keys.items.len == 0) {
-            if (!options.no_index_signatures and self.typeEntirelyNumberIndexLike(index_t)) {
+            if (self.typeEntirelyNumberIndexLike(index_t)) {
                 const number_idx = self.interner.objectNumberIndex(obj);
                 if (number_idx != types.Primitive.none) return number_idx;
             }
@@ -237102,6 +237109,26 @@ test "checker: keyof-constrained key reads a concrete class without implicit any
         valid_reads += 1;
     }
     try T.expectEqual(@as(usize, 2), valid_reads);
+}
+
+test "checker: numeric generic indexed callback accepts its write constraint" {
+    const s = try newSetup(
+        \\function ok<T extends { elements: string[] } | { elements: number[] }>(
+        \\  param: T, cb: (element: T["elements"][number]) => void
+        \\) { cb(param.elements[0]); }
+        \\function badKey<K extends "a" | "b">(
+        \\  cb: (value: { a: 123; b: "some string" }[K]) => void
+        \\) { cb(123); }
+        \\function badString<T extends { [key: string]: number }>(
+        \\  cb: (value: T[string]) => void
+        \\) { cb(1); }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: keyof syntax preserves literal inference and reports unresolved operands" {

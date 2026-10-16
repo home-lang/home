@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-17",
+  "issues": [832, 66],
+  "guard_max_mb": 3840,
+  "source": {
+    "path": "packages/ts_checker/src/check.zig",
+    "sha256": "d82255824bebd90a34af31e0d936a0d9f63b7ff9e99f5f70aeb894c5dfd5c1e4"
+  },
+  "original_fixture": {
+    "path": "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/keyof/keyofAndIndexedAccess2.ts",
+    "sha256": "7749a3d114f6880f5726c4a943377ca98a2100a2d748cae60a3b50e2f576bffa"
+  },
+  "original_baseline": {
+    "path": "_submodules/typescript-go/_submodules/TypeScript/tests/baselines/reference/keyofAndIndexedAccess2.errors.txt",
+    "sha256": "08f59523c89f655521faff937e3025525f920592ca150c66f8bb895092ecf754"
+  },
+  "controls": [
+    { "name": "exact keyofAndIndexedAccess2 fixture", "passed": 1, "failed": 0, "peak_tree_mb": 2053 },
+    { "name": "focused checker regression", "passed": 2, "total": 2, "peak_tree_mb": 1662 },
+    { "name": "exact thirteen-case neighboring window", "passed": 13, "failed": 0, "skipped": 0, "peak_tree_mb": 2159 },
+    { "name": "unfiltered checker Zig 0.17", "passed": 4651, "total": 4651, "peak_tree_mb": 2299 },
+    { "name": "unfiltered Program Zig 0.17", "passed": 321, "total": 321, "peak_tree_mb": 2397 },
+    { "name": "targeted Pickier and Zig formatting", "status": "pass" },
+    { "name": "installed TypeScript 5.7.3 negative controls", "expected_diagnostics": ["TS2345", "TS2345"] }
+  ],
+  "not_claimed": [
+    "the full 1,000-case exact slice passes",
+    "all TypeScript conformance cases pass",
+    "all Bun tests pass"
+  ]
+}
