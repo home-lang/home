@@ -2181,6 +2181,27 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_testing_framework_tests.step, test_filter, "testing_framework");
     dependOnTest(test_step, &run_modern_test_tests.step, test_filter, "testing_modern");
     dependOnTest(test_step, &run_vitest_tests.step, test_filter, "testing_vitest");
+
+    const vitest_examples_step = b.step("testing-vitest-examples", "Build and run Vitest-compatible examples");
+    const vitest_examples = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "vitest-example", .path = "packages/testing/examples/vitest_example.zig" },
+        .{ .name = "vitest-matchers-showcase", .path = "packages/testing/examples/matchers_showcase.zig" },
+    };
+    for (vitest_examples) |example| {
+        const executable = b.addExecutable(.{
+            .name = example.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(example.path),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        executable.root_module.addImport("vitest", vitest_pkg);
+        const run_example = b.addRunArtifact(executable);
+        vitest_examples_step.dependOn(&run_example.step);
+    }
+    dependOnTest(test_step, vitest_examples_step, test_filter, "testing_vitest_examples");
+
     dependOnTest(test_step, &run_cached_test_runner_tests.step, test_filter, "testing_cached_runner");
     dependOnTest(test_step, &run_test_runner_tests.step, test_filter, "testing_runner");
     dependOnTest(test_step, &run_test_executor_tests.step, test_filter, "testing_executor");

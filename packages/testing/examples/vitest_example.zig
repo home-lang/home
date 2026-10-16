@@ -1,9 +1,9 @@
 const std = @import("std");
-const testing = @import("../src/modern_test.zig");
-const test = testing.test;
+const testing = @import("vitest");
+const t = testing.t;
 
 /// Example: Modern testing framework demonstration
-/// Run with: zig test vitest_example.zig
+/// Run with: zig build test -Dfilter=testing_vitest_examples
 pub fn main() !void {
     var debug_allocator = std.heap.DebugAllocator(.{}).init;
     defer _ = debug_allocator.deinit();
@@ -20,35 +20,35 @@ pub fn main() !void {
     testing.global_test_framework = &framework;
 
     // Example 1: Basic describe/it syntax
-    try test.describe("Calculator", struct {
+    try t.describe("Calculator", struct {
         fn run() !void {
-            try test.it("adds two numbers", testAdd);
-            try test.it("subtracts two numbers", testSubtract);
-            try test.it("multiplies two numbers", testMultiply);
+            try t.it("adds two numbers", testAdd);
+            try t.it("subtracts two numbers", testSubtract);
+            try t.it("multiplies two numbers", testMultiply);
         }
     }.run);
 
     // Example 2: Nested describes
-    try test.describe("String utilities", struct {
+    try t.describe("String utilities", struct {
         fn run() !void {
-            try test.describe("length", struct {
+            try t.describe("length", struct {
                 fn run() !void {
-                    try test.it("returns correct length", testStringLength);
-                    try test.it("handles empty strings", testEmptyString);
+                    try t.it("returns correct length", testStringLength);
+                    try t.it("handles empty strings", testEmptyString);
                 }
             }.run);
 
-            try test.describe("contains", struct {
+            try t.describe("contains", struct {
                 fn run() !void {
-                    try test.it("finds substrings", testContains);
-                    try test.it("returns false when not found", testNotContains);
+                    try t.it("finds substrings", testContains);
+                    try t.it("returns false when not found", testNotContains);
                 }
             }.run);
         }
     }.run);
 
     // Example 3: Lifecycle hooks
-    try test.describe("Database operations", struct {
+    try t.describe("Database operations", struct {
         var db_connection: i32 = 0;
 
         fn setup() !void {
@@ -62,63 +62,60 @@ pub fn main() !void {
         }
 
         fn run() !void {
-            test.beforeAll(setup);
-            test.afterAll(teardown);
+            try t.beforeAll(setup);
+            try t.afterAll(teardown);
 
-            try test.it("inserts records", testInsert);
-            try test.it("queries records", testQuery);
+            try t.it("inserts records", testInsert);
+            try t.it("queries records", testQuery);
         }
     }.run);
 
     // Run all tests
     const results = try framework.run();
 
-    // Exit with error code if any tests failed
-    if (results.failed > 0) {
-        std.process.exit(1);
-    }
+    if (results.failed > 0) return error.TestsFailed;
 }
 
 // Test functions
 fn testAdd(expect: *testing.ModernTest.Expect) !void {
     const result = 2 + 3;
-    expect.* = test.expect(expect.allocator, result, expect.failures);
+    expect.* = t.expect(expect.allocator, result, expect.failures);
     try expect.toBe(5);
 }
 
 fn testSubtract(expect: *testing.ModernTest.Expect) !void {
     const result = 10 - 4;
-    expect.* = test.expect(expect.allocator, result, expect.failures);
+    expect.* = t.expect(expect.allocator, result, expect.failures);
     try expect.toBe(6);
 }
 
 fn testMultiply(expect: *testing.ModernTest.Expect) !void {
     const result = 3 * 7;
-    expect.* = test.expect(expect.allocator, result, expect.failures);
+    expect.* = t.expect(expect.allocator, result, expect.failures);
     try expect.toBe(21);
 }
 
 fn testStringLength(expect: *testing.ModernTest.Expect) !void {
     const str = "hello";
-    expect.* = test.expect(expect.allocator, str, expect.failures);
+    expect.* = t.expect(expect.allocator, str, expect.failures);
     try expect.toHaveLength(5);
 }
 
 fn testEmptyString(expect: *testing.ModernTest.Expect) !void {
     const str = "";
-    expect.* = test.expect(expect.allocator, str, expect.failures);
+    expect.* = t.expect(expect.allocator, str, expect.failures);
     try expect.toHaveLength(0);
 }
 
 fn testContains(expect: *testing.ModernTest.Expect) !void {
     const str = "hello world";
-    expect.* = test.expect(expect.allocator, str, expect.failures);
+    expect.* = t.expect(expect.allocator, str, expect.failures);
     try expect.toContain("world");
 }
 
 fn testNotContains(expect: *testing.ModernTest.Expect) !void {
     const str = "hello world";
-    expect.* = test.expect(expect.allocator, str, expect.failures);
+    expect.* = t.expect(expect.allocator, str, expect.failures);
 
     // Use .not modifier
     expect.not = true;

@@ -2,26 +2,36 @@
 
 ## Overview
 
-Modern testing framework with mocks and snapshots. Makes testing easy and powerful.
+Native Vitest-style testing with nested suites, lifecycle hooks, matchers,
+mocks, snapshots, retries, filters, timeouts, and multiple reporters.
 
 ## Features
 
-- Core testing functionality
-- Type-safe operations
-- Well-tested implementation
+- `describe`/`it` suites with lifecycle hooks
+- Typed equality, numeric, string, mock, and error matchers
+- Allocation-safe snapshots and call tracking
+- Explicit `std.Io` and writer injection for embedders
+- Pretty, minimal, verbose, JSON, and TAP reporters
 
 ## Usage
 
 ```zig
-const testing = @import("testing");
+const testing = @import("vitest");
+const t = testing.t;
 
-// Example usage
+fn adds(expectation: *testing.ModernTest.Expect) !void {
+    expectation.* = t.expect(expectation.allocator, 2 + 3, expectation.failures);
+    try expectation.toBe(5);
+}
 ```
 
 ## Testing
 
 ```bash
-zig test packages/testing/tests/testing_test.zig
+./pantry/.bin/zig build test -Dfilter=testing_vitest
+
+# Compile and execute the user-facing examples too.
+./pantry/.bin/zig build test -Dfilter=testing_vitest_examples
 ```
 
 ## License
