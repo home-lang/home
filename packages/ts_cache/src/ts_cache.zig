@@ -1,9 +1,10 @@
 //! Persistent compilation cache — Phase 5 §11.6 of TS_PARITY_PLAN.
 //!
 //! Content-addressed directory cache that survives process
-//! boundaries. Each cache entry is keyed by `sha256(source +
-//! tsconfig)` and stores the compiled JS output plus diagnostic
-//! summary. Subsequent runs of `home tsc` over an unchanged file
+//! boundaries. Each cache entry is keyed by a versioned SHA-256 digest
+//! of the length-framed source and tsconfig bytes, and stores the
+//! compiled JS output plus diagnostic summary. Subsequent runs of
+//! `home tsc` over an unchanged file
 //! skip the entire pipeline and serve the cached result.
 //!
 //! On-disk wire format (versioned): every entry is stored as
@@ -102,11 +103,17 @@ pub const Cache = struct {
     /// compiler options don't collide.
     pub fn computeKey(source: []const u8, config_blob: []const u8) Key {
         var h = std.crypto.hash.sha2.Sha256.init(.{});
+        // A separator byte is ambiguous: ("a|b", "c") and ("a", "b|c")
+        // previously shared a key, as did ("a|b", "") and ("a", "b").
+        // The version prefix also keeps old on-disk entries unreachable.
+        h.update("Home TS cache key v2\x00");
+        var length: [8]u8 = undefined;
+        std.mem.writeInt(u64, &length, @intCast(source.len), .little);
+        h.update(&length);
         h.update(source);
-        if (config_blob.len > 0) {
-            h.update("|");
-            h.update(config_blob);
-        }
+        std.mem.writeInt(u64, &length, @intCast(config_blob.len), .little);
+        h.update(&length);
+        h.update(config_blob);
         var out: Key = undefined;
         h.final(&out);
         return out;

@@ -1944,8 +1944,8 @@ pub const EmitResult = struct {
 /// Compile-or-cached-fetch. On a cache hit, returns the cached
 /// JS without running lex/parse/bind/check/emit. On a miss, runs
 /// the full pipeline, stores the result in the cache, and returns
-/// it. The cache key is `sha256(source + config_blob)` where
-/// `config_blob` is the caller-supplied tsconfig fingerprint.
+/// it. The cache key is the versioned, length-framed digest of source
+/// and `config_blob`, the caller-supplied tsconfig fingerprint.
 pub fn emitWithCache(
     gpa: std.mem.Allocator,
     source: []const u8,
@@ -5875,6 +5875,22 @@ test "driver: emitWithCache distinct sources produce distinct entries" {
 
     try T.expect(!std.mem.eql(u8, ra.js, rb.js));
     try T.expectEqual(@as(u32, 2), cache.count());
+}
+
+test "driver: emitWithCache keeps source and config boundaries distinct" {
+    var cache = try ts_cache.Cache.init(T.allocator, null);
+    defer cache.deinit();
+
+    // The old source + "|" + config scheme mapped both requests to "1|2;".
+    var first = try emitWithCache(T.allocator, "1", &cache, "2;", .{});
+    defer first.deinit(T.allocator);
+    var second = try emitWithCache(T.allocator, "1|2;", &cache, "", .{});
+    defer second.deinit(T.allocator);
+
+    try T.expect(!first.from_cache);
+    try T.expect(!second.from_cache);
+    try T.expectEqual(@as(u32, 2), cache.count());
+    try T.expect(!std.mem.eql(u8, first.js, second.js));
 }
 
 test "driver: TS2554 argument count mismatch" {
