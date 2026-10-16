@@ -3,6 +3,7 @@ const auth_mod = @import("auth.zig");
 const lockfile_mod = @import("lockfile.zig");
 const progress_mod = @import("progress.zig");
 const scripts_mod = @import("scripts.zig");
+const tree_mod = @import("tree.zig");
 const workspace_mod = @import("workspace.zig");
 const Io = std.Io;
 
@@ -31,6 +32,8 @@ pub const Lockfile = lockfile_mod.Lockfile;
 pub const ProgressBar = progress_mod.ProgressBar;
 pub const ProgressTracker = progress_mod.ProgressTracker;
 pub const ScriptRunner = scripts_mod.ScriptRunner;
+pub const DependencyTree = tree_mod.DependencyTree;
+pub const buildDependencyTreeFromLockFile = tree_mod.buildFromLockFile;
 pub const Workspace = workspace_mod.Workspace;
 pub const WorkspacePackage = workspace_mod.WorkspacePackage;
 

@@ -10,12 +10,14 @@ pub const DependencyTree = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, version: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, version: []const u8) !Self {
+        const owned_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(owned_name);
         return .{
             .allocator = allocator,
-            .root_name = name,
-            .root_version = version,
-            .nodes = std.ArrayList(TreeNode).init(allocator),
+            .root_name = owned_name,
+            .root_version = try allocator.dupe(u8, version),
+            .nodes = .empty,
         };
     }
 
@@ -24,17 +26,24 @@ pub const DependencyTree = struct {
             node.deinit();
         }
         self.nodes.deinit(self.allocator);
+        self.allocator.free(self.root_name);
+        self.allocator.free(self.root_version);
+        self.* = undefined;
     }
 
     /// Add a dependency node
     pub fn addNode(self: *Self, name: []const u8, version: []const u8, depth: usize, is_last: bool) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_version = try self.allocator.dupe(u8, version);
+        errdefer self.allocator.free(owned_version);
         const node = TreeNode{
             .allocator = self.allocator,
-            .name = try self.allocator.dupe(u8, name),
-            .version = try self.allocator.dupe(u8, version),
+            .name = owned_name,
+            .version = owned_version,
             .depth = depth,
             .is_last = is_last,
-            .children = std.ArrayList(usize).init(self.allocator),
+            .children = .empty,
         };
 
         try self.nodes.append(self.allocator, node);
@@ -45,42 +54,24 @@ pub const DependencyTree = struct {
         std.debug.print("\n📦 Dependency Tree:\n\n", .{});
         std.debug.print("{s}@{s}\n", .{ self.root_name, self.root_version });
 
-        for (self.nodes.items, 0..) |node, idx| {
-            self.renderNode(&node, idx);
+        for (self.nodes.items) |*node| {
+            renderNode(node);
         }
 
         std.debug.print("\n", .{});
     }
 
     /// Render a single node with tree lines
-    fn renderNode(self: *const Self, node: *const TreeNode, idx: usize) void {
-        _ = idx;
-        _ = self;
-
-        // Build prefix based on depth and position
-        var prefix_buf: [256]u8 = undefined;
-        var prefix_len: usize = 0;
-
+    fn renderNode(node: *const TreeNode) void {
         var d: usize = 0;
         while (d < node.depth) : (d += 1) {
             if (d == node.depth - 1) {
-                // Last level - show branch
-                if (node.is_last) {
-                    @memcpy(prefix_buf[prefix_len..][0..3], "└──");
-                    prefix_len += 3;
-                } else {
-                    @memcpy(prefix_buf[prefix_len..][0..3], "├──");
-                    prefix_len += 3;
-                }
+                std.debug.print("{s}", .{if (node.is_last) "└──" else "├──"});
             } else {
-                // Parent levels - show continuation
-                @memcpy(prefix_buf[prefix_len..][0..3], "│  ");
-                prefix_len += 3;
+                std.debug.print("│  ", .{});
             }
         }
-
-        const prefix = prefix_buf[0..prefix_len];
-        std.debug.print("{s} {s}@{s}\n", .{ prefix, node.name, node.version });
+        std.debug.print(" {s}@{s}\n", .{ node.name, node.version });
     }
 
     /// Render compact tree (single line per dependency)
@@ -95,20 +86,20 @@ pub const DependencyTree = struct {
     }
 
     /// Show dependency sizes (requires size data)
-    pub fn renderWithSizes(self: *const Self, sizes: std.StringHashMap(f64)) void {
+    pub fn renderWithSizes(self: *const Self, sizes: std.StringHashMap(f64)) !void {
         std.debug.print("\n📦 Dependencies by Size:\n\n", .{});
 
         // Sort by size (descending)
-        var sorted = std.ArrayList(SizeEntry).init(self.allocator);
-        defer sorted.deinit();
+        var sorted: std.ArrayList(SizeEntry) = .empty;
+        defer sorted.deinit(self.allocator);
 
         for (self.nodes.items) |node| {
             const size = sizes.get(node.name) orelse 0.0;
-            sorted.append(self.allocator, .{
+            try sorted.append(self.allocator, .{
                 .name = node.name,
                 .version = node.version,
                 .size_mb = size,
-            }) catch continue;
+            });
         }
 
         // Bubble sort (simple for small lists)
@@ -154,6 +145,7 @@ const TreeNode = struct {
         self.allocator.free(self.name);
         self.allocator.free(self.version);
         self.children.deinit(self.allocator);
+        self.* = undefined;
     }
 };
 
@@ -166,7 +158,8 @@ const SizeEntry = struct {
 
 /// Build dependency tree from lock file
 pub fn buildFromLockFile(allocator: std.mem.Allocator, lock_file: *pkg_manager.LockFile, root_name: []const u8, root_version: []const u8) !DependencyTree {
-    var tree = DependencyTree.init(allocator, root_name, root_version);
+    var tree = try DependencyTree.init(allocator, root_name, root_version);
+    errdefer tree.deinit();
 
     for (lock_file.packages.items, 0..) |pkg, idx| {
         const is_last = idx == lock_file.packages.items.len - 1;

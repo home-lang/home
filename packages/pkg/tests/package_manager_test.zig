@@ -2,6 +2,61 @@ const std = @import("std");
 const testing = std.testing;
 const pkg = @import("package_manager");
 
+fn buildDependencyTreeForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var lockfile = pkg.LockFile{
+        .allocator = allocator,
+        .version = 1,
+        .packages = .empty,
+    };
+    defer lockfile.packages.deinit(allocator);
+    try lockfile.packages.append(allocator, .{
+        .name = "compiler",
+        .version = "1.0.0",
+        .checksum = "test",
+        .source = .{ .Registry = "https://example.test" },
+    });
+    try lockfile.packages.append(allocator, .{
+        .name = "runtime",
+        .version = "2.0.0",
+        .checksum = "test",
+        .source = .{ .Registry = "https://example.test" },
+    });
+    var tree = try pkg.buildDependencyTreeFromLockFile(allocator, &lockfile, "root", "3.0.0");
+    defer tree.deinit();
+    try testing.expectEqual(@as(usize, 2), tree.nodes.items.len);
+}
+
+test "DependencyTree: owns roots and nodes across allocation failures" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        buildDependencyTreeForAllocationFailure,
+        .{},
+    );
+}
+
+test "DependencyTree: preserves names and renders deep UTF-8 branches" {
+    const allocator = testing.allocator;
+    const name = try allocator.dupe(u8, "root");
+    defer allocator.free(name);
+    var tree = try pkg.DependencyTree.init(allocator, name, "1.0.0");
+    defer tree.deinit();
+    @memset(name, 'x');
+    try testing.expectEqualStrings("root", tree.root_name);
+
+    const child_name = try allocator.dupe(u8, "child");
+    defer allocator.free(child_name);
+    try tree.addNode(child_name, "2.0.0", 100, true);
+    @memset(child_name, 'x');
+    try testing.expectEqualStrings("child", tree.nodes.items[0].name);
+
+    tree.render();
+    tree.renderCompact();
+    var sizes = std.StringHashMap(f64).init(allocator);
+    defer sizes.deinit();
+    try sizes.put("child", 2.0);
+    try tree.renderWithSizes(sizes);
+}
+
 fn addScriptsForAllocationFailure(allocator: std.mem.Allocator) !void {
     var runner = pkg.ScriptRunner.initWithIo(allocator, testing.io, "/unused");
     defer runner.deinit();
