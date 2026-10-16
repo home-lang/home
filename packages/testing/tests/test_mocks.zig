@@ -1,17 +1,17 @@
 const std = @import("std");
-const testing = @import("../src/modern_test.zig");
+const testing = @import("vitest");
 const t = testing.t;
 
-/// Tests for Mock and Spy functionality
-pub fn main() !void {
-    var debug_allocator = std.heap.DebugAllocator(.{}).init;
-    defer _ = debug_allocator.deinit();
-    const allocator = debug_allocator.allocator();
-
-    var framework = testing.ModernTest.init(allocator, .{
-        .reporter = .pretty,
-        .verbose = false,
-    });
+// Tests for Mock and Spy functionality.
+test "Vitest-compatible mock suite" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var framework = testing.ModernTest.initWithWriter(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .reporter = .minimal, .verbose = false },
+        &output.writer,
+    );
     defer framework.deinit();
 
     testing.global_test_framework = &framework;
@@ -25,17 +25,8 @@ pub fn main() !void {
 
     const results = try framework.run();
 
-    std.debug.print("\n=== Mock Test Results ===\n", .{});
-    std.debug.print("Total: {d}\n", .{results.total});
-    std.debug.print("Passed: {d}\n", .{results.passed});
-    std.debug.print("Failed: {d}\n", .{results.failed});
-
-    if (results.failed > 0) {
-        std.debug.print("\n❌ Some mock tests failed!\n", .{});
-        std.process.exit(1);
-    } else {
-        std.debug.print("\n✅ All mock tests passed!\n", .{});
-    }
+    try std.testing.expect(results.total > 0);
+    try std.testing.expectEqual(@as(usize, 0), results.failed);
 }
 
 // ============================================================================
@@ -87,7 +78,7 @@ fn testReturnValue(expect: *testing.ModernTest.Expect) !void {
     var mock = testing.ModernTest.Mock.init(expect.allocator);
     defer mock.deinit();
 
-    const value: i32 = 42;
+    var value: i32 = 42;
     try mock.mockReturnValue(@ptrCast(&value));
 
     const result = try mock.call(&.{});
@@ -101,8 +92,8 @@ fn testCycleValues(expect: *testing.ModernTest.Expect) !void {
     var mock = testing.ModernTest.Mock.init(expect.allocator);
     defer mock.deinit();
 
-    const value1: i32 = 10;
-    const value2: i32 = 20;
+    var value1: i32 = 10;
+    var value2: i32 = 20;
 
     try mock.mockReturnValue(@ptrCast(&value1));
     try mock.mockReturnValue(@ptrCast(&value2));
@@ -139,11 +130,11 @@ fn testMockImplementation() !void {
     }.run);
 }
 
+var custom_result: i32 = 100;
+
 fn customAddImpl(args: []const ?*anyopaque) !?*anyopaque {
     _ = args;
-    const result: i32 = 100;
-    const ptr = @as(*const anyopaque, @ptrCast(&result));
-    return @constCast(ptr);
+    return &custom_result;
 }
 
 fn testCustomImpl(expect: *testing.ModernTest.Expect) !void {
@@ -163,8 +154,8 @@ fn testImplWithArgs(expect: *testing.ModernTest.Expect) !void {
     var mock = testing.ModernTest.Mock.init(expect.allocator);
     defer mock.deinit();
 
-    const arg1: i32 = 5;
-    const arg2: i32 = 10;
+    var arg1: i32 = 5;
+    var arg2: i32 = 10;
 
     _ = try mock.call(&.{ @ptrCast(&arg1), @ptrCast(&arg2) });
 
@@ -209,7 +200,7 @@ fn testTrackArguments(expect: *testing.ModernTest.Expect) !void {
     var mock = testing.ModernTest.Mock.init(expect.allocator);
     defer mock.deinit();
 
-    const arg1: i32 = 42;
+    var arg1: i32 = 42;
     _ = try mock.call(&.{@ptrCast(&arg1)});
 
     // Verify call was tracked
@@ -302,8 +293,8 @@ fn testCalledWith(expect: *testing.ModernTest.Expect) !void {
     var mock = testing.ModernTest.Mock.init(expect.allocator);
     defer mock.deinit();
 
-    const arg1: i32 = 42;
-    const arg2: i32 = 100;
+    var arg1: i32 = 42;
+    var arg2: i32 = 100;
 
     const args = [_]?*anyopaque{ @ptrCast(&arg1), @ptrCast(&arg2) };
     _ = try mock.call(&args);

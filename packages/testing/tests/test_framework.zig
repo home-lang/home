@@ -1,17 +1,17 @@
 const std = @import("std");
-const testing = @import("../src/modern_test.zig");
+const testing = @import("vitest");
 const t = testing.t;
 
-/// Tests for framework functionality: runner, lifecycle hooks, nested suites
-pub fn main() !void {
-    var debug_allocator = std.heap.DebugAllocator(.{}).init;
-    defer _ = debug_allocator.deinit();
-    const allocator = debug_allocator.allocator();
-
-    var framework = testing.ModernTest.init(allocator, .{
-        .reporter = .pretty,
-        .verbose = false,
-    });
+// Tests for framework functionality: runner, lifecycle hooks, nested suites.
+test "framework runner, hooks, nested suites, and configuration" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var framework = testing.ModernTest.initWithWriter(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .reporter = .minimal, .verbose = false },
+        &output.writer,
+    );
     defer framework.deinit();
 
     testing.global_test_framework = &framework;
@@ -24,17 +24,8 @@ pub fn main() !void {
 
     const results = try framework.run();
 
-    std.debug.print("\n=== Framework Test Results ===\n", .{});
-    std.debug.print("Total: {d}\n", .{results.total});
-    std.debug.print("Passed: {d}\n", .{results.passed});
-    std.debug.print("Failed: {d}\n", .{results.failed});
-
-    if (results.failed > 0) {
-        std.debug.print("\n❌ Some framework tests failed!\n", .{});
-        std.process.exit(1);
-    } else {
-        std.debug.print("\n✅ All framework tests passed!\n", .{});
-    }
+    try std.testing.expect(results.total > 0);
+    try std.testing.expectEqual(@as(usize, 0), results.failed);
 }
 
 // ============================================================================
@@ -87,8 +78,8 @@ fn testLifecycleHooks() !void {
         }
 
         fn run() !void {
-            t.beforeAll(setup);
-            t.afterAll(teardown);
+            try t.beforeAll(setup);
+            try t.afterAll(teardown);
 
             try t.it("verifies beforeAll ran", testBeforeAll);
         }
@@ -112,8 +103,8 @@ fn testLifecycleHooks() !void {
         }
 
         fn run() !void {
-            t.beforeEach(incrementBefore);
-            t.afterEach(resetAfter);
+            try t.beforeEach(incrementBefore);
+            try t.afterEach(resetAfter);
 
             try t.it("test 1 sees counter", testCounterFirst);
             try t.it("test 2 sees reset counter", testCounterSecond);

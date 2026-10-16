@@ -1,17 +1,17 @@
 const std = @import("std");
-const testing = @import("../src/modern_test.zig");
+const testing = @import("vitest");
 const t = testing.t;
 
-/// Comprehensive tests for all matchers in the modern testing framework
-pub fn main() !void {
-    var debug_allocator = std.heap.DebugAllocator(.{}).init;
-    defer _ = debug_allocator.deinit();
-    const allocator = debug_allocator.allocator();
-
-    var framework = testing.ModernTest.init(allocator, .{
-        .reporter = .pretty,
-        .verbose = false,
-    });
+// Comprehensive tests for all matchers in the modern testing framework.
+test "Vitest-compatible matcher suite" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var framework = testing.ModernTest.initWithWriter(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .reporter = .minimal, .verbose = false },
+        &output.writer,
+    );
     defer framework.deinit();
 
     testing.global_test_framework = &framework;
@@ -26,19 +26,8 @@ pub fn main() !void {
 
     const results = try framework.run();
 
-    std.debug.print("\n=== Test Results ===\n", .{});
-    std.debug.print("Total: {d}\n", .{results.total});
-    std.debug.print("Passed: {d}\n", .{results.passed});
-    std.debug.print("Failed: {d}\n", .{results.failed});
-    std.debug.print("Skipped: {d}\n", .{results.skipped});
-    std.debug.print("Todo: {d}\n", .{results.todo});
-
-    if (results.failed > 0) {
-        std.debug.print("\n❌ Some tests failed!\n", .{});
-        std.process.exit(1);
-    } else {
-        std.debug.print("\n✅ All tests passed!\n", .{});
-    }
+    try std.testing.expect(results.total > 0);
+    try std.testing.expectEqual(@as(usize, 0), results.failed);
 }
 
 // ============================================================================

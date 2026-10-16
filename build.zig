@@ -1718,6 +1718,25 @@ pub fn build(b: *std.Build) void {
     vitest_tests.root_module.addImport("vitest", vitest_pkg);
     const run_vitest_tests = b.addRunArtifact(vitest_tests);
 
+    const vitest_compatibility_suites = [_][]const u8{
+        "packages/testing/tests/test_framework.zig",
+        "packages/testing/tests/test_matchers.zig",
+        "packages/testing/tests/test_mocks.zig",
+        "packages/testing/tests/test_snapshots.zig",
+    };
+    for (vitest_compatibility_suites) |source_path| {
+        const compatibility_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(source_path),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        compatibility_tests.root_module.addImport("vitest", vitest_pkg);
+        const run_compatibility_tests = b.addRunArtifact(compatibility_tests);
+        run_vitest_tests.step.dependOn(&run_compatibility_tests.step);
+    }
+
     const vitest_unit_tests = b.addTest(.{ .root_module = vitest_pkg });
     const run_vitest_unit_tests = b.addRunArtifact(vitest_unit_tests);
     run_vitest_tests.step.dependOn(&run_vitest_unit_tests.step);
