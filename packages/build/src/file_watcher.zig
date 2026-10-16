@@ -41,6 +41,7 @@ pub const FileWatcher = struct {
         path: []const u8,
         last_mtime: i96,
         size: u64,
+        present: bool = true,
     };
 
     pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64, io: std.Io) FileWatcher {
@@ -98,6 +99,7 @@ pub const FileWatcher = struct {
             .path = result.key_ptr.*,
             .last_mtime = stat.mtime.nanoseconds,
             .size = stat.size,
+            .present = true,
         };
     }
 
@@ -126,7 +128,7 @@ pub const FileWatcher = struct {
     /// Check for file changes (polling-based)
     fn watcherThread(self: *FileWatcher) void {
         while (self.running.load(.seq_cst)) {
-            self.checkForChanges() catch |err| {
+            self.pollOnce() catch |err| {
                 std.debug.print("File watcher error: {any}\n", .{err});
             };
 
@@ -138,7 +140,8 @@ pub const FileWatcher = struct {
     }
 
     /// Check all watched files for changes
-    fn checkForChanges(self: *FileWatcher) !void {
+    /// Inspect watched paths once without starting the background thread.
+    pub fn pollOnce(self: *FileWatcher) !void {
         self.lock();
         defer self.unlock();
 
@@ -148,16 +151,30 @@ pub const FileWatcher = struct {
 
             // Try to stat the file
             const stat = std.Io.Dir.cwd().statFile(self.io, info.path, .{}) catch |err| {
-                if (err == error.FileNotFound) {
-                    // File was deleted
+                if (err == error.FileNotFound and info.present) {
+                    // Commit the state only after the event is queued. If
+                    // allocation fails, the next poll must retry the event.
                     try self.queueEvent(.{
                         .path = try self.allocator.dupe(u8, info.path),
                         .event_type = .Deleted,
                         .timestamp = milliTimestamp(self.io),
                     });
+                    info.present = false;
                 }
                 continue;
             };
+
+            if (!info.present) {
+                try self.queueEvent(.{
+                    .path = try self.allocator.dupe(u8, info.path),
+                    .event_type = .Created,
+                    .timestamp = milliTimestamp(self.io),
+                });
+                info.present = true;
+                info.last_mtime = stat.mtime.nanoseconds;
+                info.size = stat.size;
+                continue;
+            }
 
             // Check if modified
             if (stat.mtime.nanoseconds != info.last_mtime or stat.size != info.size) {
@@ -295,7 +312,7 @@ pub const SmartInvalidator = struct {
         defer visited.deinit();
 
         for (events) |event| {
-            if (event.event_type == .Modified or event.event_type == .Deleted) {
+            if (event.event_type == .Created or event.event_type == .Modified or event.event_type == .Deleted) {
                 // Extract module name from path
                 // This is simplified - in practice we'd have a proper path -> module mapping
                 const module_name = std.fs.path.stem(event.path);
@@ -436,4 +453,9 @@ test "smart invalidator dependency tracking" {
     try invalidator.recordDependency("utils", "core");
 
     try std.testing.expectEqual(@as(usize, 2), invalidator.dependency_graph.count());
+
+    // A file that returns after deletion must invalidate dependents just as
+    // a content modification does; otherwise a rebuild can reuse stale IR.
+    const created = [_]FileEvent{.{ .path = "utils.home", .event_type = .Created, .timestamp = 0 }};
+    try std.testing.expectEqual(@as(usize, 1), try invalidator.handleFileEvents(&created));
 }
