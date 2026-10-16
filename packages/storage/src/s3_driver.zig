@@ -1,11 +1,9 @@
 const std = @import("std");
-const posix = std.posix;
 const storage = @import("storage.zig");
 
-/// Helper to get current timestamp (Zig 0.16 compatible)
+/// Unix timestamp used for presigned URL expiry.
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return std.Io.Clock.real.now(std.Io.Threaded.global_single_threaded.io()).toSeconds();
 }
 
 /// S3 storage driver

@@ -1,11 +1,9 @@
 const std = @import("std");
-const posix = std.posix;
 const storage = @import("storage.zig");
 
-/// Helper to get current timestamp (Zig 0.16 compatible)
+/// Unix timestamp used by the in-memory file metadata.
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    return std.Io.Clock.real.now(std.Io.Threaded.global_single_threaded.io()).toSeconds();
 }
 
 /// In-memory storage driver (useful for testing)
@@ -243,13 +241,16 @@ pub const MemoryDriver = struct {
         // Collect keys to delete. Use a heap-backed ArrayList so directories
         // with more than 1024 entries aren't silently truncated (which
         // previously left dangling files pointing at a deleted directory).
-        var keys_to_delete = std.ArrayList([]const u8).init(self.allocator);
-        defer keys_to_delete.deinit();
+        var keys_to_delete: std.ArrayList([]const u8) = .empty;
+        defer keys_to_delete.deinit(self.allocator);
 
         var it = self.files.keyIterator();
         while (it.next()) |key| {
-            if (std.mem.startsWith(u8, key.*, path)) {
-                try keys_to_delete.append(key.*);
+            const is_child = std.mem.startsWith(u8, key.*, path) and
+                (path.len == 0 or std.mem.endsWith(u8, path, "/") or
+                    (key.*.len > path.len and key.*[path.len] == '/'));
+            if (is_child) {
+                try keys_to_delete.append(self.allocator, key.*);
             }
         }
         const delete_count = keys_to_delete.items.len;
@@ -435,4 +436,27 @@ test "memory driver visibility" {
     try std.testing.expectEqual(storage.Visibility.public, vis2);
 
     _ = try d.delete("test.txt");
+}
+
+test "memory driver deletes every child without touching sibling prefixes" {
+    const allocator = std.testing.allocator;
+    const drv = try MemoryDriver.init(allocator);
+    defer drv.deinit();
+    const d = drv.driver();
+
+    try d.makeDirectory("bulk");
+    try d.put("bulk-sibling/keep.txt", "safe");
+    for (0..1025) |i| {
+        var path_buf: [40]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "bulk/{d}.txt", .{i});
+        try d.put(path, "x");
+    }
+
+    try d.deleteDirectory("bulk");
+    for (0..1025) |i| {
+        var path_buf: [40]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "bulk/{d}.txt", .{i});
+        try std.testing.expect(!d.exists(path));
+    }
+    try std.testing.expect(d.exists("bulk-sibling/keep.txt"));
 }
