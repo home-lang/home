@@ -276,7 +276,7 @@ pub const TestRunner = struct {
     allocator: std.mem.Allocator,
     io: Io,
     suites: []const TestSuite,
-    cache: TestCache,
+    cache: ?TestCache,
     max_parallel: usize,
     verbose: bool = false,
     benchmark: bool = false,
@@ -329,8 +329,26 @@ pub const TestRunner = struct {
         };
     }
 
+    /// Initializes a runner that never reads, hashes, mutates, or writes the
+    /// persistent cache. This is intentionally distinct from clearing a loaded
+    /// cache: `--no-cache` must not touch cache state at all.
+    pub fn initWithoutCache(
+        allocator: std.mem.Allocator,
+        io: Io,
+        suites: []const TestSuite,
+        max_parallel: ?usize,
+    ) !TestRunner {
+        return .{
+            .allocator = allocator,
+            .io = io,
+            .suites = suites,
+            .cache = null,
+            .max_parallel = max_parallel orelse @max(1, try std.Thread.getCpuCount() - 1),
+        };
+    }
+
     pub fn deinit(self: *TestRunner) void {
-        self.cache.deinit();
+        if (self.cache) |*cache| cache.deinit();
         self.* = undefined;
     }
 
@@ -340,7 +358,7 @@ pub const TestRunner = struct {
     }
 
     pub fn saveCache(self: *TestRunner) !void {
-        try self.cache.save();
+        if (self.cache) |*cache| try cache.save();
     }
 
     pub fn runAll(self: *TestRunner) ![]TestResult {
@@ -369,7 +387,7 @@ pub const TestRunner = struct {
         }
 
         const elapsed: u64 = @intCast(start.durationTo(Io.Clock.awake.now(self.io)).toMilliseconds());
-        try self.cache.save();
+        try self.saveCache();
         self.printSummary(results.items, elapsed);
         return results.toOwnedSlice(self.allocator);
     }
@@ -512,8 +530,9 @@ pub const TestRunner = struct {
         const cached_result: ?TestResult = cached: {
             self.state_mutex.lockUncancelable(self.io);
             defer self.state_mutex.unlock(self.io);
-            if (!try self.cache.isCached(suite)) break :cached null;
-            const entry = self.cache.getCached(suite.name) orelse break :cached null;
+            const cache = if (self.cache) |*cache| cache else break :cached null;
+            if (!try cache.isCached(suite)) break :cached null;
+            const entry = cache.getCached(suite.name) orelse break :cached null;
             break :cached .{
                 .suite_name = suite.name,
                 .success = entry.success,
@@ -529,7 +548,7 @@ pub const TestRunner = struct {
         result.suite_name = suite.name;
         self.state_mutex.lockUncancelable(self.io);
         defer self.state_mutex.unlock(self.io);
-        try self.cache.put(suite, result);
+        if (self.cache) |*cache| try cache.put(suite, result);
         return result;
     }
 
