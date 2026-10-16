@@ -5587,31 +5587,25 @@ test "conformance: fixture name filter preserves include and exclude semantics" 
     try T.expect(!fixtureNameIncluded("jsxParserRecovery", "jsx,!Recovery"));
 }
 
-fn selectedVariantBaselinePath(
+fn openSelectedVariantBaseline(
     gpa: std.mem.Allocator,
-    baseline_root: ?[]const u8,
+    io: std.Io,
+    baseline_root: ?std.Io.Dir,
     stem: []const u8,
     variant_suffix: []const u8,
     file_suffix: []const u8,
-) !?[]u8 {
+) !?std.Io.File {
     const root = baseline_root orelse return null;
-    const path = try std.fmt.allocPrint(gpa, "{s}/{s}{s}{s}", .{
-        root,
+    const name = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
         stem,
         variant_suffix,
         file_suffix,
     });
-    errdefer gpa.free(path);
-    var threaded = std.Io.Threaded.init(gpa, .{});
-    defer threaded.deinit();
-    std.Io.Dir.cwd().access(threaded.io(), path, .{}) catch |err| {
-        if (err == error.FileNotFound) {
-            gpa.free(path);
-            return null;
-        }
+    defer gpa.free(name);
+    return root.openFile(io, name, .{}) catch |err| {
+        if (err == error.FileNotFound) return null;
         return err;
     };
-    return path;
 }
 
 test "conformance: invalid baseline root is not treated as a missing baseline" {
@@ -5658,21 +5652,78 @@ test "conformance: invalid baseline root is not treated as a missing baseline" {
     try T.expect(!entries[0].expects_error);
 }
 
+test "conformance: no-content primary diff blocks fallback error baseline" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    try tmp.dir.createDir(io, "primary", .default_dir);
+    try tmp.dir.createDir(io, "primary-empty", .default_dir);
+    try tmp.dir.createDir(io, "fallback", .default_dir);
+    {
+        var source = try tmp.dir.createFile(io, "cases/sample.ts", .{ .truncate = true });
+        defer source.close(io);
+        try source.writeStreamingAll(io, "export {};\n");
+    }
+    {
+        var diff = try tmp.dir.createFile(io, "primary/sample.errors.txt.diff", .{ .truncate = true });
+        defer diff.close(io);
+        try diff.writeStreamingAll(io, "+<no content>\n");
+    }
+    {
+        var expected = try tmp.dir.createFile(io, "fallback/sample.errors.txt", .{ .truncate = true });
+        defer expected.close(io);
+        try expected.writeStreamingAll(io, "sample.ts(1,1): error TS9999: Expected fallback only.\n");
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const primary = try tmp.dir.realPathFileAlloc(io, "primary", T.allocator);
+    defer T.allocator.free(primary);
+    const primary_empty = try tmp.dir.realPathFileAlloc(io, "primary-empty", T.allocator);
+    defer T.allocator.free(primary_empty);
+    const fallback = try tmp.dir.realPathFileAlloc(io, "fallback", T.allocator);
+    defer T.allocator.free(fallback);
+    for ([_]struct { root: []const u8, expects_error: bool }{
+        .{ .root = primary, .expects_error = false },
+        .{ .root = primary_empty, .expects_error = true },
+    }) |selection| {
+        const entries = try loadDirectoryWithOptions(T.allocator, cases, .{
+            .baseline_root = selection.root,
+            .fallback_baseline_root = fallback,
+            .exact_error_headers = true,
+        });
+        defer {
+            for (entries) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+            T.allocator.free(entries);
+        }
+        try T.expectEqual(@as(usize, 1), entries.len);
+        try T.expectEqual(selection.expects_error, entries[0].expects_error);
+        if (selection.expects_error) {
+            try T.expect(std.mem.indexOf(u8, entries[0].expected_errors, "TS9999") != null);
+        } else {
+            try T.expectEqualStrings("", entries[0].expected_errors);
+        }
+    }
+}
+
 fn selectedVariantErrorBaselineIsNoContent(
     gpa: std.mem.Allocator,
-    baseline_root: ?[]const u8,
+    io: std.Io,
+    baseline_root: ?std.Io.Dir,
     stem: []const u8,
     variant_suffix: []const u8,
 ) !bool {
-    const diff_path = try selectedVariantBaselinePath(
+    var diff_file = try openSelectedVariantBaseline(
         gpa,
+        io,
         baseline_root,
         stem,
         variant_suffix,
         ".errors.txt.diff",
     ) orelse return false;
-    defer gpa.free(diff_path);
-    const diff = try readFileAlloc(gpa, diff_path);
+    defer diff_file.close(io);
+    const stat = try diff_file.stat(io);
+    const diff = try readFixtureBytes(gpa, io, &diff_file, @intCast(stat.size));
     defer gpa.free(diff);
 
     var lines = std.mem.splitScalar(u8, diff, '\n');
@@ -5690,7 +5741,10 @@ fn selectedVariantErrorBaselineIsNoContent(
 /// override. `variant_source` is consumed on success.
 fn buildVariantCorpusEntry(
     gpa: std.mem.Allocator,
+    io: std.Io,
     options: DirectoryLoadOptions,
+    primary_baseline_root: ?std.Io.Dir,
+    fallback_baseline_root: ?std.Io.Dir,
     basename: []const u8,
     stem: []const u8,
     variant_suffix: []const u8,
@@ -5709,36 +5763,40 @@ fn buildVariantCorpusEntry(
     const default_path = try gpa.dupe(u8, virtual_code_path orelse basename);
     errdefer gpa.free(default_path);
 
-    var baseline_path = try selectedVariantBaselinePath(
+    var baseline_file = try openSelectedVariantBaseline(
         gpa,
-        options.baseline_root,
+        io,
+        primary_baseline_root,
         stem,
         variant_suffix,
         ".errors.txt",
     );
-    const primary_explicitly_clean = baseline_path == null and
+    const primary_explicitly_clean = baseline_file == null and
         try selectedVariantErrorBaselineIsNoContent(
             gpa,
-            options.baseline_root,
+            io,
+            primary_baseline_root,
             stem,
             variant_suffix,
         );
-    if (baseline_path == null and !primary_explicitly_clean) {
-        baseline_path = try selectedVariantBaselinePath(
+    if (baseline_file == null and !primary_explicitly_clean) {
+        baseline_file = try openSelectedVariantBaseline(
             gpa,
-            options.fallback_baseline_root,
+            io,
+            fallback_baseline_root,
             stem,
             variant_suffix,
             ".errors.txt",
         );
     }
-    defer if (baseline_path) |path| gpa.free(path);
+    defer if (baseline_file) |*file| file.close(io);
     const name = try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem, variant_suffix });
     errdefer gpa.free(name);
     var expected_errors: []const u8 = "";
     if (options.exact_error_headers) {
-        if (baseline_path) |path| {
-            const baseline = try readFileAlloc(gpa, path);
+        if (baseline_file) |*file| {
+            const stat = try file.stat(io);
+            const baseline = try readFixtureBytes(gpa, io, file, @intCast(stat.size));
             defer gpa.free(baseline);
             expected_errors = try extractDiagnosticHeaders(gpa, baseline);
         }
@@ -5765,7 +5823,7 @@ fn buildVariantCorpusEntry(
         .name = name,
         .source = case_src,
         .path = default_path,
-        .expects_error = std.mem.indexOf(u8, basename, ".errors.") != null or baseline_path != null,
+        .expects_error = std.mem.indexOf(u8, basename, ".errors.") != null or baseline_file != null,
         .expected_errors = expected_errors,
         .use_exact_errors = options.exact_error_headers,
         .is_tsx = basename_is_tsx or virtual_is_tsx,
@@ -5879,14 +5937,18 @@ pub fn loadDirectoryWithOptions(
     defer threaded.deinit();
     const io = threaded.io();
     const cwd = std.Io.Dir.cwd();
-    // An explicit baseline root must be a readable directory. A file or
-    // inaccessible root is not equivalent to a genuinely absent case file.
-    for ([_]?[]const u8{ options.baseline_root, options.fallback_baseline_root }) |root| {
-        if (root) |path| {
-            var baseline_dir = try cwd.openDir(io, path, .{});
-            baseline_dir.close(io);
-        }
-    }
+    // Keep the validated root directories open throughout corpus loading.
+    // A path replaced after validation must not redirect expected inputs.
+    const primary_baseline_root: ?std.Io.Dir = if (options.baseline_root) |path|
+        try cwd.openDir(io, path, .{})
+    else
+        null;
+    defer if (primary_baseline_root) |root| root.close(io);
+    const fallback_baseline_root: ?std.Io.Dir = if (options.fallback_baseline_root) |path|
+        try cwd.openDir(io, path, .{})
+    else
+        null;
+    defer if (fallback_baseline_root) |root| root.close(io);
     var dir = try cwd.openDir(io, dir_path, .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walk(gpa);
@@ -5936,7 +5998,10 @@ pub fn loadDirectoryWithOptions(
             const variant_source = try fixture_variants.materializeSource(gpa, src, variant);
             const owned = try buildVariantCorpusEntry(
                 gpa,
+                io,
                 options,
+                primary_baseline_root,
+                fallback_baseline_root,
                 entry.basename,
                 stem,
                 variant.suffix,
@@ -6933,16 +6998,7 @@ fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     var file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
     const stat = try file.stat(io);
-    const file_size: usize = @intCast(stat.size);
-    const buf = try gpa.alloc(u8, file_size);
-    errdefer gpa.free(buf);
-    var read_total: usize = 0;
-    while (read_total < file_size) {
-        const n = try file.readPositionalAll(io, buf[read_total..], read_total);
-        if (n == 0) break;
-        read_total += n;
-    }
-    return buf[0..read_total];
+    return readFixtureBytes(gpa, io, &file, @intCast(stat.size));
 }
 
 fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
@@ -8263,32 +8319,44 @@ test "conformance: checkJs matrix selects the executed variant baseline" {
     const selections = try fixture_variants.enumerate(T.allocator, "// @checkJs: true,false");
     defer fixture_variants.freeSelections(T.allocator, selections);
     try T.expectEqual(@as(usize, 2), selections.len);
-    const path = (try selectedVariantBaselinePath(
-        T.allocator,
+    try T.expectEqualStrings("(checkjs=true)", selections[0].suffix);
+    var root = try std.Io.Dir.cwd().openDir(
+        T.io,
         "_submodules/typescript-go/testdata/baselines/reference/compiler",
+        .{},
+    );
+    defer root.close(T.io);
+    var file = (try openSelectedVariantBaseline(
+        T.allocator,
+        T.io,
+        root,
         "parameterDecoratorInJsFile",
         selections[0].suffix,
         ".errors.txt",
     )) orelse return error.TestExpectedEqual;
-    defer T.allocator.free(path);
-    try T.expect(std.mem.endsWith(u8, path, "parameterDecoratorInJsFile(checkjs=true).errors.txt"));
+    defer file.close(T.io);
+    try T.expect((try file.stat(T.io)).size > 0);
 }
 
 test "conformance: tsgo no-content diffs suppress inherited error baselines" {
     const root = "_submodules/typescript-go/testdata/baselines/reference/submodule/conformance";
+    var root_dir = try std.Io.Dir.cwd().openDir(T.io, root, .{});
+    defer root_dir.close(T.io);
 
     // tsgo intentionally removed the inherited diagnostics for these
     // fixtures. Their full baseline is absent and the diff's new side is
     // `<no content>`, so exact mode must treat them as clean.
     try T.expect(try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
-        root,
+        T.io,
+        root_dir,
         "checkJsdocSatisfiesTag11",
         "",
     ));
     try T.expect(try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
-        root,
+        T.io,
+        root_dir,
         "syntaxErrors",
         "",
     ));
@@ -8297,7 +8365,8 @@ test "conformance: tsgo no-content diffs suppress inherited error baselines" {
     // contains diagnostics and therefore remains an expected-error case.
     try T.expect(!try selectedVariantErrorBaselineIsNoContent(
         T.allocator,
-        root,
+        T.io,
+        root_dir,
         "checkJsdocSatisfiesTag1",
         "",
     ));
@@ -54039,7 +54108,10 @@ test "conformance: ES5 option diagnostic does not depend on comparison mode" {
     for ([_]bool{ false, true }) |exact| {
         const entry = try buildVariantCorpusEntry(
             T.allocator,
+            T.io,
             .{ .exact_error_headers = exact },
+            null,
+            null,
             "target.ts",
             "target",
             "(target=es5)",
@@ -55129,21 +55201,68 @@ test "conformance: opens the exact configured upstream error baseline" {
         try f.writeStreamingAll(io, "sample.ts(1,1): error TS2322: Type error.");
     }
 
-    const file_path = try tmp.dir.realPathFileAlloc(io, "sample(nouncheckedindexedaccess=false).errors.txt", T.allocator);
-    defer T.allocator.free(file_path);
-    const root = std.fs.path.dirname(file_path).?;
-
-    const found = try selectedVariantBaselinePath(
+    var found = (try openSelectedVariantBaseline(
         T.allocator,
-        root,
+        io,
+        tmp.dir,
         "sample",
         "(nouncheckedindexedaccess=false)",
         ".errors.txt",
-    );
-    defer if (found) |p| T.allocator.free(p);
+    )) orelse return error.TestExpectedEqual;
+    defer found.close(io);
+    const stat = try found.stat(io);
+    const contents = try readFixtureBytes(T.allocator, io, &found, @intCast(stat.size));
+    defer T.allocator.free(contents);
+    try T.expectEqualStrings("sample.ts(1,1): error TS2322: Type error.", contents);
+}
 
-    try T.expect(found != null);
-    try T.expect(std.mem.endsWith(u8, found.?, "sample(nouncheckedindexedaccess=false).errors.txt"));
+test "conformance: opened baseline root retains its identity after path replacement" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    {
+        var original = try tmp.dir.createFile(io, "baselines/case.errors.txt", .{ .truncate = true });
+        defer original.close(io);
+        try original.writeStreamingAll(io, "original");
+    }
+    var held_root = try tmp.dir.openDir(io, "baselines", .{});
+    defer held_root.close(io);
+    try tmp.dir.rename("baselines", tmp.dir, "moved", io);
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    {
+        var replacement = try tmp.dir.createFile(io, "baselines/case.errors.txt", .{ .truncate = true });
+        defer replacement.close(io);
+        try replacement.writeStreamingAll(io, "replacement");
+    }
+    var selected = (try openSelectedVariantBaseline(
+        T.allocator,
+        io,
+        held_root,
+        "case",
+        "",
+        ".errors.txt",
+    )) orelse return error.TestExpectedEqual;
+    defer selected.close(io);
+    const selected_stat = try selected.stat(io);
+    const selected_bytes = try readFixtureBytes(T.allocator, io, &selected, @intCast(selected_stat.size));
+    defer T.allocator.free(selected_bytes);
+    try T.expectEqualStrings("original", selected_bytes);
+    var new_root = try tmp.dir.openDir(io, "baselines", .{});
+    defer new_root.close(io);
+    var replacement = (try openSelectedVariantBaseline(
+        T.allocator,
+        io,
+        new_root,
+        "case",
+        "",
+        ".errors.txt",
+    )) orelse return error.TestExpectedEqual;
+    defer replacement.close(io);
+    const replacement_stat = try replacement.stat(io);
+    const replacement_bytes = try readFixtureBytes(T.allocator, io, &replacement, @intCast(replacement_stat.size));
+    defer T.allocator.free(replacement_bytes);
+    try T.expectEqualStrings("replacement", replacement_bytes);
 }
 
 test "conformance: runCorpus supports exact diagnostic entries" {

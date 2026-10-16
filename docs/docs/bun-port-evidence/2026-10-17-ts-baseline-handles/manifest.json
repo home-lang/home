@@ -1,0 +1,70 @@
+{
+  "home_source_base": "e9f03c12c14704bc142fe90fa7c8f404450a97ce",
+  "issue": 841,
+  "source_sha256": {
+    "packages/ts_conformance/src/ts_conformance.zig": "7a4740b7b2feed3f68479dd93a0f708f9dc1aa106061496d834f157f43722b9b"
+  },
+  "zig_versions": {
+    "pinned": "0.17.0-dev.2163+89ff10d56",
+    "next": "0.18.0-dev.146+35accc06e"
+  },
+  "memory_ceiling_mb": 3840,
+  "focused_controls": {
+    "held_root_identity": {
+      "zig_017": "2/2",
+      "zig_018": "2/2",
+      "peak_tree_footprint_mb": [354, 301]
+    },
+    "primary_no_content_diff_fallback": {
+      "zig_017": "2/2",
+      "zig_018": "2/2",
+      "peak_tree_footprint_mb": [349, 306]
+    },
+    "pinned_no_content_diff": {
+      "zig_017": "2/2",
+      "zig_018": "2/2",
+      "peak_tree_footprint_mb": [282, 313]
+    },
+    "exact_configured_baseline": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 359
+    },
+    "baseline_availability": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 377
+    },
+    "invalid_root": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 352
+    },
+    "es5_entry": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 317
+    },
+    "pinned_checkjs_matrix": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 367
+    },
+    "pinned_bundled_library_bytes": {
+      "zig_017": "2/2",
+      "peak_tree_footprint_mb": 318
+    }
+  },
+  "exact_corpus_window": {
+    "start": 0,
+    "limit": 5,
+    "deadline_seconds": 240,
+    "exit_code": 124,
+    "complete": false,
+    "aggregate": null
+  },
+  "lint": {
+    "zig_fmt_check": "passed",
+    "pickier_evidence_files": "passed"
+  },
+  "remaining": [
+    "full TypeScript corpus and per-fixture I/O failure records",
+    "Windows and linked-SDK verification",
+    "entire Bun feature and test-suite parity"
+  ]
+}
