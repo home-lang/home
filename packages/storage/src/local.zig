@@ -1,9 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const storage = @import("storage.zig");
+const Io = std.Io;
 
 /// Local filesystem storage driver
 pub const LocalDriver = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     root: []const u8,
     url_base: ?[]const u8,
     permissions_file: u32,
@@ -12,15 +15,30 @@ pub const LocalDriver = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: storage.StorageConfig) !*Self {
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io(), config);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, config: storage.StorageConfig) !*Self {
+        if (!std.fs.path.isAbsolute(config.root)) return error.InvalidStorageRoot;
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+        const root = try std.fs.path.resolveAlloc(allocator, &.{config.root});
+        errdefer allocator.free(root);
+        const url_base: ?[]const u8 = if (config.url_base) |u| try allocator.dupe(u8, u) else null;
         self.* = .{
             .allocator = allocator,
-            .root = try allocator.dupe(u8, config.root),
-            .url_base = if (config.url_base) |u| try allocator.dupe(u8, u) else null,
+            .io = io,
+            .root = root,
+            .url_base = url_base,
             .permissions_file = config.permissions_file,
             .permissions_dir = config.permissions_dir,
         };
         return self;
+    }
+
+    fn permissions(mode: u32, fallback: Io.File.Permissions) Io.File.Permissions {
+        if (comptime builtin.os.tag == .windows) return fallback;
+        return Io.File.Permissions.fromMode(@intCast(mode));
     }
 
     pub fn deinit(self: *Self) void {
@@ -38,7 +56,23 @@ pub const LocalDriver = struct {
     }
 
     fn fullPath(self: *Self, path: []const u8) ![]const u8 {
-        return storage.Path.join(self.allocator, &[_][]const u8{ self.root, path });
+        // This confines lexical paths. Symlink-safe confinement needs
+        // handle-relative traversal and is not provided by absolute opens.
+        if (std.fs.path.isAbsolute(path)) return error.PathOutsideRoot;
+        var components = std.mem.tokenizeAny(u8, path, if (builtin.os.tag == .windows) "/\\" else "/");
+        while (components.next()) |component| {
+            if (std.mem.eql(u8, component, "..")) return error.PathOutsideRoot;
+        }
+        const full = try std.fs.path.resolveAlloc(self.allocator, &.{ self.root, path });
+        errdefer self.allocator.free(full);
+        if (std.mem.eql(u8, full, self.root)) return full;
+        if (!std.mem.startsWith(u8, full, self.root)) return error.PathOutsideRoot;
+        if (!std.fs.path.isSep(self.root[self.root.len - 1]) and
+            (full.len <= self.root.len or !std.fs.path.isSep(full[self.root.len])))
+        {
+            return error.PathOutsideRoot;
+        }
+        return full;
     }
 
     // VTable implementations
@@ -48,23 +82,20 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
+        const io = self.io;
         // Ensure directory exists
         const dir_path = storage.Path.dirname(full);
         if (dir_path.len > 0) {
-            std.fs.makeDirAbsolute(dir_path) catch |err| {
-                if (err != error.PathAlreadyExists) {
-                    // Try to create parent directories
-                    try makeDirectoryRecursive(dir_path);
-                }
-            };
+            try makeDirectoryRecursive(io, dir_path, permissions(self.permissions_dir, .default_dir));
         }
 
-        const file = try std.fs.createFileAbsolute(full, .{
+        const file = try Io.Dir.createFileAbsolute(io, full, .{
             .truncate = true,
+            .permissions = permissions(self.permissions_file, .default_file),
         });
-        defer file.close();
+        defer file.close(io);
 
-        try file.writeAll(contents);
+        try file.writeStreamingAll(io, contents);
     }
 
     fn get(ptr: *anyopaque, path: []const u8) anyerror!?[]const u8 {
@@ -72,21 +103,20 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = std.fs.openFileAbsolute(full, .{}) catch |err| {
+        const io = self.io;
+        const file = Io.Dir.openFileAbsolute(io, full, .{}) catch |err| {
             if (err == error.FileNotFound) return null;
             return err;
         };
-        defer file.close();
+        defer file.close(io);
 
-        const stat = try file.stat();
-        const buffer = try self.allocator.alloc(u8, stat.size);
+        const stat = try file.stat(io);
+        const byte_count = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+        const buffer = try self.allocator.alloc(u8, byte_count);
         errdefer self.allocator.free(buffer);
 
-        const bytes_read = try file.preadAll(buffer, 0);
-        if (bytes_read != stat.size) {
-            self.allocator.free(buffer);
-            return error.IncompleteRead;
-        }
+        const bytes_read = try file.readPositionalAll(io, buffer, 0);
+        if (bytes_read != byte_count) return error.IncompleteRead;
 
         return buffer;
     }
@@ -96,7 +126,7 @@ pub const LocalDriver = struct {
         const full = self.fullPath(path) catch return false;
         defer self.allocator.free(full);
 
-        std.fs.accessAbsolute(full, .{}) catch return false;
+        Io.Dir.accessAbsolute(self.io, full, .{}) catch return false;
         return true;
     }
 
@@ -105,7 +135,7 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        std.fs.deleteFileAbsolute(full) catch |err| {
+        Io.Dir.deleteFileAbsolute(self.io, full) catch |err| {
             if (err == error.FileNotFound) return false;
             return err;
         };
@@ -131,10 +161,10 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = try std.fs.openFileAbsolute(full, .{});
-        defer file.close();
+        const file = try Io.Dir.openFileAbsolute(self.io, full, .{});
+        defer file.close(self.io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(self.io);
         return stat.size;
     }
 
@@ -143,12 +173,11 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = try std.fs.openFileAbsolute(full, .{});
-        defer file.close();
+        const file = try Io.Dir.openFileAbsolute(self.io, full, .{});
+        defer file.close(self.io);
 
-        const stat = try file.stat();
-        // mtime is a Timestamp struct in Zig 0.16
-        return stat.mtime.sec;
+        const stat = try file.stat(self.io);
+        return stat.mtime.toSeconds();
     }
 
     fn metadata(ptr: *anyopaque, path: []const u8) anyerror!storage.FileMetadata {
@@ -156,10 +185,10 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = try std.fs.openFileAbsolute(full, .{});
-        defer file.close();
+        const file = try Io.Dir.openFileAbsolute(self.io, full, .{});
+        defer file.close(self.io);
 
-        const stat = try file.stat();
+        const stat = try file.stat(self.io);
 
         // Detect MIME type from extension
         const mime = if (storage.Path.extension(path)) |ext|
@@ -167,11 +196,14 @@ pub const LocalDriver = struct {
         else
             "application/octet-stream";
 
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+        const mime_copy = try self.allocator.dupe(u8, mime);
         return storage.FileMetadata{
-            .path = try self.allocator.dupe(u8, path),
+            .path = path_copy,
             .size = stat.size,
-            .last_modified = stat.mtime.sec,
-            .mime_type = try self.allocator.dupe(u8, mime),
+            .last_modified = stat.mtime.toSeconds(),
+            .mime_type = mime_copy,
             .allocator = self.allocator,
         };
     }
@@ -207,15 +239,15 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = try std.fs.openFileAbsolute(full, .{});
-        defer file.close();
+        const file = try Io.Dir.openFileAbsolute(self.io, full, .{});
+        defer file.close(self.io);
 
-        const mode: std.posix.mode_t = switch (visibility) {
+        const mode: u32 = switch (visibility) {
             .public => 0o644,
             .private => 0o600,
         };
 
-        try file.chmod(mode);
+        try file.setPermissions(self.io, permissions(mode, .default_file));
     }
 
     fn getVisibility(ptr: *anyopaque, path: []const u8) anyerror!storage.Visibility {
@@ -223,11 +255,14 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        const file = try std.fs.openFileAbsolute(full, .{});
-        defer file.close();
+        const file = try Io.Dir.openFileAbsolute(self.io, full, .{});
+        defer file.close(self.io);
 
-        const stat = try file.stat();
-        const mode = stat.mode;
+        const stat = try file.stat(self.io);
+        if (comptime builtin.os.tag == .windows) {
+            return if (stat.permissions.toAttributes().READONLY) .private else .public;
+        }
+        const mode = stat.permissions.toMode();
 
         // Check if others can read
         if (mode & 0o004 != 0) {
@@ -241,15 +276,19 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        try makeDirectoryRecursive(full);
+        try makeDirectoryRecursive(self.io, full, permissions(self.permissions_dir, .default_dir));
     }
 
     fn deleteDirectory(ptr: *anyopaque, path: []const u8) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
+        if (std.mem.eql(u8, full, self.root)) return error.CannotDeleteStorageRoot;
 
-        try std.fs.deleteTreeAbsolute(full);
+        const parent_path = std.fs.path.dirname(full) orelse return error.InvalidPath;
+        const parent = try Io.Dir.openDirAbsolute(self.io, parent_path, .{});
+        defer parent.close(self.io);
+        try parent.deleteTree(self.io, std.fs.path.basename(full));
     }
 
     fn listContents(ptr: *anyopaque, path: []const u8, recursive: bool) anyerror![]storage.DirectoryEntry {
@@ -257,17 +296,13 @@ pub const LocalDriver = struct {
         const full = try self.fullPath(path);
         defer self.allocator.free(full);
 
-        // Use a fixed-size buffer for entries
-        var entries_buf: [1024]storage.DirectoryEntry = undefined;
-        var entries_count: usize = 0;
-
-        try listDirectoryContents(self.allocator, full, path, recursive, &entries_buf, &entries_count);
-
-        // Copy to heap
-        const result = try self.allocator.alloc(storage.DirectoryEntry, entries_count);
-        @memcpy(result, entries_buf[0..entries_count]);
-
-        return result;
+        var entries: std.ArrayList(storage.DirectoryEntry) = .empty;
+        errdefer {
+            for (entries.items) |entry| self.allocator.free(entry.path);
+            entries.deinit(self.allocator);
+        }
+        try listDirectoryContents(self.allocator, self.io, full, path, recursive, &entries);
+        return entries.toOwnedSlice(self.allocator);
     }
 
     fn deinitFn(ptr: *anyopaque) void {
@@ -296,60 +331,29 @@ pub const LocalDriver = struct {
     };
 };
 
-fn makeDirectoryRecursive(path: []const u8) !void {
-    var current_path_buf: [4096]u8 = undefined;
-    var current_len: usize = 0;
-
-    var iter = std.mem.splitScalar(u8, path, '/');
-    while (iter.next()) |part| {
-        if (part.len == 0) {
-            if (current_len < current_path_buf.len) {
-                current_path_buf[current_len] = '/';
-                current_len += 1;
-            }
-            continue;
-        }
-
-        if (current_len > 0 and current_path_buf[current_len - 1] != '/') {
-            if (current_len < current_path_buf.len) {
-                current_path_buf[current_len] = '/';
-                current_len += 1;
-            }
-        }
-
-        const copy_len = @min(part.len, current_path_buf.len - current_len);
-        @memcpy(current_path_buf[current_len .. current_len + copy_len], part[0..copy_len]);
-        current_len += copy_len;
-
-        std.fs.makeDirAbsolute(current_path_buf[0..current_len]) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
-    }
+fn makeDirectoryRecursive(io: Io, path: []const u8, mode: Io.File.Permissions) !void {
+    _ = try Io.Dir.cwd().createDirPathStatus(io, path, mode);
 }
 
 fn listDirectoryContents(
     allocator: std.mem.Allocator,
+    io: Io,
     full_path: []const u8,
     relative_path: []const u8,
     recursive: bool,
-    entries_buf: []storage.DirectoryEntry,
-    entries_count: *usize,
+    entries: *std.ArrayList(storage.DirectoryEntry),
 ) !void {
-    var dir = std.fs.openDirAbsolute(full_path, .{ .iterate = true }) catch |err| {
+    const dir = Io.Dir.openDirAbsolute(io, full_path, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir) return;
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (entries_count.* >= entries_buf.len) return;
-
+    while (try iter.next(io)) |entry| {
         const entry_path = try storage.Path.join(allocator, &[_][]const u8{ relative_path, entry.name });
-        // If we `continue` below (e.g. the file can't be opened), ensure
-        // entry_path is freed instead of leaked.
-        var entry_path_consumed = false;
-        errdefer if (!entry_path_consumed) allocator.free(entry_path);
+        var retained = false;
+        defer if (!retained) allocator.free(entry_path);
 
         const is_dir = entry.kind == .directory;
         var file_size: u64 = 0;
@@ -359,34 +363,26 @@ fn listDirectoryContents(
             const entry_full = try storage.Path.join(allocator, &[_][]const u8{ full_path, entry.name });
             defer allocator.free(entry_full);
 
-            const file = std.fs.openFileAbsolute(entry_full, .{}) catch {
-                allocator.free(entry_path);
-                continue;
-            };
-            defer file.close();
+            const file = Io.Dir.openFileAbsolute(io, entry_full, .{}) catch continue;
+            defer file.close(io);
 
-            const stat = file.stat() catch {
-                allocator.free(entry_path);
-                continue;
-            };
+            const stat = file.stat(io) catch continue;
             file_size = stat.size;
-            mtime = stat.mtime.sec;
+            mtime = stat.mtime.toSeconds();
         }
-        entry_path_consumed = true;
-
-        entries_buf[entries_count.*] = .{
+        try entries.append(allocator, .{
             .path = entry_path,
             .is_directory = is_dir,
             .size = file_size,
             .last_modified = mtime,
-        };
-        entries_count.* += 1;
+        });
+        retained = true;
 
         if (recursive and is_dir) {
             const subdir_full = try storage.Path.join(allocator, &[_][]const u8{ full_path, entry.name });
             defer allocator.free(subdir_full);
 
-            try listDirectoryContents(allocator, subdir_full, entry_path, recursive, entries_buf, entries_count);
+            try listDirectoryContents(allocator, io, subdir_full, entry_path, recursive, entries);
         }
     }
 }
@@ -402,11 +398,27 @@ test "local driver init" {
     try std.testing.expectEqualStrings("/tmp/test-storage", drv.root);
 }
 
+fn initWithAllocationFailure(allocator: std.mem.Allocator) !void {
+    var config = storage.StorageConfig.localDisk("/tmp/test-storage");
+    config.url_base = "https://example.test/files";
+    const drv = try LocalDriver.initWithIo(allocator, Io.Threaded.global_single_threaded.io(), config);
+    drv.deinit();
+}
+
+test "local driver initialization releases partial allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, initWithAllocationFailure, .{});
+}
+
 test "local driver put and get" {
     const allocator = std.testing.allocator;
-    const config = storage.StorageConfig.localDisk("/tmp/test-storage-local");
+    const io = Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const config = storage.StorageConfig.localDisk(root_buf[0..root_len]);
 
-    const drv = try LocalDriver.init(allocator, config);
+    const drv = try LocalDriver.initWithIo(allocator, io, config);
     defer drv.deinit();
 
     var d = drv.driver();
@@ -422,4 +434,91 @@ test "local driver put and get" {
 
     // Clean up
     _ = try d.delete("test.txt");
+}
+
+test "local driver preserves filesystem root and rejects lexical escapes" {
+    const allocator = std.testing.allocator;
+    const io = Io.Threaded.global_single_threaded.io();
+    const root = if (builtin.os.tag == .windows) "C:\\" else "/";
+    const drv = try LocalDriver.initWithIo(allocator, io, storage.StorageConfig.localDisk(root));
+    defer drv.deinit();
+    const root_path = try drv.fullPath("example.txt");
+    defer allocator.free(root_path);
+    try std.testing.expectEqualStrings(if (builtin.os.tag == .windows) "C:\\example.txt" else "/example.txt", root_path);
+    try std.testing.expectError(error.PathOutsideRoot, drv.fullPath("../outside.txt"));
+    try std.testing.expectError(error.PathOutsideRoot, drv.fullPath(if (builtin.os.tag == .windows) "C:\\outside.txt" else "/etc/passwd"));
+    try std.testing.expectError(error.InvalidStorageRoot, LocalDriver.initWithIo(allocator, io, storage.StorageConfig.localDisk("relative")));
+}
+
+test "local driver metadata visibility copy move and recursive deletion" {
+    const allocator = std.testing.allocator;
+    const io = Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const drv = try LocalDriver.initWithIo(allocator, io, storage.StorageConfig.localDisk(root_buf[0..root_len]));
+    defer drv.deinit();
+    const d = drv.driver();
+
+    try std.testing.expectError(error.CannotDeleteStorageRoot, d.deleteDirectory("."));
+
+    try d.put("nested/child/first.txt", "payload");
+    try std.testing.expectEqual(@as(u64, 7), try d.size("nested/child/first.txt"));
+    try std.testing.expect((try d.lastModified("nested/child/first.txt")) > 0);
+    var info = try d.metadata("nested/child/first.txt");
+    defer info.deinit();
+    try std.testing.expectEqualStrings("text/plain", info.mime_type.?);
+    try std.testing.expectEqual(@as(u64, 7), info.size);
+
+    try d.setVisibility("nested/child/first.txt", .public);
+    try std.testing.expectEqual(storage.Visibility.public, try d.getVisibility("nested/child/first.txt"));
+    try d.setVisibility("nested/child/first.txt", .private);
+    try std.testing.expectEqual(storage.Visibility.private, try d.getVisibility("nested/child/first.txt"));
+
+    try d.copy("nested/child/first.txt", "nested/child/copied.txt");
+    try d.move("nested/child/copied.txt", "nested/child/moved.txt");
+    try std.testing.expect(!d.exists("nested/child/copied.txt"));
+    try std.testing.expect(d.exists("nested/child/moved.txt"));
+
+    const entries = try d.listContents("nested", true);
+    defer {
+        for (entries) |entry| allocator.free(entry.path);
+        allocator.free(entries);
+    }
+    var saw_first = false;
+    var saw_moved = false;
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.path, "nested/child/first.txt")) saw_first = true;
+        if (std.mem.eql(u8, entry.path, "nested/child/moved.txt")) saw_moved = true;
+    }
+    try std.testing.expect(saw_first and saw_moved);
+
+    try d.deleteDirectory("nested");
+    try std.testing.expect(!d.exists("nested/child/first.txt"));
+    try std.testing.expect(!d.exists("nested/child/moved.txt"));
+}
+
+test "local driver lists more than 1024 entries without truncation" {
+    const allocator = std.testing.allocator;
+    const io = Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const drv = try LocalDriver.initWithIo(allocator, io, storage.StorageConfig.localDisk(root_buf[0..root_len]));
+    defer drv.deinit();
+    const d = drv.driver();
+
+    for (0..1025) |i| {
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "many/{d}.txt", .{i});
+        try d.put(name, "x");
+    }
+    const entries = try d.listContents("many", false);
+    defer {
+        for (entries) |entry| allocator.free(entry.path);
+        allocator.free(entries);
+    }
+    try std.testing.expectEqual(@as(usize, 1025), entries.len);
 }

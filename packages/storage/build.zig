@@ -30,18 +30,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const s3_tests = b.addTest(.{ .root_module = s3_module });
+    const local_module = b.addModule("storage_local", .{
+        .root_source_file = b.path("src/local.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const local_tests = b.addTest(.{ .root_module = local_module });
 
     const check_step = b.step("check", "Compile the shipped storage library and its tests");
     check_step.dependOn(&lib.step);
     check_step.dependOn(&unit_tests.step);
     check_step.dependOn(&memory_tests.step);
     check_step.dependOn(&s3_tests.step);
+    check_step.dependOn(&local_tests.step);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const run_memory_tests = b.addRunArtifact(memory_tests);
     const run_s3_tests = b.addRunArtifact(s3_tests);
+    const run_local_tests = b.addRunArtifact(local_tests);
     const test_step = b.step("test", "Run storage tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_memory_tests.step);
     test_step.dependOn(&run_s3_tests.step);
+    test_step.dependOn(&run_local_tests.step);
 }

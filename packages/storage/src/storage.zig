@@ -344,29 +344,27 @@ pub const UploadedFile = struct {
 
     /// Store with a custom name
     pub fn storeAs(self: *UploadedFile, storage: *Storage, path: []const u8, name: []const u8) ![]const u8 {
-        // Read temp file
-        const file = try std.fs.openFileAbsolute(self.temp_path, .{});
-        defer file.close();
+        return self.storeAsWithIo(std.Io.Threaded.global_single_threaded.io(), storage, path, name);
+    }
 
-        const stat = try file.stat();
-        const contents = try self.allocator.alloc(u8, stat.size);
+    pub fn storeAsWithIo(self: *UploadedFile, io: std.Io, storage: *Storage, path: []const u8, name: []const u8) ![]const u8 {
+        const contents = try self.readTempContents(io);
         defer self.allocator.free(contents);
 
-        _ = try file.preadAll(contents, 0);
-
         // Build full path
-        var full_path = std.ArrayList(u8).init(self.allocator);
-        defer full_path.deinit();
+        var full_path: std.ArrayList(u8) = .empty;
+        defer full_path.deinit(self.allocator);
 
         if (path.len > 0) {
-            try full_path.appendSlice(path);
+            try full_path.appendSlice(self.allocator, path);
             if (!std.mem.endsWith(u8, path, "/")) {
-                try full_path.appendSlice("/");
+                try full_path.append(self.allocator, '/');
             }
         }
-        try full_path.appendSlice(name);
+        try full_path.appendSlice(self.allocator, name);
 
-        const final_path = try full_path.toOwnedSlice();
+        const final_path = try full_path.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(final_path);
 
         // Store
         try storage.put(final_path, contents);
@@ -389,20 +387,17 @@ pub const UploadedFile = struct {
 
     /// Get hash of file contents
     pub fn hashName(self: *UploadedFile) ![]const u8 {
-        const file = try std.fs.openFileAbsolute(self.temp_path, .{});
-        defer file.close();
+        return self.hashNameWithIo(std.Io.Threaded.global_single_threaded.io());
+    }
 
-        const stat = try file.stat();
-        const contents = try self.allocator.alloc(u8, stat.size);
+    pub fn hashNameWithIo(self: *UploadedFile, io: std.Io) ![]const u8 {
+        const contents = try self.readTempContents(io);
         defer self.allocator.free(contents);
-
-        _ = try file.preadAll(contents, 0);
 
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(contents, &hash, .{});
 
-        var hex: [64]u8 = undefined;
-        _ = std.fmt.bufPrint(&hex, "{}", .{std.fmt.fmtSliceHexLower(&hash)}) catch unreachable;
+        const hex = std.fmt.bytesToHex(hash, .lower);
 
         // Add extension
         if (self.extension()) |ext| {
@@ -414,6 +409,17 @@ pub const UploadedFile = struct {
         }
 
         return try self.allocator.dupe(u8, &hex);
+    }
+
+    fn readTempContents(self: *UploadedFile, io: std.Io) ![]u8 {
+        const file = try std.Io.Dir.openFileAbsolute(io, self.temp_path, .{});
+        defer file.close(io);
+        const stat = try file.stat(io);
+        const byte_count = std.math.cast(usize, stat.size) orelse return error.FileTooBig;
+        const contents = try self.allocator.alloc(u8, byte_count);
+        errdefer self.allocator.free(contents);
+        if (try file.readPositionalAll(io, contents, 0) != byte_count) return error.IncompleteRead;
+        return contents;
     }
 };
 
@@ -698,4 +704,52 @@ test "path utilities" {
 test "visibility toString" {
     try std.testing.expectEqualStrings("public", Visibility.public.toString());
     try std.testing.expectEqualStrings("private", Visibility.private.toString());
+}
+
+test "uploaded file stores complete bytes and hashes through explicit I/O" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buf);
+    const temp_path = try std.fmt.allocPrint(allocator, "{s}/incoming.bin", .{root_buf[0..root_len]});
+    defer allocator.free(temp_path);
+
+    {
+        const input = try std.Io.Dir.createFileAbsolute(io, temp_path, .{});
+        defer input.close(io);
+        try input.writeStreamingAll(io, "upload payload");
+    }
+
+    var store = Storage.init(allocator);
+    defer store.deinit();
+    try store.addDisk("memory", StorageConfig.memoryDisk());
+    store.setDefaultDisk("memory");
+
+    const name = try allocator.dupe(u8, "incoming.bin");
+    defer allocator.free(name);
+    const original_name = try allocator.dupe(u8, "incoming.bin");
+    defer allocator.free(original_name);
+    const mime_type = try allocator.dupe(u8, "application/octet-stream");
+    defer allocator.free(mime_type);
+    var uploaded = UploadedFile{
+        .name = name,
+        .original_name = original_name,
+        .mime_type = mime_type,
+        .size = "upload payload".len,
+        .temp_path = temp_path,
+        .allocator = allocator,
+    };
+
+    const stored_path = try uploaded.storeAsWithIo(io, &store, "uploads", "renamed.bin");
+    defer allocator.free(stored_path);
+    try std.testing.expectEqualStrings("uploads/renamed.bin", stored_path);
+    const stored = try store.get(stored_path) orelse return error.MissingStoredUpload;
+    defer allocator.free(stored);
+    try std.testing.expectEqualStrings("upload payload", stored);
+
+    const hash_name = try uploaded.hashNameWithIo(io);
+    defer allocator.free(hash_name);
+    try std.testing.expectEqualStrings("9db0cf41b60f04100a5f3ae68afdc91b2fa5318343a5f3c76b226c387d01e030.bin", hash_name);
 }
