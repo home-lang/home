@@ -1,0 +1,64 @@
+{
+  "home_source_base": "592bbe448d63ea4abe46a4c400172388601bc317",
+  "issue": 841,
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_conformance/src/ts_conformance.zig": "057f612a4e4bd09d288f9b2edefaded16d9a1d57497fd022e551147d031ddaa4"
+  },
+  "lint": {
+    "zig_fmt_check": "passed",
+    "pickier_evidence_files": "passed",
+    "pickier_repository": {
+      "exit_code": 1,
+      "errors": 1858,
+      "warnings": 725
+    }
+  },
+  "controls": {
+    "baseline_availability": {
+      "red_before_fix": true,
+      "reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 328,
+      "zig_018": {
+        "version": "0.18.0-dev.146+35accc06e",
+        "reported_passed": 2,
+        "reported_total": 2,
+        "peak_tree_footprint_mb": 425
+      }
+    },
+    "configured_variant_loader": {
+      "reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 385
+    },
+    "upstream_unsupported_options": {
+      "reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 418
+    },
+    "emit_target_selection": {
+      "reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 282
+    },
+    "strictness_config_layering": {
+      "reported_passed": 2,
+      "reported_total": 2,
+      "peak_tree_footprint_mb": 399
+    },
+    "broader_corpus_inputs": {
+      "complete": false,
+      "exit_code": 124,
+      "deadline_seconds": 180,
+      "aggregate": null
+    }
+  },
+  "remaining": [
+    "real package and default-library declarations",
+    "root-file and virtual-file routing fidelity",
+    "other expected-baseline and executable-input dependencies",
+    "complete TypeScript corpus and Bun parity acceptance"
+  ]
+}

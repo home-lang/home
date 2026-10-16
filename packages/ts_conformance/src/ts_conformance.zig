@@ -628,21 +628,17 @@ pub const Case = struct {
     /// filesystem with `package.json` / non-code sections that the
     /// legacy stripper drops.
     raw_source: []const u8 = "",
-    /// Lower-case `moduleResolution` label extracted from the chosen
-    /// baseline filename when it carries a `(moduleresolution=X)`
-    /// suffix. Empty means "infer from `// @moduleResolution:`
-    /// directive". When present, the program-graph compile path
-    /// uses this to pick the matching `ts_resolver.Strategy` and
-    /// to set `CompileOptions.module_resolution` so the checker's
-    /// TS2792 / TS2307 selection lines up with the baseline.
+    /// Lower-case `moduleResolution` from the fixture's selected variant.
+    /// Empty means "infer from `// @moduleResolution:` or config".
+    /// The program-graph path uses this to select the resolver strategy.
     baseline_module_resolution: []const u8 = "",
-    /// Lower-case `module` label selected by a `(module=X)` baseline
-    /// suffix. Empty means use the first source/config directive value.
+    /// Lower-case `module` from the fixture's selected variant. Empty means
+    /// use the source/config directive value.
     baseline_module_kind: []const u8 = "",
-    /// Effective value selected from an upstream matrix baseline.
+    /// Effective value selected from the upstream fixture matrix.
     allow_importing_ts_extensions: ?bool = null,
-    /// Effective package-ID redirect policy selected by the upstream
-    /// baseline matrix. tsgo defaults this option on and only retains
+    /// Effective package-ID redirect policy selected by the fixture matrix.
+    /// tsgo defaults this option on and only retains
     /// duplicate physical package files when it is explicitly false.
     deduplicate_packages: bool = true,
 };
@@ -5499,8 +5495,8 @@ pub const CorpusEntry = struct {
     /// authoritative expected-error signal for that mode.
     /// Raw upstream source bytes (pre-strip). See `Case.raw_source`.
     raw_source: []const u8 = "",
-    /// See `Case.baseline_module_resolution`. Empty means the baseline
-    /// has no `(moduleresolution=X)` variant suffix.
+    /// See `Case.baseline_module_resolution`. Empty means the selected
+    /// variant has no `(moduleresolution=X)` suffix.
     baseline_module_resolution: []const u8 = "",
     /// See `Case.baseline_module_kind`.
     baseline_module_kind: []const u8 = "",
@@ -5534,12 +5530,11 @@ pub const OwnedCorpusEntry = struct {
     /// Raw upstream source bytes (pre-strip), owned. Empty when
     /// there is no separate raw source (single-file fixtures).
     raw_source: []u8 = "",
-    /// Lower-case `moduleResolution` variant extracted from the
-    /// chosen baseline filename's `(moduleresolution=X)` suffix.
-    /// Empty when the baseline has no variant suffix. Owned slice
+    /// Lower-case `moduleResolution` from the selected fixture variant's
+    /// `(moduleresolution=X)` suffix. Empty when unset. Owned slice
     /// freed alongside `name` / `source`.
     baseline_module_resolution: []u8 = "",
-    /// Lower-case `module` variant extracted from the chosen baseline.
+    /// Lower-case `module` from the selected fixture variant.
     baseline_module_kind: []u8 = "",
     allow_importing_ts_extensions: ?bool = null,
     deduplicate_packages: bool = true,
@@ -5690,19 +5685,6 @@ fn buildVariantCorpusEntry(
         );
     }
     defer if (baseline_path) |path| gpa.free(path);
-    const emit_baseline_path = if (baseline_path == null)
-        try selectedVariantBaselinePath(
-            gpa,
-            options.baseline_root,
-            stem,
-            variant_suffix,
-            ".js",
-        )
-    else
-        null;
-    defer if (emit_baseline_path) |path| gpa.free(path);
-    const selected_baseline_path = baseline_path orelse emit_baseline_path;
-
     const name = try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem, variant_suffix });
     errdefer gpa.free(name);
     var expected_errors: []const u8 = "";
@@ -5714,25 +5696,21 @@ fn buildVariantCorpusEntry(
         }
     }
     errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
-    const baseline_mr: []u8 = if (selected_baseline_path) |path|
-        try extractModuleResolutionFromBaseline(gpa, path)
-    else
-        &.{};
-    errdefer if (baseline_mr.len > 0) gpa.free(baseline_mr);
-    const baseline_module: []u8 = if (selected_baseline_path) |path|
-        try extractModuleKindFromBaseline(gpa, path)
-    else
-        &.{};
-    errdefer if (baseline_module.len > 0) gpa.free(baseline_module);
+    const variant_mr = try extractModuleResolutionFromBaseline(gpa, variant_suffix);
+    errdefer if (variant_mr.len > 0) gpa.free(variant_mr);
+    const variant_module = try extractModuleKindFromBaseline(gpa, variant_suffix);
+    errdefer if (variant_module.len > 0) gpa.free(variant_module);
 
-    const configured = try configuredStrictOptions(gpa, variant_source, selected_baseline_path);
-    const emit_target = selectedEmitTarget(variant_source, selected_baseline_path);
-    const target_selection_explicit = baselineEmitTarget(selected_baseline_path) != null or
+    // Baselines supply expectations only. The selected suffix and materialized
+    // fixture directives are the inputs to every compiler-option decision.
+    const configured = try configuredStrictOptions(gpa, variant_source, variant_suffix);
+    const emit_target = selectedEmitTarget(variant_source, variant_suffix);
+    const target_selection_explicit = baselineEmitTarget(variant_suffix) != null or
         directiveValue(variant_source, "target") != null;
     const upstream_skip = try classifyUpstreamUnsupportedOptions(
         gpa,
         variant_source,
-        selected_baseline_path,
+        variant_suffix,
     );
     const basename_is_tsx = std.mem.endsWith(u8, basename, ".tsx");
     return .{
@@ -5752,18 +5730,18 @@ fn buildVariantCorpusEntry(
         .syntax_target_es2015 = emit_target != .es5,
         .target_emit_es5 = emit_target == .es5,
         .emit_target = emit_target,
-        .compiler_target = selectedCompilerTarget(variant_source, selected_baseline_path),
+        .compiler_target = selectedCompilerTarget(variant_source, variant_suffix),
         .report_deprecated_target_es5 = options.exact_error_headers and
             target_selection_explicit and emit_target == .es5,
         .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(default_path, variant_source),
         .raw_source = raw_source,
-        .baseline_module_resolution = baseline_mr,
-        .baseline_module_kind = baseline_module,
+        .baseline_module_resolution = variant_mr,
+        .baseline_module_kind = variant_module,
         .allow_importing_ts_extensions = baselineOptionBool(
-            selected_baseline_path,
+            variant_suffix,
             "allowimportingtsextensions",
         ),
-        .deduplicate_packages = baselineOptionBool(selected_baseline_path, "deduplicatepackages") orelse
+        .deduplicate_packages = baselineOptionBool(variant_suffix, "deduplicatepackages") orelse
             directiveBool(variant_source, "deduplicatePackages") orelse
             true,
         .upstream_skip = upstream_skip,
@@ -53909,6 +53887,74 @@ test "conformance: directory loader executes every configured compiler variant" 
         try T.expect(!entry.expects_error);
         try T.expectEqualStrings("", entry.expected_errors);
     }
+}
+
+test "conformance: selected variant options do not depend on expected baseline availability" {
+    var tmp = T.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = T.io;
+    try tmp.dir.createDir(io, "cases", .default_dir);
+    try tmp.dir.createDir(io, "baselines", .default_dir);
+    {
+        var source_file = try tmp.dir.createFile(io, "cases/matrix.ts", .{ .truncate = true });
+        defer source_file.close(io);
+        try source_file.writeStreamingAll(
+            io,
+            "// @allowImportingTsExtensions: true, false\n" ++
+                "// @module: commonjs, esnext\n" ++
+                "export {};\n",
+        );
+    }
+    {
+        var baseline_file = try tmp.dir.createFile(
+            io,
+            "baselines/matrix(allowimportingtsextensions=true,module=commonjs).errors.txt",
+            .{ .truncate = true },
+        );
+        defer baseline_file.close(io);
+        try baseline_file.writeStreamingAll(io, "matrix.ts(1,1): error TS9999: Expected only.\n");
+    }
+    {
+        var emit_file = try tmp.dir.createFile(
+            io,
+            "baselines/matrix(allowimportingtsextensions=false,module=esnext).js",
+            .{ .truncate = true },
+        );
+        defer emit_file.close(io);
+        try emit_file.writeStreamingAll(io, "export {};\n");
+    }
+    const cases = try tmp.dir.realPathFileAlloc(io, "cases", T.allocator);
+    defer T.allocator.free(cases);
+    const baselines = try tmp.dir.realPathFileAlloc(io, "baselines", T.allocator);
+    defer T.allocator.free(baselines);
+    const without = try loadDirectoryWithOptions(T.allocator, cases, .{});
+    defer {
+        for (without) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(without);
+    }
+    const with = try loadDirectoryWithOptions(T.allocator, cases, .{
+        .baseline_root = baselines,
+        .exact_error_headers = true,
+    });
+    defer {
+        for (with) |entry| freeOwnedCorpusEntry(T.allocator, entry);
+        T.allocator.free(with);
+    }
+    try T.expectEqual(@as(usize, 4), without.len);
+    try T.expectEqual(without.len, with.len);
+    var expected_only: usize = 0;
+    for (without, with) |a, b| {
+        try T.expectEqualStrings(a.name, b.name);
+        try T.expectEqualStrings(a.source, b.source);
+        try T.expectEqualStrings(a.baseline_module_kind, b.baseline_module_kind);
+        try T.expectEqual(a.allow_importing_ts_extensions, b.allow_importing_ts_extensions);
+        try T.expectEqual(a.upstream_skip, b.upstream_skip);
+        if (b.expects_error) {
+            try T.expect(!a.expects_error);
+            expected_only += 1;
+        }
+    }
+    try T.expectEqual(@as(usize, 1), expected_only);
 }
 
 test "conformance: upstream unsupported option classifier matches pinned runner" {
