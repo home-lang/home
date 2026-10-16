@@ -2,6 +2,91 @@ const std = @import("std");
 const testing = std.testing;
 const pkg = @import("package_manager");
 
+fn addScriptsForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var runner = pkg.ScriptRunner.initWithIo(allocator, testing.io, "/unused");
+    defer runner.deinit();
+    try runner.addScript("build", "first");
+    try runner.addScript("test", "second");
+    try runner.addScript("build", "replacement");
+}
+
+fn addProgressForAllocationFailure(allocator: std.mem.Allocator) !void {
+    var tracker = try pkg.ProgressTracker.initWithIo(allocator, testing.io, 2);
+    defer tracker.deinit();
+    _ = try tracker.addPackage("compiler", 1024);
+    _ = try tracker.addPackage("runtime", 2048);
+}
+
+test "ScriptRunner: owns replacements across allocation failures" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        addScriptsForAllocationFailure,
+        .{},
+    );
+}
+
+test "ScriptRunner: executes owned commands with explicit IO" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+
+    var runner = pkg.ScriptRunner.initWithIo(allocator, testing.io, root);
+    defer runner.deinit();
+    const name = try allocator.dupe(u8, "mark");
+    defer allocator.free(name);
+    const command = try allocator.dupe(u8, "printf old > marker.txt");
+    defer allocator.free(command);
+    try runner.addScript(name, command);
+    @memset(name, 'x');
+    @memset(command, 'x');
+    try runner.addScript("mark", "printf current > marker.txt");
+    try runner.addScript("fail", "exit 7");
+
+    try runner.run("mark");
+    const marker = try std.fs.path.join(allocator, &.{ root, "marker.txt" });
+    defer allocator.free(marker);
+    const contents = try std.Io.Dir.cwd().readFileAlloc(testing.io, marker, allocator, .limited(32));
+    defer allocator.free(contents);
+    try testing.expectEqualStrings("current", contents);
+    try testing.expectError(error.ScriptFailed, runner.run("fail"));
+    try testing.expectError(error.ScriptNotFound, runner.run("missing"));
+}
+
+test "ProgressTracker: owns names and completes packages once" {
+    const allocator = testing.allocator;
+    var tracker = try pkg.ProgressTracker.initWithIo(allocator, testing.io, 2);
+    defer tracker.deinit();
+    const name = try allocator.dupe(u8, "compiler");
+    defer allocator.free(name);
+    const bar = try tracker.addPackage(name, 1024);
+    @memset(name, 'x');
+
+    try testing.expectEqualStrings("compiler", bar.name);
+    bar.update(2048);
+    try testing.expectEqual(@as(usize, 1024), bar.current);
+    try testing.expect(bar.completed);
+    try testing.expectEqual(@as(f64, 100.0), bar.getPercent());
+    tracker.markComplete(bar);
+    tracker.markComplete(bar);
+    try testing.expectEqual(@as(usize, 1), tracker.completed_packages);
+
+    const pending = try tracker.addPackage("runtime", 0);
+    try testing.expectEqual(@as(f64, 100.0), pending.getPercent());
+    tracker.markComplete(pending);
+    tracker.markComplete(pending);
+    try testing.expectEqual(@as(usize, 2), tracker.completed_packages);
+}
+
+test "ProgressTracker: allocation failures release owned bars" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        addProgressForAllocationFailure,
+        .{},
+    );
+}
+
 fn addWorkspacePatternsForAllocationFailure(allocator: std.mem.Allocator) !void {
     var workspace = pkg.Workspace.initWithIo(allocator, testing.io, "/unused");
     defer workspace.deinit();

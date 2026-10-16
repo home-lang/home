@@ -1,6 +1,8 @@
 const std = @import("std");
 const auth_mod = @import("auth.zig");
 const lockfile_mod = @import("lockfile.zig");
+const progress_mod = @import("progress.zig");
+const scripts_mod = @import("scripts.zig");
 const workspace_mod = @import("workspace.zig");
 const Io = std.Io;
 
@@ -23,7 +25,12 @@ const SpinMutex = struct {
 
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
+pub const InstallSummary = progress_mod.InstallSummary;
+pub const LifecycleHooks = scripts_mod.LifecycleHooks;
 pub const Lockfile = lockfile_mod.Lockfile;
+pub const ProgressBar = progress_mod.ProgressBar;
+pub const ProgressTracker = progress_mod.ProgressTracker;
+pub const ScriptRunner = scripts_mod.ScriptRunner;
 pub const Workspace = workspace_mod.Workspace;
 pub const WorkspacePackage = workspace_mod.WorkspacePackage;
 

@@ -1,33 +1,47 @@
 const std = @import("std");
+const Io = std.Io;
 
 /// Beautiful progress bar UI (Bun-inspired)
 pub const ProgressBar = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     name: []const u8,
     current: usize,
     total: usize,
     start_time: i64,
     last_update: i64,
     completed: bool,
+    counted_complete: bool,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, total: usize) Self {
-        const now = std.time.milliTimestamp();
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, total: usize) !Self {
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io(), name, total);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, name: []const u8, total: usize) !Self {
+        const now = Io.Clock.awake.now(io).toMilliseconds();
         return .{
             .allocator = allocator,
-            .name = name,
+            .io = io,
+            .name = try allocator.dupe(u8, name),
             .current = 0,
             .total = total,
             .start_time = now,
             .last_update = now,
             .completed = false,
+            .counted_complete = false,
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.name);
+        self.* = undefined;
+    }
+
     pub fn update(self: *Self, current: usize) void {
-        self.current = current;
-        self.last_update = std.time.milliTimestamp();
+        self.current = @min(current, self.total);
+        self.last_update = Io.Clock.awake.now(self.io).toMilliseconds();
         if (current >= self.total) {
             self.completed = true;
         }
@@ -36,7 +50,7 @@ pub const ProgressBar = struct {
     pub fn finish(self: *Self) void {
         self.current = self.total;
         self.completed = true;
-        self.last_update = std.time.milliTimestamp();
+        self.last_update = Io.Clock.awake.now(self.io).toMilliseconds();
     }
 
     pub fn getSpeed(self: *const Self) f64 {
@@ -64,7 +78,8 @@ pub const ProgressBar = struct {
         // Spinner animation
         const spinner = if (self.completed) "✓" else blk: {
             const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-            const frame_idx = @as(usize, @intCast(@mod(std.time.milliTimestamp() / 100, 10)));
+            const now = Io.Clock.awake.now(self.io).toMilliseconds();
+            const frame_idx = @as(usize, @intCast(@mod(@divFloor(now, 100), 10)));
             break :blk frames[frame_idx];
         };
 
@@ -90,6 +105,7 @@ pub const ProgressBar = struct {
 /// Multi-package progress tracker
 pub const ProgressTracker = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     bars: std.ArrayList(*ProgressBar),
     total_packages: usize,
     completed_packages: usize,
@@ -98,31 +114,42 @@ pub const ProgressTracker = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, total: usize) !Self {
+        return initWithIo(allocator, Io.Threaded.global_single_threaded.io(), total);
+    }
+
+    pub fn initWithIo(allocator: std.mem.Allocator, io: Io, total: usize) !Self {
         return .{
             .allocator = allocator,
+            .io = io,
             .bars = std.ArrayList(*ProgressBar).empty,
             .total_packages = total,
             .completed_packages = 0,
-            .start_time = std.time.milliTimestamp(),
+            .start_time = Io.Clock.awake.now(io).toMilliseconds(),
         };
     }
 
     pub fn deinit(self: *Self) void {
         for (self.bars.items) |bar| {
+            bar.deinit();
             self.allocator.destroy(bar);
         }
         self.bars.deinit(self.allocator);
+        self.* = undefined;
     }
 
     pub fn addPackage(self: *Self, name: []const u8, size: usize) !*ProgressBar {
         const bar = try self.allocator.create(ProgressBar);
-        bar.* = ProgressBar.init(self.allocator, name, size);
+        errdefer self.allocator.destroy(bar);
+        bar.* = try ProgressBar.initWithIo(self.allocator, self.io, name, size);
+        errdefer bar.deinit();
         try self.bars.append(self.allocator, bar);
         return bar;
     }
 
     pub fn markComplete(self: *Self, bar: *ProgressBar) void {
+        if (bar.counted_complete) return;
         bar.finish();
+        bar.counted_complete = true;
         self.completed_packages += 1;
     }
 
@@ -144,7 +171,7 @@ pub const ProgressTracker = struct {
         }
 
         // Summary line
-        const elapsed_ms = std.time.milliTimestamp() - self.start_time;
+        const elapsed_ms = Io.Clock.awake.now(self.io).toMilliseconds() - self.start_time;
         const elapsed_s = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
 
         if (self.completed_packages < self.total_packages) {
