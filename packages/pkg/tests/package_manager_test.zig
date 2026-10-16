@@ -2,6 +2,130 @@ const std = @import("std");
 const testing = std.testing;
 const pkg = @import("package_manager");
 
+fn resolveRegisteredVersionsForAllocationFailure(allocator: std.mem.Allocator) !void {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const foo_v1 = Resolver.SemanticVersion{ .major = 1, .minor = 0, .patch = 0 };
+    const foo_v12 = Resolver.SemanticVersion{ .major = 1, .minor = 2, .patch = 0 };
+    const foo_v2 = Resolver.SemanticVersion{ .major = 2, .minor = 0, .patch = 0 };
+    const constraint = try Resolver.parseConstraint("^1.0.0");
+
+    var registry = pkg.PackageRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.addPackage("foo", &.{ foo_v1, foo_v12, foo_v2 });
+    const borrowed_name = try allocator.dupe(u8, "metadata-dependency");
+    defer allocator.free(borrowed_name);
+    try registry.addDependencies("foo", foo_v12, &.{.{ .name = borrowed_name, .constraint = constraint }});
+    @memset(borrowed_name, 'x');
+    try registry.addDependencies("foo", foo_v12, &.{.{ .name = "replacement-dependency", .constraint = constraint }});
+    const cloned_dependencies = try registry.getDependencies("foo", foo_v12);
+    defer pkg.PackageRegistry.freeDependencies(allocator, cloned_dependencies);
+    try testing.expectEqualStrings("replacement-dependency", cloned_dependencies[0].name);
+
+    var resolver = Resolver.init(allocator);
+    defer resolver.deinit();
+    try resolver.addDependency("root", .{ .name = "foo", .constraint = constraint });
+    const solved_once = try resolver.resolve(&registry);
+    try testing.expectEqual(@as(usize, 1), solved_once.len);
+    allocator.free(solved_once);
+    const solved = try resolver.resolve(&registry);
+    defer allocator.free(solved);
+    try testing.expectEqual(@as(usize, 1), solved.len);
+    const foo = resolver.solution.get("foo") orelse return error.MissingResolvedPackage;
+    try testing.expectEqual(@as(u32, 1), foo.version.major);
+    try testing.expectEqual(@as(u32, 2), foo.version.minor);
+    try testing.expectEqualStrings("replacement-dependency", foo.dependencies[0].name);
+}
+
+test "AdvancedDependencyResolver: selects a compatible version and owns registry data" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        resolveRegisteredVersionsForAllocationFailure,
+        .{},
+    );
+}
+
+test "AdvancedDependencyResolver: resolver and registry use independent allocators" {
+    var registry_debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = registry_debug_allocator.deinit();
+    var resolver_debug_allocator = std.heap.DebugAllocator(.{}).init;
+    defer _ = resolver_debug_allocator.deinit();
+
+    const Resolver = pkg.AdvancedDependencyResolver;
+    var registry = pkg.PackageRegistry.init(registry_debug_allocator.allocator());
+    defer registry.deinit();
+    try registry.addPackage("foo", &.{.{ .major = 1, .minor = 0, .patch = 0 }});
+    try registry.addDependencies("foo", .{ .major = 1, .minor = 0, .patch = 0 }, &.{.{
+        .name = "bar",
+        .constraint = try Resolver.parseConstraint("^1.0.0"),
+    }});
+
+    var resolver = Resolver.init(resolver_debug_allocator.allocator());
+    defer resolver.deinit();
+    try resolver.addConstraint("foo", try Resolver.parseConstraint("^1.0.0"));
+    const result = try resolver.resolve(&registry);
+    defer resolver_debug_allocator.allocator().free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("bar", result[0].dependencies[0].name);
+}
+
+fn detectCycleForAllocationFailure(allocator: std.mem.Allocator) !void {
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const exact = try Resolver.parseConstraint("1.0.0");
+    var graph = Resolver.DependencyGraph.init(allocator);
+    defer graph.deinit();
+    try graph.addEdge("a", .{ .name = "b", .constraint = exact });
+    try graph.addEdge("b", .{ .name = "c", .constraint = exact });
+    try graph.addEdge("c", .{ .name = "a", .constraint = exact });
+    const cycle = (try graph.detectCycles()) orelse return error.MissingCycle;
+    defer graph.freeCycle(cycle);
+    try testing.expectEqual(@as(usize, 4), cycle.len);
+}
+
+test "AdvancedDependencyResolver: cycle detection frees partial paths" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        detectCycleForAllocationFailure,
+        .{},
+    );
+}
+
+test "AdvancedDependencyResolver: reports the complete owned cycle" {
+    const allocator = testing.allocator;
+    const Resolver = pkg.AdvancedDependencyResolver;
+    const exact = try Resolver.parseConstraint("1.0.0");
+    var graph = Resolver.DependencyGraph.init(allocator);
+    defer graph.deinit();
+    try graph.addEdge("a", .{ .name = "b", .constraint = exact });
+    try graph.addEdge("b", .{ .name = "c", .constraint = exact });
+    try graph.addEdge("c", .{ .name = "a", .constraint = exact });
+    const cycle = (try graph.detectCycles()) orelse return error.MissingCycle;
+    defer graph.freeCycle(cycle);
+    try testing.expectEqual(@as(usize, 4), cycle.len);
+    try testing.expectEqualStrings(cycle[0], cycle[3]);
+    try testing.expect(!std.mem.eql(u8, cycle[0], cycle[1]));
+    try testing.expect(!std.mem.eql(u8, cycle[1], cycle[2]));
+}
+
+test "AdvancedDependencyResolver: rejects incompatible constraints without leaking" {
+    const allocator = testing.allocator;
+    const Resolver = pkg.AdvancedDependencyResolver;
+    var registry = pkg.PackageRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.addPackage("foo", &.{.{ .major = 1, .minor = 0, .patch = 0 }});
+
+    var resolver = Resolver.init(allocator);
+    defer resolver.deinit();
+    try resolver.addConstraint("foo", try Resolver.parseConstraint(">=2.0.0"));
+    try testing.expectError(error.ConflictingDependencies, resolver.resolve(&registry));
+    try testing.expectEqual(@as(usize, 1), resolver.conflicts.items.len);
+    try testing.expectError(error.ConflictingDependencies, resolver.resolve(&registry));
+    try testing.expectEqual(@as(usize, 1), resolver.conflicts.items.len);
+}
+
+test "AdvancedDependencyResolver: rejects extra version components" {
+    try testing.expectError(error.InvalidVersion, pkg.AdvancedDependencyResolver.SemanticVersion.parse("1.2.3.4"));
+}
+
 fn buildDependencyTreeForAllocationFailure(allocator: std.mem.Allocator) !void {
     var lockfile = pkg.LockFile{
         .allocator = allocator,

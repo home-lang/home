@@ -35,11 +35,8 @@ pub const AdvancedDependencyResolver = struct {
             var it = self.nodes.iterator();
             while (it.next()) |entry| {
                 self.allocator.free(entry.key_ptr.*);
-                entry.value_ptr.dependencies.deinit();
-                for (entry.value_ptr.dependents.items) |dep| {
-                    self.allocator.free(dep);
-                }
-                entry.value_ptr.dependents.deinit();
+                entry.value_ptr.dependencies.deinit(self.allocator);
+                entry.value_ptr.dependents.deinit(self.allocator);
             }
             self.nodes.deinit();
         }
@@ -48,10 +45,11 @@ pub const AdvancedDependencyResolver = struct {
             if (self.nodes.contains(name)) return;
 
             const key = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(key);
             try self.nodes.put(key, .{
                 .name = key,
-                .dependencies = std.ArrayList(Dependency).init(self.allocator),
-                .dependents = std.ArrayList([]const u8).init(self.allocator),
+                .dependencies = .empty,
+                .dependents = .empty,
             });
         }
 
@@ -59,26 +57,27 @@ pub const AdvancedDependencyResolver = struct {
             try self.addNode(from);
             try self.addNode(to.name);
 
-            if (self.nodes.getPtr(from)) |node| {
-                try node.dependencies.append(to);
-            }
-
-            if (self.nodes.getPtr(to.name)) |node| {
-                try node.dependents.append(try self.allocator.dupe(u8, from));
-            }
+            const from_node = self.nodes.getPtr(from).?;
+            const to_node = self.nodes.getPtr(to.name).?;
+            try from_node.dependencies.ensureUnusedCapacity(self.allocator, 1);
+            try to_node.dependents.ensureUnusedCapacity(self.allocator, 1);
+            from_node.dependencies.appendAssumeCapacity(.{ .name = to_node.name, .constraint = to.constraint });
+            to_node.dependents.appendAssumeCapacity(from_node.name);
         }
 
         /// Detect circular dependencies
         pub fn detectCycles(self: *DependencyGraph) !?[][]const u8 {
-            var visited = std.StringHashMap(bool).init(self.allocator);
+            var visited = std.StringHashMap(void).init(self.allocator);
             defer visited.deinit();
 
-            var rec_stack = std.StringHashMap(bool).init(self.allocator);
+            var rec_stack = std.StringHashMap(usize).init(self.allocator);
             defer rec_stack.deinit();
+            var path: std.ArrayList([]const u8) = .empty;
+            defer path.deinit(self.allocator);
 
             var it = self.nodes.iterator();
             while (it.next()) |entry| {
-                if (try self.detectCyclesHelper(entry.key_ptr.*, &visited, &rec_stack)) |cycle| {
+                if (try self.detectCyclesHelper(entry.key_ptr.*, &visited, &rec_stack, &path)) |cycle| {
                     return cycle;
                 }
             }
@@ -86,38 +85,53 @@ pub const AdvancedDependencyResolver = struct {
             return null;
         }
 
+        pub fn freeCycle(self: *DependencyGraph, cycle: [][]const u8) void {
+            for (cycle) |name| self.allocator.free(name);
+            self.allocator.free(cycle);
+        }
+
         fn detectCyclesHelper(
             self: *DependencyGraph,
             node: []const u8,
-            visited: *std.StringHashMap(bool),
-            rec_stack: *std.StringHashMap(bool),
+            visited: *std.StringHashMap(void),
+            rec_stack: *std.StringHashMap(usize),
+            path: *std.ArrayList([]const u8),
         ) !?[][]const u8 {
-            if (rec_stack.get(node)) |in_stack| {
-                if (in_stack) {
-                    // Cycle detected
-                    var cycle = std.ArrayList([]const u8).init(self.allocator);
-                    try cycle.append(try self.allocator.dupe(u8, node));
-                    return try cycle.toOwnedSlice();
+            if (rec_stack.get(node)) |start| {
+                var cycle: std.ArrayList([]const u8) = .empty;
+                errdefer {
+                    for (cycle.items) |name| self.allocator.free(name);
+                    cycle.deinit(self.allocator);
                 }
+                for (path.items[start..]) |name| {
+                    try self.appendCycleName(&cycle, name);
+                }
+                try self.appendCycleName(&cycle, node);
+                return try cycle.toOwnedSlice(self.allocator);
             }
 
-            if (visited.get(node)) |v| {
-                if (v) return null; // Already processed
-            }
+            if (visited.contains(node)) return null;
 
-            try visited.put(node, true);
-            try rec_stack.put(node, true);
+            try visited.put(node, {});
+            try rec_stack.put(node, path.items.len);
+            defer _ = rec_stack.remove(node);
+            try path.append(self.allocator, node);
+            defer _ = path.pop();
 
             if (self.nodes.get(node)) |pkg_node| {
                 for (pkg_node.dependencies.items) |dep| {
-                    if (try self.detectCyclesHelper(dep.name, visited, rec_stack)) |cycle| {
+                    if (try self.detectCyclesHelper(dep.name, visited, rec_stack, path)) |cycle| {
                         return cycle;
                     }
                 }
             }
-
-            try rec_stack.put(node, false);
             return null;
+        }
+
+        fn appendCycleName(self: *DependencyGraph, cycle: *std.ArrayList([]const u8), name: []const u8) !void {
+            const owned = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(owned);
+            try cycle.append(self.allocator, owned);
         }
     };
 
@@ -131,13 +145,13 @@ pub const AdvancedDependencyResolver = struct {
         version: SemanticVersion,
 
         pub const Operator = enum {
-            Exact,      // 1.2.3
-            Caret,      // ^1.2.3 (compatible)
-            Tilde,      // ~1.2.3 (reasonably close)
-            GreaterEq,  // >=1.2.3
-            Greater,    // >1.2.3
-            LessEq,     // <=1.2.3
-            Less,       // <1.2.3
+            Exact, // 1.2.3
+            Caret, // ^1.2.3 (compatible)
+            Tilde, // ~1.2.3 (reasonably close)
+            GreaterEq, // >=1.2.3
+            Greater, // >1.2.3
+            LessEq, // <=1.2.3
+            Less, // <1.2.3
         };
 
         pub fn satisfies(self: VersionConstraint, version: SemanticVersion) bool {
@@ -157,7 +171,7 @@ pub const AdvancedDependencyResolver = struct {
             if (constraint.major > 0) {
                 return version.major == constraint.major and
                     (version.minor > constraint.minor or
-                    (version.minor == constraint.minor and version.patch >= constraint.patch));
+                        (version.minor == constraint.minor and version.patch >= constraint.patch));
             } else if (constraint.minor > 0) {
                 return version.major == 0 and
                     version.minor == constraint.minor and
@@ -191,6 +205,7 @@ pub const AdvancedDependencyResolver = struct {
             const major = try std.fmt.parseInt(u32, parts.next() orelse return error.InvalidVersion, 10);
             const minor = try std.fmt.parseInt(u32, parts.next() orelse return error.InvalidVersion, 10);
             const patch_str = parts.next() orelse return error.InvalidVersion;
+            if (parts.next() != null) return error.InvalidVersion;
 
             // Handle pre-release and build metadata
             var patch_clean = patch_str;
@@ -228,51 +243,43 @@ pub const AdvancedDependencyResolver = struct {
             .graph = DependencyGraph.init(allocator),
             .constraints = std.StringHashMap(std.ArrayList(VersionConstraint)).init(allocator),
             .solution = std.StringHashMap(ResolvedVersion).init(allocator),
-            .conflicts = std.ArrayList(Conflict).init(allocator),
+            .conflicts = .empty,
         };
     }
 
     pub fn deinit(self: *AdvancedDependencyResolver) void {
+        self.clearResolution();
         self.graph.deinit();
 
         var it = self.constraints.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
         self.constraints.deinit();
 
-        var sol_it = self.solution.iterator();
-        while (sol_it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.dependencies);
-        }
         self.solution.deinit();
-
-        for (self.conflicts.items) |conflict| {
-            self.allocator.free(conflict.package_name);
-            self.allocator.free(conflict.constraints);
-            self.allocator.free(conflict.message);
-        }
-        self.conflicts.deinit();
+        self.conflicts.deinit(self.allocator);
+        self.* = undefined;
     }
 
     /// Add a dependency constraint
     pub fn addConstraint(self: *AdvancedDependencyResolver, package: []const u8, constraint: VersionConstraint) !void {
+        try self.graph.addNode(package);
         // Look up using the caller's (possibly ephemeral) slice. If we're
         // inserting a new entry we must own the key string, so dupe up-front
         // and free on early exit.
         if (self.constraints.getPtr(package)) |existing| {
-            try existing.append(constraint);
+            try existing.append(self.allocator, constraint);
             return;
         }
 
         const key = try self.allocator.dupe(u8, package);
         errdefer self.allocator.free(key);
 
-        var list = std.ArrayList(VersionConstraint).init(self.allocator);
-        errdefer list.deinit();
-        try list.append(constraint);
+        var list: std.ArrayList(VersionConstraint) = .empty;
+        errdefer list.deinit(self.allocator);
+        try list.append(self.allocator, constraint);
 
         try self.constraints.put(key, list);
     }
@@ -283,10 +290,14 @@ pub const AdvancedDependencyResolver = struct {
         try self.addConstraint(to.name, to.constraint);
     }
 
-    /// Resolve all dependencies
+    /// Resolve all dependencies. The returned slice is owned by the caller;
+    /// its entries borrow the resolver's solution until the next `resolve` or
+    /// `deinit` call.
     pub fn resolve(self: *AdvancedDependencyResolver, registry: *PackageRegistry) ![]ResolvedVersion {
+        self.clearResolution();
         // Step 1: Detect circular dependencies
         if (try self.graph.detectCycles()) |cycle| {
+            defer self.graph.freeCycle(cycle);
             std.debug.print("Error: Circular dependency detected: ", .{});
             for (cycle, 0..) |pkg, i| {
                 if (i > 0) std.debug.print(" -> ", .{});
@@ -315,18 +326,35 @@ pub const AdvancedDependencyResolver = struct {
         }
 
         // Step 5: Return solution
-        var result = std.ArrayList(ResolvedVersion).init(self.allocator);
+        var result: std.ArrayList(ResolvedVersion) = .empty;
+        errdefer result.deinit(self.allocator);
         var it = self.solution.iterator();
         while (it.next()) |entry| {
-            try result.append(entry.value_ptr.*);
+            try result.append(self.allocator, entry.value_ptr.*);
         }
 
-        return try result.toOwnedSlice();
+        return try result.toOwnedSlice(self.allocator);
+    }
+
+    fn clearResolution(self: *AdvancedDependencyResolver) void {
+        var solutions = self.solution.iterator();
+        while (solutions.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            PackageRegistry.freeDependencies(self.allocator, entry.value_ptr.dependencies);
+        }
+        self.solution.clearRetainingCapacity();
+        for (self.conflicts.items) |conflict| {
+            self.allocator.free(conflict.package_name);
+            self.allocator.free(conflict.constraints);
+            self.allocator.free(conflict.message);
+        }
+        self.conflicts.clearRetainingCapacity();
     }
 
     /// Topological sort of the dependency graph
     fn topologicalSort(self: *AdvancedDependencyResolver) ![][]const u8 {
-        var result = std.ArrayList([]const u8).init(self.allocator);
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer result.deinit(self.allocator);
         var visited = std.StringHashMap(bool).init(self.allocator);
         defer visited.deinit();
 
@@ -335,7 +363,7 @@ pub const AdvancedDependencyResolver = struct {
             try self.topologicalSortHelper(entry.key_ptr.*, &visited, &result);
         }
 
-        return try result.toOwnedSlice();
+        return try result.toOwnedSlice(self.allocator);
     }
 
     fn topologicalSortHelper(
@@ -358,26 +386,37 @@ pub const AdvancedDependencyResolver = struct {
         }
 
         // Add to result
-        try result.append(try self.allocator.dupe(u8, node));
+        try result.append(self.allocator, node);
     }
 
     /// Resolve a single package
     fn resolvePackage(self: *AdvancedDependencyResolver, package_name: []const u8, registry: *PackageRegistry) !void {
         // Get all constraints for this package
         const constraints = self.constraints.get(package_name) orelse {
-            // No constraints, use latest version
+            // A project root participates in cycle detection but is not a
+            // registry package to resolve.
+            if (!registry.packages.contains(package_name)) {
+                const node = self.graph.nodes.get(package_name).?;
+                if (node.dependents.items.len == 0 and node.dependencies.items.len > 0) return;
+                return error.PackageNotFound;
+            }
+            // No constraints, use latest version.
             const latest = try registry.getLatestVersion(package_name);
-            try self.solution.put(try self.allocator.dupe(u8, package_name), .{
-                .package_name = package_name,
+            const deps = try registry.getDependenciesWithAllocator(self.allocator, package_name, latest);
+            errdefer PackageRegistry.freeDependencies(self.allocator, deps);
+            const solution_key = try self.allocator.dupe(u8, package_name);
+            errdefer self.allocator.free(solution_key);
+            try self.solution.put(solution_key, .{
+                .package_name = solution_key,
                 .version = latest,
-                .dependencies = &[_]Dependency{},
+                .dependencies = deps,
             });
             return;
         };
 
         // Find a version that satisfies all constraints
         const available_versions = try registry.getVersions(package_name);
-        defer self.allocator.free(available_versions);
+        defer registry.allocator.free(available_versions);
 
         // Sort versions in descending order (prefer latest)
         std.sort.pdq(SemanticVersion, available_versions, {}, compareVersionsDesc);
@@ -394,12 +433,13 @@ pub const AdvancedDependencyResolver = struct {
 
             if (satisfies_all) {
                 // Found a compatible version
-                const deps = try registry.getDependencies(package_name, version);
+                const deps = try registry.getDependenciesWithAllocator(self.allocator, package_name, version);
+                errdefer PackageRegistry.freeDependencies(self.allocator, deps);
 
                 const solution_key = try self.allocator.dupe(u8, package_name);
                 errdefer self.allocator.free(solution_key);
                 try self.solution.put(solution_key, .{
-                    .package_name = package_name,
+                    .package_name = solution_key,
                     .version = version,
                     .dependencies = deps,
                 });
@@ -422,7 +462,7 @@ pub const AdvancedDependencyResolver = struct {
         );
         errdefer self.allocator.free(message);
 
-        try self.conflicts.append(.{
+        try self.conflicts.append(self.allocator, .{
             .package_name = conflict_name,
             .constraints = conflict_constraints,
             .message = message,
@@ -483,9 +523,9 @@ pub const PackageRegistry = struct {
 
     pub const PackageInfo = struct {
         name: []const u8,
-        versions: []SemanticVersion,
+        versions: []AdvancedDependencyResolver.SemanticVersion,
         /// Dependencies for each version
-        dependencies_by_version: std.AutoHashMap(SemanticVersion, []AdvancedDependencyResolver.Dependency),
+        dependencies_by_version: std.AutoHashMap(AdvancedDependencyResolver.SemanticVersion, []AdvancedDependencyResolver.Dependency),
     };
 
     pub fn init(allocator: Allocator) PackageRegistry {
@@ -502,14 +542,55 @@ pub const PackageRegistry = struct {
             self.allocator.free(entry.value_ptr.versions);
             var dep_it = entry.value_ptr.dependencies_by_version.iterator();
             while (dep_it.next()) |dep_entry| {
-                self.allocator.free(dep_entry.value_ptr.*);
+                freeDependencies(self.allocator, dep_entry.value_ptr.*);
             }
             entry.value_ptr.dependencies_by_version.deinit();
         }
         self.packages.deinit();
     }
 
-    pub fn getLatestVersion(self: *PackageRegistry, package_name: []const u8) !SemanticVersion {
+    pub fn addPackage(self: *PackageRegistry, name: []const u8, versions: []const AdvancedDependencyResolver.SemanticVersion) !void {
+        if (self.packages.contains(name)) return error.PackageAlreadyExists;
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_versions = try self.allocator.dupe(AdvancedDependencyResolver.SemanticVersion, versions);
+        errdefer self.allocator.free(owned_versions);
+        var dependencies_by_version = std.AutoHashMap(AdvancedDependencyResolver.SemanticVersion, []AdvancedDependencyResolver.Dependency).init(self.allocator);
+        errdefer dependencies_by_version.deinit();
+        try self.packages.put(owned_name, .{
+            .name = owned_name,
+            .versions = owned_versions,
+            .dependencies_by_version = dependencies_by_version,
+        });
+    }
+
+    pub fn addDependencies(
+        self: *PackageRegistry,
+        package_name: []const u8,
+        version: AdvancedDependencyResolver.SemanticVersion,
+        dependencies: []const AdvancedDependencyResolver.Dependency,
+    ) !void {
+        const package = self.packages.getPtr(package_name) orelse return error.PackageNotFound;
+        var known_version = false;
+        for (package.versions) |candidate| {
+            if (compareVersions(candidate, version) == 0) {
+                known_version = true;
+                break;
+            }
+        }
+        if (!known_version) return error.VersionNotFound;
+
+        const owned = try cloneDependencies(self.allocator, dependencies);
+        errdefer freeDependencies(self.allocator, owned);
+        if (package.dependencies_by_version.getPtr(version)) |existing| {
+            freeDependencies(self.allocator, existing.*);
+            existing.* = owned;
+            return;
+        }
+        try package.dependencies_by_version.put(version, owned);
+    }
+
+    pub fn getLatestVersion(self: *PackageRegistry, package_name: []const u8) !AdvancedDependencyResolver.SemanticVersion {
         const pkg = self.packages.get(package_name) orelse return error.PackageNotFound;
         if (pkg.versions.len == 0) return error.NoVersionsAvailable;
 
@@ -523,29 +604,52 @@ pub const PackageRegistry = struct {
         return latest;
     }
 
-    pub fn getVersions(self: *PackageRegistry, package_name: []const u8) ![]SemanticVersion {
+    pub fn getVersions(self: *PackageRegistry, package_name: []const u8) ![]AdvancedDependencyResolver.SemanticVersion {
         const pkg = self.packages.get(package_name) orelse return error.PackageNotFound;
-        return try self.allocator.dupe(SemanticVersion, pkg.versions);
+        return try self.allocator.dupe(AdvancedDependencyResolver.SemanticVersion, pkg.versions);
     }
 
     pub fn getDependencies(
         self: *PackageRegistry,
         package_name: []const u8,
-        version: SemanticVersion,
+        version: AdvancedDependencyResolver.SemanticVersion,
+    ) ![]AdvancedDependencyResolver.Dependency {
+        return self.getDependenciesWithAllocator(self.allocator, package_name, version);
+    }
+
+    pub fn getDependenciesWithAllocator(
+        self: *PackageRegistry,
+        allocator: Allocator,
+        package_name: []const u8,
+        version: AdvancedDependencyResolver.SemanticVersion,
     ) ![]AdvancedDependencyResolver.Dependency {
         const pkg = self.packages.get(package_name) orelse return error.PackageNotFound;
 
-        if (pkg.dependencies_by_version.get(version)) |deps| {
-            return try self.allocator.dupe(AdvancedDependencyResolver.Dependency, deps);
-        }
+        const deps = pkg.dependencies_by_version.get(version) orelse &.{};
+        return try cloneDependencies(allocator, deps);
+    }
 
-        return &[_]AdvancedDependencyResolver.Dependency{};
+    fn cloneDependencies(allocator: Allocator, dependencies: []const AdvancedDependencyResolver.Dependency) ![]AdvancedDependencyResolver.Dependency {
+        const result = try allocator.alloc(AdvancedDependencyResolver.Dependency, dependencies.len);
+        errdefer allocator.free(result);
+        var completed: usize = 0;
+        errdefer for (result[0..completed]) |dep| allocator.free(dep.name);
+        for (dependencies, 0..) |dep, index| {
+            result[index] = .{ .name = try allocator.dupe(u8, dep.name), .constraint = dep.constraint };
+            completed += 1;
+        }
+        return result;
+    }
+
+    pub fn freeDependencies(allocator: Allocator, dependencies: []AdvancedDependencyResolver.Dependency) void {
+        for (dependencies) |dep| allocator.free(dep.name);
+        allocator.free(dependencies);
     }
 };
 
 /// Compare two semantic versions
 /// Returns: -1 if a < b, 0 if a == b, 1 if a > b
-fn compareVersions(a: SemanticVersion, b: SemanticVersion) i32 {
+fn compareVersions(a: AdvancedDependencyResolver.SemanticVersion, b: AdvancedDependencyResolver.SemanticVersion) i32 {
     if (a.major != b.major) {
         return if (a.major < b.major) -1 else 1;
     }
@@ -557,8 +661,6 @@ fn compareVersions(a: SemanticVersion, b: SemanticVersion) i32 {
     }
     return 0;
 }
-
-const SemanticVersion = AdvancedDependencyResolver.SemanticVersion;
 
 test "AdvancedDependencyResolver - basic resolution" {
     const testing = std.testing;
@@ -581,12 +683,12 @@ test "AdvancedDependencyResolver - basic resolution" {
 test "SemanticVersion - parsing" {
     const testing = std.testing;
 
-    const v1 = try SemanticVersion.parse("1.2.3");
+    const v1 = try AdvancedDependencyResolver.SemanticVersion.parse("1.2.3");
     try testing.expectEqual(@as(u32, 1), v1.major);
     try testing.expectEqual(@as(u32, 2), v1.minor);
     try testing.expectEqual(@as(u32, 3), v1.patch);
 
-    const v2 = try SemanticVersion.parse("0.1.0-alpha");
+    const v2 = try AdvancedDependencyResolver.SemanticVersion.parse("0.1.0-alpha");
     try testing.expectEqual(@as(u32, 0), v2.major);
     try testing.expectEqual(@as(u32, 1), v2.minor);
     try testing.expectEqual(@as(u32, 0), v2.patch);

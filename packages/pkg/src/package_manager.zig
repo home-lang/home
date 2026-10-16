@@ -1,5 +1,6 @@
 const std = @import("std");
 const auth_mod = @import("auth.zig");
+const dependency_resolver_mod = @import("dependency_resolver.zig");
 const lockfile_mod = @import("lockfile.zig");
 const progress_mod = @import("progress.zig");
 const scripts_mod = @import("scripts.zig");
@@ -26,6 +27,8 @@ const SpinMutex = struct {
 
 pub const AuthManager = auth_mod.AuthManager;
 pub const AuthToken = auth_mod.AuthToken;
+pub const AdvancedDependencyResolver = dependency_resolver_mod.AdvancedDependencyResolver;
+pub const PackageRegistry = dependency_resolver_mod.PackageRegistry;
 pub const InstallSummary = progress_mod.InstallSummary;
 pub const LifecycleHooks = scripts_mod.LifecycleHooks;
 pub const Lockfile = lockfile_mod.Lockfile;
