@@ -1,0 +1,46 @@
+{
+  "issue": 841,
+  "parent_issue": 66,
+  "date": "2026-10-17",
+  "fixture": "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/directives/ts-expect-error-js.ts",
+  "baseline": "_submodules/typescript-go/_submodules/TypeScript/tests/baselines/reference/ts-expect-error-js.errors.txt",
+  "guard_max_mb": 3840,
+  "results": [
+    {
+      "zig": "0.17.0-dev.2163_89ff10d56",
+      "control": "mixed-case virtual filename regression",
+      "passed": 2,
+      "total": 2,
+      "peak_tree_mb": 319
+    },
+    {
+      "zig": "0.17.0-dev.2163_89ff10d56",
+      "control": "buildVirtualFileIndex regressions",
+      "passed": 5,
+      "total": 5,
+      "peak_tree_mb": 326
+    },
+    {
+      "zig": "0.17.0-dev.2163_89ff10d56",
+      "control": "exact ts-expect-error-js corpus case",
+      "passed": 1,
+      "total": 1,
+      "peak_tree_mb": 352,
+      "time": "about 2 minutes"
+    },
+    {
+      "zig": "0.18.0-dev.146+35accc06e",
+      "control": "exact ts-expect-error-js corpus case",
+      "passed": 1,
+      "total": 1,
+      "peak_tree_mb": 2135,
+      "time": "about 2 minutes including compilation"
+    }
+  ],
+  "not_claimed": [
+    "120-second bound completed the exact case",
+    "five-case exact corpus window passed",
+    "full TypeScript corpus passed",
+    "full Bun parity passed"
+  ]
+}

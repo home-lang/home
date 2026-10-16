@@ -6054,11 +6054,6 @@ fn buildVirtualFileIndex(
 ) !std.ArrayListUnmanaged(VirtualFileMarker) {
     var out: std.ArrayListUnmanaged(VirtualFileMarker) = .empty;
     errdefer out.deinit(gpa);
-    if (std.mem.indexOf(u8, source, "@filename:") == null and
-        std.mem.indexOf(u8, source, "@Filename:") == null)
-    {
-        return out;
-    }
     // First pass: collect (path, line, byte_offset).
     var line_no: u32 = 1;
     var line_start: usize = 0;
@@ -6193,15 +6188,11 @@ fn virtualMarkerForByte(
 }
 
 fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u8 {
-    if (std.mem.indexOf(u8, source, "@filename:") == null and
-        std.mem.indexOf(u8, source, "@Filename:") == null)
-    {
-        return null;
-    }
-    var out: std.ArrayListUnmanaged(u8) = .empty;
-    errdefer out.deinit(gpa);
     var markers = try buildVirtualFileIndex(gpa, source);
     defer markers.deinit(gpa);
+    if (markers.items.len == 0) return null;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
     var include_section = true;
     var comment_section = false;
     var marker_index: usize = 0;
@@ -6244,10 +6235,14 @@ fn stripNonCodeVirtualSections(gpa: std.mem.Allocator, source: []const u8) !?[]u
 }
 
 fn virtualFilename(line: []const u8) ?[]const u8 {
-    const marker = std.mem.indexOf(u8, line, "@filename:") orelse
-        std.mem.indexOf(u8, line, "@Filename:") orelse return null;
-    const rest = line[marker + "@filename:".len ..];
-    return std.mem.trim(u8, rest, " \t");
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    const key = runnerDirectiveKey(trimmed) orelse return null;
+    if (!std.ascii.eqlIgnoreCase(key, "filename")) return null;
+    const body = std.mem.trimStart(u8, trimmed[2..], " \t");
+    const after_key = std.mem.trimStart(u8, body[1 + key.len ..], " \t");
+    if (after_key.len == 0 or after_key[0] != ':') return null;
+    const path = std.mem.trim(u8, after_key[1..], " \t");
+    return if (path.len > 0) path else null;
 }
 
 fn firstCodeVirtualFilename(source: []const u8) ?[]const u8 {
@@ -56013,6 +56008,41 @@ test "conformance: buildVirtualFileIndex captures multi-file markers in source o
     try T.expectEqualStrings("/a.ts", idx.items[1].path);
     try T.expectEqual(@as(u32, 8), idx.items[1].line);
     try T.expectEqual(@as(u32, 0), idx.items[1].extra_strip);
+}
+
+test "conformance: virtual filename directive is case insensitive across loader and compiler paths" {
+    const source =
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @fileName: a.js
+        \\// @ts-expect-error
+        \\const a = 1;
+        \\// @FILENAME: b.ts
+        \\export {};
+    ;
+    try T.expectEqualStrings("a.js", firstCodeVirtualFilename(source).?);
+    try T.expect(shouldRouteThroughProgram(.{
+        .name = "mixed-case-file-names",
+        .source = source,
+        .path = "fixture.ts",
+        .raw_source = source,
+    }));
+    var markers = try buildVirtualFileIndex(T.allocator, source);
+    defer markers.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 2), markers.items.len);
+    try T.expectEqualStrings("a.js", markers.items[0].path);
+    try T.expectEqualStrings("b.ts", markers.items[1].path);
+    var files = try splitVirtualFiles(T.allocator, source);
+    defer files.deinit(T.allocator);
+    try T.expectEqual(@as(usize, 2), files.items.len);
+    try T.expectEqualStrings("a.js", files.items[0].path);
+    try T.expectEqualStrings("b.ts", files.items[1].path);
+    const stripped = (try stripNonCodeVirtualSections(T.allocator, source)).?;
+    defer T.allocator.free(stripped);
+    try T.expect(std.mem.indexOf(u8, stripped, "// @fileName: a.js") != null);
+    try T.expect(std.mem.indexOf(u8, stripped, "// @FILENAME: b.ts") != null);
+    try T.expect(virtualFilename("// @filename:") == null);
+    try T.expect(virtualFilename("const s = '@filename: fake.ts';") == null);
 }
 
 test "conformance: buildVirtualFileIndex strips post-marker directives like `@jsx`" {
