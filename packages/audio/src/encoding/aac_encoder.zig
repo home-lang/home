@@ -16,7 +16,14 @@ pub const AacProfile = enum(u5) {
     aac_scalable = 6,
 
     pub fn getAudioObjectType(self: AacProfile) u5 {
-        return @as(u5, @bitCast(self));
+        return switch (self) {
+            .aac_main => 1,
+            .aac_lc => 2,
+            .aac_ssr => 3,
+            .aac_ltp => 4,
+            .sbr => 5,
+            .aac_scalable => 6,
+        };
     }
 };
 
@@ -271,8 +278,27 @@ pub const AudioSpecificConfig = struct {
         var config: [2]u8 = undefined;
 
         const aot = self.audio_object_type.getAudioObjectType();
-        const sri = @as(u4, @bitCast(SampleRateIndex.fromRate(self.sample_rate)));
-        const cc = @backingInt(ChannelConfig.fromChannels(self.channels));
+        const sri: u4 = switch (self.sample_rate) {
+            96000 => 0,
+            88200 => 1,
+            64000 => 2,
+            48000 => 3,
+            44100 => 4,
+            32000 => 5,
+            24000 => 6,
+            22050 => 7,
+            16000 => 8,
+            12000 => 9,
+            11025 => 10,
+            8000 => 11,
+            7350 => 12,
+            else => 4,
+        };
+        const cc: u4 = switch (self.channels) {
+            1...6 => @intCast(self.channels),
+            8 => 7,
+            else => 2,
+        };
 
         // audioObjectType (5 bits) + samplingFrequencyIndex (4 bits)
         config[0] = @as(u8, aot) << 3;
