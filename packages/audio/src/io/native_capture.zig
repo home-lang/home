@@ -1,6 +1,5 @@
 //! Home opaque, header-checked ALSA capture. Build C boundary and link libasound.
 //! Calls serialize; close only after read returns. S16LE mono/stereo, BOOTTIME ns.
-const std = @import("std");
 const Handle = opaque {};
 pub const Config = extern struct { sample_rate: u32, channels: u32, block_frames: u32 };
 extern fn home_audio_open(*const Config, [*:0]const u8, *?*Handle) c_int;
@@ -23,7 +22,7 @@ pub const Capture = struct {
         if (s.failed) return error.CaptureFailed;
         if (data.len < @as(u64, s.config.block_frames) * s.config.channels * 2 or timeout_ms > 1000) return error.InvalidConfiguration;
         var block: Block = undefined;
-        const rc = home_audio_read(s.handle, data.ptr, @intCast(data.len / (s.config.channels * 2)), timeout_ms, &block.frames, &block.timestamp_ns, &block.clock_error_ns);
+        const rc = home_audio_read(s.handle, data.ptr, @intCast(s.config.block_frames), timeout_ms, &block.frames, &block.timestamp_ns, &block.clock_error_ns);
         if (rc == 1) return null;
         check(rc) catch |err| {
             s.failed = true;

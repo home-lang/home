@@ -42,13 +42,8 @@ pub const Queue = struct {
         if (data.len == 0 or data.len % stride != 0) return error.InvalidPcm;
         const frames = data.len / stride;
         if (frames > s.capacity - s.used or s.count == s.entries.len) return error.BufferFull;
-        var ts = timestamp;
-        if (s.last_end) |end| {
-            if (ts < end) {
-                if (end - ts > (1_000_000_000 + s.rate - 1) / s.rate) return error.InvalidTimestamp;
-                ts = end;
-            }
-        }
+        const ts = timestamp;
+        if (s.last_end) |end| if (ts < end) return error.InvalidTimestamp;
         const end = try at(ts, frames, s.rate);
         const first = @min(frames, s.capacity - s.write_pos);
         @memcpy(s.data[s.write_pos * stride ..][0 .. first * stride], data[0 .. first * stride]);
@@ -115,6 +110,9 @@ test "PCM rejects full queues, invalid inputs and overflow before modifying hist
     try std.testing.expectError(error.InvalidPcm, q.push(&.{1}, 2000000));
     try std.testing.expectError(error.InvalidTimestamp, q.push(&.{ 1, 0 }, 1));
     try std.testing.expectError(error.TimestampOverflow, at(std.math.maxInt(u64), 1, 48000));
+    const previous = q.last_end.?;
+    try std.testing.expectError(error.InvalidTimestamp, q.push(&.{ 1, 0 }, previous - 1));
+    try std.testing.expectEqual(previous, q.last_end.?);
     try std.testing.expectEqual(@as(u64, 1_000_000_000), try at(0, 44100, 44100));
 }
 test "PCM partial allocation failure cleanup" {
