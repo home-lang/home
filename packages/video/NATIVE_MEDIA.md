@@ -57,3 +57,33 @@ tests, not Pi hardware FPS, long-run reliability or compression-quality benchmar
 References: [x265 API](https://x265.readthedocs.io/en/master/api.html),
 [x264 public header](https://code.videolan.org/videolan/x264/-/blob/master/x264.h),
 [ISO BMFF streaming requirements](https://www.w3.org/TR/mse-byte-stream-format-isobmff/).
+
+## AAC-LC with synchronized fragmented MP4
+
+`mp4_stream.Writer.initAv` extends the same bounded video muxer with an optional
+AAC track. Its `AudioConfig` consumes the encoder's real AudioSpecificConfig,
+rate/channels/bitrate and codec delay. Use the native encoder in
+[Home #918](https://github.com/home-lang/home/pull/918); the muxer itself has no
+codec dependency and remains independently testable.
+
+Audio raw access units use the sample-rate timebase and `mp4a`/`esds`; video
+retains microsecond capture timestamps. Pass a sink with both write and patch
+callbacks. One AAC packet is staged so the final duration can omit padding.
+After draining AAC, `finish(start_us, input_frames)` emits the final packet and
+patches only fixed header fields: 64-bit movie/track/media durations and edit
+lengths. Memory does not grow with recording duration. A seekable sink and clean
+finalization are required; pipe output and crash recovery are not provided.
+
+The audio edit list represents the initial offset and actual encoder delay.
+Global `sgpd` and per-fragment `sbgp` roll associations mark explicit decoder
+pre-roll. Without those associations Apple readers can apply an extra implicit
+priming trim. The final short fragment duration prevents padded tail playback.
+Both are checked by FAAD2/AVFoundation camera integration, including sub-frame
+input, 44.1/48kHz, stereo, video gaps and independently decodable split files.
+Do not infer AAC time from callback scheduling or assume a fixed codec delay.
+The caller must provide continuous PCM to the encoder and preserve sample counts.
+Microsecond movie/edit times can round by less than one PCM sample.
+
+Four focused muxer tests pass on Zig 0.15.2 and the Home development toolchain,
+including sink failure poisoning and fixed edit/duration patch values. No
+FFmpeg/Libav or complete Home media-graph validation is represented here.
