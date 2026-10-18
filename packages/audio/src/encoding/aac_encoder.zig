@@ -1,6 +1,6 @@
 // Home Audio Library - AAC Encoder
-// Pure Zig Advanced Audio Coding encoder
-// Simplified LC-AAC implementation
+// Legacy prototype/configuration helpers. encode rejects unsupported payloads.
+// For interoperable AAC-LC use native_aac.zig (opt-in standalone FDK codec).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -16,7 +16,7 @@ pub const AacProfile = enum(u5) {
     aac_scalable = 6,
 
     pub fn getAudioObjectType(self: AacProfile) u5 {
-        return @intFromEnum(self);
+        return @as(u5, @bitCast(self));
     }
 };
 
@@ -198,6 +198,11 @@ pub const AacEncoder = struct {
         quality: AacQuality,
         profile: AacProfile,
     ) !Self {
+        const mdct_buffer = try allocator.alloc(f32, SAMPLES_PER_FRAME * 2);
+        errdefer allocator.free(mdct_buffer);
+        const prev_samples = try allocator.alloc(f32, SAMPLES_PER_FRAME * @as(usize, channels));
+        errdefer allocator.free(prev_samples);
+        const scale_factors = try allocator.alloc(u8, NUM_SCALE_FACTOR_BANDS);
         return Self{
             .allocator = allocator,
             .sample_rate = sample_rate,
@@ -205,9 +210,9 @@ pub const AacEncoder = struct {
             .bitrate = quality.getBitrate(),
             .profile = profile,
             .output = .empty,
-            .mdct_buffer = try allocator.alloc(f32, SAMPLES_PER_FRAME * 2),
-            .prev_samples = try allocator.alloc(f32, SAMPLES_PER_FRAME * @as(usize, channels)),
-            .scale_factors = try allocator.alloc(u8, NUM_SCALE_FACTOR_BANDS),
+            .mdct_buffer = mdct_buffer,
+            .prev_samples = prev_samples,
+            .scale_factors = scale_factors,
             .frame_count = 0,
         };
     }
@@ -219,103 +224,12 @@ pub const AacEncoder = struct {
         self.allocator.free(self.scale_factors);
     }
 
-    /// Encode PCM samples to AAC (ADTS format)
+    /// The old envelope payload was not AAC. Never return it as encoded audio.
+    /// Use native_aac.Encoder for verified raw AAC-LC packets and codec delay.
     pub fn encode(self: *Self, samples: []const f32) !void {
-        const frame_samples = SAMPLES_PER_FRAME * @as(usize, self.channels);
-        var pos: usize = 0;
-
-        while (pos + frame_samples <= samples.len) {
-            try self.encodeFrame(samples[pos .. pos + frame_samples]);
-            pos += frame_samples;
-        }
-    }
-
-    /// Encode a single AAC frame
-    fn encodeFrame(self: *Self, samples: []const f32) !void {
-        // Simplified AAC encoding:
-        // 1. Apply MDCT
-        // 2. Quantize spectral coefficients
-        // 3. Huffman encode
-        // 4. Pack into ADTS frame
-
-        // For this implementation, we create simplified encoded data
-        var frame_data: std.ArrayList(u8) = .empty;
-        defer frame_data.deinit(self.allocator);
-
-        // Encode raw data block
-        try self.encodeRawDataBlock(samples, &frame_data);
-
-        // Calculate total frame size (header + data)
-        const frame_length: u13 = @intCast(7 + frame_data.items.len);
-
-        // Create ADTS header
-        const header = AdtsHeader{
-            .profile = @intCast(@intFromEnum(self.profile) - 1),
-            .sampling_frequency_index = @intFromEnum(SampleRateIndex.fromRate(self.sample_rate)),
-            .channel_configuration = @intCast(@intFromEnum(ChannelConfig.fromChannels(self.channels))),
-            .frame_length = frame_length,
-        };
-
-        // Write header
-        const header_bytes = header.encode();
-        try self.output.appendSlice(self.allocator, &header_bytes);
-
-        // Write data
-        try self.output.appendSlice(self.allocator, frame_data.items);
-
-        self.frame_count += 1;
-    }
-
-    fn encodeRawDataBlock(self: *Self, samples: []const f32, data: *std.ArrayList(u8)) !void {
-        // Simplified encoding: just store quantized spectral data
-        // Real AAC encoding involves:
-        // 1. Psychoacoustic analysis
-        // 2. TNS (Temporal Noise Shaping)
-        // 3. M/S stereo coding
-        // 4. Intensity stereo
-        // 5. Scale factor band grouping
-        // 6. Huffman coding
-
-        // Mix to mono for simplified encoding
-        var mono_samples: [SAMPLES_PER_FRAME]f32 = undefined;
-        for (0..SAMPLES_PER_FRAME) |i| {
-            if (self.channels == 2 and i * 2 + 1 < samples.len) {
-                mono_samples[i] = (samples[i * 2] + samples[i * 2 + 1]) * 0.5;
-            } else if (i * self.channels < samples.len) {
-                mono_samples[i] = samples[i * self.channels];
-            } else {
-                mono_samples[i] = 0;
-            }
-        }
-
-        // Apply simple windowing (sine window)
-        var windowed: [SAMPLES_PER_FRAME * 2]f32 = undefined;
-        @memcpy(windowed[0..SAMPLES_PER_FRAME], self.prev_samples[0..SAMPLES_PER_FRAME]);
-        @memcpy(windowed[SAMPLES_PER_FRAME..], &mono_samples);
-        @memcpy(self.prev_samples[0..SAMPLES_PER_FRAME], &mono_samples);
-
-        for (0..SAMPLES_PER_FRAME * 2) |i| {
-            const w = @sin(math.pi / (2.0 * SAMPLES_PER_FRAME * 2) * (@as(f32, @floatFromInt(i)) + 0.5));
-            windowed[i] *= w;
-        }
-
-        // Simplified MDCT output (just store envelope)
-        const bytes_per_frame = @max(32, self.bitrate * SAMPLES_PER_FRAME / self.sample_rate / 8);
-
-        for (0..bytes_per_frame) |i| {
-            // Simple spectral envelope approximation
-            const start = i * SAMPLES_PER_FRAME / bytes_per_frame;
-            const end = (i + 1) * SAMPLES_PER_FRAME / bytes_per_frame;
-
-            var energy: f32 = 0;
-            for (start..end) |j| {
-                energy += windowed[j] * windowed[j];
-            }
-            energy = @sqrt(energy / @as(f32, @floatFromInt(end - start)));
-
-            const quantized: u8 = @intFromFloat(std.math.clamp(energy * 255.0, 0, 255));
-            try data.append(self.allocator, quantized);
-        }
+        _ = self;
+        _ = samples;
+        return error.UnsupportedLegacyEncoder;
     }
 
     /// Finalize and return encoded AAC data
@@ -357,8 +271,8 @@ pub const AudioSpecificConfig = struct {
         var config: [2]u8 = undefined;
 
         const aot = self.audio_object_type.getAudioObjectType();
-        const sri = @intFromEnum(SampleRateIndex.fromRate(self.sample_rate));
-        const cc = @intFromEnum(ChannelConfig.fromChannels(self.channels));
+        const sri = @as(u4, @bitCast(SampleRateIndex.fromRate(self.sample_rate)));
+        const cc = @backingInt(ChannelConfig.fromChannels(self.channels));
 
         // audioObjectType (5 bits) + samplingFrequencyIndex (4 bits)
         config[0] = @as(u8, aot) << 3;
@@ -397,8 +311,8 @@ test "AacEncoder encode" {
         samples[i] = @sin(t * 440 * 2 * math.pi);
     }
 
-    try encoder.encode(&samples);
-    try std.testing.expect(encoder.getFrameCount() > 0);
+    try std.testing.expectError(error.UnsupportedLegacyEncoder, encoder.encode(&samples));
+    try std.testing.expectEqual(@as(u32, 0), encoder.getFrameCount());
 }
 
 test "AdtsHeader encode" {
@@ -423,4 +337,13 @@ test "AudioSpecificConfig encode" {
 
     const bytes = config.encode();
     try std.testing.expect(bytes[0] != 0); // Should have content
+}
+test "legacy AAC allocation failure releases earlier buffers" {
+    const Check = struct {
+        fn run(allocator: Allocator) !void {
+            var encoder = try AacEncoder.init(allocator, 48000, 2, .medium);
+            defer encoder.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }

@@ -1,0 +1,34 @@
+name: Native AAC-LC
+on:
+  push:
+    branches: [feat/aac-mp4-recording]
+  pull_request:
+    paths: ['packages/audio/src/encoding/*aac*', 'packages/video/src/codecs/audio/aac_encoder.zig', '.github/workflows/native-aac.yml']
+permissions:
+  contents: read
+jobs:
+  aac:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Build pinned standalone codec
+        run: |
+          git clone https://github.com/mstorsjo/fdk-aac.git /tmp/fdk-aac
+          git -C /tmp/fdk-aac checkout --detach 716f4394641d53f0d79c9ddac3fa93b03a49f278
+          cmake -S /tmp/fdk-aac -B /tmp/fdk-build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build /tmp/fdk-build -j 2
+          sudo cmake --install /tmp/fdk-build
+          sudo ldconfig
+      - name: Check header boundary and Zig lifecycle
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags fdk-aac) -c packages/audio/src/encoding/native_aac.c -o /tmp/home-aac.o
+          zig test packages/audio/src/encoding/native_aac_test.zig /tmp/home-aac.o -lc -L /usr/local/lib -lfdk-aac
+          zig test packages/audio/src/encoding/aac_encoder.zig
