@@ -96,3 +96,29 @@ scripts/async-runtime-tsan.sh 1 10000 1024
 ## License
 
 Part of the Home programming language project.
+
+
+## Terminal job state and event completion
+
+Task cancellation is terminal: an in-flight future poll returning Ready or Pending
+cannot overwrite Cancelled, and cancelling an already completed/failed task does
+not replace its result. JoinHandle.await returns TaskFailed immediately for a
+failed task. Cancellation does not interrupt a currently executing poll or make
+its storage safe to free; quiesce/join the polling owner before deinit.
+
+`CompletionGate` is a small allocation-free two-phase event-job helper. It ignores
+events from older revisions and terminal outcomes before an active phase has been
+observed. Success, failure, cancellation and stop are immutable terminal states.
+The caller owns synchronization; it is not an executor or a generic Future.
+zig-utils/zig-camera uses this Home module for autofocus scan gating under its
+native session mutex without allocating or running consumer work in callbacks.
+
+Regression tests cover cancellation between poll reservation and both Ready and
+Pending results, late cancellation, failed joins, stale event revisions, and
+terminal immutability. Focused task/gate tests pass on Zig 0.15.2 and Home's current
+0.17 development toolchain. The complete async root suite also passes locally with
+its threading_futex module supplied:
+
+```sh
+zig test -lc --dep threading_futex -Mroot=packages/async/src/async.zig -Mthreading_futex=packages/runtime/src/threading/Futex.zig
+```

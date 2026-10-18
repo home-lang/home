@@ -16,6 +16,7 @@ pub const RawTask = task.RawTask;
 pub const Runtime = runtime.Runtime;
 
 test {
+    _ = @import("completion_gate.zig");
     _ = future;
     _ = task;
     _ = runtime;
@@ -23,3 +24,6 @@ test {
     _ = work_stealing_deque;
     _ = parker;
 }
+
+/// Revision-aware event job gate; caller owns synchronization.
+pub const CompletionGate = @import("completion_gate.zig").Gate;
