@@ -44,3 +44,15 @@ zig test packages/video/src/containers/av_stream.zig
 
 The Linux native smoke explicitly opens ALSA's `null` test device, never the
 user's default microphone. See `.github/workflows/streaming-av.yml`.
+
+`Queue.pushRolling` adds bounded circular PCM history. It validates the entire
+input before evicting whole oldest blocks to meet both sample and descriptor
+limits. `retention_floor` reports the end of the discarded prefix. Invalid or
+oversized blocks leave history untouched. `window(minimum, cut, cursor)` reads
+non-destructively with sample-exact clipping, including arena wrap. Each replay
+uses a fresh cursor; chunks and cursors expire on mutation. `Chunk.end_ns` uses
+the original block clock to avoid accumulating fractional sample rounding.
+Consumers can align an encoded keyframe ring to the PCM retention floor and
+replay separate snapshots without consuming live audio. If eviction passes a
+live consumer's watermark, report loss rather than silently producing a gap.
+No encoder, thread or file I/O is performed by these history methods.
