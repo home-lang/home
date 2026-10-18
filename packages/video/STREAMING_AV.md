@@ -56,3 +56,10 @@ Consumers can align an encoded keyframe ring to the PCM retention floor and
 replay separate snapshots without consuming live audio. If eviction passes a
 live consumer's watermark, report loss rather than silently producing a gap.
 No encoder, thread or file I/O is performed by these history methods.
+
+`Queue.cloneWindow(allocator, minimum, cut)` freezes just the selected sample
+window into independent storage. It preserves capture timestamps and sample phase,
+handles a wrapped source block even when all 4096 descriptors are occupied, and
+frees partial allocations on failure. The source is unchanged. Serialize cloning
+with source mutation; after return the copy may move to an independent worker and
+outlive the source. No audio encoder or worker runtime is imported by this module.

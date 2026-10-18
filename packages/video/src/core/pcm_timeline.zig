@@ -102,6 +102,27 @@ pub const Queue = struct {
         }
         return null;
     }
+    /// Freeze a selected sample window into independent, minimally sized storage.
+    /// Caller serializes source mutation; destination may then move to a worker.
+    pub fn cloneWindow(s: *const Queue, a: std.mem.Allocator, minimum: u64, cut: u64) !Queue {
+        var cursor: Cursor = .{};
+        var frames: usize = 0;
+        var blocks: usize = 0;
+        while (try s.window(minimum, cut, &cursor)) |chunk| {
+            frames += chunk.frames;
+            blocks += 1;
+        }
+        // One wrapped source block can become two contiguous descriptors.
+        // A full source therefore needs at most entries.len + 1 descriptors.
+        const data = try a.alloc(u8, @max(frames, 1) * s.channels * 2);
+        errdefer a.free(data);
+        const entries = try a.alloc(Entry, @max(blocks, 1));
+        errdefer a.free(entries);
+        var result = Queue{ .allocator = a, .data = data, .entries = entries, .rate = s.rate, .channels = s.channels, .capacity = @max(frames, 1) };
+        cursor = .{};
+        while (try s.window(minimum, cut, &cursor)) |chunk| try result.push(chunk.data, chunk.timestamp);
+        return result;
+    }
     /// Emit samples with time >= minimum and < cut. Wrap is returned as separate
     /// contiguous chunks; never duplicate a sample at a segment boundary.
     pub fn take(s: *Queue, minimum: u64, cut: u64) !?Chunk {
@@ -203,4 +224,39 @@ test "rolling PCM metadata limit and window clipping preserve gaps" {
     try std.testing.expectEqual(@as(usize, 1), chunk.frames);
     try std.testing.expectEqual(@as(u64, 1250000), chunk.end_ns);
     try std.testing.expect((try q.window(1125000, 2000000, &cursor)) == null);
+}
+
+test "frozen PCM windows own wrapped clipped samples and clean up allocation failures" {
+    const Check = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var q = try Queue.init(a, 44100, 1, 6, 3);
+            defer q.deinit();
+            try q.pushRolling(&.{ 1, 0, 2, 0, 3, 0, 4, 0 }, 1000);
+            try q.pushRolling(&.{ 5, 0, 6, 0, 7, 0, 8, 0 }, try at(1000, 4, 44100));
+            const begin = try at(try at(1000, 4, 44100), 1, 44100);
+            var frozen = try q.cloneWindow(a, begin, std.math.maxInt(u64));
+            defer frozen.deinit();
+            try q.pushRolling(&.{ 9, 0, 10, 0, 11, 0, 12, 0 }, q.last_end.?);
+            var cursor: Cursor = .{};
+            var frames: usize = 0;
+            var values: [6]u8 = undefined;
+            while (try frozen.window(0, std.math.maxInt(u64), &cursor)) |chunk| {
+                @memcpy(values[frames * 2 ..][0..chunk.data.len], chunk.data);
+                frames += chunk.frames;
+            }
+            try std.testing.expectEqualSlices(u8, &.{ 6, 0, 7, 0, 8, 0 }, &values);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "freeze supports a full descriptor queue with a wrapped final block" {
+    var q = try Queue.init(std.testing.allocator, 48000, 1, 8193, 4096);
+    defer q.deinit();
+    for (0..4097) |i| try q.pushRolling(&.{ 1, 0, 2, 0 }, try at(0, i * 2, 48000));
+    var frozen = try q.cloneWindow(std.testing.allocator, 0, std.math.maxInt(u64));
+    defer frozen.deinit();
+    try std.testing.expectEqual(@as(usize, 4096), q.count);
+    try std.testing.expectEqual(@as(usize, 4097), frozen.count);
+    try std.testing.expectEqual(q.used, frozen.used);
 }
