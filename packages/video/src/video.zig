@@ -842,6 +842,7 @@ pub const applyAudioGain = sample_convert.applyGain;
 pub const normalizeAudio = sample_convert.normalize;
 pub const AudioChannelLayout = sample_convert.ChannelLayout;
 
+pub const plane_pack = @import("core/plane_pack.zig");
 pub const pixel_convert = @import("core/pixel_convert.zig");
 pub const PixelConvertFormat = pixel_convert.PixelFormat;
 pub const ConvertColorSpace = pixel_convert.ColorSpace;
@@ -1218,6 +1219,7 @@ test "Video library imports" {
     _ = dash;
     _ = subtitle_convert;
     _ = sample_convert;
+    _ = plane_pack;
     _ = pixel_convert;
     _ = nal_convert;
     _ = remux;
