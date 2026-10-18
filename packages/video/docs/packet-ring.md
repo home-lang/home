@@ -22,3 +22,15 @@ zig-camera uses this module with Home JPEG/Matroska and x264/x265/fragmented MP4
 It retains compressed access units, without retaining camera DMA leases or raw
 RGB frames. Explicit snapshots need scratch space for one largest retained
 packet; remuxing starts with fresh codec headers and resets file timestamps.
+
+For time-shifted streaming, `pushQueued` uses the same owned arena as a bounded
+FIFO: it never evicts or filters dependent frames, and rejects full/oversized or
+non-monotonic input without mutation. Use `ready(now, delay)` then `copy(0, scratch)`
+and `pop()` to forward matured packets; `ready(null, delay)` flushes EOF. Queue
+capacity must cover the delay. The caller controls keyframe starts and output
+errors; a full FIFO must not silently discard encoded dependencies.
+
+`cloneFrom(allocator, start)` owns a minimally sized copy of a selected suffix.
+Serialize it with source mutation; the resulting data can move to a worker and
+outlive the source. It copies wrapped bytes directly into a contiguous arena and
+cleans up partial allocation failures. The module creates no threads or file I/O.

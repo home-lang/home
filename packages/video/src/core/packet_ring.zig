@@ -49,6 +49,11 @@ pub const Ring = struct {
             s.skipped += 1;
             return false;
         }
+        s.store(packet, timestamp, key);
+        return true;
+    }
+    fn store(s: *Ring, packet: []const u8, timestamp: u64, key: bool) void {
+        s.last = timestamp;
         const first = @min(packet.len, s.bytes.len - s.write_pos);
         @memcpy(s.bytes[s.write_pos..][0..first], packet[0..first]);
         @memcpy(s.bytes[0 .. packet.len - first], packet[first..]);
@@ -56,7 +61,42 @@ pub const Ring = struct {
         s.write_pos = if (packet.len - first != 0) packet.len - first else if (s.write_pos + first == s.bytes.len) 0 else s.write_pos + first;
         s.count += 1;
         s.used += packet.len;
-        return true;
+    }
+    /// FIFO mode: no implicit eviction or GOP filtering. A consumer must pop
+    /// mature entries before enqueueing; overflow leaves all state unchanged.
+    pub fn pushQueued(s: *Ring, packet: []const u8, timestamp: u64, key: bool) !void {
+        if (packet.len == 0 or packet.len > s.bytes.len) return error.PacketTooLarge;
+        if (s.last) |last| if (timestamp <= last) return error.InvalidTimestamp;
+        if (s.count == s.entries.len or packet.len > s.bytes.len - s.used) return error.BufferFull;
+        s.store(packet, timestamp, key);
+    }
+    pub fn pop(s: *Ring) void {
+        if (s.count != 0) s.drop();
+    }
+    /// Null clock flushes EOF; subtraction avoids overflowing timestamp+delay.
+    pub fn ready(s: *const Ring, now: ?u64, delay: u64) bool {
+        const e = s.entry(0) orelse return false;
+        const clock = now orelse return true;
+        return clock >= e.timestamp and clock - e.timestamp >= delay;
+    }
+    /// Own only the selected suffix. Borrowed source data never escapes.
+    pub fn cloneFrom(s: *const Ring, a: std.mem.Allocator, start: usize) !Ring {
+        if (start >= s.count) return error.InvalidIndex;
+        var bytes: usize = 0;
+        for (start..s.count) |i| bytes = try std.math.add(usize, bytes, s.entry(i).?.length);
+        var result = try Ring.init(a, bytes, s.count - start, s.duration);
+        errdefer result.deinit();
+        // Destination is contiguous in this clone; copy straight into its arena.
+        for (start..s.count) |i| {
+            const e = s.entry(i).?;
+            _ = try s.copy(i, result.bytes[result.used..]);
+            result.entries[result.count] = .{ .offset = result.used, .length = e.length, .timestamp = e.timestamp, .key = e.key };
+            result.count += 1;
+            result.used += e.length;
+            result.last = e.timestamp;
+        }
+        result.write_pos = 0;
+        return result;
     }
     /// Explicit owned snapshot copy; data and metadata views otherwise expire
     /// on the next mutation. Returns the active destination slice.
@@ -108,6 +148,43 @@ test "initialization rejects zero limits and frees partial allocations" {
         fn run(a: std.mem.Allocator) !void {
             var r = try Ring.init(a, 10, 2, 3);
             defer r.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "FIFO delay preserves dependencies and rejects overflow atomically" {
+    var r = try Ring.init(std.testing.allocator, 8, 3, 1);
+    defer r.deinit();
+    try r.pushQueued("key", 10, true);
+    try r.pushQueued("p", 20, false);
+    try std.testing.expect(!r.ready(19, 10));
+    try std.testing.expect(r.ready(20, 10));
+    r.pop();
+    try std.testing.expect(!r.entry(0).?.key);
+    try r.pushQueued("next", 30, false);
+    try std.testing.expectError(error.BufferFull, r.pushQueued("full", 40, true));
+    try std.testing.expectEqual(@as(u64, 30), r.last.?);
+    try std.testing.expectEqual(@as(usize, 2), r.count);
+    try std.testing.expect(r.ready(null, std.math.maxInt(u64)));
+    try std.testing.expect(!r.ready(0, 0));
+    var clone = try r.cloneFrom(std.testing.allocator, 0);
+    defer clone.deinit();
+    r.pop();
+    r.pop();
+    var out: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("next", try clone.copy(1, &out));
+}
+test "suffix cloning frees partial allocations and preserves source" {
+    const Check = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var r = try Ring.init(a, 9, 3, 10);
+            defer r.deinit();
+            _ = try r.push("first", 0, true);
+            _ = try r.push("next", 1, true);
+            var frozen = try r.cloneFrom(a, 1);
+            defer frozen.deinit();
+            try std.testing.expectEqual(@as(usize, 2), r.count);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
