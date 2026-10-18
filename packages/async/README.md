@@ -97,7 +97,6 @@ scripts/async-runtime-tsan.sh 1 10000 1024
 
 Part of the Home programming language project.
 
-
 ## Terminal job state and event completion
 
 Task cancellation is terminal: an in-flight future poll returning Ready or Pending
