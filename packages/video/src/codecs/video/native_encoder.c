@@ -14,6 +14,7 @@ struct home_encoder {
     uint8_t *buffer;
     size_t capacity;
     uint32_t width, height;
+    int force_key;
 };
 void home_encoder_close(home_encoder *e) {
     if (!e) return;
@@ -113,6 +114,8 @@ int home_encoder_encode(home_encoder *e, const uint8_t *const planes[3], const i
     if (!planes[0] || !planes[1] || !planes[2] || strides[0]<(int)e->width || strides[1]<(int)e->width/2 || strides[2]<(int)e->width/2) return -1;
     if (e->avc) {
         x264_picture_t in, decoded; x264_picture_init(&in); x264_picture_init(&decoded);
+        in.i_type=e->force_key ? X264_TYPE_IDR : X264_TYPE_AUTO;
+        e->force_key=0;
         in.img.i_csp=X264_CSP_I420; in.img.i_plane=3; in.i_pts=pts;
         for (int i=0;i<3;i++) { in.img.plane[i]=(uint8_t *)planes[i]; in.img.i_stride[i]=strides[i]; }
         x264_nal_t *nal=NULL; int n=0;
@@ -124,6 +127,7 @@ int home_encoder_encode(home_encoder *e, const uint8_t *const planes[3], const i
     }
     for (int i=0;i<3;i++) { e->in->planes[i]=(void *)planes[i]; e->in->stride[i]=strides[i]; }
     e->in->pts=pts;
+    e->in->sliceType=e->force_key ? X265_TYPE_IDR : X265_TYPE_AUTO;e->force_key=0;
     x265_nal *nal=NULL; uint32_t n=0;
     if (x265_encoder_encode(e->hevc,&nal,&n,e->in,e->out)<=0 || !n) return -3;
     out->pts=e->out->pts; out->key=IS_X265_TYPE_I(e->out->sliceType);
@@ -149,3 +153,5 @@ int home_encoder_flush(home_encoder *e, home_packet *out) {
     out->pts=e->out->pts;out->key=IS_X265_TYPE_I(e->out->sliceType);
     return collect(e,NULL,nal,n,out);
 }
+
+int home_encoder_request_keyframe(home_encoder *e) { if(!e)return -1;e->force_key=1;return 0; }

@@ -8,6 +8,7 @@ const RawPacket = extern struct { data: [*]const u8, size: usize, pts: i64, key:
 extern fn home_encoder_open(*const Config, *?*Handle) c_int;
 extern fn home_encoder_headers(*Handle, *RawPacket) c_int;
 extern fn home_encoder_encode(*Handle, *const [3][*]const u8, *const [3]c_int, i64, *RawPacket) c_int;
+extern fn home_encoder_request_keyframe(*Handle) c_int;
 extern fn home_encoder_flush(*Handle, *RawPacket) c_int;
 extern fn home_encoder_close(*Handle) void;
 pub const Packet = struct { data: []const u8, pts: i64, key: bool };
@@ -30,6 +31,10 @@ pub const Encoder = struct {
         var packet: RawPacket = undefined;
         try check(home_encoder_headers(self.handle, &packet));
         return packet.data[0..packet.size];
+    }
+    pub fn requestKeyframe(self: *Encoder) !void {
+        if (self.failed or self.draining) return error.EncoderFailed;
+        try check(home_encoder_request_keyframe(self.handle));
     }
     pub fn flush(self: *Encoder) !?Packet {
         if (self.failed) return error.EncoderFailed;

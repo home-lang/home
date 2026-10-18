@@ -12,6 +12,7 @@ typedef struct { const uint8_t *data; size_t size; int64_t pts; int key; } home_
 int home_encoder_open(const home_encoder_config *, home_encoder **);
 int home_encoder_headers(home_encoder *, home_packet *);
 int home_encoder_encode(home_encoder *, const uint8_t *const planes[3], const int strides[3], int64_t pts, home_packet *);
+int home_encoder_request_keyframe(home_encoder *);
 int home_encoder_flush(home_encoder *, home_packet *);
 void home_encoder_close(home_encoder *);
 #endif
