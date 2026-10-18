@@ -1,3 +1,5 @@
+// Legacy handwritten vendor ABI. New integrations should use native_encoder.zig,
+// whose C boundary is compiled against installed headers. See NATIVE_MEDIA.md.
 // Home Video Library - x265 FFI Integration
 // Production H.265/HEVC encoding via libx265
 // https://x265.readthedocs.io/
