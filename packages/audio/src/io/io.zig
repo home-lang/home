@@ -37,3 +37,6 @@ test "io module" {
     _ = wasapi;
     _ = recorder;
 }
+
+// Opt-in Linux S16LE capture; compile native_capture.c and link libasound.
+pub const native_capture = @import("native_capture.zig");
