@@ -300,3 +300,21 @@ test "fragment sizes, offsets and 64-bit time are exact; sink failure poisons wr
     try std.testing.expectError(error.DiskFull, writer.frame(&.{ 0, 0, 0, 1, 1 }, 0x100000001, 1, false));
     try std.testing.expectError(error.WriterFailed, writer.frame(&.{ 0, 0, 0, 1, 1 }, 0x100000002, 1, false));
 }
+
+/// CodecPrivate for Matroska, without the enclosing avcC/hvcC box header.
+pub fn codecPrivate(codec: Codec, headers: []const u8, destination: []u8) ![]const u8 {
+    var b: Buffer = .{};
+    try config(&b, codec, headers);
+    const data = b.slice()[8..];
+    if (destination.len < data.len) return error.HeaderTooLarge;
+    @memcpy(destination[0..data.len], data);
+    return destination[0..data.len];
+}
+test "Matroska CodecPrivate reuses checked config and respects destination bounds" {
+    const headers = [_]u8{ 0, 0, 0, 4, 0x67, 100, 0, 40, 0, 0, 0, 2, 0x68, 0x80 };
+    var destination: [128]u8 = undefined;
+    const data = try codecPrivate(.h264, &headers, &destination);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 100, 0, 40, 255, 225 }, data[0..6]);
+    try std.testing.expectError(error.HeaderTooLarge, codecPrivate(.h264, &headers, destination[0..1]));
+    try std.testing.expectError(error.MissingParameterSets, codecPrivate(.h264, &.{}, &destination));
+}
