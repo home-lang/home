@@ -16,18 +16,8 @@ pub const TaskId = struct {
 };
 
 /// Task state
-pub const TaskState = enum(u8) {
-    /// Task is ready to run
-    Pending,
-    /// Task is currently running
-    Running,
-    /// Task completed successfully
-    Completed,
-    /// Task failed with an error
-    Failed,
-    /// Task was cancelled
-    Cancelled,
-};
+const job_state = @import("job_state.zig");
+pub const TaskState = job_state.State;
 
 /// A spawned task that can be awaited
 ///
@@ -58,6 +48,8 @@ pub fn Task(comptime T: type) type {
             return task;
         }
 
+        /// Call only after the poll owner/executor has quiesced. Cancellation
+        /// marks an outcome; it does not stop a currently executing poll.
         pub fn deinit(self: *Self) void {
             self.future.deinit();
             self.allocator.destroy(self);
@@ -88,19 +80,17 @@ pub fn Task(comptime T: type) type {
             switch (result) {
                 .Ready => |value| {
                     self.result = value;
-                    self.state.store(.Completed, .release);
-                    return true;
+                    return job_state.finishPoll(&self.state, true);
                 },
                 .Pending => {
-                    self.state.store(.Pending, .release);
-                    return false;
+                    return job_state.finishPoll(&self.state, false);
                 },
             }
         }
 
         /// Cancel the task
         pub fn cancel(self: *Self) void {
-            self.state.store(.Cancelled, .release);
+            _ = job_state.cancel(&self.state);
         }
 
         /// Check if task is completed
@@ -137,9 +127,9 @@ pub fn JoinHandle(comptime T: type) type {
         /// Only use this from non-async code or the runtime's block_on.
         pub fn await(self: Self) !T {
             while (!self.task.isCompleted()) {
-                if (self.task.isCancelled()) {
-                    return error.TaskCancelled;
-                }
+                const state = self.task.state.load(.acquire);
+                if (state == .Cancelled) return error.TaskCancelled;
+                if (state == .Failed) return error.TaskFailed;
 
                 // Spin or yield
                 std.Thread.yield() catch {};
@@ -380,4 +370,48 @@ test "RawTask - type erasure" {
     const completed = raw.poll(&ctx);
     try testing.expect(completed);
     try testing.expectEqual(@as(i32, 77), task.result.?);
+}
+
+fn regressionContext() Context {
+    const Noop = struct {
+        fn wake(_: *anyopaque) void {}
+        fn clone(ptr: *anyopaque) *anyopaque {
+            return ptr;
+        }
+    };
+    return Context.init(.{ .data = undefined, .vtable = &.{ .wake = Noop.wake, .wake_by_ref = Noop.wake, .clone = Noop.clone, .drop = Noop.wake } });
+}
+test "cancel during a future poll survives both Ready and Pending returns" {
+    const Poller = struct {
+        task: *Task(u32) = undefined,
+        ready: bool,
+        fn poll(ptr: *anyopaque, _: *Context) future_mod.PollResult(u32) {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.task.cancel();
+            return if (self.ready) .{ .Ready = 42 } else .Pending;
+        }
+    };
+    for ([_]bool{ false, true }) |ready| {
+        var poller: Poller = .{ .ready = ready };
+        const task = try Task(u32).init(std.testing.allocator, .{ .state = &poller, .poll_fn = Poller.poll });
+        defer task.deinit();
+        poller.task = task;
+        var ctx = regressionContext();
+        try std.testing.expect(task.poll(&ctx));
+        try std.testing.expect(task.isCancelled());
+        try std.testing.expect(!task.isCompleted());
+        const handle: JoinHandle(u32) = .{ .task = task };
+        try std.testing.expectError(error.TaskCancelled, handle.await());
+    }
+}
+test "completed tasks resist late cancellation and failed joins return immediately" {
+    const task = try Task(u32).init(std.testing.allocator, try future_mod.ready(u32, 42, std.testing.allocator));
+    defer task.deinit();
+    var ctx = regressionContext();
+    try std.testing.expect(task.poll(&ctx));
+    task.cancel();
+    const handle: JoinHandle(u32) = .{ .task = task };
+    try std.testing.expectEqual(@as(u32, 42), try handle.await());
+    task.state.store(.Failed, .release);
+    try std.testing.expectError(error.TaskFailed, handle.await());
 }
