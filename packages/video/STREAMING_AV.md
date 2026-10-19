@@ -63,3 +63,12 @@ handles a wrapped source block even when all 4096 descriptors are occupied, and
 frees partial allocations on failure. The source is unchanged. Serialize cloning
 with source mutation; after return the copy may move to an independent worker and
 outlive the source. No audio encoder or worker runtime is imported by this module.
+
+Contiguous blocks carry a fractional sample-clock numerator as well as the
+integer nanosecond timestamp. At 44.1 kHz, independently flooring every block
+can otherwise move an exact segment cut by one sample. `take`, rolling windows,
+wrapped chunks and frozen partial windows preserve this phase. A timestamp gap
+starts a new phase origin; samples are never synthesized to fill it. `Chunk.phase`
+is the fractional numerator in units of `1 / sample_rate` nanoseconds. Keep
+source timestamps on a cumulative sample clock rather than rounding each block's
+duration independently.

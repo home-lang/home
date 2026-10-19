@@ -2,17 +2,23 @@
 //! Single serialized owner; returned data expires on the next push/mutation.
 const std = @import("std");
 pub fn at(origin: u64, frames: u64, rate: u32) !u64 {
+    return atPhase(origin, frames, rate, 0);
+}
+fn atPhase(origin: u64, frames: u64, rate: u32, phase: u32) !u64 {
     if (rate < 8000 or rate > 192000) return error.InvalidRate;
-    const value = @as(u128, origin) + @as(u128, frames) * 1_000_000_000 / rate;
+    const value = @as(u128, origin) + (@as(u128, frames) * 1_000_000_000 + phase) / rate;
     if (value > std.math.maxInt(u64)) return error.TimestampOverflow;
     return @intCast(value);
 }
 pub fn before(origin: u64, cut: u64, rate: u32, limit: usize) usize {
-    if (cut <= origin) return 0;
-    return @intCast(@min(limit, (@as(u128, cut - origin) * rate + 999_999_999) / 1_000_000_000));
+    return beforePhase(origin, cut, rate, limit, 0);
 }
-const Entry = struct { offset: usize, frames: usize, consumed: usize = 0, timestamp: u64 };
-pub const Chunk = struct { data: []const u8, timestamp: u64, frames: usize, end_ns: u64 };
+fn beforePhase(origin: u64, cut: u64, rate: u32, limit: usize, phase: u32) usize {
+    if (cut <= origin) return 0;
+    return @intCast(@min(limit, (@as(u128, cut - origin) * rate - phase + 999_999_999) / 1_000_000_000));
+}
+const Entry = struct { offset: usize, frames: usize, consumed: usize = 0, timestamp: u64, phase: u32 };
+pub const Chunk = struct { data: []const u8, timestamp: u64, frames: usize, end_ns: u64, phase: u32 = 0 };
 pub const Cursor = struct { block: usize = 0, frame: usize = 0 };
 pub const Queue = struct {
     allocator: std.mem.Allocator,
@@ -26,6 +32,7 @@ pub const Queue = struct {
     used: usize = 0,
     write_pos: usize = 0,
     last_end: ?u64 = null,
+    last_phase: u32 = 0,
     trimmed: u64 = 0,
     retention_floor: ?u64 = null,
     pub fn init(a: std.mem.Allocator, rate: u32, channels: u32, frames: usize, blocks: usize) !Queue {
@@ -40,21 +47,29 @@ pub const Queue = struct {
         s.allocator.free(s.entries);
     }
     pub fn push(s: *Queue, data: []const u8, timestamp: u64) !void {
+        // A block timestamp is the floor of the cumulative sample clock. Carry
+        // its fractional numerator across contiguous blocks instead of flooring
+        // every block again (which shifts exact cuts by one sample at 44.1 kHz).
+        const phase = if (s.last_end != null and timestamp == s.last_end.?) s.last_phase else 0;
+        return s.pushPhased(data, timestamp, phase);
+    }
+    fn pushPhased(s: *Queue, data: []const u8, timestamp: u64, phase: u32) !void {
         const stride = s.channels * 2;
         if (data.len == 0 or data.len % stride != 0) return error.InvalidPcm;
         const frames = data.len / stride;
         if (frames > s.capacity - s.used or s.count == s.entries.len) return error.BufferFull;
         const ts = timestamp;
         if (s.last_end) |end| if (ts < end) return error.InvalidTimestamp;
-        const end = try at(ts, frames, s.rate);
+        const end = try atPhase(ts, frames, s.rate, phase);
         const first = @min(frames, s.capacity - s.write_pos);
         @memcpy(s.data[s.write_pos * stride ..][0 .. first * stride], data[0 .. first * stride]);
         @memcpy(s.data[0 .. (frames - first) * stride], data[first * stride ..]);
-        s.entries[(s.head + s.count) % s.entries.len] = .{ .offset = s.write_pos, .frames = frames, .timestamp = ts };
+        s.entries[(s.head + s.count) % s.entries.len] = .{ .offset = s.write_pos, .frames = frames, .timestamp = ts, .phase = phase };
         s.write_pos = (s.write_pos + frames) % s.capacity;
         s.count += 1;
         s.used += frames;
         s.last_end = end;
+        s.last_phase = @intCast((@as(u128, frames) * 1_000_000_000 + phase) % s.rate);
     }
     fn consume(s: *Queue, e: *Entry, n: usize) void {
         e.consumed += n;
@@ -72,11 +87,12 @@ pub const Queue = struct {
         const frames = data.len / stride;
         if (frames > s.capacity) return error.BufferFull;
         if (s.last_end) |end| if (timestamp < end) return error.InvalidTimestamp;
-        _ = try at(timestamp, frames, s.rate);
+        const phase = if (s.last_end != null and timestamp == s.last_end.?) s.last_phase else 0;
+        _ = try atPhase(timestamp, frames, s.rate, phase);
         while (frames > s.capacity - s.used or s.count == s.entries.len) {
             const e = &s.entries[s.head];
             const n = e.frames - e.consumed;
-            s.retention_floor = try at(e.timestamp, e.frames, s.rate);
+            s.retention_floor = try atPhase(e.timestamp, e.frames, s.rate, e.phase);
             s.trimmed += n;
             s.consume(e, n);
         }
@@ -87,8 +103,8 @@ pub const Queue = struct {
     pub fn window(s: *const Queue, minimum: u64, cut: u64, cursor: *Cursor) !?Chunk {
         while (cursor.block < s.count) {
             const e = s.entries[(s.head + cursor.block) % s.entries.len];
-            const begin = @max(@max(e.consumed, cursor.frame), before(e.timestamp, minimum, s.rate, e.frames));
-            const end = before(e.timestamp, cut, s.rate, e.frames);
+            const begin = @max(@max(e.consumed, cursor.frame), beforePhase(e.timestamp, minimum, s.rate, e.frames, e.phase));
+            const end = beforePhase(e.timestamp, cut, s.rate, e.frames, e.phase);
             if (begin >= end) {
                 if (end < e.frames) return null;
                 cursor.block += 1;
@@ -98,7 +114,7 @@ pub const Queue = struct {
             const offset = (e.offset + begin) % s.capacity;
             const n = @min(end - begin, s.capacity - offset);
             cursor.frame = begin + n;
-            return .{ .data = s.data[offset * s.channels * 2 ..][0 .. n * s.channels * 2], .timestamp = try at(e.timestamp, begin, s.rate), .frames = n, .end_ns = try at(e.timestamp, begin + n, s.rate) };
+            return .{ .data = s.data[offset * s.channels * 2 ..][0 .. n * s.channels * 2], .timestamp = try atPhase(e.timestamp, begin, s.rate, e.phase), .frames = n, .phase = @intCast((@as(u128, begin) * 1_000_000_000 + e.phase) % s.rate), .end_ns = try atPhase(e.timestamp, begin + n, s.rate, e.phase) };
         }
         return null;
     }
@@ -120,7 +136,7 @@ pub const Queue = struct {
         errdefer a.free(entries);
         var result = Queue{ .allocator = a, .data = data, .entries = entries, .rate = s.rate, .channels = s.channels, .capacity = @max(frames, 1) };
         cursor = .{};
-        while (try s.window(minimum, cut, &cursor)) |chunk| try result.push(chunk.data, chunk.timestamp);
+        while (try s.window(minimum, cut, &cursor)) |chunk| try result.pushPhased(chunk.data, chunk.timestamp, chunk.phase);
         return result;
     }
     /// Emit samples with time >= minimum and < cut. Wrap is returned as separate
@@ -128,8 +144,8 @@ pub const Queue = struct {
     pub fn take(s: *Queue, minimum: u64, cut: u64) !?Chunk {
         while (s.count != 0) {
             const e = &s.entries[s.head];
-            const end = before(e.timestamp, cut, s.rate, e.frames);
-            const begin = @max(e.consumed, @min(end, before(e.timestamp, minimum, s.rate, e.frames)));
+            const end = beforePhase(e.timestamp, cut, s.rate, e.frames, e.phase);
+            const begin = @max(e.consumed, @min(end, beforePhase(e.timestamp, minimum, s.rate, e.frames, e.phase)));
             if (begin > e.consumed) {
                 const n = begin - e.consumed;
                 s.trimmed += n;
@@ -139,7 +155,7 @@ pub const Queue = struct {
             if (end <= e.consumed) return null;
             const offset = (e.offset + e.consumed) % s.capacity;
             const n = @min(end - e.consumed, s.capacity - offset);
-            const result = Chunk{ .data = s.data[offset * s.channels * 2 ..][0 .. n * s.channels * 2], .timestamp = try at(e.timestamp, e.consumed, s.rate), .frames = n, .end_ns = try at(e.timestamp, e.consumed + n, s.rate) };
+            const result = Chunk{ .data = s.data[offset * s.channels * 2 ..][0 .. n * s.channels * 2], .timestamp = try atPhase(e.timestamp, e.consumed, s.rate, e.phase), .frames = n, .phase = @intCast((@as(u128, e.consumed) * 1_000_000_000 + e.phase) % s.rate), .end_ns = try atPhase(e.timestamp, e.consumed + n, s.rate, e.phase) };
             s.consume(e, n);
             return result;
         }
@@ -259,4 +275,53 @@ test "freeze supports a full descriptor queue with a wrapped final block" {
     try std.testing.expectEqual(@as(usize, 4096), q.count);
     try std.testing.expectEqual(@as(usize, 4097), frozen.count);
     try std.testing.expectEqual(q.used, frozen.used);
+}
+
+test "contiguous 44.1 kHz blocks and frozen partial windows preserve sample phase" {
+    const a = std.testing.allocator;
+    var q = try Queue.init(a, 44100, 1, 22050, 32);
+    defer q.deinit();
+    var block: [2048]u8 = undefined;
+    for (0..20) |i| {
+        for (0..1024) |j| std.mem.writeInt(u16, block[j * 2 ..][0..2], @intCast(i * 1024 + j), .little);
+        try q.push(&block, try at(0, i * 1024, 44100));
+    }
+    var cursor: Cursor = .{};
+    var count: usize = 0;
+    while (try q.window(0, 320_000_000, &cursor)) |chunk| count += chunk.frames;
+    try std.testing.expectEqual(@as(usize, 14112), count);
+    // Freezing from a partial block must carry the first sample's fraction too.
+    var frozen = try q.cloneWindow(a, try at(0, 3001, 44100), 400_000_000);
+    defer frozen.deinit();
+    count = 0;
+    while (try frozen.take(0, 320_000_000)) |chunk| count += chunk.frames;
+    try std.testing.expectEqual(@as(usize, 14112 - 3001), count);
+    count = 0;
+    while (try q.take(0, 320_000_000)) |chunk| count += chunk.frames;
+    try std.testing.expectEqual(@as(usize, 14112), count);
+    const next = (try q.take(320_000_000, 400_000_000)).?;
+    try std.testing.expectEqual(@as(u16, 14112), std.mem.readInt(u16, next.data[0..2], .little));
+    try std.testing.expectEqual(@as(u64, 320_000_000), next.timestamp);
+}
+
+test "rolling phase survives fractional block boundaries and gaps reset the clock" {
+    for ([_]u32{ 8000, 11025, 22050, 44100, 48000, 96000, 192000 }) |rate| {
+        var q = try Queue.init(std.testing.allocator, rate, 1, 170, 10);
+        defer q.deinit();
+        var block: [34]u8 = undefined;
+        @memset(&block, 0);
+        for (0..10) |i| try q.pushRolling(&block, try at(7_000_000_000, i * 17, rate));
+        for (1..170) |n| {
+            var cursor: Cursor = .{};
+            var count: usize = 0;
+            while (try q.window(7_000_000_000, try at(7_000_000_000, n, rate), &cursor)) |chunk| count += chunk.frames;
+            try std.testing.expectEqual(n, count);
+        }
+        const gap = q.last_end.? + 1000000;
+        try q.pushRolling(&block, gap);
+        try std.testing.expectEqual(@as(u32, @intCast(@as(u64, 17) * 1000000000 % rate)), q.last_phase);
+        var frozen = try q.cloneWindow(std.testing.allocator, gap, try at(gap, 7, rate));
+        defer frozen.deinit();
+        try std.testing.expectEqual(@as(usize, 7), frozen.used);
+    }
 }
