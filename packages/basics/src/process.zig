@@ -393,69 +393,62 @@ pub fn commandExists(allocator: std.mem.Allocator, io: std.Io, command: []const 
 
 /// Pipe: connect stdout of one process to stdin of another
 pub const Pipe = struct {
-    processes: std.ArrayList(std.process.Child),
+    commands: std.ArrayList([]const []const u8),
     allocator: std.mem.Allocator,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator) Pipe {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) Pipe {
         return .{
-            .processes = std.ArrayList(std.process.Child).init(allocator),
+            .commands = .empty,
             .allocator = allocator,
+            .io = io,
         };
     }
 
     pub fn deinit(self: *Pipe) void {
-        self.processes.deinit();
+        self.commands.deinit(self.allocator);
     }
 
     /// Add a process to the pipe chain
     pub fn add(self: *Pipe, argv: []const []const u8) !void {
-        var child = std.process.Child.init(argv, self.allocator);
-
-        if (self.processes.items.len > 0) {
-            // Connect previous stdout to current stdin
-            child.stdin_behavior = .Pipe;
-        }
-
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-
-        try self.processes.append(child);
+        if (argv.len == 0) return error.NoCommand;
+        try self.commands.append(self.allocator, argv);
     }
 
     /// Execute the pipe chain
     pub fn run(self: *Pipe) !ExecResult {
-        if (self.processes.items.len == 0) return error.NoPipeline;
+        if (self.commands.items.len == 0) return error.NoPipeline;
 
-        // Spawn all processes
-        for (self.processes.items, 0..) |*proc, i| {
-            try proc.spawn();
+        var children: std.ArrayList(std.process.Child) = .empty;
+        defer {
+            for (children.items) |*child| child.kill(self.io);
+            children.deinit(self.allocator);
+        }
 
-            // Connect pipes
-            if (i > 0) {
-                const prev = &self.processes.items[i - 1];
-                if (prev.stdout) |stdout| {
-                    _ = try std.io.copy(proc.stdin.?, stdout.reader());
-                    proc.stdin.?.close();
-                    proc.stdin = null;
-                }
+        for (self.commands.items) |argv| {
+            const previous_stdout = if (children.items.len > 0) children.items[children.items.len - 1].stdout else null;
+            var child = try std.process.spawn(self.io, .{
+                .argv = argv,
+                .stdin = if (previous_stdout) |file| .{ .file = file } else .inherit,
+                .stdout = .pipe,
+                .stderr = .inherit,
+            });
+            children.append(self.allocator, child) catch |err| {
+                child.kill(self.io);
+                return err;
+            };
+            if (previous_stdout) |file| {
+                file.close(self.io);
+                children.items[children.items.len - 2].stdout = null;
             }
         }
 
-        // Get output from last process
-        const last = &self.processes.items[self.processes.items.len - 1];
-        const stdout = try last.stdout.?.reader().readAllAlloc(self.allocator, 10 * 1024 * 1024);
-
-        // Wait for all processes
-        for (self.processes.items) |*proc| {
-            _ = try proc.wait();
+        var result = try captureChild(self.allocator, self.io, &children.items[children.items.len - 1]);
+        errdefer result.deinit();
+        for (children.items[0 .. children.items.len - 1]) |*child| {
+            _ = try child.wait(self.io);
         }
-
-        return .{
-            .stdout = stdout,
-            .stderr = &[_]u8{},
-            .exit_code = 0,
-            .allocator = self.allocator,
-        };
+        return result;
     }
 };
 
