@@ -2107,6 +2107,22 @@ pub fn build(b: *std.Build) void {
     const run_image_async_result_tests = b.addRunArtifact(image_async_result_tests);
     run_image_async_result_tests.has_side_effects = true;
 
+    const file_package_tests = b.addTest(.{ .root_module = file_pkg });
+    const run_file_package_tests = b.addRunArtifact(file_package_tests);
+    run_file_package_tests.has_side_effects = true;
+
+    const file_io_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/file/tests/file_io_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    file_io_tests.root_module.addImport("file", file_pkg);
+    const run_file_io_tests = b.addRunArtifact(file_io_tests);
+    run_file_io_tests.has_side_effects = true;
+    run_file_io_tests.step.dependOn(&run_file_package_tests.step);
+
     // Env tests
     const env_tests = b.addTest(.{
         .root_module = env_pkg,
@@ -2425,6 +2441,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_math_tests.step, test_filter, "math");
     dependOnTest(test_step, &run_image_tests.step, test_filter, "image");
     dependOnTest(test_step, &run_image_async_result_tests.step, test_filter, "image_async_result");
+    dependOnTest(test_step, &run_file_io_tests.step, test_filter, "file_package");
     dependOnTest(test_step, &run_env_tests.step, test_filter, "env");
     dependOnTest(test_step, &run_syscall_tests.step, test_filter, "syscall");
     dependOnTest(test_step, &run_syscall_io_tests.step, test_filter, "syscall_io");
