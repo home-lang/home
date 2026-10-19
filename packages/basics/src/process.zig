@@ -30,6 +30,10 @@ pub fn exec(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) 
     });
     defer child.kill(io);
 
+    return captureChild(allocator, io, &child);
+}
+
+fn captureChild(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child) !ExecResult {
     var reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
     multi_reader.init(allocator, io, reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
@@ -64,40 +68,44 @@ pub fn exec(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) 
     };
 }
 
-/// Execute a command with input
-pub fn execWithInput(allocator: std.mem.Allocator, argv: []const []const u8, stdin_input: []const u8) !ExecResult {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+fn writeChildInput(io: std.Io, file: std.Io.File, input: []const u8) anyerror!void {
+    defer file.close(io);
+    try file.writeStreamingAll(io, input);
+}
 
-    try child.spawn();
-    errdefer {
-        _ = child.kill() catch {};
+/// Execute a command with input
+pub fn execWithInput(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, stdin_input: []const u8) !ExecResult {
+    if (argv.len == 0) return error.NoCommand;
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    errdefer child.kill(io);
+
+    const stdin_file = child.stdin.?;
+    child.stdin = null;
+    if (stdin_input.len == 0) {
+        stdin_file.close(io);
+        defer child.kill(io);
+        return captureChild(allocator, io, &child);
+    }
+    var write_future = std.Io.concurrent(io, writeChildInput, .{ io, stdin_file, stdin_input }) catch |err| {
+        stdin_file.close(io);
+        return err;
+    };
+    defer {
+        // On an output/read failure, terminate the child before waiting for
+        // a writer that may be blocked on the child's stdin pipe.
+        child.kill(io);
+        _ = write_future.cancel(io) catch {};
     }
 
-    // Write to stdin
-    try child.stdin.?.writeAll(stdin_input);
-    child.stdin.?.close();
-    child.stdin = null;
-
-    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
-    errdefer allocator.free(stdout);
-
-    const stderr = try child.stderr.?.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
-    errdefer allocator.free(stderr);
-
-    const term = try child.wait();
-
-    return .{
-        .stdout = stdout,
-        .stderr = stderr,
-        .exit_code = switch (term) {
-            .Exited => |code| @intCast(code),
-            else => 1,
-        },
-        .allocator = allocator,
-    };
+    var result = try captureChild(allocator, io, &child);
+    errdefer result.deinit();
+    try write_future.await(io);
+    return result;
 }
 
 /// Execute a shell command (via sh -c on Unix, cmd /c on Windows)
