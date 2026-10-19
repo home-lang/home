@@ -268,6 +268,58 @@ test "allocation failure after any of two changes keeps both pending" {
     }
 }
 
+test "discarding an observation retries the complete changed batch" {
+    var fs = watch.VirtualWatchFs.init(testing.allocator);
+    defer fs.deinit();
+    try fs.add("/first.ts", 1, 1);
+    try fs.add("/second.ts", 1, 1);
+    var watcher = watch.Watcher.init(testing.allocator, fs.fs());
+    defer watcher.deinit();
+    try watcher.trackMany(&.{ "/first.ts", "/second.ts" });
+
+    try fs.add("/first.ts", 2, 1);
+    try fs.add("/second.ts", 2, 1);
+    {
+        var failed = try watcher.observe();
+        defer failed.deinit();
+        try testing.expectEqual(@as(usize, 2), failed.changes.changes.items.len);
+        // A caller that could not read or compile the batch drops it.
+    }
+    {
+        var retried = try watcher.observe();
+        defer retried.deinit();
+        try testing.expectEqual(@as(usize, 2), retried.changes.changes.items.len);
+        retried.commit(&watcher);
+    }
+    var settled = try watcher.observe();
+    defer settled.deinit();
+    try testing.expect(settled.changes.isEmpty());
+}
+
+test "observation commit remains valid after new paths grow the tracked map" {
+    var fs = watch.VirtualWatchFs.init(testing.allocator);
+    defer fs.deinit();
+    try fs.add("/first.ts", 1, 1);
+    var watcher = watch.Watcher.init(testing.allocator, fs.fs());
+    defer watcher.deinit();
+    try watcher.track("/first.ts");
+    try fs.add("/first.ts", 2, 1);
+
+    var observed = try watcher.observe();
+    defer observed.deinit();
+    try testing.expectEqual(@as(usize, 1), observed.changes.changes.items.len);
+    for (0..64) |index| {
+        const path = try std.fmt.allocPrint(testing.allocator, "/new-{d}.ts", .{index});
+        defer testing.allocator.free(path);
+        try fs.add(path, 1, 1);
+        try watcher.track(path);
+    }
+    observed.commit(&watcher);
+    var settled = try watcher.observe();
+    defer settled.deinit();
+    try testing.expect(settled.changes.isEmpty());
+}
+
 test "virtual filesystem replacement updates in place without allocation" {
     var fs = watch.VirtualWatchFs.init(testing.allocator);
     defer fs.deinit();

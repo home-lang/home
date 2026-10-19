@@ -4,6 +4,74 @@ const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_watch = @import("ts_watch");
 
+test "watch mode retries a revision after update and compile allocation failures" {
+    const gpa = std.testing.allocator;
+    const root_source = "import { value } from './dep'; const result: number = value;";
+    const initial_dependency = "export const value: number = 1;";
+    const revised_dependency = "export const value: string = 'bad';";
+
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", root_source);
+    try sources.addFile("/project/dep.ts", initial_dependency);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    const root_id = try program.add("/project/main.ts", root_source);
+    const options: @import("ts_driver").CompileOptions = .{ .strict = true, .no_emit = true };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/project/main.ts", 1, root_source.len);
+    try stats.add("/project/dep.ts", 1, initial_dependency.len);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    try tsc_main.trackProgramFiles(&watcher, &program);
+    try stats.add("/project/dep.ts", 2, revised_dependency.len);
+
+    {
+        var first = try watcher.observe();
+        defer first.deinit();
+        try std.testing.expectEqual(@as(usize, 1), first.changes.changes.items.len);
+        var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+        program.gpa = failing.allocator();
+        defer program.gpa = gpa;
+        try std.testing.expectError(error.OutOfMemory, program.updateSource("/project/dep.ts", revised_dependency));
+    }
+    {
+        var second = try watcher.observe();
+        defer second.deinit();
+        try std.testing.expectEqual(@as(usize, 1), second.changes.changes.items.len);
+        _ = (try program.updateSource("/project/dep.ts", revised_dependency)) orelse return error.MissingDependency;
+        var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+        program.gpa = failing.allocator();
+        defer program.gpa = gpa;
+        const paths = [_][]const u8{second.changes.changes.items[0].path};
+        try std.testing.expectError(error.OutOfMemory, program.recompileChanged(&paths, options));
+    }
+    {
+        var third = try watcher.observe();
+        defer third.deinit();
+        try std.testing.expectEqual(@as(usize, 1), third.changes.changes.items.len);
+        _ = (try program.updateSource("/project/dep.ts", revised_dependency)) orelse return error.MissingDependency;
+        const paths = [_][]const u8{third.changes.changes.items[0].path};
+        try std.testing.expectEqual(@as(u32, 2), try program.recompileChanged(&paths, options));
+        try tsc_main.trackProgramFiles(&watcher, &program);
+        third.commit(&watcher);
+    }
+    var settled = try watcher.observe();
+    defer settled.deinit();
+    try std.testing.expect(settled.changes.isEmpty());
+    var saw_type_error = false;
+    for (program.fileById(root_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) saw_type_error = true;
+    }
+    try std.testing.expect(saw_type_error);
+}
+
 test "watch mode observes a transitive imported source and recompiles its importer" {
     const gpa = std.testing.allocator;
     const root_source = "import { value } from './dep'; const result: number = value;";

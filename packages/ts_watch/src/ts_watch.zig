@@ -47,6 +47,37 @@ pub const ChangeSet = struct {
     }
 };
 
+/// A filesystem snapshot whose changes remain pending until the caller has
+/// successfully processed the whole batch. Paths in `updates` borrow the
+/// owned paths in `changes`, not slots in the tracked hash map: admitting new
+/// imports between observation and commit may grow and rehash that map.
+pub const Observation = struct {
+    gpa: std.mem.Allocator,
+    changes: ChangeSet,
+    updates: std.ArrayListUnmanaged(Update),
+
+    const Update = struct {
+        path: []const u8,
+        previous: ?Stat,
+        value: ?Stat,
+    };
+
+    pub fn deinit(self: *Observation) void {
+        self.updates.deinit(self.gpa);
+        self.changes.deinit(self.gpa);
+    }
+
+    /// Publish baselines only after the consumer has completed successfully.
+    /// A path untracked or independently advanced since observation is left
+    /// alone; committing the same observation twice is harmless.
+    pub fn commit(self: *const Observation, watcher: *Watcher) void {
+        for (self.updates.items) |update| {
+            const slot = watcher.tracked.getPtr(update.path) orelse continue;
+            if (std.meta.eql(slot.*, update.previous)) slot.* = update.value;
+        }
+    }
+};
+
 /// Pluggable stat interface. Null means the path is absent; other filesystem
 /// failures must be reported, not mistaken for a removal.
 pub const StatFs = struct {
@@ -130,14 +161,16 @@ pub const Watcher = struct {
         }
     }
 
-    /// Poll every tracked path and produce a `ChangeSet`. The
-    /// caller owns the returned `ChangeSet` and must `deinit` it.
-    pub fn tick(self: *Watcher) !ChangeSet {
-        var cs = ChangeSet.empty();
-        errdefer cs.deinit(self.gpa);
-        const Update = struct { slot: *?Stat, value: ?Stat };
-        var updates: std.ArrayListUnmanaged(Update) = .empty;
-        defer updates.deinit(self.gpa);
+    /// Poll every tracked path without consuming any change. The caller owns
+    /// the observation and must either commit it after processing succeeds or
+    /// drop it so the same changes can be retried on the next poll.
+    pub fn observe(self: *Watcher) !Observation {
+        var observation: Observation = .{
+            .gpa = self.gpa,
+            .changes = ChangeSet.empty(),
+            .updates = .empty,
+        };
+        errdefer observation.deinit();
 
         var it = self.tracked.iterator();
         while (it.next()) |entry| {
@@ -148,17 +181,28 @@ pub const Watcher = struct {
                 if (prev) |p| {
                     if (c.mtime == p.mtime and c.size == p.size) continue;
                 }
-                try self.appendChange(&cs, path, if (prev == null) .added else .modified);
-                try updates.append(self.gpa, .{ .slot = entry.value_ptr, .value = c });
+                try self.appendChange(&observation.changes, path, if (prev == null) .added else .modified);
+                const owned_path = observation.changes.changes.items[observation.changes.changes.items.len - 1].path;
+                try observation.updates.append(self.gpa, .{ .path = owned_path, .previous = prev, .value = c });
             } else if (prev != null) {
-                try self.appendChange(&cs, path, .removed);
-                try updates.append(self.gpa, .{ .slot = entry.value_ptr, .value = null });
+                try self.appendChange(&observation.changes, path, .removed);
+                const owned_path = observation.changes.changes.items[observation.changes.changes.items.len - 1].path;
+                try observation.updates.append(self.gpa, .{ .path = owned_path, .previous = prev, .value = null });
             }
         }
-        // A later stat or allocation failure discards the entire ChangeSet.
-        // Publish its new baselines only after every observation succeeds.
-        for (updates.items) |update| update.slot.* = update.value;
-        return cs;
+        return observation;
+    }
+
+    /// Eager-commit convenience for consumers that finish processing during
+    /// the poll. Watch-mode compilation uses `observe` instead so a failed
+    /// read or recompile cannot lose the event.
+    pub fn tick(self: *Watcher) !ChangeSet {
+        var observation = try self.observe();
+        observation.commit(self);
+        const changes = observation.changes;
+        observation.changes = ChangeSet.empty();
+        observation.deinit();
+        return changes;
     }
 
     fn appendChange(self: *Watcher, changes: *ChangeSet, path: []const u8, kind: ChangeKind) !void {

@@ -3860,26 +3860,30 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 .clock = .boot,
                 .raw = .fromNanoseconds(100 * std.time.ns_per_ms),
             }, watch_io) catch {};
-            var change_set = watcher.tick() catch |err| {
+            var observation = watcher.observe() catch |err| {
                 std.debug.print("watch error: {s}\n", .{@errorName(err)});
                 continue;
             };
-            defer change_set.deinit(gpa);
+            defer observation.deinit();
+            const change_set = &observation.changes;
             if (change_set.isEmpty()) continue;
 
             var changed: std.ArrayListUnmanaged([]const u8) = .empty;
             defer changed.deinit(gpa);
+            var batch_failed = false;
             for (change_set.changes.items) |ch| {
                 if (ch.kind == .removed) continue;
                 const src = RealFs.read(gpa, ch.path) catch |err| {
                     std.debug.print("error reading {s}: {s}\n", .{ ch.path, @errorName(err) });
-                    continue;
+                    batch_failed = true;
+                    break;
                 };
                 defer gpa.free(src);
                 // `updateSource` dupes the buffer internally.
                 _ = program.updateSource(ch.path, src) catch |err| {
                     std.debug.print("error updating source {s}: {s}\n", .{ ch.path, @errorName(err) });
-                    continue;
+                    batch_failed = true;
+                    break;
                 };
                 // The watcher's tracked-set keys are owned strings
                 // independent of `input_files`, so it's safe to
@@ -3890,9 +3894,19 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                     }
                     break :blk ch.path;
                 };
-                try changed.append(gpa, path_borrow);
+                changed.append(gpa, path_borrow) catch |err| {
+                    std.debug.print("error recording changed source {s}: {s}\n", .{ ch.path, @errorName(err) });
+                    batch_failed = true;
+                    break;
+                };
             }
-            if (changed.items.len == 0) continue;
+            // A partial batch cannot advance any baseline. Retry all its
+            // paths, including any already updated above, on the next poll.
+            if (batch_failed) continue;
+            if (changed.items.len == 0) {
+                observation.commit(&watcher);
+                continue;
+            }
             buildStatusMessage(6032, "File change detected. Starting incremental compilation...\n", .{});
             // Export/default facts cached by the resolver adapter describe a
             // particular source revision. Recreate the caches before checking
@@ -3909,7 +3923,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             // `recompileChanged` admits imports introduced by this revision.
             // Register the complete new closure before publishing results;
             // a stat/allocation failure must not silently leave it unwatched.
-            try trackProgramFiles(&watcher, &program);
+            trackProgramFiles(&watcher, &program) catch |err| {
+                std.debug.print("error tracking program sources: {s}\n", .{@errorName(err)});
+                continue;
+            };
             var watch_any_errors = false;
             var watch_error_count: usize = 0;
             var watch_stream_ctx: StreamCtx = .{
@@ -3931,6 +3948,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
             reportWatchErrorStatus(watch_error_count);
             _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
+            observation.commit(&watcher);
         }
     }
 
