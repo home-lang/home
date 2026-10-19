@@ -44,7 +44,8 @@ Generate the inventory without executing package scripts:
 
 ```bash
 python3 scripts/ts-project-inventory.py \
-  --root "$HOME/Code" --output .home-cache/ts-replacement/local-inventory.json
+  --root "$HOME/Code" --output .home-cache/ts-replacement/local-inventory.json \
+  --scope-output .home-cache/ts-replacement/local-project-scope.json
 python3 scripts/tests/test-ts-project-inventory.py
 ```
 
@@ -73,10 +74,10 @@ finds 1,087 removed and 36 added manifests; many missing paths are worktrees or
 framework copies that no longer exist. This reflects the current filesystem,
 not successful replacement or a decision to exclude projects.
 
-The latest scan corrects a coverage gap: a directory with a dependency/cache
+The corrected scan addressed a coverage gap: a directory with a dependency/cache
 name is retained when it is an actual Git checkout or worktree. The old rule
-excluded the real `~/Code/pantry` repository. Seven hermetic inventory controls
-now cover both Git directories and worktree pointer files, while ordinary
+excluded the real `~/Code/pantry` repository. Its seven hermetic inventory controls
+covered both Git directories and worktree pointer files, while ordinary
 installed dependency/toolchain directories remain pruned. The report records
 these exceptions in `included_pruned_name_projects`.
 
@@ -97,6 +98,26 @@ were added and 203 disappeared. A freshness check also found 115 changed
 manifests and four changed configs among the previously recorded paths.
 Discovery and pruning rules remain unchanged; the latest report supersedes
 the earlier path inventory, and still marks replacement unverified.
+
+The optional scope report assigns check-script manifests, every discovered
+config, and inventory errors to their nearest Git checkout. It groups worktrees
+through their common Git directory and retains config-only projects, malformed
+manifests and sources without Git ownership. Missing metadata, unreadable inputs
+and source-hash changes remain explicit errors; scope generation never executes
+Git or package commands and never qualifies a project.
+
+The 2026-10-18 refresh contains **1,457 manifests with check scripts, 1,777
+scripts, 1,697 literal compiler segments and 2,900 configs**. Ownership covers
+**165 canonical Git groups**, including five config-only groups omitted by a
+manifest-only registry. All 4,413 source records retain ownership, with no hash
+drift or scope errors. Static routing covers all 113 flagged entrypoints; it
+does not prove their compiler behavior. The 56 inventory errors comprise 55
+existing fixture records and one additional unresolved manifest merge conflict
+in another working tree. That tree was left untouched. Fifteen hermetic tests
+cover discovery, config-only scope, common worktree identity, malformed Git
+metadata, source drift, missing files and CLI error reporting. The
+[public scope evidence](../../bench/vs_tsgo/evidence/20261018-local-tsc-inventory-scope.json)
+contains aggregate counts and hashes; private project reports remain outside Git.
 
 ## Required evidence
 

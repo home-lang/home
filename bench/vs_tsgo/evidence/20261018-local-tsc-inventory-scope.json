@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "date": "2026-10-18",
+  "purpose": "Read-only project inventory and Git ownership coverage; no compiler qualification.",
+  "all_project_replacement_verified": false,
+  "scope": {
+    "manifest_script_git_groups": 160,
+    "total_canonical_git_groups": 165,
+    "additional_config_only_git_groups": 5,
+    "additional_error_only_git_groups": 0,
+    "unresolved_ownership_records": 0,
+    "source_records": 4413,
+    "input_hash_drift": 0,
+    "scope_errors": 0,
+    "all_project_replacement_verified": false
+  },
+  "inventory": {
+    "counts": {
+      "manifests_with_check_scripts": 1457,
+      "configs": 2900,
+      "scripts": 1777,
+      "tsc_segments": 1697,
+      "unresolved_scripts": 113,
+      "errors": 56
+    },
+    "old_counts": {
+      "manifests_with_check_scripts": 1381,
+      "configs": 2808,
+      "scripts": 1685,
+      "tsc_segments": 1607,
+      "unresolved_scripts": 108,
+      "errors": 55
+    },
+    "added_manifest_count": 237,
+    "removed_manifest_count": 161,
+    "changed_manifest_hash_count": 209,
+    "added_error_records": 11,
+    "removed_error_records": 10,
+    "symlink_directories": 1982,
+    "all_project_replacement_verified": false,
+    "inventory_sha256": "1d5a62e35c119fd23e2a22fe0edb067990d9153fad97f1e61e94d8fd52fc4156",
+    "error_review": {
+      "prior_error_records": 55,
+      "new_error_records": 56,
+      "prior_records_retained_after_checkout_relocation": 55,
+      "new_nonfixture_manifest_errors": 1,
+      "new_error_class": "unresolved Git merge conflict in package manifest",
+      "new_error_source_sha256": "c3cace891ff06e8ea7b42ca89b486a5eadd43b4f0afa0851250f4966ff538776",
+      "unrelated_worktree_left_untouched": true,
+      "all_project_replacement_verified": false
+    }
+  },
+  "routing": {
+    "unresolved_inventory_entrypoints": 113,
+    "indirect_routing_audited": 94,
+    "shell_context_audited": 35,
+    "overlap": 16,
+    "covered_by_static_review": 113,
+    "not_yet_statically_reviewed": 0,
+    "qualification": false,
+    "note": "Static routing identifies commands and prerequisites; no compiler or project qualification follows from classification."
+  },
+  "indirect_routing": {
+    "purpose": "Read-only static routing; no checker was executed and no project was qualified.",
+    "counts": {
+      "script-delegation": 18,
+      "cache-cleanup": 19,
+      "stx-framework-checker": 11,
+      "build-prerequisite": 4,
+      "nuxt-framework-checker": 1,
+      "native-compiler-shell-wrapper": 2,
+      "tests-with-typecheck-disabled": 4,
+      "native-preview-compiler": 33,
+      "workspace-delegation": 1,
+      "buddy-dynamic-command": 1
+    },
+    "entrypoints": 94,
+    "snapshot_manifest_mismatches": 0,
+    "snapshot_command_mismatches": 0,
+    "static_delegate_edges": 79,
+    "inputs_unchanged": true,
+    "all_project_replacement_verified": false
+  },
+  "shell_routing": {
+    "purpose": "Read-only shell routing; no command execution or qualification.",
+    "reviewed_entrypoints": 35,
+    "distinct_commands": 5,
+    "routing_nodes": {
+      "change-directory": 110,
+      "script-delegation": 114,
+      "compiler": 23,
+      "subshell": 52
+    },
+    "snapshot_manifest_mismatches": 0,
+    "snapshot_command_mismatches": 0,
+    "unresolved_delegate_names": 0,
+    "inputs_unchanged": true,
+    "all_project_replacement_verified": false
+  },
+  "flag_usage": {
+    "inventory_sha256": "1d5a62e35c119fd23e2a22fe0edb067990d9153fad97f1e61e94d8fd52fc4156",
+    "segments": 1697,
+    "flag_tokens": {
+      "--noEmit": 1405,
+      "-p": 296,
+      "--pretty": 181,
+      "--emitDeclarationOnly": 57,
+      "-b": 26,
+      "-w": 26,
+      "--w": 22,
+      "--declaration": 9,
+      "--declarationDir": 7,
+      "-watch": 5,
+      "--build": 4,
+      "--outDir": 4,
+      "--project": 3,
+      "--watch": 3,
+      "--clean": 2
+    },
+    "qualification": false
+  },
+  "verification": {
+    "source_hashes": {
+      "scripts/ts-project-inventory.py": "58174cb7d40fc5bdb025498b10644c2fd30dbd852e3836efb59d3149db6bda92",
+      "scripts/tests/test-ts-project-inventory.py": "01a07dff89f8a55eacf92110122a3f9398ea5623aa32f2f358e81f92696d2714"
+    },
+    "tests": 15,
+    "test_result": "passed",
+    "test_command": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-ts-project-inventory.py",
+    "test_log": "...............\n----------------------------------------------------------------------\nRan 15 tests in 0.291s\n\nOK\n",
+    "test_log_sha256": "95b654e143dceddb0c6dadd85ca63e3af4c58ee9a8d1d2c85d677d3d384eb955",
+    "scope_report_sha256": "9389d3d8fbe4c61398b6b1a9b1fe603e2c418dad0397554b7eafedd300889fad",
+    "private_project_sources_included": false
+  }
+}

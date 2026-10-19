@@ -3,6 +3,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -99,6 +101,105 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(report["counts"]["errors"], 1)
         self.assertEqual(report["counts"]["unresolved_scripts"], 1)
         self.assertFalse(report["replacement_verified"])
+
+    def test_project_scope_keeps_config_only_and_invalid_manifest_projects(self):
+        for name in ("scripted", "config-only", "invalid"):
+            self.write(name + "/.git/HEAD", "ref: refs/heads/main\n")
+        self.manifest("scripted/package.json", {"check": "tsc --noEmit"})
+        self.write("scripted/tests/fixtures/tsconfig.json", "{}")
+        self.manifest("config-only/package.json", {"start": "bun app.ts"})
+        self.write("config-only/tsconfig.json", "{}")
+        self.write("invalid/package.json", "<<<<<<< unresolved merge\n")
+        scope = MODULE.project_scope(MODULE.inventory(self.root))
+        self.assertEqual(scope["summary"]["manifest_script_git_groups"], 1)
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 3)
+        self.assertEqual(scope["summary"]["additional_config_only_git_groups"], 1)
+        self.assertEqual(scope["summary"]["additional_error_only_git_groups"], 1)
+        self.assertEqual(scope["summary"]["unresolved_ownership_records"], 0)
+        self.assertEqual(scope["errors"], [])
+        self.assertFalse(scope["all_project_replacement_verified"])
+        self.assertTrue(all(not group["replacement_verified"] for group in scope["groups"].values()))
+
+    def test_project_scope_groups_worktrees_by_common_git_directory(self):
+        self.write("main/.git/HEAD", "ref: refs/heads/main\n")
+        self.write("main/.git/worktrees/linked/commondir", "../..\n")
+        self.write("linked/.git", "gitdir: ../main/.git/worktrees/linked\n")
+        self.write("main/tsconfig.json", "{}")
+        self.write("linked/tsconfig.json", "{}")
+        scope = MODULE.project_scope(MODULE.inventory(self.root))
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 1)
+        group = next(iter(scope["groups"].values()))
+        self.assertEqual(group["checkouts"], ["linked", "main"])
+        self.assertEqual(group["counts"], {"config": 2})
+        self.assertEqual(scope["errors"], [])
+
+    def test_project_scope_retains_unversioned_sources(self):
+        self.write("tsconfig.json", "{}")
+        scope = MODULE.project_scope(MODULE.inventory(self.root))
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 0)
+        self.assertEqual(scope["summary"]["unresolved_ownership_records"], 1)
+        self.assertEqual(scope["sources"][0]["path"], "tsconfig.json")
+        self.assertFalse(scope["all_project_replacement_verified"])
+
+    def test_project_scope_reports_changed_and_deleted_inputs(self):
+        changed = self.write("tsconfig.json", "{}")
+        removed = self.manifest("package.json", {"check": "tsc"})
+        report = MODULE.inventory(self.root)
+        changed.write_text('{"compilerOptions":{"strict":true}}')
+        removed.unlink()
+        scope = MODULE.project_scope(report)
+        self.assertEqual(scope["changed_inputs"], ["tsconfig.json"])
+        self.assertEqual(scope["summary"]["input_hash_drift"], 1)
+        self.assertEqual(scope["summary"]["scope_errors"], 1)
+        self.assertEqual(len(scope["sources"]), 2)
+        self.assertFalse(scope["all_project_replacement_verified"])
+
+    def test_project_scope_does_not_attribute_a_broken_worktree_to_its_parent(self):
+        self.write(".git/HEAD", "ref: refs/heads/main\n")
+        self.write("nested/.git", "gitdir: ../missing\n")
+        self.write("nested/tsconfig.json", "{}")
+        scope = MODULE.project_scope(MODULE.inventory(self.root))
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 0)
+        self.assertEqual(scope["summary"]["scope_errors"], 1)
+        self.assertIsNone(scope["sources"][0]["owner"])
+
+    def test_project_scope_stays_inside_inventory_root(self):
+        self.write("project/.git/HEAD", "ref: refs/heads/main\n")
+        self.write("project/tsconfig.json", "{}")
+        report = MODULE.inventory(self.root / "project")
+        report["configs"].append({"path": "../outside/tsconfig.json", "sha256": "unused"})
+        scope = MODULE.project_scope(report)
+        self.assertEqual(scope["summary"]["source_records"], 2)
+        self.assertEqual(scope["summary"]["scope_errors"], 1)
+        self.assertIsNone(scope["sources"][-1]["owner"])
+
+    def test_project_scope_rejects_empty_common_directory_metadata(self):
+        self.write("main/.git/worktrees/linked/commondir", "\n")
+        self.write("linked/.git", "gitdir: ../main/.git/worktrees/linked\n")
+        self.write("linked/tsconfig.json", "{}")
+        scope = MODULE.project_scope(MODULE.inventory(self.root))
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 0)
+        self.assertEqual(scope["summary"]["scope_errors"], 1)
+        self.assertIsNone(scope["sources"][0]["owner"])
+
+    def test_scope_cli_retains_reports_on_manifest_errors(self):
+        self.write(".git/HEAD", "ref: refs/heads/main\n")
+        self.write("tsconfig.json", "{}")
+        inventory = self.root / "inventory.json"
+        scope_path = self.root / "scope.json"
+        command = [sys.executable, str(SCRIPT), "--root", str(self.root),
+                   "--output", str(inventory), "--scope-output", str(scope_path)]
+        clean = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.assertEqual(json.loads(scope_path.read_text())["summary"]["additional_config_only_git_groups"], 1)
+        self.write("package.json", "<<<<<<< unresolved merge\n")
+        invalid = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        self.assertEqual(invalid.returncode, 1, invalid.stderr)
+        self.assertEqual(json.loads(inventory.read_text())["counts"]["errors"], 1)
+        scope = json.loads(scope_path.read_text())
+        self.assertEqual(scope["summary"]["total_canonical_git_groups"], 1)
+        self.assertEqual(next(iter(scope["groups"].values()))["counts"], {"config": 1, "inventory-error": 1})
+        self.assertFalse(scope["all_project_replacement_verified"])
 
 
 if __name__ == "__main__":
