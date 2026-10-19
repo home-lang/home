@@ -64,3 +64,26 @@ failed construction, flapping, disablement, saturation and invalid settings:
 ```sh
 zig test packages/video/src/core/output_recovery.zig
 ```
+
+`owned_fifo.Queue(T)` owns a fixed byte arena and operation-entry array. Unlike
+`packet_ring`, it accepts zero-length payloads and duplicate timestamps/metadata,
+so it can queue writes, patches and packet notifications in exact order. Metadata
+is copied by value; the caller owns any pointers in `T`. Payloads are explicitly
+copied. `push` never allocates, and both byte and entry overflow reject atomically.
+
+Use `front()` and `copyFront(scratch)` without popping while an operation is in
+flight. Only acknowledge it with `pop()` after completion. This keeps in-flight
+bytes and entries charged against capacity while a producer uses the remaining
+arena. Neither the payload nor scratch may alias the arena. A caller supplies its
+own mutex/condition and worker lifecycle; no sink runs under a queue lock in this
+module. `reset` discards pending work only after the caller accounts for in-flight
+ownership. This supports fail-on-full or bounded-wait policies without dropping
+individual dependent encoded packets.
+
+Focused tests cover arena wrap, metadata-only operations, in-flight accounting,
+byte/entry bounds, unchanged state on rejection, reset and partial allocation
+failure cleanup on Zig 0.15.2 and the Home development compiler:
+
+```sh
+zig test packages/video/src/core/owned_fifo.zig
+```

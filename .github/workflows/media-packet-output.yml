@@ -2,9 +2,9 @@ name: Packet and PTS output helpers
 on:
   push:
     branches: [main]
-    paths: ['packages/video/src/core/packet_output.zig', 'packages/video/src/core/output_recovery.zig', 'packages/video/src/core/packet_ring.zig', 'packages/video/src/core/plane_pack.zig', 'packages/video/docs/packet-output.md', 'packages/video/docs/packet-ring.md', '.github/workflows/media-packet-output.yml']
+    paths: ['packages/video/src/core/packet_output.zig', 'packages/video/src/core/owned_fifo.zig', 'packages/video/src/core/output_recovery.zig', 'packages/video/src/core/packet_ring.zig', 'packages/video/src/core/plane_pack.zig', 'packages/video/docs/packet-output.md', 'packages/video/docs/packet-ring.md', '.github/workflows/media-packet-output.yml']
   pull_request:
-    paths: ['packages/video/src/core/packet_output.zig', 'packages/video/src/core/output_recovery.zig', 'packages/video/src/core/packet_ring.zig', 'packages/video/src/core/plane_pack.zig', 'packages/video/docs/packet-output.md', 'packages/video/docs/packet-ring.md', '.github/workflows/media-packet-output.yml']
+    paths: ['packages/video/src/core/packet_output.zig', 'packages/video/src/core/owned_fifo.zig', 'packages/video/src/core/output_recovery.zig', 'packages/video/src/core/packet_ring.zig', 'packages/video/src/core/plane_pack.zig', 'packages/video/docs/packet-output.md', 'packages/video/docs/packet-ring.md', '.github/workflows/media-packet-output.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,6 +22,7 @@ jobs:
         with:
           version: ${{ matrix.zig }}
       - run: |
+          zig test packages/video/src/core/owned_fifo.zig
           zig test packages/video/src/core/output_recovery.zig
           zig test packages/video/src/core/packet_output.zig
           zig test packages/video/src/core/packet_ring.zig
