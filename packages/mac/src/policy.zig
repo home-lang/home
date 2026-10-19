@@ -107,9 +107,13 @@ pub const Policy = struct {
     /// Add a policy rule
     pub fn addRule(self: *Policy, rule: Rule) !void {
         // Clone the contexts to own the memory
+        var subject = try rule.subject.clone(self.allocator);
+        errdefer subject.deinit(self.allocator);
+        var object = try rule.object.clone(self.allocator);
+        errdefer object.deinit(self.allocator);
         const owned_rule = Rule{
-            .subject = try rule.subject.clone(self.allocator),
-            .object = try rule.object.clone(self.allocator),
+            .subject = subject,
+            .object = object,
             .operation = rule.operation,
             .decision = rule.decision,
             .priority = rule.priority,
@@ -154,11 +158,10 @@ pub const Policy = struct {
     }
 
     /// Load policy from file
-    pub fn loadFromFile(self: *Policy, path: []const u8) !void {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
-
-        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024); // 10MB max
+    pub fn loadFromFile(self: *Policy, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
+        // Io.Limit rejects a file that reaches the limit. Allow exactly 10 MiB,
+        // as the previous readToEndAlloc maximum did, but reject the next byte.
+        const content = try dir.readFileAlloc(io, path, self.allocator, .limited(10 * 1024 * 1024 + 1));
         defer self.allocator.free(content);
 
         try self.parsePolicy(content);
@@ -175,7 +178,7 @@ pub const Policy = struct {
             // Skip empty lines and comments
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
-            var parts = std.mem.tokenize(u8, trimmed, " \t");
+            var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
 
             // Parse decision
             const decision_str = parts.next() orelse continue;
@@ -205,11 +208,11 @@ pub const Policy = struct {
             const operation = std.meta.stringToEnum(Operation, operation_str) orelse continue;
 
             // Parse contexts
-            const subject = try SecurityContext.parse(self.allocator, subject_str);
-            errdefer subject.deinit(self.allocator);
+            var subject = try SecurityContext.parse(self.allocator, subject_str);
+            defer subject.deinit(self.allocator);
 
-            const object = try SecurityContext.parse(self.allocator, object_str);
-            errdefer object.deinit(self.allocator);
+            var object = try SecurityContext.parse(self.allocator, object_str);
+            defer object.deinit(self.allocator);
 
             // Add rule
             try self.addRule(.{
@@ -223,11 +226,10 @@ pub const Policy = struct {
     }
 
     /// Save policy to file
-    pub fn saveToFile(self: *Policy, path: []const u8) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-
-        var writer = file.writer();
+    pub fn saveToFile(self: *Policy, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
+        var buffer: std.Io.Writer.Allocating = .init(self.allocator);
+        defer buffer.deinit();
+        const writer = &buffer.writer;
 
         try writer.writeAll("# MAC Policy File\n");
         try writer.writeAll("# Format: decision subject object operation [priority]\n\n");
@@ -254,6 +256,8 @@ pub const Policy = struct {
                 rule.priority,
             });
         }
+
+        try dir.writeFile(io, .{ .sub_path = path, .data = buffer.written() });
     }
 
     /// Clear all rules
@@ -388,4 +392,86 @@ test "policy builder" {
     defer pol.deinit();
 
     try testing.expectEqual(@as(usize, 2), pol.count());
+}
+
+test "policy file round trip preserves rule order and decisions" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var policy = try Policy.init(allocator);
+    defer policy.deinit();
+    var subject = try SecurityContext.parse(allocator, "user_u:user_r:user_t:s0");
+    defer subject.deinit(allocator);
+    var object = try SecurityContext.parse(allocator, "system_u:object_r:file_t:s0");
+    defer object.deinit(allocator);
+    try policy.addRule(.{ .subject = subject, .object = object, .operation = .read, .decision = .deny, .priority = 10 });
+    try policy.addRule(.{ .subject = subject, .object = object, .operation = .read, .decision = .allow, .priority = 90 });
+    try policy.saveToFile(io, tmp.dir, "security.policy");
+
+    const bytes = try tmp.dir.readFileAlloc(io, "security.policy", allocator, .limited(4096));
+    defer allocator.free(bytes);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "allow user_u:user_r:user_t:s0 system_u:object_r:file_t:s0 read 90") != null);
+
+    var loaded = try Policy.init(allocator);
+    defer loaded.deinit();
+    try loaded.loadFromFile(io, tmp.dir, "security.policy");
+    try std.testing.expectEqual(@as(usize, 2), loaded.count());
+    try std.testing.expectEqual(Decision.allow, loaded.evaluate(subject, object, .read));
+    try std.testing.expectEqual(Decision.deny, loaded.evaluate(subject, object, .write));
+}
+
+test "missing policy file leaves the policy unchanged" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var policy = try Policy.init(allocator);
+    defer policy.deinit();
+    try std.testing.expectError(error.FileNotFound, policy.loadFromFile(io, tmp.dir, "missing.policy"));
+    try std.testing.expectEqual(@as(usize, 0), policy.count());
+}
+
+test "policy file accepts the size cap and rejects one byte more" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const limit = 10 * 1024 * 1024;
+    const content = try allocator.alloc(u8, limit + 1);
+    defer allocator.free(content);
+    @memset(content, ' ');
+
+    var policy = try Policy.init(allocator);
+    defer policy.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "max.policy", .data = content[0..limit] });
+    try policy.loadFromFile(io, tmp.dir, "max.policy");
+    try std.testing.expectEqual(@as(usize, 0), policy.count());
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "max.policy", .data = content });
+    try std.testing.expectError(error.StreamTooLong, policy.loadFromFile(io, tmp.dir, "max.policy"));
+    try std.testing.expectEqual(@as(usize, 0), policy.count());
+}
+
+test "adding a policy rule releases partial context clones" {
+    const allocator = std.testing.allocator;
+    var subject = try SecurityContext.parse(allocator, "user_u:user_r:user_t:s0");
+    defer subject.deinit(allocator);
+    var object = try SecurityContext.parse(allocator, "system_u:object_r:file_t:s0");
+    defer object.deinit(allocator);
+    const rule: Rule = .{
+        .subject = subject,
+        .object = object,
+        .operation = .read,
+        .decision = .allow,
+    };
+    const checks = struct {
+        fn addAndDestroy(a: std.mem.Allocator, r: Rule) !void {
+            var policy = try Policy.init(a);
+            defer policy.deinit();
+            try policy.addRule(r);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(allocator, checks.addAndDestroy, .{rule});
 }

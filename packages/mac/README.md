@@ -148,12 +148,22 @@ MAC supports a comprehensive set of operations:
 Policies can be saved and loaded from files:
 
 ```zig
-// Save policy
-try system.policy.saveToFile("security.policy");
+const std = @import("std");
+const mac = @import("mac");
 
-// Load policy
-try system.loadPolicy("security.policy");
+fn saveAndReload(system: *mac.System, io: std.Io, dir: std.Io.Dir) !void {
+    // Save policy
+    try system.policy.saveToFile(io, dir, "security.policy");
+
+    // Load policy
+    try system.loadPolicy(io, dir, "security.policy");
+}
 ```
+
+Policy I/O accepts an explicit directory and uses the same `std.Io` on Zig
+0.17 and 0.18. The package tests exercise a temporary-directory save/load
+round trip and the `System.loadPolicy` path; they do not establish complete
+MAC enforcement or platform coverage.
 
 Policy file format:
 ```

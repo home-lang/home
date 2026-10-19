@@ -126,11 +126,11 @@ pub const System = struct {
     }
 
     /// Load policy from file
-    pub fn loadPolicy(self: *System, path: []const u8) !void {
+    pub fn loadPolicy(self: *System, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
 
-        try self.policy.loadFromFile(path);
+        try self.policy.loadFromFile(io, dir, path);
 
         if (self.audit) |log| {
             try log.logEvent(.policy_loaded, "Policy loaded from file");
@@ -183,4 +183,27 @@ test "MAC enforcement mode" {
 
     system.setMode(.disabled);
     try testing.expectEqual(EnforcementMode.disabled, system.getMode());
+}
+
+test "MAC system loads a policy from the supplied directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "rules.policy",
+        .data = "allow user_u:user_r:user_t:s0 system_u:object_r:file_t:s0 read 75\n",
+    });
+
+    var system = try System.init(allocator, .{});
+    defer system.deinit();
+    try system.loadPolicy(io, tmp.dir, "rules.policy");
+    try std.testing.expectEqual(@as(usize, 1), system.policy.count());
+    try std.testing.expectEqual(audit.EventType.policy_loaded, system.audit.?.getRecent(1)[0].event_type);
+
+    var subject = try SecurityContext.parse(allocator, "user_u:user_r:user_t:s0");
+    defer subject.deinit(allocator);
+    var object = try SecurityContext.parse(allocator, "system_u:object_r:file_t:s0");
+    defer object.deinit(allocator);
+    try std.testing.expectEqual(policy.Decision.allow, system.policy.evaluate(subject, object, .read));
 }

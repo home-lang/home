@@ -19,12 +19,7 @@ pub const SecurityContext = struct {
         const type_label = parts.next() orelse return error.InvalidContext;
         const level = parts.next() orelse "s0"; // Default level
 
-        return .{
-            .user = try allocator.dupe(u8, user),
-            .role = try allocator.dupe(u8, role),
-            .type_label = try allocator.dupe(u8, type_label),
-            .level = try allocator.dupe(u8, level),
-        };
+        return create(allocator, user, role, type_label, level);
     }
 
     /// Create a new security context
@@ -35,11 +30,18 @@ pub const SecurityContext = struct {
         type_label: []const u8,
         level: []const u8,
     ) !SecurityContext {
+        const owned_user = try allocator.dupe(u8, user);
+        errdefer allocator.free(owned_user);
+        const owned_role = try allocator.dupe(u8, role);
+        errdefer allocator.free(owned_role);
+        const owned_type = try allocator.dupe(u8, type_label);
+        errdefer allocator.free(owned_type);
+        const owned_level = try allocator.dupe(u8, level);
         return .{
-            .user = try allocator.dupe(u8, user),
-            .role = try allocator.dupe(u8, role),
-            .type_label = try allocator.dupe(u8, type_label),
-            .level = try allocator.dupe(u8, level),
+            .user = owned_user,
+            .role = owned_role,
+            .type_label = owned_type,
+            .level = owned_level,
         };
     }
 
@@ -205,6 +207,22 @@ test "security context parsing" {
     try testing.expectEqualStrings("system_r", ctx.role);
     try testing.expectEqualStrings("httpd_t", ctx.type_label);
     try testing.expectEqualStrings("s0", ctx.level);
+}
+
+test "security context creation and parsing release partial allocations" {
+    const checks = struct {
+        fn createAndDestroy(allocator: std.mem.Allocator) !void {
+            var ctx = try SecurityContext.create(allocator, "user_u", "user_r", "user_t", "s0");
+            defer ctx.deinit(allocator);
+        }
+
+        fn parseAndDestroy(allocator: std.mem.Allocator) !void {
+            var ctx = try SecurityContext.parse(allocator, "user_u:user_r:user_t:s0");
+            defer ctx.deinit(allocator);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checks.createAndDestroy, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checks.parseAndDestroy, .{});
 }
 
 test "security context matching" {
