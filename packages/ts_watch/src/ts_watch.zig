@@ -47,18 +47,20 @@ pub const ChangeSet = struct {
     }
 };
 
-/// Pluggable stat interface. Real-disk implementations call
-/// `std.fs.cwd().statFile(path)`; tests use VirtualWatchFs.
+/// Pluggable stat interface. Null means the path is absent; other filesystem
+/// failures must be reported, not mistaken for a removal.
 pub const StatFs = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    pub const Error = std.Io.Dir.StatFileError;
+
     pub const VTable = struct {
         /// Returns Stat or null if the path doesn't exist.
-        stat: *const fn (self: *anyopaque, path: []const u8) ?Stat,
+        stat: *const fn (self: *anyopaque, path: []const u8) Error!?Stat,
     };
 
-    pub fn stat(self: StatFs, path: []const u8) ?Stat {
+    pub fn stat(self: StatFs, path: []const u8) Error!?Stat {
         return self.vtable.stat(self.ptr, path);
     }
 };
@@ -66,8 +68,9 @@ pub const StatFs = struct {
 pub const Watcher = struct {
     gpa: std.mem.Allocator,
     fs: StatFs,
-    /// Tracked path → last-known stat.
-    tracked: std.StringHashMapUnmanaged(Stat),
+    /// Tracked path → last-known presence and stat. Null is absent, not a
+    /// zero-size file with an epoch-zero modification time.
+    tracked: std.StringHashMapUnmanaged(?Stat),
 
     pub fn init(gpa: std.mem.Allocator, fs: StatFs) Watcher {
         return .{ .gpa = gpa, .fs = fs, .tracked = .empty };
@@ -84,8 +87,9 @@ pub const Watcher = struct {
     /// change unless the file has actually moved since `track`).
     pub fn track(self: *Watcher, path: []const u8) !void {
         if (self.tracked.contains(path)) return;
+        const stat = try self.fs.stat(path);
         const key = try self.gpa.dupe(u8, path);
-        const stat = self.fs.stat(path) orelse Stat{ .mtime = 0, .size = 0 };
+        errdefer self.gpa.free(key);
         try self.tracked.put(self.gpa, key, stat);
     }
 
@@ -101,33 +105,36 @@ pub const Watcher = struct {
     pub fn tick(self: *Watcher) !ChangeSet {
         var cs = ChangeSet.empty();
         errdefer cs.deinit(self.gpa);
+        const Update = struct { slot: *?Stat, value: ?Stat };
+        var updates: std.ArrayListUnmanaged(Update) = .empty;
+        defer updates.deinit(self.gpa);
 
         var it = self.tracked.iterator();
         while (it.next()) |entry| {
             const path = entry.key_ptr.*;
             const prev = entry.value_ptr.*;
-            const cur = self.fs.stat(path);
-            if (cur == null) {
-                // Removed.
-                try cs.changes.append(self.gpa, .{
-                    .path = try self.gpa.dupe(u8, path),
-                    .kind = .removed,
-                });
-                continue;
-            }
-            const c = cur.?;
-            if (c.mtime != prev.mtime or c.size != prev.size) {
-                // Modified — also catches `added` if prev was the
-                // zero-stat from track(missing-path).
-                const kind: ChangeKind = if (prev.mtime == 0 and prev.size == 0) .added else .modified;
-                try cs.changes.append(self.gpa, .{
-                    .path = try self.gpa.dupe(u8, path),
-                    .kind = kind,
-                });
-                entry.value_ptr.* = c;
+            const cur = try self.fs.stat(path);
+            if (cur) |c| {
+                if (prev) |p| {
+                    if (c.mtime == p.mtime and c.size == p.size) continue;
+                }
+                try self.appendChange(&cs, path, if (prev == null) .added else .modified);
+                try updates.append(self.gpa, .{ .slot = entry.value_ptr, .value = c });
+            } else if (prev != null) {
+                try self.appendChange(&cs, path, .removed);
+                try updates.append(self.gpa, .{ .slot = entry.value_ptr, .value = null });
             }
         }
+        // A later stat or allocation failure discards the entire ChangeSet.
+        // Publish its new baselines only after every observation succeeds.
+        for (updates.items) |update| update.slot.* = update.value;
         return cs;
+    }
+
+    fn appendChange(self: *Watcher, changes: *ChangeSet, path: []const u8, kind: ChangeKind) !void {
+        const owned_path = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(owned_path);
+        try changes.changes.append(self.gpa, .{ .path = owned_path, .kind = kind });
     }
 
     pub fn count(self: *const Watcher) usize {
@@ -141,9 +148,8 @@ pub const Watcher = struct {
 //
 // Walks paths via `std.Io.Dir.cwd().statFile`, threading a short-
 // lived `std.Io.Threaded` instance per call (matching the pattern
-// in `ts_cache.zig`). Returns `Stat { mtime, size }` or null on
-// any error (file not found, access denied, etc.) so callers can
-// treat missing files uniformly.
+// in `ts_cache.zig`). Only missing paths return null. Permission, resource,
+// cancellation and other stat failures propagate to the polling caller.
 
 pub const RealStatFs = struct {
     gpa: std.mem.Allocator,
@@ -162,13 +168,16 @@ pub const RealStatFs = struct {
 
     const vt: StatFs.VTable = .{ .stat = realStat };
 
-    fn realStat(p: *anyopaque, path: []const u8) ?Stat {
+    fn realStat(p: *anyopaque, path: []const u8) StatFs.Error!?Stat {
         const self: *RealStatFs = @ptrCast(@alignCast(p));
         var threaded = std.Io.Threaded.init(self.gpa, .{});
         defer threaded.deinit();
         const io = threaded.io();
         const cwd = std.Io.Dir.cwd();
-        const s = cwd.statFile(io, path, .{}) catch return null;
+        const s = cwd.statFile(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return null,
+            else => return err,
+        };
         return .{
             .mtime = s.mtime.nanoseconds,
             .size = s.size,
@@ -183,6 +192,8 @@ pub const RealStatFs = struct {
 pub const VirtualWatchFs = struct {
     gpa: std.mem.Allocator,
     files: std.StringHashMapUnmanaged(Stat),
+    stat_error: ?StatFs.Error = null,
+    error_path: ?[]const u8 = null,
 
     pub fn init(gpa: std.mem.Allocator) VirtualWatchFs {
         return .{ .gpa = gpa, .files = .empty };
@@ -195,8 +206,12 @@ pub const VirtualWatchFs = struct {
     }
 
     pub fn add(self: *VirtualWatchFs, path: []const u8, mtime: i128, size: u64) !void {
-        if (self.files.fetchRemove(path)) |old| self.gpa.free(old.key);
+        if (self.files.getPtr(path)) |existing| {
+            existing.* = .{ .mtime = mtime, .size = size };
+            return;
+        }
         const key = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(key);
         try self.files.put(self.gpa, key, .{ .mtime = mtime, .size = size });
     }
 
@@ -210,8 +225,11 @@ pub const VirtualWatchFs = struct {
 
     const vt: StatFs.VTable = .{ .stat = vfsStat };
 
-    fn vfsStat(p: *anyopaque, path: []const u8) ?Stat {
+    fn vfsStat(p: *anyopaque, path: []const u8) StatFs.Error!?Stat {
         const self: *VirtualWatchFs = @ptrCast(@alignCast(p));
+        if (self.stat_error) |err| {
+            if (self.error_path == null or std.mem.eql(u8, self.error_path.?, path)) return err;
+        }
         return self.files.get(path);
     }
 };
@@ -323,7 +341,7 @@ test "RealStatFs: stat on a known repo file returns non-null" {
     defer rfs.deinit();
     // `build.zig` lives at the repo root, which is the cwd when
     // `zig build test` invokes this test binary.
-    const s = rfs.fs().stat("build.zig");
+    const s = try rfs.fs().stat("build.zig");
     try T.expect(s != null);
     try T.expect(s.?.size > 0);
 }
@@ -340,7 +358,7 @@ test "RealStatFs: stat on a nonexistent path returns null" {
     // path must not exist on disk.
     const n = nonexistent_counter.fetchAdd(1, .monotonic);
     const path = try std.fmt.bufPrint(&pbuf, "/tmp/nonexistent-home-ts-watch-{x}-{d}", .{ @as(u64, 0xCAFEBABEDEADBEEF), n });
-    const s = rfs.fs().stat(path);
+    const s = try rfs.fs().stat(path);
     try T.expect(s == null);
 }
 

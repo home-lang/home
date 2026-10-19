@@ -2736,6 +2736,15 @@ pub fn build(b: *std.Build) void {
     const ts_watch_tests = b.addTest(.{ .root_module = ts_watch_pkg });
     const run_ts_watch_tests = b.addRunArtifact(ts_watch_tests);
     dependOnTest(test_step, &run_ts_watch_tests.step, test_filter, "ts_watch");
+    const ts_watch_lifecycle_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/ts_watch/tests/watch_lifecycle_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ts_watch_lifecycle_tests.root_module.addImport("ts_watch", ts_watch_pkg);
+    dependOnTest(test_step, &b.addRunArtifact(ts_watch_lifecycle_tests).step, test_filter, "ts_watch_lifecycle");
 
     const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
