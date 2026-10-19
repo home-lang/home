@@ -7,26 +7,19 @@ pub const Protection = struct {
     write: bool = false,
     execute: bool = false,
 
-    pub fn toFlags(self: Protection) u32 {
-        var flags: u32 = 0;
-        if (self.read) flags |= std.posix.PROT.READ;
-        if (self.write) flags |= std.posix.PROT.WRITE;
-        if (self.execute) flags |= std.posix.PROT.EXEC;
-        if (flags == 0) flags = std.posix.PROT.NONE;
-        return flags;
+    pub fn toFlags(self: Protection) std.posix.PROT {
+        return .{ .READ = self.read, .WRITE = self.write, .EXEC = self.execute };
     }
 };
 
-// Page alignment constant
-const page_alignment = 4096; // Standard page size, actual runtime value from pageSize()
-
 /// Memory mapped region
 pub const MappedMemory = struct {
-    ptr: [*]align(page_alignment) u8,
+    ptr: [*]align(std.heap.page_size_min) u8,
     len: usize,
 
     /// Create a new memory mapping
     pub fn create(length: usize, prot: Protection) !MappedMemory {
+        if (length == 0) return error.InvalidLength;
         const ptr = try std.posix.mmap(
             null,
             length,
@@ -44,12 +37,20 @@ pub const MappedMemory = struct {
 
     /// Unmap the memory region
     pub fn unmap(self: MappedMemory) void {
-        std.posix.munmap(@alignCast(self.ptr[0..self.len]));
+        std.posix.munmap(self.ptr[0..self.len]);
     }
 
     /// Change protection flags on mapped memory
     pub fn protect(self: MappedMemory, prot: Protection) !void {
-        try std.posix.mprotect(self.ptr[0..self.len], prot.toFlags());
+        const rc = std.posix.system.mprotect(@ptrCast(@alignCast(self.ptr)), self.len, prot.toFlags());
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => {},
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .NOMEM => return error.UnmappedMemory,
+            .INVAL => return error.InvalidArgument,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
     }
 
     /// Sync memory to disk (for file-backed mappings)
@@ -65,7 +66,23 @@ pub const MappedMemory = struct {
 
 /// Get the system page size
 pub fn pageSize() usize {
-    return std.heap.page_size_min;
+    return std.heap.pageSize();
+}
+
+const libc_memory = struct {
+    // POSIX accepts an address within a page; std.c's declarations require a
+    // page-aligned pointer, which is too restrictive for this public API.
+    extern "c" fn mlock([*]const u8, usize) c_int;
+    extern "c" fn munlock([*]const u8, usize) c_int;
+};
+
+fn lockError(ptr: [*]u8, len: usize, comptime release: bool) std.posix.E {
+    if (builtin.link_libc or builtin.os.tag != .linux) {
+        const rc = if (release) libc_memory.munlock(ptr, len) else libc_memory.mlock(ptr, len);
+        return std.c.errno(rc);
+    }
+    const rc = if (release) std.os.linux.munlock(ptr, len) else std.os.linux.mlock(ptr, len);
+    return std.os.linux.errno(rc);
 }
 
 /// Lock memory pages to prevent swapping (Unix-only)
@@ -74,8 +91,13 @@ pub fn lock(ptr: [*]u8, len: usize) !void {
     if (builtin.os.tag == .windows) {
         return error.OperationNotSupported;
     }
-
-    try std.posix.mlock(ptr[0..len]);
+    switch (lockError(ptr, len, false)) {
+        .SUCCESS => {},
+        .AGAIN, .NOMEM => return error.LockedMemoryLimitExceeded,
+        .PERM => return error.PermissionDenied,
+        .INVAL => return error.InvalidArgument,
+        else => |err| return std.posix.unexpectedErrno(err),
+    }
 }
 
 /// Unlock previously locked memory pages
@@ -83,8 +105,12 @@ pub fn unlock(ptr: [*]u8, len: usize) !void {
     if (builtin.os.tag == .windows) {
         return error.OperationNotSupported;
     }
-
-    try std.posix.munlock(ptr[0..len]);
+    switch (lockError(ptr, len, true)) {
+        .SUCCESS => {},
+        .NOMEM => return error.UnmappedMemory,
+        .INVAL => return error.InvalidArgument,
+        else => |err| return std.posix.unexpectedErrno(err),
+    }
 }
 
 /// Allocate memory with specific alignment
