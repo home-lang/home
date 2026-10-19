@@ -498,17 +498,14 @@ pub fn AsyncResult(comptime T: type) type {
         result: ?T = null,
         err: ?anyerror = null,
         completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        mutex: std.Thread.Mutex = .{},
 
         const Self = @This();
 
-        pub fn wait(self: *Self) !T {
+        /// Wait for the producer's release-store using the caller's I/O context.
+        pub fn wait(self: *Self, io: std.Io) !T {
             while (!self.completed.load(.acquire)) {
-                std.time.sleep(1_000_000); // 1ms
+                try std.Io.sleep(io, .fromMilliseconds(1), .awake);
             }
-
-            self.mutex.lock();
-            defer self.mutex.unlock();
 
             if (self.err) |e| {
                 return e;
@@ -521,15 +518,11 @@ pub fn AsyncResult(comptime T: type) type {
         }
 
         fn setResult(self: *Self, value: T) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
             self.result = value;
             self.completed.store(true, .release);
         }
 
         fn setError(self: *Self, err: anyerror) void {
-            self.mutex.lock();
-            defer self.mutex.unlock();
             self.err = err;
             self.completed.store(true, .release);
         }
