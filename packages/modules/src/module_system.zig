@@ -72,6 +72,10 @@ pub const Module = struct {
 pub const ModuleLoader = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
+    /// Request-name aliases do not own modules. This preserves repeat-load
+    /// behavior even if the file is removed after the first successful load.
+    bare_names: std.StringHashMap(*Module),
+    /// Canonical paths own each distinct module exactly once.
     modules: std.StringHashMap(*Module),
     search_paths: std.ArrayList([]const u8),
 
@@ -79,12 +83,17 @@ pub const ModuleLoader = struct {
         return .{
             .allocator = allocator,
             .io = io,
+            .bare_names = std.StringHashMap(*Module).init(allocator),
             .modules = std.StringHashMap(*Module).init(allocator),
             .search_paths = std.ArrayList([]const u8).empty,
         };
     }
 
     pub fn deinit(self: *ModuleLoader) void {
+        var names = self.bare_names.iterator();
+        while (names.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.bare_names.deinit();
+
         var it = self.modules.iterator();
         while (it.next()) |entry| {
             // The canonical cache key borrows Module.file_path. Each module
@@ -107,9 +116,17 @@ pub const ModuleLoader = struct {
     }
 
     pub fn loadModule(self: *ModuleLoader, module_name: []const u8) !*Module {
+        if (self.bare_names.get(module_name)) |module| return module;
         const file_path = try self.findModuleFile(module_name);
         defer self.allocator.free(file_path);
-        return self.loadResolvedFile(module_name, file_path);
+        const name_copy = try self.allocator.dupe(u8, module_name);
+        errdefer self.allocator.free(name_copy);
+        // Reserve before parsing: once a newly parsed module enters the
+        // canonical owner map, publishing its request alias cannot fail.
+        try self.bare_names.ensureUnusedCapacity(1);
+        const module = try self.loadResolvedFile(module_name, file_path);
+        self.bare_names.putAssumeCapacityNoClobber(name_copy, module);
+        return module;
     }
 
     fn loadResolvedFile(self: *ModuleLoader, module_name: []const u8, file_path: []const u8) !*Module {

@@ -150,3 +150,22 @@ test "relative imports use the importing file and canonical cache identity" {
     try testing.expectError(error.ImportingModuleNotLoaded, loader.resolveImport("not-loaded", "./shared"));
     try testing.expectEqual(@as(usize, 5), loader.modules.count());
 }
+
+test "bare-name cache retains a loaded module after its file is removed" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "cached.home", .data = "pub fn retained() { }" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+
+    var loader = modules.ModuleLoader.init(allocator, io);
+    defer loader.deinit();
+    try loader.addSearchPath(root);
+    const first = try loader.loadModule("cached");
+    try tmp.dir.deleteFile(io, "cached.home");
+    try testing.expect(first == try loader.loadModule("cached"));
+    try testing.expect(first.exports.contains("retained"));
+    try testing.expectEqual(@as(usize, 1), loader.modules.count());
+}
