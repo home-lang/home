@@ -102,3 +102,11 @@ completed prefix, while pending delivery returns the first latched failure.
 This supports native codec callbacks feeding an event-loop host without invoking
 runtime functions on native threads. The owner supplies synchronization and
 keeps the queue alive until every producer and in-flight host hook has retired.
+
+`pts_clock.Clock.accept(source_ns)` supplies a shared epoch when separate clips
+rebase their own timestamps. It returns integer microseconds from the first
+accepted video frame, retaining source-clock gaps across replacements. Regressing
+sources, duplicate times and sub-microsecond collisions fail before mutation.
+The caller serializes clock/sink access, excludes audio, orders retiring segments
+before successors, and poisons the observer if a write fails. No queue, allocation,
+file ownership or floating-point arithmetic is hidden in this helper.

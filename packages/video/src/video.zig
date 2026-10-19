@@ -1315,3 +1315,6 @@ pub const recording_policy = @import("core/recording_policy.zig");
 pub const recording_path = @import("core/recording_path.zig");
 
 pub const delivery_fifo = @import("core/delivery_fifo.zig");
+
+/// Source-clock epochs for shared PTS observers across segment replacement.
+pub const pts_clock = @import("core/pts_clock.zig");
