@@ -9,6 +9,10 @@ Build configuration and incremental compilation. Manages the compilation process
 - Core build functionality
 - Type-safe operations
 - Well-tested implementation
+- Kernel and ISO staging helpers accept an explicit `std.Io` and destination
+  directory. Their tests verify the written linker script, multiboot header,
+  copied kernel bytes, and GRUB configuration in temporary directories. These
+  helpers stage inputs only; they do not yet compile a kernel or create an ISO.
 
 ## Usage
 
@@ -21,7 +25,8 @@ const build = @import("build");
 ## Testing
 
 ```bash
-zig test packages/build/tests/build_test.zig
+pantry/.bin/zig build --build-file packages/build/build.zig test -j1 --summary all
+zig build --build-file packages/build/build.zig test -j1 --summary all
 ```
 
 ## License

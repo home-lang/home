@@ -351,7 +351,9 @@ pub const KernelBuilder = struct {
         return flags.toOwnedSlice(allocator);
     }
 
-    pub fn build(self: *KernelBuilder, output_path: []const u8) !void {
+    /// Stage the linker script and optional multiboot header in `dir`.
+    /// Compiling and linking `output_path` is not implemented yet.
+    pub fn build(self: *KernelBuilder, io: std.Io, dir: std.Io.Dir, output_path: []const u8) !void {
         _ = output_path;
 
         // Generate linker script if not provided
@@ -361,10 +363,7 @@ pub const KernelBuilder = struct {
             defer self.allocator.free(script_content);
 
             const script_path = "kernel.ld";
-            const file = try std.fs.cwd().createFile(script_path, .{});
-            defer file.close();
-
-            try file.writeAll(script_content);
+            try dir.writeFile(io, .{ .sub_path = script_path, .data = script_content });
         }
 
         // Generate multiboot header if needed
@@ -372,10 +371,7 @@ pub const KernelBuilder = struct {
             const header = try MultibootHeader.generate(self.allocator);
             defer self.allocator.free(header);
 
-            const header_file = try std.fs.cwd().createFile("multiboot.bin", .{});
-            defer header_file.close();
-
-            try header_file.writeAll(header);
+            try dir.writeFile(io, .{ .sub_path = "multiboot.bin", .data = header });
         }
 
         // In a real implementation, this would:
@@ -475,14 +471,16 @@ pub const IsoBuilder = struct {
         return buffer.toOwnedSlice();
     }
 
-    pub fn build(self: *IsoBuilder, output_path: []const u8) !void {
+    /// Stage the kernel copy and GRUB configuration in `dir`.
+    /// Creating the ISO at `output_path` is not implemented yet.
+    pub fn build(self: *IsoBuilder, io: std.Io, dir: std.Io.Dir, output_path: []const u8) !void {
         _ = output_path;
 
         // Create iso directory structure
-        try std.fs.cwd().makePath("iso/boot/grub");
+        try dir.createDirPath(io, "iso/boot/grub");
 
         // Copy kernel
-        try std.fs.cwd().copyFile(self.kernel_path, std.fs.cwd(), "iso/boot/kernel.bin", .{});
+        try std.Io.Dir.cwd().copyFile(self.kernel_path, dir, "iso/boot/kernel.bin", io, .{});
 
         // Generate GRUB config
         const config = if (self.grub_config) |cfg|
@@ -492,10 +490,7 @@ pub const IsoBuilder = struct {
 
         defer if (self.grub_config == null) self.allocator.free(config);
 
-        const grub_cfg_file = try std.fs.cwd().createFile("iso/boot/grub/grub.cfg", .{});
-        defer grub_cfg_file.close();
-
-        try grub_cfg_file.writeAll(config);
+        try dir.writeFile(io, .{ .sub_path = "iso/boot/grub/grub.cfg", .data = config });
 
         // In a real implementation, this would call grub-mkrescue:
         // grub-mkrescue -o output.iso iso/
@@ -560,4 +555,45 @@ test "compiler flags generation" {
         }
     }
     try std.testing.expect(found_freestanding);
+}
+
+test "kernel build stages a linker script and multiboot header in the requested directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var builder = KernelBuilder.init(allocator, KernelBuildConfig.default());
+    defer builder.deinit();
+    try builder.build(io, tmp.dir, "kernel.elf");
+
+    const script = try tmp.dir.readFileAlloc(io, "kernel.ld", allocator, .limited(64 * 1024));
+    defer allocator.free(script);
+    try std.testing.expect(std.mem.indexOf(u8, script, "ENTRY(_start)") != null);
+
+    const header = try tmp.dir.readFileAlloc(io, "multiboot.bin", allocator, .limited(1024));
+    defer allocator.free(header);
+    try std.testing.expectEqual(@as(u32, MultibootHeader.MAGIC), std.mem.readInt(u32, header[0..4], .little));
+}
+
+test "ISO build stages the real kernel bytes and GRUB configuration" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const kernel_bytes = "kernel-image-contents";
+    try tmp.dir.writeFile(io, .{ .sub_path = "input.bin", .data = kernel_bytes });
+    const kernel_path = try tmp.dir.realPathFileAlloc(io, "input.bin", allocator);
+    defer allocator.free(kernel_path);
+
+    var builder = IsoBuilder.init(allocator, kernel_path);
+    try builder.build(io, tmp.dir, "boot.iso");
+
+    const copied = try tmp.dir.readFileAlloc(io, "iso/boot/kernel.bin", allocator, .limited(1024));
+    defer allocator.free(copied);
+    try std.testing.expectEqualStrings(kernel_bytes, copied);
+
+    const grub = try tmp.dir.readFileAlloc(io, "iso/boot/grub/grub.cfg", allocator, .limited(4096));
+    defer allocator.free(grub);
+    try std.testing.expect(std.mem.indexOf(u8, grub, "multiboot2 /boot/kernel.bin") != null);
 }
