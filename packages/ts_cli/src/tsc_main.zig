@@ -3906,6 +3906,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 std.debug.print("recompile error: {s}\n", .{@errorName(err)});
                 continue;
             };
+            // `recompileChanged` admits imports introduced by this revision.
+            // Register the complete new closure before publishing results;
+            // a stat/allocation failure must not silently leave it unwatched.
+            try trackProgramFiles(&watcher, &program);
             var watch_any_errors = false;
             var watch_error_count: usize = 0;
             var watch_stream_ctx: StreamCtx = .{

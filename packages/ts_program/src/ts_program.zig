@@ -4115,14 +4115,14 @@ pub const Program = struct {
     /// `--explainFiles` can later render TS1393. Check/emit runs only once
     /// discovery is complete, reusing every bound source in place.
     pub fn loadImportClosure(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
-        return self.loadImportClosureImpl(options, false, null);
+        return self.loadImportClosureImpl(options, false, null, true);
     }
 
     /// Parallel closure loader for production compilers. Small programs use
     /// the serial path to avoid worker startup overhead; larger programs use
     /// the same bounded worker pool as `compileAllParallel` in every round.
     pub fn loadImportClosureParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!usize {
-        return self.loadImportClosureImpl(options, true, workers);
+        return self.loadImportClosureImpl(options, true, workers, true);
     }
 
     fn loadImportClosureImpl(
@@ -4130,6 +4130,7 @@ pub const Program = struct {
         options: ts_driver.CompileOptions,
         parallel: bool,
         workers: ?usize,
+        finish_checking: bool,
     ) ProgramError!usize {
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.default_library_path.len == 0 and self.installed_library_path == null) {
@@ -4262,6 +4263,7 @@ pub const Program = struct {
             added += new_in_round;
             if (new_in_round == 0 and !depth_changed_in_round) break;
         }
+        if (!finish_checking) return added;
         if (had_checked_sources and added != 0) {
             // A caller may have checked an incomplete graph explicitly.
             // Those results cannot be reused after graph expansion; unlike
@@ -4875,7 +4877,9 @@ pub const Program = struct {
     /// Re-compile files whose paths appear in `changed_paths` and every
     /// transitive importer whose checked types can depend on them. Files
     /// outside that reverse dependency closure reuse their existing
-    /// compilation. Returns the count of canonical files re-compiled.
+    /// compilation unless a newly admitted source can contribute
+    /// program-wide declarations. Returns the count of canonical files
+    /// re-compiled.
     ///
     /// Pairs with `ts_watch.Watcher.tick()` for the watch-mode
     /// loop:
@@ -4911,8 +4915,62 @@ pub const Program = struct {
             if (file.redirect_target == null and affected[file.id]) count += 1;
         }
         self.invalidateRevisionFiles(affected);
+
+        // Discover imports introduced by this revision before the final
+        // checking pass. The ordinary closure loader rechecks the entire
+        // program when it finds a file after prior checking; here the old
+        // reverse closure is already invalidated, so leave newly discovered
+        // files bound and check only that closure plus the new dependencies.
+        const first_new_id = self.files.items.len;
+        _ = try self.loadImportClosureImpl(options, false, null, false);
+        var program_scope_changed = false;
+        for (self.files.items[first_new_id..]) |file| {
+            if (file.redirect_target != null) continue;
+            program_scope_changed = program_scope_changed or newFileMayAffectProgramScope(file);
+        }
+        if (program_scope_changed) {
+            // Scripts, ambient declarations, and JS may supply facts to
+            // unrelated sources. A broad recheck is semantic invalidation
+            // here, not the default path for ordinary imported modules.
+            try self.recompileAll(options);
+            count = 0;
+            for (self.files.items) |file| {
+                if (file.redirect_target == null) count += 1;
+            }
+            return count;
+        }
+        if (self.files.items.len > first_new_id) {
+            // Discovery's final bind pass ran before these paths were in the
+            // program. An importer's bound owner can retain an unresolved
+            // module diagnostic from that pass even after `resolveImports`
+            // has linked the new edge. Rebind the new reverse closure using
+            // the post-discovery graph before checking it.
+            const new_affected = try self.gpa.alloc(bool, self.files.items.len);
+            defer self.gpa.free(new_affected);
+            @memset(new_affected, false);
+            for (self.files.items[first_new_id..]) |file| {
+                self.markCanonicalRevision(self.canonicalFileId(file.id), new_affected);
+            }
+            self.closeRevisionImporters(new_affected);
+            for (self.files.items) |file| {
+                if (file.redirect_target != null or !new_affected[file.id]) continue;
+                if (file.id >= affected.len or !affected[file.id]) count += 1;
+            }
+            self.invalidateRevisionFiles(new_affected);
+        }
         try self.compileAll(options);
         return count;
+    }
+
+    fn newFileMayAffectProgramScope(file: *const File) bool {
+        const compilation = file.compilation orelse return true;
+        if (!boundSourceIsExternalModule(compilation) or isJsLikePath(file.path)) return true;
+        // These are the same conservative prefilters used by the program's
+        // global/ambient collectors. False positives cost a recheck; false
+        // negatives would leave unrelated checked owners stale.
+        return file.sourceContains("declare") or file.sourceContains("namespace") or
+            file.sourceContains("module") or file.sourceContains("global") or
+            std.mem.indexOf(u8, file.source, "///") != null;
     }
 
     fn appendMissingImportedHelperDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
