@@ -21,6 +21,7 @@
 //! for testing another tsgo checkout without moving Home's reproducible pin.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ts_driver = @import("ts_driver");
 const ts_diagnostics = @import("ts_diagnostics");
 const ts_program = @import("ts_program");
@@ -55816,6 +55817,24 @@ fn runOptInTsSuiteFamily(
 // The per-PR delta gate (§6.A.5) is the natural home for the
 // always-on version once the heap interaction is resolved.
 
+fn parentProcessId() ?std.posix.pid_t {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return null;
+    return std.posix.getppid();
+}
+
+/// Whether the process that launched this test binary has exited (the
+/// binary was reparented). `null` means the platform cannot tell.
+fn runnerWasLost(initial_parent: ?std.posix.pid_t) bool {
+    const initial = initial_parent orelse return false;
+    return parentProcessId() != initial;
+}
+
+test "conformance: runner loss detection keeps the live parent" {
+    try T.expect(!runnerWasLost(parentProcessId()));
+    try T.expect(!runnerWasLost(null));
+    if (parentProcessId()) |parent| try T.expect(runnerWasLost(parent +% 1));
+}
+
 test "conformance: opt-in full local TypeScript corpus survey" {
     const enabled_raw = std.c.getenv("HOME_TS_CONFORMANCE_FULL") orelse return;
     const enabled = std.mem.span(enabled_raw);
@@ -55872,8 +55891,17 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // pattern EXCLUDES matching entries instead — `!parserRealSource14`
     // alone runs the whole corpus minus that fixture (useful to route a
     // full survey around a known-slow case).
+    const runner_pid = parentProcessId();
     for (corpus[start..end], requested_start..) |entry, idx| {
         if (name_filter) |filters| if (!fixtureNameIncluded(entry.name, filters)) continue;
+        // A full survey can run for most of an hour. If the `zig build`
+        // runner that started this test binary dies, the binary is
+        // reparented and nobody reads its results, so stop at the next
+        // fixture instead of burning a shared machine until completion.
+        if (runnerWasLost(runner_pid)) {
+            std.debug.print("[ts_conformance full-corpus] build runner exited; stopping at {d}/{d}\n", .{ idx + 1, display_total });
+            std.process.exit(1);
+        }
         if (trace_fixtures) {
             std.debug.print("[ts_conformance full-corpus] RUN {d}/{d} {s}\n", .{ idx + 1, display_total, entry.name });
         }

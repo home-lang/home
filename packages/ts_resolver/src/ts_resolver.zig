@@ -470,19 +470,23 @@ pub const Resolver = struct {
         // by importer extension (`.mts` vs `.cts`) and effective module
         // kind, so a directory-only key would incorrectly share
         // package-export results across files in the same folder.
-        // On allocation failure, fall through to an uncached resolve.
-        const key = std.fmt.allocPrint(self.arena.allocator(), "{s}\x00{s}", .{ containing_file, specifier }) catch
+        // On allocation failure, fall through to an uncached resolve. The
+        // lookup key is temporary; only a stored entry copies it into the
+        // arena, so repeated hits (program closure rounds re-resolve every
+        // import) do not grow the arena.
+        const lookup = std.fmt.allocPrint(self.gpa, "{s}\x00{s}", .{ containing_file, specifier }) catch
             return self.resolveTraced(specifier, containing_file);
-        if (self.cache.get(key)) |cached| return cached orelse error.NotFound;
+        defer self.gpa.free(lookup);
+        if (self.cache.get(lookup)) |cached| return cached orelse error.NotFound;
         const result = self.resolveTraced(specifier, containing_file);
-        if (result) |r| {
-            self.cache.put(self.gpa, key, r) catch {};
-        } else |e| {
-            // Don't memoize a TS2209/TS2210-ambiguous failure: the
-            // ambiguity is reported per importing file, so each resolve
-            // must re-run and re-stash `ambiguous_root` (a cached null
-            // would suppress it for the 2nd+ importer).
-            if (e == error.NotFound and self.ambiguous_root == null) self.cache.put(self.gpa, key, null) catch {};
+        // Don't memoize a TS2209/TS2210-ambiguous failure: the ambiguity is
+        // reported per importing file, so each resolve must re-run and
+        // re-stash `ambiguous_root` (a cached null would suppress it for the
+        // 2nd+ importer).
+        const memoize = if (result) |_| true else |e| e == error.NotFound and self.ambiguous_root == null;
+        if (memoize) {
+            const key = self.arena.allocator().dupe(u8, lookup) catch return result;
+            self.cache.put(self.gpa, key, result catch null) catch {};
         }
         return result;
     }

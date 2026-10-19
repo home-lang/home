@@ -6663,7 +6663,8 @@ pub const Parser = struct {
                     self.peekAt(1).kind == .private_identifier or
                     self.peekAt(1).kind == .string_literal or
                     self.peekAt(1).kind == .number_literal or
-                    self.peekAt(1).kind.isContextualKeyword()) and
+                    // Any keyword is a property name: `get var()`, `set new(v)`.
+                    self.peekAt(1).kind.isKeyword()) and
                     (self.peekAt(2).kind == .open_paren or self.peekAt(2).kind == .less_than) or
                     self.peekAt(1).kind == .open_bracket))
             {
@@ -13484,7 +13485,10 @@ pub const Parser = struct {
             var labeled_optional = false;
             var saw_label_before_type = false;
             var element_label = string_interner.empty_string_id;
-            if ((self.peek().kind == .identifier or self.peek().kind.isContextualKeyword()) and
+            // tsc's `scanStartOfNamedTupleElement` accepts any identifier
+            // OR keyword as the label (`[function: F, new: N]`), not just
+            // identifiers and contextual keywords.
+            if ((self.peek().kind == .identifier or self.peek().kind.isKeyword()) and
                 (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon)))
             {
@@ -13504,7 +13508,7 @@ pub const Parser = struct {
             // Tolerate a labeled rest: `[...rest: T[]]` and recover
             // optional rest labels so TS5085 can be reported at the
             // same tuple member rather than cascading into `] expected`.
-            if (has_rest and (self.peek().kind == .identifier or self.peek().kind.isContextualKeyword())) {
+            if (has_rest and (self.peek().kind == .identifier or self.peek().kind.isKeyword())) {
                 if (self.peekAt(1).kind == .colon or
                     (self.peekAt(1).kind == .question and self.peekAt(2).kind == .colon))
                 {
@@ -13758,7 +13762,22 @@ pub const Parser = struct {
             span: Span,
             kind: DuplicateMemberKind,
             is_computed: bool,
+            /// Computed key the parser cannot resolve to a literal or
+            /// well-known name (`[K.A]` where `K.A: 1`, an imported
+            /// `RESP_TYPES.X`); `name` is then only a placeholder.
+            late_bound: bool = false,
             type_node: NodeId = hir_mod.none_node_id,
+
+            /// tsc compares late-bound keys by their key TYPES in the
+            /// checker. Without types, the parser treats two late-bound keys
+            /// as the same member only when their key expressions are
+            /// spelled identically (`[K.A]` twice), and never confuses one
+            /// with a resolved name, so `[K.A]` and `[K.B]` stay distinct.
+            fn sameKey(a: @This(), b: @This()) bool {
+                if (a.late_bound != b.late_bound) return false;
+                if (a.late_bound) return a.display_name == b.display_name;
+                return a.name == b.name;
+            }
         };
         var duplicate_members: std.ArrayListUnmanaged(DuplicateMember) = .empty;
         defer duplicate_members.deinit(self.gpa);
@@ -13868,6 +13887,7 @@ pub const Parser = struct {
                             .span = self.hir.spanOf(member_node),
                             .kind = if (member.is_method) .method else .property,
                             .is_computed = true,
+                            .late_bound = (try self.computedTypeMemberNameFromKey(key_expr)) == null,
                             .type_node = member.type_node,
                         });
                     }
@@ -13915,8 +13935,12 @@ pub const Parser = struct {
                     const name_tok = self.advance();
                     break :blk tokenSpan(name_tok);
                 };
+                const resolved_key = if (key_expr != hir_mod.none_node_id)
+                    try self.computedTypeMemberNameFromKey(key_expr)
+                else
+                    null;
                 const name_id = if (key_expr != hir_mod.none_node_id)
-                    (try self.computedTypeMemberNameFromKey(key_expr)) orelse 0
+                    resolved_key orelse 0
                 else
                     self.interner.intern(self.source[name_span.start..name_span.end]) catch return error.OutOfMemory;
                 const display_name = if (key_expr != hir_mod.none_node_id)
@@ -13960,6 +13984,7 @@ pub const Parser = struct {
                     .span = name_span,
                     .kind = if (is_getter) .getter else .setter,
                     .is_computed = key_expr != hir_mod.none_node_id,
+                    .late_bound = key_expr != hir_mod.none_node_id and resolved_key == null,
                 });
                 try out.append(self.gpa, member);
                 continue;
@@ -14251,7 +14276,7 @@ pub const Parser = struct {
             var plain_property_display_name: ?hir_mod.StringId = null;
             var has_plain_property = false;
             for (duplicate_members.items) |member| {
-                if (member.name != candidate.name) continue;
+                if (!member.sameKey(candidate)) continue;
                 switch (member.kind) {
                     .getter => getter_count += 1,
                     .setter => setter_count += 1,
@@ -14277,7 +14302,7 @@ pub const Parser = struct {
             var first_type_node: NodeId = hir_mod.none_node_id;
             if (identical_well_known_computed_properties) {
                 for (duplicate_members.items) |member| {
-                    if (member.name != candidate.name) continue;
+                    if (!member.sameKey(candidate)) continue;
                     if (member.kind != .property or !member.is_computed or member.type_node == hir_mod.none_node_id) {
                         identical_well_known_computed_properties = false;
                         break;
@@ -14305,7 +14330,7 @@ pub const Parser = struct {
             if (!invalid_group) continue;
             var already_reported = false;
             for (duplicate_members.items[0..candidate_index]) |prior| {
-                if (prior.name == candidate.name and prior.span.start == candidate.span.start) {
+                if (prior.sameKey(candidate) and prior.span.start == candidate.span.start) {
                     already_reported = true;
                     break;
                 }
@@ -14379,7 +14404,7 @@ pub const Parser = struct {
         return (name_kind == .identifier or
             name_kind == .string_literal or
             name_kind == .number_literal or
-            name_kind.isContextualKeyword()) and
+            name_kind.isKeyword()) and
             self.peekAt(2).kind == .open_paren;
     }
 
@@ -14456,7 +14481,7 @@ pub const Parser = struct {
             if (self.computedTypeMemberQualifiedRootIsImportedValue(key_expr)) {
                 break :blk @as(hir_mod.StringId, 0);
             }
-            if (self.hir.kindOf(key_expr) != .identifier) {
+            if (!self.isEntityNameExpression(key_expr)) {
                 // A computed type-member key whose expression isn't a
                 // literal-resolvable name (binary_op, call_expr, etc.)
                 // still needs to be reported as a computed-property-
@@ -14465,7 +14490,10 @@ pub const Parser = struct {
                 // literals. Mirrors
                 // `computedPropertyNamesDeclarationEmit3_ES{5,6}` for
                 // `["" + ""](): void` inside `interface I` and DE4 for
-                // the same shape inside `var v: { ... }`.
+                // the same shape inside `var v: { ... }`. tsc's
+                // checkGrammarForInvalidDynamicName exempts entity name
+                // expressions (`[K.A]`), whose key type only the checker
+                // can judge.
                 if (!is_mapped_member_syntax) {
                     if (self.parsing_interface_body) {
                         try self.reportGrammarCodeAt(start_tok.span.start, start_tok.line, 1169, "A computed property name in an interface must refer to an expression whose type is a literal type or a 'unique symbol' type.");
@@ -14475,7 +14503,7 @@ pub const Parser = struct {
                 }
                 break :blk @as(hir_mod.StringId, 0);
             }
-            if (!self.computedTypeMemberIdentifierIsDeclaredValue(key_expr)) {
+            if (self.hir.kindOf(key_expr) == .identifier and !self.computedTypeMemberIdentifierIsDeclaredValue(key_expr)) {
                 try self.reportCannotFindNameNode(key_expr, start_tok.line);
             }
             break :blk @as(hir_mod.StringId, 0);
@@ -14638,6 +14666,19 @@ pub const Parser = struct {
                 break :blk try self.literalTypeMemberName(assertion.type_node);
             },
             else => null,
+        };
+    }
+
+    /// tsc's `IsEntityNameExpression`: an identifier, or a non-optional
+    /// property access whose object is itself an entity name expression.
+    fn isEntityNameExpression(self: *Parser, node: NodeId) bool {
+        return switch (self.hir.kindOf(node)) {
+            .identifier => true,
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, node);
+                break :blk !member.optional and self.isEntityNameExpression(member.object);
+            },
+            else => false,
         };
     }
 
@@ -23848,6 +23889,21 @@ test "parser: tsgo parity: TS1435 spelling suggestions count Unicode codepoints"
     try T.expectEqual(expected.len, index);
 }
 
+test "parser: accessors may be named by reserved keywords" {
+    // hono's Context: `get: Get<...>; get var(): Readonly<...>;`.
+    var s = try newTestSetup(
+        \\declare class C {
+        \\    get: () => number;
+        \\    get var(): number;
+        \\    set new(v: number);
+        \\}
+        \\interface I { get class(): number; set default(v: number); }
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
 test "parser: TS1435 stays clean for ordinary class properties" {
     const cases = [_][]const u8{
         "class C { public: number; }",
@@ -25973,6 +26029,41 @@ test "parser: contextual keywords label tuples in rest parameter unions" {
     defer destroyTestSetup(s);
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: reserved keywords label tuple elements" {
+    // ioredis' RedisCommander.d.ts: `fcall(...args: [function: string, ...])`.
+    // tsc's scanStartOfNamedTupleElement accepts any identifier or keyword.
+    var s = try newTestSetup(
+        \\declare function fcall(...args: [function: string, numkeys: number, ...args: string[]]): void;
+        \\type A = [new: number, class?: string, ...default: boolean[]];
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: late-bound computed type members group by key expression" {
+    // `RESP_TYPES.X` keys from @redis/client: distinct late-bound keys are
+    // not duplicates of each other; an identically spelled key still is.
+    var s = try newTestSetup(
+        \\declare const K: { readonly A: 1; readonly B: 2 };
+        \\type Diff = { [K.A]: string; [K.B]: number };
+        \\type Same = { [K.A]: string; [K.A]: string };
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    var duplicates: usize = 0;
+    for (s.parser.diagnostics.items) |diag| {
+        // `K.A` is an entity name: never a parse-time TS1170.
+        try T.expect(diag.code != 1170);
+        if (diag.code != 2300) continue;
+        duplicates += 1;
+        try T.expectEqualStrings("Duplicate identifier '[K.A]'.", diag.message);
+        // Both reports sit on the `Same` line (the third source line).
+        try T.expect(diag.pos > 100);
+    }
+    try T.expectEqual(@as(usize, 2), duplicates);
 }
 
 test "parser: labeled tuple optional type marker emits TS5086" {
