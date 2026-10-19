@@ -332,51 +332,62 @@ pub fn exit(code: u8) noreturn {
     std.process.exit(code);
 }
 
-/// Get environment variable
-pub fn getEnv(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
-    return std.process.getEnvVarOwned(allocator, key) catch |err| {
-        if (err == error.EnvironmentVariableNotFound) return null;
+/// Read a value from the caller's process-environment snapshot.
+/// The caller owns the returned copy.
+pub fn getEnv(allocator: std.mem.Allocator, environ: std.process.Environ, key: []const u8) !?[]u8 {
+    return environ.getAlloc(allocator, key) catch |err| {
+        if (err == error.EnvironmentVariableMissing) return null;
         return err;
     };
 }
 
-/// Set environment variable
-pub fn setEnv(key: []const u8, value: []const u8) !void {
-    try std.process.setEnvVar(key, value);
+/// Set a value in an explicitly owned environment map, for child processes.
+pub fn setEnv(map: *std.process.Environ.Map, key: []const u8, value: []const u8) !void {
+    if (!std.process.Environ.Map.validateKeyForPut(key)) return error.InvalidEnvironmentVariableName;
+    if (std.mem.indexOfScalar(u8, value, 0) != null) return error.InvalidEnvironmentVariableValue;
+    try map.put(key, value);
 }
 
-/// Unset environment variable
-pub fn unsetEnv(key: []const u8) !void {
-    try std.process.unsetEnvVar(key);
+/// Remove a value from an explicitly owned environment map.
+pub fn unsetEnv(map: *std.process.Environ.Map, key: []const u8) bool {
+    return map.swapRemove(key);
 }
 
-/// Get all environment variables
-pub fn getEnvMap(allocator: std.mem.Allocator) !std.process.EnvMap {
-    return try std.process.getEnvMap(allocator);
+/// Copy the caller's process-environment snapshot into an owned map.
+pub fn getEnvMap(allocator: std.mem.Allocator, environ: std.process.Environ) !std.process.Environ.Map {
+    return environ.createMap(allocator);
 }
 
 /// Get current working directory
-pub fn getCwd(allocator: std.mem.Allocator) ![]u8 {
-    return try std.process.getCwdAlloc(allocator);
+pub fn getCwd(allocator: std.mem.Allocator, io: std.Io) ![:0]u8 {
+    return std.process.currentPathAlloc(io, allocator);
 }
 
 /// Change current working directory
-pub fn setCwd(dir: []const u8) !void {
-    try std.process.changeCurDir(dir);
+pub fn setCwd(io: std.Io, dir: []const u8) !void {
+    try std.process.setCurrentPath(io, dir);
 }
 
-/// Get command line arguments
-pub fn getArgs(allocator: std.mem.Allocator) ![][]u8 {
-    var args = std.ArrayList([]u8).init(allocator);
+/// Copy command-line arguments from the caller's process-init snapshot.
+pub fn getArgs(allocator: std.mem.Allocator, process_args: std.process.Args) ![][]u8 {
+    var args: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (args.items) |arg| allocator.free(arg);
+        args.deinit(allocator);
+    }
 
-    var iter = try std.process.argsWithAllocator(allocator);
+    var iter = try std.process.Args.Iterator.initAllocator(process_args, allocator);
     defer iter.deinit();
 
     while (iter.next()) |arg| {
-        try args.append(try allocator.dupe(u8, arg));
+        const copy = try allocator.dupe(u8, arg);
+        args.append(allocator, copy) catch |err| {
+            allocator.free(copy);
+            return err;
+        };
     }
 
-    return args.toOwnedSlice();
+    return args.toOwnedSlice(allocator);
 }
 
 /// Check if a command exists in PATH
