@@ -29,7 +29,10 @@ const config_diagnostics = @import("config_diagnostics.zig");
 /// The resolver can add a transitive dependency after the roots are loaded;
 /// `Watcher.track` keeps the original baseline when a path is already known.
 pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
-    for (program.files.items) |file| try watcher.track(file.path);
+    const paths = try watcher.gpa.alloc([]const u8, program.files.items.len);
+    defer watcher.gpa.free(paths);
+    for (program.files.items, paths) |file, *path| path.* = file.path;
+    try watcher.trackMany(paths);
 }
 
 const ts_empty_files_list_in_config: u32 = 18002;
@@ -3846,9 +3849,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         defer watcher.deinit();
         // Pre-populate the tracked set so the first tick records a
         // real baseline rather than reporting every input as added.
-        for (input_files.items) |path| {
-            try watcher.track(path);
-        }
+        try watcher.trackMany(input_files.items);
         try trackProgramFiles(&watcher, &program);
         while (true) {
             // Inter-poll pause: 100ms via `std.Io.Clock.Duration.sleep`.

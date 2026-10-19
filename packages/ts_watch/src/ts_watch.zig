@@ -93,6 +93,36 @@ pub const Watcher = struct {
         try self.tracked.put(self.gpa, key, stat);
     }
 
+    /// Add a discovered group as one observation. A failed stat, allocation,
+    /// or map growth leaves the tracked set and its baselines unchanged, so
+    /// the caller can retry the whole group on the next watch iteration.
+    pub fn trackMany(self: *Watcher, paths: []const []const u8) !void {
+        var staged: std.StringHashMapUnmanaged(?Stat) = .empty;
+        defer {
+            var it = staged.iterator();
+            while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+            staged.deinit(self.gpa);
+        }
+
+        for (paths) |path| {
+            if (self.tracked.contains(path) or staged.contains(path)) continue;
+            const stat = try self.fs.stat(path);
+            const key = try self.gpa.dupe(u8, path);
+            staged.put(self.gpa, key, stat) catch |err| {
+                self.gpa.free(key);
+                return err;
+            };
+        }
+
+        try self.tracked.ensureUnusedCapacity(self.gpa, staged.count());
+        var it = staged.iterator();
+        while (it.next()) |entry| {
+            self.tracked.putAssumeCapacityNoClobber(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        // Ownership of every staged key moved to `tracked` above.
+        staged.clearRetainingCapacity();
+    }
+
     /// Stop tracking `path`. Does nothing if it isn't tracked.
     pub fn untrack(self: *Watcher, path: []const u8) void {
         if (self.tracked.fetchRemove(path)) |old| {
