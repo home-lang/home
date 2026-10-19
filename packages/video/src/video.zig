@@ -815,6 +815,9 @@ pub const RawAudioSource = sources.RawAudioSource;
 // Media Sinks
 // ============================================================================
 
+/// Standalone checked elementary packet/PTS streaming helpers.
+pub const packet_output = @import("core/packet_output.zig");
+
 pub const sinks = @import("sinks/sinks.zig");
 pub const VideoSink = sinks.VideoSink;
 pub const AudioSink = sinks.AudioSink;

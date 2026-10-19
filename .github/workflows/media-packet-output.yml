@@ -1,0 +1,22 @@
+name: Packet and PTS output helpers
+on:
+  push:
+    branches: [feat/packet-output-streams]
+  pull_request:
+    paths: ['packages/video/src/core/packet_output.zig', 'packages/video/docs/packet-output.md', '.github/workflows/media-packet-output.yml']
+permissions:
+  contents: read
+jobs:
+  helpers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - run: zig test packages/video/src/core/packet_output.zig
