@@ -34,3 +34,9 @@ errors; a full FIFO must not silently discard encoded dependencies.
 Serialize it with source mutation; the resulting data can move to a worker and
 outlive the source. It copies wrapped bytes directly into a contiguous arena and
 cleans up partial allocation failures. The module creates no threads or file I/O.
+
+`reset()` discards the entire queued dependency chain while retaining both arena
+capacities and cumulative eviction/skip diagnostics. It clears the previous
+clock, allowing the next producer epoch to restart at zero. Use it when replacing
+a failed sink; the caller must wait for a new keyframe before forwarding a new
+decoder epoch. Reset performs no allocation or callbacks.

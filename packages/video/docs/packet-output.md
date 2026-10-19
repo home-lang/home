@@ -45,3 +45,22 @@ registry count. It returns the old payload for caller-managed finalization.
 A stale ID fails before mutation. Packet producers can therefore commit one
 attachment's keyframe-aligned replacement without disturbing other attachments
 or allowing an old detach request to affect a different logical sink.
+
+`output_recovery.zig` provides `Retry.init(limit, initial_ns, maximum_ns)` and
+`poll(now, failed)` for bounded recovery claims. A caller supplies a monotonic
+clock, serializes access, and creates a fresh sink for every claimed attempt.
+The first observed failure starts a deadline. Later claims use exponential
+backoff capped at `maximum_ns`; arithmetic saturates at the clock limit. Zero
+initial delay allows an immediate claim. Limit zero disables recovery.
+
+A claim consumes one attempt even if sink construction fails. A healthy poll
+clears a pending deadline but preserves the lifetime attempt budget, preventing
+flapping sinks from retrying forever. Reconfigure with `init` to explicitly reset
+the budget. This helper does not sleep, allocate, open files, retry a poisoned
+writer, or promise recovery from source/encoder failures. Check `exhausted()` and
+expose failed attempts to the application. Tests cover deadline equality, caps,
+failed construction, flapping, disablement, saturation and invalid settings:
+
+```sh
+zig test packages/video/src/core/output_recovery.zig
+```

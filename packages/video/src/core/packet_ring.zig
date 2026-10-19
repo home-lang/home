@@ -26,6 +26,15 @@ pub const Ring = struct {
         s.allocator.free(s.bytes);
         s.allocator.free(s.entries);
     }
+    /// Discard queued dependency chains after a sink restart, retaining capacity
+    /// and cumulative diagnostics. The next packet may begin a fresh timeline.
+    pub fn reset(s: *Ring) void {
+        s.head = 0;
+        s.count = 0;
+        s.used = 0;
+        s.write_pos = 0;
+        s.last = null;
+    }
     fn drop(s: *Ring) void {
         s.used -= s.entries[s.head].length;
         s.head = (s.head + 1) % s.entries.len;
@@ -188,4 +197,17 @@ test "suffix cloning frees partial allocations and preserves source" {
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "reset reuses FIFO capacity and accepts a fresh clock" {
+    var ring = try Ring.init(std.testing.allocator, 8, 2, 100);
+    defer ring.deinit();
+    try ring.pushQueued("abcd", 100, true);
+    try ring.pushQueued("efgh", 101, false);
+    ring.reset();
+    try std.testing.expectEqual(@as(usize, 0), ring.count);
+    try std.testing.expectEqual(@as(usize, 0), ring.used);
+    try ring.pushQueued("fresh", 0, true);
+    var bytes: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("fresh", try ring.copy(0, &bytes));
 }
