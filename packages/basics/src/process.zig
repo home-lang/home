@@ -466,39 +466,29 @@ pub const Pipe = struct {
 /// Process signals (Unix-like systems)
 /// Note: On Windows, only a subset of signals are supported via limited emulation
 pub const Signal = enum(u32) {
-    SIGTERM = 15,
-    SIGKILL = 9,
-    SIGINT = 2,
-    SIGHUP = 1,
-    SIGQUIT = 3,
-    SIGUSR1 = 10,
-    SIGUSR2 = 12,
+    SIGTERM = if (builtin.os.tag == .windows) 15 else @backingInt(std.posix.SIG.TERM),
+    SIGKILL = if (builtin.os.tag == .windows) 9 else @backingInt(std.posix.SIG.KILL),
+    SIGINT = if (builtin.os.tag == .windows) 2 else @backingInt(std.posix.SIG.INT),
+    SIGHUP = if (builtin.os.tag == .windows) 1 else @backingInt(std.posix.SIG.HUP),
+    SIGQUIT = if (builtin.os.tag == .windows) 3 else @backingInt(std.posix.SIG.QUIT),
+    SIGUSR1 = if (builtin.os.tag == .windows) 10 else @backingInt(std.posix.SIG.USR1),
+    SIGUSR2 = if (builtin.os.tag == .windows) 12 else @backingInt(std.posix.SIG.USR2),
 
     /// Send signal to process
     /// On Windows, this will attempt to terminate the process (SIGTERM/SIGKILL only)
     pub fn send(self: Signal, process_id: std.process.Child.Id) !void {
         if (builtin.os.tag == .windows) {
-            // Windows doesn't support POSIX signals
-            // SIGTERM and SIGKILL will terminate the process
-            if (self == .SIGTERM or self == .SIGKILL) {
-                const handle = std.os.windows.kernel32.OpenProcess(
-                    std.os.windows.PROCESS_TERMINATE,
-                    std.os.windows.FALSE,
-                    process_id,
-                );
-                if (handle == null) return error.OpenProcessFailed;
-                defer std.os.windows.CloseHandle(handle.?);
-
-                const exit_code: u32 = if (self == .SIGKILL) 1 else 0;
-                if (std.os.windows.kernel32.TerminateProcess(handle.?, exit_code) == 0) {
-                    return error.TerminateProcessFailed;
-                }
-            } else {
-                // Other signals not supported on Windows
-                return error.UnsupportedSignal;
-            }
+            if (self != .SIGTERM and self != .SIGKILL) return error.UnsupportedSignal;
+            // Child.Id is a process HANDLE on Windows, not a numeric PID.
+            // The caller retains ownership so it can still wait and reap.
+            const exit_code: u32 = if (self == .SIGKILL) 1 else 0;
+            return switch (std.os.windows.ntdll.NtTerminateProcess(process_id, @fromBackingInt(exit_code))) {
+                .SUCCESS, .PROCESS_IS_TERMINATING => {},
+                else => error.TerminateProcessFailed,
+            };
         } else {
-            _ = try std.os.kill(process_id, @backingInt(self));
+            if (process_id <= 0) return error.InvalidProcessId;
+            try std.posix.kill(process_id, @fromBackingInt(@intCast(@backingInt(self))));
         }
     }
 };
@@ -506,30 +496,19 @@ pub const Signal = enum(u32) {
 /// Check if process is running
 pub fn isRunning(process_id: std.process.Child.Id) bool {
     if (builtin.os.tag == .windows) {
-        // On Windows, try to open the process handle
-        const handle = std.os.windows.kernel32.OpenProcess(
-            std.os.windows.PROCESS_QUERY_INFORMATION,
-            std.os.windows.FALSE,
-            process_id,
-        );
-        if (handle == null) return false;
-        defer std.os.windows.CloseHandle(handle.?);
-
-        // Check if process has exited
-        var exit_code: u32 = undefined;
-        if (std.os.windows.kernel32.GetExitCodeProcess(handle.?, &exit_code) == 0) {
-            return false;
-        }
-        // STILL_ACTIVE = 259
-        return exit_code == 259;
+        const zero_timeout: std.os.windows.LARGE_INTEGER = 0;
+        return std.os.windows.ntdll.NtWaitForSingleObject(process_id, .FALSE, &zero_timeout) == .TIMEOUT;
     } else {
-        // Try to send signal 0 (null signal) to check if process exists
-        std.os.kill(process_id, 0) catch return false;
+        if (process_id <= 0) return false;
+        std.posix.kill(process_id, @fromBackingInt(0)) catch |err| return switch (err) {
+            error.PermissionDenied => true,
+            else => false,
+        };
         return true;
     }
 }
 
 /// Wait for a specific duration
-pub fn sleep(milliseconds: u64) void {
-    std.time.sleep(milliseconds * std.time.ns_per_ms);
+pub fn sleep(io: std.Io, milliseconds: u64) std.Io.Cancelable!void {
+    try std.Io.sleep(io, .fromNanoseconds(@as(i96, milliseconds) * std.time.ns_per_ms), .awake);
 }
