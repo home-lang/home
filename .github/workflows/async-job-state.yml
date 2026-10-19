@@ -6,6 +6,7 @@ on:
       - 'packages/async/src/job_state.zig'
       - 'packages/async/src/completion_gate.zig'
       - 'packages/async/src/completion_watermark.zig'
+      - 'packages/async/src/preparation_gate.zig'
       - '.github/workflows/async-job-state.yml'
   pull_request:
     paths:
@@ -13,6 +14,7 @@ on:
       - 'packages/async/src/job_state.zig'
       - 'packages/async/src/completion_gate.zig'
       - 'packages/async/src/completion_watermark.zig'
+      - 'packages/async/src/preparation_gate.zig'
       - '.github/workflows/async-job-state.yml'
   workflow_dispatch:
 permissions:
@@ -33,4 +35,5 @@ jobs:
             zig test packages/async/src/task.zig -lc -O "$mode"
             zig test packages/async/src/completion_gate.zig -O "$mode"
             zig test packages/async/src/completion_watermark.zig -O "$mode"
+            zig test packages/async/src/preparation_gate.zig -O "$mode"
           done

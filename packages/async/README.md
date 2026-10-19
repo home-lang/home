@@ -56,6 +56,25 @@ try std.testing.expectEqual(@as(i32, 42), result);
 
 ## Testing
 
+`PreparationGate` separates queued, preparing, ready and published work from
+terminal cancellation/failure. `claim`, `ready` and `publish` enforce that order.
+Queued cancellation wins before resource acquisition. Cancelling preparing/ready
+work records a cooperative request: the owner releases its resources, then calls
+`cleaned()` to make cancellation terminal. Repeated requests return false.
+Publication and terminal outcomes cannot be undone by late cancellation or errors.
+If preparation itself fails while cancellation is requested, `fail()` preserves
+failure instead of claiming successful cancellation.
+
+Use the caller's mutex around the gate and the actual publication boundary.
+Keep result events and slot release after cleanup, and retain resource ownership
+while arbitrary callbacks are still running. The gate does not interrupt code,
+run cleanup, allocate, or provide synchronization. Standalone tests cover queued
+and claimed cancellation, publication, invalid order and failure races:
+
+```bash
+zig test packages/async/src/preparation_gate.zig
+```
+
 `CompletionWatermark` (also available directly from `src/completion_watermark.zig`)
 tracks FIFO admissions and completed prefixes without allocations. `reserve()`
 returns an increasing ticket; `complete()` acknowledges the next operation.

@@ -16,6 +16,7 @@ pub const RawTask = task.RawTask;
 pub const Runtime = runtime.Runtime;
 
 test {
+    _ = @import("preparation_gate.zig");
     _ = @import("completion_watermark.zig");
     _ = @import("completion_gate.zig");
     _ = future;
@@ -30,3 +31,5 @@ test {
 pub const CompletionGate = @import("completion_gate.zig").Gate;
 /// Fixed-prefix FIFO completion; caller owns synchronization and storage.
 pub const CompletionWatermark = @import("completion_watermark.zig").Watermark;
+/// Cooperative preparation with cleanup before terminal cancellation.
+pub const PreparationGate = @import("preparation_gate.zig").Gate;
