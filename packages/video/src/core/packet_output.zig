@@ -87,3 +87,64 @@ test "PTS sink failure poisons the writer; rejected timestamps do not call the s
     try std.testing.expectError(error.SinkFailed, writer.frame(2));
     try std.testing.expectEqual(@as(usize, 2), state.calls);
 }
+
+/// Fixed-capacity, allocation-free attachment identities. Serialized owner only;
+/// payload ownership stays with the caller. IDs are never reused, so a stale
+/// detach cannot remove a later attachment occupying the same slot.
+pub fn Slots(comptime T: type, comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        pub const Entry = struct { id: u64 = 0, value: ?T = null };
+        entries: [capacity]Entry = std.mem.zeroes([capacity]Entry),
+        count: usize = 0,
+        next_id: u64 = 1,
+        pub fn add(s: *Self, value: T) !u64 {
+            if (s.count == capacity) return error.Capacity;
+            if (s.next_id == std.math.maxInt(u64)) return error.IdentityExhausted;
+            for (&s.entries) |*entry| if (entry.value == null) {
+                const id = s.next_id;
+                entry.* = .{ .id = id, .value = value };
+                s.next_id += 1;
+                s.count += 1;
+                return id;
+            };
+            unreachable;
+        }
+        pub fn get(s: *const Self, id: u64) ?T {
+            if (id == 0) return null;
+            for (s.entries) |entry| if (entry.id == id) return entry.value;
+            return null;
+        }
+        pub fn remove(s: *Self, id: u64) ?T {
+            if (id == 0) return null;
+            for (&s.entries) |*entry| if (entry.id == id and entry.value != null) {
+                const value = entry.value;
+                entry.* = .{};
+                s.count -= 1;
+                return value;
+            };
+            return null;
+        }
+    };
+}
+test "attachment slots bound capacity and reject stale or exhausted identities atomically" {
+    var slots: Slots(u32, 2) = .{};
+    const first = try slots.add(10);
+    const second = try slots.add(20);
+    try std.testing.expectError(error.Capacity, slots.add(30));
+    try std.testing.expectEqual(@as(u64, 3), slots.next_id);
+    try std.testing.expectEqual(@as(u32, 10), slots.remove(first).?);
+    const third = try slots.add(30);
+    try std.testing.expect(third != first);
+    try std.testing.expect(slots.remove(first) == null);
+    try std.testing.expect(slots.get(0) == null);
+    try std.testing.expectEqual(@as(u32, 20), slots.get(second).?);
+    try std.testing.expectEqual(@as(u32, 30), slots.get(third).?);
+    _ = slots.remove(second);
+    slots.next_id = std.math.maxInt(u64);
+    try std.testing.expectError(error.IdentityExhausted, slots.add(40));
+    try std.testing.expectEqual(@as(usize, 1), slots.count);
+    try std.testing.expectEqual(@as(u32, 30), slots.get(third).?);
+    var empty: Slots(u32, 0) = .{};
+    try std.testing.expectError(error.Capacity, empty.add(1));
+}

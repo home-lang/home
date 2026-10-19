@@ -32,3 +32,10 @@ Tests cover multi-NAL conversion, malformed/truncated input, exact maximum PTS,
 small-buffer state preservation, monotonicity and sink-failure poisoning.
 zig-camera uses the helpers at its native callback output boundary, with
 independent video decoding and media/PTS timeline checks in its integration suite.
+
+`Slots(T, capacity)` provides fixed-capacity attachment identities for serialized
+packet fan-out owners. `add` returns a nonzero ID; `get` and `remove` reject stale
+IDs even after a slot is reused. Capacity and ID exhaustion leave entries intact.
+No allocation, sink callbacks or payload destruction occur inside the registry;
+the caller retains ownership and synchronization. IDs never wrap or repeat.
+This supports independent container/PTS lifetimes while sharing encoded packets.
