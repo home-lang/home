@@ -1554,6 +1554,22 @@ pub fn build(b: *std.Build) void {
     }));
     const run_basics_memory_tests = b.addRunArtifact(basics_memory_tests);
 
+    const basics_process_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/basics/tests/process_exec_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    basics_process_tests.root_module.link_libc = true;
+    basics_process_tests.root_module.addImport("basics_process", b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/process.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_basics_process_tests = b.addRunArtifact(basics_process_tests);
+    run_basics_process_tests.has_side_effects = true;
+
     const basics_datetime_tests = b.addTest(.{
         .root_module = basics_datetime_module,
     });
@@ -2233,6 +2249,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_basics_temporal_tests.step, test_filter, "basics_temporal");
     dependOnTest(test_step, &run_basics_core_tests.step, test_filter, "basics_core");
     dependOnTest(test_step, &run_basics_memory_tests.step, test_filter, "basics_memory");
+    dependOnTest(test_step, &run_basics_process_tests.step, test_filter, "basics_process");
     dependOnTest(test_step, &run_basics_datetime_tests.step, test_filter, "basics_datetime");
     dependOnTest(test_step, &run_basics_ini_parser_tests.step, test_filter, "basics_ini_parser");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");

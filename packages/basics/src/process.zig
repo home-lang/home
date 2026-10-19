@@ -17,31 +17,47 @@ pub const ExecResult = struct {
 };
 
 /// Execute a command and capture output
-pub fn exec(allocator: std.mem.Allocator, argv: []const []const u8) !ExecResult {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+/// Read both pipes concurrently so a child cannot block on a full stderr
+/// pipe while its parent waits for stdout to reach EOF. The caller supplies
+/// an I/O implementation capable of allocating during process creation.
+pub fn exec(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !ExecResult {
+    if (argv.len == 0) return error.NoCommand;
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .inherit,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io);
 
-    try child.spawn();
-    // If we bail out before `wait()`, terminate the child and reap it so
-    // we don't leak processes or FDs back to the caller.
-    errdefer {
-        _ = child.kill() catch {};
+    var reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(allocator, io, reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer multi_reader.deinit();
+
+    const stdout_reader = multi_reader.reader(0);
+    const stderr_reader = multi_reader.reader(1);
+    const output_limit = 10 * 1024 * 1024;
+    while (multi_reader.fill(64, .none)) |_| {
+        if (stdout_reader.buffered().len > output_limit or stderr_reader.buffered().len > output_limit)
+            return error.StreamTooLong;
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |e| return e,
     }
+    try multi_reader.checkAnyError();
 
-    const stdout = try child.stdout.?.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
+    const term = try child.wait(io);
+    const stdout = try multi_reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
-
-    const stderr = try child.stderr.?.reader().readAllAlloc(allocator, 10 * 1024 * 1024);
+    const stderr = try multi_reader.toOwnedSlice(1);
     errdefer allocator.free(stderr);
-
-    const term = try child.wait();
 
     return .{
         .stdout = stdout,
         .stderr = stderr,
         .exit_code = switch (term) {
-            .Exited => |code| @intCast(code),
+            .exited => |code| @intCast(code),
             else => 1,
         },
         .allocator = allocator,
@@ -85,12 +101,12 @@ pub fn execWithInput(allocator: std.mem.Allocator, argv: []const []const u8, std
 }
 
 /// Execute a shell command (via sh -c on Unix, cmd /c on Windows)
-pub fn shell(allocator: std.mem.Allocator, command: []const u8) !ExecResult {
+pub fn shell(allocator: std.mem.Allocator, io: std.Io, command: []const u8) !ExecResult {
     const argv = if (builtin.os.tag == .windows)
         &[_][]const u8{ "cmd", "/c", command }
     else
         &[_][]const u8{ "sh", "-c", command };
-    return exec(allocator, argv);
+    return exec(allocator, io, argv);
 }
 
 /// Spawn a process without waiting
@@ -335,10 +351,10 @@ pub fn getArgs(allocator: std.mem.Allocator) ![][]u8 {
 }
 
 /// Check if a command exists in PATH
-pub fn commandExists(allocator: std.mem.Allocator, command: []const u8) bool {
+pub fn commandExists(allocator: std.mem.Allocator, io: std.Io, command: []const u8) bool {
     // On Windows use "where", on Unix use "which"
     const check_cmd = if (builtin.os.tag == .windows) "where" else "which";
-    const result = exec(allocator, &[_][]const u8{ check_cmd, command }) catch return false;
+    const result = exec(allocator, io, &[_][]const u8{ check_cmd, command }) catch return false;
     defer {
         var mut_result = result;
         mut_result.deinit();
@@ -449,7 +465,7 @@ pub const Signal = enum(u32) {
                 return error.UnsupportedSignal;
             }
         } else {
-            _ = try std.os.kill(process_id, @intFromEnum(self));
+            _ = try std.os.kill(process_id, @backingInt(self));
         }
     }
 };
