@@ -1498,6 +1498,20 @@ pub fn build(b: *std.Build) void {
     }));
     const run_basics_fs_util_tests = b.addRunArtifact(basics_fs_util_tests);
 
+    const basics_json_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/basics/tests/json_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    basics_json_tests.root_module.addImport("basics_json", b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/json.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_basics_json_tests = b.addRunArtifact(basics_json_tests);
+
     const basics_datetime_tests = b.addTest(.{
         .root_module = basics_datetime_module,
     });
@@ -2173,6 +2187,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_basics_middleware_tests.step, test_filter, "basics_middleware");
     dependOnTest(test_step, &run_basics_filesystem_tests.step, test_filter, "basics_filesystem");
     dependOnTest(test_step, &run_basics_fs_util_tests.step, test_filter, "basics_fs_util");
+    dependOnTest(test_step, &run_basics_json_tests.step, test_filter, "basics_json");
     dependOnTest(test_step, &run_basics_datetime_tests.step, test_filter, "basics_datetime");
     dependOnTest(test_step, &run_basics_ini_parser_tests.step, test_filter, "basics_ini_parser");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");

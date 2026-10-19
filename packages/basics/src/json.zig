@@ -66,9 +66,9 @@ pub const Json = struct {
     /// Returns: Compact JSON string (caller must free)
     /// Errors: OutOfMemory on allocation failure
     pub fn stringify(self: *Json, value: Value) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
+        var buffer: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer buffer.deinit();
-        try self.writeValue(&buffer.writer(), value, 0);
+        try self.writeValue(&buffer.writer, value, 0);
         return buffer.toOwnedSlice();
     }
 
@@ -83,9 +83,9 @@ pub const Json = struct {
     /// Returns: Pretty-printed JSON string (caller must free)
     /// Errors: OutOfMemory on allocation failure
     pub fn stringifyPretty(self: *Json, value: Value) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
+        var buffer: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer buffer.deinit();
-        try self.writeValuePretty(&buffer.writer(), value, 0);
+        try self.writeValuePretty(&buffer.writer, value, 0);
         return buffer.toOwnedSlice();
     }
 
@@ -143,37 +143,38 @@ pub const Json = struct {
         };
     }
 
-    fn writeValue(self: *Json, writer: anytype, value: Value, indent: usize) !void {
-        _ = indent;
+    fn writeEscapedString(writer: *std.Io.Writer, s: []const u8) !void {
+        try writer.writeByte('"');
+        for (s) |c| {
+            switch (c) {
+                '"' => try writer.writeAll("\\\""),
+                '\\' => try writer.writeAll("\\\\"),
+                '\n' => try writer.writeAll("\\n"),
+                '\r' => try writer.writeAll("\\r"),
+                '\t' => try writer.writeAll("\\t"),
+                0x08 => try writer.writeAll("\\b"),
+                0x0C => try writer.writeAll("\\f"),
+                else => {
+                    if (c < 0x20) {
+                        const hex = "0123456789abcdef";
+                        try writer.writeAll("\\u00");
+                        try writer.writeByte(hex[c >> 4]);
+                        try writer.writeByte(hex[c & 0x0F]);
+                    } else {
+                        try writer.writeByte(c);
+                    }
+                },
+            }
+        }
+        try writer.writeByte('"');
+    }
+
+    fn writeValue(self: *Json, writer: *std.Io.Writer, value: Value, indent: usize) !void {
         switch (value) {
             .Null => try writer.writeAll("null"),
             .Bool => |b| try writer.writeAll(if (b) "true" else "false"),
             .Number => |n| try writer.print("{d}", .{n}),
-            .String => |s| {
-                try writer.writeByte('"');
-                for (s) |c| {
-                    switch (c) {
-                        '"' => try writer.writeAll("\\\""),
-                        '\\' => try writer.writeAll("\\\\"),
-                        '\n' => try writer.writeAll("\\n"),
-                        '\r' => try writer.writeAll("\\r"),
-                        '\t' => try writer.writeAll("\\t"),
-                        0x08 => try writer.writeAll("\\b"),
-                        0x0C => try writer.writeAll("\\f"),
-                        else => {
-                            if (c < 0x20) {
-                                const hex = "0123456789abcdef";
-                                try writer.writeAll("\\u00");
-                                try writer.writeByte(hex[c >> 4]);
-                                try writer.writeByte(hex[c & 0x0F]);
-                            } else {
-                                try writer.writeByte(c);
-                            }
-                        },
-                    }
-                }
-                try writer.writeByte('"');
-            },
+            .String => |s| try writeEscapedString(writer, s),
             .Array => |arr| {
                 try writer.writeByte('[');
                 for (arr, 0..) |item, i| {
@@ -190,9 +191,8 @@ pub const Json = struct {
                     if (!first) try writer.writeByte(',');
                     first = false;
 
-                    try writer.writeByte('"');
-                    try writer.writeAll(entry.key_ptr.*);
-                    try writer.writeAll("\":");
+                    try writeEscapedString(writer, entry.key_ptr.*);
+                    try writer.writeByte(':');
                     try self.writeValue(writer, entry.value_ptr.*, indent + 2);
                 }
                 try writer.writeByte('}');
@@ -200,8 +200,8 @@ pub const Json = struct {
         }
     }
 
-    fn writeValuePretty(self: *Json, writer: anytype, value: Value, indent: usize) !void {
-        const indent_str = "  " ** 10; // Max 10 levels
+    fn writeValuePretty(self: *Json, writer: *std.Io.Writer, value: Value, indent: usize) !void {
+        const indent_str = "                    "; // Max 10 levels
         const clamped = @min(indent, 10);
         const clamped_plus_1 = @min(indent + 1, 10);
 
@@ -209,31 +209,7 @@ pub const Json = struct {
             .Null => try writer.writeAll("null"),
             .Bool => |b| try writer.writeAll(if (b) "true" else "false"),
             .Number => |n| try writer.print("{d}", .{n}),
-            .String => |s| {
-                try writer.writeByte('"');
-                for (s) |c| {
-                    switch (c) {
-                        '"' => try writer.writeAll("\\\""),
-                        '\\' => try writer.writeAll("\\\\"),
-                        '\n' => try writer.writeAll("\\n"),
-                        '\r' => try writer.writeAll("\\r"),
-                        '\t' => try writer.writeAll("\\t"),
-                        0x08 => try writer.writeAll("\\b"),
-                        0x0C => try writer.writeAll("\\f"),
-                        else => {
-                            if (c < 0x20) {
-                                const hex = "0123456789abcdef";
-                                try writer.writeAll("\\u00");
-                                try writer.writeByte(hex[c >> 4]);
-                                try writer.writeByte(hex[c & 0x0F]);
-                            } else {
-                                try writer.writeByte(c);
-                            }
-                        },
-                    }
-                }
-                try writer.writeByte('"');
-            },
+            .String => |s| try writeEscapedString(writer, s),
             .Array => |arr| {
                 if (arr.len == 0) {
                     try writer.writeAll("[]");
@@ -264,9 +240,8 @@ pub const Json = struct {
                 const count = obj.count();
                 while (iter.next()) |entry| {
                     try writer.writeAll(indent_str[0 .. clamped_plus_1 * 2]);
-                    try writer.writeByte('"');
-                    try writer.writeAll(entry.key_ptr.*);
-                    try writer.writeAll("\": ");
+                    try writeEscapedString(writer, entry.key_ptr.*);
+                    try writer.writeAll(": ");
                     try self.writeValuePretty(writer, entry.value_ptr.*, indent + 1);
                     if (i < count - 1) {
                         try writer.writeByte(',');
@@ -463,7 +438,7 @@ pub const Builder = struct {
     pub fn array(self: *Builder) !ArrayBuilder {
         return ArrayBuilder{
             .allocator = self.allocator,
-            .values = std.ArrayList(Value).init(self.allocator),
+            .values = .empty,
         };
     }
 
@@ -489,7 +464,7 @@ pub const ArrayBuilder = struct {
     ///
     /// Errors: OutOfMemory on allocation failure
     pub fn push(self: *ArrayBuilder, value: Value) !void {
-        try self.values.append(value);
+        try self.values.append(self.allocator, value);
     }
 
     /// Finalize the array and return it as a Value.
@@ -499,7 +474,7 @@ pub const ArrayBuilder = struct {
     /// Returns: JSON array Value
     /// Errors: OutOfMemory on allocation failure
     pub fn build(self: *ArrayBuilder) !Value {
-        return Value{ .Array = try self.values.toOwnedSlice() };
+        return Value{ .Array = try self.values.toOwnedSlice(self.allocator) };
     }
 };
 
@@ -518,7 +493,13 @@ pub const ObjectBuilder = struct {
     ///
     /// Errors: OutOfMemory on allocation failure
     pub fn put(self: *ObjectBuilder, key: []const u8, value: Value) !void {
+        if (self.map.getEntry(key)) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            entry.value_ptr.* = value;
+            return;
+        }
         const owned_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(owned_key);
         try self.map.put(owned_key, value);
     }
 
