@@ -9,7 +9,7 @@ pub const Pool = struct {
     block_size: usize,
     block_count: usize,
     free_list: ?*FreeNode,
-    buffer: []u8,
+    buffer: []align(@alignOf(FreeNode)) u8,
     stats: MemStats,
     parent_allocator: std.mem.Allocator,
 
@@ -18,9 +18,12 @@ pub const Pool = struct {
     };
 
     pub fn init(parent: std.mem.Allocator, block_size: usize, block_count: usize) AllocatorError!Pool {
-        const actual_block_size = @max(block_size, @sizeOf(FreeNode));
+        const alignment = @alignOf(FreeNode);
+        const min_block_size = @max(block_size, @sizeOf(FreeNode));
+        const padded_size = std.math.add(usize, min_block_size, alignment - 1) catch return AllocatorError.OutOfMemory;
+        const actual_block_size = padded_size & ~@as(usize, alignment - 1);
         const buffer_size = std.math.mul(usize, actual_block_size, block_count) catch return AllocatorError.OutOfMemory;
-        const buffer = parent.alloc(u8, buffer_size) catch return AllocatorError.OutOfMemory;
+        const buffer = parent.alignedAlloc(u8, .fromByteUnits(alignment), buffer_size) catch return AllocatorError.OutOfMemory;
 
         var pool = Pool{
             .block_size = actual_block_size,
@@ -60,10 +63,9 @@ pub const Pool = struct {
 
     fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *Pool = @ptrCast(@alignCast(ctx));
-        _ = ptr_align;
         _ = ret_addr;
 
-        if (len > self.block_size) {
+        if (len > self.block_size or ptr_align.toByteUnits() > @alignOf(FreeNode)) {
             return null; // Block too large
         }
 
@@ -116,4 +118,33 @@ test "pool allocator" {
     allocator.free(block1);
     const block3 = try allocator.alloc(u8, 16);
     try testing.expectEqual(@as(usize, 16), block3.len);
+}
+
+test "pool rounds odd blocks to free-list node alignment" {
+    var pool = try Pool.init(std.testing.allocator, 9, 3);
+    defer pool.deinit();
+    const a = pool.allocator();
+    const one = try a.alloc(u8, 9);
+    const two = try a.alloc(u8, 9);
+    const three = try a.alloc(u8, 9);
+    try std.testing.expectEqual(@as(usize, 0), @intFromPtr(one.ptr) % @alignOf(usize));
+    try std.testing.expectEqual(@as(usize, 0), @intFromPtr(two.ptr) % @alignOf(usize));
+    try std.testing.expectEqual(@as(usize, 0), @intFromPtr(three.ptr) % @alignOf(usize));
+    a.free(two);
+    const reused = try a.alloc(u8, 9);
+    try std.testing.expectEqual(two.ptr, reused.ptr);
+}
+
+test "pool refuses alignment beyond its backing allocation" {
+    var pool = try Pool.init(std.testing.allocator, 64, 2);
+    defer pool.deinit();
+    try std.testing.expectError(error.OutOfMemory, pool.allocator().alignedAlloc(u8, .@"64", 1));
+}
+
+test "pool checks stride rounding and total size overflow" {
+    try std.testing.expectError(error.OutOfMemory, Pool.init(std.testing.allocator, std.math.maxInt(usize), 1));
+    try std.testing.expectError(error.OutOfMemory, Pool.init(std.testing.allocator, 16, std.math.maxInt(usize)));
+    var empty = try Pool.init(std.testing.allocator, 9, 0);
+    defer empty.deinit();
+    try std.testing.expectError(error.OutOfMemory, empty.allocator().alloc(u8, 1));
 }
