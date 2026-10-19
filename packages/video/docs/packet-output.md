@@ -39,3 +39,9 @@ IDs even after a slot is reused. Capacity and ID exhaustion leave entries intact
 No allocation, sink callbacks or payload destruction occur inside the registry;
 the caller retains ownership and synchronization. IDs never wrap or repeat.
 This supports independent container/PTS lifetimes while sharing encoded packets.
+
+`Slots.replace(id, value)` swaps a live payload while preserving its ID and the
+registry count. It returns the old payload for caller-managed finalization.
+A stale ID fails before mutation. Packet producers can therefore commit one
+attachment's keyframe-aligned replacement without disturbing other attachments
+or allowing an old detach request to affect a different logical sink.

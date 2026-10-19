@@ -115,6 +115,17 @@ pub fn Slots(comptime T: type, comptime capacity: usize) type {
             for (s.entries) |entry| if (entry.id == id) return entry.value;
             return null;
         }
+        /// Replace a live payload without changing its stable identity/count.
+        /// The caller receives ownership of the old payload only on success.
+        pub fn replace(s: *Self, id: u64, value: T) !T {
+            if (id == 0) return error.StaleIdentity;
+            for (&s.entries) |*entry| if (entry.id == id and entry.value != null) {
+                const old = entry.value.?;
+                entry.value = value;
+                return old;
+            };
+            return error.StaleIdentity;
+        }
         pub fn remove(s: *Self, id: u64) ?T {
             if (id == 0) return null;
             for (&s.entries) |*entry| if (entry.id == id and entry.value != null) {
@@ -147,4 +158,19 @@ test "attachment slots bound capacity and reject stale or exhausted identities a
     try std.testing.expectEqual(@as(u32, 30), slots.get(third).?);
     var empty: Slots(u32, 0) = .{};
     try std.testing.expectError(error.Capacity, empty.add(1));
+}
+
+test "attachment replacement preserves identity and ownership; stale replacement is atomic" {
+    var slots: Slots(u32, 2) = .{};
+    const id = try slots.add(10);
+    const next = slots.next_id;
+    try std.testing.expectEqual(@as(u32, 10), try slots.replace(id, 20));
+    try std.testing.expectEqual(@as(u32, 20), slots.get(id).?);
+    try std.testing.expectEqual(@as(usize, 1), slots.count);
+    try std.testing.expectEqual(next, slots.next_id);
+    try std.testing.expectError(error.StaleIdentity, slots.replace(0, 30));
+    _ = slots.remove(id);
+    const newer = try slots.add(40);
+    try std.testing.expectError(error.StaleIdentity, slots.replace(id, 50));
+    try std.testing.expectEqual(@as(u32, 40), slots.get(newer).?);
 }
