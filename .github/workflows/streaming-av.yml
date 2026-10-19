@@ -2,9 +2,9 @@ name: Streaming A/V modules
 on:
   push:
     branches: [main]
-    paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
+    paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/video/src/core/recording_path.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
   pull_request:
-    paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
+    paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/video/src/core/recording_path.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,6 +25,7 @@ jobs:
       - run: |
           zig test packages/video/src/core/pcm_timeline.zig
           zig test packages/video/src/core/recording_policy.zig
+          zig test packages/video/src/core/recording_path.zig
           zig test packages/video/src/containers/av_stream.zig
           cc -std=c11 -Wall -Wextra -Werror packages/audio/src/io/native_capture.c packages/audio/src/io/native_capture_test.c -lasound -o /tmp/home-capture-test
           /tmp/home-capture-test
