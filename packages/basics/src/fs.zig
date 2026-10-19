@@ -1,40 +1,48 @@
 const std = @import("std");
+const compat = @import("compat.zig");
+const Io = std.Io;
 
 /// File system operations for Home standard library
 pub const File = struct {
-    handle: std.fs.File,
+    handle: Io.File,
     path: []const u8,
     allocator: std.mem.Allocator,
+    io: Io,
+    position: u64 = 0,
+    append: bool = false,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, mode: OpenMode) !*File {
-        const std_mode: std.fs.File.OpenFlags = switch (mode) {
-            .Read => .{ .mode = .read_only },
-            .Write => .{ .mode = .write_only },
-            .Append => .{ .mode = .write_only },
-            .ReadWrite => .{ .mode = .read_write },
-        };
-
-        // Open the file FIRST so the heap struct isn't leaked when the
-        // open fails, and dupe the path before taking ownership so a dup
-        // failure doesn't leak the opened handle either.
-        const handle = try std.fs.cwd().openFile(path, std_mode);
-        errdefer handle.close();
+        const io = compat.io();
+        const handle = try Io.Dir.cwd().openFile(io, path, .{
+            .mode = switch (mode) {
+                .Read => .read_only,
+                .Write, .Append => .write_only,
+                .ReadWrite => .read_write,
+            },
+        });
+        errdefer handle.close(io);
         const owned_path = try allocator.dupe(u8, path);
         errdefer allocator.free(owned_path);
+        const position = if (mode == .Append) try handle.length(io) else 0;
+        if (mode == .Append) try io.vtable.fileSeekTo(io.userdata, handle, position);
         const file = try allocator.create(File);
 
         file.* = .{
             .handle = handle,
             .path = owned_path,
             .allocator = allocator,
+            .io = io,
+            .position = position,
+            .append = mode == .Append,
         };
 
         return file;
     }
 
     pub fn create(allocator: std.mem.Allocator, path: []const u8) !*File {
-        const handle = try std.fs.cwd().createFile(path, .{});
-        errdefer handle.close();
+        const io = compat.io();
+        const handle = try Io.Dir.cwd().createFile(io, path, .{});
+        errdefer handle.close(io);
         const owned_path = try allocator.dupe(u8, path);
         errdefer allocator.free(owned_path);
         const file = try allocator.create(File);
@@ -43,51 +51,81 @@ pub const File = struct {
             .handle = handle,
             .path = owned_path,
             .allocator = allocator,
+            .io = io,
         };
 
         return file;
     }
 
     pub fn close(self: *File) void {
-        self.handle.close();
+        self.handle.close(self.io);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
     }
 
-    /// Read entire file into a string
+    /// Read from the current position until EOF, enforcing the caller's limit.
     pub fn readToString(self: *File, max_size: usize) ![]u8 {
-        return try self.handle.readToEndAlloc(self.allocator, max_size);
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const allowance = @min(buffer.len, max_size - result.items.len +| 1);
+            const count = try self.read(buffer[0..allowance]);
+            if (count == 0) return result.toOwnedSlice(self.allocator);
+            if (count > max_size - result.items.len) return error.StreamTooLong;
+            try result.appendSlice(self.allocator, buffer[0..count]);
+        }
     }
 
     /// Read file into a buffer
     pub fn read(self: *File, buffer: []u8) !usize {
-        return try self.handle.read(buffer);
+        if (buffer.len == 0) return 0;
+        while (true) {
+            const count = self.handle.readStreaming(self.io, &.{buffer}) catch |err| switch (err) {
+                error.EndOfStream => return 0,
+                else => return err,
+            };
+            if (count == 0) continue;
+            self.position += count;
+            return count;
+        }
     }
 
     /// Write bytes to file
     pub fn write(self: *File, data: []const u8) !usize {
-        return try self.handle.write(data);
+        if (self.append) {
+            self.position = try self.handle.length(self.io);
+            try self.io.vtable.fileSeekTo(self.io.userdata, self.handle, self.position);
+        }
+        const count = try self.handle.writeStreaming(self.io, &.{}, &.{data}, 1);
+        self.position += count;
+        return count;
     }
 
     /// Write string to file
     pub fn writeString(self: *File, s: []const u8) !void {
-        _ = try self.handle.writeAll(s);
+        if (self.append) {
+            self.position = try self.handle.length(self.io);
+            try self.io.vtable.fileSeekTo(self.io.userdata, self.handle, self.position);
+        }
+        try self.handle.writeStreamingAll(self.io, s);
+        self.position += s.len;
     }
 
     /// Seek to position in file
     pub fn seek(self: *File, pos: u64) !void {
-        try self.handle.seekTo(pos);
+        try self.io.vtable.fileSeekTo(self.io.userdata, self.handle, pos);
+        self.position = pos;
     }
 
     /// Get current file position
     pub fn tell(self: *File) !u64 {
-        return try self.handle.getPos();
+        return self.position;
     }
 
     /// Get file size
     pub fn size(self: *File) !u64 {
-        const stat = try self.handle.stat();
-        return stat.size;
+        return self.handle.length(self.io);
     }
 };
 
@@ -100,13 +138,15 @@ pub const OpenMode = enum {
 
 /// Directory operations
 pub const Dir = struct {
-    handle: std.fs.Dir,
+    handle: Io.Dir,
     path: []const u8,
     allocator: std.mem.Allocator,
+    io: Io,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !*Dir {
-        var handle = try std.fs.cwd().openDir(path, .{ .iterate = true });
-        errdefer handle.close();
+        const io = compat.io();
+        const handle = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        errdefer handle.close(io);
         const owned_path = try allocator.dupe(u8, path);
         errdefer allocator.free(owned_path);
         const dir = try allocator.create(Dir);
@@ -115,13 +155,14 @@ pub const Dir = struct {
             .handle = handle,
             .path = owned_path,
             .allocator = allocator,
+            .io = io,
         };
 
         return dir;
     }
 
     pub fn close(self: *Dir) void {
-        self.handle.close();
+        self.handle.close(self.io);
         self.allocator.free(self.path);
         self.allocator.destroy(self);
     }
@@ -129,30 +170,30 @@ pub const Dir = struct {
     /// Create a directory
     pub fn create(allocator: std.mem.Allocator, path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().makeDir(path);
+        try Io.Dir.cwd().createDir(compat.io(), path, .default_dir);
     }
 
     /// Create directory and all parent directories
     pub fn createAll(allocator: std.mem.Allocator, path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().makePath(path);
+        try Io.Dir.cwd().createDirPath(compat.io(), path);
     }
 
     /// List directory contents
     pub fn list(self: *Dir) ![]DirEntry {
-        var entries = std.ArrayList(DirEntry).init(self.allocator);
+        var entries: std.ArrayList(DirEntry) = .empty;
         // Free previously-duped names if any subsequent dupe/append
         // fails before we can hand ownership to the caller.
         errdefer {
             for (entries.items) |e| self.allocator.free(e.name);
-            entries.deinit();
+            entries.deinit(self.allocator);
         }
 
         var iter = self.handle.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(self.io)) |entry| {
             const name_copy = try self.allocator.dupe(u8, entry.name);
             errdefer self.allocator.free(name_copy);
-            try entries.append(.{
+            try entries.append(self.allocator, .{
                 .name = name_copy,
                 .kind = switch (entry.kind) {
                     .file => .File,
@@ -163,44 +204,46 @@ pub const Dir = struct {
             });
         }
 
-        return entries.toOwnedSlice();
+        return entries.toOwnedSlice(self.allocator);
     }
 
     /// Check if file exists
     pub fn exists(allocator: std.mem.Allocator, path: []const u8) bool {
         _ = allocator;
-        std.fs.cwd().access(path, .{}) catch return false;
+        Io.Dir.cwd().access(compat.io(), path, .{}) catch return false;
         return true;
     }
 
     /// Delete a file
     pub fn deleteFile(allocator: std.mem.Allocator, path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().deleteFile(path);
+        try Io.Dir.cwd().deleteFile(compat.io(), path);
     }
 
     /// Delete a directory
     pub fn deleteDir(allocator: std.mem.Allocator, path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().deleteDir(path);
+        try Io.Dir.cwd().deleteDir(compat.io(), path);
     }
 
     /// Delete directory and all contents recursively
     pub fn deleteDirAll(allocator: std.mem.Allocator, path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().deleteTree(path);
+        try Io.Dir.cwd().deleteTree(compat.io(), path);
     }
 
     /// Copy file
     pub fn copyFile(allocator: std.mem.Allocator, src: []const u8, dest: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().copyFile(src, std.fs.cwd(), dest, .{});
+        const cwd = Io.Dir.cwd();
+        try cwd.copyFile(src, cwd, dest, compat.io(), .{ .replace = true });
     }
 
     /// Rename/move file
     pub fn rename(allocator: std.mem.Allocator, old_path: []const u8, new_path: []const u8) !void {
         _ = allocator;
-        try std.fs.cwd().rename(old_path, new_path);
+        const cwd = Io.Dir.cwd();
+        try cwd.rename(old_path, cwd, new_path, compat.io());
     }
 };
 
@@ -245,28 +288,27 @@ pub const Path = struct {
 
     /// Get absolute path
     pub fn absolute(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-        return try std.fs.cwd().realpathAlloc(allocator, path);
+        var buffer: [Io.Dir.max_path_bytes]u8 = undefined;
+        const len = try Io.Dir.cwd().realPathFile(compat.io(), path, &buffer);
+        return allocator.dupe(u8, buffer[0..len]);
     }
 };
 
 /// Convenient file operations
 pub fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = try File.open(allocator, path, .Read);
     defer file.close();
-    return try file.readToEndAlloc(allocator, 100 * 1024 * 1024); // 100MB limit
+    return file.readToString(100 * 1024 * 1024);
 }
 
 pub fn writeFile(allocator: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    _ = allocator;
-    const file = try std.fs.cwd().createFile(path, .{});
+    const file = try File.create(allocator, path);
     defer file.close();
-    try file.writeAll(data);
+    try file.writeString(data);
 }
 
 pub fn appendFile(allocator: std.mem.Allocator, path: []const u8, data: []const u8) !void {
-    _ = allocator;
-    const file = try std.fs.cwd().openFile(path, .{ .mode = .write_only });
+    const file = try File.open(allocator, path, .Append);
     defer file.close();
-    try file.seekFromEnd(0);
-    try file.writeAll(data);
+    try file.writeString(data);
 }
