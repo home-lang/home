@@ -169,3 +169,46 @@ test "bare-name cache retains a loaded module after its file is removed" {
     try testing.expect(first.exports.contains("retained"));
     try testing.expectEqual(@as(usize, 1), loader.modules.count());
 }
+
+test "relative import cache retains each importer's module after source removal" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "first");
+    try tmp.dir.createDirPath(io, "second");
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/entry_first.home", .data = "pub fn first() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second/entry_second.home", .data = "pub fn second() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/shared.home", .data = "pub fn from_first() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second/shared.home", .data = "pub fn from_second() { }" });
+    const first_root = try tmp.dir.realPathFileAlloc(io, "first", allocator);
+    defer allocator.free(first_root);
+    const second_root = try tmp.dir.realPathFileAlloc(io, "second", allocator);
+    defer allocator.free(second_root);
+
+    var loader = modules.ModuleLoader.init(allocator, io);
+    defer loader.deinit();
+    try loader.addSearchPath(first_root);
+    try loader.addSearchPath(second_root);
+    const first = try loader.loadModule("entry_first");
+    const second = try loader.loadModule("entry_second");
+    const first_shared = try loader.resolveImport(first.file_path, "./shared");
+    const second_shared = try loader.resolveImport(second.file_path, "./shared");
+    try testing.expect(first_shared != second_shared);
+
+    try tmp.dir.deleteFile(io, "first/shared.home");
+    try tmp.dir.deleteFile(io, "second/shared.home");
+    try testing.expect(first_shared == try loader.resolveImport(first.file_path, "./shared"));
+    try testing.expect(second_shared == try loader.resolveImport(second.file_path, "./shared"));
+    try testing.expect(first_shared.exports.contains("from_first"));
+    try testing.expect(second_shared.exports.contains("from_second"));
+    try testing.expectError(error.ModuleNotFound, loader.resolveImport(first.file_path, "./missing"));
+    try testing.expectEqual(@as(usize, 4), loader.modules.count());
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/broken.home", .data = "pub fn broken(" });
+    try testing.expectError(error.ModuleParseFailed, loader.resolveImport(first.file_path, "./broken"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/broken.home", .data = "pub fn repaired() { }" });
+    const repaired = try loader.resolveImport(first.file_path, "./broken");
+    try testing.expect(repaired.exports.contains("repaired"));
+    try testing.expectEqual(@as(usize, 5), loader.modules.count());
+}

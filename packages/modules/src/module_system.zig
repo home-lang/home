@@ -75,6 +75,9 @@ pub const ModuleLoader = struct {
     /// Request-name aliases do not own modules. This preserves repeat-load
     /// behavior even if the file is removed after the first successful load.
     bare_names: std.StringHashMap(*Module),
+    /// A relative request is scoped to its canonical importing module. These
+    /// aliases do not own the modules they point to.
+    relative_names: std.StringHashMap(*Module),
     /// Canonical paths own each distinct module exactly once.
     modules: std.StringHashMap(*Module),
     search_paths: std.ArrayList([]const u8),
@@ -84,6 +87,7 @@ pub const ModuleLoader = struct {
             .allocator = allocator,
             .io = io,
             .bare_names = std.StringHashMap(*Module).init(allocator),
+            .relative_names = std.StringHashMap(*Module).init(allocator),
             .modules = std.StringHashMap(*Module).init(allocator),
             .search_paths = std.ArrayList([]const u8).empty,
         };
@@ -93,6 +97,10 @@ pub const ModuleLoader = struct {
         var names = self.bare_names.iterator();
         while (names.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.bare_names.deinit();
+
+        var relative_names = self.relative_names.iterator();
+        while (relative_names.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.relative_names.deinit();
 
         var it = self.modules.iterator();
         while (it.next()) |entry| {
@@ -230,6 +238,17 @@ pub const ModuleLoader = struct {
         // require the canonical path of an already loaded importing module.
         if (!isRelativeImport(import_name)) return self.loadModule(import_name);
         const importer = self.modules.get(from_module) orelse return error.ImportingModuleNotLoaded;
+        // Canonical paths cannot contain NUL, so the separator makes this
+        // unambiguous even when two importers use the same relative spelling.
+        const request_key = try std.fmt.allocPrint(self.allocator, "{s}\x00{s}", .{ importer.file_path, import_name });
+        errdefer self.allocator.free(request_key);
+        if (self.relative_names.get(request_key)) |module| {
+            self.allocator.free(request_key);
+            return module;
+        }
+        // Reserve before loading: a newly parsed module may already be in the
+        // canonical owner map when its request alias is published.
+        try self.relative_names.ensureUnusedCapacity(1);
         const parent = std.fs.path.dirname(importer.file_path) orelse unreachable;
         const filename = if (std.fs.path.extension(import_name).len == 0)
             try std.fmt.allocPrint(self.allocator, "{s}.home", .{import_name})
@@ -243,7 +262,9 @@ pub const ModuleLoader = struct {
             file.close(self.io);
             const canonical = try self.canonicalFilePath(candidate);
             defer self.allocator.free(canonical);
-            return self.loadResolvedFile(import_name, canonical);
+            const module = try self.loadResolvedFile(import_name, canonical);
+            self.relative_names.putAssumeCapacityNoClobber(request_key, module);
+            return module;
         }
         return error.ModuleNotFound;
     }

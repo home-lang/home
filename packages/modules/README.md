@@ -17,6 +17,9 @@ imports with one owned syntax tree per canonical source file.
 - A bare request name also retains a non-owning alias after its first successful
   load, so repeating that request returns the same module even if its source
   file has since been removed. The canonical path map alone owns the module.
+- Relative requests retain the same behavior per importing module: repeating
+  `./sibling` from a loaded importer returns its prior module after source
+  removal, without confusing an identical request from another directory.
 - The loader owns parsed source, syntax trees, names, paths, and export keys until
   `deinit`. Files larger than 10 MiB and modules with parse errors are rejected.
 
