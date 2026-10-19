@@ -1,5 +1,5 @@
 // Home Audio Library - Encoding Module
-// Pure Zig audio encoders for MP3, AAC, and Opus
+// Audio encoder interfaces and an opt-in native AAC-LC codec.
 
 pub const mp3_encoder = @import("mp3_encoder.zig");
 pub const aac_encoder = @import("aac_encoder.zig");
@@ -33,3 +33,7 @@ test "encoding module" {
     _ = aac_encoder;
     _ = opus_encoder;
 }
+
+/// Header-checked AAC-LC packets, explicit sample counts and priming metadata.
+pub const native_aac = @import("native_aac.zig");
+pub const NativeAacEncoder = native_aac.Encoder;
