@@ -34,17 +34,39 @@ pub fn exec(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) 
 }
 
 fn captureChild(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child) !ExecResult {
-    var reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    if (child.stdout) |stdout| {
+        if (child.stderr) |stderr| return captureStreams(2, allocator, io, child, .{ stdout, stderr }, 0, 1);
+        return captureStreams(1, allocator, io, child, .{stdout}, 0, null);
+    }
+    if (child.stderr) |stderr| return captureStreams(1, allocator, io, child, .{stderr}, null, 0);
+
+    const term = try child.wait(io);
+    const stdout = try allocator.alloc(u8, 0);
+    errdefer allocator.free(stdout);
+    const stderr = try allocator.alloc(u8, 0);
+    return resultFromTerm(allocator, term, stdout, stderr);
+}
+
+fn captureStreams(
+    comptime count: usize,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    child: *std.process.Child,
+    files: [count]std.Io.File,
+    comptime stdout_index: ?usize,
+    comptime stderr_index: ?usize,
+) !ExecResult {
+    var reader_buffer: std.Io.File.MultiReader.Buffer(count) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
-    multi_reader.init(allocator, io, reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    multi_reader.init(allocator, io, reader_buffer.toStreams(), &files);
     defer multi_reader.deinit();
 
-    const stdout_reader = multi_reader.reader(0);
-    const stderr_reader = multi_reader.reader(1);
     const output_limit = 10 * 1024 * 1024;
     while (multi_reader.fill(64, .none)) |_| {
-        if (stdout_reader.buffered().len > output_limit or stderr_reader.buffered().len > output_limit)
-            return error.StreamTooLong;
+        for (0..count) |index| {
+            if (multi_reader.reader(index).buffered().len > output_limit)
+                return error.StreamTooLong;
+        }
     } else |err| switch (err) {
         error.EndOfStream => {},
         else => |e| return e,
@@ -52,11 +74,15 @@ fn captureChild(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Ch
     try multi_reader.checkAnyError();
 
     const term = try child.wait(io);
-    const stdout = try multi_reader.toOwnedSlice(0);
+    const stdout = if (stdout_index) |index| try multi_reader.toOwnedSlice(index) else try allocator.alloc(u8, 0);
     errdefer allocator.free(stdout);
-    const stderr = try multi_reader.toOwnedSlice(1);
+    const stderr = if (stderr_index) |index| try multi_reader.toOwnedSlice(index) else try allocator.alloc(u8, 0);
     errdefer allocator.free(stderr);
 
+    return resultFromTerm(allocator, term, stdout, stderr);
+}
+
+fn resultFromTerm(allocator: std.mem.Allocator, term: std.process.Child.Term, stdout: []u8, stderr: []u8) ExecResult {
     return .{
         .stdout = stdout,
         .stderr = stderr,
@@ -121,48 +147,46 @@ pub fn shell(allocator: std.mem.Allocator, io: std.Io, command: []const u8) !Exe
 pub const SpawnedProcess = struct {
     child: std.process.Child,
     allocator: std.mem.Allocator,
+    io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator, argv: []const []const u8) !SpawnedProcess {
-        var child = std.process.Child.init(argv, allocator);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !SpawnedProcess {
+        if (argv.len == 0) return error.NoCommand;
+        const child = try std.process.spawn(io, .{
+            .argv = argv,
+            .stdin = .inherit,
+            .stdout = .pipe,
+            .stderr = .pipe,
+        });
 
         return .{
             .child = child,
             .allocator = allocator,
+            .io = io,
         };
     }
 
     /// Wait for process to complete
     pub fn wait(self: *SpawnedProcess) !ExecResult {
-        const stdout = try self.child.stdout.?.reader().readAllAlloc(self.allocator, 10 * 1024 * 1024);
-        errdefer self.allocator.free(stdout);
-
-        const stderr = try self.child.stderr.?.reader().readAllAlloc(self.allocator, 10 * 1024 * 1024);
-        errdefer self.allocator.free(stderr);
-
-        const term = try self.child.wait();
-
-        return .{
-            .stdout = stdout,
-            .stderr = stderr,
-            .exit_code = switch (term) {
-                .Exited => |code| @intCast(code),
-                else => 1,
-            },
-            .allocator = self.allocator,
-        };
+        if (self.child.id == null) return error.ProcessAlreadyWaited;
+        errdefer self.child.kill(self.io);
+        if (self.child.stdin) |file| {
+            file.close(self.io);
+            self.child.stdin = null;
+        }
+        return captureChild(self.allocator, self.io, &self.child);
     }
 
     /// Kill the process
     pub fn kill(self: *SpawnedProcess) !void {
-        try self.child.kill();
+        self.child.kill(self.io);
+    }
+
+    pub fn deinit(self: *SpawnedProcess) void {
+        self.child.kill(self.io);
     }
 
     /// Get process ID
-    pub fn pid(self: *SpawnedProcess) std.process.Child.Id {
+    pub fn pid(self: *SpawnedProcess) ?std.process.Child.Id {
         return self.child.id;
     }
 };
@@ -170,46 +194,48 @@ pub const SpawnedProcess = struct {
 /// Process builder with configuration
 pub const ProcessBuilder = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     argv: std.ArrayList([]const u8),
-    env_map: std.process.EnvMap,
+    env_map: std.process.Environ.Map,
     cwd: ?[]const u8,
-    stdin_behavior: std.process.Child.StdIo,
-    stdout_behavior: std.process.Child.StdIo,
-    stderr_behavior: std.process.Child.StdIo,
+    stdin_behavior: std.process.SpawnOptions.StdIo,
+    stdout_behavior: std.process.SpawnOptions.StdIo,
+    stderr_behavior: std.process.SpawnOptions.StdIo,
 
-    pub fn init(allocator: std.mem.Allocator) ProcessBuilder {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) ProcessBuilder {
         return .{
             .allocator = allocator,
-            .argv = std.ArrayList([]const u8).init(allocator),
-            .env_map = std.process.EnvMap.init(allocator),
+            .io = io,
+            .argv = .empty,
+            .env_map = std.process.Environ.Map.init(allocator),
             .cwd = null,
-            .stdin_behavior = .Inherit,
-            .stdout_behavior = .Pipe,
-            .stderr_behavior = .Pipe,
+            .stdin_behavior = .inherit,
+            .stdout_behavior = .pipe,
+            .stderr_behavior = .pipe,
         };
     }
 
     pub fn deinit(self: *ProcessBuilder) void {
-        self.argv.deinit();
+        self.argv.deinit(self.allocator);
         self.env_map.deinit();
     }
 
     /// Set command to execute
     pub fn command(self: *ProcessBuilder, cmd: []const u8) !*ProcessBuilder {
-        try self.argv.append(cmd);
+        try self.argv.append(self.allocator, cmd);
         return self;
     }
 
     /// Add argument
     pub fn arg(self: *ProcessBuilder, argument: []const u8) !*ProcessBuilder {
-        try self.argv.append(argument);
+        try self.argv.append(self.allocator, argument);
         return self;
     }
 
     /// Add multiple arguments
     pub fn args(self: *ProcessBuilder, arguments: []const []const u8) !*ProcessBuilder {
         for (arguments) |argument| {
-            try self.argv.append(argument);
+            try self.argv.append(self.allocator, argument);
         }
         return self;
     }
@@ -227,19 +253,19 @@ pub const ProcessBuilder = struct {
     }
 
     /// Set stdin behavior
-    pub fn stdin(self: *ProcessBuilder, behavior: std.process.Child.StdIo) *ProcessBuilder {
+    pub fn stdin(self: *ProcessBuilder, behavior: std.process.SpawnOptions.StdIo) *ProcessBuilder {
         self.stdin_behavior = behavior;
         return self;
     }
 
     /// Set stdout behavior
-    pub fn stdout(self: *ProcessBuilder, behavior: std.process.Child.StdIo) *ProcessBuilder {
+    pub fn stdout(self: *ProcessBuilder, behavior: std.process.SpawnOptions.StdIo) *ProcessBuilder {
         self.stdout_behavior = behavior;
         return self;
     }
 
     /// Set stderr behavior
-    pub fn stderr(self: *ProcessBuilder, behavior: std.process.Child.StdIo) *ProcessBuilder {
+    pub fn stderr(self: *ProcessBuilder, behavior: std.process.SpawnOptions.StdIo) *ProcessBuilder {
         self.stderr_behavior = behavior;
         return self;
     }
@@ -248,31 +274,26 @@ pub const ProcessBuilder = struct {
     pub fn spawn(self: *ProcessBuilder) !SpawnedProcess {
         if (self.argv.items.len == 0) return error.NoCommand;
 
-        var child = std.process.Child.init(self.argv.items, self.allocator);
-        child.stdin_behavior = self.stdin_behavior;
-        child.stdout_behavior = self.stdout_behavior;
-        child.stderr_behavior = self.stderr_behavior;
-
-        if (self.cwd) |dir| {
-            child.cwd = dir;
-        }
-
-        // Set environment variables
-        if (self.env_map.count() > 0) {
-            child.env_map = &self.env_map;
-        }
-
-        try child.spawn();
+        const child = try std.process.spawn(self.io, .{
+            .argv = self.argv.items,
+            .cwd = if (self.cwd) |dir| .{ .path = dir } else .inherit,
+            .environ_map = if (self.env_map.count() > 0) &self.env_map else null,
+            .stdin = self.stdin_behavior,
+            .stdout = self.stdout_behavior,
+            .stderr = self.stderr_behavior,
+        });
 
         return .{
             .child = child,
             .allocator = self.allocator,
+            .io = self.io,
         };
     }
 
     /// Execute and wait for completion
     pub fn run(self: *ProcessBuilder) !ExecResult {
         var spawned = try self.spawn();
+        defer spawned.deinit();
         return spawned.wait();
     }
 };
