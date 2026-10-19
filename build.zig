@@ -1512,6 +1512,22 @@ pub fn build(b: *std.Build) void {
     }));
     const run_basics_json_tests = b.addRunArtifact(basics_json_tests);
 
+    const basics_temporal_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/basics/tests/temporal_io_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    basics_temporal_tests.root_module.link_libc = true;
+    basics_temporal_tests.root_module.addImport("basics_temporal", b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/temporal.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_basics_temporal_tests = b.addRunArtifact(basics_temporal_tests);
+    run_basics_temporal_tests.has_side_effects = true;
+
     const basics_datetime_tests = b.addTest(.{
         .root_module = basics_datetime_module,
     });
@@ -2188,6 +2204,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_basics_filesystem_tests.step, test_filter, "basics_filesystem");
     dependOnTest(test_step, &run_basics_fs_util_tests.step, test_filter, "basics_fs_util");
     dependOnTest(test_step, &run_basics_json_tests.step, test_filter, "basics_json");
+    dependOnTest(test_step, &run_basics_temporal_tests.step, test_filter, "basics_temporal");
     dependOnTest(test_step, &run_basics_datetime_tests.step, test_filter, "basics_datetime");
     dependOnTest(test_step, &run_basics_ini_parser_tests.step, test_filter, "basics_ini_parser");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 
 /// JavaScript-compatible Temporal API for Home
 /// Implements the TC39 Temporal proposal: https://tc39.es/proposal-temporal/
@@ -16,36 +17,7 @@ const builtin = @import("builtin");
 
 /// Get current wall-clock time in nanoseconds since Unix epoch
 fn getWallClockNanoseconds() i128 {
-    switch (builtin.os.tag) {
-        .windows => {
-            // Windows: use GetSystemTimePreciseAsFileTime
-            const windows = std.os.windows;
-            var ft: windows.FILETIME = undefined;
-            windows.kernel32.GetSystemTimePreciseAsFileTime(&ft);
-            // FILETIME is in 100-nanosecond intervals since January 1, 1601
-            const ft_value = @as(u64, ft.dwHighDateTime) << 32 | ft.dwLowDateTime;
-            // Convert to Unix epoch (difference is 116444736000000000 100-ns intervals)
-            const unix_100ns = @as(i128, ft_value) - 116444736000000000;
-            return unix_100ns * 100; // Convert to nanoseconds
-        },
-        .wasi => {
-            var ns: std.os.wasi.timestamp_t = undefined;
-            const rc = std.os.wasi.clock_time_get(.REALTIME, 1, &ns);
-            if (rc != .SUCCESS) {
-                // Fallback: return 0 (epoch)
-                return 0;
-            }
-            return @as(i128, ns);
-        },
-        else => {
-            // POSIX systems: use clock_gettime with REALTIME
-            const ts = std.posix.clock_gettime(.REALTIME) catch {
-                // Fallback: return 0 (epoch)
-                return 0;
-            };
-            return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
-        },
-    }
+    return std.Io.Clock.real.now(compat.io()).toNanoseconds();
 }
 
 // ============================================================================
@@ -892,25 +864,19 @@ pub const Duration = struct {
 
 pub const Now = struct {
     /// Private helper to get system time zone
-    /// Returns the IANA time zone identifier for the system's current time zone.
-    /// This is a best-effort implementation that tries multiple methods.
+    /// Returns the process TZ override, or UTC when no override is available.
     fn getSystemTimeZone() []const u8 {
-        // On POSIX systems, try to read /etc/localtime symlink or TZ env var
-        // For now, return a reasonable default - a full implementation would
-        // use platform-specific APIs or read system configuration
-
-        // Try TZ environment variable first
-        if (std.posix.getenv("TZ")) |tz| {
-            if (tz.len > 0) {
-                return tz;
+        // Preserve the process TZ override where an ambient environment is
+        // available. A libc-free caller has no implicit process environment
+        // in std.Io and retains the existing UTC fallback.
+        if (builtin.link_libc) {
+            if (std.c.getenv("TZ")) |tz_ptr| {
+                const tz = std.mem.span(tz_ptr);
+                if (tz.len > 0) return tz;
             }
         }
 
-        // Default to UTC if we can't determine the system timezone
-        // A production implementation would use platform-specific APIs:
-        // - macOS: CFTimeZoneCopySystem()
-        // - Linux: /etc/localtime symlink target
-        // - Windows: GetDynamicTimeZoneInformation()
+        // The existing fallback when no TZ override can be read.
         return "UTC";
     }
 
@@ -2026,6 +1992,7 @@ test "Now: instant is monotonically increasing" {
 test "Now: timeZoneId returns non-empty string" {
     const tz = Now.timeZoneId();
     try std.testing.expect(tz.len > 0);
+    if (!builtin.link_libc) try std.testing.expectEqualStrings("UTC", tz);
 }
 
 test "Now: all methods with explicit timezone" {
