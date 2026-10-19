@@ -195,9 +195,6 @@ pub const HttpClient = struct {
         // Parse URL
         const uri = try std.Uri.parse(url);
 
-        // Connect to server
-        const port = uri.port orelse (if (std.mem.eql(u8, uri.scheme, "https")) @as(u16, 443) else @as(u16, 80));
-
         const host = uri.host.?.percent_encoded;
 
         var client = std.http.Client{ .allocator = self.allocator };
@@ -257,7 +254,7 @@ pub const HttpClient = struct {
         try req.reader().readAllArrayList(&response_body, max_read);
 
         return HttpResponse{
-            .status = @intFromEnum(req.response.status),
+            .status = @backingInt(req.response.status),
             .body = try response_body.toOwnedSlice(),
             .allocator = self.allocator,
         };

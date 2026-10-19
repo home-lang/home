@@ -7,6 +7,7 @@
 // This provides a more welcoming API with Home naming conventions
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 // Re-export core functionality with Home naming
 pub const Allocator = std.mem.Allocator;
@@ -104,11 +105,66 @@ pub const net = struct {
 
 // Time utilities
 pub const time = struct {
-    pub const timestamp = std.time.timestamp;
-    pub const milliTimestamp = std.time.milliTimestamp;
-    pub const nanoTimestamp = std.time.nanoTimestamp;
-    pub const sleep = std.time.sleep;
-    pub const Timer = std.time.Timer;
+    pub fn timestamp() i64 {
+        return timestampWithIo(compat.io());
+    }
+
+    pub fn timestampWithIo(io: std.Io) i64 {
+        return std.Io.Clock.real.now(io).toSeconds();
+    }
+
+    pub fn milliTimestamp() i64 {
+        return milliTimestampWithIo(compat.io());
+    }
+
+    pub fn milliTimestampWithIo(io: std.Io) i64 {
+        return std.Io.Clock.real.now(io).toMilliseconds();
+    }
+
+    pub fn nanoTimestamp() i128 {
+        return nanoTimestampWithIo(compat.io());
+    }
+
+    pub fn nanoTimestampWithIo(io: std.Io) i128 {
+        return std.Io.Clock.real.now(io).toNanoseconds();
+    }
+
+    pub fn sleep(nanoseconds: u64) std.Io.Cancelable!void {
+        return sleepWithIo(compat.io(), nanoseconds);
+    }
+
+    pub fn sleepWithIo(io: std.Io, nanoseconds: u64) std.Io.Cancelable!void {
+        try std.Io.sleep(io, .fromNanoseconds(nanoseconds), .awake);
+    }
+
+    pub const Timer = struct {
+        io: std.Io,
+        start_time: std.Io.Timestamp,
+
+        pub fn start() !Timer {
+            return startWithIo(compat.io());
+        }
+
+        pub fn startWithIo(io: std.Io) !Timer {
+            return .{ .io = io, .start_time = std.Io.Clock.awake.now(io) };
+        }
+
+        pub fn read(self: *const Timer) u64 {
+            const elapsed = self.start_time.durationTo(std.Io.Clock.awake.now(self.io));
+            return @intCast(@max(0, elapsed.toNanoseconds()));
+        }
+
+        pub fn lap(self: *Timer) u64 {
+            const now_time = std.Io.Clock.awake.now(self.io);
+            const elapsed = self.start_time.durationTo(now_time);
+            self.start_time = now_time;
+            return @intCast(@max(0, elapsed.toNanoseconds()));
+        }
+
+        pub fn reset(self: *Timer) void {
+            self.start_time = std.Io.Clock.awake.now(self.io);
+        }
+    };
 
     /// High-precision time structure
     pub const TimeSpec = struct {
@@ -116,10 +172,14 @@ pub const time = struct {
         nanoseconds: i64,
 
         pub fn now() TimeSpec {
-            const ns = std.time.nanoTimestamp();
+            return nowWithIo(compat.io());
+        }
+
+        pub fn nowWithIo(io: std.Io) TimeSpec {
+            const ns = nanoTimestampWithIo(io);
             return .{
-                .seconds = @divFloor(ns, std.time.ns_per_s),
-                .nanoseconds = @mod(ns, std.time.ns_per_s),
+                .seconds = @intCast(@divFloor(ns, std.time.ns_per_s)),
+                .nanoseconds = @intCast(@mod(ns, std.time.ns_per_s)),
             };
         }
 
@@ -128,7 +188,7 @@ pub const time = struct {
         }
 
         pub fn toMilliseconds(self: TimeSpec) i64 {
-            return @divFloor(self.toNanoseconds(), std.time.ns_per_ms);
+            return @intCast(@divFloor(self.toNanoseconds(), std.time.ns_per_ms));
         }
 
         pub fn toSeconds(self: TimeSpec) i64 {
@@ -245,22 +305,30 @@ pub fn strEql(a: []const u8, b: []const u8) bool {
 
 /// Get current timestamp in seconds
 pub fn now() i64 {
-    return std.time.timestamp();
+    return time.timestamp();
 }
 
 /// Get current timestamp in milliseconds
 pub fn nowMillis() i64 {
-    return std.time.milliTimestamp();
+    return time.milliTimestamp();
 }
 
 /// Sleep for milliseconds
-pub fn sleepMs(milliseconds: u64) void {
-    std.time.sleep(milliseconds * 1_000_000);
+pub fn sleepMs(milliseconds: u64) std.Io.Cancelable!void {
+    return sleepMsWithIo(compat.io(), milliseconds);
+}
+
+pub fn sleepMsWithIo(io: std.Io, milliseconds: u64) std.Io.Cancelable!void {
+    try std.Io.sleep(io, .fromNanoseconds(@as(i96, milliseconds) * std.time.ns_per_ms), .awake);
 }
 
 /// Sleep for seconds
-pub fn sleepSec(seconds: u64) void {
-    std.time.sleep(seconds * 1_000_000_000);
+pub fn sleepSec(seconds: u64) std.Io.Cancelable!void {
+    return sleepSecWithIo(compat.io(), seconds);
+}
+
+pub fn sleepSecWithIo(io: std.Io, seconds: u64) std.Io.Cancelable!void {
+    try std.Io.sleep(io, .fromNanoseconds(@as(i96, seconds) * std.time.ns_per_s), .awake);
 }
 
 /// Create a debug allocator (replaces GeneralPurposeAllocator)
@@ -457,12 +525,12 @@ test "Basics module imports" {
     const allocator = testing.allocator;
 
     // Test ArrayList
-    var list = ArrayList(i32).init(allocator);
-    defer list.deinit();
+    var list: ArrayList(i32) = .empty;
+    defer list.deinit(allocator);
 
-    try list.append(1);
-    try list.append(2);
-    try list.append(3);
+    try list.append(allocator, 1);
+    try list.append(allocator, 2);
+    try list.append(allocator, 3);
 
     try testing.expectEqual(@as(usize, 3), list.items.len);
 }
@@ -476,6 +544,47 @@ test "Home-friendly helpers" {
 
     const millis = nowMillis();
     try testing.expect(millis > 0);
+}
+
+test "Basics time helpers use real and monotonic std.Io clocks" {
+    const before = time.nanoTimestamp();
+    const seconds = time.timestamp();
+    const millis = time.milliTimestamp();
+    const spec = time.TimeSpec.now();
+    const after = time.nanoTimestamp();
+
+    try testing.expect(before <= @as(i128, seconds + 1) * std.time.ns_per_s);
+    try testing.expect(@as(i128, seconds) * std.time.ns_per_s <= after);
+    try testing.expect(before <= @as(i128, millis + 1) * std.time.ns_per_ms);
+    try testing.expect(@as(i128, millis) * std.time.ns_per_ms <= after);
+    try testing.expect(spec.nanoseconds >= 0 and spec.nanoseconds < std.time.ns_per_s);
+    try testing.expect(spec.toNanoseconds() >= before);
+    try testing.expect(spec.toNanoseconds() <= after);
+    try testing.expectEqual(@as(i64, @intCast(@divFloor(spec.toNanoseconds(), std.time.ns_per_ms))), spec.toMilliseconds());
+
+    var timer = try time.Timer.start();
+    try time.sleep(0);
+    try sleepMs(0);
+    try sleepSec(0);
+    const first = timer.read();
+    const lap = timer.lap();
+    try testing.expect(lap >= first);
+    timer.reset();
+    _ = timer.read();
+
+    const explicit_io = std.testing.io;
+    const explicit_before = time.nanoTimestampWithIo(explicit_io);
+    const explicit_spec = time.TimeSpec.nowWithIo(explicit_io);
+    const explicit_after = time.nanoTimestampWithIo(explicit_io);
+    try testing.expect(explicit_spec.toNanoseconds() >= explicit_before);
+    try testing.expect(explicit_spec.toNanoseconds() <= explicit_after);
+    try testing.expect(time.timestampWithIo(explicit_io) > 0);
+    try testing.expect(time.milliTimestampWithIo(explicit_io) > 0);
+    var explicit_timer = try time.Timer.startWithIo(explicit_io);
+    try time.sleepWithIo(explicit_io, 0);
+    try sleepMsWithIo(explicit_io, 0);
+    try sleepSecWithIo(explicit_io, 0);
+    _ = explicit_timer.lap();
 }
 
 test "Option type" {
@@ -577,9 +686,9 @@ test "Temporal.Now integration" {
     try testing.expect(date.day >= 1 and date.day <= 31);
 
     // Test plainTimeISO
-    const time = Temporal.Now.plainTimeISO(null);
-    try testing.expect(time.hour <= 23);
-    try testing.expect(time.minute <= 59);
+    const plain_time = Temporal.Now.plainTimeISO(null);
+    try testing.expect(plain_time.hour <= 23);
+    try testing.expect(plain_time.minute <= 59);
 
     // Test zonedDateTimeISO
     const zdt = Temporal.Now.zonedDateTimeISO("UTC");
