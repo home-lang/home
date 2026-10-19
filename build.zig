@@ -966,6 +966,10 @@ pub fn build(b: *std.Build) void {
     const json_pkg = createPackage(b, "packages/json/src/json.zig", target, optimize, zig_test_framework);
     const toml_pkg = createPackage(b, "packages/toml/src/toml.zig", target, optimize, zig_test_framework);
     const file_pkg = createPackage(b, "packages/file/src/file.zig", target, optimize, zig_test_framework);
+    const modules_pkg = createPackage(b, "packages/modules/src/module_system.zig", target, optimize, zig_test_framework);
+    modules_pkg.addImport("ast", ast_pkg);
+    modules_pkg.addImport("lexer", lexer_pkg);
+    modules_pkg.addImport("parser", parser_pkg);
     const network_pkg = createPackage(b, "packages/network/src/network.zig", target, optimize, zig_test_framework);
     const network_pool_pkg = createPackage(b, "packages/network/src/pool.zig", target, optimize, zig_test_framework);
     const http_pkg = createPackage(b, "packages/http/src/http.zig", target, optimize, zig_test_framework);
@@ -2123,6 +2127,17 @@ pub fn build(b: *std.Build) void {
     run_file_io_tests.has_side_effects = true;
     run_file_io_tests.step.dependOn(&run_file_package_tests.step);
 
+    const modules_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/modules/tests/modules_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    modules_tests.root_module.addImport("modules", modules_pkg);
+    const run_modules_tests = b.addRunArtifact(modules_tests);
+    run_modules_tests.has_side_effects = true;
+
     // Env tests
     const env_tests = b.addTest(.{
         .root_module = env_pkg,
@@ -2442,6 +2457,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_image_tests.step, test_filter, "image");
     dependOnTest(test_step, &run_image_async_result_tests.step, test_filter, "image_async_result");
     dependOnTest(test_step, &run_file_io_tests.step, test_filter, "file_package");
+    dependOnTest(test_step, &run_modules_tests.step, test_filter, "modules");
     dependOnTest(test_step, &run_env_tests.step, test_filter, "env");
     dependOnTest(test_step, &run_syscall_tests.step, test_filter, "syscall");
     dependOnTest(test_step, &run_syscall_io_tests.step, test_filter, "syscall_io");

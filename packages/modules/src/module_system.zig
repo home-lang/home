@@ -1,7 +1,7 @@
 const std = @import("std");
-const ast = @import("../ast/ast.zig");
-const lexer_mod = @import("../lexer/lexer.zig");
-const parser_mod = @import("../parser/parser.zig");
+const ast = @import("ast");
+const lexer_mod = @import("lexer");
+const parser_mod = @import("parser");
 
 /// Maximum size of a module file in bytes (10 MB)
 /// This prevents loading extremely large files that could exhaust memory
@@ -11,6 +11,8 @@ const MAX_MODULE_SIZE = 10 * 1024 * 1024;
 pub const Module = struct {
     name: []const u8,
     file_path: []const u8,
+    /// Owned source backing token and AST name slices for the module lifetime.
+    source: []const u8,
     program: *ast.Program,
     exports: std.StringHashMap(Export),
     allocator: std.mem.Allocator,
@@ -24,24 +26,34 @@ pub const Module = struct {
         Function,
         Type,
         Constant,
+        Variable,
     };
 
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, file_path: []const u8, program: *ast.Program) Module {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, file_path: []const u8, source: []const u8, program: *ast.Program) Module {
         return .{
             .name = name,
             .file_path = file_path,
+            .source = source,
             .program = program,
             .exports = std.StringHashMap(Export).init(allocator),
             .allocator = allocator,
         };
     }
 
-    pub fn deinit(self: *Module) void {
+    fn deinitExports(self: *Module) void {
         var it = self.exports.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
         }
         self.exports.deinit();
+    }
+
+    pub fn deinit(self: *Module) void {
+        self.deinitExports();
+        self.program.deinit(self.allocator);
+        self.allocator.free(self.source);
+        self.allocator.free(self.file_path);
+        self.allocator.free(self.name);
     }
 
     pub fn addExport(self: *Module, name: []const u8, kind: ExportKind) !void {
@@ -59,12 +71,14 @@ pub const Module = struct {
 /// Module loader and resolver
 pub const ModuleLoader = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     modules: std.StringHashMap(*Module),
     search_paths: std.ArrayList([]const u8),
 
-    pub fn init(allocator: std.mem.Allocator) ModuleLoader {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) ModuleLoader {
         return .{
             .allocator = allocator,
+            .io = io,
             .modules = std.StringHashMap(*Module).init(allocator),
             .search_paths = std.ArrayList([]const u8).empty,
         };
@@ -101,20 +115,22 @@ pub const ModuleLoader = struct {
         const file_path = try self.findModuleFile(module_name);
         defer self.allocator.free(file_path);
 
-        // Read the file
-        const file = try std.fs.cwd().openFile(file_path, .{});
-        defer file.close();
-
-        const source = try file.readToEndAlloc(self.allocator, MAX_MODULE_SIZE);
-        defer self.allocator.free(source);
+        // Retain source: AST names may borrow slices from lexer tokens.
+        // readFileAlloc rejects a length that reaches its limit, so include
+        // one extra byte to admit a file of exactly MAX_MODULE_SIZE bytes.
+        const source = try std.Io.Dir.cwd().readFileAlloc(self.io, file_path, self.allocator, .limited(MAX_MODULE_SIZE + 1));
+        errdefer self.allocator.free(source);
 
         // Tokenize and parse
         var lex = lexer_mod.Lexer.init(self.allocator, source);
         var tokens = try lex.tokenize();
         defer tokens.deinit(self.allocator);
 
-        var par = parser_mod.Parser.init(self.allocator, tokens.items);
+        var par = try parser_mod.Parser.init(self.allocator, tokens.items);
+        defer par.deinit();
         const program = try par.parse();
+        errdefer program.deinit(self.allocator);
+        if (par.errors.items.len != 0) return error.ModuleParseFailed;
 
         // Dupe the name and path so Module owns them independently of the
         // file_path/module_name arguments (both of which are owned by the
@@ -127,14 +143,21 @@ pub const ModuleLoader = struct {
         // Create module
         const module = try self.allocator.create(Module);
         errdefer self.allocator.destroy(module);
-        module.* = Module.init(self.allocator, owned_name, owned_path, program);
+        module.* = Module.init(self.allocator, owned_name, owned_path, source, program);
+        errdefer module.deinitExports();
 
-        // Collect exports (functions marked as pub)
+        // Export declaration ownership comes from the parser's visibility
+        // flags, never from the presence of a top-level name alone.
         for (program.statements) |stmt| {
-            if (stmt == .FnDecl) {
-                // In future, check for pub keyword
-                const fn_name = stmt.FnDecl.name;
-                try module.addExport(fn_name, .Function);
+            switch (stmt) {
+                .FnDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Function),
+                .LetDecl => |decl| if (decl.is_public) try module.addExport(decl.name, if (decl.is_mutable) .Variable else .Constant),
+                .StructDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Type),
+                .EnumDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Type),
+                .UnionDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Type),
+                .TypeAliasDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Type),
+                .TraitDecl => |decl| if (decl.is_public) try module.addExport(decl.name, .Type),
+                else => {},
             }
         }
 
@@ -152,23 +175,31 @@ pub const ModuleLoader = struct {
         defer self.allocator.free(filename);
 
         // Check if file exists in current directory
-        if (std.fs.cwd().openFile(filename, .{})) |file| {
-            file.close();
+        const cwd = std.Io.Dir.cwd();
+        if (try self.openCandidate(cwd, filename)) |file| {
+            file.close(self.io);
             return try self.allocator.dupe(u8, filename);
-        } else |_| {}
+        }
 
         // Try search paths
         for (self.search_paths.items) |search_path| {
             const path = try std.fs.path.join(self.allocator, &[_][]const u8{ search_path, filename });
             defer self.allocator.free(path);
 
-            if (std.fs.cwd().openFile(path, .{})) |file| {
-                file.close();
+            if (try self.openCandidate(cwd, path)) |file| {
+                file.close(self.io);
                 return try self.allocator.dupe(u8, path);
-            } else |_| {}
+            }
         }
 
         return error.ModuleNotFound;
+    }
+
+    fn openCandidate(self: *ModuleLoader, dir: std.Io.Dir, path: []const u8) !?std.Io.File {
+        return dir.openFile(self.io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => null,
+            else => |other| return other,
+        };
     }
 
     pub fn resolveImport(self: *ModuleLoader, from_module: []const u8, import_name: []const u8) !*Module {
