@@ -87,3 +87,18 @@ failure cleanup on Zig 0.15.2 and the Home development compiler:
 ```sh
 zig test packages/video/src/core/owned_fifo.zig
 ```
+
+## Host-runtime delivery
+
+`core/delivery_fifo.zig` builds an acknowledged, owned host-consumer queue on
+`owned_fifo`. Producer calls copy payloads into bounded storage and receive a
+monotonic sequence. `copy(sequence, destination)` exposes only an owned copy;
+`ack(sequence)` releases its capacity after delivery. Stale acknowledgements,
+oversized packets, full queues and sequence exhaustion leave state unchanged.
+Empty metadata also consumes a slot. The caller serializes all queue access.
+
+`poll(prefix)` observes a fixed issued prefix. A later failure cannot change a
+completed prefix, while pending delivery returns the first latched failure.
+This supports native codec callbacks feeding an event-loop host without invoking
+runtime functions on native threads. The owner supplies synchronization and
+keeps the queue alive until every producer and in-flight host hook has retired.

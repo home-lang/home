@@ -1,0 +1,88 @@
+//! Owned producer/host-consumer FIFO. Caller serializes access. Acknowledgement
+//! retains in-flight capacity; sequence-checked copies never expose arena bytes.
+const std = @import("std");
+const Owned = @import("owned_fifo.zig");
+pub fn Queue(comptime T: type) type {
+    return struct {
+        const Self = @This();
+        pub const Item = struct { value: T, sequence: u64 };
+        fifo: Owned.Queue(Item),
+        issued: u64 = 0,
+        completed: u64 = 0,
+        failure: ?i32 = null,
+        pub fn init(a: std.mem.Allocator, bytes: usize, items: usize) !Self {
+            return .{ .fifo = try Owned.Queue(Item).init(a, bytes, items) };
+        }
+        pub fn deinit(s: *Self) void {
+            s.fifo.deinit();
+        }
+        pub fn push(s: *Self, value: T, bytes: []const u8) !u64 {
+            if (s.failure != null) return error.Closed;
+            if (s.issued == std.math.maxInt(u64)) return error.SequenceOverflow;
+            const sequence = s.issued + 1;
+            try s.fifo.push(.{ .value = value, .sequence = sequence }, bytes);
+            s.issued = sequence;
+            return sequence;
+        }
+        pub fn copy(s: *const Self, sequence: u64, out: []u8) ![]const u8 {
+            const entry = s.fifo.front() orelse return error.EmptyBuffer;
+            if (entry.value.sequence != sequence) return error.StaleSequence;
+            return s.fifo.copyFront(out);
+        }
+        pub fn ack(s: *Self, sequence: u64) !void {
+            if (s.failure != null) return error.Closed;
+            const entry = s.fifo.front() orelse return error.EmptyBuffer;
+            if (entry.value.sequence != sequence) return error.StaleSequence;
+            s.fifo.pop();
+            s.completed = sequence;
+        }
+        pub fn fail(s: *Self, code: i32) void {
+            if (s.failure == null) s.failure = code;
+        }
+        /// A later failure cannot poison an already completed prefix.
+        pub fn poll(s: *const Self, target: u64) !?i32 {
+            if (target > s.issued) return error.InvalidTarget;
+            if (target <= s.completed) return 0;
+            if (s.failure) |code| return code;
+            return null;
+        }
+    };
+}
+test "host delivery retains in-flight capacity, rejects stale acknowledgements and owns bytes" {
+    var q = try Queue(u32).init(std.testing.allocator, 4, 2);
+    defer q.deinit();
+    var source = [_]u8{ 1, 2, 3 };
+    const first = try q.push(9, &source);
+    source[0] = 99;
+    var copy: [4]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, try q.copy(first, &copy));
+    try std.testing.expectError(error.BufferFull, q.push(10, "xx"));
+    try std.testing.expectError(error.StaleSequence, q.ack(first + 1));
+    try q.ack(first);
+    const second = try q.push(10, "xyz");
+    try std.testing.expectError(error.StaleSequence, q.copy(first, &copy));
+    q.fail(-6);
+    q.fail(-4);
+    try std.testing.expectEqual(@as(?i32, 0), try q.poll(first));
+    try std.testing.expectEqual(@as(?i32, -6), try q.poll(second));
+    try std.testing.expectError(error.Closed, q.push(11, ""));
+    try std.testing.expectError(error.Closed, q.ack(second));
+}
+test "metadata, wrap, invalid prefix and sequence exhaustion are bounded" {
+    var q = try Queue(u8).init(std.testing.allocator, 3, 2);
+    defer q.deinit();
+    const first = try q.push(1, "ab");
+    _ = try q.push(2, "");
+    try std.testing.expectError(error.BufferFull, q.push(3, ""));
+    try q.ack(first);
+    const third = try q.push(3, "xyz");
+    try q.ack(2);
+    var out: [3]u8 = undefined;
+    try std.testing.expectEqualStrings("xyz", try q.copy(third, &out));
+    try std.testing.expectEqual(@as(?i32, null), try q.poll(third));
+    try q.ack(third);
+    try std.testing.expectEqual(@as(?i32, 0), try q.poll(third));
+    try std.testing.expectError(error.InvalidTarget, q.poll(third + 1));
+    q.issued = std.math.maxInt(u64);
+    try std.testing.expectError(error.SequenceOverflow, q.push(4, ""));
+}

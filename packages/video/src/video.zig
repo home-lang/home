@@ -1313,3 +1313,5 @@ pub const pcm_timeline = @import("core/pcm_timeline.zig");
 pub const recording_policy = @import("core/recording_policy.zig");
 
 pub const recording_path = @import("core/recording_path.zig");
+
+pub const delivery_fifo = @import("core/delivery_fifo.zig");
