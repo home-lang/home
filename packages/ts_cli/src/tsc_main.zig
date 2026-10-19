@@ -25,6 +25,13 @@ const ts_lsp = @import("ts_lsp");
 const ts_lsp_server = @import("ts_lsp_server");
 const config_diagnostics = @import("config_diagnostics.zig");
 
+/// Watch every source admitted to the program, not only command-line roots.
+/// The resolver can add a transitive dependency after the roots are loaded;
+/// `Watcher.track` keeps the original baseline when a path is already known.
+pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
+    for (program.files.items) |file| try watcher.track(file.path);
+}
+
 const ts_empty_files_list_in_config: u32 = 18002;
 
 /// tsc writes its normal output (diagnostics, summaries, status messages,
@@ -3842,6 +3849,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         for (input_files.items) |path| {
             try watcher.track(path);
         }
+        try trackProgramFiles(&watcher, &program);
         while (true) {
             // Inter-poll pause: 100ms via `std.Io.Clock.Duration.sleep`.
             // A platform-native FS-event backend (FSEvents/inotify/

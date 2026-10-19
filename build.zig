@@ -2716,6 +2716,7 @@ pub fn build(b: *std.Build) void {
     // tsc_main (the `home tsc` driver and `home lsp`'s TypeScript project).
     const tsc_main_tests = b.addTest(.{ .root_module = tsc_main_pkg });
     const run_tsc_main_tests = b.addRunArtifact(tsc_main_tests);
+    run_tsc_main_tests.has_side_effects = true;
     dependOnTest(test_step, &run_tsc_main_tests.step, test_filter, "tsc_main");
 
     const ts_conformance_test_filters: []const []const u8 = if (ts_conformance_test_filter) |needle| &.{needle} else &.{};
@@ -2735,6 +2736,7 @@ pub fn build(b: *std.Build) void {
 
     const ts_watch_tests = b.addTest(.{ .root_module = ts_watch_pkg });
     const run_ts_watch_tests = b.addRunArtifact(ts_watch_tests);
+    run_ts_watch_tests.has_side_effects = true;
     dependOnTest(test_step, &run_ts_watch_tests.step, test_filter, "ts_watch");
     const ts_watch_lifecycle_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -2744,7 +2746,25 @@ pub fn build(b: *std.Build) void {
         }),
     });
     ts_watch_lifecycle_tests.root_module.addImport("ts_watch", ts_watch_pkg);
-    dependOnTest(test_step, &b.addRunArtifact(ts_watch_lifecycle_tests).step, test_filter, "ts_watch_lifecycle");
+    const run_ts_watch_lifecycle_tests = b.addRunArtifact(ts_watch_lifecycle_tests);
+    run_ts_watch_lifecycle_tests.has_side_effects = true;
+    dependOnTest(test_step, &run_ts_watch_lifecycle_tests.step, test_filter, "ts_watch_lifecycle");
+
+    const ts_watch_program_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/ts_cli/tests/watch_program_tracking_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    ts_watch_program_tests.root_module.addImport("tsc_main", tsc_main_pkg);
+    ts_watch_program_tests.root_module.addImport("ts_program", ts_program_pkg);
+    ts_watch_program_tests.root_module.addImport("ts_resolver", ts_resolver_pkg);
+    ts_watch_program_tests.root_module.addImport("ts_driver", ts_driver_pkg);
+    ts_watch_program_tests.root_module.addImport("ts_watch", ts_watch_pkg);
+    const run_ts_watch_program_tests = b.addRunArtifact(ts_watch_program_tests);
+    run_ts_watch_program_tests.has_side_effects = true;
+    dependOnTest(test_step, &run_ts_watch_program_tests.step, test_filter, "ts_watch_program");
 
     const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
