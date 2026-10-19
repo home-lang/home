@@ -56,6 +56,24 @@ try std.testing.expectEqual(@as(i32, 42), result);
 
 ## Testing
 
+`CompletionWatermark` (also available directly from `src/completion_watermark.zig`)
+tracks FIFO admissions and completed prefixes without allocations. `reserve()`
+returns an increasing ticket; `complete()` acknowledges the next operation.
+Capture `issued` at submission and `poll(ticket)` for pending, success, or the
+first failure code. Later admissions cannot extend a ticket's boundary, and a
+later failure cannot invalidate an already completed prefix. Invalid targets,
+extra acknowledgements, and sequence overflow fail without mutation.
+
+The caller supplies synchronization, wakeups, lifetime retention, and a bounded
+ticket registry. Keep the watermark alive until its worker and all retained
+waiters finish; never retain a pointer to a worker that may be destroyed.
+`fail(code)` closes admission and fails unfinished prefixes, preserving the first
+code. This helper does not cancel callbacks, create threads, or imply durable I/O.
+
+```bash
+zig test packages/async/src/completion_watermark.zig
+```
+
 ```bash
 zig build test -Dfilter=async
 ```

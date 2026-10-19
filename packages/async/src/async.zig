@@ -16,6 +16,7 @@ pub const RawTask = task.RawTask;
 pub const Runtime = runtime.Runtime;
 
 test {
+    _ = @import("completion_watermark.zig");
     _ = @import("completion_gate.zig");
     _ = future;
     _ = task;
@@ -27,3 +28,5 @@ test {
 
 /// Revision-aware event job gate; caller owns synchronization.
 pub const CompletionGate = @import("completion_gate.zig").Gate;
+/// Fixed-prefix FIFO completion; caller owns synchronization and storage.
+pub const CompletionWatermark = @import("completion_watermark.zig").Watermark;
