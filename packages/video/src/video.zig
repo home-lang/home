@@ -1303,3 +1303,8 @@ test "SampleFormat" {
     try std.testing.expectEqual(@as(u8, 2), SampleFormat.s16le.bytesPerSample());
     try std.testing.expectEqual(@as(u8, 4), SampleFormat.f32le.bytesPerSample());
 }
+
+// Bounded capture building blocks; independently testable on Zig 0.15.2+.
+pub const av_stream = @import("containers/av_stream.zig");
+pub const pcm_timeline = @import("core/pcm_timeline.zig");
+pub const recording_policy = @import("core/recording_policy.zig");
