@@ -84,15 +84,19 @@ pub const math = struct {
 
 // File system operations
 pub const fs = struct {
-    pub const File = std.fs.File;
-    pub const Dir = std.fs.Dir;
-    pub const cwd = std.fs.cwd;
-    pub const openFileAbsolute = std.fs.openFileAbsolute;
-    pub const createFileAbsolute = std.fs.createFileAbsolute;
-    pub const deleteFileAbsolute = std.fs.deleteFileAbsolute;
-    pub const makeDirAbsolute = std.fs.makeDirAbsolute;
-    pub const deleteDirAbsolute = std.fs.deleteDirAbsolute;
+    pub const File = std.Io.File;
+    pub const Dir = std.Io.Dir;
+    pub const cwd = std.Io.Dir.cwd;
+    pub const openFileAbsolute = std.Io.Dir.openFileAbsolute;
+    pub const createFileAbsolute = std.Io.Dir.createFileAbsolute;
+    pub const deleteFileAbsolute = std.Io.Dir.deleteFileAbsolute;
+    pub const deleteDirAbsolute = std.Io.Dir.deleteDirAbsolute;
     pub const path = std.fs.path;
+
+    /// Create one directory at an absolute path with ordinary directory permissions.
+    pub fn makeDirAbsolute(io: std.Io, absolute_path: []const u8) std.Io.Dir.CreateDirError!void {
+        try std.Io.Dir.createDirAbsolute(io, absolute_path, .default_dir);
+    }
 };
 
 // Networking

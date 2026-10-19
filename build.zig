@@ -1539,6 +1539,22 @@ pub fn build(b: *std.Build) void {
     const run_basics_core_tests = b.addRunArtifact(basics_core_tests);
     run_basics_core_tests.has_side_effects = true;
 
+    const basics_fs_facade_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/basics/tests/fs_facade_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    basics_fs_facade_tests.root_module.link_libc = true;
+    basics_fs_facade_tests.root_module.addImport("basics", b.createModule(.{
+        .root_source_file = b.path("packages/basics/src/basics.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    const run_basics_fs_facade_tests = b.addRunArtifact(basics_fs_facade_tests);
+    run_basics_fs_facade_tests.has_side_effects = true;
+
     const basics_memory_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("packages/basics/tests/memory_test.zig"),
@@ -2328,6 +2344,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_basics_json_tests.step, test_filter, "basics_json");
     dependOnTest(test_step, &run_basics_temporal_tests.step, test_filter, "basics_temporal");
     dependOnTest(test_step, &run_basics_core_tests.step, test_filter, "basics_core");
+    dependOnTest(test_step, &run_basics_fs_facade_tests.step, test_filter, "basics_fs_facade");
     dependOnTest(test_step, &run_basics_memory_tests.step, test_filter, "basics_memory");
     dependOnTest(test_step, &run_basics_process_tests.step, test_filter, "basics_process");
     dependOnTest(test_step, &run_basics_process_input_tests.step, test_filter, "basics_process_input");
