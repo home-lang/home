@@ -169308,8 +169308,7 @@ pub const Checker = struct {
             if (self.subst_memo.get(t)) |m| return m;
         }
         const defer_before = self.instantiation_defer_events;
-        const result = try self.substituteTypeUncached(t, subs);
-        try self.propagateProgramContextualOrigins(t, result, subs);
+        const result = try self.propagateProgramContextualOrigins(t, try self.substituteTypeUncached(t, subs), subs);
         if (memo_eligible and self.instantiation_defer_events == defer_before) {
             self.subst_memo.put(self.gpa, t, result) catch {};
         }
@@ -169398,26 +169397,52 @@ pub const Checker = struct {
         return try self.interner.internInstantiation(definition, arguments);
     }
 
+    /// Carry `source`'s program contextual origins to its substitution and
+    /// return the type that owns them. Origins describe ONE instantiation:
+    /// recording substituted arguments onto a type that substitution left
+    /// unchanged would grow that type's chain with every mapper it meets
+    /// (hono's Context reached thousands, scanned on every record) and make
+    /// its member reads ambiguous. An unchanged deferred-read placeholder
+    /// whose arguments did change therefore gets a fresh placeholder; any
+    /// other unchanged type does not depend on the substituted parameters.
     fn propagateProgramContextualOrigins(
         self: *Checker,
         source: TypeId,
         result: TypeId,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
-    ) CheckError!void {
-        var current = self.program_contextual_type_origins.get(source);
+    ) CheckError!TypeId {
+        const first = self.program_contextual_type_origins.get(source) orelse return result;
+        var substituted: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer substituted.deinit(self.gpa);
+        var any_changed = false;
+        var all_deferred = true;
+        var current: ?*const ProgramContextualTypeOrigin = first;
         while (current) |origin| : (current = origin.next) {
-            const args = try self.gpa.alloc(TypeId, origin.args.len);
-            defer self.gpa.free(args);
-            for (origin.args, args) |argument, *substituted| {
-                substituted.* = try self.substituteType(argument, subs);
+            for (origin.args) |argument| {
+                const next = try self.substituteType(argument, subs);
+                if (next != argument) any_changed = true;
+                try substituted.append(self.gpa, next);
             }
-            try self.recordProgramContextualTypeOrigin(
-                result,
-                origin.declaration,
-                args,
-                origin.deferred_read,
+            if (!origin.deferred_read) all_deferred = false;
+        }
+        var owner = result;
+        if (result == source) {
+            if (!any_changed or !all_deferred) return result;
+            owner = try self.interner.internObjectTypeWithIndexAndSymbol(
+                &.{},
+                types.Primitive.any,
+                types.Primitive.any,
+                types.Primitive.any,
             );
         }
+        var offset: usize = 0;
+        current = first;
+        while (current) |origin| : (current = origin.next) {
+            const args = substituted.items[offset .. offset + origin.args.len];
+            offset += origin.args.len;
+            try self.recordProgramContextualTypeOrigin(owner, origin.declaration, args, origin.deferred_read);
+        }
+        return owner;
     }
 
     fn recordSignatureGenericParameterOrigins(self: *Checker, signature: TypeId, original: []const TypeId, substituted: []const TypeId, has_rest: bool) CheckError!void {
