@@ -40,7 +40,10 @@ pub const RawImage = struct {
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, bits: u8) !RawImage {
-        const data = try allocator.alloc(u16, width * height);
+        if (bits == 0 or bits > 16) return error.InvalidBitDepth;
+        if (width == 0 or height == 0) return error.InvalidDimensions;
+        const count = std.math.mul(usize, width, height) catch return error.ImageTooLarge;
+        const data = try allocator.alloc(u16, count);
         @memset(data, 0);
 
         return RawImage{
@@ -50,7 +53,7 @@ pub const RawImage = struct {
             .bits_per_sample = bits,
             .bayer_pattern = .rggb,
             .black_level = 0,
-            .white_level = @as(u16, 1) << @intCast(bits),
+            .white_level = @intCast((@as(u32, 1) << @intCast(bits)) - 1),
             .color_matrix = .{ 1, 0, 0, 0, 1, 0, 0, 0, 1 },
             .white_balance = .{ 1, 1, 1 },
             .allocator = allocator,
@@ -63,12 +66,12 @@ pub const RawImage = struct {
 
     pub fn getValue(self: *const RawImage, x: u32, y: u32) u16 {
         if (x >= self.width or y >= self.height) return 0;
-        return self.data[y * self.width + x];
+        return self.data[@as(usize, y) * self.width + x];
     }
 
     pub fn setValue(self: *RawImage, x: u32, y: u32, value: u16) void {
         if (x >= self.width or y >= self.height) return;
-        self.data[y * self.width + x] = value;
+        self.data[@as(usize, y) * self.width + x] = value;
     }
 };
 
@@ -1023,4 +1026,24 @@ fn bilinearSample(img: *Image, x: f32, y: f32) Color {
         .b = @intFromFloat(lerp(fy, lerp(fx, @floatFromInt(c00.b), @floatFromInt(c10.b)), lerp(fx, @floatFromInt(c01.b), @floatFromInt(c11.b)))),
         .a = 255,
     };
+}
+
+test "raw image white level covers the full declared bit depth" {
+    var raw = try RawImage.init(std.testing.allocator, 2, 2, 16);
+    defer raw.deinit();
+    try std.testing.expectEqual(@as(u16, 65535), raw.white_level);
+    var twelve = try RawImage.init(std.testing.allocator, 2, 2, 12);
+    defer twelve.deinit();
+    try std.testing.expectEqual(@as(u16, 4095), twelve.white_level);
+}
+
+test "raw image rejects empty geometry and invalid bit depths" {
+    try std.testing.expectError(error.InvalidBitDepth, RawImage.init(std.testing.allocator, 2, 2, 0));
+    try std.testing.expectError(error.InvalidBitDepth, RawImage.init(std.testing.allocator, 2, 2, 17));
+    try std.testing.expectError(error.InvalidDimensions, RawImage.init(std.testing.allocator, 0, 2, 12));
+}
+
+test "raw image propagates allocation failure" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, RawImage.init(failing.allocator(), 2, 2, 12));
 }
