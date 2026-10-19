@@ -87,7 +87,8 @@ pub const ModuleLoader = struct {
     pub fn deinit(self: *ModuleLoader) void {
         var it = self.modules.iterator();
         while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
+            // The canonical cache key borrows Module.file_path. Each module
+            // owns that path and is destroyed exactly once by this map.
             entry.value_ptr.*.deinit();
             self.allocator.destroy(entry.value_ptr.*);
         }
@@ -106,14 +107,14 @@ pub const ModuleLoader = struct {
     }
 
     pub fn loadModule(self: *ModuleLoader, module_name: []const u8) !*Module {
-        // Check if already loaded
-        if (self.modules.get(module_name)) |module| {
-            return module;
-        }
-
-        // Try to find the module file
         const file_path = try self.findModuleFile(module_name);
         defer self.allocator.free(file_path);
+        return self.loadResolvedFile(module_name, file_path);
+    }
+
+    fn loadResolvedFile(self: *ModuleLoader, module_name: []const u8, file_path: []const u8) !*Module {
+        // Resolve aliases and repeated imports to the same owned program.
+        if (self.modules.get(file_path)) |module| return module;
 
         // Retain source: AST names may borrow slices from lexer tokens.
         // readFileAlloc rejects a length that reaches its limit, so include
@@ -161,10 +162,9 @@ pub const ModuleLoader = struct {
             }
         }
 
-        // Cache the module using its owned name as the key.
-        const name_copy = try self.allocator.dupe(u8, module_name);
-        errdefer self.allocator.free(name_copy);
-        try self.modules.put(name_copy, module);
+        // The canonical path is owned by Module and borrowed by the map.
+        // No alias gets a second ownership entry (or a second deinit).
+        try self.modules.put(module.file_path, module);
 
         return module;
     }
@@ -178,7 +178,7 @@ pub const ModuleLoader = struct {
         const cwd = std.Io.Dir.cwd();
         if (try self.openCandidate(cwd, filename)) |file| {
             file.close(self.io);
-            return try self.allocator.dupe(u8, filename);
+            return self.canonicalFilePath(filename);
         }
 
         // Try search paths
@@ -188,7 +188,7 @@ pub const ModuleLoader = struct {
 
             if (try self.openCandidate(cwd, path)) |file| {
                 file.close(self.io);
-                return try self.allocator.dupe(u8, path);
+                return self.canonicalFilePath(path);
             }
         }
 
@@ -202,8 +202,37 @@ pub const ModuleLoader = struct {
         };
     }
 
+    fn canonicalFilePath(self: *ModuleLoader, path: []const u8) ![]u8 {
+        var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const len = try std.Io.Dir.cwd().realPathFile(self.io, path, &buffer);
+        return self.allocator.dupe(u8, buffer[0..len]);
+    }
+
     pub fn resolveImport(self: *ModuleLoader, from_module: []const u8, import_name: []const u8) !*Module {
-        _ = from_module;
-        return try self.loadModule(import_name);
+        // Bare names keep the cwd/search-path lookup order. Relative names
+        // require the canonical path of an already loaded importing module.
+        if (!isRelativeImport(import_name)) return self.loadModule(import_name);
+        const importer = self.modules.get(from_module) orelse return error.ImportingModuleNotLoaded;
+        const parent = std.fs.path.dirname(importer.file_path) orelse unreachable;
+        const filename = if (std.fs.path.extension(import_name).len == 0)
+            try std.fmt.allocPrint(self.allocator, "{s}.home", .{import_name})
+        else
+            try self.allocator.dupe(u8, import_name);
+        defer self.allocator.free(filename);
+        const candidate = try std.fs.path.join(self.allocator, &.{ parent, filename });
+        defer self.allocator.free(candidate);
+        const cwd = std.Io.Dir.cwd();
+        if (try self.openCandidate(cwd, candidate)) |file| {
+            file.close(self.io);
+            const canonical = try self.canonicalFilePath(candidate);
+            defer self.allocator.free(canonical);
+            return self.loadResolvedFile(import_name, canonical);
+        }
+        return error.ModuleNotFound;
+    }
+
+    fn isRelativeImport(import_name: []const u8) bool {
+        return (import_name.len >= 2 and import_name[0] == '.' and std.fs.path.isSep(import_name[1])) or
+            (import_name.len >= 3 and import_name[0] == '.' and import_name[1] == '.' and std.fs.path.isSep(import_name[2]));
     }
 };

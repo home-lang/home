@@ -104,3 +104,49 @@ test "module loader never caches a partial parse and can reload repaired source"
     try testing.expect(loaded.exports.contains("repaired"));
     try testing.expect(!loaded.exports.contains("broken"));
 }
+
+test "relative imports use the importing file and canonical cache identity" {
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "first/nested");
+    try tmp.dir.createDirPath(io, "second");
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/entry_first.home", .data = "pub fn first() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second/entry_second.home", .data = "pub fn second() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/shared.home", .data = "pub fn from_first() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second/shared.home", .data = "pub fn from_second() { }" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/nested/child.home", .data = "pub fn child() { }" });
+    const first_root = try tmp.dir.realPathFileAlloc(io, "first", allocator);
+    defer allocator.free(first_root);
+    const second_root = try tmp.dir.realPathFileAlloc(io, "second", allocator);
+    defer allocator.free(second_root);
+    const first_shared_path = try tmp.dir.realPathFileAlloc(io, "first/shared.home", allocator);
+    defer allocator.free(first_shared_path);
+    const second_shared_path = try tmp.dir.realPathFileAlloc(io, "second/shared.home", allocator);
+    defer allocator.free(second_shared_path);
+
+    var loader = modules.ModuleLoader.init(allocator, io);
+    defer loader.deinit();
+    try loader.addSearchPath(first_root);
+    try loader.addSearchPath(second_root);
+    const first = try loader.loadModule("entry_first");
+    const second = try loader.loadModule("entry_second");
+
+    const first_shared = try loader.resolveImport(first.file_path, "./shared");
+    const second_shared = try loader.resolveImport(second.file_path, "./shared.home");
+    try testing.expect(first_shared != second_shared);
+    try testing.expectEqualStrings(first_shared_path, first_shared.file_path);
+    try testing.expectEqualStrings(second_shared_path, second_shared.file_path);
+    try testing.expect(first_shared.exports.contains("from_first"));
+    try testing.expect(second_shared.exports.contains("from_second"));
+    try testing.expect(first_shared == try loader.resolveImport(first.file_path, "./nested/../shared"));
+    try testing.expect(first_shared == try loader.loadModule("shared"));
+
+    const child = try loader.resolveImport(first.file_path, "./nested/child");
+    try testing.expect(first_shared == try loader.resolveImport(child.file_path, "../shared"));
+    try testing.expectEqual(@as(usize, 5), loader.modules.count());
+    try testing.expectError(error.ModuleNotFound, loader.resolveImport(second.file_path, "./missing"));
+    try testing.expectError(error.ImportingModuleNotLoaded, loader.resolveImport("not-loaded", "./shared"));
+    try testing.expectEqual(@as(usize, 5), loader.modules.count());
+}
