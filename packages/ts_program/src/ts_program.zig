@@ -9110,6 +9110,38 @@ test "Program: loadImportClosure bounds node_modules JavaScript by configured de
     try T.expect(depth_two_program.lookupPath("/proj/node_modules/dep/leaf.js") == null);
 }
 
+test "Program: loadImportClosure admits a parent-directory import cycle once" {
+    // Shape of @redis/client's declarations: command files reach the package
+    // index through `import("../..")` and the index re-exports the commands.
+    // Every file must enter the program exactly once under its canonical
+    // path; a non-normalized `dist/lib/../index.d.ts` re-admitted the whole
+    // package on every lap of the cycle until memory ran out.
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import * as client from 'client';\n");
+    try vfs.addFile("/proj/node_modules/client/package.json", "{\"types\":\"dist/index.d.ts\"}");
+    try vfs.addFile("/proj/node_modules/client/dist/index.d.ts", "export * from './lib/commands';\nexport { CommandParser } from './lib/parser';\n");
+    try vfs.addFile("/proj/node_modules/client/dist/lib/parser.d.ts", "export interface CommandParser { push(arg: string): void }\n");
+    try vfs.addFile("/proj/node_modules/client/dist/lib/commands/index.d.ts", "import GET from './GET';\ndeclare const _default: { GET: typeof GET };\nexport default _default;\n");
+    try vfs.addFile(
+        "/proj/node_modules/client/dist/lib/commands/GET.d.ts",
+        "declare const _default: { parseCommand: (parser: import(\"../..\").CommandParser) => void };\nexport default _default;\n",
+    );
+
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", "import * as client from 'client';\n");
+    try T.expectEqual(@as(usize, 4), try program.loadImportClosure(.{}));
+    for (program.files.items) |file| {
+        try T.expect(std.mem.indexOf(u8, file.path, "/../") == null);
+        try T.expect(std.mem.indexOf(u8, file.path, "/./") == null);
+    }
+    try T.expect(program.lookupPath("/proj/node_modules/client/dist/index.d.ts") != null);
+    try T.expect(program.lookupPath("/proj/node_modules/client/dist/lib/commands/GET.d.ts") != null);
+}
+
 test "Program: explicit node_modules roots retain depth zero and admit one dependency level" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

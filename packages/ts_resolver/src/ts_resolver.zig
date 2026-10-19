@@ -817,16 +817,14 @@ pub const Resolver = struct {
         // Relative or absolute path.
         if (isRelative(specifier)) {
             const dir = dirname(containing_file);
-            // tsc accepts a bare `.` (and `..`) as a relative
-            // directory specifier — `import x from "."` resolves to
-            // `./index.{ts,…}` in the containing file's directory.
-            // Normalize to `./` / `../` so `joinPath` produces a
-            // clean directory path that `tryDirectoryIndex` can stat
-            // (mirrors `importFromDot.ts`).
-            const normalized: []const u8 = if (std.mem.eql(u8, specifier, "."))
-                "./"
-            else if (std.mem.eql(u8, specifier, ".."))
-                "../"
+            // tsc accepts a bare `.` (and `..`) as a relative directory
+            // specifier — `import x from "."` resolves to `./index.{ts,…}`
+            // (mirrors `importFromDot.ts`). tsgo's
+            // `normalizePathForCJSResolution` generalizes this: any final
+            // `.`/`..` component (`"../.."`) names a directory, so the
+            // candidate keeps a trailing separator after normalization.
+            const normalized: []const u8 = if (endsWithDotComponent(specifier))
+                std.fmt.allocPrint(self.ar(), "{s}/", .{specifier}) catch return error.OutOfMemory
             else
                 specifier;
             const joined = try self.joinPath(dir, normalized);
@@ -1173,37 +1171,17 @@ pub const Resolver = struct {
     }
 
     fn joinPath(self: *Resolver, a: []const u8, b: []const u8) ResolveError![]const u8 {
-        // An absolute `b` (e.g. a `package.json` `"types"` field of
-        // `/.ts/typescript.d.ts`) discards `a` entirely — matching
-        // tsc's `combinePaths`, where a rooted trailing path resets
-        // the result. Without this an absolute `types`/`typings`
-        // value gets spuriously concatenated onto the package dir.
-        if (isAbsolute(b)) return self.ar().dupe(u8, b) catch error.OutOfMemory;
-        // Resolve `..` segments in b relative to a.
-        var bb = b;
-        const aa_owned = self.ar().dupe(u8, a) catch return error.OutOfMemory;
-        var aa: []u8 = aa_owned;
-        while (true) {
-            if (bb.len >= 2 and bb[0] == '.' and bb[1] == '/') {
-                bb = bb[2..];
-                continue;
-            }
-            if (bb.len >= 3 and bb[0] == '.' and bb[1] == '.' and bb[2] == '/') {
-                // Pop one segment from aa.
-                aa = stripLastSegment(aa);
-                bb = bb[3..];
-                continue;
-            }
-            break;
-        }
-        // Special case: aa is just "/" — preserve it.
-        if (aa.len == 1 and aa[0] == '/') {
-            return std.fmt.allocPrint(self.ar(), "/{s}", .{bb}) catch error.OutOfMemory;
-        }
-        // Trim trailing `/`.
-        while (aa.len > 0 and aa[aa.len - 1] == '/') aa = aa[0 .. aa.len - 1];
-        if (aa.len == 0) return self.ar().dupe(u8, bb) catch error.OutOfMemory;
-        return std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ aa, bb }) catch error.OutOfMemory;
+        // tsc's `NormalizePath(CombinePaths(a, b))`. An absolute `b` (e.g. a
+        // `package.json` `"types"` field of `/.ts/typescript.d.ts`) discards
+        // `a` entirely, and every `.`/`..` segment collapses — not only a
+        // leading `./`/`../` prefix. A partially normalized result such as
+        // `dist/lib/..` (from `import("../..")`) is a distinct program file
+        // identity, so a package whose modules import each other through
+        // such paths would otherwise be re-admitted under ever-longer
+        // spellings (`lib/../lib/../lib/...`) without bound.
+        if (isAbsolute(b) or a.len == 0) return normalizePath(self.ar(), b) catch error.OutOfMemory;
+        const combined = std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ a, b }) catch return error.OutOfMemory;
+        return normalizePath(self.ar(), combined) catch error.OutOfMemory;
     }
 
     /// `fileExists` wrapped with tsc's per-candidate resolution traces
@@ -2981,18 +2959,49 @@ pub fn dirname(path: []const u8) []const u8 {
     return "";
 }
 
-/// Remove the last `/<segment>` from a path. For "/a/b/c" returns
-/// "/a/b"; for "/a" returns "/"; for "a" returns "".
-fn stripLastSegment(path: []u8) []u8 {
-    var i: usize = path.len;
-    while (i > 0) {
-        i -= 1;
-        if (path[i] == '/' or path[i] == '\\') {
-            if (i == 0) return path[0..1];
-            return path[0..i];
-        }
+/// Whether the last path component of `path` is `.` or `..`.
+fn endsWithDotComponent(path: []const u8) bool {
+    var start: usize = path.len;
+    while (start > 0 and path[start - 1] != '/' and path[start - 1] != '\\') start -= 1;
+    const last = path[start..];
+    return std.mem.eql(u8, last, ".") or std.mem.eql(u8, last, "..");
+}
+
+/// tsc's `NormalizePath`: `/`-separated, `.` and empty segments dropped, `..`
+/// segments collapsed against the previous segment (kept when a relative path
+/// climbs above its start, dropped at a root), and a trailing separator kept.
+fn normalizePath(gpa: std.mem.Allocator, path: []const u8) error{OutOfMemory}![]const u8 {
+    var root_len: usize = 0;
+    if (path.len >= 1 and (path[0] == '/' or path[0] == '\\')) {
+        root_len = 1;
+    } else if (path.len >= 3 and path[1] == ':' and (path[2] == '/' or path[2] == '\\')) {
+        root_len = 3;
     }
-    return path[0..0];
+    var segments: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer segments.deinit(gpa);
+    var it = std.mem.tokenizeAny(u8, path[root_len..], "/\\");
+    while (it.next()) |segment| {
+        if (std.mem.eql(u8, segment, ".")) continue;
+        if (std.mem.eql(u8, segment, "..")) {
+            if (segments.items.len != 0 and !std.mem.eql(u8, segments.items[segments.items.len - 1], "..")) {
+                _ = segments.pop();
+                continue;
+            }
+            if (root_len != 0) continue;
+        }
+        try segments.append(gpa, segment);
+    }
+    const trailing = path.len > root_len and (path[path.len - 1] == '/' or path[path.len - 1] == '\\');
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(gpa);
+    if (root_len == 1) try out.append(gpa, '/');
+    if (root_len == 3) try out.appendSlice(gpa, &.{ path[0], ':', '/' });
+    for (segments.items, 0..) |segment, i| {
+        if (i != 0) try out.append(gpa, '/');
+        try out.appendSlice(gpa, segment);
+    }
+    if (trailing and segments.items.len != 0) try out.append(gpa, '/');
+    return out.toOwnedSlice(gpa);
 }
 
 /// Match `pattern` (which may contain one `*`) against `s`. Returns the
@@ -3867,6 +3876,54 @@ test "Resolver: bare dot specifier resolves to sibling index" {
     const res = try r.resolve(".", "/proj/a/b.ts");
     try T.expectEqualStrings("/proj/a/index.ts", res.path);
     try T.expectEqual(Resolution.Source.index_file, res.source);
+}
+
+test "Resolver: parent directory specifiers normalize to one canonical path" {
+    // @redis/client's `dist/lib/commands/*.d.ts` use `import("../..")` for
+    // the package index while `dist/index.d.ts` imports `./lib/...`. Each
+    // result must be the canonical path; a partially normalized
+    // `dist/lib/../index.d.ts` made every lap through that module cycle a
+    // new file identity (`lib/../lib/../lib/...`) and grew without bound.
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/pkg/dist/index.d.ts", "export * from './lib/commands';");
+    try vfs.addFile("/pkg/dist/lib/commands/index.d.ts", "");
+    try vfs.addFile("/pkg/dist/lib/commands/GET.d.ts", "");
+    try vfs.addFile("/pkg/dist.d.ts", "");
+
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+    // A final `..` names a directory: `/pkg/dist/` (its index), never the
+    // sibling file `/pkg/dist.d.ts`.
+    const up = try r.resolve("../..", "/pkg/dist/lib/commands/GET.d.ts");
+    try T.expectEqualStrings("/pkg/dist/index.d.ts", up.path);
+    const down = try r.resolve("./lib/commands", up.path);
+    try T.expectEqualStrings("/pkg/dist/lib/commands/index.d.ts", down.path);
+    const mid = try r.resolve("./../commands/./GET", "/pkg/dist/lib/commands/index.d.ts");
+    try T.expectEqualStrings("/pkg/dist/lib/commands/GET.d.ts", mid.path);
+    const sibling = try r.resolve("../dist", "/pkg/dist/index.d.ts");
+    try T.expectEqualStrings("/pkg/dist.d.ts", sibling.path);
+}
+
+test "Resolver: normalizePath matches tsc NormalizePath" {
+    const cases = [_][2][]const u8{
+        .{ "/a/b/../c", "/a/c" },
+        .{ "/a/b/../../..", "/" },
+        .{ "/a/./b//c/", "/a/b/c/" },
+        .{ "/a/lib/../lib/../lib/x.d.ts", "/a/lib/x.d.ts" },
+        .{ "a/../../b", "../b" },
+        .{ "./a", "a" },
+        .{ "C:/x/../y", "C:/y" },
+    };
+    for (cases) |case| {
+        const got = try normalizePath(T.allocator, case[0]);
+        defer T.allocator.free(got);
+        try T.expectEqualStrings(case[1], got);
+    }
+    try T.expect(endsWithDotComponent("../.."));
+    try T.expect(endsWithDotComponent("."));
+    try T.expect(!endsWithDotComponent("../a"));
+    try T.expect(!endsWithDotComponent("./.x"));
 }
 
 test "Resolver: paths mapping with wildcard" {
