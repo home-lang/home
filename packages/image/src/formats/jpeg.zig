@@ -198,7 +198,7 @@ const JpegDecoder = struct {
             b2 = try self.readByte();
         }
 
-        return @enumFromInt((@as(u16, 0xFF) << 8) | b2);
+        return @fromBackingInt(@intCast((@as(u16, 0xFF) << 8) | b2));
     }
 
     fn skipMarker(self: *JpegDecoder) !void {
@@ -455,125 +455,7 @@ const JpegDecoder = struct {
 // ============================================================================
 
 fn idct(block: *[64]i32, quant: *const [64]u16) void {
-    // Dequantize
-    for (0..64) |i| {
-        block[i] *= @intCast(quant[i]);
-    }
-
-    // Fast IDCT using scaled integers
-    // Based on AAN algorithm
-    var workspace: [64]i32 = undefined;
-
-    // Process columns
-    for (0..8) |col| {
-        idctColumn(block, &workspace, col);
-    }
-
-    // Process rows
-    for (0..8) |row| {
-        idctRow(&workspace, block, row);
-    }
-}
-
-fn idctColumn(input: *const [64]i32, output: *[64]i32, col: usize) void {
-    const s0 = input[col + 0 * 8];
-    const s1 = input[col + 1 * 8];
-    const s2 = input[col + 2 * 8];
-    const s3 = input[col + 3 * 8];
-    const s4 = input[col + 4 * 8];
-    const s5 = input[col + 5 * 8];
-    const s6 = input[col + 6 * 8];
-    const s7 = input[col + 7 * 8];
-
-    // Stage 1
-    const p2 = s2;
-    const p3 = s6;
-    const p1 = @divTrunc((p2 + p3) * 2896, 4096); // cos(4*pi/16) * 4096
-    const t2 = @divTrunc(p3 * -7017, 4096) + p1; // -cos(4*pi/16) - cos(2*pi/16)
-    const t3 = @divTrunc(p2 * 3406, 4096) + p1; // cos(4*pi/16) - cos(6*pi/16)
-
-    const t0 = (s0 + s4) << 12;
-    const t1 = (s0 - s4) << 12;
-
-    const t10 = t0 + t3;
-    const t13 = t0 - t3;
-    const t11 = t1 + t2;
-    const t12 = t1 - t2;
-
-    // Stage 2
-    const z1 = s7 + s1;
-    const z2 = s5 + s3;
-    const z3 = s7 + s3;
-    const z4 = s5 + s1;
-    const z5 = @divTrunc((z3 + z4) * 4816, 4096); // cos(2*pi/16) + cos(6*pi/16)
-
-    const t4 = @divTrunc(s7 * 799, 4096);
-    const t5 = @divTrunc(s5 * 2276, 4096);
-    const t6 = @divTrunc(s3 * 3406, 4096);
-    const t7 = @divTrunc(s1 * 4017, 4096);
-
-    const z1_scaled = @divTrunc(z1 * -1390, 4096);
-    const z2_scaled = @divTrunc(z2 * -3406, 4096);
-    const z3_scaled = @divTrunc(z3 * -7017, 4096);
-    const z4_scaled = @divTrunc(z4 * 799, 4096);
-
-    const t4_out = t4 + z1_scaled + z3_scaled;
-    const t5_out = t5 + z2_scaled + z4_scaled;
-    const t6_out = t6 + z2_scaled + z3_scaled;
-    const t7_out = t7 + z1_scaled + z4_scaled + z5;
-
-    output[col + 0 * 8] = (t10 + t7_out) >> 12;
-    output[col + 7 * 8] = (t10 - t7_out) >> 12;
-    output[col + 1 * 8] = (t11 + t6_out) >> 12;
-    output[col + 6 * 8] = (t11 - t6_out) >> 12;
-    output[col + 2 * 8] = (t12 + t5_out) >> 12;
-    output[col + 5 * 8] = (t12 - t5_out) >> 12;
-    output[col + 3 * 8] = (t13 + t4_out) >> 12;
-    output[col + 4 * 8] = (t13 - t4_out) >> 12;
-}
-
-fn idctRow(input: *const [64]i32, output: *[64]i32, row: usize) void {
-    const base = row * 8;
-    const s0 = input[base + 0];
-    const s1 = input[base + 1];
-    const s2 = input[base + 2];
-    const s3 = input[base + 3];
-    const s4 = input[base + 4];
-    const s5 = input[base + 5];
-    const s6 = input[base + 6];
-    const s7 = input[base + 7];
-
-    // Simplified 1D IDCT
-    const t0 = (s0 + s4) << 7;
-    const t1 = (s0 - s4) << 7;
-
-    const t2 = @divTrunc(s2 * 2896, 4096) - @divTrunc(s6 * 1203, 4096);
-    const t3 = @divTrunc(s2 * 1203, 4096) + @divTrunc(s6 * 2896, 4096);
-
-    const t10 = t0 + t3;
-    const t13 = t0 - t3;
-    const t11 = t1 + t2;
-    const t12 = t1 - t2;
-
-    const z1 = s1 + s7;
-    const z2 = s3 + s5;
-    const z3 = s1 + s5;
-    const z4 = s3 + s7;
-
-    const t4 = @divTrunc(s7 * 799, 4096) - @divTrunc(z1 * 1390, 4096) - @divTrunc(z3 * 3406, 4096);
-    const t5 = @divTrunc(s5 * 2276, 4096) - @divTrunc(z2 * 3406, 4096) + @divTrunc(z4 * 799, 4096);
-    const t6 = @divTrunc(s3 * 3406, 4096) - @divTrunc(z2 * 3406, 4096) - @divTrunc(z3 * 3406, 4096);
-    const t7 = @divTrunc(s1 * 4017, 4096) - @divTrunc(z1 * 1390, 4096) + @divTrunc(z4 * 799, 4096);
-
-    // Final output with level shift and clamping
-    output[base + 0] = clamp(@divTrunc(t10 + t7, 256) + 128);
-    output[base + 7] = clamp(@divTrunc(t10 - t7, 256) + 128);
-    output[base + 1] = clamp(@divTrunc(t11 + t6, 256) + 128);
-    output[base + 6] = clamp(@divTrunc(t11 - t6, 256) + 128);
-    output[base + 2] = clamp(@divTrunc(t12 + t5, 256) + 128);
-    output[base + 5] = clamp(@divTrunc(t12 - t5, 256) + 128);
-    output[base + 3] = clamp(@divTrunc(t13 + t4, 256) + 128);
-    output[base + 4] = clamp(@divTrunc(t13 - t4, 256) + 128);
+    @import("../jpeg_dct.zig").inverse(block, quant);
 }
 
 fn clamp(value: i32) i32 {
@@ -638,7 +520,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
             .EOI => break,
             else => {
                 // Skip unknown markers
-                if (@intFromEnum(marker) >= 0xFFC0) {
+                if (@backingInt(marker) >= 0xFFC0) {
                     try decoder.skipMarker();
                 }
             },
@@ -720,149 +602,22 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 // JPEG Encoder (basic quality encoding)
 // ============================================================================
 
+/// Encode baseline JPEG with a real DCT/quantization/Huffman scan. The standalone
+/// encoder also accepts borrowed, padded rows and can reuse its output capacity.
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    if (img.width == 0 or img.height == 0 or img.width > std.math.maxInt(u16) or img.height > std.math.maxInt(u16)) {
-        return error.InvalidDimensions;
-    }
-    switch (img.format) {
-        .grayscale8, .rgb8, .rgba8 => {},
-        else => return error.UnsupportedFormat,
-    }
-
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    // SOI marker
-    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xD8 });
-
-    // APP0 (JFIF) marker
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF, 0xE0, // APP0
-        0x00, 0x10, // Length = 16
-        'J', 'F', 'I', 'F', 0x00, // Identifier
-        0x01, 0x01, // Version 1.1
-        0x00, // Aspect ratio units (0 = no units)
-        0x00, 0x01, // X density
-        0x00, 0x01, // Y density
-        0x00, // Thumbnail width
-        0x00, // Thumbnail height
-    });
-
-    // DQT marker (quantization tables)
-    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x00 }); // Length, table 0
-    try output.appendSlice(allocator, &DEFAULT_LUMINANCE_QUANT);
-
-    // Second quantization table for chrominance
-    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xDB, 0x00, 0x43, 0x01 });
-    try output.appendSlice(allocator, &DEFAULT_CHROMINANCE_QUANT);
-
-    // SOF0 (baseline DCT)
-    const is_grayscale = img.format == .grayscale8;
-    const num_components: u8 = if (is_grayscale) 1 else 3;
-
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF,
-        0xC0, // SOF0
-        0x00,
-        @intCast(8 + num_components * 3), // Length
-        0x08, // Precision (8 bits)
-    });
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.height))));
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, @intCast(img.width))));
-    try output.append(allocator, num_components);
-
-    if (is_grayscale) {
-        try output.appendSlice(allocator, &[_]u8{ 1, 0x11, 0 }); // Y component
-    } else {
-        try output.appendSlice(allocator, &[_]u8{ 1, 0x11, 0 }); // Y component
-        try output.appendSlice(allocator, &[_]u8{ 2, 0x11, 1 }); // Cb component
-        try output.appendSlice(allocator, &[_]u8{ 3, 0x11, 1 }); // Cr component
-    }
-
-    // DHT (Huffman tables) - using standard JPEG tables
-    try writeStandardHuffmanTables(allocator, &output);
-
-    // SOS (start of scan)
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF,
-        0xDA, // SOS
-        0x00,
-        @intCast(6 + num_components * 2), // Length
-        num_components,
-    });
-
-    if (is_grayscale) {
-        try output.appendSlice(allocator, &[_]u8{ 1, 0x00 }); // Component 1, DC/AC table 0
-    } else {
-        try output.appendSlice(allocator, &[_]u8{ 1, 0x00 }); // Y: tables 0/0
-        try output.appendSlice(allocator, &[_]u8{ 2, 0x11 }); // Cb: tables 1/1
-        try output.appendSlice(allocator, &[_]u8{ 3, 0x11 }); // Cr: tables 1/1
-    }
-
-    try output.appendSlice(allocator, &[_]u8{ 0x00, 0x3F, 0x00 }); // Spectral selection, successive approx
-
-    // Encode scan data (simplified - just output raw MCUs with minimal compression)
-    // This is a placeholder - full encoding would require DCT, quantization, Huffman encoding
-
-    // For now, output a minimal valid bitstream
-    // A proper implementation would encode each 8x8 block with DCT
-
-    // EOI marker
-    try output.appendSlice(allocator, &[_]u8{ 0xFF, 0xD9 });
-
-    return output.toOwnedSlice(allocator);
+    return encodeWithQuality(allocator, img, 90);
 }
-
-fn writeStandardHuffmanTables(allocator: std.mem.Allocator, output: *std.ArrayList(u8)) !void {
-    // DC luminance table
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF, 0xC4, // DHT marker
-        0x00, 0x1F, // Length
-        0x00, // DC table 0
-        0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Bits
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, // Values
-    });
-
-    // AC luminance table
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF, 0xC4, // DHT marker
-        0x00, 0xB5, // Length
-        0x10, // AC table 0
-        0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D, // Bits
-    });
-    // AC values (162 bytes)
-    const ac_values = [_]u8{
-        0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
-        0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
-        0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
-        0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
-        0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
-        0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
-        0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
-        0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
-        0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
-        0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
-        0xF9, 0xFA,
+pub fn encodeWithQuality(allocator: std.mem.Allocator, img: *const Image, quality: u8) ![]u8 {
+    const channels: u8 = switch (img.format) {
+        .grayscale8 => 1,
+        .rgb8 => 3,
+        .rgba8 => 4,
+        else => return error.UnsupportedFormat,
     };
-    try output.appendSlice(allocator, &ac_values);
-
-    // DC chrominance table
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF, 0xC4, // DHT marker
-        0x00, 0x1F, // Length
-        0x01, // DC table 1
-        0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // Bits
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, // Values
-    });
-
-    // AC chrominance table
-    try output.appendSlice(allocator, &[_]u8{
-        0xFF, 0xC4, // DHT marker
-        0x00, 0xB5, // Length
-        0x11, // AC table 1
-        0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77, // Bits
-    });
-    try output.appendSlice(allocator, &ac_values);
+    var encoder = @import("../jpeg_encoder.zig").Encoder.init(allocator);
+    defer encoder.deinit();
+    _ = try encoder.encode(img.pixels, img.width, img.height, @as(usize, img.width) * channels, channels, quality);
+    return encoder.output.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -870,8 +625,8 @@ fn writeStandardHuffmanTables(allocator: std.mem.Allocator, output: *std.ArrayLi
 // ============================================================================
 
 test "JPEG marker constants" {
-    try std.testing.expectEqual(@as(u16, 0xFFD8), @intFromEnum(Marker.SOI));
-    try std.testing.expectEqual(@as(u16, 0xFFD9), @intFromEnum(Marker.EOI));
+    try std.testing.expectEqual(@as(u16, 0xFFD8), @backingInt(Marker.SOI));
+    try std.testing.expectEqual(@as(u16, 0xFFD9), @backingInt(Marker.EOI));
 }
 
 test "YCbCr to RGB conversion" {
