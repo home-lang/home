@@ -97,6 +97,12 @@ pub const TrackInfo = mp4.TrackInfo;
 pub const TrackType = mp4.TrackType;
 pub const SampleTable = mp4.SampleTable;
 
+// Optional header-checked AVC/HEVC integration: compile native_encoder.c and
+// link x264/x265 only when this module is used. See NATIVE_MEDIA.md.
+pub const native_encoder = @import("codecs/video/native_encoder.zig");
+pub const rgb_i420 = @import("codecs/video/rgb_i420.zig");
+pub const mp4_stream = @import("containers/mp4_stream.zig");
+
 pub const mp4_muxer = @import("containers/mp4_muxer.zig");
 pub const Mp4Muxer = mp4_muxer.Mp4Muxer;
 pub const VideoTrackConfig = mp4_muxer.VideoTrackConfig;

@@ -1,3 +1,5 @@
+// Legacy handwritten vendor ABI. New integrations should use native_encoder.zig,
+// whose C boundary is compiled against installed headers. See NATIVE_MEDIA.md.
 // Home Video Library - x264 FFI Integration
 // Production H.264 encoding via libx264
 // https://www.videolan.org/developers/x264.html
