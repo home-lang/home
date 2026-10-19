@@ -1,9 +1,11 @@
 name: Native AAC-LC
 on:
   push:
-    branches: [feat/aac-mp4-recording]
+    branches: [main]
+    paths: ['packages/audio/src/encoding/*aac*', 'packages/video/src/codecs/audio/aac_encoder.zig', '.github/workflows/native-aac.yml']
   pull_request:
     paths: ['packages/audio/src/encoding/*aac*', 'packages/video/src/codecs/audio/aac_encoder.zig', '.github/workflows/native-aac.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:

@@ -1,9 +1,11 @@
 name: Streaming A/V modules
 on:
   push:
-    branches: [feat/pcm-av-streaming]
+    branches: [main]
+    paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
   pull_request:
     paths: ['packages/video/src/containers/av_stream.zig', 'packages/video/src/core/pcm_timeline.zig', 'packages/video/src/core/recording_policy.zig', 'packages/audio/src/io/native_capture*', '.github/workflows/streaming-av.yml']
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
