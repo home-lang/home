@@ -16793,6 +16793,46 @@ test "Program: nullable JavaScript JSDoc preserves array and element boundaries"
     }
 }
 
+test "Program: optional call diagnostics retain source-sensitive undefined targets" {
+    const source = @embedFile("testdata/optional_argument_diagnostics.ts");
+    const expected = [_][]const u8{
+        "Argument of type 'number' is not assignable to parameter of type 'string'.",
+        "Argument of type 'string | number' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'string | null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'unknown' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'string'.",
+        "Argument of type 'number' is not assignable to parameter of type 'string'.",
+        "Argument of type 'string | number' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'string | null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'unknown' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'string'.",
+        "Argument of type '(a: IFrenchEye, b: IFrenchEye) => number' is not assignable to parameter of type '(a: IEye, b: IEye) => number'.",
+    };
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/cases.ts", source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const file = try p.add("/cases.ts", source);
+        const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(file).compilation.?.diagnostics.items;
+        try T.expectEqual(expected.len, diagnostics.len);
+        for (diagnostics, expected) |diagnostic, message| {
+            try T.expectEqual(@as(u32, 2345), diagnostic.code);
+            try T.expectEqualStrings(message, diagnostic.message);
+        }
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

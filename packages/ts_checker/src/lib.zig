@@ -74,9 +74,14 @@ pub const LibCache = struct {
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
     array_proto_by_elem: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// Signature identities for the built-in `Array.sort` callback, whose
+    /// declaration uses `(a: T, b: T) => number` rather than synthesized
+    /// positional names. The checker reads this only for diagnostics.
+    sort_comparator_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
 
     pub fn deinit(self: *LibCache, gpa: std.mem.Allocator) void {
         self.array_proto_by_elem.deinit(gpa);
+        self.sort_comparator_signatures.deinit(gpa);
     }
 };
 
@@ -521,6 +526,7 @@ pub fn arrayProto(
     const cb_t_void = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
     const cb_tt_num = try ti.internSignature(&[_]TypeId{ elem, elem }, number_t, false);
+    try cache.sort_comparator_signatures.put(gpa, cb_tt_num, {});
     // `(prev: T, cur: T, index: number, array: T[]) => T` — no-initial-value reducer callback
     // for reduce / reduceRight. This overload returns the array element
     // type, matching lib.d.ts and the compiler corpus' `genericReduce`.

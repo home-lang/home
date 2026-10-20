@@ -171885,17 +171885,11 @@ pub const Checker = struct {
                     stop_after_arg_mismatch = true;
                 }
                 if (!emitted) {
-                    const raw_display_param_t = if ((union_composite or fixed_pos >= fixed_min_required) and
-                        self.typeIncludesUndefined(param_t) and
-                        !preserve_optional_spread_display and
-                        !try self.signatureParamUsesJsDocOptionalTypeSuffix(sig, @intCast(fixed_pos)))
-                    blk: {
-                        const without_undefined = self.subtractType(param_t, types.Primitive.undefined_t) catch param_t;
-                        break :blk if (without_undefined == types.Primitive.never or without_undefined == types.Primitive.none)
-                            param_t
-                        else
-                            without_undefined;
-                    } else param_t;
+                    // Keep the declared optional union for diagnostics. The
+                    // formatter chooses its sole substantive member for a
+                    // non-union source, while union/nullish/unknown sources
+                    // must still display the full `T | undefined` target.
+                    const raw_display_param_t = param_t;
                     const generic_display_param_t = if (union_composite)
                         raw_display_param_t
                     else
@@ -174721,14 +174715,18 @@ pub const Checker = struct {
     }
 
     fn arraySortComparatorDiagnosticName(self: *Checker, arg_node: NodeId, param_t: TypeId) CheckError!?[]const u8 {
-        if (!self.interner.isSignature(param_t)) return null;
+        // The optional sort comparator retains `| undefined` in its declared
+        // target, but an invalid function argument is reported against the
+        // comparator signature itself.
+        const comparator_t = self.singleNonNullishUnionDiagnosticTarget(self.hir.typeOf(arg_node), param_t) orelse param_t;
+        if (!self.interner.isSignature(comparator_t)) return null;
         const call_node = self.hir.parentOf(arg_node);
         if (call_node == hir_mod.none_node_id or self.hir.kindOf(call_node) != .call_expr) return null;
         const call = hir_mod.callOf(self.hir, call_node);
         if (self.hir.kindOf(call.callee) != .member_access) return null;
         const callee = hir_mod.memberOf(self.hir, call.callee);
         if (!std.mem.eql(u8, self.string_interner.get(callee.name), "sort")) return null;
-        const params = self.interner.signatureParams(param_t);
+        const params = self.interner.signatureParams(comparator_t);
         if (params.len != 2) return null;
 
         var rendered: std.ArrayListUnmanaged(u8) = .empty;
@@ -174740,7 +174738,7 @@ pub const Checker = struct {
         const second_name = (try self.allocSignatureConstituentDisplayName(params[1])) orelse return null;
         try rendered.appendSlice(arena, second_name);
         try rendered.appendSlice(arena, ") => ");
-        const return_type = self.interner.signatureReturn(param_t) orelse types.Primitive.any;
+        const return_type = self.interner.signatureReturn(comparator_t) orelse types.Primitive.any;
         const return_name = (try self.allocSignatureConstituentDisplayName(return_type)) orelse return null;
         try rendered.appendSlice(arena, return_name);
         return rendered.items;
@@ -175936,6 +175934,10 @@ pub const Checker = struct {
     fn signatureParamNameAt(self: *Checker, sig: TypeId, i: usize) CheckError![]const u8 {
         if (self.signature_param_names.get(sig)) |names| {
             if (i < names.len) return self.string_interner.get(names[i]);
+        }
+        if (self.lib_cache.sort_comparator_signatures.contains(sig)) {
+            if (i == 0) return "a";
+            if (i == 1) return "b";
         }
         return try std.fmt.allocPrint(self.diag_arena.allocator(), "x{d}", .{i});
     }
@@ -191423,7 +191425,8 @@ pub const Checker = struct {
                 // The incompatible union member is already isolated here.
                 // Wrapping a nullish member in another nullish child would
                 // print the same "Type 'null' ..." explanation twice.
-                entries[0] = try self.typeNotAssignableChainEntry(member, target, false);
+                const display_target = self.singleNonNullishUnionDiagnosticTarget(member, target) orelse target;
+                entries[0] = try self.typeNotAssignableChainEntry(member, display_target, false);
                 return entries;
             }
         }
@@ -194656,10 +194659,15 @@ pub const Checker = struct {
         const empty: []const DiagnosticChainEntry = &.{};
         if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return empty;
 
-        if (try self.nullishSourceAssignabilityChain(source, target)) |entry| {
-            const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-            slice[0] = entry;
-            return slice;
+        // A direct nullish source is already fully described by the TS2345
+        // header. Only a union source needs a child identifying which member
+        // failed; repeating the direct source adds a line tsc does not emit.
+        if (source != types.Primitive.null_t and source != types.Primitive.undefined_t) {
+            if (try self.nullishSourceAssignabilityChain(source, target)) |entry| {
+                const slice = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
+                slice[0] = entry;
+                return slice;
+            }
         }
 
         if (try self.assignmentTypeParameterInstantiationChainEntry(source, target)) |entry| {
@@ -264625,6 +264633,45 @@ test "checker: nullable union assignment has one incompatible-member explanation
     }
 }
 
+test "checker: optional call target display depends on source union shape" {
+    const s = try newSetup(
+        \\declare function optional(value?: string): void;
+        \\declare function explicit(value: string | undefined): void;
+        \\declare const mixed: string | number;
+        \\declare const maybenull: string | null;
+        \\declare const unknownValue: unknown;
+        \\optional(1);
+        \\optional(mixed);
+        \\optional(maybenull);
+        \\optional(unknownValue);
+        \\optional(null);
+        \\optional(true);
+        \\explicit(mixed);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    const expected = [_][]const u8{
+        "Argument of type 'number' is not assignable to parameter of type 'string'.",
+        "Argument of type 'string | number' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'string | null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'unknown' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'null' is not assignable to parameter of type 'string | undefined'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'string'.",
+        "Argument of type 'string | number' is not assignable to parameter of type 'string | undefined'.",
+    };
+    try T.expectEqual(expected.len, s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items, expected) |diagnostic, message| {
+        try T.expectEqual(TsCodes.argument_type_mismatch, diagnostic.code);
+        try T.expectEqualStrings(message, diagnostic.message);
+    }
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", s.checker.diagnostics.items[1].chain[0].message);
+    try T.expectEqualStrings("Type 'null' is not assignable to type 'string | undefined'.", s.checker.diagnostics.items[2].chain[0].message);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items[4].chain.len);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", s.checker.diagnostics.items[6].chain[0].message);
+}
+
 test "checker: TS2345 preserves repeated callback parameter names" {
     const s = try newSetup(
         \\function f<A>(a: (a: A) => A, b: (b: A) => A, c: (c: A) => A) {}
@@ -291475,6 +291522,14 @@ test "checker: parity 251 sort comparator diagnostics preserve declaration alias
         TsCodes.argument_type_mismatch,
         "Argument of type '(a: IFrenchEye, b: IFrenchEye) => number' is not assignable to parameter of type '(a: IEye, b: IEye) => number'.",
     ));
+    var saw_named_chain = false;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.argument_type_mismatch or diagnostic.chain.len == 0) continue;
+        if (std.mem.eql(u8, diagnostic.chain[0].message, "Types of parameters 'a' and 'a' are incompatible.")) {
+            saw_named_chain = true;
+        }
+    }
+    try T.expect(saw_named_chain);
 }
 
 test "checker: parity 251 strict nested callback diagnostics expand typeof and bivariant aliases" {
