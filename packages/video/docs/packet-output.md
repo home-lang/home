@@ -139,3 +139,36 @@ bounded native preparation and keyframe publication.
 `zig test packages/video/src/core/factory_policy.zig` covers threshold admission,
 failed construction, stale completion, pending reconfiguration, lifetime retry
 budgets and index exhaustion with both Zig 0.15.2 and the Home development compiler.
+
+## Queue telemetry and cooperative capacity waits
+
+`delivery_fifo.Queue.stats()` reports current owned bytes/entries, accepted and
+acknowledged operation/byte totals, rejected admissions, configured bounds and
+high-water marks. A copy does not acknowledge an entry. Zero-length metadata
+still consumes one operation. Lifetime byte/rejection counters saturate; delivery
+sequences reject exhaustion before wrapping. Failed admissions leave queued data
+unchanged and do not poison the queue automatically.
+
+`capacity(bytes, items)` checks a complete headroom predicate without mutation.
+Requests exceeding the queue's configured limits or requesting zero operations
+are invalid. Failure closes capacity queries. A true result is an observation,
+not a reservation; callers must serialize admissions or allow later contention.
+
+`capacity_wait.Registry(N)` stores at most N cooperative wait tickets, including
+terminal results until explicitly released. Callers supply monotonic times and
+capacity observations; the helper never sleeps, allocates, enqueues or calls a
+sink. `begin` observes immediate capacity, including a zero timeout. Otherwise,
+`poll` checks closure, deadline equality, then available capacity. A timeout cannot
+become success merely because polling was delayed until space later appeared.
+Tickets never repeat or wrap. Terminal results survive later closure/failure.
+Release cancels a pending wait, and close terminates pending waits. Counters expose
+requests, blocked waits, outcomes, pending count and saturating total/peak elapsed
+time. The caller owns synchronization, payload lifetimes, cancellation and ticket
+release; cooperative polling is not a realtime wakeup guarantee.
+
+Focused checks on Zig 0.15.2 and the Home development compiler:
+
+```sh
+zig test packages/video/src/core/delivery_fifo.zig
+zig test packages/video/src/core/capacity_wait.zig
+```
