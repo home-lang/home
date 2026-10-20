@@ -16637,6 +16637,81 @@ test "Program: checked JavaScript rest JSDoc types cross the import boundary" {
     }
 }
 
+test "Program: checked JavaScript union JSDoc types cross the import boundary" {
+    const owner_source =
+        \\/**
+        \\ * @param {string | number} value
+        \\ * @returns {string | number}
+        \\ */
+        \\export function echo(value) { return value; }
+        \\/**
+        \\ * @param {Array<string | number>} values
+        \\ * @returns {ReadonlyArray<string | number>}
+        \\ */
+        \\export function copy(values) { return values; }
+        \\/**
+        \\ * @param {...(string | number)} values
+        \\ * @returns {number}
+        \\ */
+        \\export function count(...values) { return values.length; }
+        \\export class Holder {
+        \\  /** @param {string | number} value */
+        \\  constructor(value) { this.value = value; }
+        \\}
+    ;
+    const consumer_source =
+        \\import { echo, copy, count, Holder } from './owner.js';
+        \\echo(true);
+        \\const badEcho: number = echo(1);
+        \\copy([true]);
+        \\const badCopy: number[] = copy([1]);
+        \\count(true);
+        \\const badField: boolean = new Holder(1).value;
+        \\echo('valid'); copy([1, 'valid']); count(1, 'valid');
+        \\new Holder('valid');
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 6), diagnostics.len);
+        try T.expectEqualSlices(u32, &.{ 2345, 2322, 2322, 4104, 2345, 2322 }, &.{
+            diagnostics[0].code,
+            diagnostics[1].code,
+            diagnostics[2].code,
+            diagnostics[3].code,
+            diagnostics[4].code,
+            diagnostics[5].code,
+        });
+        try T.expectEqualStrings("Argument of type 'boolean' is not assignable to parameter of type 'string | number'.", diagnostics[0].message);
+        try T.expectEqualStrings("Type 'string | number' is not assignable to type 'number'.", diagnostics[1].message);
+        try T.expectEqualStrings("Type 'boolean' is not assignable to type 'string | number'.", diagnostics[2].message);
+        try T.expectEqualStrings("The type 'readonly (string | number)[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.", diagnostics[3].message);
+        try T.expectEqualStrings("Argument of type 'boolean' is not assignable to parameter of type 'string | number'.", diagnostics[4].message);
+        try T.expectEqualStrings("Type 'string | number' is not assignable to type 'boolean'.", diagnostics[5].message);
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

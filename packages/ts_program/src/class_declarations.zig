@@ -216,12 +216,13 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
                     defer jsdoc_types.deinitAssignedFields(gpa, fields);
                     for (fields) |field| {
                         if (hasMember(members.items, field.name)) continue;
-                        requires_schema_members = requires_schema_members or field.type_expression.containers.len > 0;
+                        const primitive = field.type_expression.barePrimitive();
+                        requires_schema_members = requires_schema_members or primitive == null;
                         // The legacy name-only projection cannot represent
-                        // containers. The exact source-owned schema carries
+                        // containers or unions. The exact source-owned schema carries
                         // those types; keep this fallback conservative.
-                        const type_name = if (field.type_expression.containers.len == 0)
-                            jsdoc_types.typeName(field.type_expression.primitive)
+                        const type_name = if (primitive) |value|
+                            jsdoc_types.typeName(value)
                         else
                             "any";
                         try members.append(gpa, .{ .name = field.name, .type_name = type_name });

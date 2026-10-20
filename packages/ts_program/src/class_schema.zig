@@ -798,7 +798,14 @@ pub const Builder = struct {
     }
 
     fn jsdocType(self: *Builder, type_expression: jsdoc_types.TypeExpression) !*const schema.Expression {
-        var result = try self.expression(.{ .primitive = schemaPrimitive(type_expression.primitive) });
+        var result = switch (type_expression.base) {
+            .primitive => |primitive| try self.expression(.{ .primitive = schemaPrimitive(primitive) }),
+            .union_type => |members| union_expression: {
+                const expressions = try self.arena.alloc(*const schema.Expression, members.len);
+                for (members, expressions) |member, *result| result.* = try self.jsdocType(member);
+                break :union_expression try self.expression(.{ .union_type = expressions });
+            },
+        };
         var index = type_expression.containers.len;
         while (index > 0) {
             index -= 1;

@@ -32,11 +32,29 @@ pub const Container = enum {
 /// stored from outermost to innermost, so `Array<ReadonlyArray<string>>` is
 /// represented by `{ array, readonly_array }` around `string`.
 pub const TypeExpression = struct {
-    primitive: Primitive,
+    base: union(enum) {
+        primitive: Primitive,
+        union_type: []TypeExpression,
+    },
     containers: []Container = &.{},
 
     pub fn deinit(self: TypeExpression, gpa: std.mem.Allocator) void {
         if (self.containers.len > 0) gpa.free(self.containers);
+        switch (self.base) {
+            .primitive => {},
+            .union_type => |members| {
+                for (members) |member| member.deinit(gpa);
+                gpa.free(members);
+            },
+        }
+    }
+
+    pub fn barePrimitive(self: TypeExpression) ?Primitive {
+        if (self.containers.len > 0) return null;
+        return switch (self.base) {
+            .primitive => |primitive| primitive,
+            .union_type => null,
+        };
     }
 };
 
@@ -229,9 +247,35 @@ fn parsePrimitive(text: []const u8) ?Primitive {
 }
 
 fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpression {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (topLevelUnionEnd(trimmed)) |first_end| {
+        var members: std.ArrayListUnmanaged(TypeExpression) = .empty;
+        errdefer {
+            for (members.items) |member| member.deinit(gpa);
+            members.deinit(gpa);
+        }
+        var start: usize = 0;
+        var end = first_end;
+        while (true) {
+            const member = try parseTypeExpression(gpa, trimmed[start..end]) orelse {
+                for (members.items) |item| item.deinit(gpa);
+                members.deinit(gpa);
+                return null;
+            };
+            members.append(gpa, member) catch |err| {
+                member.deinit(gpa);
+                return err;
+            };
+            if (end == trimmed.len) break;
+            start = end + 1;
+            end = if (topLevelUnionEnd(trimmed[start..])) |relative_end| start + relative_end else trimmed.len;
+        }
+        return .{ .base = .{ .union_type = try members.toOwnedSlice(gpa) } };
+    }
+
     var containers: std.ArrayListUnmanaged(Container) = .empty;
     errdefer containers.deinit(gpa);
-    var current = std.mem.trim(u8, text, " \t\r\n");
+    var current = trimmed;
     while (true) {
         if (std.mem.endsWith(u8, current, "[]")) {
             try containers.append(gpa, .array);
@@ -250,14 +294,82 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
         }
         break;
     }
-    const primitive = parsePrimitive(current) orelse {
+    var base: TypeExpression = if (parsePrimitive(current)) |primitive|
+        .{ .base = .{ .primitive = primitive } }
+    else if (outerGroupBody(current)) |body|
+        (try parseTypeExpression(gpa, body) orelse {
+            containers.deinit(gpa);
+            return null;
+        })
+    else if (topLevelUnionEnd(current) != null)
+        (try parseTypeExpression(gpa, current) orelse {
+            containers.deinit(gpa);
+            return null;
+        })
+    else {
         containers.deinit(gpa);
         return null;
     };
-    return .{
-        .primitive = primitive,
-        .containers = if (containers.items.len == 0) &.{} else try containers.toOwnedSlice(gpa),
+    if (containers.items.len == 0) return base;
+    errdefer base.deinit(gpa);
+    const combined = try gpa.alloc(Container, containers.items.len + base.containers.len);
+    @memcpy(combined[0..containers.items.len], containers.items);
+    @memcpy(combined[containers.items.len..], base.containers);
+    if (base.containers.len > 0) gpa.free(base.containers);
+    base.containers = combined;
+    containers.deinit(gpa);
+    return base;
+}
+
+/// Only a pipe outside generic arguments, grouping, and array brackets
+/// separates union members. Returning null also leaves unsupported object
+/// and function syntax to the ordinary conservative parse failure.
+fn topLevelUnionEnd(text: []const u8) ?usize {
+    var angle: usize = 0;
+    var paren: usize = 0;
+    var bracket: usize = 0;
+    var brace: usize = 0;
+    for (text, 0..) |byte, index| switch (byte) {
+        '<' => angle += 1,
+        '>' => {
+            if (angle == 0) return null;
+            angle -= 1;
+        },
+        '(' => paren += 1,
+        ')' => {
+            if (paren == 0) return null;
+            paren -= 1;
+        },
+        '[' => bracket += 1,
+        ']' => {
+            if (bracket == 0) return null;
+            bracket -= 1;
+        },
+        '{' => brace += 1,
+        '}' => {
+            if (brace == 0) return null;
+            brace -= 1;
+        },
+        '|' => if (angle == 0 and paren == 0 and bracket == 0 and brace == 0) return index,
+        else => {},
     };
+    return null;
+}
+
+fn outerGroupBody(text: []const u8) ?[]const u8 {
+    if (text.len < 2 or text[0] != '(' or text[text.len - 1] != ')') return null;
+    var depth: usize = 0;
+    for (text, 0..) |byte, index| switch (byte) {
+        '(' => depth += 1,
+        ')' => {
+            if (depth == 0) return null;
+            depth -= 1;
+            if (depth == 0 and index + 1 != text.len) return null;
+        },
+        else => {},
+    };
+    if (depth != 0) return null;
+    return std.mem.trim(u8, text[1 .. text.len - 1], " \t\r\n");
 }
 
 fn parameterTypeExpression(gpa: std.mem.Allocator, text: []const u8, rest: bool) !?TypeExpression {
@@ -301,18 +413,37 @@ fn genericBody(text: []const u8, name: []const u8) ?[]const u8 {
 test "JSDoc primitive array expressions preserve nested mutable and readonly wrappers" {
     const parsed = (try parseTypeExpression(std.testing.allocator, "Array.<ReadonlyArray<string[]>>")).?;
     defer parsed.deinit(std.testing.allocator);
-    try std.testing.expectEqual(Primitive.string_t, parsed.primitive);
+    try std.testing.expectEqual(Primitive.string_t, parsed.base.primitive);
     try std.testing.expectEqualSlices(Container, &.{ .array, .readonly_array, .array }, parsed.containers);
 }
 
-test "JSDoc array expression parser rejects unsupported union leaves" {
-    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | number>")) == null);
+test "JSDoc union expression parser preserves precedence and nested wrappers" {
+    const union_array = (try parseTypeExpression(std.testing.allocator, "Array<string | number>")).?;
+    defer union_array.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.array}, union_array.containers);
+    try std.testing.expectEqual(@as(usize, 2), union_array.base.union_type.len);
+    try std.testing.expectEqual(Primitive.string_t, union_array.base.union_type[0].base.primitive);
+    try std.testing.expectEqual(Primitive.number_t, union_array.base.union_type[1].base.primitive);
+
+    const mixed = (try parseTypeExpression(std.testing.allocator, "string | number[]")).?;
+    defer mixed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), mixed.base.union_type.len);
+    try std.testing.expectEqual(@as(usize, 0), mixed.base.union_type[0].containers.len);
+    try std.testing.expectEqualSlices(Container, &.{.array}, mixed.base.union_type[1].containers);
+
+    const readonly = (try parseTypeExpression(std.testing.allocator, "ReadonlyArray<(string | number)[]>")).?;
+    defer readonly.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{ .readonly_array, .array }, readonly.containers);
+    try std.testing.expectEqual(@as(usize, 2), readonly.base.union_type.len);
+
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "string | ")) == null);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")) == null);
 }
 
 test "JSDoc rest parameter expressions preserve element and array forms" {
     const scalar = (try parameterTypeExpression(std.testing.allocator, "...number", true)).?;
     defer scalar.deinit(std.testing.allocator);
-    try std.testing.expectEqual(Primitive.number_t, scalar.primitive);
+    try std.testing.expectEqual(Primitive.number_t, scalar.base.primitive);
     try std.testing.expectEqualSlices(Container, &.{.array}, scalar.containers);
 
     const arrays = (try parameterTypeExpression(std.testing.allocator, "...number[]", true)).?;
@@ -323,6 +454,11 @@ test "JSDoc rest parameter expressions preserve element and array forms" {
     defer explicit.deinit(std.testing.allocator);
     try std.testing.expectEqualSlices(Container, &.{.array}, explicit.containers);
     try std.testing.expect((try parameterTypeExpression(std.testing.allocator, "number", true)) == null);
+
+    const union_rest = (try parameterTypeExpression(std.testing.allocator, "...(string | number)", true)).?;
+    defer union_rest.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.array}, union_rest.containers);
+    try std.testing.expectEqual(@as(usize, 2), union_rest.base.union_type.len);
 }
 
 fn isParameter(c: *const driver.Compilation, function: hir.NodeId, name: hir.StringId) bool {
