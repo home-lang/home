@@ -55,3 +55,31 @@ test "audio settings reject impossible queue bounds and stale bitrate on disable
     try std.testing.expectError(error.InvalidConfiguration, validateAudio(48000, 2, 1, 4097, 0));
     try std.testing.expectError(error.InvalidConfiguration, validateAudio(48000, 2, 1, 1, 320001));
 }
+
+/// Resolve negotiated capture geometry without mutating the proposed settings.
+/// exact bit 0/1 requires the proposed width/height, respectively. Other fields
+/// remain session-owned; validate the resulting codec shape before publication.
+pub fn withGeometry(cfg: anytype, width: u32, height: u32, exact: u32) !@TypeOf(cfg) {
+    if (exact > 3 or (exact & 1 != 0 and cfg.width != width) or (exact & 2 != 0 and cfg.height != height)) return error.InvalidConfiguration;
+    var next = cfg;
+    next.width = width;
+    next.height = height;
+    try validateVideo(next);
+    return next;
+}
+
+test "negotiated geometry adapts omitted dimensions and rejects explicit mismatches without changing settings" {
+    const Config = struct { codec: u32 = 1, width: u32 = 32, height: u32 = 24, fps_num: u32 = 25, fps_den: u32 = 1, bitrate: u32 = 200000, quality: u32 = 80, gop: u32 = 3 };
+    const cfg: Config = .{};
+    const next = try withGeometry(cfg, 128, 96, 0);
+    try std.testing.expectEqual(@as(u32, 128), next.width);
+    try std.testing.expectEqual(cfg.bitrate, next.bitrate);
+    try std.testing.expectEqual(cfg.gop, next.gop);
+    try std.testing.expectEqual(@as(u32, 32), cfg.width);
+    try std.testing.expectError(error.InvalidConfiguration, withGeometry(cfg, 128, 96, 1));
+    try std.testing.expectError(error.InvalidConfiguration, withGeometry(cfg, 32, 96, 2));
+    _ = try withGeometry(cfg, 32, 96, 1);
+    _ = try withGeometry(cfg, 32, 24, 3);
+    try std.testing.expectError(error.InvalidConfiguration, withGeometry(cfg, 127, 96, 0));
+    try std.testing.expectError(error.InvalidConfiguration, withGeometry(cfg, 32, 24, 4));
+}

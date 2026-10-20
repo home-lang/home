@@ -247,3 +247,15 @@ zig test packages/video/src/core/session_config.zig
 ```
 
 Focused boundary tests pass with Zig 0.15.2 and development Zig.
+
+`session_config.withGeometry(config, width, height, exact)` resolves copied codec
+settings against negotiated camera geometry. The low two exact bits require the
+proposed width and height independently; omitted dimensions can adapt to the
+camera. It validates the final codec shape, retains rate control/GOP/FPS and leaves
+the proposal unchanged on success or failure. Invalid masks, explicit mismatches
+and unsupported codec shapes reject before media publication. zig-camera uses
+this during coordinated camera/recorder switching: camera negotiation and preview
+must succeed before the prepared recorder session is published. This helper owns
+no camera, codec, lock or rollback state; the coordinator keeps both owners alive,
+serializes work and restores the camera on preparation failure. A flushed old
+recording remains terminal even when camera restoration succeeds.
