@@ -11515,6 +11515,42 @@ test "Program: source revisions recompile transitive importers" {
     try expectCompilationLacksDiagnosticCode(p.fileById(main).compilation.?, 2322);
 }
 
+test "Program: preferred TypeScript source does not inherit a retained JavaScript export route" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const original = "import { value } from './dep'; const result: number = value;";
+    const revised = original ++ "\n// Recheck after a higher-priority source appears.";
+    try vfs.addFile("/main.ts", original);
+    try vfs.addFile("/dep.js", "export const value = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var external = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/main.ts", original);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .allow_js = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &external, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try T.expectEqual(@as(usize, 1), try p.loadImportClosure(options));
+    try p.compileAll(options);
+    try T.expect(p.lookupPath("/dep.js") != null);
+    try T.expect(p.lookupPath("/dep.ts") == null);
+
+    try vfs.addFile("/dep.ts", "export const value: string = 'wrong';");
+    try vfs.addFile("/main.ts", revised);
+    _ = (try p.updateSource("/main.ts", revised)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    const changed = [_][]const u8{"/main.ts"};
+    _ = try p.recompileChanged(&changed, options);
+
+    const preferred = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
+    try T.expectEqualSlices(FileId, &.{preferred}, p.fileById(main_id).imports.items);
+    try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
 test "Program: emitAllToCache emits JS for every file" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

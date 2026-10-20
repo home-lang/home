@@ -3483,6 +3483,10 @@ const ProgramImportResolutionKey = struct {
 };
 
 const ProgramImportResolution = struct {
+    /// Exact resolved source identity. The extensionless bases below are
+    /// useful fallbacks, but cannot distinguish a newly preferred .ts file
+    /// from an older .js file retained in an incremental Program.
+    external_path: ?hir_mod.StringId = null,
     external_base: ?hir_mod.StringId = null,
     fallback_base: ?hir_mod.StringId = null,
 };
@@ -115580,6 +115584,7 @@ pub const Checker = struct {
                     self.virtualSectionFilenameForNode(import_node) orelse "/__root__.ts";
                 if (resolver.resolve(spec, containing)) |resolved| {
                     const base = stripProgramModuleExtension(resolved.path);
+                    computed.external_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
                     computed.external_base = self.string_interner.intern(base) catch return error.OutOfMemory;
                 }
             }
@@ -115599,10 +115604,13 @@ pub const Checker = struct {
 
     fn programImportTargetsPath(self: *Checker, import_node: NodeId, spec: []const u8, target_path: []const u8) CheckError!bool {
         const resolution = try self.programImportResolution(import_node, spec);
-        const target_base = stripProgramModuleExtension(target_path);
-        if (resolution.external_base) |base| {
-            if (std.mem.eql(u8, self.string_interner.get(base), target_base)) return true;
+        // A successful resolver result is authoritative. Falling through to
+        // an extensionless relative guess would also match stale siblings
+        // such as dep.js after dep.ts takes precedence in watch mode.
+        if (resolution.external_path) |path| {
+            return std.mem.eql(u8, self.string_interner.get(path), target_path);
         }
+        const target_base = stripProgramModuleExtension(target_path);
         if (resolution.fallback_base) |base| {
             if (std.mem.eql(u8, self.string_interner.get(base), target_base)) return true;
         }

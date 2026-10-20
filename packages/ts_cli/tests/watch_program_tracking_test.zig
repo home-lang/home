@@ -3,6 +3,24 @@ const tsc_main = @import("tsc_main");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
 const ts_watch = @import("ts_watch");
+const ts_driver = @import("ts_driver");
+
+const ProgramResolverAdapter = struct {
+    resolver: *ts_resolver.Resolver,
+    program: *const ts_program.Program,
+
+    const vtable = ts_driver.ExternalResolver.VTable{ .resolve = resolve };
+
+    fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+        const self: *ProgramResolverAdapter = @ptrCast(@alignCast(ptr));
+        const found = self.resolver.resolve(specifier, containing_file) catch return null;
+        const admitted_js = (std.mem.endsWith(u8, found.path, ".js") or
+            std.mem.endsWith(u8, found.path, ".jsx") or
+            std.mem.endsWith(u8, found.path, ".mjs") or
+            std.mem.endsWith(u8, found.path, ".cjs")) and self.program.lookupPath(found.path) != null;
+        return .{ .path = found.path, .is_declaration = found.is_declaration or admitted_js };
+    }
+};
 
 test "watch mode retries a revision after update and compile allocation failures" {
     const gpa = std.testing.allocator;
@@ -264,4 +282,77 @@ test "watch revision admits a source after a cached missing import" {
         if (diagnostic.code == 2322) saw_type_error = true;
     }
     try std.testing.expect(saw_type_error);
+}
+
+test "watch revision prefers a newly admitted TypeScript source over retained JavaScript" {
+    const gpa = std.testing.allocator;
+    const initial = "import { value } from './dep'; const result: number = value;";
+    const revised = initial ++ "\n// Recheck after source priority changes.";
+    const old_js = "export const value = 1;";
+    const new_ts = "export const value: string = 'wrong';";
+
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", initial);
+    try sources.addFile("/project/dep.js", old_js);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    var adapter = ProgramResolverAdapter{ .resolver = &resolver, .program = &program };
+    const main_id = try program.add("/project/main.ts", initial);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .allow_js = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &adapter, .vtable = &ProgramResolverAdapter.vtable },
+    };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/project/main.ts", 1, initial.len);
+    try stats.add("/project/dep.js", 1, old_js.len);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    try tsc_main.trackProgramFiles(&watcher, &program);
+    try std.testing.expectEqual(@as(usize, 2), watcher.count());
+
+    try sources.addFile("/project/dep.ts", new_ts);
+    try sources.addFile("/project/main.ts", revised);
+    try stats.add("/project/dep.ts", 1, new_ts.len);
+    try stats.add("/project/main.ts", 2, revised.len);
+    var revision = try watcher.observe();
+    defer revision.deinit();
+    try std.testing.expectEqual(@as(usize, 1), revision.changes.changes.items.len);
+    _ = (try program.updateSource("/project/main.ts", revised)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    const changed = [_][]const u8{"/project/main.ts"};
+    _ = try program.recompileChanged(&changed, options);
+    const preferred = program.lookupPath("/project/dep.ts") orelse return error.MissingPreferredSource;
+    try std.testing.expectEqualSlices(ts_program.FileId, &.{preferred}, program.fileById(main_id).imports.items);
+    var has_2322 = false;
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) has_2322 = true;
+    }
+    try std.testing.expect(has_2322);
+    try tsc_main.trackProgramFiles(&watcher, &program);
+    revision.commit(&watcher);
+    try std.testing.expectEqual(@as(usize, 3), watcher.count());
+
+    const corrected = "export const value: number = 2;";
+    try sources.addFile("/project/dep.ts", corrected);
+    try stats.add("/project/dep.ts", 2, corrected.len);
+    var next = try watcher.observe();
+    defer next.deinit();
+    try std.testing.expectEqual(@as(usize, 1), next.changes.changes.items.len);
+    try std.testing.expectEqualStrings("/project/dep.ts", next.changes.changes.items[0].path);
+    _ = (try program.updateSource("/project/dep.ts", corrected)) orelse return error.MissingPreferredSource;
+    resolver.invalidateCaches();
+    const dependency_change = [_][]const u8{"/project/dep.ts"};
+    _ = try program.recompileChanged(&dependency_change, options);
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.code != 2322);
+    }
 }
