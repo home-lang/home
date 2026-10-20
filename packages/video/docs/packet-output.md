@@ -259,3 +259,28 @@ must succeed before the prepared recorder session is published. This helper owns
 no camera, codec, lock or rollback state; the coordinator keeps both owners alive,
 serializes work and restores the camera on preparation failure. A flushed old
 recording remains terminal even when camera restoration succeeds.
+
+## Desired runtime settings
+
+`keyed_state.State(T, capacity)` stages a bounded set of values with nonzero u32
+ID fields. `updated(updates, removed)` returns an independent candidate with
+removals first, then explicit updates; output is sorted by ID. Duplicate/zero
+update IDs, input batches beyond capacity and full-state insertion reject without
+mutating the source. Payloads are copied by value; the caller validates their
+meaning and owns synchronization. The helper allocates nothing and owns no
+pointers, threads, callbacks or device revisions. Publish the candidate only
+after the device accepts the complete batch.
+
+zig-camera uses it for accepted persistent runtime controls, excluding one-shot
+AF trigger/pause commands. A new AE-enable setting removes stale manual-mode
+aliases before same-batch explicit overrides are merged. A failed driver update
+cannot change the replay snapshot. Reopened modes revalidate the snapshot before
+stream start and join normal camera rollback on failure.
+
+```sh
+zig test packages/video/src/core/keyed_state.zig
+```
+
+Focused tests run with Zig 0.15.2 and development Zig. Values returned by values()
+borrow the caller-owned state until its next mutation; copy before crossing an
+asynchronous ownership boundary.
