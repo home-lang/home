@@ -20,6 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  zig-018-baseline:
+    name: Zig 0.18 migrated surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Zig 0.18 baseline
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.18.0-dev.146+35accc06e'
+
+      - name: Build and test migrated surfaces
+        run: bash scripts/verify-zig-018.sh
+
   compatibility:
     runs-on: ubuntu-latest
     timeout-minutes: 20
