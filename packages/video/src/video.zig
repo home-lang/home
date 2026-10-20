@@ -900,34 +900,33 @@ pub const Audio = struct {
 
     /// Load audio from file
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !Self {
+        return loadWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    pub fn loadWithIo(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Self {
         const ext = std.fs.path.extension(path);
 
         if (std.mem.eql(u8, ext, ".wav") or std.mem.eql(u8, ext, ".WAV")) {
-            return loadWav(allocator, path);
+            return loadWavWithIo(allocator, io, path);
         }
 
         return VideoError.UnsupportedFormat;
     }
 
     /// Load WAV file
-    fn loadWav(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+    fn loadWavWithIo(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Self {
+        var reader = try WavReader.fromFileWithIo(allocator, io, path);
+        defer reader.deinit();
 
-        const data = try file.readToEndAlloc(allocator, 1024 * 1024 * 1024);
-        defer allocator.free(data);
-
-        var reader = try WavReader.fromMemory(allocator, data);
-
-        var frames = std.ArrayList(AudioFrame).init(allocator);
+        var frames: std.ArrayList(AudioFrame) = .empty;
         errdefer {
             for (frames.items) |*f| f.deinit();
-            frames.deinit();
+            frames.deinit(allocator);
         }
 
         // Read all frames
         while (try reader.readFrames(4096)) |audio_frame| {
-            try frames.append(audio_frame);
+            try frames.append(allocator, audio_frame);
         }
 
         return Self{
@@ -944,14 +943,14 @@ pub const Audio = struct {
         if (wav.isWav(data)) {
             var reader = try WavReader.fromMemory(allocator, data);
 
-            var frames = std.ArrayList(AudioFrame).init(allocator);
+            var frames: std.ArrayList(AudioFrame) = .empty;
             errdefer {
                 for (frames.items) |*f| f.deinit();
-                frames.deinit();
+                frames.deinit(allocator);
             }
 
             while (try reader.readFrames(4096)) |audio_frame| {
-                try frames.append(audio_frame);
+                try frames.append(allocator, audio_frame);
             }
 
             return Self{
@@ -970,22 +969,26 @@ pub const Audio = struct {
         for (self.frames.items) |*f| {
             f.deinit();
         }
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     /// Save audio to file
     pub fn save(self: *const Self, path: []const u8) !void {
+        return self.saveWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    pub fn saveWithIo(self: *const Self, io: std.Io, path: []const u8) !void {
         const ext = std.fs.path.extension(path);
 
         if (std.mem.eql(u8, ext, ".wav") or std.mem.eql(u8, ext, ".WAV")) {
-            try self.saveWav(path);
+            try self.saveWavWithIo(io, path);
             return;
         }
 
         return VideoError.UnsupportedFormat;
     }
 
-    fn saveWav(self: *const Self, path: []const u8) !void {
+    fn saveWavWithIo(self: *const Self, io: std.Io, path: []const u8) !void {
         var writer = try WavWriter.init(self.allocator, self.channels, self.sample_rate, self.format);
         defer writer.deinit();
 
@@ -993,7 +996,7 @@ pub const Audio = struct {
             try writer.writeFrame(audio_frame);
         }
 
-        try writer.writeToFile(path);
+        try writer.writeToFileWithIo(io, path);
     }
 
     /// Encode to bytes in specified format

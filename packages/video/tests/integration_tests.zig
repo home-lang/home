@@ -221,6 +221,56 @@ test "public file source and target preserve relative and end seeks" {
     try std.testing.expectError(video.VideoError.SeekOutOfRange, source.seek(-1, .start));
 }
 
+test "public WAV disk APIs round trip owned samples" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(root);
+    const path = try std.fs.path.join(gpa, &.{ root, "samples.wav" });
+    defer gpa.free(path);
+    const copy_path = try std.fs.path.join(gpa, &.{ root, "copy.wav" });
+    defer gpa.free(copy_path);
+    const missing = try std.fs.path.join(gpa, &.{ root, "missing.wav" });
+    defer gpa.free(missing);
+
+    try std.testing.expectError(video.VideoError.FileNotFound, video.WavReader.fromFileWithIo(gpa, io, missing));
+
+    var writer = try video.WavWriter.init(gpa, 1, 8_000, .s16le);
+    defer writer.deinit();
+    const samples = [_]u8{ 0x01, 0x00, 0xfe, 0xff };
+    try writer.writeSamples(&samples);
+    try writer.writeToFileWithIo(io, path);
+
+    var borrowed_reader = try video.WavReader.fromMemory(gpa, try writer.getData());
+    borrowed_reader.deinit();
+
+    var reader = try video.WavReader.fromFileWithIo(gpa, io, path);
+    defer reader.deinit();
+    try std.testing.expectEqual(@as(u64, 2), reader.header.getTotalSamples());
+    var frame = (try reader.readFrames(2)) orelse return error.MissingAudioFrame;
+    defer frame.deinit();
+    try std.testing.expectEqualSlices(u8, &samples, frame.data);
+
+    var audio = try video.Audio.loadWithIo(gpa, io, path);
+    defer audio.deinit();
+    try std.testing.expectEqual(@as(usize, 1), audio.frames.items.len);
+    try std.testing.expectEqualSlices(u8, &samples, audio.frames.items[0].data);
+
+    var memory_audio = try video.Audio.loadFromMemory(gpa, try writer.getData());
+    defer memory_audio.deinit();
+    try std.testing.expectEqualSlices(u8, &samples, memory_audio.frames.items[0].data);
+
+    try audio.saveWithIo(io, copy_path);
+    var copied = try video.Audio.load(gpa, copy_path);
+    defer copied.deinit();
+    try std.testing.expectEqualSlices(u8, &samples, copied.frames.items[0].data);
+
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = copy_path, .data = "invalid WAV data" });
+    try std.testing.expectError(video.VideoError.TruncatedData, video.WavReader.fromFileWithIo(gpa, io, copy_path));
+}
+
 fn runFormatDetectionTests() !void {
     try t.describe(allocator, "Format Detection Workflows", struct {
         fn register(test_allocator: std.mem.Allocator) !void {

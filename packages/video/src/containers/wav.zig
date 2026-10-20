@@ -123,6 +123,10 @@ pub const WavReader = struct {
     /// Source data
     data: []const u8,
 
+    /// Only file-backed readers own their source bytes. Memory-backed
+    /// readers continue to borrow the caller's slice.
+    owned_data: ?[]u8 = null,
+
     /// Current read position (samples)
     position: u64,
 
@@ -220,13 +224,24 @@ pub const WavReader = struct {
 
     /// Open WAV from file
     pub fn fromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const file = std.fs.cwd().openFile(path, .{}) catch return VideoError.FileNotFound;
-        defer file.close();
+        return fromFileWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
 
-        const data = file.readToEndAlloc(allocator, 1024 * 1024 * 1024) catch return VideoError.ReadError; // 1GB max
+    pub fn fromFileWithIo(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Self {
+        const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024 * 1024 + 1)) catch |read_error| switch (read_error) {
+            error.FileNotFound => return VideoError.FileNotFound,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return VideoError.ReadError,
+        };
         errdefer allocator.free(data);
+        var reader = try fromMemory(allocator, data);
+        reader.owned_data = data;
+        return reader;
+    }
 
-        return fromMemory(allocator, data);
+    pub fn deinit(self: *Self) void {
+        if (self.owned_data) |data| self.allocator.free(data);
+        self.owned_data = null;
     }
 
     /// Read audio frames
@@ -454,12 +469,12 @@ pub const WavWriter = struct {
 
     /// Write to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
+        return self.writeToFileWithIo(std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    pub fn writeToFileWithIo(self: *Self, io: std.Io, path: []const u8) !void {
         const data = try self.getData();
-
-        const file = std.fs.cwd().createFile(path, .{}) catch return VideoError.WriteError;
-        defer file.close();
-
-        file.writeAll(data) catch return VideoError.WriteError;
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return VideoError.WriteError;
     }
 
     /// Get WAV data as bytes (finalizes if not already finalized)
