@@ -172,3 +172,26 @@ Focused checks on Zig 0.15.2 and the Home development compiler:
 zig test packages/video/src/core/delivery_fifo.zig
 zig test packages/video/src/core/capacity_wait.zig
 ```
+
+## Owned producer input admission
+
+`owned_admission.Registry(N)` bounds separately allocated asynchronous payloads
+by both total bytes and live ticket count. A copied frame or PCM batch remains
+charged while queued, running or retained after completion; release only after
+freeing its owned payload. The helper owns no pointers, memory, threads or clock.
+The caller serializes its control operations and supplies payload allocation.
+
+Admission failures preserve existing ownership. Tickets combine a bounded slot
+with a never-repeated identity, so stale or duplicate releases cannot uncharge a
+new allocation. Oversized payloads, configured count/byte limits and u64 identity
+exhaustion reject without wrapping. Current and peak ownership and admitted,
+released and rejected totals remain observable. This supports a persistent
+producer worker while keeping codec, buffer and lifecycle policy with its caller.
+
+```sh
+zig test packages/video/src/core/owned_admission.zig
+```
+
+Focused tests run on Zig 0.15.2 and development Zig. zig-camera reuses this helper
+for owned RGB/PCM input budgets and existing capacity_wait/delivery_fifo for
+bounded producer backpressure and acknowledged host delivery.
