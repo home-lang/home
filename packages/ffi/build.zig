@@ -38,6 +38,13 @@ pub fn build(b: *std.Build) void {
     });
     ffi_tests.root_module.addImport("ffi", ffi_module);
     ffi_tests.root_module.addImport("header_gen", header_gen_module);
+    const sqlite_example_module = b.addModule("sqlite_example", .{
+        .root_source_file = b.path("examples/sqlite_example.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sqlite_example_module.addImport("ffi", ffi_module);
+    ffi_tests.root_module.addImport("sqlite_example", sqlite_example_module);
 
     const run_ffi_tests = b.addRunArtifact(ffi_tests);
 
@@ -94,6 +101,12 @@ pub fn build(b: *std.Build) void {
     const run_sqlite_example = b.addRunArtifact(sqlite_example);
     const sqlite_example_step = b.step("example-sqlite", "Run SQLite FFI example");
     sqlite_example_step.dependOn(&run_sqlite_example.step);
+
+    const check_step = b.step("check", "Compile FFI examples and active tests");
+    check_step.dependOn(&math_example.step);
+    check_step.dependOn(&sqlite_example.step);
+    check_step.dependOn(&ffi_tests.step);
+    check_step.dependOn(&bindgen_tests.step);
 
     // Run all examples
     const examples_step = b.step("examples", "Run all FFI examples");

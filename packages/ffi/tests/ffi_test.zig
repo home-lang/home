@@ -5,6 +5,21 @@ const std = @import("std");
 const testing = std.testing;
 const ffi = @import("ffi");
 const header_gen = @import("header_gen");
+const sqlite_example = @import("sqlite_example");
+
+test "SQLite statement handles remain distinct from the Home wrapper" {
+    const handle: ?*sqlite_example.SQLite.sqlite3_stmt = null;
+    const wrapped: sqlite_example.Statement = .{ .stmt = handle };
+    try testing.expect(wrapped.stmt == null);
+    try testing.expect(sqlite_example.SQLite.Statement == sqlite_example.SQLite.sqlite3_stmt);
+}
+
+test "C standard library callbacks use the target C ABI" {
+    const Callback = *const fn () callconv(.c) void;
+    const Register = *const fn (Callback) callconv(.c) ffi.c_int;
+    const register: Register = &ffi.CStdLib.atexit;
+    _ = register;
+}
 
 // ============================================================================
 // C Type Tests

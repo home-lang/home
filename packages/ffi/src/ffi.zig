@@ -315,7 +315,7 @@ pub const CStdLib = struct {
     // Process control
     pub extern "c" fn exit(status: c_int) noreturn;
     pub extern "c" fn abort() noreturn;
-    pub extern "c" fn atexit(func: *const fn () callconv(.C) void) c_int;
+    pub extern "c" fn atexit(func: *const fn () callconv(.c) void) c_int;
 
     // Math functions
     pub extern "c" fn sqrt(x: f64) f64;

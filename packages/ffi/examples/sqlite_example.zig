@@ -13,7 +13,7 @@ pub const SQLite = struct {
     pub const Database = opaque {};
     pub const Statement = opaque {};
     pub const sqlite3 = Database;
-    pub const sqlite3_stmt = Statement;
+    pub const sqlite3_stmt = @This().Statement;
 
     // Result codes
     pub const SQLITE_OK = 0;
@@ -55,7 +55,7 @@ pub const SQLite = struct {
             ffi.c_int,
             [*c][*c]u8,
             [*c][*c]u8,
-        ) callconv(.C) ffi.c_int,
+        ) callconv(.c) ffi.c_int,
         arg: ?*anyopaque,
         errmsg: ?*[*:0]u8,
     ) ffi.c_int;
