@@ -223,3 +223,27 @@ validate headers and publish the candidate only after all setup succeeds. Failur
 or cancellation discards the candidate, preserving the old session. Restart from
 open/running state and u64 identity exhaustion reject before publication. Never
 reuse drained codec or container instances merely by resetting their flags.
+
+## Immutable session media settings
+
+`session_config.validateVideo(config)` accepts a scalar settings structure with
+codec (1=AVC, 2=HEVC, 3=MJPEG), width/height, fps_num/fps_den, bitrate, quality and
+GOP fields. It validates geometry, frame duration, rate control and codec-specific
+bounds before a caller allocates replacement encoders or invokes output hooks.
+`validateAudio(rate, channels, frames, blocks, bitrate)` checks enabled PCM queue
+bounds and optional AAC bitrate; rate zero disables audio and requires bitrate
+zero. Container capabilities, backend availability and AAC sampling rates remain
+with the encoder/container implementation.
+
+The helper has no allocations, threads, pointers or implicit defaults. Callers
+copy settings into their owned job, prepare fresh codecs and publish settings
+only with the prepared session. Failed validation or preparation must preserve
+the terminal source settings. zig-camera uses this contract for asynchronous
+recorder reconfiguration and candidate-specific output metadata. Its queue
+budgets and circular capacities remain independent of session codec settings.
+
+```sh
+zig test packages/video/src/core/session_config.zig
+```
+
+Focused boundary tests pass with Zig 0.15.2 and development Zig.
