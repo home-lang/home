@@ -1825,6 +1825,40 @@ test "class schema: function signatures retain readonly record domains" {
     try T.expect(try result.isSupported(T.allocator));
 }
 
+test "class schema: JavaScript nullable JSDoc keeps whole arrays distinct from nullable elements" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.js", .text =
+        \\/**
+        \\ * @param {?Array<number>} values
+        \\ * @returns {?Array<number>}
+        \\ */
+        \\export function maybeArray(values) { return values; }
+        \\/**
+        \\ * @param {Array<?number>} values
+        \\ * @returns {ReadonlyArray<?number>}
+        \\ */
+        \\export function maybeElements(values) { return values; }
+    }});
+    defer graph.deinit();
+
+    const whole = try graph.class(0, "maybeArray");
+    defer whole.deinit(T.allocator);
+    try T.expect(try whole.isSupported(T.allocator));
+    const whole_parameter = whole.declaration.body.?.function.parameters[0].type.union_type;
+    try T.expectEqual(@as(usize, 2), whole_parameter.len);
+    try T.expectEqual(Primitive.number_t, whole_parameter[0].array.primitive);
+    try T.expectEqual(Primitive.null_t, whole_parameter[1].primitive);
+
+    const elements = try graph.class(0, "maybeElements");
+    defer elements.deinit(T.allocator);
+    try T.expect(try elements.isSupported(T.allocator));
+    const element_parameter = elements.declaration.body.?.function.parameters[0].type.array.union_type;
+    try T.expectEqual(@as(usize, 2), element_parameter.len);
+    try T.expectEqual(Primitive.number_t, element_parameter[0].primitive);
+    try T.expectEqual(Primitive.null_t, element_parameter[1].primitive);
+    const element_result = elements.declaration.body.?.function.result.readonly_array.union_type;
+    try T.expectEqual(Primitive.null_t, element_result[1].primitive);
+}
+
 test "class schema: Record index domains are whole-type transferable" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export interface Metadata {

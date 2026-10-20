@@ -16712,6 +16712,87 @@ test "Program: checked JavaScript union JSDoc types cross the import boundary" {
     }
 }
 
+test "Program: nullable JavaScript JSDoc preserves array and element boundaries" {
+    const owner_source =
+        \\/**
+        \\ * @param {?string} value
+        \\ * @returns {?string}
+        \\ */
+        \\export function maybe(value) { return value; }
+        \\/**
+        \\ * @param {string?} value
+        \\ * @returns {string?}
+        \\ */
+        \\export function maybePost(value) { return value; }
+        \\/**
+        \\ * @param {Array<?number>} values
+        \\ * @returns {ReadonlyArray<?number>}
+        \\ */
+        \\export function maybeElements(values) { return values; }
+        \\/**
+        \\ * @param {?Array<number>} values
+        \\ * @returns {?Array<number>}
+        \\ */
+        \\export function maybeArray(values) { return values; }
+    ;
+    const consumer_source =
+        \\import { maybe, maybePost, maybeElements, maybeArray } from './owner.js';
+        \\maybe(true);
+        \\const badMaybe: string = maybe('valid');
+        \\maybePost(2);
+        \\const badPost: string = maybePost(null);
+        \\maybeElements([true]);
+        \\const badElements: number[] = maybeElements([1]);
+        \\maybeArray([true]);
+        \\const badArray: number[] = maybeArray([1]);
+        \\maybe(null); maybePost(null); maybeElements([null]); maybeArray(null);
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel)
+            try p.compileAllParallel(options, 2)
+        else
+            try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 8), diagnostics.len);
+        try T.expectEqualSlices(u32, &.{ 2345, 2322, 2345, 2322, 2322, 4104, 2322, 2322 }, &.{
+            diagnostics[0].code,
+            diagnostics[1].code,
+            diagnostics[2].code,
+            diagnostics[3].code,
+            diagnostics[4].code,
+            diagnostics[5].code,
+            diagnostics[6].code,
+            diagnostics[7].code,
+        });
+        try T.expectEqualStrings("Argument of type 'boolean' is not assignable to parameter of type 'string'.", diagnostics[0].message);
+        try T.expectEqualStrings("Type 'string | null' is not assignable to type 'string'.", diagnostics[1].message);
+        try T.expectEqualStrings("Argument of type 'number' is not assignable to parameter of type 'string'.", diagnostics[2].message);
+        try T.expectEqualStrings("Type 'string | null' is not assignable to type 'string'.", diagnostics[3].message);
+        try T.expectEqualStrings("Type 'boolean' is not assignable to type 'number'.", diagnostics[4].message);
+        try T.expectEqualStrings("The type 'readonly (number | null)[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.", diagnostics[5].message);
+        try T.expectEqualStrings("Type 'boolean' is not assignable to type 'number'.", diagnostics[6].message);
+        try T.expectEqualStrings("Type 'number[] | null' is not assignable to type 'number[]'.", diagnostics[7].message);
+    }
+}
+
 test "Program: CommonJS export table is canonical while retaining source order" {
     const source = "function C() {}\nexports = module.exports = C;\n";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

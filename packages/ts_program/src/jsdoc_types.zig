@@ -272,6 +272,14 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
         }
         return .{ .base = .{ .union_type = try members.toOwnedSlice(gpa) } };
     }
+    if (nullableBody(trimmed)) |body| {
+        const value = try parseTypeExpression(gpa, body) orelse return null;
+        errdefer value.deinit(gpa);
+        const members = try gpa.alloc(TypeExpression, 2);
+        members[0] = value;
+        members[1] = .{ .base = .{ .primitive = .null_t } };
+        return .{ .base = .{ .union_type = members } };
+    }
 
     var containers: std.ArrayListUnmanaged(Container) = .empty;
     errdefer containers.deinit(gpa);
@@ -301,7 +309,7 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
             containers.deinit(gpa);
             return null;
         })
-    else if (topLevelUnionEnd(current) != null)
+    else if (topLevelUnionEnd(current) != null or nullableBody(current) != null)
         (try parseTypeExpression(gpa, current) orelse {
             containers.deinit(gpa);
             return null;
@@ -319,6 +327,16 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     base.containers = combined;
     containers.deinit(gpa);
     return base;
+}
+
+/// JSDoc accepts both prefix `?T` and postfix `T?` nullable forms. Parse
+/// these before peeling containers so `?Array<T>` is nullable as a whole,
+/// while `Array<?T>` has nullable elements.
+fn nullableBody(text: []const u8) ?[]const u8 {
+    if (text.len < 2) return null;
+    if (text[0] == '?') return std.mem.trim(u8, text[1..], " \t\r\n");
+    if (text[text.len - 1] == '?') return std.mem.trim(u8, text[0 .. text.len - 1], " \t\r\n");
+    return null;
 }
 
 /// Only a pipe outside generic arguments, grouping, and array brackets
@@ -438,6 +456,31 @@ test "JSDoc union expression parser preserves precedence and nested wrappers" {
 
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "string | ")) == null);
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")) == null);
+}
+
+test "JSDoc nullable expressions preserve whole-array and element precedence" {
+    for ([_][]const u8{ "?string", "string?" }) |text| {
+        const parsed = (try parseTypeExpression(std.testing.allocator, text)).?;
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 2), parsed.base.union_type.len);
+        try std.testing.expectEqual(Primitive.string_t, parsed.base.union_type[0].base.primitive);
+        try std.testing.expectEqual(Primitive.null_t, parsed.base.union_type[1].base.primitive);
+    }
+
+    const whole = (try parseTypeExpression(std.testing.allocator, "?Array<number>")).?;
+    defer whole.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), whole.containers.len);
+    try std.testing.expectEqualSlices(Container, &.{.array}, whole.base.union_type[0].containers);
+    try std.testing.expectEqual(Primitive.null_t, whole.base.union_type[1].base.primitive);
+
+    const elements = (try parseTypeExpression(std.testing.allocator, "ReadonlyArray<?number>")).?;
+    defer elements.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.readonly_array}, elements.containers);
+    try std.testing.expectEqual(Primitive.number_t, elements.base.union_type[0].base.primitive);
+    try std.testing.expectEqual(Primitive.null_t, elements.base.union_type[1].base.primitive);
+
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "?")) == null);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "?Array<MissingType>")) == null);
 }
 
 test "JSDoc rest parameter expressions preserve element and array forms" {

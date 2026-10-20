@@ -174751,6 +174751,9 @@ pub const Checker = struct {
         if (reduced_param_t != param_t) {
             return self.formatArgumentNotAssignable(arg_t, reduced_param_t, position);
         }
+        if (self.singleNonNullishUnionDiagnosticTarget(arg_t, param_t)) |member| {
+            return self.formatArgumentNotAssignable(arg_t, member, position);
+        }
         if (param_t == types.Primitive.never and
             (arg_t == types.Primitive.null_t or
                 arg_t == types.Primitive.undefined_t or
@@ -175037,6 +175040,30 @@ pub const Checker = struct {
             "Argument is not assignable to parameter at position {d}.",
             .{position},
         );
+    }
+
+    /// TypeScript reports a failed, non-union source against the sole
+    /// substantive member of `T | null` / `T | undefined`. It keeps the
+    /// complete union for a union source or when the target has multiple
+    /// substantive alternatives. `boolean` counts as two literal alternatives
+    /// in TypeScript, so `boolean | null` is not reduced. This changes
+    /// diagnostic prose only, never assignability or the target type itself.
+    fn singleNonNullishUnionDiagnosticTarget(self: *Checker, source: TypeId, target: TypeId) ?TypeId {
+        if (self.typeIncludesNull(source) or self.typeIncludesUndefined(source)) return null;
+        if (source < self.interner.pool.typeCount() and self.interner.pool.flagsOf(source).is_union) return null;
+        if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return null;
+        var member: ?TypeId = null;
+        var saw_nullish = false;
+        for (self.interner.unionMembers(target)) |candidate| {
+            if (candidate == types.Primitive.null_t or candidate == types.Primitive.undefined_t) {
+                saw_nullish = true;
+                continue;
+            }
+            if (candidate == types.Primitive.boolean_t) return null;
+            if (member != null) return null;
+            member = candidate;
+        }
+        return if (saw_nullish) member else null;
     }
 
     fn argumentNamedSourceToCallSignatureNames(
@@ -190400,13 +190427,14 @@ pub const Checker = struct {
             try self.currentGenericReturnAnnotationDiagnosticName()
         else
             null;
+        const display_target = self.singleNonNullishUnionDiagnosticTarget(source, target) orelse target;
         const target_name = (try self.directAssignmentTargetIndexedAccessAnnotationName(node)) orelse
             return_annotation_name orelse
             (if (self.intersectionReducesToNeverForAssignability(target)) @as(?[]const u8, "never") else null) orelse
             (if (self.intersectionObjectEmptyObjectDisplayType(target)) |display_t| try self.allocSimpleTypeName(display_t) else null) orelse
-            (try self.normalizedKeyofDiagnosticName(target)) orelse
-            (try self.allocSimpleTypeName(target)) orelse
-            (try self.allocObjectTypeShapeWithUndefined(target)) orelse
+            (try self.normalizedKeyofDiagnosticName(display_target)) orelse
+            (try self.allocSimpleTypeName(display_target)) orelse
+            (try self.allocObjectTypeShapeWithUndefined(display_target)) orelse
             return try self.report(node, TsCodes.type_not_assignable, fallback);
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -191392,7 +191420,10 @@ pub const Checker = struct {
             for (members) |member| {
                 if (try self.checkerAssignableTo(member, target)) continue;
                 const entries = try self.diag_arena.allocator().alloc(DiagnosticChainEntry, 1);
-                entries[0] = try self.typeNotAssignableChainEntry(member, target, true);
+                // The incompatible union member is already isolated here.
+                // Wrapping a nullish member in another nullish child would
+                // print the same "Type 'null' ..." explanation twice.
+                entries[0] = try self.typeNotAssignableChainEntry(member, target, false);
                 return entries;
             }
         }
@@ -264530,6 +264561,68 @@ test "checker: TS2345 renders argument and parameter type names" {
         }
     }
     try T.expect(saw_2345);
+}
+
+test "checker: diagnostics select a sole non-nullish target only for non-nullish sources" {
+    const s = try newSetup(
+        \\declare function nullable(value: string | null): void;
+        \\declare function optional(value?: string): void;
+        \\declare function many(value: string | number | null | undefined): void;
+        \\declare function nullish(value: null | undefined): void;
+        \\declare function boolNullable(value: boolean | null): void;
+        \\declare const flag: boolean;
+        \\nullable(true);
+        \\optional(true);
+        \\many(flag);
+        \\nullish(flag);
+        \\nullable(undefined);
+        \\boolNullable(1);
+        \\const scalar: number | null = true;
+        \\const nullishScalar: number | null = undefined;
+        \\const arrayElement: (number | null)[] = [true];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    const expected = [_][]const u8{
+        "Argument of type 'boolean' is not assignable to parameter of type 'string'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'string'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'string | number | null | undefined'.",
+        "Argument of type 'boolean' is not assignable to parameter of type 'null | undefined'.",
+        "Argument of type 'undefined' is not assignable to parameter of type 'string | null'.",
+        "Argument of type 'number' is not assignable to parameter of type 'boolean | null'.",
+        "Type 'boolean' is not assignable to type 'number'.",
+        "Type 'undefined' is not assignable to type 'number | null'.",
+        "Type 'boolean' is not assignable to type 'number'.",
+    };
+    try T.expectEqual(expected.len, s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items, expected, 0..) |diagnostic, message, index| {
+        try T.expectEqual(if (index < 6) TsCodes.argument_type_mismatch else TsCodes.type_not_assignable, diagnostic.code);
+        try T.expectEqualStrings(message, diagnostic.message);
+    }
+}
+
+test "checker: nullable union assignment has one incompatible-member explanation" {
+    const s = try newSetup(
+        \\declare const maybeString: string | null;
+        \\const requiredString: string = maybeString;
+        \\declare const maybeArray: number[] | null;
+        \\const requiredArray: number[] = maybeArray;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items, &[_][]const u8{ "string", "number[]" }) |diagnostic, target_name| {
+        try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        const expected = try std.fmt.allocPrint(T.allocator, "Type 'null' is not assignable to type '{s}'.", .{target_name});
+        defer T.allocator.free(expected);
+        try T.expectEqualStrings(expected, diagnostic.chain[0].message);
+        try T.expectEqual(@as(usize, 0), diagnostic.chain[0].children.len);
+    }
 }
 
 test "checker: TS2345 preserves repeated callback parameter names" {
