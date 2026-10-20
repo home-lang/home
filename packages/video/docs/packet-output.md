@@ -188,6 +188,14 @@ exhaustion reject without wrapping. Current and peak ownership and admitted,
 released and rejected totals remain observable. This supports a persistent
 producer worker while keeping codec, buffer and lifecycle policy with its caller.
 
+Capture `issued` and poll `pendingThrough(target)` to fence payload cleanup for
+that fixed admission prefix. It scans only the bounded slots and handles releases
+in any order, including slot reuse. Later admissions cannot extend a drain, and
+an empty prefix is immediately complete. Invalid future targets reject. This
+reports ownership settlement regardless of operation result; track cancellation
+and operation failures separately. A caller retaining a drain after worker close
+must retain the registry and serialize polls with releases.
+
 ```sh
 zig test packages/video/src/core/owned_admission.zig
 ```

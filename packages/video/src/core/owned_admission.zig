@@ -45,7 +45,33 @@ pub fn Registry(comptime capacity: usize) type {
             s.slots[ticket.slot] = null;
             s.released += 1;
         }
+        /// True while any payload admitted at/before target still owns storage.
+        /// Out-of-order releases and later admissions cannot extend this prefix.
+        /// This is a cleanup fence, not an operation-success watermark.
+        pub fn pendingThrough(s: *const Self, target: u64) !bool {
+            if (target > s.issued) return error.InvalidTarget;
+            for (s.slots) |slot| if (slot) |entry| {
+                if (entry.id <= target) return true;
+            };
+            return false;
+        }
     };
+}
+test "ownership prefixes survive holes, slot reuse and later admissions" {
+    var r = try Registry(3).init(10, 3);
+    try std.testing.expect(!try r.pendingThrough(0));
+    try std.testing.expectError(error.InvalidTarget, r.pendingThrough(1));
+    const a = try r.reserve(1);
+    const b = try r.reserve(1);
+    const target = r.issued;
+    try r.release(b);
+    const later = try r.reserve(1);
+    try std.testing.expect(try r.pendingThrough(target));
+    try r.release(a);
+    try std.testing.expect(!try r.pendingThrough(target));
+    try std.testing.expect(try r.pendingThrough(later.id));
+    try r.release(later);
+    try std.testing.expect(!try r.pendingThrough(target));
 }
 test "admission charges in-flight ownership, rejects atomically and never accepts stale releases" {
     var r = try Registry(2).init(10, 2);
