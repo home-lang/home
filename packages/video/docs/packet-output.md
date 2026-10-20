@@ -203,3 +203,15 @@ zig test packages/video/src/core/owned_admission.zig
 Focused tests run on Zig 0.15.2 and development Zig. zig-camera reuses this helper
 for owned RGB/PCM input budgets and existing capacity_wait/delivery_fifo for
 bounded producer backpressure and acknowledged host delivery.
+
+## Terminal media flush
+
+`recording_policy.Finalization` serializes an irreversible codec/container flush.
+`begin()` grants exactly one owner and rejects re-entry while running. After
+`complete(code)`, future begins replay the latched success or negative failure
+without entering codecs again. Positive results and completion outside a running
+flush reject without changing state. `accepting()` is false from first entry, so
+callers can reject new media before touching a drained encoder. This helper owns
+no codec, thread, allocation or output queue; callers keep those alive through
+flush and separately wait for sink acknowledgements. Cancellation before entry
+can abandon a job; entered finalization must complete safely.
