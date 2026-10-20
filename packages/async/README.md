@@ -144,7 +144,10 @@ its storage safe to free; quiesce/join the polling owner before deinit.
 
 `CompletionGate` is a small allocation-free two-phase event-job helper. It ignores
 events from older revisions and terminal outcomes before an active phase has been
-observed. Success, failure, cancellation and stop are immutable terminal states.
+observed. A monotonic observation watermark also rejects completions older than
+the latest accepted event, even when both are newer than the job start revision.
+Equal-revision scan and completion events remain valid. Success, failure,
+cancellation and stop are immutable terminal states.
 The caller owns synchronization; it is not an executor or a generic Future.
 zig-utils/zig-camera uses this Home module for autofocus scan gating under its
 native session mutex without allocating or running consumer work in callbacks.

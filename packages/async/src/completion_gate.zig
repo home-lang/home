@@ -6,6 +6,7 @@ pub const State = enum(u32) { pending = 1, active = 2, succeeded = 3, failed = 4
 pub const Gate = struct {
     revision: u64,
     state: State = .pending,
+    observed_revision: ?u64 = null,
     pub fn terminal(self: Gate) bool {
         return switch (self.state) {
             .pending, .active => false,
@@ -14,6 +15,10 @@ pub const Gate = struct {
     }
     pub fn observe(self: *Gate, revision: u64, active: bool, outcome: ?bool) void {
         if (self.terminal() or revision < self.revision) return;
+        // Request completions may arrive out of order. An older completion must
+        // never finish a scan observed on a newer control revision.
+        if (self.observed_revision) |latest| if (revision < latest) return;
+        self.observed_revision = revision;
         if (active) self.state = .active;
         if (self.state == .active) {
             if (outcome) |success| {
@@ -28,6 +33,17 @@ pub const Gate = struct {
         if (!self.terminal()) self.state = .stopped;
     }
 };
+test "newer observations fence older completion events without rejecting equal revisions" {
+    var g: Gate = .{ .revision = 9 };
+    g.observe(11, false, true);
+    g.observe(10, true, null);
+    try std.testing.expectEqual(State.pending, g.state);
+    g.observe(11, true, null);
+    g.observe(10, false, false);
+    try std.testing.expectEqual(State.active, g.state);
+    g.observe(11, false, true);
+    try std.testing.expectEqual(State.succeeded, g.state);
+}
 test "gate ignores stale and pre-active results; cancellation is terminal" {
     var g: Gate = .{ .revision = 9 };
     g.observe(8, true, null);
