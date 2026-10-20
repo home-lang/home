@@ -23,6 +23,7 @@ jobs:
           version: ${{ matrix.zig }}
       - run: |
           zig test packages/video/src/core/owned_fifo.zig
+          zig test packages/video/src/core/device_identity.zig
           zig test packages/video/src/core/typed_catalog.zig
           zig test packages/video/src/core/lease_pool.zig
           zig test packages/video/src/core/owned_admission.zig

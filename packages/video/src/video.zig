@@ -1327,3 +1327,5 @@ pub const delivery_fifo = @import("core/delivery_fifo.zig");
 pub const pts_clock = @import("core/pts_clock.zig");
 
 pub const typed_catalog = @import("core/typed_catalog.zig");
+
+pub const device_identity = @import("core/device_identity.zig");
