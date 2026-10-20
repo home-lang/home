@@ -45,6 +45,14 @@ pub fn Pool(comptime resources: usize, comptime references: usize) type {
         pub fn retain(self: *Self, id: u64) !u64 {
             return self.issue(self.resource(id) orelse return error.StaleLease);
         }
+        /// Leave at least `reserved` reference entries free for other producers.
+        /// The caller chooses the reservation under the same lock as this call.
+        /// Rejection never changes tokens, counts, generation or search cursor.
+        pub fn retainReserved(self: *Self, id: u64, reserved: usize) !u64 {
+            const index = self.resource(id) orelse return error.StaleLease;
+            if (references - self.used <= reserved) return error.ReferenceLimit;
+            return self.issue(index);
+        }
         pub fn count(self: *const Self, id: u64) !u32 {
             return self.counts[self.resource(id) orelse return error.StaleLease];
         }
@@ -104,4 +112,39 @@ test "one-slot and non-power-of-two pools validate encoded slot bounds" {
     try std.testing.expect(!try p.release(b));
     try std.testing.expect(!try p.release(a));
     try std.testing.expect(try p.release(c));
+}
+test "retention reserves producer capacity and all rejection paths preserve ownership" {
+    var p: Pool(3, 5) = .{};
+    const a = try p.acquire(0);
+    const b = try p.retainReserved(a, 2);
+    const c = try p.retainReserved(b, 2);
+    const before = p;
+    try std.testing.expectError(error.ReferenceLimit, p.retainReserved(a, 2));
+    try std.testing.expectError(error.ReferenceLimit, p.retainReserved(a, std.math.maxInt(usize)));
+    try std.testing.expectError(error.StaleLease, p.retainReserved(0, 2));
+    try std.testing.expectEqualDeep(before, p);
+    const d = try p.acquire(1);
+    const e = try p.acquire(2);
+    try std.testing.expectEqual(@as(usize, 5), p.used);
+    try std.testing.expect(!try p.release(a));
+    try std.testing.expect(try p.release(d));
+    const f = try p.retainReserved(c, 1);
+    try std.testing.expect(!try p.release(b));
+    try std.testing.expect(!try p.release(c));
+    try std.testing.expect(try p.release(f));
+    try std.testing.expect(try p.release(e));
+    try std.testing.expectEqual(@as(usize, 0), p.used);
+    p.issued = @TypeOf(p).max_sequence;
+    try std.testing.expectError(error.StaleLease, p.retainReserved(a, 0));
+}
+test "zero reservation matches retain and exhausted generations reject atomically" {
+    var p: Pool(1, 3) = .{};
+    const a = try p.acquire(0);
+    var direct = p;
+    try std.testing.expectEqual(try direct.retain(a), try p.retainReserved(a, 0));
+    try std.testing.expectEqualDeep(direct, p);
+    p.issued = @TypeOf(p).max_sequence;
+    const before = p;
+    try std.testing.expectError(error.SequenceExhausted, p.retainReserved(a, 0));
+    try std.testing.expectEqualDeep(before, p);
 }
