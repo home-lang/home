@@ -215,3 +215,11 @@ callers can reject new media before touching a drained encoder. This helper owns
 no codec, thread, allocation or output queue; callers keep those alive through
 flush and separately wait for sink acknowledgements. Cancellation before entry
 can abandon a job; entered finalization must complete safely.
+
+`Finalization.nextSession()` prepares a fresh open state with a monotonically
+increasing session identity after terminal success or failure. It leaves the old
+terminal result unchanged. Callers allocate replacement codecs/queues/outputs,
+validate headers and publish the candidate only after all setup succeeds. Failure
+or cancellation discards the candidate, preserving the old session. Restart from
+open/running state and u64 identity exhaustion reject before publication. Never
+reuse drained codec or container instances merely by resetting their flags.

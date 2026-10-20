@@ -13,6 +13,14 @@ pub const Finalization = struct {
     pub const Phase = enum(u32) { open, running, finished, failed };
     phase: Phase = .open,
     code: i32 = 0,
+    session: u64 = 0,
+    /// Prepare a fresh session without changing the terminal owner. Publish only
+    /// after replacement codecs/queues/outputs are ready; discard on failure.
+    pub fn nextSession(s: Finalization) !Finalization {
+        if (s.phase != .finished and s.phase != .failed) return error.InvalidState;
+        if (s.session == std.math.maxInt(u64)) return error.SequenceOverflow;
+        return .{ .session = s.session + 1 };
+    }
     pub fn accepting(s: Finalization) bool {
         return s.phase == .open;
     }
@@ -33,6 +41,24 @@ pub const Finalization = struct {
         s.phase = if (code == 0) .finished else .failed;
     }
 };
+test "session preparation preserves terminal results and never wraps identities" {
+    var f: Finalization = .{};
+    try std.testing.expectError(error.InvalidState, f.nextSession());
+    _ = try f.begin();
+    try std.testing.expectError(error.InvalidState, f.nextSession());
+    try f.complete(-6);
+    const candidate = try f.nextSession();
+    try std.testing.expect(candidate.accepting());
+    try std.testing.expectEqual(@as(u64, 1), candidate.session);
+    try std.testing.expectEqual(@as(i32, -6), f.code);
+    try std.testing.expectEqual(@as(u64, 0), f.session);
+    f = candidate;
+    _ = try f.begin();
+    try f.complete(0);
+    try std.testing.expectEqual(@as(u64, 2), (try f.nextSession()).session);
+    f.session = std.math.maxInt(u64);
+    try std.testing.expectError(error.SequenceOverflow, f.nextSession());
+}
 test "finalization enters once, rejects concurrent entry, and replays success or failure" {
     for ([_]i32{ 0, -6 }) |code| {
         var f: Finalization = .{};
