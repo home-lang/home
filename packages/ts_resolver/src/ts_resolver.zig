@@ -3115,6 +3115,16 @@ pub const VirtualFs = struct {
         }
     }
 
+    /// Remove one source without erasing its parent directories. Watch-mode
+    /// tests use this to model a file disappearing and later returning at
+    /// the same path, including when the replacement has identical metadata.
+    pub fn removeFile(self: *VirtualFs, path: []const u8) bool {
+        const removed = self.files.fetchRemove(path) orelse return false;
+        self.gpa.free(removed.key);
+        self.gpa.free(removed.value);
+        return true;
+    }
+
     pub fn addRealPath(self: *VirtualFs, path: []const u8, real_path: []const u8) !void {
         if (self.realpaths.fetchRemove(path)) |old| {
             self.gpa.free(old.key);
@@ -3236,6 +3246,22 @@ fn trimLeadingSlashes(path: []const u8) []const u8 {
 // =============================================================================
 
 const T = std.testing;
+
+test "VirtualFs: removed source keeps its directory and can be recreated" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/project/dep.ts", "export const value = 1;");
+    try T.expect(vfs.fs().fileExists("/project/dep.ts"));
+    try T.expect(vfs.removeFile("/project/dep.ts"));
+    try T.expect(!vfs.removeFile("/project/dep.ts"));
+    try T.expect(!vfs.fs().fileExists("/project/dep.ts"));
+    try T.expect(vfs.fs().directoryExists("/project"));
+    try T.expectError(error.FileNotFound, vfs.fs().readFile(T.allocator, "/project/dep.ts"));
+    try vfs.addFile("/project/dep.ts", "export const value = 2;");
+    const source = try vfs.fs().readFile(T.allocator, "/project/dep.ts");
+    defer T.allocator.free(source);
+    try T.expectEqualStrings("export const value = 2;", source);
+}
 
 test "isRelative / isAbsolute" {
     try T.expect(isRelative("./foo"));

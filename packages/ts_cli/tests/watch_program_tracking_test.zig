@@ -90,6 +90,86 @@ test "watch mode retries a revision after update and compile allocation failures
     try std.testing.expect(saw_type_error);
 }
 
+test "watch mode retires an imported source and restores its FileId with unchanged metadata" {
+    const gpa = std.testing.allocator;
+    const root_source = "import { value } from './dep'; const result: number = value;";
+    const dependency_source = "export const value: number = 1;";
+    const dependency_path = "/project/dep.ts";
+
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", root_source);
+    try sources.addFile(dependency_path, dependency_source);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    var adapter = ProgramResolverAdapter{ .resolver = &resolver, .program = &program };
+    const main_id = try program.add("/project/main.ts", root_source);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &adapter, .vtable = &ProgramResolverAdapter.vtable },
+    };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    const dependency_id = program.lookupPath(dependency_path) orelse return error.MissingDependency;
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/project/main.ts", 1, root_source.len);
+    try stats.add(dependency_path, 1, dependency_source.len);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    try tsc_main.trackProgramFiles(&watcher, &program);
+
+    stats.remove(dependency_path);
+    try std.testing.expect(sources.removeFile(dependency_path));
+    var removed = try watcher.observe();
+    defer removed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), removed.changes.changes.items.len);
+    try std.testing.expectEqual(ts_watch.ChangeKind.removed, removed.changes.changes.items[0].kind);
+    try std.testing.expectEqualStrings(dependency_path, removed.changes.changes.items[0].path);
+    resolver.invalidateCaches();
+    try std.testing.expectEqual(dependency_id, (try program.removeSource(dependency_path)).?);
+    const changed = [_][]const u8{dependency_path};
+    _ = try program.recompileChanged(&changed, options);
+    removed.commit(&watcher);
+    try std.testing.expect(program.lookupPath(dependency_path) == null);
+    try std.testing.expect(!program.fileById(dependency_id).present);
+    try std.testing.expect(program.fileById(dependency_id).compilation == null);
+    var saw_missing_import = false;
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2307) saw_missing_import = true;
+    }
+    try std.testing.expect(saw_missing_import);
+
+    var still_missing = try watcher.observe();
+    defer still_missing.deinit();
+    try std.testing.expect(still_missing.changes.isEmpty());
+
+    // The replacement has precisely the old mtime and size. A watcher that
+    // remembered the pre-removal stat would miss this creation altogether.
+    try sources.addFile(dependency_path, dependency_source);
+    try stats.add(dependency_path, 1, dependency_source.len);
+    var restored = try watcher.observe();
+    defer restored.deinit();
+    try std.testing.expectEqual(@as(usize, 1), restored.changes.changes.items.len);
+    try std.testing.expectEqual(ts_watch.ChangeKind.added, restored.changes.changes.items[0].kind);
+    resolver.invalidateCaches();
+    try std.testing.expectEqual(dependency_id, (try program.updateSource(dependency_path, dependency_source)).?);
+    _ = try program.recompileChanged(&changed, options);
+    restored.commit(&watcher);
+    try std.testing.expectEqual(dependency_id, program.lookupPath(dependency_path).?);
+    try std.testing.expect(program.fileById(dependency_id).compilation != null);
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.code != 2307);
+    }
+    var settled = try watcher.observe();
+    defer settled.deinit();
+    try std.testing.expect(settled.changes.isEmpty());
+}
+
 test "watch mode observes a transitive imported source and recompiles its importer" {
     const gpa = std.testing.allocator;
     const root_source = "import { value } from './dep'; const result: number = value;";

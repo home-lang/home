@@ -168,6 +168,13 @@ pub const File = struct {
     id: FileId,
     /// Resolved absolute (or program-canonical) path.
     path: []const u8,
+    /// A removed source retains its FileId and path so a later watch event
+    /// can restore it. Its compilation and owner are gone; `source` is never
+    /// treated as a replacement empty file while this is false.
+    present: bool = true,
+    /// Set only when an absent FileId was restored in the current revision.
+    /// The incremental checker uses this for program-scope invalidation.
+    restored_in_revision: bool = false,
     /// Source text. Canonical files borrow the bytes owned by
     /// `Program.sources`; redirects borrow their canonical file's slice.
     source: []const u8,
@@ -203,6 +210,7 @@ pub const File = struct {
     redirect_target: ?FileId = null,
 
     fn sourceContains(self: *const File, comptime marker: []const u8) bool {
+        if (!self.present) return false;
         if (self.source_markers) |*markers| return markers.contains(marker);
         return std.mem.indexOf(u8, self.source, marker) != null;
     }
@@ -439,7 +447,12 @@ pub const Program = struct {
     /// `path` already exists, returns the existing id and ignores the
     /// new source.
     pub fn add(self: *Program, path: []const u8, source: []const u8) ProgramError!FileId {
-        if (self.by_path.get(path)) |id| return id;
+        if (self.by_path.get(path)) |id| {
+            if (!self.files.items[id].present) {
+                _ = try self.updateSource(path, source);
+            }
+            return id;
+        }
 
         const owned_path = try self.gpa.dupe(u8, path);
         errdefer self.gpa.free(owned_path);
@@ -476,7 +489,22 @@ pub const Program = struct {
     }
 
     fn addRedirectFile(self: *Program, path: []const u8, target_id: FileId) ProgramError!FileId {
-        if (self.by_path.get(path)) |id| return id;
+        if (self.by_path.get(path)) |id| {
+            const existing = self.files.items[id];
+            if (!existing.present) {
+                const affected = try self.gpa.alloc(bool, self.files.items.len);
+                defer self.gpa.free(affected);
+                @memset(affected, false);
+                affected[id] = true;
+                self.closeRevisionImporters(affected);
+                self.invalidateRevisionFiles(affected);
+                existing.redirect_target = target_id;
+                existing.source = self.files.items[target_id].source;
+                existing.present = true;
+                existing.restored_in_revision = true;
+            }
+            return id;
+        }
 
         const target = self.files.items[target_id];
         const owned_path = try self.gpa.dupe(u8, path);
@@ -583,6 +611,44 @@ pub const Program = struct {
         }
     }
 
+    /// An importer checked while a dependency was absent has no graph edge
+    /// to that dependency. On restoration, inspect its retained import HIR
+    /// against the current resolver before invalidating the old compilation;
+    /// otherwise a checked TS2307 can survive the re-addition forever.
+    fn markImportersOfRestoredSources(self: *Program, affected: []bool) ProgramError!void {
+        var has_restored = false;
+        for (self.files.items) |file| {
+            if (file.present and file.restored_in_revision) {
+                has_restored = true;
+                break;
+            }
+        }
+        if (!has_restored) return;
+
+        var references: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
+        defer references.deinit(self.gpa);
+        for (self.files.items) |importer| {
+            if (!importer.present or affected[importer.id]) continue;
+            const compilation = importer.compilation orelse continue;
+            if (compilation.hir.kindOf(compilation.root) != .block_stmt) continue;
+            references.clearRetainingCapacity();
+            try appendStaticModuleReferences(self.gpa, compilation, &references);
+            for (references.items) |reference| {
+                const resolved = self.resolver.resolve(reference.specifier, importer.path) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => continue,
+                };
+                for (self.files.items) |restored| {
+                    if (!restored.present or !restored.restored_in_revision) continue;
+                    if (!std.mem.eql(u8, resolved.path, restored.path)) continue;
+                    affected[importer.id] = true;
+                    break;
+                }
+                if (affected[importer.id]) break;
+            }
+        }
+    }
+
     fn invalidateRevisionFiles(self: *Program, affected: []const bool) void {
         for (self.files.items) |file| {
             if (!affected[file.id]) continue;
@@ -597,42 +663,159 @@ pub const Program = struct {
     /// transitive importer is invalidated because its checked types may depend
     /// on the revised exports. Allocation completes before any published
     /// source or compilation state changes.
-    pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) !?FileId {
+    pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) ProgramError!?FileId {
         const id = self.by_path.get(path) orelse return null;
         const canonical_id = self.canonicalFileId(id);
         const canonical = self.files.items[canonical_id];
-        const source_slot = self.sources.getPtr(canonical.path) orelse return error.NotFound;
+        const was_missing = !self.files.items[id].present;
+        const canonical_was_missing = !canonical.present;
+        const source_slot = self.sources.getPtr(canonical.path);
+        if (!canonical_was_missing and source_slot == null) return error.NotFound;
+        if (canonical_was_missing and source_slot != null) return error.NotFound;
         const affected = try self.gpa.alloc(bool, self.files.items.len);
         defer self.gpa.free(affected);
         @memset(affected, false);
         self.markCanonicalRevision(canonical_id, affected);
         self.closeRevisionImporters(affected);
         const new_dupe = try self.gpa.dupe(u8, new_source);
+        errdefer self.gpa.free(new_dupe);
+        const new_key = if (canonical_was_missing) try self.gpa.dupe(u8, canonical.path) else null;
+        errdefer if (new_key) |key| self.gpa.free(key);
+        if (canonical_was_missing) try self.sources.ensureUnusedCapacity(self.gpa, 1);
 
-        // Everything after the duplicate succeeds is allocation-free. Keep
+        // Everything after preallocation succeeds is allocation-free. Keep
         // the old map entry, source slices, compilations, owners, imports, and
         // marker snapshots intact if allocation fails.
-        const old_source = source_slot.*;
         self.invalidateRevisionFiles(affected);
-        source_slot.* = new_dupe;
+        if (source_slot) |slot| {
+            const old_source = slot.*;
+            slot.* = new_dupe;
+            self.gpa.free(old_source);
+        } else {
+            self.sources.putAssumeCapacityNoClobber(new_key.?, new_dupe);
+        }
+        canonical.present = true;
+        canonical.restored_in_revision = canonical.restored_in_revision or was_missing or canonical_was_missing;
         canonical.source = new_dupe;
         canonical.source_markers = null;
         for (self.files.items) |file| {
             if (file.redirect_target != canonical_id) continue;
-            file.source = new_dupe;
+            if (file.id == id) file.present = true;
+            file.source = if (file.present) new_dupe else "";
             file.source_markers = null;
         }
-        self.gpa.free(old_source);
+        return id;
+    }
+
+    /// Retire a physical source without reusing its FileId. An absent source
+    /// has no compilation, owner, outgoing edges, or stored source bytes;
+    /// importers are invalidated from their OLD edges before those edges are
+    /// cleared. Re-adding the path through `updateSource` restores the same
+    /// FileId rather than compiling an empty stand-in.
+    pub fn removeSource(self: *Program, path: []const u8) ProgramError!?FileId {
+        const id = self.by_path.get(path) orelse return null;
+        const removed = self.files.items[id];
+        if (!removed.present) return id;
+
+        const canonical_id = self.canonicalFileId(id);
+        const affected = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(affected);
+        @memset(affected, false);
+        if (id == canonical_id) {
+            self.markCanonicalRevision(canonical_id, affected);
+        } else {
+            affected[id] = true;
+        }
+        self.closeRevisionImporters(affected);
+
+        var promoted_id: ?FileId = null;
+        var promoted_source: ?[]u8 = null;
+        var promoted_key: ?[]u8 = null;
+        errdefer if (promoted_source) |source| self.gpa.free(source);
+        errdefer if (promoted_key) |key| self.gpa.free(key);
+        if (id == canonical_id) {
+            if (!self.sources.contains(removed.path)) return error.NotFound;
+            // A package-identity redirect is a real physical path. If its
+            // former canonical path disappears, promote a surviving path and
+            // read that path's own bytes before changing any Program state.
+            for (self.files.items) |candidate| {
+                if (candidate.redirect_target != canonical_id or !candidate.present) continue;
+                if (!self.resolver.fs.fileExists(candidate.path)) continue;
+                const source = self.resolver.fs.readFile(self.gpa, candidate.path) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.FileNotFound => continue,
+                    else => return error.NotFound,
+                };
+                promoted_source = source;
+                promoted_key = try self.gpa.dupe(u8, candidate.path);
+                try self.sources.ensureUnusedCapacity(self.gpa, 1);
+                promoted_id = candidate.id;
+                break;
+            }
+        }
+
+        self.invalidateRevisionFiles(affected);
+        removed.present = false;
+        removed.restored_in_revision = false;
+        removed.source = "";
+        self.clearIncludeReason(removed);
+        if (id != canonical_id) return id;
+
+        const old_source = self.sources.fetchRemove(removed.path).?;
+        self.gpa.free(old_source.key);
+        self.gpa.free(old_source.value);
+        for (self.files.items) |file| {
+            if (file.redirect_target != canonical_id) continue;
+            const still_present = promoted_id != null and self.resolver.fs.fileExists(file.path);
+            file.present = still_present;
+            file.restored_in_revision = false;
+            file.source = if (still_present) promoted_source.? else "";
+            file.redirect_target = promoted_id;
+            if (!still_present) self.clearIncludeReason(file);
+        }
+        if (promoted_id) |replacement_id| {
+            const replacement = self.files.items[replacement_id];
+            replacement.present = true;
+            replacement.redirect_target = null;
+            replacement.source = promoted_source.?;
+            // Keep the missing path's identity as a dormant redirect. If it
+            // reappears, it rejoins this package owner instead of creating a
+            // second canonical compilation for the same package identity.
+            removed.redirect_target = replacement_id;
+            self.sources.putAssumeCapacityNoClobber(promoted_key.?, promoted_source.?);
+            promoted_source = null;
+            promoted_key = null;
+            var packages = self.by_package_id.iterator();
+            while (packages.next()) |entry| {
+                if (entry.value_ptr.* == canonical_id) entry.value_ptr.* = replacement_id;
+            }
+        } else {
+            // Do not leave a package identity pointing at an absent source.
+            while (true) {
+                var key: ?[]const u8 = null;
+                var packages = self.by_package_id.iterator();
+                while (packages.next()) |entry| {
+                    if (entry.value_ptr.* == canonical_id) {
+                        key = entry.key_ptr.*;
+                        break;
+                    }
+                }
+                const removed_key = key orelse break;
+                const package = self.by_package_id.fetchRemove(removed_key).?;
+                self.gpa.free(package.key);
+            }
+        }
         return id;
     }
 
     pub fn lookupPath(self: *const Program, path: []const u8) ?FileId {
-        return self.by_path.get(path);
+        const id = self.by_path.get(path) orelse return null;
+        return if (self.files.items[id].present) id else null;
     }
 
     fn prepareSourceMarkers(self: *Program) void {
         for (self.files.items) |file| {
-            file.source_markers = if (file.redirect_target != null)
+            file.source_markers = if (!file.present or file.redirect_target != null)
                 null
             else if (file.compilation) |compilation|
                 .{ .borrowed = &compilation.source_markers }
@@ -641,12 +824,28 @@ pub const Program = struct {
         }
     }
 
+    fn knownReferencePaths(self: *const Program, extra: []const []const u8) ProgramError![]const []const u8 {
+        var present_count: usize = 0;
+        for (self.files.items) |file| {
+            if (file.present) present_count += 1;
+        }
+        const paths = try self.gpa.alloc([]const u8, present_count + extra.len);
+        var index: usize = 0;
+        for (self.files.items) |file| {
+            if (!file.present) continue;
+            paths[index] = file.path;
+            index += 1;
+        }
+        @memcpy(paths[index..], extra);
+        return paths;
+    }
+
     fn clearSourceMarkers(self: *Program) void {
         for (self.files.items) |file| file.source_markers = null;
     }
 
     fn needsCompilation(f: *const File, options: ts_driver.CompileOptions) bool {
-        if (f.redirect_target != null) return false;
+        if (!f.present or f.redirect_target != null) return false;
         const c = f.compilation orelse return true;
         return !options.bind_only and (c.check_state == .bound or c.check_state == .unavailable);
     }
@@ -690,7 +889,7 @@ pub const Program = struct {
         var index: BoundGlobals = .{};
         errdefer index.deinit(self.gpa);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             const c = f.compilation orelse continue;
             const external_module = boundSourceIsExternalModule(c);
             // Binder insertion order is deterministic within each file, even
@@ -869,7 +1068,7 @@ pub const Program = struct {
         var order: std.ArrayListUnmanaged(usize) = .empty;
         errdefer order.deinit(self.gpa);
         for (self.files.items, 0..) |file, index| {
-            if (file.redirect_target == null and
+            if (file.present and file.redirect_target == null and
                 !fileIsCommonJsExportProvider(file, commonjs_exports) and
                 fileContributesGlobals(globals, file))
                 try self.appendGlobalProviderOrder(index, globals, states, &order);
@@ -1603,10 +1802,8 @@ pub const Program = struct {
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
-        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
+        const known_reference_paths = try self.knownReferencePaths(options.known_reference_paths);
         defer self.gpa.free(known_reference_paths);
-        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
-        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         var shared_options = options;
         shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
         shared_options.script_object_expandos = script_object_expandos;
@@ -1632,7 +1829,7 @@ pub const Program = struct {
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
@@ -1652,7 +1849,9 @@ pub const Program = struct {
         @memset(states, 0);
         var order: std.ArrayListUnmanaged(usize) = .empty;
         errdefer order.deinit(self.gpa);
-        for (self.files.items, 0..) |_, index| try self.appendDependencyOrder(index, states, &order);
+        for (self.files.items, 0..) |file, index| {
+            if (file.present) try self.appendDependencyOrder(index, states, &order);
+        }
         return order.toOwnedSlice(self.gpa);
     }
 
@@ -1777,10 +1976,8 @@ pub const Program = struct {
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
-        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
+        const known_reference_paths = try self.knownReferencePaths(options.known_reference_paths);
         defer self.gpa.free(known_reference_paths);
-        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
-        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         var shared_options = options;
         shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
         shared_options.script_object_expandos = script_object_expandos;
@@ -1805,7 +2002,7 @@ pub const Program = struct {
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!needsCompilation(f, shared_options)) {
                 // Already compiled — replay its diagnostics anyway so
                 // a streaming consumer that joined late doesn't miss
@@ -1826,7 +2023,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer freeStringSlice(self.gpa, out.items);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!f.sourceContains("namespace") and
                 !f.sourceContains("module") and
                 !f.sourceContains("global")) continue;
@@ -1842,13 +2039,13 @@ pub const Program = struct {
         var namespace_roots: std.ArrayListUnmanaged([]const u8) = .empty;
         defer namespace_roots.deinit(self.gpa);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!f.sourceContains("namespace") and
                 !f.sourceContains("module")) continue;
             try collectTopLevelNamespaceRootSlices(self.gpa, f.source, &namespace_roots);
         }
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!isJsLikePath(f.path)) continue;
             try collectQualifiedJsDocTypedefs(self.gpa, f.source, &out);
             var roots: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -1866,7 +2063,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ModuleInterfaceAugmentation) = .empty;
         errdefer out.deinit(self.gpa);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!f.sourceContains("declare") or
                 !f.sourceContains("module") or
                 !f.sourceContains("interface")) continue;
@@ -1887,7 +2084,7 @@ pub const Program = struct {
         var sources: std.ArrayListUnmanaged(class_declarations.Source) = .empty;
         defer sources.deinit(self.gpa);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             // Every execution mode prepares bound owners before collecting
             // cross-file declarations. Do not reparse or omit missing owners.
             const compilation = f.compilation orelse unreachable;
@@ -1905,7 +2102,7 @@ pub const Program = struct {
             namespace_augmentations.deinit(self.gpa);
         }
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!f.sourceContains("declare") or
                 !f.sourceContains("module") or
                 !f.sourceContains("namespace")) continue;
@@ -1938,7 +2135,7 @@ pub const Program = struct {
         var sources: std.ArrayListUnmanaged(declaration_graph.Source) = .empty;
         defer sources.deinit(self.gpa);
         for (self.files.items) |file| {
-            if (file.redirect_target != null) continue;
+            if (!file.present or file.redirect_target != null) continue;
             try sources.append(self.gpa, .{ .path = file.path, .compilation = file.compilation orelse unreachable });
         }
         return declaration_graph.collect(self.gpa, self.resolver, sources.items) catch return error.OutOfMemory;
@@ -1951,7 +2148,7 @@ pub const Program = struct {
     /// available for callers that explicitly request an export snapshot.
     fn collectProgramDeclarationsForChecking(self: *Program) ProgramError!declaration_graph.Graph {
         for (self.files.items) |file| {
-            if (file.redirect_target != null) continue;
+            if (!file.present or file.redirect_target != null) continue;
             if (file.imports.items.len != 0) return self.collectProgramDeclarations();
             // Ambient imports need exact declaration routes even when their
             // specifiers do not resolve to a filesystem module.
@@ -1986,7 +2183,7 @@ pub const Program = struct {
             out.deinit(self.gpa);
         }
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!f.sourceContains("declare") or
                 !f.sourceContains("interface") or
                 (!f.sourceContains("module") and
@@ -2003,7 +2200,7 @@ pub const Program = struct {
         out: *std.ArrayListUnmanaged(ts_driver.ProgramAmbientModuleInterfaceExport),
     ) ProgramError!void {
         for (self.files.items) |file| {
-            if (file.redirect_target != null) continue;
+            if (!file.present or file.redirect_target != null) continue;
             if (!file.sourceContains("export") or
                 !file.sourceContains("interface") or
                 (!file.sourceContains("namespace") and
@@ -2021,7 +2218,7 @@ pub const Program = struct {
         while (changed) {
             changed = false;
             for (self.files.items) |file| {
-                if (file.redirect_target != null) continue;
+                if (!file.present or file.redirect_target != null) continue;
                 var stars = try relativeExportStarSpecifiers(self.gpa, file.source);
                 defer stars.deinit(self.gpa);
                 for (stars.items) |specifier| {
@@ -2382,7 +2579,7 @@ pub const Program = struct {
         var out: std.ArrayListUnmanaged(ts_driver.ProgramCommonJsExport) = .empty;
         errdefer freeProgramCommonJsExports(self.gpa, out.items);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (f.is_declaration) {
                 // A declaration-file CommonJS export requires `export =`.
                 // Avoid scanning ordinary library declarations when either
@@ -3105,7 +3302,7 @@ pub const Program = struct {
         const target_path = try resolveProgramRelativeModulePath(self.gpa, from_path, spec);
         defer self.gpa.free(target_path);
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             if (!programModulePathMatches(f.path, target_path)) continue;
             const pos = findTopLevelInterfaceDeclarationPos(f.source, interface_name) orelse return null;
             return .{ .path = f.path, .pos = pos };
@@ -3600,12 +3797,18 @@ pub const Program = struct {
         options: ts_driver.CompileOptions,
     ) ProgramError![]EmitSummary {
         try self.prepareNameStore();
-        const out = self.gpa.alloc(EmitSummary, self.files.items.len) catch return error.OutOfMemory;
+        var present_count: usize = 0;
+        for (self.files.items) |file| {
+            if (file.present) present_count += 1;
+        }
+        const out = self.gpa.alloc(EmitSummary, present_count) catch return error.OutOfMemory;
+        var emitted: usize = 0;
         errdefer {
-            for (out) |*s| self.gpa.free(s.js);
+            for (out[0..emitted]) |*s| self.gpa.free(s.js);
             self.gpa.free(out);
         }
-        for (self.files.items, 0..) |f, idx| {
+        for (self.files.items) |f| {
+            if (!f.present) continue;
             var per_file = options;
             per_file.shared_strings = &self.strings.?;
             per_file.is_tsx = f.is_tsx;
@@ -3619,7 +3822,7 @@ pub const Program = struct {
                 error.EmitError => return error.EmitError,
                 else => return error.EmitError,
             };
-            out[idx] = .{
+            out[emitted] = .{
                 .file_id = f.id,
                 .path = f.path,
                 .js = r.js,
@@ -3627,6 +3830,7 @@ pub const Program = struct {
                 .has_errors = r.has_errors,
                 .from_cache = r.from_cache,
             };
+            emitted += 1;
         }
         return out;
     }
@@ -3677,10 +3881,8 @@ pub const Program = struct {
         defer freeProgramUmdGlobals(self.gpa, program_umd_globals);
         const merged_program_umd_globals = try mergeProgramUmdGlobals(self.gpa, program_umd_globals, options.program_umd_globals);
         defer self.gpa.free(merged_program_umd_globals);
-        const known_reference_paths = try self.gpa.alloc([]const u8, self.files.items.len + options.known_reference_paths.len);
+        const known_reference_paths = try self.knownReferencePaths(options.known_reference_paths);
         defer self.gpa.free(known_reference_paths);
-        for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
-        for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
         var shared_options = options;
         shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
         shared_options.script_object_expandos = script_object_expandos;
@@ -3969,6 +4171,7 @@ pub const Program = struct {
                 // record the edge. Otherwise the program is partial —
                 // the LSP will pick it up when the file is added.
                 if (self.by_path.get(res.path)) |target_id| {
+                    if (!self.files.items[target_id].present) continue;
                     const seen = try targets.getOrPut(self.gpa, target_id);
                     if (seen.found_existing) continue;
                     try f.imports.append(self.gpa, target_id);
@@ -4198,9 +4401,11 @@ pub const Program = struct {
                             };
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
-                                depth_changed_in_round = depth_changed_in_round or
-                                    self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
-                                continue;
+                                if (self.files.items[existing_id].present) {
+                                    depth_changed_in_round = depth_changed_in_round or
+                                        self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
+                                    continue;
+                                }
                             }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
@@ -4243,9 +4448,11 @@ pub const Program = struct {
                             } orelse continue;
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
-                                depth_changed_in_round = depth_changed_in_round or
-                                    self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
-                                continue;
+                                if (self.files.items[existing_id].present) {
+                                    depth_changed_in_round = depth_changed_in_round or
+                                        self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
+                                    continue;
+                                }
                             }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
@@ -4286,7 +4493,7 @@ pub const Program = struct {
         var i: usize = 0;
         while (i < n) : (i += 1) {
             const f = self.files.items[i];
-            if (f.is_declaration) continue;
+            if (!f.present or f.is_declaration) continue;
             if (options.emit.import_helpers) {
                 const specifier = try quotedSpecifier(self.gpa, "tslib");
                 defer self.gpa.free(specifier);
@@ -4544,7 +4751,7 @@ pub const Program = struct {
     }
 
     fn addResolvedIncludeFile(self: *Program, path: []const u8) ProgramError!?FileId {
-        if (self.by_path.get(path) != null) return null;
+        if (self.lookupPath(path) != null) return null;
         const src = self.resolver.fs.readFile(self.gpa, path) catch return null;
         defer self.gpa.free(src);
         return self.add(path, src) catch |err| switch (err) {
@@ -4554,16 +4761,16 @@ pub const Program = struct {
     }
 
     fn addResolvedIncludeFileFromResolution(self: *Program, res: ts_resolver.Resolution) ProgramError!?FileId {
-        if (self.by_path.get(res.path) != null) return null;
+        if (self.lookupPath(res.path) != null) return null;
         if (self.deduplicate_packages) {
             if (res.package_id) |package_id| {
                 if (package_id.len != 0) {
                     if (self.by_package_id.get(package_id)) |canonical_id| {
                         const canonical = self.files.items[canonical_id];
-                        if (!std.mem.eql(u8, canonical.path, res.path)) {
+                        if (canonical.present and !std.mem.eql(u8, canonical.path, res.path)) {
                             return try self.addRedirectFile(res.path, canonical_id);
                         }
-                        return null;
+                        if (canonical.present) return null;
                     }
                 }
             }
@@ -4633,6 +4840,10 @@ pub const Program = struct {
         }
 
         if (self.by_path.get(res.path)) |existing_id| {
+            if (!self.files.items[existing_id].present) {
+                const restored_id = try self.addResolvedIncludeFileFromResolution(res);
+                return .{ .target_id = restored_id, .added = restored_id != null };
+            }
             return .{
                 .target_id = existing_id,
                 .depth_changed = self.setDiscoveredNodeModulesDepth(existing_id, depth, false),
@@ -4900,19 +5111,20 @@ pub const Program = struct {
         // cleared its old edges. Preserve that closure by admitting every
         // canonical file whose compilation is currently absent.
         for (self.files.items) |file| {
-            if (file.redirect_target == null and file.compilation == null) affected[file.id] = true;
+            if (file.present and file.redirect_target == null and file.compilation == null) affected[file.id] = true;
         }
         for (changed_paths) |path| {
             const requested_id = self.by_path.get(path) orelse continue;
             const canonical_id = self.canonicalFileId(requested_id);
             self.markCanonicalRevision(canonical_id, affected);
         }
+        try self.markImportersOfRestoredSources(affected);
         self.closeRevisionImporters(affected);
 
         try self.prepareNameStore();
         var count: u32 = 0;
         for (self.files.items) |file| {
-            if (file.redirect_target == null and affected[file.id]) count += 1;
+            if (file.present and file.redirect_target == null and affected[file.id]) count += 1;
         }
         self.invalidateRevisionFiles(affected);
 
@@ -4925,7 +5137,11 @@ pub const Program = struct {
         _ = try self.loadImportClosureImpl(options, false, null, false);
         var program_scope_changed = false;
         for (self.files.items[first_new_id..]) |file| {
-            if (file.redirect_target != null) continue;
+            if (!file.present or file.redirect_target != null) continue;
+            program_scope_changed = program_scope_changed or newFileMayAffectProgramScope(file);
+        }
+        for (self.files.items) |file| {
+            if (!file.present or !file.restored_in_revision or file.redirect_target != null) continue;
             program_scope_changed = program_scope_changed or newFileMayAffectProgramScope(file);
         }
         if (program_scope_changed) {
@@ -4935,8 +5151,9 @@ pub const Program = struct {
             try self.recompileAll(options);
             count = 0;
             for (self.files.items) |file| {
-                if (file.redirect_target == null) count += 1;
+                if (file.present and file.redirect_target == null) count += 1;
             }
+            for (self.files.items) |file| file.restored_in_revision = false;
             return count;
         }
         if (self.files.items.len > first_new_id) {
@@ -4959,6 +5176,7 @@ pub const Program = struct {
             self.invalidateRevisionFiles(new_affected);
         }
         try self.compileAll(options);
+        for (self.files.items) |file| file.restored_in_revision = false;
         return count;
     }
 
@@ -4976,7 +5194,7 @@ pub const Program = struct {
     fn appendMissingImportedHelperDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         if (!options.emit.import_helpers) return;
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             try self.appendMissingImportedHelperDiagnosticsForFile(f, options);
         }
     }
@@ -5180,7 +5398,7 @@ pub const Program = struct {
         defer members.deinit(self.gpa);
 
         for (self.files.items, 0..) |file, file_index| {
-            if (file.redirect_target != null) continue;
+            if (!file.present or file.redirect_target != null) continue;
             const compilation = file.compilation orelse continue;
             if (boundSourceIsExternalModule(compilation)) continue;
             if (compilation.hir.kindOf(compilation.root) != .block_stmt) continue;
@@ -5718,7 +5936,7 @@ pub const Program = struct {
 
     fn findTslibDeclaration(self: *Program) ?*File {
         for (self.files.items) |f| {
-            if (f.redirect_target != null) continue;
+            if (!f.present or f.redirect_target != null) continue;
             const base = std.fs.path.basename(f.path);
             if (std.mem.eql(u8, base, "tslib.d.ts")) return f;
         }
@@ -9394,6 +9612,33 @@ test "Program: duplicate package-id redirect survives source update and recompil
     try T.expect(p.fileById(app_id).compilation != null);
     try T.expect(p.fileById(nested_id).compilation != null);
     try T.expectEqual(canonical_id, p.by_package_id.get(package_id).?);
+
+    try T.expect(vfs.removeFile("/app/node_modules/pkg/index.d.ts"));
+    r.invalidateCaches();
+    try T.expectEqual(canonical_id, (try p.removeSource("/app/node_modules/pkg/index.d.ts")).?);
+    try T.expect(p.lookupPath("/app/node_modules/pkg/index.d.ts") == null);
+    try T.expectEqual(redirect_id, p.lookupPath("/app/nested/node_modules/pkg/index.d.ts").?);
+    try T.expect(redirect.redirect_target == null);
+    try T.expectEqual(redirect_id, p.by_package_id.get(package_id).?);
+    try T.expectEqualStrings("export const value: number;\n", redirect.source);
+    try T.expect(!p.sources.contains(canonical.path));
+    try T.expect(p.sources.contains(redirect.path));
+    _ = try p.recompileChanged(&.{"/app/node_modules/pkg/index.d.ts"}, .{});
+    try T.expect(redirect.compilation != null);
+    try T.expect(canonical.compilation == null);
+
+    const revived_source = "export const revived: boolean;\n";
+    try vfs.addFile("/app/node_modules/pkg/index.d.ts", revived_source);
+    r.invalidateCaches();
+    try T.expectEqual(canonical_id, (try p.updateSource("/app/node_modules/pkg/index.d.ts", revived_source)).?);
+    _ = try p.recompileChanged(&.{"/app/node_modules/pkg/index.d.ts"}, .{});
+    try T.expect(canonical.present);
+    try T.expectEqual(redirect_id, canonical.redirect_target.?);
+    try T.expectEqual(redirect_id, p.by_package_id.get(package_id).?);
+    try T.expect(canonical.source.ptr == redirect.source.ptr);
+    try T.expectEqualStrings(revived_source, redirect.source);
+    try T.expect(canonical.compilation == null);
+    try T.expect(redirect.compilation != null);
 }
 
 test "Program: disabled package deduplication retains physical package copies" {
@@ -11454,6 +11699,52 @@ test "Program: updateSource publishes source and redirects atomically" {
     try T.expect(second_redirect.source_markers == null);
 }
 
+test "Program: removal leaves a canonical source and redirect untouched on allocation failure" {
+    var reached_success = false;
+    for (0..8) |fail_index| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/a.ts", "export const value = 1;");
+        try vfs.addFile("/redirect.ts", "export const value = 2;");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        const canonical_id = try p.add("/a.ts", "export const value = 1;");
+        const redirect_id = try p.addRedirectFile("/redirect.ts", canonical_id);
+        const canonical = p.fileById(canonical_id);
+        const redirect = p.fileById(redirect_id);
+        const original_source = canonical.source;
+        try T.expect(vfs.removeFile("/a.ts"));
+
+        var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = fail_index });
+        var result: ProgramError!?FileId = undefined;
+        {
+            p.gpa = failing.allocator();
+            defer p.gpa = T.allocator;
+            result = p.removeSource("/a.ts");
+        }
+        if (failing.has_induced_failure) {
+            try T.expectError(error.OutOfMemory, result);
+            try T.expect(canonical.present);
+            try T.expect(redirect.present);
+            try T.expectEqual(canonical_id, redirect.redirect_target.?);
+            try T.expect(canonical.source.ptr == original_source.ptr);
+            try T.expect(redirect.source.ptr == original_source.ptr);
+            try T.expect(p.sources.contains("/a.ts"));
+            try T.expect(!p.sources.contains("/redirect.ts"));
+        } else {
+            try T.expectEqual(canonical_id, (try result).?);
+            try T.expect(!canonical.present);
+            try T.expect(redirect.present);
+            try T.expect(redirect.redirect_target == null);
+            reached_success = true;
+            break;
+        }
+    }
+    try T.expect(reached_success);
+}
+
 test "Program: recompileChanged preserves unrelated files" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -11595,6 +11886,74 @@ test "Program: preferred TypeScript source does not inherit a retained CommonJS 
     const preferred = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
     try T.expectEqualSlices(FileId, &.{preferred}, p.fileById(main_id).imports.items);
     try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
+test "Program: removed import invalidates its owner and restores the same FileId" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const main_source = "import { value } from './dep'; const result: number = value;";
+    try vfs.addFile("/main.ts", main_source);
+    try vfs.addFile("/dep.ts", "export const value: number = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/main.ts", main_source);
+    var external = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &p,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer external.arena.deinit();
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &external, .vtable = &SourceExportResolver.vtable },
+    };
+    try T.expectEqual(@as(usize, 1), try p.loadImportClosure(options));
+    const dep_id = p.lookupPath("/dep.ts") orelse return error.MissingDependency;
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2307);
+
+    try T.expect(vfs.removeFile("/dep.ts"));
+    resolver.invalidateCaches();
+    try T.expectEqual(dep_id, (try p.removeSource("/dep.ts")).?);
+    try T.expectEqual(dep_id, (try p.removeSource("/dep.ts")).?);
+    try T.expect(p.lookupPath("/dep.ts") == null);
+    try T.expect(!p.sources.contains("/dep.ts"));
+    try T.expect(p.fileById(dep_id).compilation == null);
+    try T.expectEqual(source_owners.OwnerId.none, p.fileById(dep_id).owner);
+    _ = try p.recompileChanged(&.{"/dep.ts"}, options);
+    try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2307);
+
+    try vfs.addFile("/dep.ts", "export const value: string = 'wrong';");
+    resolver.invalidateCaches();
+    try T.expectEqual(dep_id, (try p.updateSource("/dep.ts", "export const value: string = 'wrong';")).?);
+    _ = try p.recompileChanged(&.{"/dep.ts"}, options);
+    try T.expectEqual(dep_id, p.lookupPath("/dep.ts").?);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2307);
+    try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+
+    try vfs.addFile("/dep.ts", "export const value: number = 2;");
+    resolver.invalidateCaches();
+    _ = try p.updateSource("/dep.ts", "export const value: number = 2;");
+    _ = try p.recompileChanged(&.{"/dep.ts"}, options);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2307);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+
+    try T.expect(vfs.removeFile("/main.ts"));
+    resolver.invalidateCaches();
+    try T.expectEqual(main_id, (try p.removeSource("/main.ts")).?);
+    _ = try p.recompileChanged(&.{"/main.ts"}, options);
+    try T.expect(p.lookupPath("/main.ts") == null);
+    try T.expect(p.fileById(main_id).compilation == null);
+    try T.expect(!p.sources.contains("/main.ts"));
+
+    try vfs.addFile("/main.ts", main_source);
+    resolver.invalidateCaches();
+    try T.expectEqual(main_id, (try p.updateSource("/main.ts", main_source)).?);
+    _ = try p.recompileChanged(&.{"/main.ts"}, options);
+    try T.expectEqual(main_id, p.lookupPath("/main.ts").?);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2307);
 }
 
 test "Program: emitAllToCache emits JS for every file" {

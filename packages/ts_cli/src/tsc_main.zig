@@ -2025,7 +2025,7 @@ const CompositeProjectFileListSummary = struct {
 };
 
 fn sourceFileMayBeEmittedByProject(f: *const ts_program.File) bool {
-    return !f.is_declaration;
+    return f.present and !f.is_declaration;
 }
 
 fn compositeProjectFileListMessage(
@@ -3873,19 +3873,27 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             defer changed.deinit(gpa);
             var batch_failed = false;
             for (change_set.changes.items) |ch| {
-                if (ch.kind == .removed) continue;
-                const src = RealFs.read(gpa, ch.path) catch |err| {
-                    std.debug.print("error reading {s}: {s}\n", .{ ch.path, @errorName(err) });
-                    batch_failed = true;
-                    break;
-                };
-                defer gpa.free(src);
-                // `updateSource` dupes the buffer internally.
-                _ = program.updateSource(ch.path, src) catch |err| {
-                    std.debug.print("error updating source {s}: {s}\n", .{ ch.path, @errorName(err) });
-                    batch_failed = true;
-                    break;
-                };
+                if (ch.kind == .removed) {
+                    _ = program.removeSource(ch.path) catch |err| {
+                        std.debug.print("error removing source {s}: {s}\n", .{ ch.path, @errorName(err) });
+                        batch_failed = true;
+                        break;
+                    };
+                } else {
+                    const src = RealFs.read(gpa, ch.path) catch |err| {
+                        std.debug.print("error reading {s}: {s}\n", .{ ch.path, @errorName(err) });
+                        batch_failed = true;
+                        break;
+                    };
+                    defer gpa.free(src);
+                    // `updateSource` owns a duplicate; a re-added path
+                    // revives its stable FileId in the same Program.
+                    _ = program.updateSource(ch.path, src) catch |err| {
+                        std.debug.print("error updating source {s}: {s}\n", .{ ch.path, @errorName(err) });
+                        batch_failed = true;
+                        break;
+                    };
+                }
                 // The watcher's tracked-set keys are owned strings
                 // independent of `input_files`, so it's safe to
                 // borrow the input_files slice here for re-emit.
@@ -3947,6 +3955,15 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 if (f.redirect_target != null) continue;
                 const c = f.compilation orelse continue;
                 streamDiagsCallback(&watch_stream_ctx, f.path, c.diagnostics.items);
+            }
+            if (root_file_reason != .none) {
+                for (input_files.items) |path| {
+                    if (program.lookupPath(path) != null) continue;
+                    const message = try missingRootFileDiagnostic(gpa, path, root_file_reason);
+                    defer gpa.free(message);
+                    printStdout("{s}\n", .{message});
+                    watch_error_count += 1;
+                }
             }
             reportWatchErrorStatus(watch_error_count);
             _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
@@ -4714,6 +4731,22 @@ fn rootFileExtensionDiagnostic(
         .javascript => try javaScriptFileNeedsAllowJsDiagnostic(gpa, path),
         .unsupported => try unsupportedExtensionDiagnostic(gpa, path),
     };
+    if (reason == .none) return base;
+    defer gpa.free(base);
+    const detail = switch (reason) {
+        .none => unreachable,
+        .command_line => "Root file specified for compilation",
+        .files_list => "Part of 'files' list in tsconfig.json",
+    };
+    return std.fmt.allocPrint(
+        gpa,
+        "{s}\n  The file is in the program because:\n    {s}",
+        .{ base, detail },
+    );
+}
+
+fn missingRootFileDiagnostic(gpa: std.mem.Allocator, path: []const u8, reason: RootFileDiagnosticReason) ![]u8 {
+    const base = try std.fmt.allocPrint(gpa, "error TS6053: File '{s}' not found.", .{path});
     if (reason == .none) return base;
     defer gpa.free(base);
     const detail = switch (reason) {
@@ -5632,6 +5665,17 @@ test "tsc_main: explainFiles reports Node package type module format reasons" {
     try std.testing.expectEqualStrings(
         "File is ECMAScript module because '/repo/package.json' has field \"type\" with value \"module\"",
         reason.message,
+    );
+}
+
+test "tsc_main: removed explicit root reports TS6053 with its provenance" {
+    const message = try missingRootFileDiagnostic(std.testing.allocator, "/repo/main.ts", .command_line);
+    defer std.testing.allocator.free(message);
+    try std.testing.expectEqualStrings(
+        "error TS6053: File '/repo/main.ts' not found.\n" ++
+            "  The file is in the program because:\n" ++
+            "    Root file specified for compilation",
+        message,
     );
 }
 
