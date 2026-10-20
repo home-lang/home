@@ -8432,7 +8432,11 @@ pub const Parser = struct {
         var value: NodeId = hir_mod.none_node_id;
         var type_anno: NodeId = hir_mod.none_node_id;
         var is_method = false;
-        var is_optional_field = false;
+        // `?` belongs to the member name for fields and methods alike:
+        // @types/node 22's EventEmitter declares
+        // `[EventEmitter.captureRejectionSymbol]?<K>(error: Error, ...): void;`.
+        const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
+        const is_optional_field = optional_member_token != null;
         if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
             var type_params: []NodeId = &.{};
             var owns_tps = false;
@@ -8482,8 +8486,6 @@ pub const Parser = struct {
             is_method = true;
             try self.reportAccessorModifierOnlyOnProperty(mods);
         } else {
-            const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
-            is_optional_field = optional_member_token != null;
             const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             if (self.match(.colon)) {
                 type_anno = try self.parseTypeAnnotation();
@@ -23887,6 +23889,21 @@ test "parser: tsgo parity: TS1435 spelling suggestions count Unicode codepoints"
         index += 1;
     }
     try T.expectEqual(expected.len, index);
+}
+
+test "parser: computed class methods may be optional and generic" {
+    // @types/node 22 events.d.ts.
+    var s = try newTestSetup(
+        \\declare const sym: unique symbol;
+        \\declare class E {
+        \\    [sym]?(): void;
+        \\    [sym]?<K>(error: Error, event: K): void;
+        \\    ["literal"]?: number;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: accessors may be named by reserved keywords" {
