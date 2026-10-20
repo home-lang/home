@@ -717,6 +717,9 @@ fn buildOneProject(
         return .errors_outputs_skipped;
     };
     cfg.file_path = config_path;
+    if (cfg.extends.len != 0) {
+        cfg = resolveConfigExtends(gpa, arena, cfg, config_path) catch return .errors_outputs_skipped;
+    }
     const config_validation_diags = cfg.validate(gpa) catch return .errors_outputs_skipped;
     defer tsconfig_mod.freeValidationDiagnostics(gpa, config_validation_diags);
     const project_pretty = cfg.compiler_options.pretty orelse default_pretty;
@@ -2384,7 +2387,12 @@ pub const LspProject = struct {
                 self.config_source = source;
                 self.config_source_owned = true;
                 self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch null;
-                if (self.config) |*c| c.file_path = path;
+                if (self.config) |*c| {
+                    c.file_path = path;
+                    if (c.extends.len != 0) {
+                        self.config = resolveConfigExtends(gpa, self.config_arena.allocator(), c.*, path) catch null;
+                    }
+                }
             } else |_| {}
         }
         self.fs = ResolverRealFs.init(gpa);
@@ -2440,6 +2448,40 @@ pub const LspProject = struct {
         return false;
     }
 };
+
+/// Apply a config's `extends` chain (tsc's config-file inheritance): every
+/// base merges under the child, with inherited file specs and path options
+/// rebased onto the child's directory. `cfg` is the already-parsed child.
+fn resolveConfigExtends(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    cfg: tsconfig_mod.TsConfig,
+    path: []const u8,
+) error{ OutOfMemory, ConfigExtendsFailed }!tsconfig_mod.TsConfig {
+    const absolute = if (std.fs.path.isAbsolute(path))
+        path
+    else blk: {
+        const cwd = std.process.currentPathAlloc(std.Options.debug_io, arena) catch return error.ConfigExtendsFailed;
+        break :blk std.fs.path.resolvePosix(arena, &.{ cwd, path }) catch return error.OutOfMemory;
+    };
+    var fs_impl = ResolverRealFs.init(gpa);
+    defer fs_impl.deinit();
+    const resolution = try ts_program.config_graph.resolve(gpa, arena, fs_impl.fs(), absolute);
+    if (resolution.failure) |failure| {
+        // tsc: TS6053 for an unresolvable base, TS18000 for a cycle.
+        switch (failure.kind) {
+            .missing => printStdout("{s}: error TS6053: File '{s}' not found.\n", .{ path, failure.path }),
+            .circular => printStdout("error TS18000: Circularity detected while resolving configuration: {s}\n", .{failure.path}),
+            .invalid => printStdout("{s}: error TS5083: Cannot read file '{s}'.\n", .{ path, failure.path }),
+        }
+        return error.ConfigExtendsFailed;
+    }
+    var resolved = resolution.config orelse return cfg;
+    // Keep the child's own identity: diagnostics, `include` defaults and
+    // relative inputs all anchor at the file the user passed.
+    resolved.file_path = path;
+    return resolved;
+}
 
 const ResolverRealFs = struct {
     threaded: std.Io.Threaded,
@@ -3466,7 +3508,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             };
             if (loaded_cfg) |*c| {
                 c.file_path = path;
-                ts_cli.applyConfigOverrides(c, opts);
+                if (c.extends.len != 0) {
+                    loaded_cfg = resolveConfigExtends(gpa, cfg_arena.allocator(), c.*, path) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ConfigExtendsFailed => std.process.exit(@backingInt(ts_cli.ExitCode.type_errors)),
+                    };
+                }
+                if (loaded_cfg) |*resolved| ts_cli.applyConfigOverrides(resolved, opts);
             }
         }
     }
@@ -5693,6 +5741,44 @@ test "tsc_main: project discovery uses effective allowJs" {
     try std.testing.expect(isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(implicit)));
     const disabled: tsconfig_mod.CompilerOptions = .{ .allow_js = false, .check_js = true };
     try std.testing.expect(!isProjectInputExtension("src/app.js", tsconfig_mod.effectiveAllowJs(disabled)));
+}
+
+test "tsc_main: project configs inherit compiler options through extends" {
+    // pickier/opencode shape: a child config that only extends must keep the
+    // base's options (here skipLibCheck/strict) and its rebased file specs.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "configs");
+    try tmp.dir.createDirPath(io, "node_modules/@tsconfig/node22");
+    const writes = [_][2][]const u8{
+        .{ "configs/base.json", "{\"compilerOptions\":{\"strict\":true,\"skipLibCheck\":true},\"include\":[\"../src/**/*.ts\"]}" },
+        .{ "node_modules/@tsconfig/node22/tsconfig.json", "{\"compilerOptions\":{\"module\":\"node16\",\"noImplicitAny\":false}}" },
+        .{ "node_modules/@tsconfig/node22/package.json", "{\"name\":\"@tsconfig/node22\"}" },
+        .{ "tsconfig.json", "{\"extends\":[\"@tsconfig/node22/tsconfig.json\",\"./configs/base.json\"],\"compilerOptions\":{\"noImplicitAny\":true}}" },
+    };
+    for (writes) |entry| {
+        var file = try tmp.dir.createFile(io, entry[0], .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, entry[1]);
+    }
+    const root = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(root);
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ root, "tsconfig.json" });
+    defer std.testing.allocator.free(config_path);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try RealFs.read(arena.allocator(), config_path);
+    var child = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), source);
+    child.file_path = config_path;
+    const resolved = try resolveConfigExtends(std.testing.allocator, arena.allocator(), child, config_path);
+    try std.testing.expectEqual(@as(?bool, true), resolved.compiler_options.skip_lib_check);
+    try std.testing.expectEqual(@as(?bool, true), resolved.compiler_options.strict);
+    try std.testing.expectEqual(@as(?bool, true), resolved.compiler_options.no_implicit_any);
+    try std.testing.expect(resolved.compiler_options.module != null);
+    try std.testing.expectEqualStrings("src/**/*.ts", resolved.include.?[0]);
+    try std.testing.expectEqualStrings(config_path, resolved.file_path);
 }
 
 test "tsc_main: resolver realpath returns an ordinary owned slice" {

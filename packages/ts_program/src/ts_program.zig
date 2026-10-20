@@ -29,6 +29,7 @@ const source_owners = ts_driver.source_owners;
 
 pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
+pub const config_graph = @import("config_graph.zig");
 const class_declarations = @import("class_declarations.zig");
 const declaration_graph = @import("declaration_graph.zig");
 const checked_schema = @import("checked_schema.zig");
