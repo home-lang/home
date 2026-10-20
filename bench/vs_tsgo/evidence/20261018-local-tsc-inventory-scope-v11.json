@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "date": "2026-10-18",
+  "purpose": "Refreshed full project scope and static routing; no compiler qualification",
+  "all_project_replacement_verified": false,
+  "scope": {
+    "manifest_script_git_groups": 160,
+    "total_canonical_git_groups": 165,
+    "additional_config_only_git_groups": 5,
+    "additional_error_only_git_groups": 0,
+    "unresolved_ownership_records": 0,
+    "source_records": 4511,
+    "input_hash_drift": 0,
+    "scope_errors": 0,
+    "all_project_replacement_verified": false
+  },
+  "inventory": {
+    "counts": {
+      "manifests_with_check_scripts": 1472,
+      "configs": 2973,
+      "scripts": 1809,
+      "tsc_segments": 1730,
+      "unresolved_scripts": 114,
+      "errors": 66
+    },
+    "inventory_sha256": "312dd1816f831fba9707a696ac1cbb5c23e133667a69535ced3f8912621f2b5d",
+    "scope_sha256": "573d5354149626ae837e4f6d3ee93b38e7722743ede0b4b0832d535b7fa520dc",
+    "changes_since_v10": {
+      "added_input_paths": 108,
+      "removed_input_paths": 20,
+      "changed_input_hashes": 209,
+      "new_error_records": 10,
+      "new_errors_byte_identical_to_previously_retained_errors": 10,
+      "new_literal_flag_spellings": []
+    }
+  },
+  "routing": {
+    "review_entrypoints": 114,
+    "indirect": 93,
+    "shell": 36,
+    "overlap": 15,
+    "covered": 114,
+    "uncovered": 0,
+    "rechecked_static_inputs": 213,
+    "inputs_unchanged": true
+  },
+  "error_review": {
+    "total": 66,
+    "previous_fixture_records": 55,
+    "new_records_byte_identical_to_previously_retained_fixtures": 10,
+    "unresolved_nonfixture_manifest_merge_conflicts": 1,
+    "unrelated_working_tree_left_untouched": true
+  },
+  "producer_verification": {
+    "source_hashes": {
+      "scripts/ts-project-inventory.py": "58174cb7d40fc5bdb025498b10644c2fd30dbd852e3836efb59d3149db6bda92",
+      "scripts/tests/test-ts-project-inventory.py": "01a07dff89f8a55eacf92110122a3f9398ea5623aa32f2f358e81f92696d2714"
+    },
+    "tests": 15,
+    "test_result": "passed",
+    "reused_from": "20261018-local-tsc-inventory-scope.json",
+    "reuse_basis": "Producer and hermetic test source hashes are identical; the refreshed report separately verifies its own scope and routing input hashes.",
+    "private_project_sources_included": false
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "date": "2026-10-18",
+  "purpose": "Focused actual-project memory qualification of published cyclic-import normalization fix",
+  "all_project_replacement_verified": false,
+  "diagnostic_parity_qualified": false,
+  "source_commit": "8a07cb365cbeb2b933f0735245a736cbe9141dcd",
+  "compiler_sha256": "c94a67bf9e72cf607ca046b58437eb8628e4572c3c67cec9b79c54a775b193c6",
+  "invocation": [
+    "--noEmit",
+    "--pretty",
+    "false"
+  ],
+  "guard": {
+    "exit": 0,
+    "max_tree_footprint_mb": 3840,
+    "wall_seconds": 180,
+    "peak_tree_footprint_mb": 976,
+    "host_low_water_percent": 58
+  },
+  "actual_replay": {
+    "completed": true,
+    "seconds": 11.707327082998745,
+    "compiler_exit": 1,
+    "original_inputs_unchanged": 590,
+    "published_compiler_source_files_unchanged": 71,
+    "source_and_project_working_trees": "clean",
+    "residual_diagnostic_count": 198,
+    "residual_diagnostic_codes": [
+      1003,
+      1005,
+      1109,
+      1484,
+      2300,
+      2304,
+      2322,
+      2339,
+      2345,
+      2352,
+      2353,
+      2420,
+      2554,
+      2578,
+      2683,
+      2741,
+      2769,
+      2801,
+      7006,
+      7053
+    ]
+  },
+  "evidence_hashes": {
+    "guard_log": "2733097ee0bcb6a47b105d9ace5247d63ffd51db92c090cd42eccfaea3c8916d",
+    "diagnostic_log": "d1316e680276c1c35e2beae989f1a79b56f671191453b89c670af2dc9529efa8"
+  },
+  "limits": "This qualifies completion of the original runaway under the existing physical-footprint guard. Native TypeScript accepts the unchanged project, while Home reports residual diagnostics; whole-project replacement remains unqualified."
+}

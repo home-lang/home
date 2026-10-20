@@ -106,18 +106,42 @@ manifests and sources without Git ownership. Missing metadata, unreadable inputs
 and source-hash changes remain explicit errors; scope generation never executes
 Git or package commands and never qualifies a project.
 
-The 2026-10-18 refresh contains **1,457 manifests with check scripts, 1,777
-scripts, 1,697 literal compiler segments and 2,900 configs**. Ownership covers
-**165 canonical Git groups**, including five config-only groups omitted by a
-manifest-only registry. All 4,413 source records retain ownership, with no hash
-drift or scope errors. Static routing covers all 113 flagged entrypoints; it
-does not prove their compiler behavior. The 56 inventory errors comprise 55
-existing fixture records and one additional unresolved manifest merge conflict
-in another working tree. That tree was left untouched. Fifteen hermetic tests
+The latest 2026-10-18 refresh contains **1,472 manifests with check scripts,
+1,809 scripts, 1,730 literal compiler segments and 2,973 configs**. Ownership
+covers **165 canonical Git groups**, including five config-only groups omitted
+by a manifest-only registry. All 4,511 source records retain ownership, with no
+hash drift or scope errors. Static routing covers all 114 flagged entrypoints
+and rechecks 213 routing inputs; it does not prove compiler behavior. Since the
+previous snapshot, 108 input paths were added, 20 removed and 209 hashes changed;
+no new literal compiler flag spelling appeared. The 66 inventory errors include
+55 prior fixture records, ten added records byte-identical to retained fixtures,
+and one unresolved manifest merge conflict in another working tree. That tree
+was left untouched. Fifteen hermetic tests
 cover discovery, config-only scope, common worktree identity, malformed Git
 metadata, source drift, missing files and CLI error reporting. The
-[public scope evidence](../../bench/vs_tsgo/evidence/20261018-local-tsc-inventory-scope.json)
+[public scope evidence](../../bench/vs_tsgo/evidence/20261018-local-tsc-inventory-scope-v11.json)
 contains aggregate counts and hashes; private project reports remain outside Git.
+
+## Cyclic import memory qualification — 2026-10-18
+
+Published source `8a07cb365` normalizes every joined module path, including
+interior and terminal parent-directory segments. Previously a Redis declaration
+cycle repeatedly admitted the same modules under longer path spellings, so
+import discovery never reached a fixpoint. A Program regression retains the
+actual command-to-package-index cycle and requires each module exactly once.
+
+The exact published-source artifact completes the original ordinary `--noEmit`
+replay under the existing fail-closed descendant-tree guard: **11.707 seconds,
+976 MB peak physical footprint**, with the **3,840 MB ceiling and 180-second
+wall bound unchanged**. During that run, all 590 original inputs and 71 compiler
+source files were unchanged before and after; the corresponding source and
+project working trees were clean. The guard exits zero. Home exits one with
+198 residual diagnostics while
+native TypeScript accepts the same project, so this qualifies the memory fix
+only. Diagnostic parity and whole-tree replacement remain unqualified.
+
+[Public memory evidence](../../bench/vs_tsgo/evidence/20261018-local-tsc-resolver-memory.json)
+retains aggregate results and hashes without private paths or project source.
 
 ## Required evidence
 
