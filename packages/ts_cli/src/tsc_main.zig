@@ -35,27 +35,36 @@ pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.
     try watcher.trackMany(paths);
 }
 
-/// Keep failed resolution probes alongside admitted Program paths. A missing
-/// higher-priority candidate can appear without any source edit, and the
-/// previous candidate set must be retired when imports are removed or
-/// replaced. A failed stat/allocation leaves both sets unchanged.
+/// Reconcile the watch set with current Program membership and failed
+/// resolution probes. Roots remain watched while physically absent; retired
+/// transitive sources do not. A failed stat/allocation leaves both sets
+/// unchanged so the entire observation can be retried.
 pub const WatchInterest = struct {
     gpa: std.mem.Allocator,
-    candidates: std.StringHashMapUnmanaged(void) = .empty,
+    watched_paths: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) WatchInterest {
         return .{ .gpa = gpa };
     }
 
     pub fn deinit(self: *WatchInterest) void {
-        self.clearCandidates();
+        self.clearWatchedPaths();
     }
 
-    fn clearCandidates(self: *WatchInterest) void {
-        var it = self.candidates.iterator();
+    fn clearWatchedPaths(self: *WatchInterest) void {
+        var it = self.watched_paths.iterator();
         while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
-        self.candidates.deinit(self.gpa);
-        self.candidates = .empty;
+        self.watched_paths.deinit(self.gpa);
+        self.watched_paths = .empty;
+    }
+
+    fn stagePath(self: *WatchInterest, next: *std.StringHashMapUnmanaged(void), path: []const u8) !void {
+        if (next.contains(path)) return;
+        const key = try self.gpa.dupe(u8, path);
+        next.put(self.gpa, key, {}) catch |err| {
+            self.gpa.free(key);
+            return err;
+        };
     }
 
     pub fn refresh(self: *WatchInterest, watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
@@ -68,24 +77,17 @@ pub const WatchInterest = struct {
             while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
             next.deinit(self.gpa);
         }
-        for (failed_paths) |path| {
-            // Program paths, including tombstones kept for stable FileIds,
-            // already have a durable watch entry of their own.
-            if (program.by_path.contains(path)) continue;
-            const key = try self.gpa.dupe(u8, path);
-            next.put(self.gpa, key, {}) catch |err| {
-                self.gpa.free(key);
-                return err;
-            };
+        for (program.files.items) |file| {
+            if (!file.present and !file.root_input and !file.compiler_root) continue;
+            try self.stagePath(&next, file.path);
         }
+        // A physically removed import may have a stable FileId tombstone,
+        // but its new failed lookup still needs a watch for recreation.
+        for (failed_paths) |path| try self.stagePath(&next, path);
 
-        const paths = try self.gpa.alloc([]const u8, program.files.items.len + next.count());
+        const paths = try self.gpa.alloc([]const u8, next.count());
         defer self.gpa.free(paths);
         var index: usize = 0;
-        for (program.files.items) |file| {
-            paths[index] = file.path;
-            index += 1;
-        }
         var next_it = next.iterator();
         while (next_it.next()) |entry| {
             paths[index] = entry.key_ptr.*;
@@ -93,13 +95,13 @@ pub const WatchInterest = struct {
         }
         try watcher.trackMany(paths);
 
-        var old_it = self.candidates.iterator();
+        var old_it = self.watched_paths.iterator();
         while (old_it.next()) |entry| {
             const path = entry.key_ptr.*;
-            if (!next.contains(path) and !program.by_path.contains(path)) watcher.untrack(path);
+            if (!next.contains(path)) watcher.untrack(path);
         }
-        self.clearCandidates();
-        self.candidates = next;
+        self.clearWatchedPaths();
+        self.watched_paths = next;
     }
 };
 

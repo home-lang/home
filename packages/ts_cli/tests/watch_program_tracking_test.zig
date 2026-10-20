@@ -213,7 +213,7 @@ test "watch mode observes a previously missing preferred source without an impor
     stats.error_path = "/project/dep.ts";
     try std.testing.expectError(error.AccessDenied, interests.refresh(&watcher, &program));
     try std.testing.expectEqual(@as(usize, 0), watcher.count());
-    try std.testing.expectEqual(@as(usize, 0), interests.candidates.count());
+    try std.testing.expectEqual(@as(usize, 0), interests.watched_paths.count());
     stats.stat_error = null;
     try interests.refresh(&watcher, &program);
     try std.testing.expect(watcher.tracked.contains("/project/dep.ts"));
@@ -267,6 +267,68 @@ test "watch mode observes a previously missing preferred source without an impor
     var settled = try watcher.observe();
     defer settled.deinit();
     try std.testing.expect(settled.changes.isEmpty());
+}
+
+test "watch mode retires a replaced transitive source but preserves explicit roots" {
+    const gpa = std.testing.allocator;
+    const original = "import { value } from './first'; const result: number = value;";
+    const replacement = "import { value } from './second'; const result: number = value;";
+    const first_source = "export const value: number = 'bad';";
+    const second_source = "export const value: number = 2;";
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", original);
+    try sources.addFile("/project/first.ts", first_source);
+    try sources.addFile("/project/second.ts", second_source);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{});
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    _ = try program.add("/project/main.ts", original);
+    // This source is independently named on the command line. It must stay
+    // admitted when its temporary importer stops using it.
+    const rooted_id = try program.add("/project/rooted.ts", "export const stable = 1;");
+    const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    const first_id = program.lookupPath("/project/first.ts") orelse return error.MissingFirstImport;
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/project/main.ts", 1, original.len);
+    try stats.add("/project/first.ts", 1, first_source.len);
+    try stats.add("/project/second.ts", 1, second_source.len);
+    try stats.add("/project/rooted.ts", 1, 24);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    var interests = tsc_main.WatchInterest.init(gpa);
+    defer interests.deinit();
+    try interests.refresh(&watcher, &program);
+    try std.testing.expect(watcher.tracked.contains("/project/first.ts"));
+
+    try sources.addFile("/project/main.ts", replacement);
+    try stats.add("/project/main.ts", 2, replacement.len);
+    var changed = try watcher.observe();
+    defer changed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), changed.changes.changes.items.len);
+    _ = (try program.updateSource("/project/main.ts", replacement)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/project/main.ts"}, options);
+    try interests.refresh(&watcher, &program);
+    changed.commit(&watcher);
+    try std.testing.expect(program.lookupPath("/project/first.ts") == null);
+    try std.testing.expect(program.fileById(first_id).compilation == null);
+    try std.testing.expect(!watcher.tracked.contains("/project/first.ts"));
+    try std.testing.expectEqual(rooted_id, program.lookupPath("/project/rooted.ts").?);
+    try std.testing.expect(watcher.tracked.contains("/project/rooted.ts"));
+    try std.testing.expect(program.lookupPath("/project/second.ts") != null);
+
+    try sources.addFile("/project/first.ts", "export const value: string = 'unused';");
+    try stats.add("/project/first.ts", 2, 38);
+    var unrelated_edit = try watcher.observe();
+    defer unrelated_edit.deinit();
+    try std.testing.expect(unrelated_edit.changes.isEmpty());
 }
 
 test "watch mode clears a missing-import diagnostic when its source appears alone" {

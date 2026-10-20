@@ -168,6 +168,11 @@ pub const File = struct {
     id: FileId,
     /// Resolved absolute (or program-canonical) path.
     path: []const u8,
+    /// Set by the public `add` entry point. Imported files do not become
+    /// roots merely because closure discovery stores them in this Program.
+    root_input: bool = false,
+    /// Compiler-selected type and standard libraries are independent roots.
+    compiler_root: bool = false,
     /// A removed source retains its FileId and path so a later watch event
     /// can restore it. Its compilation and owner are gone; `source` is never
     /// treated as a replacement empty file while this is false.
@@ -188,6 +193,9 @@ pub const File = struct {
     owner: source_owners.OwnerId = .none,
     /// Outgoing import edges — file ids this file imports from.
     imports: std.ArrayListUnmanaged(FileId),
+    /// Triple-slash and compiler-injected dependency edges, rebuilt during
+    /// each closure discovery rather than inferred from first-seen prose.
+    include_edges: std.ArrayListUnmanaged(FileId) = .empty,
     /// True for `.d.ts` / `.d.hm` / `.d.home` declaration-only files.
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
@@ -415,6 +423,7 @@ pub const Program = struct {
         for (self.files.items) |f| {
             self.dropCompilation(f);
             f.imports.deinit(self.gpa);
+            f.include_edges.deinit(self.gpa);
             if (f.include_reason) |ir| {
                 if (ir.specifier_text.len != 0) self.gpa.free(ir.specifier_text);
                 if (ir.package_id.len != 0) self.gpa.free(ir.package_id);
@@ -447,10 +456,19 @@ pub const Program = struct {
     /// `path` already exists, returns the existing id and ignores the
     /// new source.
     pub fn add(self: *Program, path: []const u8, source: []const u8) ProgramError!FileId {
+        return self.addWithOrigin(path, source, true);
+    }
+
+    fn addDiscovered(self: *Program, path: []const u8, source: []const u8) ProgramError!FileId {
+        return self.addWithOrigin(path, source, false);
+    }
+
+    fn addWithOrigin(self: *Program, path: []const u8, source: []const u8, root_input: bool) ProgramError!FileId {
         if (self.by_path.get(path)) |id| {
             if (!self.files.items[id].present) {
                 _ = try self.updateSource(path, source);
             }
+            if (root_input) self.files.items[id].root_input = true;
             return id;
         }
 
@@ -465,6 +483,7 @@ pub const Program = struct {
         file.* = .{
             .id = id,
             .path = owned_path,
+            .root_input = root_input,
             .source = owned_source,
             .compilation = null,
             .owner = .none,
@@ -774,6 +793,7 @@ pub const Program = struct {
         removed.present = false;
         removed.restored_in_revision = false;
         removed.source = "";
+        removed.include_edges.clearRetainingCapacity();
         self.clearIncludeReason(removed);
         if (id != canonical_id) return id;
 
@@ -787,7 +807,10 @@ pub const Program = struct {
             file.restored_in_revision = false;
             file.source = if (still_present) promoted_source.? else "";
             file.redirect_target = promoted_id;
-            if (!still_present) self.clearIncludeReason(file);
+            if (!still_present) {
+                file.include_edges.clearRetainingCapacity();
+                self.clearIncludeReason(file);
+            }
         }
         if (promoted_id) |replacement_id| {
             const replacement = self.files.items[replacement_id];
@@ -4239,6 +4262,54 @@ pub const Program = struct {
         file.include_reason = null;
     }
 
+    fn markReachableFile(self: *const Program, reached: []bool, queue: []FileId, queued: *usize, id: FileId) void {
+        if (id >= self.files.items.len or reached[id]) return;
+        reached[id] = true;
+        queue[queued.*] = id;
+        queued.* += 1;
+    }
+
+    /// Reconcile the current source graph with explicit and compiler roots.
+    /// First compute the complete live set; then retire redirects before
+    /// canonicals so package deduplication cannot promote an unreachable
+    /// physical copy. Retired paths keep their FileIds and may be readmitted
+    /// by a later import without leaving stale owners, diagnostics or source
+    /// bytes in the current Program.
+    fn retireUnreachableSources(self: *Program) ProgramError!bool {
+        const reached = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(reached);
+        @memset(reached, false);
+        const queue = try self.gpa.alloc(FileId, self.files.items.len);
+        defer self.gpa.free(queue);
+        var queued: usize = 0;
+        for (self.files.items) |file| {
+            if (file.root_input or file.compiler_root) self.markReachableFile(reached, queue, &queued, file.id);
+        }
+        var cursor: usize = 0;
+        while (cursor < queued) : (cursor += 1) {
+            const file = self.files.items[queue[cursor]];
+            if (!file.present) continue;
+            if (file.redirect_target) |target| self.markReachableFile(reached, queue, &queued, target);
+            for (file.imports.items) |target| self.markReachableFile(reached, queue, &queued, target);
+            for (file.include_edges.items) |target| self.markReachableFile(reached, queue, &queued, target);
+        }
+
+        var program_scope_changed = false;
+        for (self.files.items) |file| {
+            if (!file.present or reached[file.id] or file.redirect_target != null) continue;
+            program_scope_changed = program_scope_changed or newFileMayAffectProgramScope(file);
+        }
+        for (self.files.items) |file| {
+            if (!file.present or reached[file.id] or file.redirect_target == null) continue;
+            _ = try self.removeSource(file.path);
+        }
+        for (self.files.items) |file| {
+            if (!file.present or reached[file.id] or file.redirect_target != null) continue;
+            _ = try self.removeSource(file.path);
+        }
+        return program_scope_changed;
+    }
+
     fn staticModuleSpecifier(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
         const name = switch (c.hir.kindOf(node)) {
             .import_decl => hir_mod_ns.importOf(&c.hir, node).module,
@@ -4366,6 +4437,10 @@ pub const Program = struct {
                 if (c.check_state == .checked) break true;
             }
         } else false;
+        for (self.files.items) |file| {
+            file.include_edges.clearRetainingCapacity();
+            file.compiler_root = false;
+        }
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
         added += try self.loadCompilerInjectedImports(options);
@@ -4418,6 +4493,7 @@ pub const Program = struct {
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
+                                    try self.appendIncludeEdge(f, existing_id);
                                     depth_changed_in_round = depth_changed_in_round or
                                         self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
                                     continue;
@@ -4425,10 +4501,11 @@ pub const Program = struct {
                             }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
-                            const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
+                            const new_id = self.addDiscovered(candidate, rsrc) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            try self.appendIncludeEdge(f, new_id);
                             _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .reference_file, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
@@ -4449,6 +4526,7 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            if (admission.target_id) |target_id| try self.appendIncludeEdge(f, target_id);
                             depth_changed_in_round = depth_changed_in_round or admission.depth_changed;
                             if (!admission.added) continue;
                             try self.recordReferenceIncludeReason(admission.target_id.?, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
@@ -4465,6 +4543,7 @@ pub const Program = struct {
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
+                                    try self.appendIncludeEdge(f, existing_id);
                                     depth_changed_in_round = depth_changed_in_round or
                                         self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
                                     continue;
@@ -4472,10 +4551,11 @@ pub const Program = struct {
                             }
                             const rsrc = self.resolver.fs.readFile(self.gpa, candidate) catch continue;
                             defer self.gpa.free(rsrc);
-                            const new_id = self.add(candidate, rsrc) catch |err| switch (err) {
+                            const new_id = self.addDiscovered(candidate, rsrc) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
+                            try self.appendIncludeEdge(f, new_id);
                             _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .lib_reference, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
@@ -4539,6 +4619,7 @@ pub const Program = struct {
             else => return 0,
         };
         const admission = try self.admitResolvedImport(importer.node_modules_depth, res, options);
+        if (admission.target_id) |target_id| try self.appendIncludeEdge(importer, target_id);
         if (!admission.added) return 0;
         try self.recordReferenceIncludeReasonWithProjectOutput(admission.target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
         return 1;
@@ -4567,6 +4648,13 @@ pub const Program = struct {
         return std.fmt.allocPrint(gpa, "\"{s}\"", .{specifier}) catch return error.OutOfMemory;
     }
 
+    fn appendIncludeEdge(self: *Program, importer: *File, target_id: FileId) ProgramError!void {
+        for (importer.include_edges.items) |existing| {
+            if (existing == target_id) return;
+        }
+        try importer.include_edges.append(self.gpa, target_id);
+    }
+
     fn loadCompilerOptionIncludes(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
         const cfg = options.pub_tsconfig orelse return 0;
         var added: usize = 0;
@@ -4579,6 +4667,7 @@ pub const Program = struct {
                     else => continue,
                 };
                 const admission = try self.admitResolvedImport(0, res, options);
+                if (admission.target_id) |target_id| self.files.items[target_id].compiler_root = true;
                 if (!admission.added) continue;
                 try self.recordReferenceIncludeReason(admission.target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
                 added += 1;
@@ -4602,6 +4691,7 @@ pub const Program = struct {
                 } orelse continue;
                 defer self.gpa.free(candidate);
                 const target_id = try self.addResolvedIncludeFile(candidate);
+                if (self.lookupPath(candidate)) |id| self.files.items[id].compiler_root = true;
                 if (target_id == null) continue;
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
                 added += 1;
@@ -4617,6 +4707,7 @@ pub const Program = struct {
             } orelse return added;
             defer self.gpa.free(candidate);
             const target_id = try self.addResolvedIncludeFile(candidate);
+            if (self.lookupPath(candidate)) |id| self.files.items[id].compiler_root = true;
             if (target_id) |id| {
                 try self.recordReferenceIncludeReason(id, .default_lib_reference, 0, default_lib.target_name, "", 0);
                 added += 1;
@@ -4657,6 +4748,7 @@ pub const Program = struct {
                 else => continue,
             };
             const admission = try self.admitResolvedImport(0, res, options);
+            if (admission.target_id) |target_id| self.files.items[target_id].compiler_root = true;
             if (!admission.added) continue;
             try self.recordReferenceIncludeReason(admission.target_id.?, .implicit_type_reference, 0, type_name, res.package_id orelse "", 0);
             added += 1;
@@ -4770,7 +4862,7 @@ pub const Program = struct {
         if (self.lookupPath(path) != null) return null;
         const src = self.resolver.fs.readFile(self.gpa, path) catch return null;
         defer self.gpa.free(src);
-        return self.add(path, src) catch |err| switch (err) {
+        return self.addDiscovered(path, src) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return null,
         };
@@ -5151,7 +5243,11 @@ pub const Program = struct {
         // files bound and check only that closure plus the new dependencies.
         const first_new_id = self.files.items.len;
         _ = try self.loadImportClosureImpl(options, false, null, false);
-        var program_scope_changed = false;
+        var program_scope_changed = try self.retireUnreachableSources();
+        count = 0;
+        for (self.files.items[0..affected.len]) |file| {
+            if (file.present and file.redirect_target == null and affected[file.id]) count += 1;
+        }
         for (self.files.items[first_new_id..]) |file| {
             if (!file.present or file.redirect_target != null) continue;
             program_scope_changed = program_scope_changed or newFileMayAffectProgramScope(file);
@@ -5182,11 +5278,12 @@ pub const Program = struct {
             defer self.gpa.free(new_affected);
             @memset(new_affected, false);
             for (self.files.items[first_new_id..]) |file| {
+                if (!file.present) continue;
                 self.markCanonicalRevision(self.canonicalFileId(file.id), new_affected);
             }
             self.closeRevisionImporters(new_affected);
             for (self.files.items) |file| {
-                if (file.redirect_target != null or !new_affected[file.id]) continue;
+                if (!file.present or file.redirect_target != null or !new_affected[file.id]) continue;
                 if (file.id >= affected.len or !affected[file.id]) count += 1;
             }
             self.invalidateRevisionFiles(new_affected);
@@ -11895,7 +11992,8 @@ test "Program: creation-only preferred source invalidates the checked importer" 
     const typescript_id = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
     try T.expectEqualSlices(FileId, &.{typescript_id}, p.fileById(main_id).imports.items);
     try T.expect(p.fileById(main_id).owner != old_owner);
-    try T.expect(p.fileById(javascript_id).compilation != null);
+    try T.expect(p.lookupPath("/dep.js") == null);
+    try T.expect(p.fileById(javascript_id).compilation == null);
     try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
 
     try T.expect(vfs.removeFile("/dep.ts"));
@@ -11903,7 +12001,49 @@ test "Program: creation-only preferred source invalidates the checked importer" 
     _ = try p.removeSource("/dep.ts");
     _ = try p.recompileChanged(&.{"/dep.ts"}, options);
     try T.expectEqualSlices(FileId, &.{javascript_id}, p.fileById(main_id).imports.items);
+    try T.expect(p.fileById(javascript_id).compilation != null);
     try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
+test "Program: detached import cycle is retired and can be readmitted" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const original = "import { value } from './a'; const result: number = value;";
+    const replacement = "export const result: number = 0;";
+    const a_source = "import './b'; export const value: number = 1;";
+    const b_source = "import './a'; export const marker = true;";
+    try vfs.addFile("/main.ts", original);
+    try vfs.addFile("/a.ts", a_source);
+    try vfs.addFile("/b.ts", b_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const main_id = try program.add("/main.ts", original);
+    const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+    try T.expectEqual(@as(usize, 2), try program.loadImportClosure(options));
+    const a_id = program.lookupPath("/a.ts") orelse return error.MissingFirstImport;
+    const b_id = program.lookupPath("/b.ts") orelse return error.MissingSecondImport;
+    try program.compileAll(options);
+
+    try vfs.addFile("/main.ts", replacement);
+    _ = (try program.updateSource("/main.ts", replacement)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/main.ts"}, options);
+    try T.expect(program.lookupPath("/a.ts") == null);
+    try T.expect(program.lookupPath("/b.ts") == null);
+    try T.expect(program.fileById(a_id).compilation == null);
+    try T.expect(program.fileById(b_id).compilation == null);
+
+    try vfs.addFile("/main.ts", original);
+    _ = (try program.updateSource("/main.ts", original)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/main.ts"}, options);
+    try T.expectEqual(main_id, program.lookupPath("/main.ts").?);
+    try T.expectEqual(a_id, program.lookupPath("/a.ts").?);
+    try T.expectEqual(b_id, program.lookupPath("/b.ts").?);
+    try T.expect(program.fileById(a_id).compilation != null);
+    try T.expect(program.fileById(b_id).compilation != null);
 }
 
 test "Program: preferred TypeScript source does not inherit a retained CommonJS export" {
