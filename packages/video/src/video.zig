@@ -1315,6 +1315,7 @@ pub const av_stream = @import("containers/av_stream.zig");
 pub const pcm_timeline = @import("core/pcm_timeline.zig");
 pub const recording_policy = @import("core/recording_policy.zig");
 pub const factory_policy = @import("core/factory_policy.zig");
+pub const lease_pool = @import("core/lease_pool.zig");
 pub const owned_admission = @import("core/owned_admission.zig");
 pub const capacity_wait = @import("core/capacity_wait.zig");
 
