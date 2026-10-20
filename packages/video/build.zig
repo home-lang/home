@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addImport("test_framework", test_framework_module);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
+    const test_step = b.step("test", "Run unit and public integration tests");
     test_step.dependOn(&run_unit_tests.step);
 
     // Integration tests with test framework
@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     const integration_step = b.step("test-integration", "Run integration tests");
     integration_step.dependOn(&run_integration_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
 
     // Conformance tests
     const conformance_tests = b.addTest(.{

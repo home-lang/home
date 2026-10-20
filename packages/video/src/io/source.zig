@@ -98,19 +98,19 @@ pub const Source = struct {
         }
     }
 
-    /// Read all remaining data
+    /// Read at most `max_size` bytes, leaving any remainder in the source.
     pub fn readAll(self: *Self, allocator: std.mem.Allocator, max_size: usize) ![]u8 {
-        var result = std.ArrayList(u8).init(allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(allocator);
 
         var buf: [8192]u8 = undefined;
         while (result.items.len < max_size) {
-            const n = try self.read(&buf);
+            const n = try self.read(buf[0..@min(buf.len, max_size - result.items.len)]);
             if (n == 0) break;
-            try result.appendSlice(buf[0..n]);
+            try result.appendSlice(allocator, buf[0..n]);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(allocator);
     }
 
     // Convenience read methods

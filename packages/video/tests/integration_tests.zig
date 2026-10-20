@@ -140,6 +140,42 @@ fn testMemoryIoPatching(test_allocator: std.mem.Allocator) !void {
     try t.expect(test_allocator, std.mem.eql(u8, buffer_target.getData(), &.{ 0, 0, 0, 8, 'm', 'd', 'a', 't' })).toBeTruthy();
 }
 
+test "public Source.readAll respects its byte limit" {
+    const data = "0123456789";
+    var buffer_source = video.BufferSource.init(data);
+    var source = buffer_source.source();
+
+    const empty = try source.readAll(std.testing.allocator, 0);
+    defer std.testing.allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectEqual(@as(u64, 0), source.tell());
+
+    const first = try source.readAll(std.testing.allocator, 4);
+    defer std.testing.allocator.free(first);
+    try std.testing.expectEqualStrings("0123", first);
+    try std.testing.expectEqual(@as(u64, 4), source.tell());
+
+    const rest = try source.readAll(std.testing.allocator, 16);
+    defer std.testing.allocator.free(rest);
+    try std.testing.expectEqualStrings("456789", rest);
+}
+
+test "public Source.readAll stops exactly after a partial second chunk" {
+    var data: [8192 + 17]u8 = undefined;
+    for (&data, 0..) |*byte, index| byte.* = @intCast(index % 251);
+    var buffer_source = video.BufferSource.init(&data);
+    var source = buffer_source.source();
+
+    const first = try source.readAll(std.testing.allocator, 8192 + 3);
+    defer std.testing.allocator.free(first);
+    try std.testing.expectEqualSlices(u8, data[0 .. 8192 + 3], first);
+    try std.testing.expectEqual(@as(u64, 8192 + 3), source.tell());
+
+    const rest = try source.readAll(std.testing.allocator, 100);
+    defer std.testing.allocator.free(rest);
+    try std.testing.expectEqualSlices(u8, data[8192 + 3 ..], rest);
+}
+
 fn runFormatDetectionTests() !void {
     try t.describe(allocator, "Format Detection Workflows", struct {
         fn register(test_allocator: std.mem.Allocator) !void {
