@@ -75,6 +75,72 @@ test "eval: multiple statements and a returning function" {
     );
 }
 
+test "eval: match statement range and or patterns" {
+    try runProgram(
+        \\fn classify(x: int): int {
+        \\  match x {
+        \\    0..=9 => return 1,
+        \\    10..20 => return 2,
+        \\    30 | 40 => return 3,
+        \\    60 | 70..=75 => return 4,
+        \\    50 => return 5,
+        \\    n if n > 100 => return n,
+        \\    _ => return 0,
+        \\  }
+        \\  return -1
+        \\}
+        \\
+        \\fn main() {
+        \\  assert(classify(0) == 1)
+        \\  assert(classify(9) == 1)
+        \\  assert(classify(10) == 2)
+        \\  assert(classify(19) == 2)
+        \\  assert(classify(20) == 0)
+        \\  assert(classify(30) == 3)
+        \\  assert(classify(40) == 3)
+        \\  assert(classify(41) == 0)
+        \\  assert(classify(60) == 4)
+        \\  assert(classify(75) == 4)
+        \\  assert(classify(76) == 0)
+        \\  assert(classify(50) == 5)
+        \\  assert(classify(101) == 101)
+        \\  assert(classify(-1) == 0)
+        \\}
+    );
+}
+
+test "eval: failed or-pattern alternatives leave no bindings" {
+    try runProgram(
+        \\struct P {
+        \\  a: int,
+        \\  b: int,
+        \\}
+        \\
+        \\fn after_failed_alternatives(p: P): int {
+        \\  let x = 99
+        \\  match p {
+        \\    P { a: x, b: 0 } | P { a: x, b: 3 } => return -1,
+        \\    _ => return x,
+        \\  }
+        \\  return -2
+        \\}
+        \\
+        \\fn from_matching_alternative(p: P): int {
+        \\  match p {
+        \\    P { a: y, b: 0 } | P { a: y, b: 2 } => return y,
+        \\    _ => return -1,
+        \\  }
+        \\  return -2
+        \\}
+        \\
+        \\fn main() {
+        \\  let p = P { a: 1, b: 2 }
+        \\  assert(after_failed_alternatives(p) == 99)
+        \\  assert(from_matching_alternative(p) == 1)
+        \\}
+    );
+}
+
 test "eval: finite recursive calls remain valid" {
     try runProgram(
         \\fn countdown(n: i32): i32 {
