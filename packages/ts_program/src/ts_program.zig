@@ -11984,6 +11984,44 @@ test "Program: package type revisions refresh implied module format" {
     try expectCompilationHasDiagnosticCode(p.fileById(id).compilation.?, 1309);
 }
 
+test "Program: real Node-format imports and exports follow package type" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source = "import { answer } from './dep.mjs';\nexport const result = answer;\n";
+    const dependency = "export const answer = 42;\n";
+    try vfs.addFile("/proj/package.json", "{\"type\":\"commonjs\"}");
+    try vfs.addFile("/proj/main.ts", source);
+    try vfs.addFile("/proj/dep.mts", dependency);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16, .module_kind = "node16" });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var source_exports = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &program,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer source_exports.arena.deinit();
+    const id = try program.add("/proj/main.ts", source);
+    const options: ts_driver.CompileOptions = .{
+        .module_kind = "node16",
+        .module_resolution = "node16",
+        .verbatim_module_syntax = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    };
+    _ = try program.loadImportClosure(options);
+    try program.compileAll(options);
+    const commonjs = program.fileById(id).compilation.?;
+    for ([_]u32{ 1295, 1479, 1287 }) |code| try expectCompilationHasDiagnosticCode(commonjs, code);
+
+    try vfs.addFile("/proj/package.json", "{\"type\":\"module\"}");
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    const esm = program.fileById(id).compilation.?;
+    for ([_]u32{ 1295, 1479, 1287 }) |code| try expectCompilationLacksDiagnosticCode(esm, code);
+}
+
 test "Program: preferred TypeScript source does not inherit a retained JavaScript export route" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

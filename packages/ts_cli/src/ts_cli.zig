@@ -121,6 +121,8 @@ pub const Options = struct {
     show_all_help: bool = false,
     /// `--strict` (and the strict-family individual toggles).
     strict: ?bool = null,
+    /// `--verbatimModuleSyntax`. Null defers to tsconfig/default false.
+    verbatim_module_syntax: ?bool = null,
     /// `--allowJs`. Null means defer to tsconfig/default false.
     allow_js: ?bool = null,
     /// `--checkJs`. Null means defer to tsconfig/default false; true implies
@@ -160,6 +162,7 @@ pub const Options = struct {
 /// the driver's shared option mappers.
 pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Options) void {
     compile_opts.strict = opts.strict;
+    if (opts.verbatim_module_syntax) |value| compile_opts.verbatim_module_syntax = value;
     compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
     compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
     if (opts.allow_js) |value| compile_opts.allow_js = value;
@@ -207,6 +210,7 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
 pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void {
     const compiler_options = &config.compiler_options;
     if (opts.strict) |value| compiler_options.strict = value;
+    if (opts.verbatim_module_syntax) |value| compiler_options.verbatim_module_syntax = value;
     if (opts.allow_js) |value| compiler_options.allow_js = value;
     if (opts.check_js) |value| compiler_options.check_js = value;
     if (opts.no_emit) compiler_options.no_emit = true;
@@ -318,6 +322,10 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.show_all_help = true;
         } else if (std.mem.eql(u8, a, "--strict")) {
             opts.strict = true;
+        } else if (std.mem.eql(u8, a, "--verbatimModuleSyntax")) {
+            opts.verbatim_module_syntax = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--no-verbatimModuleSyntax")) {
+            opts.verbatim_module_syntax = false;
         } else if (std.mem.eql(u8, a, "--allowJs")) {
             opts.allow_js = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--checkJs")) {
@@ -1581,6 +1589,33 @@ test "parseArgs: allowJs and checkJs reach config and compile options" {
     applyConfigOverrides(&config, enabled);
     try T.expectEqual(@as(?bool, false), config.compiler_options.allow_js);
     try T.expectEqual(@as(?bool, true), config.compiler_options.check_js);
+}
+
+test "parseArgs: verbatimModuleSyntax reaches compile options and overrides config" {
+    const enabled_args = [_][]const u8{ "--verbatimModuleSyntax", "src/main.ts" };
+    const enabled = try parseArgs(T.allocator, &enabled_args);
+    defer T.allocator.free(enabled.files);
+    try T.expectEqual(@as(usize, 1), enabled.files.len);
+    try T.expectEqualStrings("src/main.ts", enabled.files[0]);
+    try T.expectEqual(@as(?bool, true), enabled.verbatim_module_syntax);
+    var options: ts_driver.CompileOptions = .{};
+    applyCompileOptions(&options, enabled);
+    try T.expectEqual(@as(?bool, true), options.verbatim_module_syntax);
+
+    const disabled_args = [_][]const u8{ "--verbatimModuleSyntax", "false", "src/main.ts" };
+    const disabled = try parseArgs(T.allocator, &disabled_args);
+    defer T.allocator.free(disabled.files);
+    try T.expectEqual(@as(?bool, false), disabled.verbatim_module_syntax);
+    applyCompileOptions(&options, disabled);
+    try T.expectEqual(@as(?bool, false), options.verbatim_module_syntax);
+
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "verbatimModuleSyntax": true } }
+    );
+    applyConfigOverrides(&config, disabled);
+    try T.expectEqual(@as(?bool, false), config.compiler_options.verbatim_module_syntax);
 }
 
 test "parseArgs: --watch and -w both work" {

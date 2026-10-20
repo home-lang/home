@@ -57953,13 +57953,17 @@ pub const Checker = struct {
         return .none;
     }
 
-    /// Resolve a relative import specifier to the virtual section it names
-    /// and return that section's filename (e.g. `./module.mjs` → the
-    /// `/module.mts` section). Only relative specifiers in the
-    /// virtual-section model are handled; null otherwise.
+    /// Return the resolved source filename for a relative import. Production
+    /// programs use the external resolver; conformance inputs use virtual
+    /// sections in the source text. Both paths must feed the same Node-format
+    /// checks for imports and import types.
     fn resolvedImportSectionFilename(self: *Checker, node: NodeId, spec: []const u8) CheckError!?[]const u8 {
         if (!std.mem.startsWith(u8, spec, ".")) return null;
-        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (!self.sourceHasVirtualFilenameSections()) {
+            const resolver = self.external_resolver orelse return null;
+            const resolution = resolver.resolve(spec, self.importer_path) orelse return null;
+            return resolution.path;
+        }
         const from = self.virtualSectionFilenameForNode(node) orelse return null;
         const resolved_full = try self.resolveVirtualRelativePath(from, spec);
         defer self.gpa.free(resolved_full);
@@ -58173,7 +58177,9 @@ pub const Checker = struct {
         const is_preserve = self.effectiveModuleKindIs("preserve");
         const is_commonjs_module = self.effectiveModuleKindIs("commonjs");
         const is_commonjs_format = self.sectionFileIsCommonJsFormat(node);
-        if (!is_commonjs_format and !(is_commonjs_module and is_verbatim)) return;
+        const is_node_commonjs_format = !is_commonjs_format and self.sourceModuleIsNodeFormatFamily() and
+            self.sectionFileIsCommonJsFormatForNodeMode(node);
+        if (!is_commonjs_format and !is_node_commonjs_format and !(is_commonjs_module and is_verbatim)) return;
 
         const is_js = self.virtualSectionIsJsLike(node);
         // Verbatim form is suppressed in JS files by tsc; preserve form
@@ -58181,7 +58187,7 @@ pub const Checker = struct {
         const want_verbatim = is_verbatim and !is_js;
         if (!want_verbatim and !is_preserve) return;
 
-        if (!is_commonjs_format and is_commonjs_module and want_verbatim) {
+        if (!is_commonjs_format and (is_commonjs_module or is_node_commonjs_format) and want_verbatim) {
             try self.reportEsmImportInCommonJsVerbatimModule(node, imp);
             return;
         }
@@ -58244,13 +58250,15 @@ pub const Checker = struct {
     fn checkEsmExportDefaultInCommonJs(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
         if (!ex.is_default) return;
         const is_commonjs_format = self.sectionFileIsCommonJsFormat(node);
+        const is_node_commonjs_format = !is_commonjs_format and self.sourceModuleIsNodeFormatFamily() and
+            self.sectionFileIsCommonJsFormatForNodeMode(node);
         const is_commonjs_module = self.effectiveModuleKindIs("commonjs");
-        if (!is_commonjs_format and !is_commonjs_module) return;
+        if (!is_commonjs_format and !is_node_commonjs_format and !is_commonjs_module) return;
         // The verbatim message is gated to non-JS files by tsc.
         if (self.virtualSectionIsJsLike(node)) return;
         if (self.virtualSectionIsDeclarationFile(node)) return;
         if (!self.effectiveVerbatimModuleSyntax()) return;
-        if (!is_commonjs_format and is_commonjs_module) {
+        if (!is_commonjs_format and (is_node_commonjs_format or is_commonjs_module)) {
             if (ex.decl != hir_mod.none_node_id) {
                 switch (self.hir.kindOf(ex.decl)) {
                     .class_decl, .class_expr, .interface_decl => return,
@@ -58293,7 +58301,9 @@ pub const Checker = struct {
             if (decl == hir_mod.none_node_id) continue;
             // CommonJS-format gate (.cts / .cjs). JS-like files are
             // excluded by upstream too (the grammar check is TS-only).
-            if (!self.sectionFileIsCommonJsFormat(s) and !self.effectiveModuleKindIs("commonjs")) continue;
+            if (!self.sectionFileIsCommonJsFormat(s) and
+                !(self.sourceModuleIsNodeFormatFamily() and self.sectionFileIsCommonJsFormatForNodeMode(s)) and
+                !self.effectiveModuleKindIs("commonjs")) continue;
             if (self.virtualSectionIsJsLike(s)) continue;
             // Skip ambient declarations (`export declare const x`).
             if (self.declarationSourceHasLeadingDeclare(decl)) continue;

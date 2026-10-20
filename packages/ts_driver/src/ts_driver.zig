@@ -384,6 +384,8 @@ pub const CompileOptions = struct {
     /// CLI `--strict` override. When null, defer to tsconfig or the
     /// tsc default (`false`).
     strict: ?bool = null,
+    /// CLI override; null defers to tsconfig or the TypeScript default.
+    verbatim_module_syntax: ?bool = null,
     /// Direct checker strictness override for callers that already
     /// resolved file-scoped options (for example TS conformance
     /// `// @strict: true` directives).
@@ -598,7 +600,9 @@ fn reportDeprecatedOptionDirectives(
     }
 
     const effective_verbatim_module_syntax = directiveBool(source, "verbatimModuleSyntax") orelse
-        if (options.strict_flags) |flags|
+        if (options.verbatim_module_syntax) |value|
+            value
+        else if (options.strict_flags) |flags|
             flags.verbatim_module_syntax
         else if (options.pub_tsconfig) |cfg|
             cfg.compiler_options.verbatim_module_syntax orelse false
@@ -2466,6 +2470,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     // override, then tsconfig, then tsc's default (`false`).
     if (options.strict_flags) |flags| {
         var merged_flags = flags;
+        if (options.verbatim_module_syntax) |value| merged_flags.verbatim_module_syntax = value;
         if (options.always_strict) merged_flags.always_strict = true;
         checker.setStrictFlags(merged_flags);
     } else if (options.pub_tsconfig) |cfg| {
@@ -2491,7 +2496,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .exact_optional_property_types = co.exact_optional_property_types orelse false,
             .isolated_modules = co.isolated_modules orelse false,
-            .verbatim_module_syntax = co.verbatim_module_syntax orelse false,
+            .verbatim_module_syntax = options.verbatim_module_syntax orelse (co.verbatim_module_syntax orelse false),
             .allow_synthetic_default_imports = co.allow_synthetic_default_imports orelse true,
             .isolated_declarations = co.isolated_declarations orelse false,
             // `composite` implies `declaration` in tsc (unless the user
@@ -2514,6 +2519,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .strict_bind_call_apply = strict_on,
             .strict_null_checks = strict_on,
             .strict_property_initialization = strict_on,
+            .verbatim_module_syntax = options.verbatim_module_syntax orelse false,
             .always_strict = options.always_strict,
         });
     }
@@ -8706,6 +8712,31 @@ test "driver: config verbatimModuleSyntax reaches checker binding diagnostics" {
             if (diagnostic.code == 2748) count += 1;
         }
         try T.expectEqual(@as(usize, if (enabled) 2 else 0), count);
+    }
+}
+
+test "driver: explicit verbatimModuleSyntax overrides config in Node CommonJS files" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"module":"node16","verbatimModuleSyntax":true}}
+    );
+    const source = "export const result = 42;";
+    for ([_]bool{ false, true }) |enabled| {
+        var options = optionsFromConfig(&cfg);
+        options.no_emit = true;
+        options.importer_path = "/proj/main.ts";
+        options.verbatim_module_syntax = enabled;
+        var compilation = try compileSource(T.allocator, source, options);
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        var count: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 1287) count += 1;
+        }
+        try T.expectEqual(@as(usize, if (enabled) 1 else 0), count);
     }
 }
 
