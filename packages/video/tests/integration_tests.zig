@@ -176,6 +176,51 @@ test "public Source.readAll stops exactly after a partial second chunk" {
     try std.testing.expectEqualSlices(u8, data[8192 + 3 ..], rest);
 }
 
+test "public file source and target preserve relative and end seeks" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const allocator_tmp = std.testing.allocator;
+    const root_path = try tmp.dir.realPathFileAlloc(io, ".", allocator_tmp);
+    defer allocator_tmp.free(root_path);
+    const path = try std.fs.path.join(allocator_tmp, &.{ root_path, "sample.bin" });
+    defer allocator_tmp.free(path);
+    try std.testing.expectError(video.VideoError.FileNotFound, video.FileSource.open(io, path));
+
+    {
+        var file_target = try video.FileTarget.create(io, path);
+        defer file_target.close();
+        var target = file_target.target();
+        try target.write("abcde");
+        try std.testing.expectEqual(@as(u64, 3), try target.seek(-2, .current));
+        try target.write("XY");
+        try std.testing.expectEqual(@as(u64, 5), try target.seek(0, .end));
+        try target.write("!");
+        try std.testing.expectEqual(@as(u64, 6), target.tell());
+        try std.testing.expectError(video.VideoError.SeekOutOfRange, target.seek(-1, .start));
+        try target.flush();
+    }
+
+    var file_source = try video.FileSource.open(io, path);
+    defer file_source.close();
+    var source = file_source.source();
+    try std.testing.expectEqual(@as(?u64, 6), source.size());
+    var first: [3]u8 = undefined;
+    try source.readExact(&first);
+    try std.testing.expectEqualStrings("abc", &first);
+    try std.testing.expectEqual(@as(u64, 2), try source.seek(-1, .current));
+    var middle: [3]u8 = undefined;
+    try source.readExact(&middle);
+    try std.testing.expectEqualStrings("cXY", &middle);
+    try std.testing.expectEqual(@as(u64, 4), try source.seek(-2, .end));
+    var last: [2]u8 = undefined;
+    try source.readExact(&last);
+    try std.testing.expectEqualStrings("Y!", &last);
+    var eof: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try source.read(&eof));
+    try std.testing.expectError(video.VideoError.SeekOutOfRange, source.seek(-1, .start));
+}
+
 fn runFormatDetectionTests() !void {
     try t.describe(allocator, "Format Detection Workflows", struct {
         fn register(test_allocator: std.mem.Allocator) !void {

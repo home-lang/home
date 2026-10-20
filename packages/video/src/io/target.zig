@@ -288,17 +288,23 @@ pub const BufferTarget = struct {
 
 /// Target that writes to a file
 pub const FileTarget = struct {
-    file: std.fs.File,
+    file: std.Io.File,
+    io: std.Io,
+    position: u64,
 
     const Self = @This();
 
-    pub fn create(path: []const u8) !Self {
-        const file = std.fs.cwd().createFile(path, .{}) catch return VideoError.WriteError;
-        return Self{ .file = file };
+    /// `io` must remain valid until `close` releases the file.
+    pub fn create(io: std.Io, path: []const u8) !Self {
+        const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |open_error| return switch (open_error) {
+            error.PermissionDenied, error.AccessDenied => VideoError.PermissionDenied,
+            else => VideoError.WriteError,
+        };
+        return Self{ .file = file, .io = io, .position = 0 };
     }
 
     pub fn close(self: *Self) void {
-        self.file.close();
+        self.file.close(self.io);
     }
 
     pub fn target(self: *Self) Target {
@@ -313,25 +319,32 @@ pub const FileTarget = struct {
 
     fn writeImpl(ctx: *anyopaque, data: []const u8) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        self.file.writeAll(data) catch return VideoError.WriteError;
+        const next_position = std.math.add(u64, self.position, @intCast(data.len)) catch return VideoError.WriteError;
+        self.file.writePositionalAll(self.io, data, self.position) catch return VideoError.WriteError;
+        self.position = next_position;
     }
 
     fn seekImpl(ctx: *anyopaque, offset: i64, whence: SeekWhence) anyerror!u64 {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        _ = whence;
-
-        self.file.seekTo(@bitCast(offset)) catch return VideoError.SeekError;
-        return self.file.getPos() catch return VideoError.SeekError;
+        const base: u64 = switch (whence) {
+            .start => 0,
+            .current => self.position,
+            .end => (self.file.stat(self.io) catch return VideoError.SeekError).size,
+        };
+        const new_position = @as(i128, base) + @as(i128, offset);
+        if (new_position < 0 or new_position > std.math.maxInt(u64)) return VideoError.SeekOutOfRange;
+        self.position = @intCast(new_position);
+        return self.position;
     }
 
     fn tellImpl(ctx: *anyopaque) u64 {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        return self.file.getPos() catch 0;
+        return self.position;
     }
 
     fn flushImpl(ctx: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        self.file.sync() catch return VideoError.WriteError;
+        self.file.sync(self.io) catch return VideoError.WriteError;
     }
 };
 

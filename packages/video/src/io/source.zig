@@ -243,27 +243,36 @@ pub const BufferSource = struct {
 
 /// Source that reads from a file
 pub const FileSource = struct {
-    file: std.fs.File,
+    file: std.Io.File,
+    io: std.Io,
+    position: u64,
     size_cached: ?u64,
 
     const Self = @This();
 
-    pub fn open(path: []const u8) !Self {
-        const file = std.fs.cwd().openFile(path, .{}) catch return VideoError.FileNotFound;
+    /// `io` must remain valid until `close` releases the file.
+    pub fn open(io: std.Io, path: []const u8) !Self {
+        const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |open_error| return switch (open_error) {
+            error.FileNotFound => VideoError.FileNotFound,
+            error.PermissionDenied, error.AccessDenied => VideoError.PermissionDenied,
+            else => VideoError.ReadError,
+        };
 
-        const stat = file.stat() catch {
-            file.close();
+        const stat = file.stat(io) catch {
+            file.close(io);
             return VideoError.ReadError;
         };
 
         return Self{
             .file = file,
+            .io = io,
+            .position = 0,
             .size_cached = stat.size,
         };
     }
 
     pub fn close(self: *Self) void {
-        self.file.close();
+        self.file.close(self.io);
     }
 
     pub fn source(self: *Self) Source {
@@ -278,32 +287,27 @@ pub const FileSource = struct {
 
     fn readImpl(ctx: *anyopaque, buffer: []u8) anyerror!usize {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        return self.file.read(buffer) catch return VideoError.ReadError;
+        const n = self.file.readPositional(self.io, &.{buffer}, self.position) catch return VideoError.ReadError;
+        self.position += n;
+        return n;
     }
 
     fn seekImpl(ctx: *anyopaque, offset: i64, whence: SeekWhence) anyerror!u64 {
         const self: *Self = @ptrCast(@alignCast(ctx));
-
-        switch (whence) {
-            .start => {
-                if (offset < 0) return VideoError.SeekError;
-                self.file.seekTo(@intCast(offset)) catch return VideoError.SeekError;
-            },
-            .current => self.file.seekBy(offset) catch return VideoError.SeekError,
-            .end => {
-                const end_pos = self.file.getEndPos() catch return VideoError.SeekError;
-                const target = @as(i64, @intCast(end_pos)) + offset;
-                if (target < 0) return VideoError.SeekError;
-                self.file.seekTo(@intCast(target)) catch return VideoError.SeekError;
-            },
-        }
-
-        return self.file.getPos() catch return VideoError.SeekError;
+        const base: u64 = switch (whence) {
+            .start => 0,
+            .current => self.position,
+            .end => (self.file.stat(self.io) catch return VideoError.SeekError).size,
+        };
+        const new_position = @as(i128, base) + @as(i128, offset);
+        if (new_position < 0 or new_position > std.math.maxInt(u64)) return VideoError.SeekOutOfRange;
+        self.position = @intCast(new_position);
+        return self.position;
     }
 
     fn tellImpl(ctx: *anyopaque) u64 {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        return self.file.getPos() catch 0;
+        return self.position;
     }
 
     fn sizeImpl(ctx: *anyopaque) ?u64 {
