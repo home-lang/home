@@ -87027,11 +87027,19 @@ pub const Checker = struct {
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
-        if (std.mem.eql(u8, name, "Error")) {
+        if (std.mem.eql(u8, name, "Error") or
+            std.mem.eql(u8, name, "TypeError") or
+            std.mem.eql(u8, name, "RangeError") or
+            std.mem.eql(u8, name, "SyntaxError"))
+        {
             // `Error` instance shape — used when the name appears in
             // type position (`let e: Error`). The constructor side
             // lives in `errorConstructorGlobalType` and exposes the
-            // same set of fields plus `prototype` / `__call`.
+            // same set of fields plus `prototype` / `__call`. The lib
+            // declares the subclasses as `interface RangeError extends
+            // Error {}`, so they share this shape exactly; an empty `{}`
+            // made lib.es5's `RangeErrorConstructor extends
+            // ErrorConstructor` a false TS2430.
             const string_t = types.Primitive.string_t;
             const any_t = types.Primitive.any;
             const members = [_]types.ObjectMember{
@@ -87120,10 +87128,6 @@ pub const Checker = struct {
             "RegExp",
             "RegExpMatchArray",
             "RegExpExecArray",
-            "Error",
-            "TypeError",
-            "RangeError",
-            "SyntaxError",
             "Function",
             "PromiseLike",
             "Iterator",
@@ -265054,6 +265058,27 @@ test "checker: seeded TypeError/RangeError/SyntaxError share Error shape" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: Error subclass instance types keep the Error members" {
+    // lib.es5: `interface RangeErrorConstructor extends ErrorConstructor {
+    // readonly prototype: RangeError }` must not report TS2430.
+    const s = try newSetup(
+        \\declare const t: TypeError;
+        \\declare const r: RangeError;
+        \\declare const y: SyntaxError;
+        \\const messages: string[] = [t.message, r.message, y.name];
+        \\const asError: Error[] = [t, r, y];
+        \\interface Base { readonly prototype: Error }
+        \\interface Derived extends Base { readonly prototype: RangeError }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != 2322);
+        try T.expect(d.code != 2430);
     }
 }
 
