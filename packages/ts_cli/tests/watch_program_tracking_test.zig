@@ -5,6 +5,120 @@ const ts_resolver = @import("ts_resolver");
 const ts_watch = @import("ts_watch");
 const ts_driver = @import("ts_driver");
 
+test "watch mode recompiles package type changes without editing source" {
+    const gpa = std.testing.allocator;
+    const package_path = "/project/package.json";
+    const source_path = "/project/main.ts";
+    const source = "// @module: node16\n// @target: es2022\nexport {};\nawait 1;";
+    const commonjs = "{\"type\":\"commonjs\"}";
+    const module = "{\"type\":\"module\"}";
+
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile(package_path, commonjs);
+    try sources.addFile(source_path, source);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{ .strategy = .node16, .module_kind = "node16" });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    const id = try program.add(source_path, source);
+    const options: ts_driver.CompileOptions = .{ .module_kind = "node16", .no_emit = true };
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add(package_path, 1, commonjs.len);
+    try stats.add(source_path, 1, source.len);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    var interests = tsc_main.WatchInterest.init(gpa);
+    defer interests.deinit();
+    try interests.refresh(&watcher, &program);
+
+    for ([_]struct { json: []const u8, mtime: i128, expect_error: bool }{
+        .{ .json = module, .mtime = 2, .expect_error = false },
+        .{ .json = commonjs, .mtime = 3, .expect_error = true },
+    }) |revision| {
+        try sources.addFile(package_path, revision.json);
+        try stats.add(package_path, revision.mtime, revision.json.len);
+        var observation = try watcher.observe();
+        defer observation.deinit();
+        try std.testing.expectEqual(@as(usize, 1), observation.changes.changes.items.len);
+        try std.testing.expectEqualStrings(package_path, observation.changes.changes.items[0].path);
+        var changed: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer changed.deinit(gpa);
+        try std.testing.expect(try interests.appendMetadataImporters(&program, package_path, &changed));
+        try std.testing.expectEqual(@as(usize, 1), changed.items.len);
+        try std.testing.expectEqualStrings(source_path, changed.items[0]);
+
+        resolver.invalidateCaches();
+        _ = try program.recompileChanged(changed.items, options);
+        try interests.refresh(&watcher, &program);
+        observation.commit(&watcher);
+        try std.testing.expectEqual(!revision.expect_error, program.fileById(id).package_type_module);
+        var has_error = false;
+        for (program.fileById(id).compilation.?.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 1309) has_error = true;
+        }
+        try std.testing.expectEqual(revision.expect_error, has_error);
+    }
+}
+
+test "watch mode retains metadata dependencies of untouched programs" {
+    const gpa = std.testing.allocator;
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/a/package.json", "{\"type\":\"module\"}");
+    try sources.addFile("/b/package.json", "{\"type\":\"module\"}");
+    try sources.addFile("/a/main.ts", "export {};");
+    try sources.addFile("/b/main.ts", "export {};");
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{ .strategy = .node16 });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    const first = try program.add("/a/main.ts", "export {};");
+    const second = try program.add("/b/main.ts", "export {};");
+    const options: ts_driver.CompileOptions = .{ .no_emit = true };
+    try program.compileAll(options);
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/a/package.json", 1, 17);
+    try stats.add("/b/package.json", 1, 17);
+    try stats.add("/a/main.ts", 1, 10);
+    try stats.add("/b/main.ts", 1, 10);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    var interests = tsc_main.WatchInterest.init(gpa);
+    defer interests.deinit();
+    try interests.refresh(&watcher, &program);
+    try std.testing.expect(watcher.tracked.contains("/a/package.json"));
+    try std.testing.expect(watcher.tracked.contains("/b/package.json"));
+    const second_revision = program.fileById(second).watch_revision;
+
+    _ = (try program.updateSource("/a/main.ts", "export const value = 1;")) orelse return error.MissingSource;
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/a/main.ts"}, options);
+    try interests.refresh(&watcher, &program);
+    try std.testing.expect(program.fileById(first).watch_revision != second_revision);
+    try std.testing.expectEqual(second_revision, program.fileById(second).watch_revision);
+    try std.testing.expect(watcher.tracked.contains("/b/package.json"));
+    var affected: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer affected.deinit(gpa);
+    try std.testing.expect(try interests.appendMetadataImporters(&program, "/b/package.json", &affected));
+    try std.testing.expectEqual(@as(usize, 1), affected.items.len);
+    try std.testing.expectEqualStrings("/b/main.ts", affected.items[0]);
+
+    try std.testing.expect(sources.removeFile("/b/main.ts"));
+    resolver.invalidateCaches();
+    _ = (try program.removeSource("/b/main.ts")) orelse return error.MissingSource;
+    _ = try program.recompileChanged(&.{"/b/main.ts"}, options);
+    try interests.refresh(&watcher, &program);
+    try std.testing.expect(!watcher.tracked.contains("/b/package.json"));
+}
+
 const ProgramResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
     program: *const ts_program.Program,
@@ -384,8 +498,14 @@ test "watch mode tracks package metadata that selects an imported declaration" {
     // prior compilation attempt already cleared resolver caches.
     resolver.invalidateCaches();
     try std.testing.expect(try interests.appendMetadataImporters(&program, package_path, &revision_paths));
-    try std.testing.expectEqual(@as(usize, 1), revision_paths.items.len);
-    try std.testing.expectEqualStrings("/project/main.ts", revision_paths.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), revision_paths.items.len);
+    var saw_main = false;
+    var saw_declaration = false;
+    for (revision_paths.items) |path| {
+        if (std.mem.eql(u8, path, "/project/main.ts")) saw_main = true;
+        if (std.mem.eql(u8, path, "/project/node_modules/pkg/first.d.ts")) saw_declaration = true;
+    }
+    try std.testing.expect(saw_main and saw_declaration);
     _ = try program.recompileChanged(revision_paths.items, options);
     try interests.refresh(&watcher, &program);
     changed.commit(&watcher);

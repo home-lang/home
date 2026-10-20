@@ -444,9 +444,22 @@ pub const Resolver = struct {
     }
 
     pub fn containingPackageIsTypeModule(self: *Resolver, containing_file: []const u8) bool {
+        // This lookup also determines the implied format of the source
+        // itself. Outside resolve(), record its package-scope probes against
+        // that source so a watch observes a new or changed package.json.
+        const prior_importer = self.watch_resolution_importer;
+        if (self.watch_failed_lookup_capture and prior_importer == null) {
+            self.watch_resolution_importer = containing_file;
+        }
+        defer self.watch_resolution_importer = prior_importer;
         const directory = dirname(containing_file);
         if (self.trace == null) {
-            if (self.package_type_module_by_directory.get(directory)) |cached| return cached;
+            if (self.package_type_module_by_directory.get(directory)) |cached| {
+                // Another source in this directory still needs its own
+                // metadata dependency, even though the parsed type is cached.
+                if (self.watch_failed_lookup_capture) _ = self.getPackageScope(containing_file) catch null;
+                return cached;
+            }
         }
         const is_type_module = blk: {
             const scope = self.getPackageScope(containing_file) catch break :blk false;
@@ -3451,6 +3464,25 @@ test "Resolver: watch records package metadata against every importing source" {
     const reset = try resolver.watchPackageJsonPaths(T.allocator);
     defer T.allocator.free(reset);
     try T.expectEqual(@as(usize, 0), reset.len);
+}
+
+test "Resolver: watch records containing package scope for each source, including cache hits" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/package.json", "{\"type\":\"commonjs\"}");
+    var resolver = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16 });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+
+    try T.expect(!resolver.containingPackageIsTypeModule("/proj/src/first.ts"));
+    try T.expect(!resolver.containingPackageIsTypeModule("/proj/src/second.ts"));
+    const importers = resolver.watchPackageJsonImporters("/proj/package.json") orelse return error.MissingPackageWatch;
+    try T.expectEqual(@as(usize, 2), importers.count());
+    try T.expect(importers.contains("/proj/src/first.ts"));
+    try T.expect(importers.contains("/proj/src/second.ts"));
+    // A newly created nearer package must also be observed.
+    const nearer = resolver.watchPackageJsonImporters("/proj/src/package.json") orelse return error.MissingNearerPackageWatch;
+    try T.expectEqual(@as(usize, 2), nearer.count());
 }
 
 test "Resolver: package imports map output paths back to project sources" {

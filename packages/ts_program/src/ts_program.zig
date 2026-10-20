@@ -180,6 +180,10 @@ pub const File = struct {
     /// Set only when an absent FileId was restored in the current revision.
     /// The incremental checker uses this for program-scope invalidation.
     restored_in_revision: bool = false,
+    /// Monotonic identity of this file's invalidated compilation. Watch
+    /// metadata dependencies from an unchanged revision remain valid when
+    /// another source is incrementally recompiled.
+    watch_revision: u64 = 0,
     /// Source text. Canonical files borrow the bytes owned by
     /// `Program.sources`; redirects borrow their canonical file's slice.
     source: []const u8,
@@ -689,6 +693,7 @@ pub const Program = struct {
             if (!affected[file.id]) continue;
             self.dropCompilation(file);
             file.imports.clearRetainingCapacity();
+            file.watch_revision += 1;
         }
     }
 
@@ -1916,8 +1921,31 @@ pub const Program = struct {
         for (self.files.items) |file| {
             self.dropCompilation(file);
             file.imports.clearRetainingCapacity();
+            file.watch_revision += 1;
         }
+        self.refreshPackageTypeModules(null);
         try self.compileAll(options);
+    }
+
+    /// Package metadata is filesystem state, not part of a File's source.
+    /// Refresh implied module format on the single-threaded revision path,
+    /// before any checker workers consume the per-file options.
+    fn refreshPackageTypeModules(self: *Program, affected: ?[]const bool) void {
+        for (self.files.items) |file| {
+            if (!file.present or file.redirect_target != null) continue;
+            if (affected) |mask| {
+                if (file.id >= mask.len or !mask[file.id]) continue;
+            }
+            file.package_type_module = self.resolver.containingPackageIsTypeModule(file.path);
+        }
+        for (self.files.items) |file| {
+            const target_id = file.redirect_target orelse continue;
+            if (!file.present) continue;
+            if (affected) |mask| {
+                if (target_id >= mask.len or !mask[target_id]) continue;
+            }
+            file.package_type_module = self.files.items[target_id].package_type_module;
+        }
     }
 
     fn appendMissingCompilerTypeReferenceDiagnostics(
@@ -5235,6 +5263,8 @@ pub const Program = struct {
             if (file.present and file.redirect_target == null and affected[file.id]) count += 1;
         }
         self.invalidateRevisionFiles(affected);
+
+        self.refreshPackageTypeModules(affected);
 
         // Discover imports introduced by this revision before the final
         // checking pass. The ordinary closure loader rechecks the entire
@@ -11922,6 +11952,36 @@ test "Program: source revisions recompile transitive importers" {
     const changed = [_][]const u8{"/dep.ts"};
     try T.expectEqual(@as(u32, 3), try p.recompileChanged(&changed, options));
     try expectCompilationLacksDiagnosticCode(p.fileById(main).compilation.?, 2322);
+}
+
+test "Program: package type revisions refresh implied module format" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source = "// @module: node16\n// @target: es2022\nexport {};\nawait 1;";
+    try vfs.addFile("/proj/package.json", "{\"type\":\"commonjs\"}");
+    try vfs.addFile("/proj/main.ts", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node16, .module_kind = "node16" });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add("/proj/main.ts", source);
+    const options: ts_driver.CompileOptions = .{ .module_kind = "node16", .no_emit = true };
+    try p.compileAll(options);
+    try T.expect(!p.fileById(id).package_type_module);
+    try expectCompilationHasDiagnosticCode(p.fileById(id).compilation.?, 1309);
+
+    try vfs.addFile("/proj/package.json", "{\"type\":\"module\"}");
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expect(p.fileById(id).package_type_module);
+    try expectCompilationLacksDiagnosticCode(p.fileById(id).compilation.?, 1309);
+
+    try vfs.addFile("/proj/package.json", "{\"type\":\"commonjs\"}");
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expect(!p.fileById(id).package_type_module);
+    try expectCompilationHasDiagnosticCode(p.fileById(id).compilation.?, 1309);
 }
 
 test "Program: preferred TypeScript source does not inherit a retained JavaScript export route" {

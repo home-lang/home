@@ -40,12 +40,17 @@ pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.
 /// transitive sources do not. A failed stat/allocation leaves both sets
 /// unchanged so the entire observation can be retried.
 pub const WatchInterest = struct {
+    const MetadataImporter = struct {
+        path: []const u8,
+        watch_revision: u64,
+    };
+
     gpa: std.mem.Allocator,
     watched_paths: std.StringHashMapUnmanaged(void) = .empty,
     /// Borrowed keys from watched_paths and stable Program-owned importer
     /// paths. This committed snapshot survives resolver cache invalidation
     /// and lets an uncommitted watch observation retry after a failed build.
-    metadata_importers: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty,
+    metadata_importers: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(MetadataImporter)) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) WatchInterest {
         return .{ .gpa = gpa };
@@ -79,6 +84,23 @@ pub const WatchInterest = struct {
         };
     }
 
+    fn stageMetadataImporter(
+        self: *WatchInterest,
+        next_paths: *std.StringHashMapUnmanaged(void),
+        next_metadata: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(MetadataImporter)),
+        package_path: []const u8,
+        file: *const ts_program.File,
+    ) !void {
+        try self.stagePath(next_paths, package_path);
+        const owned_path = next_paths.getEntry(package_path).?.key_ptr.*;
+        const entry = try next_metadata.getOrPut(self.gpa, owned_path);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        for (entry.value_ptr.items) |importer| {
+            if (std.mem.eql(u8, importer.path, file.path)) return;
+        }
+        try entry.value_ptr.append(self.gpa, .{ .path = file.path, .watch_revision = file.watch_revision });
+    }
+
     /// A package.json revision invalidates its actual importers, not a
     /// fictitious TypeScript source at the metadata path. The map is the
     /// previous successful refresh, so retries do not depend on a resolver
@@ -90,16 +112,16 @@ pub const WatchInterest = struct {
         changed: *std.ArrayListUnmanaged([]const u8),
     ) !bool {
         const importers = self.metadata_importers.get(path) orelse return false;
-        for (importers.items) |importer_path| {
-            if (program.lookupPath(importer_path) == null) continue;
+        for (importers.items) |importer| {
+            if (program.lookupPath(importer.path) == null) continue;
             var already_added = false;
             for (changed.items) |existing| {
-                if (std.mem.eql(u8, existing, importer_path)) {
+                if (std.mem.eql(u8, existing, importer.path)) {
                     already_added = true;
                     break;
                 }
             }
-            if (!already_added) try changed.append(self.gpa, importer_path);
+            if (!already_added) try changed.append(self.gpa, importer.path);
         }
         return true;
     }
@@ -116,7 +138,7 @@ pub const WatchInterest = struct {
             while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
             next.deinit(self.gpa);
         }
-        var next_metadata: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
+        var next_metadata: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(MetadataImporter)) = .empty;
         errdefer {
             var it = next_metadata.iterator();
             while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
@@ -132,18 +154,22 @@ pub const WatchInterest = struct {
         for (package_paths) |path| {
             const importers = program.resolver.watchPackageJsonImporters(path).?;
             var it = importers.iterator();
-            var live_importers: std.ArrayListUnmanaged([]const u8) = .empty;
-            errdefer live_importers.deinit(self.gpa);
             while (it.next()) |entry| {
                 const id = program.lookupPath(entry.key_ptr.*) orelse continue;
-                try live_importers.append(self.gpa, program.fileById(id).path);
+                try self.stageMetadataImporter(&next, &next_metadata, path, program.fileById(id));
             }
-            if (live_importers.items.len != 0) {
-                try self.stagePath(&next, path);
-                try next_metadata.put(self.gpa, next.getEntry(path).?.key_ptr.*, live_importers);
-                live_importers = .empty;
+        }
+        // Resolver cache invalidation drops its entire metadata map. Retain
+        // dependencies of files whose compilation revision did not change;
+        // changed files must supply their current probes above instead.
+        var previous = self.metadata_importers.iterator();
+        while (previous.next()) |entry| {
+            for (entry.value_ptr.items) |importer| {
+                const id = program.lookupPath(importer.path) orelse continue;
+                const file = program.fileById(id);
+                if (file.watch_revision != importer.watch_revision) continue;
+                try self.stageMetadataImporter(&next, &next_metadata, entry.key_ptr.*, file);
             }
-            live_importers.deinit(self.gpa);
         }
 
         const paths = try self.gpa.alloc([]const u8, next.count());
@@ -167,6 +193,42 @@ pub const WatchInterest = struct {
         self.metadata_importers = next_metadata;
     }
 };
+
+test "tsc_main: package type metadata changes enqueue the owning source" {
+    var source_fs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer source_fs.deinit();
+    try source_fs.addFile("/proj/package.json", "{\"type\":\"commonjs\"}");
+    try source_fs.addFile("/proj/src/main.ts", "export {}; await 1;");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, source_fs.fs(), .{ .strategy = .node16 });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/src/main.ts", "export {}; await 1;");
+
+    var watch_fs = ts_watch.VirtualWatchFs.init(std.testing.allocator);
+    defer watch_fs.deinit();
+    try watch_fs.add("/proj/package.json", 1, 23);
+    try watch_fs.add("/proj/src/main.ts", 1, 19);
+    var watcher = ts_watch.Watcher.init(std.testing.allocator, watch_fs.fs());
+    defer watcher.deinit();
+    var interest = WatchInterest.init(std.testing.allocator);
+    defer interest.deinit();
+    try interest.refresh(&watcher, &program);
+    try std.testing.expect(watcher.tracked.contains("/proj/package.json"));
+    // A closer package created later must also change the owner's format.
+    try std.testing.expect(watcher.tracked.contains("/proj/src/package.json"));
+
+    try watch_fs.add("/proj/package.json", 2, 21);
+    var observation = try watcher.observe();
+    defer observation.deinit();
+    try std.testing.expectEqual(@as(usize, 1), observation.changes.changes.items.len);
+    var changed: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer changed.deinit(std.testing.allocator);
+    try std.testing.expect(try interest.appendMetadataImporters(&program, "/proj/package.json", &changed));
+    try std.testing.expectEqual(@as(usize, 1), changed.items.len);
+    try std.testing.expectEqualStrings("/proj/src/main.ts", changed.items[0]);
+}
 
 const ts_empty_files_list_in_config: u32 = 18002;
 
