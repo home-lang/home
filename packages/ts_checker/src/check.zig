@@ -270,6 +270,9 @@ pub const ExternalResolver = struct {
         /// arena (which must outlive the `Checker`'s
         /// `checkSourceFile` call). The checker never frees it.
         path: []const u8,
+        /// The resolved path is an admitted Program source, not merely an
+        /// output/declaration path that may alias another extension.
+        source_is_admitted: bool = false,
         /// True when `path` ends in `.d.ts` / `.d.cts` / `.d.mts`
         /// or `.ts` / `.tsx` / `.mts` / `.cts` ÃÂ¢ÃÂÃÂ i.e. tsc would
         /// treat the resolution as "typed". A Program adapter also sets
@@ -3487,6 +3490,7 @@ const ProgramImportResolution = struct {
     /// useful fallbacks, but cannot distinguish a newly preferred .ts file
     /// from an older .js file retained in an incremental Program.
     external_path: ?hir_mod.StringId = null,
+    source_is_admitted: bool = false,
     external_base: ?hir_mod.StringId = null,
     fallback_base: ?hir_mod.StringId = null,
 };
@@ -64911,11 +64915,12 @@ pub const Checker = struct {
         const resolution = try self.programImportResolution(node, spec);
         if (resolution.external_base) |base| {
             for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (!self.programCommonJsExportMatchesResolution(resolution, exported)) continue;
                 if (std.mem.eql(u8, exported.name, name_text)) return true;
             }
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base == base) return false;
+            if (resolution.source_is_admitted or resolution.external_base == base) return false;
             for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
                 if (std.mem.eql(u8, exported.name, name_text)) return true;
             }
@@ -64928,17 +64933,22 @@ pub const Checker = struct {
         const name_text = self.string_interner.get(name);
         const resolution = try self.programImportResolution(node, spec);
         if (resolution.external_base) |base| {
-            if (try self.programCommonJsNamedExportTypeForPath(self.string_interner.get(base), name_text)) |typ| return typ;
+            if (try self.programCommonJsNamedExportTypeForPath(
+                self.string_interner.get(base),
+                name_text,
+                if (resolution.source_is_admitted) self.string_interner.get(resolution.external_path.?) else null,
+            )) |typ| return typ;
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base == base) return null;
-            if (try self.programCommonJsNamedExportTypeForPath(self.string_interner.get(base), name_text)) |typ| return typ;
+            if (resolution.source_is_admitted or resolution.external_base == base) return null;
+            if (try self.programCommonJsNamedExportTypeForPath(self.string_interner.get(base), name_text, null)) |typ| return typ;
         }
         return null;
     }
 
-    fn programCommonJsNamedExportTypeForPath(self: *Checker, resolved_path: []const u8, name: []const u8) CheckError!?TypeId {
+    fn programCommonJsNamedExportTypeForPath(self: *Checker, resolved_path: []const u8, name: []const u8, exact_path: ?[]const u8) CheckError!?TypeId {
         for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exact_path) |path| if (!std.mem.eql(u8, exported.module_path, path)) continue;
             if (!std.mem.eql(u8, exported.name, name)) continue;
             if (try self.programCommonJsNamedExportSchemaType(exported, true)) |typ| return typ;
         }
@@ -64958,13 +64968,15 @@ pub const Checker = struct {
             if (try self.programCommonJsNamedExportWriteTypeForPath(
                 self.string_interner.get(base),
                 name_text,
+                if (resolution.source_is_admitted) self.string_interner.get(resolution.external_path.?) else null,
             )) |typ| return typ;
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base == base) return null;
+            if (resolution.source_is_admitted or resolution.external_base == base) return null;
             if (try self.programCommonJsNamedExportWriteTypeForPath(
                 self.string_interner.get(base),
                 name_text,
+                null,
             )) |typ| return typ;
         }
         return null;
@@ -64974,8 +64986,10 @@ pub const Checker = struct {
         self: *Checker,
         resolved_path: []const u8,
         name: []const u8,
+        exact_path: ?[]const u8,
     ) CheckError!?TypeId {
         for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exact_path) |path| if (!std.mem.eql(u8, exported.module_path, path)) continue;
             if (!std.mem.eql(u8, exported.name, name)) continue;
             if (try self.programCommonJsNamedExportSchemaType(exported, false)) |typ| return typ;
         }
@@ -65008,13 +65022,15 @@ pub const Checker = struct {
             if (try self.programCommonJsNamedExportObjectTypeForPath(
                 self.string_interner.get(base),
                 is_readonly,
+                if (resolution.source_is_admitted) self.string_interner.get(resolution.external_path.?) else null,
             )) |typ| return typ;
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base == base) return null;
+            if (resolution.source_is_admitted or resolution.external_base == base) return null;
             if (try self.programCommonJsNamedExportObjectTypeForPath(
                 self.string_interner.get(base),
                 is_readonly,
+                null,
             )) |typ| return typ;
         }
         return null;
@@ -65024,10 +65040,12 @@ pub const Checker = struct {
         self: *Checker,
         resolved_path: []const u8,
         is_readonly: bool,
+        exact_path: ?[]const u8,
     ) CheckError!?TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
         for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exact_path) |path| if (!std.mem.eql(u8, exported.module_path, path)) continue;
             if (exported.name.len == 0) continue;
             const member_type = (try self.programCommonJsNamedExportSchemaType(exported, true)) orelse
                 types.Primitive.any;
@@ -65047,11 +65065,12 @@ pub const Checker = struct {
         const resolution = try self.programImportResolution(node, spec);
         if (resolution.external_base) |base| {
             for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (!self.programCommonJsExportMatchesResolution(resolution, exported)) continue;
                 if (exported.name.len == 0) return true;
             }
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base == base) return false;
+            if (resolution.source_is_admitted or resolution.external_base == base) return false;
             for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
                 if (exported.name.len == 0) return true;
             }
@@ -65061,24 +65080,25 @@ pub const Checker = struct {
 
     fn programCommonJsWholeExportType(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
         if (self.program_commonjs_exports.len == 0) return null;
-        if (self.external_resolver) |resolver| {
-            const containing = if (self.importer_path.len > 0)
-                self.importer_path
-            else
-                self.virtualSectionFilenameForNode(node) orelse "/__root__.ts";
-            if (resolver.resolve(spec, containing)) |resolved| {
-                if (try self.programCommonJsWholeExportTypeForPath(resolved.path)) |whole_t| return whole_t;
-            }
+        const resolution = try self.programImportResolution(node, spec);
+        if (resolution.external_path) |path| {
+            const resolved_path = self.string_interner.get(path);
+            if (try self.programCommonJsWholeExportTypeForPath(
+                resolved_path,
+                if (resolution.source_is_admitted) resolved_path else null,
+            )) |whole_t| return whole_t;
+            if (resolution.source_is_admitted) return null;
         }
         if (self.importer_path.len == 0) return null;
         const directory = std.fs.path.dirname(self.importer_path) orelse "";
         const resolved = std.fs.path.resolve(self.gpa, &.{ directory, spec }) catch return null;
         defer self.gpa.free(resolved);
-        return self.programCommonJsWholeExportTypeForPath(resolved);
+        return self.programCommonJsWholeExportTypeForPath(resolved, null);
     }
 
-    fn programCommonJsWholeExportTypeForPath(self: *Checker, resolved_path: []const u8) CheckError!?TypeId {
+    fn programCommonJsWholeExportTypeForPath(self: *Checker, resolved_path: []const u8, exact_path: ?[]const u8) CheckError!?TypeId {
         for (self.programCommonJsExportsForPath(resolved_path)) |exported| {
+            if (exact_path) |path| if (!std.mem.eql(u8, exported.module_path, path)) continue;
             if (exported.name.len != 0) continue;
             if (exported.whole_export_is_any) return types.Primitive.any;
             const owner_schema = exported.whole_export_schema orelse continue;
@@ -65100,12 +65120,13 @@ pub const Checker = struct {
         var first: ?ProgramCommonJsExport = null;
         if (resolution.external_base) |base| {
             for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
+                if (!self.programCommonJsExportMatchesResolution(resolution, exported)) continue;
                 if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
                 if (first == null or exported.source_index < first.?.source_index) first = exported;
             }
         }
         if (resolution.fallback_base) |base| {
-            if (resolution.external_base != base) {
+            if (!resolution.source_is_admitted and resolution.external_base != base) {
                 for (self.programCommonJsExportsForPath(self.string_interner.get(base))) |exported| {
                     if (exported.private_type_name.len == 0 or exported.private_module_name.len == 0) continue;
                     if (first == null or exported.source_index < first.?.source_index) first = exported;
@@ -115585,6 +115606,7 @@ pub const Checker = struct {
                 if (resolver.resolve(spec, containing)) |resolved| {
                     const base = stripProgramModuleExtension(resolved.path);
                     computed.external_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
+                    computed.source_is_admitted = resolved.source_is_admitted;
                     computed.external_base = self.string_interner.intern(base) catch return error.OutOfMemory;
                 }
             }
@@ -115656,6 +115678,16 @@ pub const Checker = struct {
                 low = middle + 1;
         }
         return self.program_commonjs_exports[start..low];
+    }
+
+    fn programCommonJsExportMatchesResolution(
+        self: *const Checker,
+        resolution: ProgramImportResolution,
+        exported: ProgramCommonJsExport,
+    ) bool {
+        if (!resolution.source_is_admitted) return true;
+        const path = resolution.external_path orelse return false;
+        return std.mem.eql(u8, exported.module_path, self.string_interner.get(path));
     }
 
     fn stripProgramModuleExtension(path: []const u8) []const u8 {
@@ -266763,6 +266795,7 @@ test "checker: namespace-scoped classes keep independent instance members" {
 const StubExternalResolver = struct {
     canned_path: []const u8,
     canned_is_declaration: bool,
+    canned_source_is_admitted: bool = false,
     canned_module_name: ?[]const u8 = null,
     canned_exported_name: []const u8 = "",
     canned_local_name: []const u8 = "",
@@ -266791,6 +266824,7 @@ const StubExternalResolver = struct {
         _ = containing_file;
         return .{
             .path = self.canned_path,
+            .source_is_admitted = self.canned_source_is_admitted,
             .is_declaration = self.canned_is_declaration,
             .alternate_result = self.canned_alternate_result,
             .project_reference_output = self.canned_project_reference_output,
@@ -266932,6 +266966,28 @@ test "checker: whole CommonJS path matching preserves duplicates misses and meta
     try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
     s.checker.setProgramCommonJsExports(&.{});
     try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./named.cjs"));
+}
+
+test "checker: admitted source does not inherit a sibling CommonJS export" {
+    const s = try newSetup("const item = require('./dep'); item.value;");
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/p/dep.ts",
+        .canned_is_declaration = true,
+        .canned_source_is_admitted = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/p/main.ts");
+    s.checker.setProgramCommonJsExports(&.{.{ .module_path = "/p/dep.js", .name = "" }});
+    try T.expect(!try s.checker.programCommonJsModuleHasWholeExport(s.root, "./dep"));
+
+    var exports = [_]ProgramCommonJsExport{
+        .{ .module_path = "/p/dep.js", .name = "" },
+        .{ .module_path = "/p/dep.ts", .name = "" },
+    };
+    Checker.sortProgramCommonJsExports(&exports);
+    s.checker.setProgramCommonJsExports(&exports);
+    try T.expect(try s.checker.programCommonJsModuleHasWholeExport(s.root, "./dep"));
 }
 
 test "checker: CommonJS schemas separate widened reads from fresh writes" {

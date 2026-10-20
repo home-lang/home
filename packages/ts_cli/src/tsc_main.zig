@@ -2651,6 +2651,7 @@ const CheckerResolverAdapter = struct {
         const r = self.resolveModule(specifier, containing_file) orelse return null;
         return .{
             .path = r.path,
+            .source_is_admitted = if (self.admitted_program) |program| program.lookupPath(r.path) != null else false,
             // The checker API's bit means typed resolution, including
             // admitted JS source inference, not only declaration files.
             .is_declaration = r.is_declaration or self.admittedJavaScript(r.path),
@@ -5237,6 +5238,9 @@ test "tsc_main: resolver admission distinguishes typed JS from untyped implement
         const project = CheckerResolverAdapter.resolveImpl(&adapter, "./project.js", "/main.ts").?;
         const explicit = CheckerResolverAdapter.resolveImpl(&adapter, "./node_modules/explicit/index.js", "/main.ts").?;
         const unadmitted = CheckerResolverAdapter.resolveImpl(&adapter, "./unadmitted.js", "/main.ts").?;
+        try std.testing.expect(project.source_is_admitted);
+        try std.testing.expect(explicit.source_is_admitted);
+        try std.testing.expect(!unadmitted.source_is_admitted);
         try std.testing.expectEqual(options.allow_js or options.check_js, project.is_declaration);
         try std.testing.expectEqual(options.allow_js or options.check_js, explicit.is_declaration);
         try std.testing.expect(!unadmitted.is_declaration);

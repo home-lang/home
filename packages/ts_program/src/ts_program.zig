@@ -8853,6 +8853,7 @@ const NamespaceImportTestResolver = struct {
 
 const SourceExportResolver = struct {
     resolver: *ts_resolver.Resolver,
+    program: ?*const Program = null,
     arena: std.heap.ArenaAllocator,
 
     const vtable = ts_driver.ExternalResolver.VTable{
@@ -8864,7 +8865,11 @@ const SourceExportResolver = struct {
     fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
         const self: *@This() = @ptrCast(@alignCast(ptr));
         const result = self.resolver.resolve(specifier, containing_file) catch return null;
-        return .{ .path = result.path, .is_declaration = result.is_declaration };
+        return .{
+            .path = result.path,
+            .source_is_admitted = if (self.program) |program| program.lookupPath(result.path) != null else false,
+            .is_declaration = result.is_declaration,
+        };
     }
 
     fn moduleExport(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
@@ -11538,6 +11543,47 @@ test "Program: preferred TypeScript source does not inherit a retained JavaScrip
     try p.compileAll(options);
     try T.expect(p.lookupPath("/dep.js") != null);
     try T.expect(p.lookupPath("/dep.ts") == null);
+
+    try vfs.addFile("/dep.ts", "export const value: string = 'wrong';");
+    try vfs.addFile("/main.ts", revised);
+    _ = (try p.updateSource("/main.ts", revised)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    const changed = [_][]const u8{"/main.ts"};
+    _ = try p.recompileChanged(&changed, options);
+
+    const preferred = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
+    try T.expectEqualSlices(FileId, &.{preferred}, p.fileById(main_id).imports.items);
+    try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
+test "Program: preferred TypeScript source does not inherit a retained CommonJS export" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const original = "import dep = require('./dep'); const result: number = dep.value;";
+    const revised = original ++ "\n// Recheck after a higher-priority source appears.";
+    try vfs.addFile("/main.ts", original);
+    try vfs.addFile("/dep.js", "module.exports.value = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    var external = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &p,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer external.arena.deinit();
+    const main_id = try p.add("/main.ts", original);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .allow_js = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &external, .vtable = &SourceExportResolver.vtable },
+    };
+    try T.expectEqual(@as(usize, 1), try p.loadImportClosure(options));
+    try p.compileAll(options);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+    try T.expect(p.lookupPath("/dep.js") != null);
 
     try vfs.addFile("/dep.ts", "export const value: string = 'wrong';");
     try vfs.addFile("/main.ts", revised);
