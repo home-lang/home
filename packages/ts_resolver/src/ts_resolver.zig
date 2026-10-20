@@ -311,6 +311,11 @@ pub const Resolver = struct {
     /// mirrors tsc's lower-level lookup cache so repeated candidates can
     /// report TS6239/TS6240 instead of hitting the filesystem again.
     file_exists_cache: std.StringHashMapUnmanaged(bool) = .empty,
+    /// Watch mode retains file probes that failed before a resolution either
+    /// succeeded or failed. A later creation at one of these paths can change
+    /// import priority even when no admitted source is edited.
+    watch_failed_lookup_capture: bool = false,
+    watch_failed_lookup_paths: std.StringHashMapUnmanaged(void) = .empty,
     /// Set transiently by `attachExportsAlternateResult` while probing
     /// the exports-disabled "alternate" resolution. In this mode the
     /// legacy `main`/`types`/`module` fields only count when they
@@ -346,6 +351,7 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(self: *Resolver) void {
+        self.watch_failed_lookup_paths.deinit(self.gpa);
         self.package_type_module_by_directory.deinit(self.gpa);
         self.relative_files.deinit(self.gpa);
         self.relative_file_directories.deinit(self.gpa);
@@ -360,6 +366,8 @@ pub const Resolver = struct {
     /// Releasing the arena as well as the maps keeps repeated revisions from
     /// retaining every candidate path ever probed by the resolver.
     pub fn invalidateCaches(self: *Resolver) void {
+        self.watch_failed_lookup_paths.deinit(self.gpa);
+        self.watch_failed_lookup_paths = .empty;
         self.package_type_module_by_directory.deinit(self.gpa);
         self.relative_files.deinit(self.gpa);
         self.relative_file_directories.deinit(self.gpa);
@@ -374,6 +382,25 @@ pub const Resolver = struct {
         self.alternate_mode = false;
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(self.gpa);
+    }
+
+    /// The returned paths borrow the resolver arena and remain valid only
+    /// until the next cache invalidation. The caller owns the outer slice.
+    pub fn watchFailedLookupPaths(self: *Resolver, allocator: std.mem.Allocator) error{OutOfMemory}![][]const u8 {
+        const paths = try allocator.alloc([]const u8, self.watch_failed_lookup_paths.count());
+        var it = self.watch_failed_lookup_paths.iterator();
+        var index: usize = 0;
+        while (it.next()) |entry| {
+            paths[index] = entry.key_ptr.*;
+            index += 1;
+        }
+        return paths;
+    }
+
+    fn recordWatchFailedLookup(self: *Resolver, path: []const u8) ResolveError!void {
+        if (!self.watch_failed_lookup_capture or self.watch_failed_lookup_paths.contains(path)) return;
+        const key = self.ar().dupe(u8, path) catch return error.OutOfMemory;
+        self.watch_failed_lookup_paths.put(self.gpa, key, {}) catch return error.OutOfMemory;
     }
 
     pub fn containingPackageIsTypeModule(self: *Resolver, containing_file: []const u8) bool {
@@ -1214,7 +1241,7 @@ pub const Resolver = struct {
     /// (TS6097 "File 'X' exists - use it as a name resolution result." /
     /// TS6096 "File 'X' does not exist."). Repeated probes use the
     /// lookup cache traces TS6239/TS6240. No-op tracing when no sink.
-    fn fileExistsTraced(self: *Resolver, path: []const u8) bool {
+    fn fileExistsTraced(self: *Resolver, path: []const u8) ResolveError!bool {
         if (self.trace != null) {
             if (self.file_exists_cache.get(path)) |exists| {
                 if (exists) {
@@ -1222,10 +1249,12 @@ pub const Resolver = struct {
                 } else {
                     self.traceMsg(6240, "File '{s}' does not exist according to earlier cached lookups.", .{path});
                 }
+                if (!exists) try self.recordWatchFailedLookup(path);
                 return exists;
             }
         }
         if (self.relativeDirectoryFileExists(path)) |exists| {
+            if (!exists) try self.recordWatchFailedLookup(path);
             if (self.trace != null) {
                 const key = self.ar().dupe(u8, path) catch {
                     self.traceFileExists(path, exists);
@@ -1236,8 +1265,9 @@ pub const Resolver = struct {
             self.traceFileExists(path, exists);
             return exists;
         }
-        if (self.trace == null) return self.fs.fileExists(path);
         const exists = self.fs.fileExists(path);
+        if (!exists) try self.recordWatchFailedLookup(path);
+        if (self.trace == null) return exists;
         const key = self.ar().dupe(u8, path) catch {
             self.traceFileExists(path, exists);
             return exists;
@@ -1343,7 +1373,7 @@ pub const Resolver = struct {
             &.{""};
         for (suffixes) |suffix| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}{s}", .{ stem, suffix, ext }) catch return error.OutOfMemory;
-            if (self.fileExistsTraced(candidate)) {
+            if (try self.fileExistsTraced(candidate)) {
                 return .{
                     .path = candidate,
                     .source = source,
@@ -2691,7 +2721,7 @@ pub const Resolver = struct {
         const candidates = sourceExtensionsForOutputPath(output_path);
         for (candidates) |ext| {
             const candidate = std.fmt.allocPrint(self.ar(), "{s}{s}", .{ source_base, ext }) catch return error.OutOfMemory;
-            if (self.fileExistsTraced(candidate)) {
+            if (try self.fileExistsTraced(candidate)) {
                 return .{
                     .path = candidate,
                     .source = .package_exports,
@@ -3313,6 +3343,32 @@ test "Resolver: relative .ts file" {
     const res = try r.resolve("./foo", "/proj/src/bar.ts");
     try T.expectEqualStrings("/proj/src/foo.ts", res.path);
     try T.expectEqual(Resolution.Source.relative, res.source);
+}
+
+test "Resolver: watch retains higher-priority failed probes until cache invalidation" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/main.ts", "import './dep';");
+    try vfs.addFile("/proj/dep.js", "export const value = 1;");
+
+    var resolver = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    try T.expectEqualStrings("/proj/dep.js", (try resolver.resolve("./dep", "/proj/main.ts")).path);
+    const initial = try resolver.watchFailedLookupPaths(T.allocator);
+    defer T.allocator.free(initial);
+    var watched_typescript = false;
+    for (initial) |path| {
+        if (std.mem.eql(u8, path, "/proj/dep.ts")) watched_typescript = true;
+    }
+    try T.expect(watched_typescript);
+
+    resolver.invalidateCaches();
+    const reset = try resolver.watchFailedLookupPaths(T.allocator);
+    defer T.allocator.free(reset);
+    try T.expectEqual(@as(usize, 0), reset.len);
+    try vfs.addFile("/proj/dep.ts", "export const value: string = 'new';");
+    try T.expectEqualStrings("/proj/dep.ts", (try resolver.resolve("./dep", "/proj/main.ts")).path);
 }
 
 test "Resolver: package imports map output paths back to project sources" {

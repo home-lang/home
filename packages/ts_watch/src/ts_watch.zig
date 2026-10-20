@@ -252,6 +252,11 @@ pub const RealStatFs = struct {
             error.FileNotFound, error.NotDir => return null,
             else => return err,
         };
+        // Resolver failed-lookup interests are file candidates. A candidate
+        // path can already name a directory; reporting its directory stat as
+        // a source addition would make the CLI repeatedly try to read it as
+        // a file and never commit the observation.
+        if (s.kind != .file) return null;
         return .{
             .mtime = s.mtime.nanoseconds,
             .size = s.size,
@@ -418,6 +423,16 @@ test "RealStatFs: stat on a known repo file returns non-null" {
     const s = try rfs.fs().stat("build.zig");
     try T.expect(s != null);
     try T.expect(s.?.size > 0);
+}
+
+test "RealStatFs: a directory is not a candidate source file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", T.allocator);
+    defer T.allocator.free(path);
+    var rfs = RealStatFs.init(T.allocator);
+    defer rfs.deinit();
+    try T.expect((try rfs.fs().stat(path)) == null);
 }
 
 var nonexistent_counter: std.atomic.Value(u64) = .{ .raw = 0 };

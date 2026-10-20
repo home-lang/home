@@ -611,11 +611,12 @@ pub const Program = struct {
         }
     }
 
-    /// An importer checked while a dependency was absent has no graph edge
-    /// to that dependency. On restoration, inspect its retained import HIR
-    /// against the current resolver before invalidating the old compilation;
-    /// otherwise a checked TS2307 can survive the re-addition forever.
-    fn markImportersOfRestoredSources(self: *Program, affected: []bool) ProgramError!void {
+    /// A checked importer has no edge to a previously missing dependency or
+    /// to a higher-priority source that did not exist when it was checked.
+    /// Resolve its retained references against the current filesystem before
+    /// invalidating the old compilation so creation alone can replace an old
+    /// JS target with a new TS source (or clear TS2307).
+    fn markImportersOfChangedLookupTargets(self: *Program, affected: []bool, changed_paths: []const []const u8) ProgramError!void {
         var has_restored = false;
         for (self.files.items) |file| {
             if (file.present and file.restored_in_revision) {
@@ -623,7 +624,14 @@ pub const Program = struct {
                 break;
             }
         }
-        if (!has_restored) return;
+        var has_new_path = false;
+        for (changed_paths) |path| {
+            if (self.by_path.get(path) == null) {
+                has_new_path = true;
+                break;
+            }
+        }
+        if (!has_restored and !has_new_path) return;
 
         var references: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
         defer references.deinit(self.gpa);
@@ -643,6 +651,14 @@ pub const Program = struct {
                     if (!std.mem.eql(u8, resolved.path, restored.path)) continue;
                     affected[importer.id] = true;
                     break;
+                }
+                if (!affected[importer.id]) {
+                    for (changed_paths) |path| {
+                        if (self.by_path.get(path) != null) continue;
+                        if (!std.mem.eql(u8, resolved.path, path)) continue;
+                        affected[importer.id] = true;
+                        break;
+                    }
                 }
                 if (affected[importer.id]) break;
             }
@@ -5118,7 +5134,7 @@ pub const Program = struct {
             const canonical_id = self.canonicalFileId(requested_id);
             self.markCanonicalRevision(canonical_id, affected);
         }
-        try self.markImportersOfRestoredSources(affected);
+        try self.markImportersOfChangedLookupTargets(affected, changed_paths);
         self.closeRevisionImporters(affected);
 
         try self.prepareNameStore();
@@ -11845,6 +11861,49 @@ test "Program: preferred TypeScript source does not inherit a retained JavaScrip
     const preferred = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
     try T.expectEqualSlices(FileId, &.{preferred}, p.fileById(main_id).imports.items);
     try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+}
+
+test "Program: creation-only preferred source invalidates the checked importer" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const main_source = "import { value } from './dep'; const result: number = value;";
+    try vfs.addFile("/main.ts", main_source);
+    try vfs.addFile("/dep.js", "export const value = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var external = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const main_id = try p.add("/main.ts", main_source);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .allow_js = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &external, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try T.expectEqual(@as(usize, 1), try p.loadImportClosure(options));
+    try p.compileAll(options);
+    const javascript_id = p.lookupPath("/dep.js") orelse return error.MissingJavaScriptSource;
+    const old_owner = p.fileById(main_id).owner;
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+
+    // The importer bytes do not change; the watch event is for a path that
+    // has never been admitted to Program.
+    try vfs.addFile("/dep.ts", "export const value: string = 'wrong';");
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/dep.ts"}, options);
+    const typescript_id = p.lookupPath("/dep.ts") orelse return error.MissingPreferredSource;
+    try T.expectEqualSlices(FileId, &.{typescript_id}, p.fileById(main_id).imports.items);
+    try T.expect(p.fileById(main_id).owner != old_owner);
+    try T.expect(p.fileById(javascript_id).compilation != null);
+    try expectCompilationHasDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
+
+    try T.expect(vfs.removeFile("/dep.ts"));
+    resolver.invalidateCaches();
+    _ = try p.removeSource("/dep.ts");
+    _ = try p.recompileChanged(&.{"/dep.ts"}, options);
+    try T.expectEqualSlices(FileId, &.{javascript_id}, p.fileById(main_id).imports.items);
+    try expectCompilationLacksDiagnosticCode(p.fileById(main_id).compilation.?, 2322);
 }
 
 test "Program: preferred TypeScript source does not inherit a retained CommonJS export" {

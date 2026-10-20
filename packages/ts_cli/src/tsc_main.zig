@@ -35,6 +35,74 @@ pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.
     try watcher.trackMany(paths);
 }
 
+/// Keep failed resolution probes alongside admitted Program paths. A missing
+/// higher-priority candidate can appear without any source edit, and the
+/// previous candidate set must be retired when imports are removed or
+/// replaced. A failed stat/allocation leaves both sets unchanged.
+pub const WatchInterest = struct {
+    gpa: std.mem.Allocator,
+    candidates: std.StringHashMapUnmanaged(void) = .empty,
+
+    pub fn init(gpa: std.mem.Allocator) WatchInterest {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *WatchInterest) void {
+        self.clearCandidates();
+    }
+
+    fn clearCandidates(self: *WatchInterest) void {
+        var it = self.candidates.iterator();
+        while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+        self.candidates.deinit(self.gpa);
+        self.candidates = .empty;
+    }
+
+    pub fn refresh(self: *WatchInterest, watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
+        const failed_paths = try program.resolver.watchFailedLookupPaths(self.gpa);
+        defer self.gpa.free(failed_paths);
+
+        var next: std.StringHashMapUnmanaged(void) = .empty;
+        errdefer {
+            var it = next.iterator();
+            while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
+            next.deinit(self.gpa);
+        }
+        for (failed_paths) |path| {
+            // Program paths, including tombstones kept for stable FileIds,
+            // already have a durable watch entry of their own.
+            if (program.by_path.contains(path)) continue;
+            const key = try self.gpa.dupe(u8, path);
+            next.put(self.gpa, key, {}) catch |err| {
+                self.gpa.free(key);
+                return err;
+            };
+        }
+
+        const paths = try self.gpa.alloc([]const u8, program.files.items.len + next.count());
+        defer self.gpa.free(paths);
+        var index: usize = 0;
+        for (program.files.items) |file| {
+            paths[index] = file.path;
+            index += 1;
+        }
+        var next_it = next.iterator();
+        while (next_it.next()) |entry| {
+            paths[index] = entry.key_ptr.*;
+            index += 1;
+        }
+        try watcher.trackMany(paths);
+
+        var old_it = self.candidates.iterator();
+        while (old_it.next()) |entry| {
+            const path = entry.key_ptr.*;
+            if (!next.contains(path) and !program.by_path.contains(path)) watcher.untrack(path);
+        }
+        self.clearCandidates();
+        self.candidates = next;
+    }
+};
+
 const ts_empty_files_list_in_config: u32 = 18002;
 
 /// tsc writes its normal output (diagnostics, summaries, status messages,
@@ -3422,6 +3490,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         .{};
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = opts.watch;
     const trace_resolution = opts.trace_resolution or blk: {
         if (loaded_cfg) |c| break :blk (c.compiler_options.trace_resolution orelse false);
         break :blk false;
@@ -3848,10 +3917,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         defer rfs.deinit();
         var watcher = ts_watch.Watcher.init(gpa, rfs.fs());
         defer watcher.deinit();
+        var watch_interest = WatchInterest.init(gpa);
+        defer watch_interest.deinit();
         // Pre-populate the tracked set so the first tick records a
         // real baseline rather than reporting every input as added.
         try watcher.trackMany(input_files.items);
-        try trackProgramFiles(&watcher, &program);
+        try watch_interest.refresh(&watcher, &program);
         while (true) {
             // Inter-poll pause: 100ms via `std.Io.Clock.Duration.sleep`.
             // A platform-native FS-event backend (FSEvents/inotify/
@@ -3933,7 +4004,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             // `recompileChanged` admits imports introduced by this revision.
             // Register the complete new closure before publishing results;
             // a stat/allocation failure must not silently leave it unwatched.
-            trackProgramFiles(&watcher, &program) catch |err| {
+            watch_interest.refresh(&watcher, &program) catch |err| {
                 std.debug.print("error tracking program sources: {s}\n", .{@errorName(err)});
                 continue;
             };
