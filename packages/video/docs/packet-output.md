@@ -49,7 +49,9 @@ or allowing an old detach request to affect a different logical sink.
 `output_recovery.zig` provides `Retry.init(limit, initial_ns, maximum_ns)` and
 `poll(now, failed)` for bounded recovery claims. A caller supplies a monotonic
 clock, serializes access, and creates a fresh sink for every claimed attempt.
-The first observed failure starts a deadline. Later claims use exponential
+The first observed failure starts a deadline. `observe(now, failed)` arms or
+clears the deadline without spending an attempt; asynchronous construction
+failures should observe their completion time before a later poll. Later claims use exponential
 backoff capped at `maximum_ns`; arithmetic saturates at the clock limit. Zero
 initial delay allows an immediate claim. Limit zero disables recovery.
 
@@ -110,3 +112,30 @@ sources, duplicate times and sub-microsecond collisions fail before mutation.
 The caller serializes clock/sink access, excludes audio, orders retiring segments
 before successors, and poisons the observer if a write fails. No queue, allocation,
 file ownership or floating-point arithmetic is hidden in this helper.
+
+## Asynchronous output factories
+
+`factory_policy.State` composes the existing recording threshold and retry
+helpers for caller-serialized asynchronous rotation or recovery. `poll(Input)`
+returns a ticket/index claim only when the threshold or media-clock deadline is
+due and the caller reports available lifecycle capacity. Pending claims reserve
+one preparation slot in the caller; repeated polls cannot duplicate a claim.
+No callback, allocation, file operation or thread runs in this policy.
+
+Finish every claim, including cancellation and failure. `finishAt(ticket, code,
+now)` rejects stale tickets and positive result codes, records the result and
+arms failed recovery backoff at completion time without spending another attempt.
+Rotation errors latch until explicit reconfiguration. Recovery claims consume a
+lifetime attempt even if construction fails; healthy periods preserve that budget.
+Reconfiguration requires no pending claim and preserves the ticket sequence.
+
+Indices and tickets never wrap. The maximum u64 index may be claimed exactly
+once. Admission failure consumes neither an index nor an attempt. The caller
+owns output identity, slot reservation, generation checks, hook cancellation and
+publication; a successful factory result is not itself permission to replace a
+live sink. zig-camera uses this module for Bun-created sinks while retaining
+bounded native preparation and keyframe publication.
+
+`zig test packages/video/src/core/factory_policy.zig` covers threshold admission,
+failed construction, stale completion, pending reconfiguration, lifetime retry
+budgets and index exhaustion with both Zig 0.15.2 and the Home development compiler.

@@ -17,18 +17,23 @@ pub const Retry = struct {
     }
     /// A successful sink clears the pending deadline, not the lifetime budget.
     /// Failed attempts, including failed sink creation, consume that budget.
-    pub fn poll(s: *Retry, now: u64, failed: bool) bool {
-        if (!failed) {
+    /// Arm backoff without consuming an attempt. Async owners call this when
+    /// construction finishes so the next frame does not shift the deadline.
+    pub fn observe(s: *Retry, now: u64, failed: bool) void {
+        if (!failed or s.limit == 0 or s.exhausted()) {
             s.deadline = null;
-            return false;
+            return;
         }
-        if (s.limit == 0 or s.exhausted()) return false;
         if (s.deadline == null) {
             var delay = s.initial_ns;
             var remaining = s.attempts;
             while (remaining > 0 and delay < s.maximum_ns and delay != 0) : (remaining -= 1) delay = @min(s.maximum_ns, std.math.mul(u64, delay, 2) catch std.math.maxInt(u64));
             s.deadline = std.math.add(u64, now, delay) catch std.math.maxInt(u64);
         }
+    }
+    pub fn poll(s: *Retry, now: u64, failed: bool) bool {
+        s.observe(now, failed);
+        if (s.deadline == null) return false;
         if (now < s.deadline.?) return false;
         s.attempts += 1;
         s.deadline = null;
@@ -59,4 +64,19 @@ test "disabled, immediate, saturating clocks and invalid caps" {
     try std.testing.expect(saturated.poll(std.math.maxInt(u64), true));
     try std.testing.expect(saturated.poll(std.math.maxInt(u64), true));
     try std.testing.expectError(error.InvalidConfiguration, Retry.init(1, 20, 10));
+}
+
+test "async completion observes a deadline without spending or shifting another claim" {
+    var r = try Retry.init(3, 10, 20);
+    r.observe(100, true);
+    try std.testing.expectEqual(@as(u32, 0), r.attempts);
+    try std.testing.expect(r.poll(110, true));
+    r.observe(120, true);
+    try std.testing.expectEqual(@as(?u64, 140), r.deadline);
+    try std.testing.expectEqual(@as(u32, 1), r.attempts);
+    try std.testing.expect(!r.poll(139, true));
+    try std.testing.expect(r.poll(140, true));
+    r.observe(150, false);
+    try std.testing.expect(r.deadline == null);
+    try std.testing.expectEqual(@as(u32, 2), r.attempts);
 }
