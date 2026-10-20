@@ -5003,6 +5003,48 @@ pub const Parser = struct {
         return ast.Stmt{ .MatchStmt = stmt };
     }
 
+    /// Digits of a numeric literal token used in a match pattern, without
+    /// `_` separators or a type suffix (`i<N>`/`u<N>` for integers, `f<N>`
+    /// for floats). Expression literals accept the same spellings.
+    fn patternLiteralDigits(self: *Parser, lexeme: []const u8, suffix_starts: []const u8) !std.ArrayList(u8) {
+        var end = lexeme.len;
+        for (lexeme, 0..) |c, i| {
+            if (i > 0 and i + 1 < lexeme.len and std.mem.indexOfScalar(u8, suffix_starts, c) != null and std.ascii.isDigit(lexeme[i + 1])) {
+                end = i;
+                break;
+            }
+        }
+
+        var digits = std.ArrayList(u8).empty;
+        errdefer digits.deinit(self.allocator);
+        for (lexeme[0..end]) |c| {
+            if (c != '_') try digits.append(self.allocator, c);
+        }
+        return digits;
+    }
+
+    /// Value of an integer token used in a match pattern. Accepts `0x`/`0b`/`0o`
+    /// prefixes, `_` separators and a type suffix.
+    fn patternIntValue(self: *Parser, token: Token) !i64 {
+        var digits = try self.patternLiteralDigits(token.lexeme, "iu");
+        defer digits.deinit(self.allocator);
+        return std.fmt.parseInt(i64, digits.items, 0) catch {
+            try self.reportError("Invalid integer literal in pattern");
+            return error.UnexpectedToken;
+        };
+    }
+
+    /// Value of a float token used in a match pattern. Accepts `_` separators
+    /// and a type suffix.
+    fn patternFloatValue(self: *Parser, token: Token) !f64 {
+        var digits = try self.patternLiteralDigits(token.lexeme, "f");
+        defer digits.deinit(self.allocator);
+        return std.fmt.parseFloat(f64, digits.items) catch {
+            try self.reportError("Invalid float literal in pattern");
+            return error.UnexpectedToken;
+        };
+    }
+
     /// Parse a pattern for match statements
     fn parsePattern(self: *Parser) !*ast.Pattern {
         const pattern = try self.allocator.create(ast.Pattern);
@@ -5011,8 +5053,7 @@ pub const Parser = struct {
         // Negative integer pattern: -N
         if (self.match(&.{.Minus})) {
             if (self.match(&.{.Integer})) {
-                const token = self.previous();
-                const pos_value = try std.fmt.parseInt(i64, token.lexeme, 10);
+                const pos_value = try self.patternIntValue(self.previous());
                 pattern.* = ast.Pattern{ .IntLiteral = -pos_value };
                 return pattern;
             }
@@ -5023,7 +5064,7 @@ pub const Parser = struct {
         // Integer literal pattern (or range pattern)
         if (self.match(&.{.Integer})) {
             const token = self.previous();
-            const start_value = try std.fmt.parseInt(i64, token.lexeme, 10);
+            const start_value = try self.patternIntValue(token);
 
             // Check for range pattern: N..M (exclusive) or N..=M (inclusive).
             // The lexer emits DotDotEqual as a single token, so we must
@@ -5033,7 +5074,7 @@ pub const Parser = struct {
             if (self.match(&.{ .DotDot, .DotDotEqual })) {
                 const inclusive = self.previous().type == .DotDotEqual;
                 const end_token = try self.expect(.Integer, "Expected end value in range pattern");
-                const end_value = try std.fmt.parseInt(i64, end_token.lexeme, 10);
+                const end_value = try self.patternIntValue(end_token);
 
                 if (start_value > end_value) {
                     std.debug.print(
@@ -5060,8 +5101,7 @@ pub const Parser = struct {
         // Float literal pattern — reject infinity/NaN which would
         // silently never match any runtime value.
         if (self.match(&.{.Float})) {
-            const token = self.previous();
-            const value = try std.fmt.parseFloat(f64, token.lexeme);
+            const value = try self.patternFloatValue(self.previous());
             if (std.math.isInf(value) or std.math.isNan(value)) {
                 try self.reportError("float pattern overflows to infinity or NaN and will never match");
                 return error.UnexpectedToken;
