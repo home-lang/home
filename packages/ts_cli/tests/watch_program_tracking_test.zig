@@ -228,3 +228,40 @@ test "newly imported global declarations recheck unrelated checked sources" {
     try std.testing.expect(program.lookupPath("/project/ambient.d.ts") != null);
     try std.testing.expect(program.fileById(unrelated_id).owner != prior_owner);
 }
+
+test "watch revision admits a source after a cached missing import" {
+    const gpa = std.testing.allocator;
+    const initial_root = "import { value } from './dep'; const result: number = value;";
+    const revised_root = initial_root ++ "\n// A later edit makes the importer eligible for incremental checking.";
+    const typescript_source = "export const value: string = 'wrong';";
+
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", initial_root);
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    const main_id = try program.add("/project/main.ts", initial_root);
+    const options: @import("ts_driver").CompileOptions = .{ .strict = true, .no_emit = true };
+    try std.testing.expectEqual(@as(usize, 0), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    try std.testing.expect(program.lookupPath("/project/dep.ts") == null);
+    try std.testing.expectError(error.NotFound, resolver.resolve("./dep", "/project/main.ts"));
+
+    try sources.addFile("/project/dep.ts", typescript_source);
+    try sources.addFile("/project/main.ts", revised_root);
+    _ = (try program.updateSource("/project/main.ts", revised_root)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    const changed = [_][]const u8{"/project/main.ts"};
+    _ = try program.recompileChanged(&changed, options);
+
+    const typescript_id = program.lookupPath("/project/dep.ts") orelse return error.MissingNewImport;
+    try std.testing.expect(program.fileById(typescript_id).compilation != null);
+    try std.testing.expectEqualSlices(ts_program.FileId, &.{typescript_id}, program.fileById(main_id).imports.items);
+    var saw_type_error = false;
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) saw_type_error = true;
+    }
+    try std.testing.expect(saw_type_error);
+}

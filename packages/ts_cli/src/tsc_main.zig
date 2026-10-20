@@ -3914,6 +3914,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             // pointer remains valid because `resolver_adapter` keeps its
             // address.
             resolver_adapter.deinit();
+            resolver.invalidateCaches();
             resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
             resolver_adapter.setProgramSources(&program, compile_opts);
             _ = program.recompileChanged(changed.items, compile_opts) catch |err| {

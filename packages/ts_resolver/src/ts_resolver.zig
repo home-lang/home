@@ -354,6 +354,28 @@ pub const Resolver = struct {
         self.arena.deinit();
     }
 
+    /// Discard filesystem-dependent resolution facts between watch revisions.
+    /// Returned Resolution slices borrow this arena, so callers must finish
+    /// using them (and dispose of resolver adapters that cache them) first.
+    /// Releasing the arena as well as the maps keeps repeated revisions from
+    /// retaining every candidate path ever probed by the resolver.
+    pub fn invalidateCaches(self: *Resolver) void {
+        self.package_type_module_by_directory.deinit(self.gpa);
+        self.relative_files.deinit(self.gpa);
+        self.relative_file_directories.deinit(self.gpa);
+        self.file_exists_cache.deinit(self.gpa);
+        self.cache.deinit(self.gpa);
+        self.package_type_module_by_directory = .empty;
+        self.relative_files = .empty;
+        self.relative_file_directories = .empty;
+        self.file_exists_cache = .empty;
+        self.cache = .empty;
+        self.ambiguous_root = null;
+        self.alternate_mode = false;
+        self.arena.deinit();
+        self.arena = std.heap.ArenaAllocator.init(self.gpa);
+    }
+
     pub fn containingPackageIsTypeModule(self: *Resolver, containing_file: []const u8) bool {
         const directory = dirname(containing_file);
         if (self.trace == null) {
@@ -3609,6 +3631,27 @@ test "Resolver: cached importer and specifier keys own caller bytes" {
     @memset(&specifier, '?');
     try T.expectEqualStrings(result.path, (try r.resolve("./foo", "/proj/app.ts")).path);
     try T.expect(r.cache.contains("/proj/app.ts\x00./foo"));
+}
+
+test "Resolver: watch revision invalidates positive and negative filesystem resolutions" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/project/dep.js", "export const value = 1;");
+    var r = Resolver.init(T.allocator, vfs.fs(), .{});
+    defer r.deinit();
+
+    try T.expectEqualStrings("/project/dep.js", (try r.resolve("./dep", "/project/main.ts")).path);
+    try T.expectError(error.NotFound, r.resolve("./later", "/project/main.ts"));
+    try vfs.addFile("/project/dep.ts", "export const value: string = 'new';");
+    try vfs.addFile("/project/later.ts", "export const later = 1;");
+
+    // Both a positive resolution and a missing-file probe are stale within
+    // this revision. An invalidate starts a new filesystem observation.
+    try T.expectEqualStrings("/project/dep.js", (try r.resolve("./dep", "/project/main.ts")).path);
+    try T.expectError(error.NotFound, r.resolve("./later", "/project/main.ts"));
+    r.invalidateCaches();
+    try T.expectEqualStrings("/project/dep.ts", (try r.resolve("./dep", "/project/main.ts")).path);
+    try T.expectEqualStrings("/project/later.ts", (try r.resolve("./later", "/project/main.ts")).path);
 }
 
 test "Resolver: cached hits preserve importer conditions and repeated ambiguity" {
