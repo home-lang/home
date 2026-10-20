@@ -42,13 +42,25 @@ pub fn trackProgramFiles(watcher: *ts_watch.Watcher, program: *const ts_program.
 pub const WatchInterest = struct {
     gpa: std.mem.Allocator,
     watched_paths: std.StringHashMapUnmanaged(void) = .empty,
+    /// Borrowed keys from watched_paths and stable Program-owned importer
+    /// paths. This committed snapshot survives resolver cache invalidation
+    /// and lets an uncommitted watch observation retry after a failed build.
+    metadata_importers: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) WatchInterest {
         return .{ .gpa = gpa };
     }
 
     pub fn deinit(self: *WatchInterest) void {
+        self.clearMetadataImporters();
         self.clearWatchedPaths();
+    }
+
+    fn clearMetadataImporters(self: *WatchInterest) void {
+        var it = self.metadata_importers.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+        self.metadata_importers.deinit(self.gpa);
+        self.metadata_importers = .empty;
     }
 
     fn clearWatchedPaths(self: *WatchInterest) void {
@@ -67,15 +79,48 @@ pub const WatchInterest = struct {
         };
     }
 
+    /// A package.json revision invalidates its actual importers, not a
+    /// fictitious TypeScript source at the metadata path. The map is the
+    /// previous successful refresh, so retries do not depend on a resolver
+    /// cache that the failed build may already have cleared.
+    pub fn appendMetadataImporters(
+        self: *const WatchInterest,
+        program: *const ts_program.Program,
+        path: []const u8,
+        changed: *std.ArrayListUnmanaged([]const u8),
+    ) !bool {
+        const importers = self.metadata_importers.get(path) orelse return false;
+        for (importers.items) |importer_path| {
+            if (program.lookupPath(importer_path) == null) continue;
+            var already_added = false;
+            for (changed.items) |existing| {
+                if (std.mem.eql(u8, existing, importer_path)) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added) try changed.append(self.gpa, importer_path);
+        }
+        return true;
+    }
+
     pub fn refresh(self: *WatchInterest, watcher: *ts_watch.Watcher, program: *const ts_program.Program) !void {
         const failed_paths = try program.resolver.watchFailedLookupPaths(self.gpa);
         defer self.gpa.free(failed_paths);
+        const package_paths = try program.resolver.watchPackageJsonPaths(self.gpa);
+        defer self.gpa.free(package_paths);
 
         var next: std.StringHashMapUnmanaged(void) = .empty;
         errdefer {
             var it = next.iterator();
             while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
             next.deinit(self.gpa);
+        }
+        var next_metadata: std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
+        errdefer {
+            var it = next_metadata.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+            next_metadata.deinit(self.gpa);
         }
         for (program.files.items) |file| {
             if (!file.present and !file.root_input and !file.compiler_root) continue;
@@ -84,6 +129,22 @@ pub const WatchInterest = struct {
         // A physically removed import may have a stable FileId tombstone,
         // but its new failed lookup still needs a watch for recreation.
         for (failed_paths) |path| try self.stagePath(&next, path);
+        for (package_paths) |path| {
+            const importers = program.resolver.watchPackageJsonImporters(path).?;
+            var it = importers.iterator();
+            var live_importers: std.ArrayListUnmanaged([]const u8) = .empty;
+            errdefer live_importers.deinit(self.gpa);
+            while (it.next()) |entry| {
+                const id = program.lookupPath(entry.key_ptr.*) orelse continue;
+                try live_importers.append(self.gpa, program.fileById(id).path);
+            }
+            if (live_importers.items.len != 0) {
+                try self.stagePath(&next, path);
+                try next_metadata.put(self.gpa, next.getEntry(path).?.key_ptr.*, live_importers);
+                live_importers = .empty;
+            }
+            live_importers.deinit(self.gpa);
+        }
 
         const paths = try self.gpa.alloc([]const u8, next.count());
         defer self.gpa.free(paths);
@@ -100,8 +161,10 @@ pub const WatchInterest = struct {
             const path = entry.key_ptr.*;
             if (!next.contains(path)) watcher.untrack(path);
         }
+        self.clearMetadataImporters();
         self.clearWatchedPaths();
         self.watched_paths = next;
+        self.metadata_importers = next_metadata;
     }
 };
 
@@ -3946,6 +4009,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             defer changed.deinit(gpa);
             var batch_failed = false;
             for (change_set.changes.items) |ch| {
+                const metadata_changed = watch_interest.appendMetadataImporters(&program, ch.path, &changed) catch |err| {
+                    std.debug.print("error recording package metadata dependency {s}: {s}\n", .{ ch.path, @errorName(err) });
+                    batch_failed = true;
+                    break;
+                };
+                if (metadata_changed and program.lookupPath(ch.path) == null) continue;
                 if (ch.kind == .removed) {
                     _ = program.removeSource(ch.path) catch |err| {
                         std.debug.print("error removing source {s}: {s}\n", .{ ch.path, @errorName(err) });

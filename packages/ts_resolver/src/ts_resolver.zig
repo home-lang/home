@@ -316,6 +316,10 @@ pub const Resolver = struct {
     /// import priority even when no admitted source is edited.
     watch_failed_lookup_capture: bool = false,
     watch_failed_lookup_paths: std.StringHashMapUnmanaged(void) = .empty,
+    /// Each package.json consulted by a watch-mode resolution, mapped to
+    /// the source files whose module lookups depend on that metadata.
+    watch_package_json_importers: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)) = .empty,
+    watch_resolution_importer: ?[]const u8 = null,
     /// Set transiently by `attachExportsAlternateResult` while probing
     /// the exports-disabled "alternate" resolution. In this mode the
     /// legacy `main`/`types`/`module` fields only count when they
@@ -351,6 +355,7 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(self: *Resolver) void {
+        self.clearWatchPackageJsonImporters();
         self.watch_failed_lookup_paths.deinit(self.gpa);
         self.package_type_module_by_directory.deinit(self.gpa);
         self.relative_files.deinit(self.gpa);
@@ -366,6 +371,7 @@ pub const Resolver = struct {
     /// Releasing the arena as well as the maps keeps repeated revisions from
     /// retaining every candidate path ever probed by the resolver.
     pub fn invalidateCaches(self: *Resolver) void {
+        self.clearWatchPackageJsonImporters();
         self.watch_failed_lookup_paths.deinit(self.gpa);
         self.watch_failed_lookup_paths = .empty;
         self.package_type_module_by_directory.deinit(self.gpa);
@@ -380,6 +386,7 @@ pub const Resolver = struct {
         self.cache = .empty;
         self.ambiguous_root = null;
         self.alternate_mode = false;
+        self.watch_resolution_importer = null;
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(self.gpa);
     }
@@ -395,6 +402,39 @@ pub const Resolver = struct {
             index += 1;
         }
         return paths;
+    }
+
+    fn clearWatchPackageJsonImporters(self: *Resolver) void {
+        var it = self.watch_package_json_importers.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(self.gpa);
+        self.watch_package_json_importers.deinit(self.gpa);
+        self.watch_package_json_importers = .empty;
+    }
+
+    /// Returned paths and importer keys borrow the resolver arena. A watch
+    /// revision consumes them before invalidating resolution caches.
+    pub fn watchPackageJsonPaths(self: *Resolver, allocator: std.mem.Allocator) error{OutOfMemory}![][]const u8 {
+        const paths = try allocator.alloc([]const u8, self.watch_package_json_importers.count());
+        var it = self.watch_package_json_importers.iterator();
+        var index: usize = 0;
+        while (it.next()) |entry| {
+            paths[index] = entry.key_ptr.*;
+            index += 1;
+        }
+        return paths;
+    }
+
+    pub fn watchPackageJsonImporters(self: *Resolver, path: []const u8) ?*const std.StringHashMapUnmanaged(void) {
+        return self.watch_package_json_importers.getPtr(path);
+    }
+
+    fn recordWatchPackageJson(self: *Resolver, path: []const u8) ResolveError!void {
+        const importer = self.watch_resolution_importer orelse return;
+        const entry = self.watch_package_json_importers.getOrPut(self.gpa, path) catch return error.OutOfMemory;
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        if (entry.value_ptr.contains(importer)) return;
+        const owned_importer = self.ar().dupe(u8, importer) catch return error.OutOfMemory;
+        entry.value_ptr.put(self.gpa, owned_importer, {}) catch return error.OutOfMemory;
     }
 
     fn recordWatchFailedLookup(self: *Resolver, path: []const u8) ResolveError!void {
@@ -493,6 +533,9 @@ pub const Resolver = struct {
         containing_file: []const u8,
     ) ResolveError!Resolution {
         if (specifier.len == 0) return error.InvalidSpecifier;
+        const prior_watch_importer = self.watch_resolution_importer;
+        if (self.watch_failed_lookup_capture) self.watch_resolution_importer = containing_file;
+        defer self.watch_resolution_importer = prior_watch_importer;
         // Fresh per-resolution: any TS2209/TS2210 ambiguity is recorded
         // during this call and read by the caller immediately after.
         self.ambiguous_root = null;
@@ -1232,9 +1275,16 @@ pub const Resolver = struct {
         // identity, so a package whose modules import each other through
         // such paths would otherwise be re-admitted under ever-longer
         // spellings (`lib/../lib/../lib/...`) without bound.
-        if (isAbsolute(b) or a.len == 0) return normalizePath(self.ar(), b) catch error.OutOfMemory;
-        const combined = std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ a, b }) catch return error.OutOfMemory;
-        return normalizePath(self.ar(), combined) catch error.OutOfMemory;
+        const result = if (isAbsolute(b) or a.len == 0)
+            normalizePath(self.ar(), b) catch return error.OutOfMemory
+        else blk: {
+            const combined = std.fmt.allocPrint(self.ar(), "{s}/{s}", .{ a, b }) catch return error.OutOfMemory;
+            break :blk normalizePath(self.ar(), combined) catch return error.OutOfMemory;
+        };
+        if (self.watch_failed_lookup_capture and std.mem.eql(u8, b, "package.json")) {
+            try self.recordWatchPackageJson(result);
+        }
+        return result;
     }
 
     /// `fileExists` wrapped with tsc's per-candidate resolution traces
@@ -3369,6 +3419,38 @@ test "Resolver: watch retains higher-priority failed probes until cache invalida
     try T.expectEqual(@as(usize, 0), reset.len);
     try vfs.addFile("/proj/dep.ts", "export const value: string = 'new';");
     try T.expectEqualStrings("/proj/dep.ts", (try resolver.resolve("./dep", "/proj/main.ts")).path);
+}
+
+test "Resolver: watch records package metadata against every importing source" {
+    var vfs = VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const package_path = "/proj/node_modules/pkg/package.json";
+    try vfs.addFile(package_path, "{\"types\":\"./index.d.ts\"}");
+    try vfs.addFile("/proj/node_modules/pkg/index.d.ts", "export declare const value: number;");
+    var resolver = Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+
+    try T.expectEqualStrings("/proj/node_modules/pkg/index.d.ts", (try resolver.resolve("pkg", "/proj/first.ts")).path);
+    try T.expectEqualStrings("/proj/node_modules/pkg/index.d.ts", (try resolver.resolve("pkg", "/proj/first.ts")).path);
+    try T.expectEqualStrings("/proj/node_modules/pkg/index.d.ts", (try resolver.resolve("pkg", "/proj/second.ts")).path);
+    const importers = resolver.watchPackageJsonImporters(package_path) orelse return error.MissingPackageWatch;
+    try T.expectEqual(@as(usize, 2), importers.count());
+    try T.expect(importers.contains("/proj/first.ts"));
+    try T.expect(importers.contains("/proj/second.ts"));
+    const paths = try resolver.watchPackageJsonPaths(T.allocator);
+    defer T.allocator.free(paths);
+    var found_package = false;
+    for (paths) |path| {
+        if (std.mem.eql(u8, path, package_path)) found_package = true;
+    }
+    try T.expect(found_package);
+
+    resolver.invalidateCaches();
+    try T.expect(resolver.watchPackageJsonImporters(package_path) == null);
+    const reset = try resolver.watchPackageJsonPaths(T.allocator);
+    defer T.allocator.free(reset);
+    try T.expectEqual(@as(usize, 0), reset.len);
 }
 
 test "Resolver: package imports map output paths back to project sources" {

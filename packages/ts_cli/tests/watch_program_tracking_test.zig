@@ -331,6 +331,111 @@ test "watch mode retires a replaced transitive source but preserves explicit roo
     try std.testing.expect(unrelated_edit.changes.isEmpty());
 }
 
+test "watch mode tracks package metadata that selects an imported declaration" {
+    const gpa = std.testing.allocator;
+    const main_source = "import { value } from 'pkg'; const result: number = value;";
+    const package_path = "/project/node_modules/pkg/package.json";
+    const first_package = "{\"name\":\"pkg\",\"version\":\"1.0.0\",\"types\":\"./first.d.ts\"}";
+    const second_package = "{\"name\":\"pkg\",\"version\":\"1.0.0\",\"types\":\"./second.d.ts\"}";
+    var sources = ts_resolver.VirtualFs.init(gpa);
+    defer sources.deinit();
+    try sources.addFile("/project/main.ts", main_source);
+    try sources.addFile(package_path, first_package);
+    try sources.addFile("/project/node_modules/pkg/first.d.ts", "export declare const value: number;");
+    try sources.addFile("/project/node_modules/pkg/second.d.ts", "export declare const value: string;");
+    var resolver = ts_resolver.Resolver.init(gpa, sources.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    resolver.watch_failed_lookup_capture = true;
+    var program = ts_program.Program.init(gpa, &resolver);
+    defer program.deinit();
+    var adapter = ProgramResolverAdapter{ .resolver = &resolver, .program = &program };
+    const main_id = try program.add("/project/main.ts", main_source);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &adapter, .vtable = &ProgramResolverAdapter.vtable },
+    };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const first_id = program.lookupPath("/project/node_modules/pkg/first.d.ts") orelse return error.MissingFirstImport;
+
+    var stats = ts_watch.VirtualWatchFs.init(gpa);
+    defer stats.deinit();
+    try stats.add("/project/main.ts", 1, main_source.len);
+    try stats.add(package_path, 1, first_package.len);
+    try stats.add("/project/node_modules/pkg/first.d.ts", 1, 35);
+    try stats.add("/project/node_modules/pkg/second.d.ts", 1, 35);
+    var watcher = ts_watch.Watcher.init(gpa, stats.fs());
+    defer watcher.deinit();
+    var interests = tsc_main.WatchInterest.init(gpa);
+    defer interests.deinit();
+    try interests.refresh(&watcher, &program);
+    try std.testing.expect(watcher.tracked.contains(package_path));
+
+    try sources.addFile(package_path, second_package);
+    try stats.add(package_path, 2, second_package.len);
+    var changed = try watcher.observe();
+    defer changed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), changed.changes.changes.items.len);
+    try std.testing.expectEqualStrings(package_path, changed.changes.changes.items[0].path);
+    var revision_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer revision_paths.deinit(gpa);
+    // The committed watch snapshot must retain importer ownership even if a
+    // prior compilation attempt already cleared resolver caches.
+    resolver.invalidateCaches();
+    try std.testing.expect(try interests.appendMetadataImporters(&program, package_path, &revision_paths));
+    try std.testing.expectEqual(@as(usize, 1), revision_paths.items.len);
+    try std.testing.expectEqualStrings("/project/main.ts", revision_paths.items[0]);
+    _ = try program.recompileChanged(revision_paths.items, options);
+    try interests.refresh(&watcher, &program);
+    changed.commit(&watcher);
+    try std.testing.expect(program.lookupPath("/project/node_modules/pkg/first.d.ts") == null);
+    try std.testing.expect(program.fileById(first_id).compilation == null);
+    const second_id = program.lookupPath("/project/node_modules/pkg/second.d.ts") orelse return error.MissingSecondImport;
+    try std.testing.expectEqualSlices(ts_program.FileId, &.{second_id}, program.fileById(main_id).imports.items);
+    var found_type_error = false;
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) found_type_error = true;
+    }
+    try std.testing.expect(found_type_error);
+
+    try sources.addFile(package_path, first_package);
+    try stats.add(package_path, 3, first_package.len);
+    var restored = try watcher.observe();
+    defer restored.deinit();
+    try std.testing.expectEqual(@as(usize, 1), restored.changes.changes.items.len);
+    revision_paths.clearRetainingCapacity();
+    resolver.invalidateCaches();
+    try std.testing.expect(try interests.appendMetadataImporters(&program, package_path, &revision_paths));
+    _ = try program.recompileChanged(revision_paths.items, options);
+    try interests.refresh(&watcher, &program);
+    restored.commit(&watcher);
+    try std.testing.expectEqual(first_id, program.lookupPath("/project/node_modules/pkg/first.d.ts").?);
+    try std.testing.expect(program.lookupPath("/project/node_modules/pkg/second.d.ts") == null);
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.code != 2322);
+    }
+
+    const replacement = "export const result: number = 0;";
+    try sources.addFile("/project/main.ts", replacement);
+    try stats.add("/project/main.ts", 2, replacement.len);
+    var replaced = try watcher.observe();
+    defer replaced.deinit();
+    _ = (try program.updateSource("/project/main.ts", replacement)) orelse return error.MissingRoot;
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/project/main.ts"}, options);
+    try interests.refresh(&watcher, &program);
+    replaced.commit(&watcher);
+    try std.testing.expect(!watcher.tracked.contains(package_path));
+    try std.testing.expect(program.lookupPath("/project/node_modules/pkg/first.d.ts") == null);
+
+    try sources.addFile(package_path, second_package);
+    try stats.add(package_path, 4, second_package.len);
+    var unrelated_edit = try watcher.observe();
+    defer unrelated_edit.deinit();
+    try std.testing.expect(unrelated_edit.changes.isEmpty());
+}
+
 test "watch mode clears a missing-import diagnostic when its source appears alone" {
     const gpa = std.testing.allocator;
     const main_source = "import { value } from './dep'; const result: number = value;";
