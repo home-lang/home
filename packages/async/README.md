@@ -161,3 +161,10 @@ its threading_futex module supplied:
 ```sh
 zig test -lc --dep threading_futex -Mroot=packages/async/src/async.zig -Mthreading_futex=packages/runtime/src/threading/Futex.zig
 ```
+
+CompletionGate.acknowledge supports single-phase command acknowledgements without
+requiring an intermediate active event. Null observations advance the revision
+watermark while pending; stale responses and late terminal changes are ignored.
+It shares the same ordering and synchronization contract as observe. Camera
+continuous-AF pause/resume uses this path because an already paused/running
+algorithm can acknowledge directly without reporting a transition first.

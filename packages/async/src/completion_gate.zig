@@ -13,12 +13,22 @@ pub const Gate = struct {
             else => true,
         };
     }
-    pub fn observe(self: *Gate, revision: u64, active: bool, outcome: ?bool) void {
-        if (self.terminal() or revision < self.revision) return;
+    fn accept(self: *Gate, revision: u64) bool {
+        if (self.terminal() or revision < self.revision) return false;
         // Request completions may arrive out of order. An older completion must
         // never finish a scan observed on a newer control revision.
-        if (self.observed_revision) |latest| if (revision < latest) return;
+        if (self.observed_revision) |latest| if (revision < latest) return false;
         self.observed_revision = revision;
+        return true;
+    }
+    /// Single-phase command acknowledgement; no intermediate event is required.
+    /// Null records a newer nonterminal observation without completing the job.
+    pub fn acknowledge(self: *Gate, revision: u64, outcome: ?bool) void {
+        if (!self.accept(revision)) return;
+        if (outcome) |success| self.state = if (success) .succeeded else .failed;
+    }
+    pub fn observe(self: *Gate, revision: u64, active: bool, outcome: ?bool) void {
+        if (!self.accept(revision)) return;
         if (active) self.state = .active;
         if (self.state == .active) {
             if (outcome) |success| {
@@ -33,6 +43,25 @@ pub const Gate = struct {
         if (!self.terminal()) self.state = .stopped;
     }
 };
+test "command acknowledgement needs no active phase and fences stale responses" {
+    var g: Gate = .{ .revision = 5 };
+    g.acknowledge(4, true);
+    try std.testing.expectEqual(State.pending, g.state);
+    g.acknowledge(7, null);
+    g.acknowledge(6, true);
+    try std.testing.expectEqual(State.pending, g.state);
+    g.acknowledge(7, true);
+    g.cancel();
+    g.acknowledge(8, false);
+    try std.testing.expectEqual(State.succeeded, g.state);
+    g = .{ .revision = 8 };
+    g.acknowledge(8, false);
+    try std.testing.expectEqual(State.failed, g.state);
+    g = .{ .revision = 8 };
+    g.stop();
+    g.acknowledge(8, true);
+    try std.testing.expectEqual(State.stopped, g.state);
+}
 test "newer observations fence older completion events without rejecting equal revisions" {
     var g: Gate = .{ .revision = 9 };
     g.observe(11, false, true);
