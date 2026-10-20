@@ -59,10 +59,22 @@ pub fn build(b: *std.Build) void {
     integration_tests.root_module.addImport("regex", regex_module);
     integration_tests.root_module.addImport("test_framework", test_framework_module);
 
+    const sink_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sink_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    sink_tests.root_module.addImport("video", video_module);
+
     const run_integration_tests = b.addRunArtifact(integration_tests);
+    const run_sink_tests = b.addRunArtifact(sink_tests);
     const integration_step = b.step("test-integration", "Run integration tests");
     integration_step.dependOn(&run_integration_tests.step);
+    integration_step.dependOn(&run_sink_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    test_step.dependOn(&run_sink_tests.step);
 
     // Conformance tests
     const conformance_tests = b.addTest(.{
@@ -79,6 +91,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&lib.step);
     check_step.dependOn(&unit_tests.step);
     check_step.dependOn(&integration_tests.step);
+    check_step.dependOn(&sink_tests.step);
     check_step.dependOn(&conformance_tests.step);
 
     const run_conformance_tests = b.addRunArtifact(conformance_tests);
@@ -89,5 +102,6 @@ pub fn build(b: *std.Build) void {
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(&run_unit_tests.step);
     all_tests_step.dependOn(&run_integration_tests.step);
+    all_tests_step.dependOn(&run_sink_tests.step);
     all_tests_step.dependOn(&run_conformance_tests.step);
 }

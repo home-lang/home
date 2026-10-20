@@ -59,12 +59,12 @@ pub const VideoFrameSink = struct {
     pub fn init(allocator: std.mem.Allocator) VideoFrameSink {
         return .{
             .allocator = allocator,
-            .frames = std.ArrayList(frame.VideoFrame).init(allocator),
+            .frames = .empty,
         };
     }
 
     pub fn deinit(self: *VideoFrameSink) void {
-        self.frames.deinit();
+        self.frames.deinit(self.allocator);
     }
 
     pub fn asVideoSink(self: *VideoFrameSink) VideoSink {
@@ -91,7 +91,7 @@ pub const VideoFrameSink = struct {
 
     fn writeFrameImpl(ptr: *anyopaque, video_frame: frame.VideoFrame) !void {
         const self: *VideoFrameSink = @ptrCast(@alignCast(ptr));
-        try self.frames.append(video_frame);
+        try self.frames.append(self.allocator, video_frame);
     }
 
     fn flushImpl(ptr: *anyopaque) !void {
@@ -172,16 +172,16 @@ pub const EncodedPacketSink = struct {
     pub fn init(allocator: std.mem.Allocator) EncodedPacketSink {
         return .{
             .allocator = allocator,
-            .packets = std.ArrayList(packet.Packet).init(allocator),
+            .packets = .empty,
         };
     }
 
     pub fn deinit(self: *EncodedPacketSink) void {
-        self.packets.deinit();
+        self.packets.deinit(self.allocator);
     }
 
     pub fn writePacket(self: *EncodedPacketSink, pkt: packet.Packet) !void {
-        try self.packets.append(pkt);
+        try self.packets.append(self.allocator, pkt);
     }
 
     pub fn getPackets(self: *const EncodedPacketSink) []const packet.Packet {
@@ -206,14 +206,14 @@ pub const AudioSampleSink = struct {
     pub fn init(allocator: std.mem.Allocator, sample_rate: u32, channels: u8) AudioSampleSink {
         return .{
             .allocator = allocator,
-            .samples = std.ArrayList(f32).init(allocator),
+            .samples = .empty,
             .sample_rate = sample_rate,
             .channels = channels,
         };
     }
 
     pub fn deinit(self: *AudioSampleSink) void {
-        self.samples.deinit();
+        self.samples.deinit(self.allocator);
     }
 
     pub fn asAudioSink(self: *AudioSampleSink) AudioSink {
@@ -249,13 +249,13 @@ pub const AudioSampleSink = struct {
 
         // Reserve space for new samples
         const total_new_samples = @as(usize, num_samples) * @as(usize, channels);
-        try self.samples.ensureTotalCapacity(self.samples.items.len + total_new_samples);
+        try self.samples.ensureTotalCapacity(self.allocator, self.samples.items.len + total_new_samples);
 
         // Extract samples and append to buffer (interleaved format)
         for (0..num_samples) |sample_idx| {
             for (0..channels) |ch| {
                 const sample = audio_frame.getSampleF32(@intCast(ch), @intCast(sample_idx)) orelse 0.0;
-                try self.samples.append(sample);
+                try self.samples.append(self.allocator, sample);
             }
         }
     }
@@ -290,12 +290,12 @@ pub const WaveformSink = struct {
             .sample_rate = sample_rate,
             .channels = channels,
             .window_size = window_size,
-            .peaks = std.ArrayList(WaveformPoint).init(allocator),
+            .peaks = .empty,
         };
     }
 
     pub fn deinit(self: *WaveformSink) void {
-        self.peaks.deinit();
+        self.peaks.deinit(self.allocator);
     }
 
     pub fn asAudioSink(self: *WaveformSink) AudioSink {
@@ -351,7 +351,7 @@ pub const WaveformSink = struct {
                 0.0;
 
             // Add waveform point
-            try self.peaks.append(.{
+            try self.peaks.append(self.allocator, .{
                 .min = min_val,
                 .max = max_val,
                 .rms = rms,
@@ -451,25 +451,35 @@ pub const NullSink = struct {
 /// File sink (write to file)
 pub const FileSink = struct {
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: ?std.Io.File,
+    io: std.Io,
     bytes_written: u64,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !FileSink {
-        const file = try std.fs.cwd().createFile(path, .{});
+        return initWithIo(allocator, std.Io.Threaded.global_single_threaded.io(), path);
+    }
+
+    /// The supplied I/O interface must remain valid until `deinit` closes the file.
+    pub fn initWithIo(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !FileSink {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
         return .{
             .allocator = allocator,
             .file = file,
+            .io = io,
             .bytes_written = 0,
         };
     }
 
     pub fn deinit(self: *FileSink) void {
-        self.file.close();
+        if (self.file) |file| file.close(self.io);
+        self.file = null;
     }
 
     pub fn write(self: *FileSink, data: []const u8) !void {
-        try self.file.writeAll(data);
-        self.bytes_written += data.len;
+        const file = self.file orelse return error.NotOpen;
+        const next = std.math.add(u64, self.bytes_written, @intCast(data.len)) catch return error.FileTooBig;
+        try file.writePositionalAll(self.io, data, self.bytes_written);
+        self.bytes_written = next;
     }
 
     pub fn getBytesWritten(self: *const FileSink) u64 {
@@ -485,16 +495,16 @@ pub const BufferSink = struct {
     pub fn init(allocator: std.mem.Allocator) BufferSink {
         return .{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .empty,
         };
     }
 
     pub fn deinit(self: *BufferSink) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     pub fn write(self: *BufferSink, data: []const u8) !void {
-        try self.buffer.appendSlice(data);
+        try self.buffer.appendSlice(self.allocator, data);
     }
 
     pub fn getBuffer(self: *const BufferSink) []const u8 {
