@@ -309,10 +309,14 @@ const script_text = try script.generateToString(.{
 defer allocator.free(script_text);
 
 // To writer
-try script.generate(std.io.getStdOut().writer(), .{
+const io = std.Io.Threaded.global_single_threaded.io();
+var buffer: [4096]u8 = undefined;
+var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
+try script.generate(&stdout.interface, .{
     .validate = true,
     .include_comments = true,
 });
+try stdout.interface.flush();
 ```
 
 ## Alignment Utilities

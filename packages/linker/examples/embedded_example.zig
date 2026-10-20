@@ -59,7 +59,7 @@ pub fn main() !void {
             .readonly = true,
             .executable = true,
         })
-            .withVma(0x0800_0400)
+            .withVma(0x0800_1000)
             .withAlignment(.Page)
             .withRegion("flash"),
     );
@@ -71,7 +71,7 @@ pub fn main() !void {
             .load = true,
             .readonly = true,
         })
-            .withVma(0x0808_0000)
+            .withVma(0x0804_0000)
             .withAlignment(.Page)
             .withRegion("flash"),
     );
@@ -84,7 +84,7 @@ pub fn main() !void {
             .writable = true,
         })
             .withVma(0x2000_0000)
-            .withLma(0x0809_0000) // Load from flash
+            .withLma(0x0806_0000) // Load from flash
             .withAlignment(.Word)
             .withRegion("sram"),
     );
@@ -155,11 +155,14 @@ pub fn main() !void {
     std.debug.print("Generated stm32_cortex_m.ld\n", .{});
 
     // Also print to stdout
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll("\n--- Generated Script ---\n\n");
-    try script.generate(stdout, .{
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
+    try stdout.interface.writeAll("\n--- Generated Script ---\n\n");
+    try script.generate(&stdout.interface, .{
         .validate = false,
         .include_comments = true,
         .verbose = false,
     });
+    try stdout.interface.flush();
 }

@@ -86,6 +86,14 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(embedded_example);
     b.installArtifact(custom_example);
 
+    const check_step = b.step("check", "Compile linker examples and active tests");
+    check_step.dependOn(&kernel_example.step);
+    check_step.dependOn(&higher_half_example.step);
+    check_step.dependOn(&embedded_example.step);
+    check_step.dependOn(&custom_example.step);
+    check_step.dependOn(&unit_tests.step);
+    check_step.dependOn(&integration_tests.step);
+
     // Run steps for examples
     const run_kernel = b.addRunArtifact(kernel_example);
     const run_higher_half = b.addRunArtifact(higher_half_example);
