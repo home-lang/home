@@ -124,6 +124,7 @@ fn appendNamespaceValueRoute(
     node: hir.NodeId,
     target_path: []const u8,
     namespace_path: []const u8,
+    class_namespace_merges: ?*const std.StringHashMapUnmanaged(void),
     values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
 ) !void {
     const c = source.compilation;
@@ -134,13 +135,19 @@ fn appendNamespaceValueRoute(
         if (declarationName(c, member)) |name| {
             const visible = try builder.query.resolveInNamespace(source.path, node, name);
             const origin = visible.value orelse visible.type_only_value orelse visible.namespace orelse continue;
-            if (!visible.complete or visible.ambiguous or !std.mem.eql(u8, origin.path, source.path) or origin.position != c.hir.spanOf(member).start) continue;
+            const same_origin = std.mem.eql(u8, origin.path, source.path) and origin.position == c.hir.spanOf(member).start;
+            const kind = c.hir.kindOf(member);
+            const merged_contributor = if (!same_origin and (kind == .class_decl or kind == .namespace_decl) and class_namespace_merges != null) blk: {
+                const full = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, name });
+                break :blk class_namespace_merges.?.contains(full);
+            } else false;
+            if (!visible.complete or visible.ambiguous or (!same_origin and !merged_contributor)) continue;
         }
         if (c.hir.kindOf(member) == .namespace_decl) {
             const namespace = hir.namespaceOf(&c.hir, member);
             if (c.hir.kindOf(namespace.name) != .identifier) continue;
             const nested_path = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
-            try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, values);
+            try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, class_namespace_merges, values);
             continue;
         }
         if (c.hir.kindOf(member) == .enum_decl) {
@@ -444,17 +451,20 @@ fn mergedAmbientNamespace(
     }
     if (declarations.items.len < 2) return null;
 
-    // A class and a same-named namespace form one value in TypeScript.
-    // Class static schemas do not yet combine namespace augmentation members
-    // from separate fragments, so the complete route is not transferable.
+    // A class and a namespace with the same qualified name are one exported
+    // value. A single resolved origin cannot identify both declaration nodes;
+    // record the proven pairs before collecting either contributor.
     var classes: std.StringHashMapUnmanaged(void) = .empty;
     var namespaces: std.StringHashMapUnmanaged(void) = .empty;
+    var class_namespace_merges: std.StringHashMapUnmanaged(void) = .empty;
     for (declarations.items) |declaration| {
         const c = sources[declaration.source].compilation;
         try collectClassNamespaceNames(arena, c, declaration.node, name, &classes, &namespaces);
     }
     var class_names = classes.keyIterator();
-    while (class_names.next()) |class_name| if (namespaces.contains(class_name.*)) return null;
+    while (class_names.next()) |class_name| {
+        if (namespaces.contains(class_name.*)) try class_namespace_merges.put(arena, class_name.*, {});
+    }
 
     var collected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     var collected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
@@ -464,7 +474,7 @@ fn mergedAmbientNamespace(
         const counts = (try exactNamespaceRouteCounts(arena, source.compilation, declaration.node)) orelse return null;
         expected.values += counts.values;
         expected.types += counts.types;
-        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_values);
+        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &class_namespace_merges, &collected_values);
         try appendNamespaceTypeRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_types);
     }
     if (expected.values + expected.types == 0 or
@@ -680,7 +690,7 @@ fn collectAmbientModules(
                     if (c.hir.kindOf(key.node) == .namespace_decl) {
                         const first_value = values.items.len;
                         const first_type = types.items.len;
-                        try appendNamespaceValueRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, values);
+                        try appendNamespaceValueRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, null, values);
                         try appendNamespaceTypeRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, types);
                         for (values.items[first_value..]) |*route| route.ambient_module_name = specifier;
                         for (types.items[first_type..]) |*route| route.ambient_module_name = specifier;
@@ -768,7 +778,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             if (by_path.get(origin.path)) |owner| {
                 if (declarations.get(.{ .source = owner, .position = origin.position })) |node| {
                     if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl) {
-                        try appendNamespaceValueRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, &values);
+                        try appendNamespaceValueRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, null, &values);
                         try appendNamespaceTypeRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, &types);
                     }
                 }

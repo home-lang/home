@@ -7444,15 +7444,151 @@ test "Program: merged ambient class retains instance constructor and static cont
     }
 }
 
-test "Program: class namespace augmentation cannot publish a partial merged class" {
+test "Program: merged ambient class namespace keeps static and nested contracts in either owner order" {
     const first =
         \\declare module "pkg" {
-        \\  export namespace Nested { export class Box { readonly id: 1; } }
+        \\  export namespace Nested {
+        \\    export class Box {
+        \\      static readonly own: "own";
+        \\      readonly id: 1;
+        \\      constructor(value: "ready");
+        \\    }
+        \\  }
         \\}
     ;
     const second =
         \\declare module "pkg" {
-        \\  export namespace Nested { export namespace Box { export const extra: 2; } }
+        \\  export namespace Nested {
+        \\    export namespace Box {
+        \\      export const extra: 2;
+        \\      export function parse(value: "ready"): 3;
+        \\      export namespace Inner { export const deep: 4; }
+        \\      export interface Tag { value: "tag"; }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\import pkg = require("pkg");
+        \\const box: Nested.Box = new Nested.Box("ready");
+        \\const wrongId: 2 = box.id;
+        \\const wrongOwn: "other" = Nested.Box.own;
+        \\const wrongExtra: 1 = Nested.Box.extra;
+        \\const parsed: 3 = Nested.Box.parse("ready");
+        \\Nested.Box.parse("late");
+        \\const wrongDeep: 5 = Nested.Box.Inner.deep;
+        \\const tag: Nested.Box.Tag = { value: "tag" };
+        \\const wrongTag: Nested.Box.Tag = { value: "other" };
+        \\new Nested.Box("late");
+        \\const wrongRequire: 1 = pkg.Nested.Box.extra;
+    ;
+    const expected = [_]u32{ 2322, 2322, 2322, 2345, 2322, 2322, 2345, 2322 };
+    inline for (.{ false, true }) |split_files| {
+        inline for (.{ false, true }) |reverse_files| {
+            if (!split_files and reverse_files) continue;
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/first.d.ts", if (split_files) first else first ++ "\n" ++ second);
+            if (split_files) try vfs.addFile("/second.d.ts", second);
+            try vfs.addFile("/main.ts", consumer);
+            try vfs.addFile("/top.ts", "import { Box } from 'pkg'; new Box();");
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            if (split_files and reverse_files) _ = try program.add("/second.d.ts", second);
+            _ = try program.add("/first.d.ts", if (split_files) first else first ++ "\n" ++ second);
+            if (split_files and !reverse_files) _ = try program.add("/second.d.ts", second);
+            const main_id = try program.add("/main.ts", consumer);
+            const top_id = try program.add("/top.ts", "import { Box } from 'pkg'; new Box();");
+            try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict = true });
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(expected.len, diagnostics.len);
+            for (expected, diagnostics) |code, diagnostic| try T.expectEqual(code, diagnostic.code);
+            const top = program.fileById(top_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 1), top.len);
+            try T.expectEqual(@as(u32, 2305), top[0].code);
+
+            var graph = try program.collectProgramDeclarations();
+            defer graph.deinit();
+            var box: usize = 0;
+            var extra: usize = 0;
+            var parse: usize = 0;
+            var deep: usize = 0;
+            for (graph.values) |value| {
+                if (!std.mem.eql(u8, value.ambient_module_name, "pkg")) continue;
+                if (std.mem.eql(u8, value.namespace_path, "Nested") and std.mem.eql(u8, value.export_name, "Box")) box += 1;
+                if (std.mem.eql(u8, value.namespace_path, "Nested.Box") and std.mem.eql(u8, value.export_name, "extra")) extra += 1;
+                if (std.mem.eql(u8, value.namespace_path, "Nested.Box") and std.mem.eql(u8, value.export_name, "parse")) parse += 1;
+                if (std.mem.eql(u8, value.namespace_path, "Nested.Box.Inner") and std.mem.eql(u8, value.export_name, "deep")) deep += 1;
+            }
+            try T.expectEqual(@as(usize, 1), box);
+            try T.expectEqual(@as(usize, 1), extra);
+            try T.expectEqual(@as(usize, 1), parse);
+            try T.expectEqual(@as(usize, 1), deep);
+        }
+    }
+}
+
+test "Program: own class static shadows a same-named ambient namespace export" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { static readonly extra: 1; constructor(); }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export namespace Box { export const extra: 2; }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const good: 1 = Nested.Box.extra;
+        \\const wrong: 2 = Nested.Box.extra;
+    ;
+    inline for (.{ false, true }) |reverse_files| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        if (reverse_files) _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/first.d.ts", first);
+        if (!reverse_files) _ = try program.add("/second.d.ts", second);
+        const main_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict = true });
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try T.expectEqual(
+            @as(u32, @intCast(std.mem.indexOf(u8, consumer, if (reverse_files) "good" else "wrong").?)),
+            diagnostics[0].pos,
+        );
+    }
+}
+
+test "Program: unsupported class augmentation cannot publish a partial merged value" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { static get computed(): 1; constructor(); }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export namespace Box { export const extra: 2; }
+        \\  }
         \\}
     ;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);

@@ -114077,23 +114077,61 @@ pub const Checker = struct {
         return self.programNamespaceValueTypeForModule(path, namespace_path, "");
     }
 
+    fn programClassStaticPrecedesNamespaceMember(
+        self: *Checker,
+        path: []const u8,
+        ambient_module: []const u8,
+        namespace_path: []const u8,
+        class_name: []const u8,
+        child_path: []const u8,
+        member_name: []const u8,
+    ) bool {
+        for (self.program_exported_values) |value| {
+            if (!std.mem.eql(u8, value.target_path, path) or
+                !std.mem.eql(u8, value.ambient_module_name, ambient_module)) continue;
+            if (std.mem.eql(u8, value.namespace_path, namespace_path) and
+                std.mem.eql(u8, value.export_name, class_name) and value.declaration != null)
+            {
+                const body = value.declaration.?.body orelse continue;
+                if (body.* == .typeof_class) return true;
+            }
+            if (std.mem.eql(u8, value.namespace_path, child_path) and
+                std.mem.eql(u8, value.export_name, member_name)) return false;
+            if (value.namespace_path.len <= child_path.len or
+                !std.mem.startsWith(u8, value.namespace_path, child_path) or
+                value.namespace_path[child_path.len] != '.') continue;
+            const suffix = value.namespace_path[child_path.len + 1 ..];
+            if (std.mem.startsWith(u8, suffix, member_name) and
+                (suffix.len == member_name.len or suffix[member_name.len] == '.')) return false;
+        }
+        return true;
+    }
+
     fn programNamespaceValueTypeForModule(self: *Checker, path: []const u8, namespace_path: []const u8, ambient_module: []const u8) CheckError!?TypeId {
         var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer members.deinit(self.gpa);
+        var merged_children: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer merged_children.deinit(self.gpa);
+        // Materialize direct declarations before descendant namespaces. A
+        // class and its namespace augmentation may arrive in either source
+        // order; processing a child first would let the later class replace it.
         for (self.program_exported_values) |value| {
             if (!value.runtime_value) continue;
             if (!std.mem.eql(u8, value.ambient_module_name, ambient_module)) continue;
             if (!std.mem.eql(u8, value.target_path, path)) continue;
-            if (std.mem.eql(u8, value.namespace_path, namespace_path)) {
-                try self.appendOrReplaceObjectMember(&members, .{
-                    .name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory,
-                    .type = (try self.programExportedValueType(value)) orelse types.Primitive.any,
-                    .is_optional = false,
-                    .is_readonly = true,
-                    .is_method = value.kind == .function,
-                });
-                continue;
-            }
+            if (!std.mem.eql(u8, value.namespace_path, namespace_path)) continue;
+            try self.appendOrReplaceObjectMember(&members, .{
+                .name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory,
+                .type = (try self.programExportedValueType(value)) orelse types.Primitive.any,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = value.kind == .function,
+            });
+        }
+        for (self.program_exported_values) |value| {
+            if (!value.runtime_value) continue;
+            if (!std.mem.eql(u8, value.ambient_module_name, ambient_module)) continue;
+            if (!std.mem.eql(u8, value.target_path, path)) continue;
             if (value.namespace_path.len <= namespace_path.len) continue;
             if (namespace_path.len != 0 and
                 (!std.mem.startsWith(u8, value.namespace_path, namespace_path) or
@@ -114101,15 +114139,47 @@ pub const Checker = struct {
             const suffix = value.namespace_path[if (namespace_path.len == 0) 0 else namespace_path.len + 1..];
             const child_name = suffix[0 .. std.mem.indexOfScalar(u8, suffix, '.') orelse suffix.len];
             const child_id = self.string_interner.intern(child_name) catch return error.OutOfMemory;
-            var present = false;
-            for (members.items) |member| if (member.name == child_id) {
-                present = true;
+            var present: ?*types.ObjectMember = null;
+            for (members.items) |*member| if (member.name == child_id) {
+                present = member;
                 break;
             };
-            if (present) continue;
+            if (present != null and merged_children.contains(child_id)) continue;
+            if (present) |existing| {
+                if (self.class_name_by_static.get(existing.type) == null) continue;
+            }
             const child_path = try std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", child_name });
             defer self.gpa.free(child_path);
             const child_type = (try self.programNamespaceValueTypeForModule(path, child_path, ambient_module)) orelse continue;
+            if (present) |existing| {
+                const class_name = self.class_name_by_static.get(existing.type).?;
+                var combined: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer combined.deinit(self.gpa);
+                try combined.appendSlice(self.gpa, self.interner.objectMembers(existing.type));
+                for (self.interner.objectMembers(child_type)) |child_member| {
+                    var shadowed = false;
+                    for (combined.items) |*class_member| if (class_member.name == child_member.name) {
+                        // Both declarations are exact; source order decides
+                        // which statically named member TypeScript exposes.
+                        if (!self.programClassStaticPrecedesNamespaceMember(
+                            path,
+                            ambient_module,
+                            namespace_path,
+                            child_name,
+                            child_path,
+                            self.string_interner.get(child_member.name),
+                        )) class_member.* = child_member;
+                        shadowed = true;
+                        break;
+                    };
+                    if (!shadowed) try combined.append(self.gpa, child_member);
+                }
+                const merged_type = self.interner.internObjectType(combined.items) catch return error.OutOfMemory;
+                try self.class_name_by_static.put(self.gpa, merged_type, class_name);
+                existing.type = merged_type;
+                try merged_children.put(self.gpa, child_id, {});
+                continue;
+            }
             try members.append(self.gpa, .{ .name = child_id, .type = child_type, .is_optional = false, .is_readonly = true, .is_method = false });
         }
         if (members.items.len == 0) return null;
