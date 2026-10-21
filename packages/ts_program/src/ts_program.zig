@@ -1923,6 +1923,7 @@ pub const Program = struct {
         try self.appendProgramGlobalDeclareVarDiagnostics(options);
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendMergedAmbientModuleExportDiagnostics(options);
+        try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
     }
 
     /// Source-file enumeration is a DFS postorder, independent of admission
@@ -2191,6 +2192,22 @@ pub const Program = struct {
 
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendRootDirDiagnostics(options);
+
+        // Cross-file declaration conflicts are known only after every owner
+        // has been checked. Streaming clients already received each file's
+        // early diagnostics, so publish only the new suffix from this pass.
+        const previous_counts = try self.gpa.alloc(usize, self.files.items.len);
+        defer self.gpa.free(previous_counts);
+        for (self.files.items, 0..) |file, i| {
+            previous_counts[i] = if (file.compilation) |c| c.diagnostics.items.len else 0;
+        }
+        try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
+        for (self.files.items, 0..) |file, i| {
+            if (!file.present or file.redirect_target != null) continue;
+            const c = file.compilation orelse continue;
+            if (c.diagnostics.items.len > previous_counts[i])
+                callback(ctx, file.path, c.diagnostics.items[previous_counts[i]..]);
+        }
     }
 
     fn collectAmbientGlobalNamespaceRoots(self: *const Program) ProgramError![]const []const u8 {
@@ -4097,6 +4114,7 @@ pub const Program = struct {
         try self.appendProgramGlobalDeclareVarDiagnostics(options);
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendMergedAmbientModuleExportDiagnostics(options);
+        try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
     }
 
     fn compileFilesInDependencyBatches(
@@ -5485,6 +5503,234 @@ pub const Program = struct {
         pos: usize,
         is_block_scoped: bool,
     };
+
+    const AmbientClassNamespaceMember = struct {
+        file_index: usize,
+        module_name: []const u8,
+        /// Owned qualified path of the class or its augmenting namespace.
+        class_path: []const u8,
+        name: []const u8,
+        pos: u32,
+        span_len: u32,
+        class_static: bool,
+        block_scoped: bool = false,
+    };
+
+    const AmbientMemberKey = struct {
+        module_name: []const u8,
+        class_path: []const u8,
+        name: []const u8,
+    };
+
+    const AmbientMemberKeyContext = struct {
+        pub fn hash(_: @This(), key: AmbientMemberKey) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update(key.module_name);
+            hasher.update(&.{0});
+            hasher.update(key.class_path);
+            hasher.update(&.{0});
+            hasher.update(key.name);
+            return hasher.final();
+        }
+
+        pub fn eql(_: @This(), a: AmbientMemberKey, b: AmbientMemberKey) bool {
+            return std.mem.eql(u8, a.module_name, b.module_name) and
+                std.mem.eql(u8, a.class_path, b.class_path) and
+                std.mem.eql(u8, a.name, b.name);
+        }
+    };
+
+    const AmbientMemberGroup = struct {
+        class_statics: std.ArrayListUnmanaged(usize) = .empty,
+        namespace_values: std.ArrayListUnmanaged(usize) = .empty,
+
+        fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+            self.class_statics.deinit(gpa);
+            self.namespace_values.deinit(gpa);
+        }
+    };
+
+    fn ambientMemberName(c: *const ts_driver.Compilation, node: hir_mod_ns.NodeId) ?[]const u8 {
+        if (node == hir_mod_ns.none_node_id) return null;
+        return switch (c.hir.kindOf(node)) {
+            .identifier => c.interner.get(hir_mod_ns.identifierOf(&c.hir, node).name),
+            .literal_string => c.interner.get(hir_mod_ns.literalStringOf(&c.hir, node).value),
+            else => null,
+        };
+    }
+
+    fn appendAmbientClassNamespaceMember(
+        self: *Program,
+        c: *const ts_driver.Compilation,
+        file_index: usize,
+        module_name: []const u8,
+        class_path: []const u8,
+        name_node: hir_mod_ns.NodeId,
+        class_static: bool,
+        block_scoped: bool,
+        out: *std.ArrayListUnmanaged(AmbientClassNamespaceMember),
+    ) ProgramError!void {
+        const name = ambientMemberName(c, name_node) orelse return;
+        const owned_path = try self.gpa.dupe(u8, class_path);
+        errdefer self.gpa.free(owned_path);
+        const span = c.hir.spanOf(name_node);
+        try out.append(self.gpa, .{
+            .file_index = file_index,
+            .module_name = module_name,
+            .class_path = owned_path,
+            .name = name,
+            .pos = span.start,
+            .span_len = span.end - span.start,
+            .class_static = class_static,
+            .block_scoped = block_scoped,
+        });
+    }
+
+    fn collectAmbientClassNamespaceMembers(
+        self: *Program,
+        c: *const ts_driver.Compilation,
+        file_index: usize,
+        module_name: []const u8,
+        namespace_path: []const u8,
+        node: hir_mod_ns.NodeId,
+        out: *std.ArrayListUnmanaged(AmbientClassNamespaceMember),
+    ) ProgramError!void {
+        for (hir_mod_ns.namespaceBody(&c.hir, node)) |raw| {
+            const member = if (c.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&c.hir, raw).decl else raw;
+            if (member == hir_mod_ns.none_node_id) continue;
+            switch (c.hir.kindOf(member)) {
+                .namespace_decl => {
+                    const namespace = hir_mod_ns.namespaceOf(&c.hir, member);
+                    const name = ambientMemberName(c, namespace.name) orelse continue;
+                    try self.appendAmbientClassNamespaceMember(c, file_index, module_name, namespace_path, namespace.name, false, false, out);
+                    const nested_path = if (namespace_path.len == 0)
+                        try self.gpa.dupe(u8, name)
+                    else
+                        try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ namespace_path, name });
+                    defer self.gpa.free(nested_path);
+                    try self.collectAmbientClassNamespaceMembers(c, file_index, module_name, nested_path, member, out);
+                },
+                .class_decl => {
+                    const class = hir_mod_ns.classOf(&c.hir, member);
+                    const name = ambientMemberName(c, class.name) orelse continue;
+                    try self.appendAmbientClassNamespaceMember(c, file_index, module_name, namespace_path, class.name, false, false, out);
+                    const class_path = if (namespace_path.len == 0)
+                        try self.gpa.dupe(u8, name)
+                    else
+                        try std.fmt.allocPrint(self.gpa, "{s}.{s}", .{ namespace_path, name });
+                    defer self.gpa.free(class_path);
+                    for (hir_mod_ns.classMembers(&c.hir, member)) |class_member| {
+                        const key = switch (c.hir.kindOf(class_member)) {
+                            .object_property => blk: {
+                                const property = hir_mod_ns.objectPropertyOf(&c.hir, class_member);
+                                if (!property.is_static) continue;
+                                break :blk property.key;
+                            },
+                            .fn_decl, .fn_expr, .arrow_fn => blk: {
+                                const function = hir_mod_ns.fnDeclOf(&c.hir, class_member);
+                                if (!function.flags.is_static) continue;
+                                break :blk function.name;
+                            },
+                            else => continue,
+                        };
+                        try self.appendAmbientClassNamespaceMember(c, file_index, module_name, class_path, key, true, false, out);
+                    }
+                },
+                .var_decl, .let_decl, .const_decl => {
+                    const kind = c.hir.kindOf(member);
+                    try self.appendAmbientClassNamespaceMember(
+                        c,
+                        file_index,
+                        module_name,
+                        namespace_path,
+                        hir_mod_ns.varDeclOf(&c.hir, member).name,
+                        false,
+                        kind == .let_decl or kind == .const_decl,
+                        out,
+                    );
+                },
+                .fn_decl, .enum_decl => {
+                    const name_node = if (c.hir.kindOf(member) == .fn_decl)
+                        hir_mod_ns.fnDeclOf(&c.hir, member).name
+                    else
+                        hir_mod_ns.enumOf(&c.hir, member).name;
+                    try self.appendAmbientClassNamespaceMember(c, file_index, module_name, namespace_path, name_node, false, false, out);
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn appendAmbientClassNamespaceCollisionDiagnostic(self: *Program, binding: AmbientClassNamespaceMember, code: u32) ProgramError!void {
+        const file = self.files.items[binding.file_index];
+        const c = file.compilation orelse return;
+        if (diagnosticExistsAt(c, code, binding.pos)) return;
+        const message = if (code == 2451)
+            try std.fmt.allocPrint(self.gpa, "Cannot redeclare block-scoped variable '{s}'.", .{binding.name})
+        else
+            try std.fmt.allocPrint(self.gpa, "Duplicate identifier '{s}'.", .{binding.name});
+        try c.diagnostics.append(self.gpa, .{
+            .phase = .bind,
+            .pos = binding.pos,
+            .line = 0,
+            .span_len = binding.span_len,
+            .code = code,
+            .message = message,
+        });
+        c.has_errors = true;
+    }
+
+    fn appendAmbientClassNamespaceCollisionDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        var bindings: std.ArrayListUnmanaged(AmbientClassNamespaceMember) = .empty;
+        defer {
+            for (bindings.items) |binding| self.gpa.free(binding.class_path);
+            bindings.deinit(self.gpa);
+        }
+        for (self.files.items, 0..) |file, file_index| {
+            if (!file.present or file.redirect_target != null) continue;
+            if (!file.sourceContains("module")) continue;
+            const c = file.compilation orelse continue;
+            if (c.hir.kindOf(c.root) != .block_stmt) continue;
+            for (hir_mod_ns.blockStmts(&c.hir, c.root)) |raw| {
+                const node = if (c.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&c.hir, raw).decl else raw;
+                if (node == hir_mod_ns.none_node_id or c.hir.kindOf(node) != .namespace_decl) continue;
+                const namespace = hir_mod_ns.namespaceOf(&c.hir, node);
+                if (!namespace.is_string_named) continue;
+                const module_name = ambientMemberName(c, namespace.name) orelse continue;
+                try self.collectAmbientClassNamespaceMembers(c, file_index, module_name, "", node, &bindings);
+            }
+        }
+        const Groups = std.HashMapUnmanaged(AmbientMemberKey, AmbientMemberGroup, AmbientMemberKeyContext, 80);
+        var groups: Groups = .empty;
+        defer {
+            var it = groups.valueIterator();
+            while (it.next()) |group| group.deinit(self.gpa);
+            groups.deinit(self.gpa);
+        }
+        for (bindings.items, 0..) |binding, index| {
+            const key: AmbientMemberKey = .{ .module_name = binding.module_name, .class_path = binding.class_path, .name = binding.name };
+            const gop = try groups.getOrPut(self.gpa, key);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (binding.class_static)
+                try gop.value_ptr.class_statics.append(self.gpa, index)
+            else
+                try gop.value_ptr.namespace_values.append(self.gpa, index);
+        }
+        var it = groups.valueIterator();
+        while (it.next()) |group| {
+            for (group.class_statics.items) |class_index| {
+                const class_member = bindings.items[class_index];
+                for (group.namespace_values.items) |namespace_index| {
+                    const namespace_member = bindings.items[namespace_index];
+                    const code: u32 = if (class_member.file_index != namespace_member.file_index and namespace_member.block_scoped) 2451 else 2300;
+                    if (!self.skipDeclarationDiagnostics(self.files.items[class_member.file_index], options))
+                        try self.appendAmbientClassNamespaceCollisionDiagnostic(class_member, code);
+                    if (!self.skipDeclarationDiagnostics(self.files.items[namespace_member.file_index], options))
+                        try self.appendAmbientClassNamespaceCollisionDiagnostic(namespace_member, code);
+                }
+            }
+        }
+    }
 
     fn appendMergedAmbientModuleExportDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
         var bindings: std.ArrayListUnmanaged(ProgramAmbientExportBinding) = .empty;
@@ -7573,6 +7819,67 @@ test "Program: own class static shadows a same-named ambient namespace export" {
             @as(u32, @intCast(std.mem.indexOf(u8, consumer, if (reverse_files) "good" else "wrong").?)),
             diagnostics[0].pos,
         );
+    }
+}
+
+test "Program: ambient class static and namespace value collisions match TypeScript diagnostics" {
+    const first = @embedFile("testdata/ambient_class_static_collision_first.d.ts");
+    const second = @embedFile("testdata/ambient_class_static_collision_second.d.ts");
+    inline for (.{ false, true }) |split_files| {
+        inline for (.{ false, true }) |reverse_files| {
+            if (!split_files and reverse_files) continue;
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            const combined = if (split_files) first else first ++ "\n" ++ second;
+            try vfs.addFile("/first.d.ts", combined);
+            if (split_files) try vfs.addFile("/second.d.ts", second);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            if (reverse_files) _ = try program.add("/second.d.ts", second);
+            const first_id = try program.add("/first.d.ts", combined);
+            const second_id = if (split_files and !reverse_files) try program.add("/second.d.ts", second) else if (split_files) program.lookupPath("/second.d.ts").? else first_id;
+            try program.compileAll(.{ .no_emit = true, .strict = true });
+            const expected_code: u32 = if (split_files) 2451 else 2300;
+            const first_diags = program.fileById(first_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, if (split_files) 1 else 2), first_diags.len);
+            for (first_diags) |diagnostic| try T.expectEqual(expected_code, diagnostic.code);
+            if (split_files) {
+                const second_diags = program.fileById(second_id).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 1), second_diags.len);
+                try T.expectEqual(expected_code, second_diags[0].code);
+            }
+        }
+    }
+}
+
+test "Program: streaming publishes late ambient class collisions once and respects skipLibCheck" {
+    const first = @embedFile("testdata/ambient_class_static_collision_first.d.ts");
+    const second = @embedFile("testdata/ambient_class_static_collision_second.d.ts");
+    const Callback = struct {
+        fn receive(counts: *[2]usize, path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+            const index: usize = if (std.mem.eql(u8, path, "/first.d.ts")) 0 else if (std.mem.eql(u8, path, "/second.d.ts")) 1 else return;
+            for (diagnostics) |diagnostic| {
+                if (diagnostic.code == 2451) counts[index] += 1;
+            }
+        }
+    };
+    inline for (.{ false, true }) |skip_lib_check| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        var counts = [2]usize{ 0, 0 };
+        try program.compileAllStreaming(.{ .no_emit = true, .strict = true, .skip_lib_check = skip_lib_check }, &counts, Callback.receive);
+        const expected: usize = if (skip_lib_check) 0 else 1;
+        try T.expectEqual([2]usize{ expected, expected }, counts);
     }
 }
 
