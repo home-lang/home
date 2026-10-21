@@ -736,6 +736,12 @@ pub const ProgramExportedValueKind = enum {
     variable,
 };
 
+pub const ProgramEnumMember = struct {
+    pub const Value = union(enum) { number: f64, string: []const u8 };
+    name: []const u8,
+    value: Value,
+};
+
 pub const ProgramExportedValue = struct {
     target_path: []const u8,
     ambient_module_name: []const u8 = "",
@@ -747,6 +753,9 @@ pub const ProgramExportedValue = struct {
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
     declaration: ?*const ProgramClassSchema.Declaration = null,
+    /// Source-owned constant members of an exported ambient const enum.
+    /// Null means this route is not an enum; an empty slice is a valid enum.
+    enum_members: ?[]const ProgramEnumMember = null,
     /// The declared value type contains a leaf that cannot be transferred
     /// losslessly. Keep its declaration for contextual member projection,
     /// but never publish the approximate whole value as an ordinary type.
@@ -6043,6 +6052,7 @@ pub const Checker = struct {
     conditional_type_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     conditional_type_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_has_ambient_const_enum_routes: bool = false,
     program_exported_types: []const ProgramExportedType = &.{},
     program_ambient_modules: []const ProgramAmbientModule = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
@@ -6736,6 +6746,13 @@ pub const Checker = struct {
     pub fn setProgramExportedValues(self: *Checker, values: []const ProgramExportedValue) void {
         self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_values = values;
+        self.program_has_ambient_const_enum_routes = false;
+        for (values) |value| {
+            if (value.ambient_module_name.len != 0 and value.enum_members != null) {
+                self.program_has_ambient_const_enum_routes = true;
+                break;
+            }
+        }
     }
 
     pub fn setProgramExportedTypes(self: *Checker, values: []const ProgramExportedType) void {
@@ -73763,6 +73780,7 @@ pub const Checker = struct {
         const info = try self.localImportModuleInfo(chain[0], anchor) orelse return false;
         const import = hir_mod.importOf(self.hir, info.import_node);
         if (import.is_type_only) return false;
+        if (self.program_has_ambient_const_enum_routes and self.programImportedAmbientConstEnumForAccess(info, chain)) return true;
         var specifier = self.string_interner.get(info.specifier);
         var enum_name = chain[chain.len - 2];
         var component: usize = 1;
@@ -73787,6 +73805,69 @@ pub const Checker = struct {
         }
         if (try self.ambientModuleNamedExportRuntimeStatus(anchor, specifier, enum_name) == .ambient_const_enum) return true;
         return self.sourceHasVirtualFilenameSections() and try self.virtualBareModuleAmbientConstEnum(anchor, specifier, enum_name);
+    }
+
+    fn programImportedAmbientConstEnumForAccess(self: *Checker, info: LocalImportModuleInfo, chain: []const hir_mod.StringId) bool {
+        return self.programImportedAmbientConstEnumRouteForAccess(info, chain) != null;
+    }
+
+    fn programImportedAmbientConstEnumRouteForAccess(self: *Checker, info: LocalImportModuleInfo, chain: []const hir_mod.StringId) ?*const ProgramExportedValue {
+        const specifier = self.string_interner.get(info.specifier);
+        const enum_name = self.string_interner.get(chain[chain.len - 2]);
+        for (self.program_exported_values) |*value| {
+            if (value.enum_members == null or value.ambient_module_name.len == 0) continue;
+            if (!self.moduleNameMatchesSpecifier(value.ambient_module_name, specifier) or
+                !std.mem.eql(u8, value.export_name, enum_name)) continue;
+            var parts = std.mem.splitScalar(u8, value.namespace_path, '.');
+            if (info.exported_root) |root| {
+                const first = parts.next() orelse continue;
+                if (!std.mem.eql(u8, first, self.string_interner.get(root))) continue;
+            }
+            var matched = true;
+            for (chain[1 .. chain.len - 2]) |part| {
+                const next = parts.next() orelse {
+                    matched = false;
+                    break;
+                };
+                if (!std.mem.eql(u8, next, self.string_interner.get(part))) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched and parts.next() == null) return value;
+        }
+        return null;
+    }
+
+    fn programEnumMemberHasDistinctSiblingValue(self: *Checker, node: NodeId, member_type: TypeId) CheckError!bool {
+        if (!self.program_has_ambient_const_enum_routes) return false;
+        const member_info = self.interner.enumLiteralInfo(member_type) orelse return false;
+        var chain: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer chain.deinit(self.gpa);
+        if (!try self.collectMemberAccessIdentifierChain(node, &chain) or chain.items.len < 2) return false;
+        if (chain.items[chain.items.len - 2] != member_info.enum_name or
+            chain.items[chain.items.len - 1] != member_info.member_name) return false;
+        const info = try self.localImportModuleInfo(chain.items[0], node) orelse return false;
+        const route = self.programImportedAmbientConstEnumRouteForAccess(info, chain.items) orelse return false;
+        const members = route.enum_members.?;
+        for (members) |member| {
+            if (!std.mem.eql(u8, member.name, self.string_interner.get(member_info.member_name))) continue;
+            for (members) |other| {
+                const distinct = switch (member.value) {
+                    .number => |number| switch (other.value) {
+                        .number => |other_number| number != other_number,
+                        .string => true,
+                    },
+                    .string => |string| switch (other.value) {
+                        .number => true,
+                        .string => |other_string| !std.mem.eql(u8, string, other_string),
+                    },
+                };
+                if (distinct) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     fn valueImportBindingInSection(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
@@ -107122,7 +107203,7 @@ pub const Checker = struct {
             self.interner.pool.flagsOf(target_t)
         else
             return init_t;
-        if (target_flags.is_enum_literal) return init_t;
+        if (target_flags.is_enum_literal or try self.programEnumMemberHasDistinctSiblingValue(init_node, init_t)) return init_t;
         return self.widenLiteralType(init_t);
     }
 
@@ -112028,6 +112109,22 @@ pub const Checker = struct {
 
     fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!?TypeId {
         if (value.projection_only) return null;
+        if (value.enum_members) |enum_members| {
+            const enum_name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory;
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            for (enum_members) |member| {
+                const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+                const member_type = switch (member.value) {
+                    .number => |number| self.interner.internEnumNumberLiteral(number, enum_name, member_name) catch return error.OutOfMemory,
+                    .string => |string| self.interner.internEnumStringLiteral(self.string_interner.intern(string) catch return error.OutOfMemory, enum_name, member_name) catch return error.OutOfMemory,
+                };
+                try members.append(self.gpa, .{ .name = member_name, .type = member_type, .is_optional = false, .is_readonly = true, .is_method = false });
+            }
+            const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+            try self.registerEnumNamespaceDisplayName(result, enum_name);
+            return result;
+        }
         if (value.declaration) |declaration| {
             const definition_id = self.programGenericDefinition(declaration) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,

@@ -7041,6 +7041,61 @@ test "Program: ambient module graph preserves const enum provenance" {
     try T.expect(found_mode and found_runtime and found_ts_mode);
 }
 
+test "Program: nested ambient const enum retains value members and isolated access diagnostics" {
+    const ambient =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 1, Two }
+        \\    export const enum Alias { First = 1, Again = 1 }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import pkg = require("pkg");
+        \\const one: 1 = pkg.Nested.Mode.One;
+        \\const two: 2 = pkg.Nested.Mode.Two;
+        \\const wrongOne: 3 = pkg.Nested.Mode.One;
+        \\const wrongTwo: 3 = pkg.Nested.Mode.Two;
+        \\const wrongAlias: 2 = pkg.Nested.Alias.Again;
+        \\pkg.Nested.Mode.Missing;
+    ;
+    inline for (.{ false, true }) |isolated| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/ambient.d.ts", ambient);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/ambient.d.ts", ambient);
+        const consumer_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict_flags = .{ .isolated_modules = isolated } });
+        const compilation = program.fileById(consumer_id).compilation.?;
+        var isolated_access: usize = 0;
+        var wrong_value: usize = 0;
+        var missing_member: usize = 0;
+        var named_one = false;
+        var named_two = false;
+        var named_alias = false;
+        for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2748 => isolated_access += 1,
+            2322 => {
+                wrong_value += 1;
+                if (std.mem.indexOf(u8, diagnostic.message, "Type 'Mode.One'")) |_| named_one = true;
+                if (std.mem.indexOf(u8, diagnostic.message, "Type 'Mode.Two'")) |_| named_two = true;
+                if (std.mem.indexOf(u8, diagnostic.message, "Type 'Alias'")) |_| named_alias = true;
+            },
+            2339 => missing_member += 1,
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, if (isolated) 6 else 0), isolated_access);
+        try T.expectEqual(@as(usize, 3), wrong_value);
+        try T.expectEqual(@as(usize, 1), missing_member);
+        try T.expect(named_one and named_two and named_alias);
+    }
+}
+
 test "Program: ambient export assignment class supplies require alias type" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

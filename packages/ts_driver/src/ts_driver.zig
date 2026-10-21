@@ -42,6 +42,7 @@ pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = ts_checker.ProgramMemberVisibility;
 pub const ProgramTypeReference = ts_checker.ProgramTypeReference;
 pub const ProgramExportedValue = ts_checker.ProgramExportedValue;
+pub const ProgramEnumMember = ts_checker.ProgramEnumMember;
 pub const ProgramExportedType = ts_checker.ProgramExportedType;
 pub const ProgramAmbientModule = ts_checker.ProgramAmbientModule;
 pub const ProgramAmbientModuleExport = ts_checker.ProgramAmbientModuleExport;

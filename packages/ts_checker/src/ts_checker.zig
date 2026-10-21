@@ -55,6 +55,7 @@ pub const ProgramExportedClassMember = check.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = check.ProgramMemberVisibility;
 pub const ProgramTypeReference = check.ProgramTypeReference;
 pub const ProgramExportedValue = check.ProgramExportedValue;
+pub const ProgramEnumMember = check.ProgramEnumMember;
 pub const ProgramExportedType = check.ProgramExportedType;
 pub const ProgramAmbientModule = check.ProgramAmbientModule;
 pub const ProgramAmbientModuleExport = check.ProgramAmbientModuleExport;

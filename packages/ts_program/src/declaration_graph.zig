@@ -41,12 +41,66 @@ fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
         .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
         .class_decl => hir.classOf(&c.hir, node).name,
         .namespace_decl => hir.namespaceOf(&c.hir, node).name,
+        .enum_decl => hir.enumOf(&c.hir, node).name,
         .fn_decl => hir.fnDeclOf(&c.hir, node).name,
         .var_decl, .let_decl, .const_decl => hir.varDeclOf(&c.hir, node).name,
         else => return null,
     };
     if (name_node == hir.none_node_id or c.hir.kindOf(name_node) != .identifier) return null;
     return c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+}
+
+/// Transfer only enum declarations whose complete member values can be
+/// represented exactly. Other constant expressions retain their existing
+/// unresolved route instead of publishing an approximate member type.
+fn literalConstEnumMembers(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]const driver.ProgramEnumMember {
+    var result: std.ArrayListUnmanaged(driver.ProgramEnumMember) = .empty;
+    var next_number: ?f64 = 0;
+    for (hir.enumMembers(&c.hir, node)) |member| {
+        if (c.hir.kindOf(member) != .object_property) return null;
+        const property = hir.objectPropertyOf(&c.hir, member);
+        if (c.hir.kindOf(property.key) != .identifier) return null;
+        const name = c.interner.get(hir.identifierOf(&c.hir, property.key).name);
+        for (result.items) |existing| if (std.mem.eql(u8, existing.name, name)) return null;
+        const value: driver.ProgramEnumMember.Value = if (property.value == hir.none_node_id) blk: {
+            const number = next_number orelse return null;
+            break :blk .{ .number = number };
+        } else switch (c.hir.kindOf(property.value)) {
+            .literal_number => .{ .number = hir.literalNumberOf(&c.hir, property.value) },
+            .literal_string => blk: {
+                const raw = c.interner.get(hir.literalStringOf(&c.hir, property.value).value);
+                if (std.mem.indexOfAny(u8, raw, "\\\r") == null) break :blk .{ .string = raw };
+                var cooked: std.ArrayListUnmanaged(u8) = .empty;
+                try driver.ProgramClassSchema.appendCookedStringText(arena, raw, &cooked);
+                break :blk .{ .string = try cooked.toOwnedSlice(arena) };
+            },
+            .unary_op => blk: {
+                const unary = hir.unaryOf(&c.hir, property.value);
+                if ((unary.op != .neg and unary.op != .plus) or c.hir.kindOf(unary.operand) != .literal_number) return null;
+                const number = hir.literalNumberOf(&c.hir, unary.operand);
+                break :blk .{ .number = if (unary.op == .neg) -number else number };
+            },
+            else => return null,
+        };
+        next_number = switch (value) {
+            .number => |number| if (std.math.isFinite(number)) number + 1 else return null,
+            .string => null,
+        };
+        try result.append(arena, .{ .name = name, .value = value });
+    }
+    const owned = try result.toOwnedSlice(arena);
+    return owned;
+}
+
+fn singleEnumDeclarationInNamespace(c: *const driver.Compilation, namespace_node: hir.NodeId, name: []const u8) bool {
+    var count: usize = 0;
+    for (hir.namespaceBody(&c.hir, namespace_node)) |raw| {
+        const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else raw;
+        if (member == hir.none_node_id or c.hir.kindOf(member) != .enum_decl) continue;
+        const found = declarationName(c, member) orelse continue;
+        if (std.mem.eql(u8, found, name)) count += 1;
+    }
+    return count == 1;
 }
 
 fn appendNamespaceValueRoute(
@@ -76,6 +130,20 @@ fn appendNamespaceValueRoute(
             if (c.hir.kindOf(namespace.name) != .identifier) continue;
             const nested_path = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
             try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, values);
+            continue;
+        }
+        if (c.hir.kindOf(member) == .enum_decl) {
+            if (!ambient or !hir.enumOf(&c.hir, member).is_const) continue;
+            const name = declarationName(c, member) orelse continue;
+            if (!singleEnumDeclarationInNamespace(c, node, name)) continue;
+            const enum_members = (try literalConstEnumMembers(arena, c, member)) orelse continue;
+            try values.append(arena, .{
+                .target_path = target_path,
+                .namespace_path = namespace_path,
+                .export_name = name,
+                .kind = .variable,
+                .enum_members = enum_members,
+            });
             continue;
         }
         switch (c.hir.kindOf(member)) {
