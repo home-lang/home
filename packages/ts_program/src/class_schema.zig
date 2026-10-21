@@ -30,6 +30,7 @@ const Context = struct {
     locals: []const *const schema.Parameter = &.{},
     allow_opaque: bool = false,
     allow_contextual_projection: bool = false,
+    visible_parameters: ?[]const schema.Parameter = null,
 };
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !*const schema.Schema {
@@ -86,6 +87,7 @@ pub const Builder = struct {
     resolver: *resolver_mod.Resolver,
     query: origins.Query,
     declarations: std.AutoHashMapUnmanaged(Key, *schema.Declaration) = .empty,
+    global_types: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Key)) = .empty,
 
     const ReadMode = enum { all, pick, omit };
     const ReadCoverage = struct {
@@ -106,8 +108,55 @@ pub const Builder = struct {
     pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Builder {
         var result: Builder = .{ .gpa = gpa, .arena = arena, .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
         errdefer result.query.deinit();
-        for (sources) |owner| try result.query.borrow(owner.path, owner.compilation);
+        for (sources, 0..) |owner, source| {
+            try result.query.borrow(owner.path, owner.compilation);
+            const c = owner.compilation;
+            for (c.module.scopes.items) |scope| {
+                if (!globalScope(c, scope)) continue;
+                var symbols = scope.types.iterator();
+                while (symbols.next()) |entry| {
+                    if (entry.value_ptr.*.flags.is_import) continue;
+                    for (entry.value_ptr.*.decls.items) |node| {
+                        if (!declarationHasName(c, node, entry.key_ptr.*)) continue;
+                        const group = try result.global_types.getOrPut(arena, c.interner.get(entry.key_ptr.*));
+                        if (!group.found_existing) group.value_ptr.* = .empty;
+                        const key: Key = .{ .source = source, .node = node };
+                        var found = false;
+                        for (group.value_ptr.items) |existing| if (std.meta.eql(existing, key)) {
+                            found = true;
+                            break;
+                        };
+                        if (!found) try group.value_ptr.append(arena, key);
+                    }
+                }
+            }
+        }
         return result;
+    }
+
+    fn globalScope(c: *const driver.Compilation, scope: *const binder.Scope) bool {
+        if (scope == c.module.root) return !@import("ts_program.zig").Program.boundSourceIsExternalModule(c);
+        if (scope.kind != .namespace) return false;
+        const node = scope.introducing_node;
+        if (node == 0 or c.hir.kindOf(node) != .namespace_decl) return false;
+        const namespace = hir.namespaceOf(&c.hir, node);
+        if (namespace.name == 0 or c.hir.kindOf(namespace.name) != .identifier) return false;
+        return std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, namespace.name).name), "global") and
+            c.hir.spanOf(node).start == c.hir.spanOf(namespace.name).start;
+    }
+
+    fn globalFragments(self: *Builder, key: Key) []const Key {
+        const c = self.sources[key.source].compilation;
+        const node = key.node;
+        const name_node = switch (c.hir.kindOf(node)) {
+            .interface_decl => hir.interfaceOf(&c.hir, node).name,
+            else => return &.{},
+        };
+        if (name_node == 0 or c.hir.kindOf(name_node) != .identifier) return &.{};
+        const name = c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+        const group = self.global_types.get(name) orelse return &.{};
+        for (group.items) |member| if (std.meta.eql(member, key)) return group.items;
+        return &.{};
     }
 
     fn expression(self: *Builder, value: schema.Expression) !*const schema.Expression {
@@ -588,6 +637,7 @@ pub const Builder = struct {
         return .{
             .source = context.source,
             .declaration = context.declaration,
+            .visible_parameters = context.visible_parameters,
             .locals = locals,
             .allow_opaque = context.allow_opaque,
             .allow_contextual_projection = context.allow_contextual_projection,
@@ -622,6 +672,19 @@ pub const Builder = struct {
         const source = self.sources[key.source];
         const c = source.compilation;
         const kind = c.hir.kindOf(key.node);
+        const interface_name = if (kind == .interface_decl) hir.interfaceOf(&c.hir, key.node).name else 0;
+        if (interface_name != 0 and c.hir.kindOf(interface_name) == .identifier) {
+            const globals = self.globalFragments(key);
+            if (globals.len > 1) return self.mergedInterface(globals);
+            const name = hir.identifierOf(&c.hir, hir.interfaceOf(&c.hir, key.node).name).name;
+            if (declarationSymbol(c, key.node, name, false)) |symbol| {
+                if (symbol.decls.items.len > 1) {
+                    const fragments = try self.arena.alloc(Key, symbol.decls.items.len);
+                    for (symbol.decls.items, fragments) |node, *fragment| fragment.* = .{ .source = key.source, .node = node };
+                    return self.mergedInterface(fragments);
+                }
+            }
+        }
         const def = try self.arena.create(schema.Declaration);
         def.* = .{ .path = source.path, .position = c.hir.spanOf(key.node).start, .name = "", .is_class = kind == .class_decl or kind == .class_expr, .is_function = kind == .fn_decl, .is_interface = kind == .interface_decl };
         try self.declarations.put(self.arena, key, def);
@@ -732,6 +795,109 @@ pub const Builder = struct {
         return def;
     }
 
+    fn mergedInterface(self: *Builder, fragments: []const Key) error{OutOfMemory}!*schema.Declaration {
+        const first = fragments[0];
+        if (self.declarations.get(first)) |existing| return existing;
+        const owner = self.sources[first.source];
+        const c = owner.compilation;
+        const def = try self.arena.create(schema.Declaration);
+        def.* = .{ .path = owner.path, .position = c.hir.spanOf(first.node).start, .name = "", .is_interface = true };
+        // Publish every fragment identity before lowering recursive members.
+        for (fragments) |key| try self.declarations.put(self.arena, key, def);
+        var template = first;
+        var max_parameters: usize = 0;
+        for (fragments) |key| {
+            const source = self.sources[key.source].compilation;
+            if (source.hir.kindOf(key.node) != .interface_decl) {
+                def.body = try self.expression(.unsupported);
+                return def;
+            }
+            const declaration_info = hir.interfaceOf(&source.hir, key.node);
+            if (declaration_info.type_params_len > max_parameters) {
+                max_parameters = declaration_info.type_params_len;
+                template = key;
+            }
+        }
+        def.name = c.interner.get(hir.identifierOf(&c.hir, hir.interfaceOf(&c.hir, first.node).name).name);
+        def.parameters = try self.arena.alloc(schema.Parameter, max_parameters);
+        const template_source = self.sources[template.source].compilation;
+        const template_info = hir.interfaceOf(&template_source.hir, template.node);
+        const template_nodes = template_source.hir.child_pool.items[template_info.type_params_start..][0..template_info.type_params_len];
+        for (template_nodes, def.parameters) |node, *parameter| parameter.* = .{ .name = template_source.interner.get(hir.typeParameterOf(&template_source.hir, node).name) };
+        var minimum_parameters = max_parameters;
+        // Merge metadata in source order while resolving each expression in
+        // its own lexical scope. All fragments bind the canonical parameters.
+        for (fragments) |key| {
+            const source = self.sources[key.source].compilation;
+            const info = hir.interfaceOf(&source.hir, key.node);
+            minimum_parameters = @min(minimum_parameters, info.type_params_len);
+            const context: Context = .{ .source = key.source, .declaration = def, .visible_parameters = def.parameters[0..info.type_params_len] };
+            for (source.hir.child_pool.items[info.type_params_start..][0..info.type_params_len], 0..) |node, index| {
+                const value = hir.typeParameterOf(&source.hir, node);
+                const parameter = &def.parameters[index];
+                if (!std.mem.eql(u8, source.interner.get(value.name), parameter.name)) {
+                    def.body = try self.expression(.unsupported);
+                    return def;
+                }
+                parameter.variance = value.variance;
+                parameter.is_const = value.is_const;
+                if (value.constraint != 0 and parameter.constraint == null) parameter.constraint = try self.lowerTransferable(context, value.constraint);
+                if (value.default != 0 and parameter.default == null) parameter.default = try self.lowerContextualDefault(context, value.default);
+            }
+        }
+        for (def.parameters[minimum_parameters..]) |parameter| if (parameter.default == null) {
+            def.body = try self.expression(.unsupported);
+            return def;
+        };
+        var members: std.ArrayListUnmanaged(schema.Member) = .empty;
+        var indices: std.ArrayListUnmanaged(schema.IndexSignature) = .empty;
+        var bases: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
+        // Later declaration groups have overload priority; signatures within
+        // each group keep their source order. Retain separate method slots
+        // so the checker sees an ordered overload set, not a sorted type union.
+        for (0..fragments.len) |fragment_index| {
+            const key = fragments[fragments.len - 1 - fragment_index];
+            const source = self.sources[key.source].compilation;
+            const context: Context = .{ .source = key.source, .declaration = def, .visible_parameters = def.parameters[0..hir.interfaceOf(&source.hir, key.node).type_params_len] };
+            const own = try self.object(context, hir.interfaceMembers(&source.hir, key.node));
+            const own_members = switch (own.*) {
+                .object => |value| value,
+                .indexed_object => |value| blk: {
+                    try indices.appendSlice(self.arena, value.indices);
+                    break :blk value.members;
+                },
+                else => {
+                    def.body = try self.expression(.unsupported);
+                    return def;
+                },
+            };
+            for (own_members) |member| {
+                var duplicate = false;
+                for (members.items) |*existing| {
+                    if (!std.mem.eql(u8, existing.name, member.name)) continue;
+                    if (existing.method and member.method) continue;
+                    // Data properties retain the first declaration's type,
+                    // including when skipLibCheck suppresses a conflict.
+                    existing.* = member;
+                    duplicate = true;
+                    break;
+                }
+                if (!duplicate) try members.append(self.arena, member);
+            }
+            for (hir.interfaceExtends(&source.hir, key.node)) |base| try bases.append(self.arena, try self.lower(context, base));
+        }
+        const own = if (indices.items.len == 0)
+            try self.expression(.{ .object = try members.toOwnedSlice(self.arena) })
+        else
+            try self.expression(.{ .indexed_object = .{ .members = try members.toOwnedSlice(self.arena), .indices = try indices.toOwnedSlice(self.arena) } });
+        def.interface_own_body = own;
+        if (bases.items.len == 0) def.body = own else {
+            try bases.append(self.arena, own);
+            def.body = try self.expression(.{ .intersection = try bases.toOwnedSlice(self.arena) });
+        }
+        return def;
+    }
+
     fn classConstructors(self: *Builder, context: Context, node: hir.NodeId) !?*const schema.Expression {
         const c = self.sources[context.source].compilation;
         var overloads: usize = 0;
@@ -820,6 +986,7 @@ pub const Builder = struct {
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
         const own = try self.object(context, hir.interfaceMembers(&c.hir, node));
+        context.declaration.interface_own_body = own;
         const bases = hir.interfaceExtends(&c.hir, node);
         if (bases.len == 0) return own;
         const members = try self.arena.alloc(*const schema.Expression, bases.len + 1);
@@ -999,8 +1166,10 @@ pub const Builder = struct {
         }
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
         var this_type: ?*const schema.Expression = null;
+        var has_literal_types = false;
         for (nodes, 0..) |node, i| {
             const value = hir.parameterOf(&c.hir, node);
+            has_literal_types = has_literal_types or value.flags.has_literal_type_annotation;
             if (i == 0 and c.hir.kindOf(value.name) == .identifier and std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, value.name).name), "this")) {
                 this_type = try self.lowerTransferable(function_context, value.type_annotation);
                 continue;
@@ -1064,6 +1233,7 @@ pub const Builder = struct {
             .this_type = this_type,
             .predicate = predicate,
             .is_construct = is_construct,
+            .has_literal_types = has_literal_types,
         } });
     }
 
@@ -1081,7 +1251,7 @@ pub const Builder = struct {
                 if (ref.import_module == null and ref.qualifier_len == 0) {
                     if (std.mem.eql(u8, name, "this")) return self.expression(.polymorphic_this);
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
-                    for (context.declaration.parameters) |*param| {
+                    for (context.visible_parameters orelse context.declaration.parameters) |*param| {
                         if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
                     }
                 } else {
@@ -1089,7 +1259,7 @@ pub const Builder = struct {
                     if (qualifiers.len > 0 and c.hir.kindOf(qualifiers[0]) == .identifier) {
                         const root_name = c.interner.get(hir.identifierOf(&c.hir, qualifiers[0]).name);
                         if (localParameter(context, root_name) != null) return self.expression(.unsupported);
-                        for (context.declaration.parameters) |*param| {
+                        for (context.visible_parameters orelse context.declaration.parameters) |*param| {
                             if (std.mem.eql(u8, param.name, root_name)) return self.expression(.unsupported);
                         }
                     }
@@ -1182,7 +1352,18 @@ pub const Builder = struct {
                 }
                 return self.lower(context, literal.literal);
             },
-            .literal_string => return self.expression(.{ .string = c.interner.get(hir.literalStringOf(&c.hir, node).value) }),
+            .template_literal_type => {
+                const texts = hir.templateLiteralTypeTexts(&c.hir, node);
+                if (hir.templateLiteralTypeTypes(&c.hir, node).len != 0 or texts.len != 1) return self.expression(.unsupported);
+                return self.lower(context, texts[0]);
+            },
+            .literal_string => {
+                const raw = c.interner.get(hir.literalStringOf(&c.hir, node).value);
+                if (std.mem.indexOfAny(u8, raw, "\\\r") == null) return self.expression(.{ .string = raw });
+                var cooked: std.ArrayListUnmanaged(u8) = .empty;
+                try schema.appendCookedStringText(self.arena, raw, &cooked);
+                return self.expression(.{ .string = try cooked.toOwnedSlice(self.arena) });
+            },
             .literal_number => return self.expression(.{ .number = hir.literalNumberOf(&c.hir, node) }),
             .literal_bool => return self.expression(.{ .boolean = hir.literalBoolOf(&c.hir, node) }),
             .array_type => return self.expression(.{ .array = try self.lower(context, hir.arrayTypeOf(&c.hir, node).element) }),
@@ -1347,8 +1528,41 @@ pub const Builder = struct {
 
     fn resolve(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) error{OutOfMemory}!Resolution {
         const c = self.sources[source].compilation;
-        const bound = self.scopedSymbol(source, node, name) orelse return .missing;
+        const bound = self.scopedSymbol(source, node, name) orelse {
+            const text = c.interner.get(name);
+            // Canonical library identities keep the existing consumer-owned
+            // lowering path; ordinary globals carry their actual owners.
+            if (builtin_object_type_name_set.has(text) or builtin_generic_type_name_set.has(text) or
+                std.mem.eql(u8, text, "Array") or std.mem.eql(u8, text, "ReadonlyArray") or
+                std.mem.eql(u8, text, "Record") or std.mem.eql(u8, text, "ThisType") or
+                std.mem.eql(u8, text, "PropertyKey") or std.StaticStringMap(void).initComptime(.{
+                .{"Partial"}, .{"Required"}, .{"Readonly"}, .{"Pick"}, .{"Omit"}, .{"Extract"}, .{"Exclude"},
+            }).has(text)) return .missing;
+            if (self.global_types.get(text)) |group| {
+                if (group.items.len == 1) return .{ .declaration = group.items[0] };
+                for (group.items) |key| if (self.sources[key.source].compilation.hir.kindOf(key.node) != .interface_decl) return .unsupported;
+                return .{ .declaration = group.items[0] };
+            }
+            return .missing;
+        };
         if (!bound.flags.is_import) {
+            if (self.global_types.get(c.interner.get(name))) |group| {
+                for (group.items) |member| {
+                    if (member.source != source or std.mem.indexOfScalar(hir.NodeId, bound.decls.items, member.node) == null) continue;
+                    for (group.items) |fragment| if (self.sources[fragment.source].compilation.hir.kindOf(fragment.node) != .interface_decl and group.items.len > 1) return .unsupported;
+                    return .{ .declaration = group.items[0] };
+                }
+            }
+            // Interfaces share a declaration shell; their fragment bodies
+            // retain source-local imports and canonical parameter bindings.
+            if (bound.decls.items.len > 1) {
+                var all_interfaces = true;
+                for (bound.decls.items) |decl| if (c.hir.kindOf(decl) != .interface_decl) {
+                    all_interfaces = false;
+                    break;
+                };
+                if (all_interfaces) return .{ .declaration = .{ .source = source, .node = bound.decls.items[0] } };
+            }
             var local_declaration: ?hir.NodeId = null;
             for (bound.decls.items) |declaration_node| {
                 if (!declarationHasName(c, declaration_node, name)) continue;
@@ -1532,7 +1746,7 @@ pub const Builder = struct {
 };
 
 const T = std.testing;
-const TestFile = struct { path: []const u8, text: []const u8, syntax_target_es2015: bool = false };
+const TestFile = struct { path: []const u8, text: []const u8, syntax_target_es2015: bool = false, expect_parse_error: bool = false };
 const TestGraph = struct {
     vfs: resolver_mod.VirtualFs,
     resolver: resolver_mod.Resolver,
@@ -1550,7 +1764,7 @@ const TestGraph = struct {
                 compilation.deinit();
                 T.allocator.destroy(compilation);
             }
-            try T.expect(!compilation.has_errors);
+            try T.expectEqual(file.expect_parse_error, compilation.has_errors);
             try graph.sources.append(T.allocator, .{ .path = file.path, .compilation = compilation });
         }
         return graph;
@@ -2452,4 +2666,130 @@ test "class schema: private inferred fields retain independently typed sibling m
     try T.expect(members[0].type.* == .unsupported);
     try T.expectEqualStrings("search", members[1].name);
     try T.expect(members[1].type.* == .function);
+}
+
+test "class schema: cross-file global interfaces retain all source owners" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/first.d.ts", .text = "interface Payload { left: string; }" },
+        .{ .path = "/second.d.ts", .text = "interface Payload { right: number; }" },
+        .{ .path = "/api.ts", .text = "export declare function take(value: Payload): void;" },
+    });
+    defer graph.deinit();
+    const result = try graph.class(2, "take");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const target = result.declaration.body.?.function.parameters[0].type.reference.declaration;
+    try T.expectEqualStrings("/first.d.ts", target.path);
+    try T.expectEqual(@as(usize, 2), target.body.?.object.len);
+    try T.expectEqualStrings("right", target.body.?.object[0].name);
+    try T.expectEqualStrings("left", target.body.?.object[1].name);
+}
+
+test "class schema: added default parameters do not rebind earlier fragment names" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/first.d.ts", .text = "type T=number; interface Box { first:T; }" },
+        .{ .path = "/second.d.ts", .text = "interface Box<T=string> { second:T; }" },
+        .{ .path = "/api.ts", .text = "export declare function take(value:Box):void;" },
+    });
+    defer graph.deinit();
+    const result = try graph.class(2, "take");
+    defer result.deinit(T.allocator);
+    const target = result.declaration.body.?.function.parameters[0].type.reference.declaration;
+    try T.expectEqual(@as(usize, 1), target.parameters.len);
+    try T.expect(target.parameters[0].default.?.primitive == Primitive.string_t);
+    const first = target.body.?.object[1].type.reference.declaration;
+    try T.expectEqualStrings("/first.d.ts", first.path);
+    try T.expect(first.body.?.primitive == Primitive.number_t);
+    try T.expect(target.body.?.object[0].type.parameter == &target.parameters[0]);
+}
+
+test "class schema: recovered unnamed interfaces do not crash owner collection" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/owner.d.ts", .text = "export default interface { value:string; }", .expect_parse_error = true },
+        .{ .path = "/api.ts", .text = "import type Value from './owner';export declare function take(value:Value):void;" },
+    });
+    defer graph.deinit();
+    const result = try graph.class(1, "take");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const target = result.declaration.body.?.function.parameters[0].type.reference.declaration;
+    try T.expectEqualStrings("value", target.body.?.object[0].name);
+}
+
+test "class schema: merged global owner collection releases partial allocations" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/first.d.ts", .text = "interface Payload<T=string>{left:T;next?:Payload<T>}" },
+        .{ .path = "/second.d.ts", .text = "interface Payload<T=string>{right:T}" },
+        .{ .path = "/api.ts", .text = "export declare function take(value:Payload):void;" },
+    });
+    defer graph.deinit();
+    const Probe = struct {
+        fn run(gpa: std.mem.Allocator, owner: *TestGraph) !void {
+            const source = owner.sources.items[2];
+            const symbol = source.compilation.lookupTopLevel("take").?;
+            const result = try collect(gpa, &owner.resolver, owner.sources.items, source, symbol.decls.items[0]);
+            defer @constCast(result).deinit(gpa);
+            try T.expect(try result.isSupported(gpa));
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{graph});
+}
+
+test "class schema: merged interface overload groups keep declaration priority" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/first.d.ts", .text = "interface Payload{(value:string):1;(value:number):2;new(value:string):3;}" },
+        .{ .path = "/second.d.ts", .text = "interface Payload{(value:boolean):4;new(value:boolean):5;}" },
+        .{ .path = "/api.ts", .text = "export declare function get():Payload;" },
+    });
+    defer graph.deinit();
+    const result = try graph.class(2, "get");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const members = result.declaration.body.?.function.result.reference.declaration.body.?.object;
+    try T.expectEqual(@as(usize, 5), members.len);
+    try T.expectEqualStrings("__call", members[0].name);
+    try T.expectEqualStrings("__construct", members[1].name);
+    try T.expectEqual(@as(f64, 4), members[0].type.function.result.number);
+    try T.expectEqual(@as(f64, 5), members[1].type.function.result.number);
+    try T.expectEqual(@as(f64, 1), members[2].type.function.result.number);
+    try T.expectEqual(@as(f64, 2), members[3].type.function.result.number);
+    try T.expectEqual(@as(f64, 3), members[4].type.function.result.number);
+}
+
+test "class schema: duplicate data members retain the first declaration type" {
+    for ([_][]const u8{ "string", "number" }) |first| {
+        const first_text = try std.fmt.allocPrint(T.allocator, "interface Payload{{value:{s}}}", .{first});
+        defer T.allocator.free(first_text);
+        const graph = try TestGraph.init(&.{
+            .{ .path = "/first.d.ts", .text = first_text },
+            .{ .path = "/second.d.ts", .text = "interface Payload{value:boolean}" },
+            .{ .path = "/api.ts", .text = "export declare function take(value:Payload):void;" },
+        });
+        defer graph.deinit();
+        const result = try graph.class(2, "take");
+        defer result.deinit(T.allocator);
+        const target = result.declaration.body.?.function.parameters[0].type.reference.declaration;
+        try T.expect(target.interface_own_body.? == target.body.?);
+        const members = target.body.?.object;
+        try T.expectEqual(@as(usize, 1), members.len);
+        const expected = if (std.mem.eql(u8, first, "string")) Primitive.string_t else Primitive.number_t;
+        try T.expectEqual(expected, members[0].type.primitive);
+    }
+}
+
+test "class schema: declared literal priority survives owner lowering" {
+    const graph = try TestGraph.init(&.{.{
+        .path = "/api.ts",
+        .text = "type Alias=\"ok\";interface Holder{value:\"ok\"}" ++
+            "export declare function pick(a:\"ok\",b:(\"ok\"),c:null,d:null|string,e:Holder[\"value\"],f:Alias):void;" ++
+            "export declare function ordinary(value:(\"ok\")):void;" ++
+            "export declare function receiver(this:\"scope\",value:string):void;" ++
+            "export declare function templated(value:`ok`):void;",
+    }});
+    defer graph.deinit();
+    for ([_][]const u8{ "pick", "ordinary", "receiver", "templated" }, [_]bool{ true, false, true, true }) |name, literal| {
+        const result = try graph.class(0, name);
+        defer result.deinit(T.allocator);
+        try T.expectEqual(literal, result.declaration.body.?.function.has_literal_types);
+    }
 }

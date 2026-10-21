@@ -8090,6 +8090,8 @@ test "conformance: malformed JSX virtual files route independently" {
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
+    const trace_entry = std.c.getenv("HOME_TS_COMPILER_RUN_TRACE") != null;
+    if (trace_entry) std.debug.print("[ts_suite run] {s}: {s}\n", .{ entry.path, entry.name });
     if (entry.upstream_skip) |skip| {
         const name = try gpa.dupe(u8, entry.name);
         errdefer gpa.free(name);
@@ -8142,6 +8144,7 @@ fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
             if (!passed) result.detail = try gpa.dupe(u8, "expected at least one diagnostic; got none");
         }
     }
+    if (trace_entry and result.outcome == .failed) std.debug.print("[ts_suite result] {s}: {s}\n", .{ entry.name, result.detail });
     return result;
 }
 

@@ -252,6 +252,7 @@ pub const CompilerOptions = struct {
     target: ?Target = null,
     lib: ?[][]const u8 = null,
     no_lib: ?bool = null,
+    no_resolve: ?bool = null,
     jsx: ?Jsx = null,
     jsx_factory: ?[]const u8 = null,
     jsx_fragment_factory: ?[]const u8 = null,
@@ -1492,6 +1493,22 @@ fn targetAtLeastES2015(target: ?Target) bool {
     };
 }
 
+/// Match the pinned compiler's JSON default after option recovery. Removed
+/// classic/node10 modes are diagnosed separately and use the current default.
+pub fn effectiveResolveJsonModule(co: CompilerOptions) bool {
+    if (co.resolve_json_module) |enabled| return enabled;
+    const default_resolution: ModuleResolution = switch (co.module orelse .esnext) {
+        .node16, .node18, .node20 => .node16,
+        .nodenext => .nodenext,
+        else => .bundler,
+    };
+    const resolution = if (co.module_resolution) |mode| switch (mode) {
+        .classic, .node10 => default_resolution,
+        else => mode,
+    } else default_resolution;
+    return resolution == .bundler or resolution == .nodenext;
+}
+
 fn effectiveModuleKind(co: CompilerOptions) Module {
     if (co.module) |module| {
         return module;
@@ -2343,6 +2360,7 @@ fn fillCompilerOptions(
             .{ .name = "isolatedDeclarations", .field = "isolated_declarations" },
             .{ .name = "verbatimModuleSyntax", .field = "verbatim_module_syntax" },
             .{ .name = "noLib", .field = "no_lib" },
+            .{ .name = "noResolve", .field = "no_resolve" },
             .{ .name = "declaration", .field = "declaration" },
             .{ .name = "declarationMap", .field = "declaration_map" },
             .{ .name = "emitDeclarationOnly", .field = "emit_declaration_only" },
@@ -2969,6 +2987,21 @@ test "tsconfig: noEmit + skipLibCheck" {
     );
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.no_emit);
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.skip_lib_check);
+}
+
+test "tsconfig: noResolve and noLib preserve explicit false through inheritance" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{"compilerOptions":{"noResolve":true,"noLib":true}}
+    );
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{"compilerOptions":{"noResolve":false,"noLib":false}}
+    );
+    const merged = try merge(arena.allocator(), base, child);
+    try t.expectEqual(@as(?bool, true), base.compiler_options.no_resolve);
+    try t.expectEqual(@as(?bool, false), merged.compiler_options.no_resolve);
+    try t.expectEqual(@as(?bool, false), merged.compiler_options.no_lib);
 }
 
 test "tsconfig: traceResolution boolean" {
@@ -5157,4 +5190,16 @@ test "fileIncludeGlobMayMatchDirectory follows explicit excluded-directory compo
     try t.expect(!fileIncludeGlobMayMatchDirectory("packages/**/*", "packages/a/node_modules"));
     try t.expect(fileIncludeGlobMayMatchDirectory(".generated/**/*", ".generated"));
     try t.expect(!fileIncludeGlobMayMatchDirectory("src", "src/node_modules"));
+}
+
+test "tsconfig: JSON defaults preserve explicit false and modern resolution modes" {
+    for ([_]ModuleResolution{ .bundler, .nodenext, .node16 }) |mode| {
+        const expected = mode != .node16;
+        try t.expectEqual(expected, effectiveResolveJsonModule(.{ .module_resolution = mode }));
+        try t.expect(!effectiveResolveJsonModule(.{ .module_resolution = mode, .resolve_json_module = false }));
+        try t.expect(effectiveResolveJsonModule(.{ .module_resolution = mode, .resolve_json_module = true }));
+    }
+    try t.expect(effectiveResolveJsonModule(.{}));
+    try t.expect(effectiveResolveJsonModule(.{ .module = .nodenext }));
+    try t.expect(!effectiveResolveJsonModule(.{ .module = .node16 }));
 }

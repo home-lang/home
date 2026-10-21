@@ -3,6 +3,8 @@
 const std = @import("std");
 const types = @import("types.zig");
 pub const Primitive = types.Primitive;
+/// Source projectors decode raw parser text before creating semantic strings.
+pub const appendCookedStringText = @import("string_literal.zig").appendCookedStringText;
 
 pub const Parameter = struct {
     name: []const u8,
@@ -30,6 +32,7 @@ pub const Function = struct {
     this_type: ?*const Expression = null,
     predicate: ?TypePredicate = null,
     is_construct: bool = false,
+    has_literal_types: bool = false,
     construct_visibility: types.MemberVisibility = .public,
 };
 pub const Reference = struct {
@@ -169,6 +172,9 @@ pub const Declaration = struct {
     constructors: ?*const Expression = null,
     is_abstract_class: bool = false,
     is_interface: bool = false,
+    /// Own members remain distinct from heritage when collecting overloads.
+    /// This expression is also reachable through `body`.
+    interface_own_body: ?*const Expression = null,
     is_function: bool = false,
     /// Keep a class constructor value distinct from its instance declaration.
     value_side: bool = false,
@@ -387,6 +393,7 @@ pub const Schema = struct {
 
     fn appendDeclaration(gpa: std.mem.Allocator, pending: *std.ArrayListUnmanaged(*const Expression), declaration: *const Declaration) !void {
         if (declaration.body) |body| try pending.append(gpa, body);
+        if (declaration.interface_own_body) |own| try pending.append(gpa, own);
         for (declaration.parameters) |param| {
             if (param.constraint) |constraint| try pending.append(gpa, constraint);
             if (param.default) |default| try pending.append(gpa, default);

@@ -332,6 +332,7 @@ const Builder = struct {
             .parameters = parameters,
             .result = try self.lower(payload.return_type),
             .this_type = if (payload.has_this_type) try self.lower(payload.this_type) else null,
+            .has_literal_types = payload.has_literal_types,
         } });
     }
 };
@@ -394,4 +395,26 @@ test "checked schema: named CommonJS export retains its fresh checked assignment
     const body = result.declaration.body orelse return error.TestUnexpectedResult;
     try T.expect(body.* == .number);
     try T.expectEqual(@as(f64, 1), body.number);
+}
+
+test "checked schema: projected callable retains declared literal priority" {
+    for ([_][]const u8{ "\"ok\"", "(\"ok\")", "Alias" }, [_]bool{ true, false, false }) |annotation, literal| {
+        const source = try std.fmt.allocPrint(T.allocator, "type Alias='ok';declare const module:{{exports:any}};function pick(value:{s}):'yes'{{return 'yes'}}module.exports=pick;", .{annotation});
+        defer T.allocator.free(source);
+        const compilation = try driver.compileSource(T.allocator, source, .{ .no_emit = true, .importer_path = "/owner.cts" });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        try T.expect(!compilation.has_errors);
+        const signatures = try wholeExportTypes(T.allocator, compilation);
+        defer T.allocator.free(signatures);
+        try T.expectEqual(@as(usize, 1), signatures.len);
+        const result = try collect(T.allocator, "/owner.cts", compilation, signatures, 0);
+        defer @constCast(result).deinit(T.allocator);
+        try T.expect(try result.isSupported(T.allocator));
+        const body = result.declaration.body orelse return error.TestUnexpectedResult;
+        try T.expect(body.* == .function);
+        try T.expectEqual(literal, body.function.has_literal_types);
+    }
 }

@@ -189,46 +189,48 @@ def main() -> None:
             cleaned = invoke(compiler, directory, ["--build", "tsconfig.json", "--clean", "--pretty", "false"])
             assert cleaned["exit"] == 0 and (directory / "index.js").read_bytes() == original, cleaned
 
-        for engine, compiler in (("reference", reference), ("home", home)):
-            directory = setup("watch", engine, {})
-            log_path = directory / "watch.log"
-            command = compiler + ["--watch", "-p", "tsconfig.json", "--pretty", "false"]
-            with log_path.open("w") as log:
-                process = subprocess.Popen(command, cwd=directory, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                try:
-                    def await_declaration(needle: str) -> None:
-                        deadline = time.monotonic() + 30
-                        while time.monotonic() < deadline:
-                            assert process.poll() is None, log_path.read_text()
-                            dts = directory / "types/index.d.ts"
-                            if dts.exists() and needle in dts.read_text():
-                                assert artifacts(directory) == ["types/index.d.ts"], artifacts(directory)
-                                return
-                            time.sleep(0.05)
-                        raise AssertionError(log_path.read_text())
-                    await_declaration("answer: number")
-                    # Emission can finish before the compiler installs its
-                    # watchers. Wait for readiness before making the edit.
-                    ready_deadline = time.monotonic() + 30
-                    while "Watching for file changes." not in log_path.read_text():
-                        assert process.poll() is None, log_path.read_text()
-                        if time.monotonic() >= ready_deadline:
+        for label, watch_flag in (("canonical", "--watch"), ("short", "-w"), ("double-short", "--w"),
+                                  ("single-long", "-watch"), ("case", "--WATCH")):
+            for engine, compiler in (("reference", reference), ("home", home)):
+                directory = setup("watch-" + label, engine, {})
+                log_path = directory / "watch.log"
+                command = compiler + [watch_flag, "-p", "tsconfig.json", "--pretty", "false"]
+                with log_path.open("w") as log:
+                    process = subprocess.Popen(command, cwd=directory, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                    try:
+                        def await_declaration(needle: str) -> None:
+                            deadline = time.monotonic() + 30
+                            while time.monotonic() < deadline:
+                                assert process.poll() is None, log_path.read_text()
+                                dts = directory / "types/index.d.ts"
+                                if dts.exists() and needle in dts.read_text():
+                                    assert artifacts(directory) == ["types/index.d.ts"], artifacts(directory)
+                                    return
+                                time.sleep(0.05)
                             raise AssertionError(log_path.read_text())
-                        time.sleep(0.05)
-                    (directory / "index.ts").write_text('export const answer: string = "updated";\n')
-                    await_declaration("answer: string")
-                finally:
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait()
-            records.append({"command": command, "cwd": str(directory), "stdout": log_path.read_text(),
-                            "artifacts": artifacts(directory), "watch_reemitted": True})
+                        await_declaration("answer: number")
+                        # Emission can finish before the compiler installs its
+                        # watchers. Wait for readiness before making the edit.
+                        ready_deadline = time.monotonic() + 30
+                        while "Watching for file changes." not in log_path.read_text():
+                            assert process.poll() is None, log_path.read_text()
+                            if time.monotonic() >= ready_deadline:
+                                raise AssertionError(log_path.read_text())
+                            time.sleep(0.05)
+                        (directory / "index.ts").write_text('export const answer: string = "updated";\n')
+                        await_declaration("answer: string")
+                    finally:
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                records.append({"command": command, "cwd": str(directory), "stdout": log_path.read_text(),
+                                "artifacts": artifacts(directory), "watch_reemitted": True})
         summary["passed"] = True
         print(f"Declaration CLI contracts passed ({len(records)} compiler observations); evidence: {root}")
     finally:

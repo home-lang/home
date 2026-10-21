@@ -27,6 +27,14 @@ const binder = @import("binder");
 const StringInterner = ts_driver.StringInterner;
 const source_owners = ts_driver.source_owners;
 
+fn noResolveEnabled(options: ts_driver.CompileOptions) bool {
+    return if (options.pub_tsconfig) |cfg| cfg.compiler_options.no_resolve orelse options.no_resolve else options.no_resolve;
+}
+
+fn noLibEnabled(options: ts_driver.CompileOptions) bool {
+    return if (options.pub_tsconfig) |cfg| cfg.compiler_options.no_lib orelse options.no_lib else options.no_lib;
+}
+
 pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
 pub const config_graph = @import("config_graph.zig");
@@ -164,6 +172,10 @@ fn findIncludeSpecifierPosition(source: []const u8, specifier_text: []const u8) 
     return 0;
 }
 
+pub const IncludeEdge = struct { target: FileId, kind: IncludeKind };
+pub const SourceFileOrderEntry = struct { file_id: FileId, is_library: bool };
+const SourceFileOrderFrame = struct { file_id: FileId, is_library: bool, exiting: bool = false };
+
 /// One file in the program. Owned by the program.
 pub const File = struct {
     id: FileId,
@@ -174,6 +186,7 @@ pub const File = struct {
     root_input: bool = false,
     /// Compiler-selected type and standard libraries are independent roots.
     compiler_root: bool = false,
+    compiler_library_root: bool = false,
     /// A removed source retains its FileId and path so a later watch event
     /// can restore it. Its compilation and owner are gone; `source` is never
     /// treated as a replacement empty file while this is false.
@@ -200,7 +213,7 @@ pub const File = struct {
     imports: std.ArrayListUnmanaged(FileId),
     /// Triple-slash and compiler-injected dependency edges, rebuilt during
     /// each closure discovery rather than inferred from first-seen prose.
-    include_edges: std.ArrayListUnmanaged(FileId) = .empty,
+    include_edges: std.ArrayListUnmanaged(IncludeEdge) = .empty,
     /// True for `.d.ts` / `.d.hm` / `.d.home` declaration-only files.
     is_declaration: bool,
     /// True for `.tsx` / `.jsx` files.
@@ -404,6 +417,7 @@ pub const Program = struct {
     by_path: std.StringHashMapUnmanaged(FileId),
     by_package_id: std.StringHashMapUnmanaged(FileId),
     deduplicate_packages: bool,
+    no_resolve: bool = false,
     resolver: *ts_resolver.Resolver,
     /// Stored sources keyed by path (we own the dupes).
     sources: std.StringHashMapUnmanaged([]const u8),
@@ -1222,7 +1236,7 @@ pub const Program = struct {
         path: hir_mod_ns.StringId,
     ) ProgramError!ts_driver.TypeId {
         if (first == second) return first;
-        const merged = try self.mergeImportedGlobalTypes(compilation, first, second);
+        const merged = try self.mergeImportedGlobalTypes(compilation, first, second, null);
         // Only nested namespace objects merge recursively. Ordinary exported
         // variables retain their declared types even when those are objects.
         const members = try self.gpa.dupe(@TypeOf(compilation.type_interner.objectMembers(merged)[0]), compilation.type_interner.objectMembers(merged));
@@ -1257,7 +1271,7 @@ pub const Program = struct {
         namespace_type: ts_driver.TypeId,
     ) ProgramError!ts_driver.TypeId {
         if (!compilation.type_interner.pool.flagsOf(value_type).is_signature)
-            return self.mergeImportedGlobalTypes(compilation, value_type, namespace_type);
+            return self.mergeImportedGlobalTypes(compilation, value_type, namespace_type, null);
         var members: std.ArrayListUnmanaged(@TypeOf(compilation.type_interner.objectMembers(namespace_type)[0])) = .empty;
         defer members.deinit(self.gpa);
         const call_name = compilation.interner.intern("__call") catch return error.OutOfMemory;
@@ -1333,6 +1347,7 @@ pub const Program = struct {
         compilation: *ts_driver.Compilation,
         first: ts_driver.TypeId,
         second: ts_driver.TypeId,
+        own_surfaces: ?*ts_driver.interface_merge.OwnSurfaces,
     ) ProgramError!ts_driver.TypeId {
         if (first == second) return first;
         const pool = &compilation.type_interner.pool;
@@ -1344,6 +1359,19 @@ pub const Program = struct {
         if (second_flags.is_signature and first_flags.is_object_type)
             return self.mergeNamespaceIntoGlobalValue(compilation, second, first);
         if (!first_flags.is_object_type or !second_flags.is_object_type) return first;
+        if (own_surfaces) |surfaces| {
+            if (surfaces.contains(first) and surfaces.contains(second)) {
+                return ts_driver.interface_merge.merge(
+                    self.gpa,
+                    &compilation.type_interner,
+                    surfaces,
+                    first,
+                    second,
+                    compilation.interner.intern("__call") catch return error.OutOfMemory,
+                    compilation.interner.intern("__construct") catch return error.OutOfMemory,
+                );
+            }
+        }
         var members: std.ArrayListUnmanaged(@TypeOf(compilation.type_interner.objectMembers(first)[0])) = .empty;
         defer members.deinit(self.gpa);
         try members.appendSlice(self.gpa, compilation.type_interner.objectMembers(first));
@@ -1484,6 +1512,13 @@ pub const Program = struct {
         try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
         for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
 
+        var own_surfaces: ts_driver.interface_merge.OwnSurfaces = .empty;
+        defer own_surfaces.deinit(self.gpa);
+        for (result.imports.items) |*imported| {
+            var entries = imported.types.checked.ordered_overload_types.iterator();
+            while (entries.next()) |entry| try own_surfaces.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+        }
+
         var namespace_paths: std.AutoHashMapUnmanaged(hir_mod_ns.StringId, void) = .empty;
         defer namespace_paths.deinit(self.gpa);
         for (globals.entries.keys(), globals.entries.values()) |key, owners| {
@@ -1611,7 +1646,7 @@ pub const Program = struct {
                     break;
                 }
                 merged_type = if (merged_type) |current|
-                    try self.mergeImportedGlobalTypes(compilation, current, owner_type)
+                    try self.mergeImportedGlobalTypes(compilation, current, owner_type, &own_surfaces)
                 else
                     owner_type;
             }
@@ -1625,6 +1660,7 @@ pub const Program = struct {
                 try result.types.append(self.gpa, .{
                     .name = key.name,
                     .type = global_type,
+                    .own_interface_type = own_surfaces.get(global_type) orelse ts_driver.Primitive.none,
                     .is_polymorphic_this_boundary = is_polymorphic_this_boundary,
                     .generic_declarations = try result.metadata_arena.allocator().dupe(ts_driver.ProgramGlobalBinding.GenericDeclaration, generic_declarations.items),
                 });
@@ -1806,6 +1842,7 @@ pub const Program = struct {
 
     /// Compile every file after resolving the complete bound dependency graph.
     pub fn compileAll(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        self.no_resolve = noResolveEnabled(options);
         try self.prepareNameStore();
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
@@ -1886,6 +1923,64 @@ pub const Program = struct {
         try self.appendProgramGlobalDeclareVarDiagnostics(options);
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendMergedAmbientModuleExportDiagnostics(options);
+    }
+
+    /// Source-file enumeration is a DFS postorder, independent of admission
+    /// and checking order. Retain first-visit library provenance so the CLI
+    /// can put compiler libraries ahead of ordinary sources by lib priority.
+    pub fn sourceFileOrder(self: *const Program) error{OutOfMemory}![]SourceFileOrderEntry {
+        const seen = try self.gpa.alloc(bool, self.files.items.len);
+        defer self.gpa.free(seen);
+        @memset(seen, false);
+        var stack: std.ArrayListUnmanaged(SourceFileOrderFrame) = .empty;
+        defer stack.deinit(self.gpa);
+        var order: std.ArrayListUnmanaged(SourceFileOrderEntry) = .empty;
+        errdefer order.deinit(self.gpa);
+        // Native collection starts with explicit roots, then compiler libs,
+        // then automatic/explicit type libraries. Library sorting is separate.
+        for (0..3) |phase| for (self.files.items) |file| {
+            const selected = switch (phase) {
+                0 => file.root_input,
+                1 => file.compiler_root and file.compiler_library_root,
+                else => file.compiler_root and !file.compiler_library_root,
+            };
+            if (!selected) continue;
+            try stack.append(self.gpa, .{ .file_id = file.id, .is_library = phase == 1 });
+            while (stack.pop()) |frame| {
+                if (frame.file_id >= self.files.items.len) continue;
+                const current = self.files.items[frame.file_id];
+                if (!current.present) continue;
+                if (frame.exiting) {
+                    try order.append(self.gpa, .{ .file_id = frame.file_id, .is_library = frame.is_library });
+                    continue;
+                }
+                if (seen[frame.file_id]) continue;
+                seen[frame.file_id] = true;
+                if (current.redirect_target) |target| {
+                    try stack.append(self.gpa, .{ .file_id = target, .is_library = frame.is_library });
+                    continue;
+                }
+                try stack.append(self.gpa, .{ .file_id = frame.file_id, .is_library = frame.is_library, .exiting = true });
+                var index = if (self.no_resolve) @as(usize, 0) else current.imports.items.len;
+                while (index > 0) {
+                    index -= 1;
+                    try stack.append(self.gpa, .{ .file_id = current.imports.items[index], .is_library = false });
+                }
+                // Push in reverse execution order: paths, types, libs,
+                // imported helpers, JSX runtime, then written imports.
+                for ([_]IncludeKind{ .jsx_runtime_import, .imported_helper, .lib_reference, .type_reference, .reference_file }) |kind| {
+                    if (self.no_resolve and kind != .lib_reference) continue;
+                    index = current.include_edges.items.len;
+                    while (index > 0) {
+                        index -= 1;
+                        const edge = current.include_edges.items[index];
+                        if (edge.kind != kind) continue;
+                        try stack.append(self.gpa, .{ .file_id = edge.target, .is_library = kind == .lib_reference });
+                    }
+                }
+            }
+        };
+        return order.toOwnedSlice(self.gpa);
     }
 
     fn dependencyOrder(self: *const Program) ProgramError![]const usize {
@@ -2014,6 +2109,17 @@ pub const Program = struct {
         comptime callback: fn (ctx_t: @TypeOf(ctx), file_path: []const u8, diags: []const ts_driver.Diagnostic) void,
     ) ProgramError!void {
         try self.prepareNameStore();
+        self.deduplicate_packages = options.deduplicate_packages;
+        if (options.bind_only) {
+            try self.prepareFiles(options);
+            try self.resolveImports();
+            for (self.files.items) |file| {
+                if (file.redirect_target != null) continue;
+                const compilation = file.compilation orelse continue;
+                callback(ctx, file.path, compilation.diagnostics.items);
+            }
+            return;
+        }
         try self.prepareFiles(options);
         try self.resolveImports();
         const compilation_order = try self.dependencyOrder();
@@ -3911,6 +4017,7 @@ pub const Program = struct {
     /// embarrassingly parallel (each file is independent). Number
     /// of workers defaults to `min(NPROC, 8)` matching tsgo.
     pub fn compileAllParallel(self: *Program, options: ts_driver.CompileOptions, workers: ?usize) ProgramError!void {
+        self.no_resolve = noResolveEnabled(options);
         try self.prepareNameStore();
         self.deduplicate_packages = options.deduplicate_packages;
         if (options.bind_only) {
@@ -4319,8 +4426,10 @@ pub const Program = struct {
             const file = self.files.items[queue[cursor]];
             if (!file.present) continue;
             if (file.redirect_target) |target| self.markReachableFile(reached, queue, &queued, target);
-            for (file.imports.items) |target| self.markReachableFile(reached, queue, &queued, target);
-            for (file.include_edges.items) |target| self.markReachableFile(reached, queue, &queued, target);
+            if (!self.no_resolve) for (file.imports.items) |target| self.markReachableFile(reached, queue, &queued, target);
+            for (file.include_edges.items) |edge| {
+                if (!self.no_resolve or edge.kind == .lib_reference) self.markReachableFile(reached, queue, &queued, edge.target);
+            }
         }
 
         var program_scope_changed = false;
@@ -4452,6 +4561,7 @@ pub const Program = struct {
         finish_checking: bool,
     ) ProgramError!usize {
         self.deduplicate_packages = options.deduplicate_packages;
+        self.no_resolve = noResolveEnabled(options);
         if (options.default_library_path.len == 0 and self.installed_library_path == null) {
             const containing_file = if (options.pub_tsconfig) |cfg|
                 compilerOptionContainingFile(cfg, self.files.items)
@@ -4469,6 +4579,7 @@ pub const Program = struct {
         for (self.files.items) |file| {
             file.include_edges.clearRetainingCapacity();
             file.compiler_root = false;
+            file.compiler_library_root = false;
         }
         var added: usize = 0;
         added += try self.loadCompilerOptionIncludes(options);
@@ -4493,7 +4604,7 @@ pub const Program = struct {
                 var specifiers: std.ArrayListUnmanaged(StaticModuleReference) = .empty;
                 defer specifiers.deinit(self.gpa);
                 try appendStaticModuleReferences(self.gpa, c, &specifiers);
-                for (specifiers.items) |reference| {
+                if (!self.no_resolve) for (specifiers.items) |reference| {
                     const module_name = reference.specifier;
                     if (module_name.len == 0) continue;
                     const res = self.resolver.resolve(module_name, f.path) catch |err| switch (err) {
@@ -4506,7 +4617,7 @@ pub const Program = struct {
                     };
                     if (admission.added) new_in_round += 1;
                     depth_changed_in_round = depth_changed_in_round or admission.depth_changed;
-                }
+                };
                 // Triple-slash directives pull files into the program
                 // with distinct explainFiles reasons: path (TS1400),
                 // types (TS1402/TS1403), and lib (TS1405). `path`
@@ -4516,13 +4627,14 @@ pub const Program = struct {
                 for (c.references.items) |ref| {
                     switch (ref.kind) {
                         .path => {
+                            if (self.no_resolve) continue;
                             const candidate = self.joinReferencePath(f.path, ref.name) catch |err| switch (err) {
                                 error.OutOfMemory => return error.OutOfMemory,
                             };
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
-                                    try self.appendIncludeEdge(f, existing_id);
+                                    try self.appendIncludeEdge(f, existing_id, .reference_file);
                                     depth_changed_in_round = depth_changed_in_round or
                                         self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
                                     continue;
@@ -4534,12 +4646,13 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
-                            try self.appendIncludeEdge(f, new_id);
+                            try self.appendIncludeEdge(f, new_id, .reference_file);
                             _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .reference_file, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
                         },
                         .types => {
+                            if (self.no_resolve) continue;
                             const resolution = if (ref.resolution_mode) |mode|
                                 self.resolver.resolveTypeReferenceDirectiveWithMode(ref.name, f.path, switch (mode) {
                                     .import => .import,
@@ -4555,13 +4668,14 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
-                            if (admission.target_id) |target_id| try self.appendIncludeEdge(f, target_id);
+                            if (admission.target_id) |target_id| try self.appendIncludeEdge(f, target_id, .type_reference);
                             depth_changed_in_round = depth_changed_in_round or admission.depth_changed;
                             if (!admission.added) continue;
                             try self.recordReferenceIncludeReason(admission.target_id.?, .type_reference, f.id, ref.name, res.package_id orelse "", ref.pos);
                             new_in_round += 1;
                         },
                         .lib => {
+                            if (noLibEnabled(options)) continue;
                             const candidate = self.resolveLibReferencePath(
                                 f.path,
                                 ref.name,
@@ -4572,7 +4686,7 @@ pub const Program = struct {
                             defer self.gpa.free(candidate);
                             if (self.by_path.get(candidate)) |existing_id| {
                                 if (self.files.items[existing_id].present) {
-                                    try self.appendIncludeEdge(f, existing_id);
+                                    try self.appendIncludeEdge(f, existing_id, .lib_reference);
                                     depth_changed_in_round = depth_changed_in_round or
                                         self.setDiscoveredNodeModulesDepth(existing_id, f.node_modules_depth, false);
                                     continue;
@@ -4584,7 +4698,7 @@ pub const Program = struct {
                                 error.OutOfMemory => return error.OutOfMemory,
                                 else => continue,
                             };
-                            try self.appendIncludeEdge(f, new_id);
+                            try self.appendIncludeEdge(f, new_id, .lib_reference);
                             _ = self.setDiscoveredNodeModulesDepth(new_id, f.node_modules_depth, true);
                             try self.recordReferenceIncludeReason(new_id, .lib_reference, f.id, ref.name, "", ref.pos);
                             new_in_round += 1;
@@ -4613,6 +4727,7 @@ pub const Program = struct {
     }
 
     fn loadCompilerInjectedImports(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
+        if (self.no_resolve) return 0;
         var added: usize = 0;
         const n = self.files.items.len;
         var i: usize = 0;
@@ -4648,7 +4763,7 @@ pub const Program = struct {
             else => return 0,
         };
         const admission = try self.admitResolvedImport(importer.node_modules_depth, res, options);
-        if (admission.target_id) |target_id| try self.appendIncludeEdge(importer, target_id);
+        if (admission.target_id) |target_id| try self.appendIncludeEdge(importer, target_id, kind);
         if (!admission.added) return 0;
         try self.recordReferenceIncludeReasonWithProjectOutput(admission.target_id.?, kind, importer.id, specifier_text, res.package_id orelse "", res.project_reference_output orelse "", 0);
         return 1;
@@ -4677,11 +4792,11 @@ pub const Program = struct {
         return std.fmt.allocPrint(gpa, "\"{s}\"", .{specifier}) catch return error.OutOfMemory;
     }
 
-    fn appendIncludeEdge(self: *Program, importer: *File, target_id: FileId) ProgramError!void {
+    fn appendIncludeEdge(self: *Program, importer: *File, target_id: FileId, kind: IncludeKind) ProgramError!void {
         for (importer.include_edges.items) |existing| {
-            if (existing == target_id) return;
+            if (existing.target == target_id and existing.kind == kind) return;
         }
-        try importer.include_edges.append(self.gpa, target_id);
+        try importer.include_edges.append(self.gpa, .{ .target = target_id, .kind = kind });
     }
 
     fn loadCompilerOptionIncludes(self: *Program, options: ts_driver.CompileOptions) ProgramError!usize {
@@ -4701,13 +4816,13 @@ pub const Program = struct {
                 try self.recordReferenceIncludeReason(admission.target_id.?, .compiler_type_reference, 0, type_name, res.package_id orelse "", 0);
                 added += 1;
             }
-        } else {
+        } else if (!self.no_resolve) {
             added += try self.loadImplicitTypeLibraries(cfg, containing_file, options);
         }
         // The pinned file loader gates both an explicit `lib` list and the
         // target-selected default behind `noLib`. Type references remain
         // independent and were loaded above.
-        if (cfg.compiler_options.no_lib == true) return added;
+        if (noLibEnabled(options)) return added;
         if (cfg.compiler_options.lib) |libs| {
             for (libs) |lib_name| {
                 if (lib_name.len == 0) continue;
@@ -4720,7 +4835,10 @@ pub const Program = struct {
                 } orelse continue;
                 defer self.gpa.free(candidate);
                 const target_id = try self.addResolvedIncludeFile(candidate);
-                if (self.lookupPath(candidate)) |id| self.files.items[id].compiler_root = true;
+                if (self.lookupPath(candidate)) |id| {
+                    self.files.items[id].compiler_root = true;
+                    self.files.items[id].compiler_library_root = true;
+                }
                 if (target_id == null) continue;
                 try self.recordReferenceIncludeReason(target_id.?, .compiler_lib_reference, 0, lib_name, "", 0);
                 added += 1;
@@ -4736,7 +4854,10 @@ pub const Program = struct {
             } orelse return added;
             defer self.gpa.free(candidate);
             const target_id = try self.addResolvedIncludeFile(candidate);
-            if (self.lookupPath(candidate)) |id| self.files.items[id].compiler_root = true;
+            if (self.lookupPath(candidate)) |id| {
+                self.files.items[id].compiler_root = true;
+                self.files.items[id].compiler_library_root = true;
+            }
             if (target_id) |id| {
                 try self.recordReferenceIncludeReason(id, .default_lib_reference, 0, default_lib.target_name, "", 0);
                 added += 1;
@@ -4967,6 +5088,7 @@ pub const Program = struct {
         res: ts_resolver.Resolution,
         options: ts_driver.CompileOptions,
     ) ProgramError!ImportAdmission {
+        if (std.mem.endsWith(u8, res.path, ".json") and !ts_driver.effectiveResolveJsonModule(options)) return .{};
         const is_js = isJsLikePath(res.path);
         if (is_js and !options.allow_js) return .{};
 
@@ -6735,7 +6857,7 @@ test "Program: literal exports survive unrelated parse diagnostics" {
     try T.expectEqualStrings("~tag", graph.values[0].declaration.?.body.?.string);
 }
 
-test "Program: unsupported value graphs are retained as projection-only metadata" {
+test "Program: merged interfaces retain complete value and type graphs" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -6749,10 +6871,14 @@ test "Program: unsupported value graphs are retained as projection-only metadata
     defer graph.deinit();
     try T.expectEqual(@as(usize, 1), graph.values.len);
     try T.expectEqualStrings("make", graph.values[0].export_name);
-    try T.expect(graph.values[0].projection_only);
+    try T.expect(!graph.values[0].projection_only);
     try T.expectEqual(@as(usize, 1), graph.types.len);
     try T.expectEqualStrings("Box", graph.types[0].export_name);
-    try T.expect(graph.types[0].projection_only);
+    try T.expect(!graph.types[0].projection_only);
+    const body = graph.types[0].declaration.body.?.object;
+    try T.expectEqual(@as(usize, 2), body.len);
+    try T.expectEqualStrings("second", body[0].name);
+    try T.expectEqualStrings("first", body[1].name);
 }
 
 test "Program: bound class facts separate static members and ignore source trivia" {
@@ -19644,5 +19770,255 @@ test "Program: bare ambient import types and dynamic imports do not skip the dec
         const compilation = program.fileById(app).compilation.?;
         try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
         for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2345), diagnostic.code);
+    }
+}
+
+test "Program: unsupported template value graphs remain projection-only" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", "export type Box = `item-${string}`;export declare function make():Box;");
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 1), graph.values.len);
+    try T.expectEqual(@as(usize, 1), graph.types.len);
+    try T.expect(graph.values[0].projection_only);
+    try T.expect(graph.types[0].projection_only);
+}
+
+test "Program: plain template overloads retain source-owned literal types and priority" {
+    const Variant = struct { annotation: []const u8, argument: []const u8, specialized: bool };
+    for ([_]Variant{
+        .{ .annotation = "`ok`", .argument = "\"ok\"", .specialized = true },
+        .{ .annotation = "(`ok`)", .argument = "\"ok\"", .specialized = false },
+        .{ .annotation = "`a\\nb`", .argument = "\"a\\nb\"", .specialized = true },
+        .{ .annotation = "`\\x6f\\x6b`", .argument = "\"ok\"", .specialized = true },
+        .{ .annotation = "`\\xE9`", .argument = "\"é\"", .specialized = true },
+        .{ .annotation = "`\\u{1F600}`", .argument = "\"\\uD83D\\uDE00\"", .specialized = true },
+        .{ .annotation = "\"a\\nb\"", .argument = "\"a\\nb\"", .specialized = true },
+    }) |variant| {
+        for ([_]bool{ false, true }) |matching| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+            defer checker_resolver.arena.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const first = try std.fmt.allocPrint(T.allocator, "interface Payload{{pick(value:{s}):'special'}}", .{variant.annotation});
+            defer T.allocator.free(first);
+            const second = "interface Payload{pick(value:string):'ordinary'}";
+            const api = "declare module 'api'{export function get():Payload;}";
+            const argument = if (matching) variant.argument else "\"different\"";
+            const main = try std.fmt.allocPrint(T.allocator, "import {{get}} from 'api';\nconst special:'special'=get().pick({s});\nconst ordinary:'ordinary'=get().pick({s});", .{ argument, argument });
+            defer T.allocator.free(main);
+            for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/api.d.ts", "/main.ts" }, [_][]const u8{ first, second, api, main }) |path, source| try vfs.addFile(path, source);
+            _ = try program.add("/first.d.ts", first);
+            _ = try program.add("/second.d.ts", second);
+            _ = try program.add("/api.d.ts", api);
+            const app = try program.add("/main.ts", main);
+            try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } });
+            const compilation = program.fileById(app).compilation.?;
+            try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+            try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+            const expected_name = if (matching and variant.specialized) "ordinary:" else "special:";
+            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, main, expected_name).?)), compilation.diagnostics.items[0].pos);
+        }
+    }
+}
+
+test "Program: checked global overload groups retain canonical declaration identities" {
+    const first = "interface Base{pick(value:string):'first'|'second'|'third';base:number}interface Payload extends Base{pick(value:string):'first';field:string}";
+    const second = "interface Payload{pick(value:string|number):'second'}";
+    const third = "interface Payload{pick(value:unknown):'third'}";
+    for ([_]usize{ 1, 2, 4 }) |workers| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+        defer checker_resolver.arena.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/third.d.ts" }, [_][]const u8{ first, second, third }) |path, source| {
+            try vfs.addFile(path, source);
+            _ = try program.add(path, source);
+        }
+        var apps: std.ArrayListUnmanaged(FileId) = .empty;
+        defer apps.deinit(T.allocator);
+        for ([_][]const u8{
+            "value.pick('ok')",
+            "value['pick']('ok')",
+            "pick('ok')",
+            "indexed('ok')",
+        }, 0..) |expression, index| {
+            const main = try std.fmt.allocPrint(T.allocator, "export {{}};declare const value:Payload;const pick=value.pick;declare const indexed:Payload['pick'];const first:'first'={s};const third:'third'={s};const base:number=value.base;const field:string=value.field;", .{ expression, expression });
+            defer T.allocator.free(main);
+            const path = try std.fmt.allocPrint(T.allocator, "/main{d}.ts", .{index});
+            defer T.allocator.free(path);
+            try vfs.addFile(path, main);
+            try apps.append(T.allocator, try program.add(path, main));
+        }
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+        if (workers == 1) try program.compileAll(options) else try program.compileAllParallel(options, workers);
+        for (apps.items) |id| {
+            const file = program.fileById(id);
+            const diagnostics = file.compilation.?.diagnostics.items;
+            if (diagnostics.len != 1) for (diagnostics) |diagnostic| std.debug.print("checked global workers={d} TS{d}: {s}\n", .{ workers, diagnostic.code, diagnostic.message });
+            try T.expectEqual(@as(usize, 1), diagnostics.len);
+            try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+            try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, file.source, "first:'first'").?)), diagnostics[0].pos);
+        }
+    }
+}
+
+test "Program: bind-only streaming replays syntax without semantic allocations and permits checking afterward" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const good_syntax = try program.add("/typed.ts", "export type Box<T> = { value: T }; export const bad: number = 'text';");
+    const bad_syntax = try program.add("/syntax.ts", "const broken = ;");
+    try program.compileAll(.{ .bind_only = true, .no_emit = true });
+    const bound = program.fileById(good_syntax).compilation.?;
+    const module = bound.module;
+    const root = bound.root;
+    const tokens = bound.tokens.items.ptr;
+    const type_count = bound.type_interner.pool.typeCount();
+    const Sink = struct {
+        calls: usize = 0,
+        syntax_errors: usize = 0,
+        type_errors: usize = 0,
+        fn receive(self: *@This(), _: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+            self.calls += 1;
+            for (diagnostics) |diagnostic| {
+                if (diagnostic.phase == .lex or diagnostic.phase == .parse) self.syntax_errors += 1;
+                if (diagnostic.code == 2322) self.type_errors += 1;
+            }
+        }
+    };
+    var sink: Sink = .{};
+    // Replaying already-bound import-free sources must not depend on the
+    // semantic pipeline's allocations, even with no allocation headroom.
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    {
+        program.gpa = failing.allocator();
+        defer program.gpa = T.allocator;
+        try program.compileAllStreaming(.{ .bind_only = true, .no_emit = true }, &sink, Sink.receive);
+    }
+    try T.expect(!failing.has_induced_failure);
+    try T.expectEqual(@as(usize, 2), sink.calls);
+    try T.expect(sink.syntax_errors > 0);
+    try T.expectEqual(@as(usize, 0), sink.type_errors);
+    try T.expectEqual(.bound, bound.check_state);
+    try T.expectEqual(.bound, program.fileById(bad_syntax).compilation.?.check_state);
+    try T.expect(!bound.checked_types_ready);
+    try T.expectEqual(source_owners.OwnerId.none, program.fileById(good_syntax).owner);
+    try T.expectEqual(type_count, bound.type_interner.pool.typeCount());
+    try T.expect(bound.module == module and bound.root == root and bound.tokens.items.ptr == tokens);
+    try T.expectEqual(@as(usize, 0), bound.js.len);
+    sink = .{};
+    try program.compileAllStreaming(.{ .no_emit = true }, &sink, Sink.receive);
+    try T.expectEqual(.checked, bound.check_state);
+    try T.expect(bound.checked_types_ready and sink.type_errors > 0);
+    try T.expect(bound.module == module and bound.root == root and bound.tokens.items.ptr == tokens);
+}
+
+test "Program: source listing follows references and cyclic diamond dependencies before roots" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const files = [_][2][]const u8{
+        .{ "/proj/main.ts", "/// <reference path=\"./pre.d.ts\" />\nimport './right'; import './left';" },
+        .{ "/proj/second.ts", "export {};" },
+        .{ "/proj/pre.d.ts", "declare const pre: number;" },
+        .{ "/proj/right.ts", "import './shared'; import './cycle'; export {};" },
+        .{ "/proj/left.ts", "import './shared'; export {};" },
+        .{ "/proj/shared.ts", "export {};" },
+        .{ "/proj/cycle.ts", "import './right'; export {};" },
+    };
+    for (files) |file| try vfs.addFile(file[0], file[1]);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add(files[0][0], files[0][1]);
+    _ = try program.add(files[1][0], files[1][1]);
+    try T.expectEqual(@as(usize, 5), try program.loadImportClosure(.{ .bind_only = true }));
+    const order = try program.sourceFileOrder();
+    defer T.allocator.free(order);
+    const expected = [_][]const u8{ "/proj/pre.d.ts", "/proj/shared.ts", "/proj/cycle.ts", "/proj/right.ts", "/proj/left.ts", "/proj/main.ts", "/proj/second.ts" };
+    try T.expectEqual(expected.len, order.len);
+    for (expected, order) |path, entry| {
+        try T.expectEqualStrings(path, program.files.items[entry.file_id].path);
+        try T.expect(!entry.is_library);
+        try T.expect(program.files.items[entry.file_id].compilation.?.check_state == .bound);
+    }
+}
+
+test "Program: noResolve toggles retire and restore discovered dependency owners" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const main = "/// <reference path=\"./pre.d.ts\" />\nimport { value } from './dep'; export { value };";
+    try vfs.addFile("/proj/main.ts", main);
+    try vfs.addFile("/proj/pre.d.ts", "interface Pre {}");
+    try vfs.addFile("/proj/dep.ts", "export const value = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", main);
+    var options: ts_driver.CompileOptions = .{ .bind_only = true, .no_lib = true };
+    try T.expectEqual(@as(usize, 2), try program.loadImportClosure(options));
+    const pre = program.lookupPath("/proj/pre.d.ts").?;
+    const dependency = program.lookupPath("/proj/dep.ts").?;
+    options.no_resolve = true;
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expect(!program.files.items[pre].present);
+    try T.expect(!program.files.items[dependency].present);
+    {
+        const order = try program.sourceFileOrder();
+        defer T.allocator.free(order);
+        try T.expectEqual(@as(usize, 1), order.len);
+        try T.expectEqualStrings("/proj/main.ts", program.files.items[order[0].file_id].path);
+    }
+    options.no_resolve = false;
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expect(program.files.items[pre].present);
+    try T.expect(program.files.items[dependency].present);
+    const order = try program.sourceFileOrder();
+    defer T.allocator.free(order);
+    try T.expectEqual(@as(usize, 3), order.len);
+    try T.expectEqualStrings("/proj/pre.d.ts", program.files.items[order[0].file_id].path);
+    try T.expectEqualStrings("/proj/dep.ts", program.files.items[order[1].file_id].path);
+}
+
+test "Program: noLib suppresses per-source library reference admission" {
+    for ([_]bool{ true, false }) |no_lib| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const main = "/// <reference lib=\"es2015.promise\" />\nexport {};";
+        try vfs.addFile("/proj/main.ts", main);
+        try vfs.addFile("/lib/lib.es2015.promise.d.ts", "interface Library {}");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/proj/main.ts", main);
+        _ = try program.loadImportClosure(.{ .bind_only = true, .no_lib = no_lib, .default_library_path = "/lib" });
+        const order = try program.sourceFileOrder();
+        defer T.allocator.free(order);
+        try T.expectEqual(@as(usize, if (no_lib) 1 else 2), order.len);
+        if (!no_lib) {
+            try T.expect(order[0].is_library);
+            try T.expectEqualStrings("/lib/lib.es2015.promise.d.ts", program.files.items[order[0].file_id].path);
+        }
     }
 }

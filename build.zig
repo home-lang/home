@@ -412,6 +412,7 @@ pub fn build(b: *std.Build) void {
         "ts-conformance-test-filter",
         "Only compile/run ts_conformance tests whose name contains this substring",
     );
+    const strip_ts_conformance_tests = b.option(bool, "ts-conformance-strip", "Strip conformance test symbols to reduce compiler memory") orelse false;
     const ts_checker_test_filter = b.option(
         []const u8,
         "ts-checker-test-filter",
@@ -2726,6 +2727,10 @@ pub fn build(b: *std.Build) void {
         .root_module = ts_conformance_pkg,
         .filters = ts_conformance_test_filters,
     });
+    if (strip_ts_conformance_tests) ts_conformance_tests.root_module.strip = true;
+    const install_ts_conformance_tests = b.addInstallArtifact(ts_conformance_tests, .{ .dest_sub_path = "ts-conformance-tests" });
+    const ts_conformance_test_bin = b.step("ts-conformance-test-bin", "Build the conformance test runner without executing tests");
+    ts_conformance_test_bin.dependOn(&install_ts_conformance_tests.step);
     const run_ts_conformance_tests = b.addRunArtifact(ts_conformance_tests);
     // The conformance executable selects smoke, category, full-corpus, exact,
     // slice, and fixture-filter modes from HOME_TS_CONFORMANCE_* at runtime.

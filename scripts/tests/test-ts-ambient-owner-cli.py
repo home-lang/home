@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compare scoped ambient-module ownership and imported constructors with tsc.
 
-Run under scripts/run-bounded.pl. --include-known-gaps adds cross-file global
-ownership controls whose mismatches remain disqualifying discovery evidence.
+Run under scripts/run-bounded.pl. --include-known-gaps retains the historical
+cross-file global controls also covered by test-ts-global-owner-cli.py.
 """
 from pathlib import Path
 import runpy

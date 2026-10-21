@@ -311,6 +311,10 @@ pub const SignaturePayload = struct {
     is_construct: bool,
     /// True for `abstract new` constructor signatures.
     is_abstract_construct: bool = false,
+    /// Declared literal syntax gives an overload specialized priority.
+    has_literal_types: bool = false,
+    /// Contextual names/types must not replace a declaration's syntax flags.
+    has_parameter_declaration_origin: bool = false,
     /// True if this is the `this` parameter signature variant.
     has_this_type: bool,
     /// Explicit `this` parameter type when `has_this_type` is true.

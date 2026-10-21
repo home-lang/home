@@ -151,6 +151,13 @@ const ScopedOwner = struct { path: []const u8, node: hir.NodeId, default_visible
 const IndexKey = struct { owner: *const driver.Compilation, scope: hir.NodeId };
 
 pub const Query = struct {
+    pub const SourceFilter = struct {
+        context: *const anyopaque,
+        allows: *const fn (*const anyopaque, []const u8) bool,
+    };
+    /// A compiler host may resolve physical paths that are outside its
+    /// current Program. Apply admission before consulting cached owners too.
+    source_filter: ?SourceFilter = null,
     gpa: std.mem.Allocator,
     resolver: *resolver_mod.Resolver,
     files: std.StringHashMapUnmanaged(Entry) = .empty,
@@ -191,9 +198,15 @@ pub const Query = struct {
         try self.files.put(self.gpa, path, .{ .compilation = source, .owned = false });
     }
 
+    fn sourceAllowed(self: *const Query, path: []const u8) bool {
+        const filter = self.source_filter orelse return true;
+        return filter.allows(filter.context, path);
+    }
+
     /// Retain an immutable bound owner for export facts as well as origin
     /// traversal. Repeated queries must inspect this same source identity.
     pub fn compilation(self: *Query, path: []const u8) !?*driver.Compilation {
+        if (!self.sourceAllowed(path)) return null;
         if (self.files.get(path)) |entry| return entry.compilation;
         const source = self.resolver.fs.readFile(self.gpa, path) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -223,6 +236,7 @@ pub const Query = struct {
         const arena = self.index_arena.allocator();
         var files = self.files.iterator();
         while (files.next()) |entry| {
+            if (!self.sourceAllowed(entry.key_ptr.*)) continue;
             const c = entry.value_ptr.compilation;
             if (self.ambient_indexed.contains(c)) continue;
             if (c.hir.kindOf(c.root) != .block_stmt) continue;
@@ -255,13 +269,16 @@ pub const Query = struct {
 
     pub fn hasAmbientModule(self: *Query, name: []const u8) !bool {
         try self.indexAmbientModules();
-        return self.ambient_modules.contains(name);
+        const owners = self.ambient_modules.get(name) orelse return false;
+        for (owners.items) |owner| if (self.sourceAllowed(owner.path)) return true;
+        return false;
     }
 
     fn enqueueModule(self: *Query, specifier: []const u8, from: []const u8, state: State) !void {
-        try self.indexAmbientModules();
-        if (self.ambient_modules.get(specifier)) |owners| {
+        if (try self.hasAmbientModule(specifier)) {
+            const owners = self.ambient_modules.get(specifier).?;
             for (owners.items) |owner| {
+                if (!self.sourceAllowed(owner.path)) continue;
                 var next = state;
                 next.path = owner.path;
                 next.scope = owner.node;
@@ -276,9 +293,11 @@ pub const Query = struct {
     }
 
     fn moduleNamespace(self: *Query, specifier: []const u8, from: []const u8, values: bool, restriction: ?Restriction) !void {
-        try self.indexAmbientModules();
-        if (self.ambient_modules.get(specifier)) |owners| {
-            for (owners.items) |owner| self.namespace(owner.path, owner.node, values, restriction);
+        if (try self.hasAmbientModule(specifier)) {
+            const owners = self.ambient_modules.get(specifier).?;
+            for (owners.items) |owner| {
+                if (self.sourceAllowed(owner.path)) self.namespace(owner.path, owner.node, values, restriction);
+            }
         } else if (try self.target(specifier, from)) |path| self.namespace(path, 0, values, restriction);
     }
 
@@ -372,12 +391,27 @@ pub const Query = struct {
                 return null;
             },
         };
+        if (!self.sourceAllowed(resolved.path)) {
+            self.result.complete = false;
+            return null;
+        }
         return resolved.path;
     }
 
     /// Query-local traversal state is reset between names; bound source
     /// storage can be reused until the Query is destroyed. Results contain
     /// no pointers into that temporary HIR, symbol or string storage.
+    /// Explicit aliases remain declared exports when their target is unknown.
+    /// An unresolved export-star does not declare arbitrary named symbols.
+    pub fn hasExplicitExport(self: *Query, path: []const u8, name: []const u8) !bool {
+        const c = try self.compilation(path) orelse return false;
+        if (c.hir.kindOf(c.root) != .block_stmt) return false;
+        const source_index = try self.index(c, 0);
+        if (std.mem.eql(u8, name, "default")) return source_index.defaults.items.len != 0;
+        const id = c.interner.lookup(name) orelse return false;
+        return source_index.exports.contains(id);
+    }
+
     pub fn resolve(self: *Query, path: []const u8, name: []const u8) !Origins {
         self.pending.clearRetainingCapacity();
         self.visited.clearRetainingCapacity();
@@ -413,9 +447,11 @@ pub const Query = struct {
     };
 
     fn appendModuleScopes(self: *Query, pending: *std.ArrayListUnmanaged(ScopedOwner), specifier: []const u8, from: []const u8) !bool {
-        try self.indexAmbientModules();
-        if (self.ambient_modules.get(specifier)) |owners| {
-            try pending.appendSlice(self.gpa, owners.items);
+        if (try self.hasAmbientModule(specifier)) {
+            const owners = self.ambient_modules.get(specifier).?;
+            for (owners.items) |owner| {
+                if (self.sourceAllowed(owner.path)) try pending.append(self.gpa, owner);
+            }
             return true;
         }
         if (try self.target(specifier, from)) |path| {
@@ -510,6 +546,10 @@ pub const Query = struct {
     }
 
     fn namespace(self: *Query, path: []const u8, scope: hir.NodeId, values: bool, restriction: ?Restriction) void {
+        if (!self.sourceAllowed(path)) {
+            self.result.complete = false;
+            return;
+        }
         const origin: Origin = .{ .path = path, .position = if (scope == 0) 0 else self.files.get(path).?.compilation.hir.spanOf(scope).start, .kind = if (scope == 0) .namespace else .declaration };
         self.result.include("namespace", origin);
         if (values) self.result.include("value", origin) else self.result.include("type_only_value", origin);
@@ -983,4 +1023,45 @@ test "export origins: unresolved local aliases do not prove missing exports" {
     try T.expect(!alias.complete and alias.type == null and alias.value == null);
     const absent = try query.resolve("/owner.d.ts", "Absent");
     try T.expect(absent.complete and absent.type == null and absent.value == null);
+}
+
+test "export origins: admission filters apply to cached owners and transitive reexports" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", "export { value } from './leaf'; export * as child from './leaf';");
+    try vfs.addFile("/leaf.ts", "export const value = 1;");
+    try vfs.addFile("/ambient.d.ts", "declare module 'ambient' { export const value: number; }");
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const admitted = try query.resolve("/owner.ts", "value");
+    try T.expect(admitted.value != null);
+    const admitted_namespace = try query.resolve("/owner.ts", "child");
+    try T.expect(admitted_namespace.namespace != null);
+    try T.expect(try query.compilation("/ambient.d.ts") != null);
+    try T.expect(try query.hasAmbientModule("ambient"));
+    const Admission = struct {
+        allow_imported: bool = false,
+        fn allows(context: *const anyopaque, path: []const u8) bool {
+            const self: *const @This() = @ptrCast(@alignCast(context));
+            return self.allow_imported or (!std.mem.eql(u8, path, "/leaf.ts") and !std.mem.eql(u8, path, "/ambient.d.ts"));
+        }
+    };
+    var admission: Admission = .{};
+    query.source_filter = .{ .context = &admission, .allows = Admission.allows };
+    try T.expect(try query.compilation("/leaf.ts") == null);
+    const excluded = try query.resolve("/owner.ts", "value");
+    try T.expect(!excluded.complete and excluded.value == null);
+    try T.expect(try query.hasExplicitExport("/owner.ts", "value"));
+    try T.expect(try query.hasExplicitExport("/owner.ts", "child"));
+    try T.expect(!try query.hasExplicitExport("/owner.ts", "absent"));
+    const excluded_namespace = try query.resolve("/owner.ts", "child");
+    try T.expect(!excluded_namespace.complete and excluded_namespace.namespace == null);
+    try T.expect(!try query.hasAmbientModule("ambient"));
+    admission.allow_imported = true;
+    const restored = try query.resolve("/owner.ts", "value");
+    try T.expect(admitted.sameDeclaration(restored));
+    try T.expect(admitted_namespace.sameDeclaration(try query.resolve("/owner.ts", "child")));
+    try T.expect(try query.hasAmbientModule("ambient"));
 }

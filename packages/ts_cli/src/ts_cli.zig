@@ -12,8 +12,8 @@
 //!   home tsc --watch              # re-emit on file change
 //!   home tsc --project=tsconfig.json   # explicit config path
 //!
-//! Exit codes match tsc: 0 success, 1 type errors, 2 CLI/config errors,
-//! 3 internal errors.
+//! Reference diagnostic statuses distinguish skipped outputs (1) from
+//! generated outputs (2). Home internal failures use status 3.
 
 const std = @import("std");
 const ts_diagnostics = @import("ts_diagnostics");
@@ -69,7 +69,9 @@ test "CLI: explicit project roots resolve relative paths and preserve absolute p
 
 pub const ExitCode = enum(u8) {
     success = 0,
+    /// Diagnostics with outputs skipped, including command-line parse errors.
     type_errors = 1,
+    /// Diagnostics with outputs generated; the historical name is retained.
     config_error = 2,
     internal_error = 3,
 };
@@ -91,8 +93,11 @@ pub const Options = struct {
     files: []const []const u8 = &.{},
     /// `--project` / `-p` path to a tsconfig.json.
     project: ?[]const u8 = null,
-    /// `--noEmit`.
-    no_emit: bool = false,
+    /// `--noEmit`. Null preserves the project setting; false overrides it.
+    no_emit: ?bool = null,
+    no_lib: ?bool = null,
+    no_resolve: ?bool = null,
+    resolve_json_module: ?bool = null,
     /// `--skipLibCheck`. `null` means defer to tsconfig.
     skip_lib_check: ?bool = null,
     /// `--ignoreConfig`. This only suppresses config discovery when source
@@ -102,8 +107,8 @@ pub const Options = struct {
     watch: bool = false,
     /// `--pretty` / `--no-pretty`. `null` means "auto" (TTY detect).
     pretty: ?bool = null,
-    /// `--traceResolution`.
-    trace_resolution: bool = false,
+    /// `--traceResolution`. Null preserves the project setting.
+    trace_resolution: ?bool = null,
     /// `--listFiles`.
     list_files: bool = false,
     /// `--listFilesOnly`.
@@ -157,13 +162,45 @@ pub const Options = struct {
     home_options: tsconfig_mod.HomeOptions = .{},
 };
 
+test "CLI: noLib and noResolve aliases override config and compile options in both directions" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    for ([_]bool{ true, false }) |enabled| {
+        for ([_][]const u8{ "--noLib", "--NOLIB", "-noLib", "--noResolve", "--NORESOLVE", "-noResolve" }) |flag| {
+            const args = [_][]const u8{ flag, if (enabled) "true" else "false" };
+            const opts = try parseArgs(T.allocator, &args);
+            defer T.allocator.free(opts.files);
+            var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+            config.compiler_options.no_lib = !enabled;
+            config.compiler_options.no_resolve = !enabled;
+            var compiled: ts_driver.CompileOptions = .{ .no_lib = !enabled, .no_resolve = !enabled };
+            applyConfigOverrides(&config, opts);
+            applyCompileOptions(&compiled, opts);
+            if (optionIs(flag, "--noLib")) {
+                try T.expectEqual(@as(?bool, enabled), opts.no_lib);
+                try T.expectEqual(@as(?bool, enabled), config.compiler_options.no_lib);
+                try T.expectEqual(enabled, compiled.no_lib);
+            } else {
+                try T.expectEqual(@as(?bool, enabled), opts.no_resolve);
+                try T.expectEqual(@as(?bool, enabled), config.compiler_options.no_resolve);
+                try T.expectEqual(enabled, compiled.no_resolve);
+            }
+        }
+    }
+    try T.expectEqual(@as(?bool, null), (Options{}).no_resolve);
+    try T.expectEqual(@as(?bool, null), (Options{}).no_lib);
+}
+
 /// Apply command-line compiler options after loading tsconfig. Command-line
 /// values win, and each resolved option updates every compiler phase through
 /// the driver's shared option mappers.
 pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Options) void {
     compile_opts.strict = opts.strict;
     if (opts.verbatim_module_syntax) |value| compile_opts.verbatim_module_syntax = value;
-    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
+    if (opts.no_emit) |value| compile_opts.no_emit = value;
+    if (opts.no_lib) |value| compile_opts.no_lib = value;
+    if (opts.no_resolve) |value| compile_opts.no_resolve = value;
+    if (opts.resolve_json_module) |value| compile_opts.resolve_json_module = value;
     compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
     if (opts.allow_js) |value| compile_opts.allow_js = value;
     if (opts.check_js) |value| {
@@ -213,10 +250,13 @@ pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void 
     if (opts.verbatim_module_syntax) |value| compiler_options.verbatim_module_syntax = value;
     if (opts.allow_js) |value| compiler_options.allow_js = value;
     if (opts.check_js) |value| compiler_options.check_js = value;
-    if (opts.no_emit) compiler_options.no_emit = true;
+    if (opts.no_emit) |value| compiler_options.no_emit = value;
+    if (opts.no_lib) |value| compiler_options.no_lib = value;
+    if (opts.no_resolve) |value| compiler_options.no_resolve = value;
+    if (opts.resolve_json_module) |value| compiler_options.resolve_json_module = value;
     if (opts.skip_lib_check) |value| compiler_options.skip_lib_check = value;
     if (opts.pretty) |value| compiler_options.pretty = value;
-    if (opts.trace_resolution) compiler_options.trace_resolution = true;
+    if (opts.trace_resolution) |value| compiler_options.trace_resolution = value;
     if (opts.target) |value| {
         if (tsconfig_mod.Target.fromString(value)) |target| compiler_options.target = target;
     }
@@ -288,49 +328,55 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        if (std.mem.eql(u8, a, "--noEmit")) {
-            opts.no_emit = true;
-        } else if (std.mem.eql(u8, a, "--skipLibCheck")) {
+        if (optionIs(a, "--noEmit")) {
+            opts.no_emit = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--noLib")) {
+            opts.no_lib = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--noResolve")) {
+            opts.no_resolve = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--resolveJsonModule")) {
+            opts.resolve_json_module = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--skipLibCheck")) {
             opts.skip_lib_check = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--ignoreConfig")) {
+        } else if (optionIs(a, "--ignoreConfig")) {
             opts.ignore_config = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--watch") or std.mem.eql(u8, a, "-w")) {
-            opts.watch = true;
-        } else if (std.mem.eql(u8, a, "--pretty")) {
+        } else if (optionIs(a, "--watch")) {
+            opts.watch = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--pretty")) {
             opts.pretty = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-pretty")) {
+        } else if (optionIs(a, "--no-pretty")) {
             opts.pretty = false;
-        } else if (std.mem.eql(u8, a, "--traceResolution")) {
-            opts.trace_resolution = true;
-        } else if (std.mem.eql(u8, a, "--no-traceResolution")) {
+        } else if (optionIs(a, "--traceResolution")) {
+            opts.trace_resolution = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--no-traceResolution")) {
             opts.trace_resolution = false;
-        } else if (std.mem.eql(u8, a, "--listFiles")) {
-            opts.list_files = true;
-        } else if (std.mem.eql(u8, a, "--listFilesOnly")) {
-            opts.list_files_only = true;
-        } else if (std.mem.eql(u8, a, "--explainFiles")) {
-            opts.explain_files = true;
-        } else if (std.mem.eql(u8, a, "--showConfig")) {
-            opts.show_config = true;
-        } else if (std.mem.eql(u8, a, "--init")) {
-            opts.init_config = true;
-        } else if (std.mem.eql(u8, a, "--version") or std.mem.eql(u8, a, "-v")) {
-            opts.show_version = true;
-        } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "-?")) {
-            opts.show_help = true;
-        } else if (std.mem.eql(u8, a, "--all")) {
-            opts.show_all_help = true;
-        } else if (std.mem.eql(u8, a, "--strict")) {
-            opts.strict = true;
-        } else if (std.mem.eql(u8, a, "--verbatimModuleSyntax")) {
+        } else if (optionIs(a, "--listFiles")) {
+            opts.list_files = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--listFilesOnly")) {
+            opts.list_files_only = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--explainFiles")) {
+            opts.explain_files = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--showConfig")) {
+            opts.show_config = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--init")) {
+            opts.init_config = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--version")) {
+            opts.show_version = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--help")) {
+            opts.show_help = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--all")) {
+            opts.show_all_help = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--strict")) {
+            opts.strict = parseOptionalBooleanArg(args, &i);
+        } else if (optionIs(a, "--verbatimModuleSyntax")) {
             opts.verbatim_module_syntax = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-verbatimModuleSyntax")) {
+        } else if (optionIs(a, "--no-verbatimModuleSyntax")) {
             opts.verbatim_module_syntax = false;
-        } else if (std.mem.eql(u8, a, "--allowJs")) {
+        } else if (optionIs(a, "--allowJs")) {
             opts.allow_js = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--checkJs")) {
+        } else if (optionIs(a, "--checkJs")) {
             opts.check_js = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--maxNodeModuleJsDepth")) {
+        } else if (optionIs(a, "--maxNodeModuleJsDepth")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "maxNodeModuleJsDepth";
@@ -341,15 +387,15 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
         } else if (parseEqFlag(a, "--maxNodeModuleJsDepth=")) |value| {
             opts.max_node_module_js_depth = parseNumberOption(value, "maxNodeModuleJsDepth", ctx) catch
                 return error.InvalidEnumOption;
-        } else if (std.mem.eql(u8, a, "--home-sound")) {
+        } else if (optionIs(a, "--home-sound")) {
             opts.home_options.sound = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-home-sound")) {
+        } else if (optionIs(a, "--no-home-sound")) {
             opts.home_options.sound = false;
-        } else if (std.mem.eql(u8, a, "--home-list-unmodeled-any")) {
+        } else if (optionIs(a, "--home-list-unmodeled-any")) {
             opts.home_options.list_unmodeled_any = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-home-list-unmodeled-any")) {
+        } else if (optionIs(a, "--no-home-list-unmodeled-any")) {
             opts.home_options.list_unmodeled_any = false;
-        } else if (std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "-p")) {
+        } else if (optionIs(a, "--project")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "project";
@@ -358,7 +404,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.project = args[i];
         } else if (parseEqFlag(a, "--project=")) |v| {
             opts.project = v;
-        } else if (std.mem.eql(u8, a, "--target")) {
+        } else if (optionIs(a, "--target")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "target";
@@ -379,7 +425,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.target = v;
         } else if (parseEqFlag(a, "--outDir=")) |v| {
             opts.out_dir = v;
-        } else if (std.mem.eql(u8, a, "--outDir")) {
+        } else if (optionIs(a, "--outDir")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "outDir";
@@ -393,7 +439,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.InvalidEnumOption;
             }
             opts.module = v;
-        } else if (std.mem.eql(u8, a, "--module")) {
+        } else if (optionIs(a, "--module")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "module";
@@ -419,7 +465,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.InvalidEnumOption;
             }
             opts.module_resolution = v;
-        } else if (std.mem.eql(u8, a, "--moduleResolution")) {
+        } else if (optionIs(a, "--moduleResolution")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "moduleResolution";
@@ -431,7 +477,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 return error.InvalidEnumOption;
             }
             opts.module_resolution = args[i];
-        } else if (std.mem.eql(u8, a, "--jsx")) {
+        } else if (optionIs(a, "--jsx")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "jsx";
@@ -449,23 +495,23 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
                 ctx.config_only_option = name;
                 return error.ConfigOnlyBooleanOption;
             }
-        } else if (std.mem.eql(u8, a, "--paths")) {
+        } else if (optionIs(a, "--paths")) {
             i += 1;
             if (i >= args.len or !std.mem.eql(u8, args[i], "null")) {
                 ctx.config_only_option = "paths";
                 return error.ConfigOnlyOption;
             }
-        } else if (std.mem.eql(u8, a, "--rootDirs")) {
+        } else if (optionIs(a, "--rootDirs")) {
             i += 1;
             if (i >= args.len or !std.mem.eql(u8, args[i], "null")) {
                 ctx.config_only_option = "rootDirs";
                 return error.ConfigOnlyOption;
             }
-        } else if (std.mem.eql(u8, a, "--declaration") or std.mem.eql(u8, a, "-d")) {
+        } else if (optionIs(a, "--declaration")) {
             opts.declaration = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--emitDeclarationOnly")) {
+        } else if (optionIs(a, "--emitDeclarationOnly")) {
             opts.emit_declaration_only = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--declarationDir")) {
+        } else if (optionIs(a, "--declarationDir")) {
             i += 1;
             if (i >= args.len) {
                 ctx.missing_value_option = "declarationDir";
@@ -474,15 +520,15 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.declaration_dir = args[i];
         } else if (parseEqFlag(a, "--declarationDir=")) |value| {
             opts.declaration_dir = value;
-        } else if (std.mem.eql(u8, a, "--no-declaration")) {
+        } else if (optionIs(a, "--no-declaration")) {
             opts.declaration = false;
-        } else if (std.mem.eql(u8, a, "--sourceMap")) {
+        } else if (optionIs(a, "--sourceMap")) {
             opts.source_map = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-sourceMap")) {
+        } else if (optionIs(a, "--no-sourceMap")) {
             opts.source_map = false;
-        } else if (std.mem.eql(u8, a, "--declarationMap")) {
+        } else if (optionIs(a, "--declarationMap")) {
             opts.declaration_map = parseOptionalBooleanArg(args, &i);
-        } else if (std.mem.eql(u8, a, "--no-declarationMap")) {
+        } else if (optionIs(a, "--no-declarationMap")) {
             opts.declaration_map = false;
         } else if (watchOptionFromFlag(a)) |watch| {
             try parseWatchOptionArg(args, &i, watch, ctx);
@@ -504,8 +550,26 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
     return opts;
 }
 
+/// Resolve supported option identities through the generated declarations.
+/// Values and positional paths remain borrowed from the original argv: only
+/// the flag name is case-insensitive and permits either one or two dashes.
+pub fn optionIs(flag: []const u8, canonical_flag: []const u8) bool {
+    if (flag.len == 0 or flag[0] != '-') return false;
+    std.debug.assert(std.mem.startsWith(u8, canonical_flag, "--"));
+    const prefix_length: usize = if (flag.len > 1 and flag[1] == '-') 2 else 1;
+    const name = flag[prefix_length..];
+    const canonical_name = canonical_flag[2..];
+    if (std.ascii.eqlIgnoreCase(name, canonical_name)) return true;
+    for (all_options) |decl| {
+        if (decl.short.len != 0 and std.mem.eql(u8, decl.name, canonical_name) and
+            std.ascii.eqlIgnoreCase(name, decl.short)) return true;
+    }
+    return false;
+}
+
 fn parseEqFlag(a: []const u8, prefix: []const u8) ?[]const u8 {
-    if (std.mem.startsWith(u8, a, prefix)) return a[prefix.len..];
+    const equals = std.mem.indexOfScalar(u8, a, '=') orelse return null;
+    if (optionIs(a[0..equals], prefix[0 .. prefix.len - 1])) return a[equals + 1 ..];
     return null;
 }
 
@@ -541,10 +605,10 @@ fn parseOptionalBooleanArg(args: []const []const u8, index: *usize) bool {
 }
 
 fn configOnlyBooleanOptionName(a: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, a, "--composite")) return "composite";
-    if (std.mem.eql(u8, a, "--disableSourceOfProjectReferenceRedirect")) return "disableSourceOfProjectReferenceRedirect";
-    if (std.mem.eql(u8, a, "--disableSolutionSearching")) return "disableSolutionSearching";
-    if (std.mem.eql(u8, a, "--disableReferencedProjectLoad")) return "disableReferencedProjectLoad";
+    if (optionIs(a, "--composite")) return "composite";
+    if (optionIs(a, "--disableSourceOfProjectReferenceRedirect")) return "disableSourceOfProjectReferenceRedirect";
+    if (optionIs(a, "--disableSolutionSearching")) return "disableSolutionSearching";
+    if (optionIs(a, "--disableReferencedProjectLoad")) return "disableReferencedProjectLoad";
     return null;
 }
 
@@ -558,26 +622,26 @@ const WatchOption = struct {
 
 fn watchOptionFromFlag(flag: []const u8) ?WatchOption {
     if (flag.len == 0 or flag[0] != '-') return null;
-    var name = stripDashes(flag);
+    const prefix_length: usize = if (flag.len > 1 and flag[1] == '-') 2 else 1;
+    var name = flag[prefix_length..];
     var value: ?[]const u8 = null;
     if (std.mem.indexOfScalar(u8, name, '=')) |eq| {
         value = name[eq + 1 ..];
         name = name[0..eq];
     }
-    const kind: WatchOptionKind = if (std.mem.eql(u8, name, "watchInterval"))
-        .number
-    else if (std.mem.eql(u8, name, "watchFile") or
-        std.mem.eql(u8, name, "watchDirectory") or
-        std.mem.eql(u8, name, "fallbackPolling"))
-        .string
-    else if (std.mem.eql(u8, name, "synchronousWatchDirectory"))
-        .boolean
-    else if (std.mem.eql(u8, name, "excludeDirectories") or
-        std.mem.eql(u8, name, "excludeFiles"))
-        .array
-    else
-        return null;
-    return .{ .name = name, .kind = kind, .value = value };
+    const declarations = [_]struct { name: []const u8, kind: WatchOptionKind }{
+        .{ .name = "watchInterval", .kind = .number },
+        .{ .name = "watchFile", .kind = .string },
+        .{ .name = "watchDirectory", .kind = .string },
+        .{ .name = "fallbackPolling", .kind = .string },
+        .{ .name = "synchronousWatchDirectory", .kind = .boolean },
+        .{ .name = "excludeDirectories", .kind = .array },
+        .{ .name = "excludeFiles", .kind = .array },
+    };
+    for (declarations) |decl| {
+        if (std.ascii.eqlIgnoreCase(name, decl.name)) return .{ .name = decl.name, .kind = decl.kind, .value = value };
+    }
+    return null;
 }
 
 fn parseWatchOptionArg(
@@ -1522,7 +1586,7 @@ test "parseArgs: --noEmit" {
     const argv = [_][]const u8{"--noEmit"};
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
-    try T.expect(opts.no_emit);
+    try T.expectEqual(@as(?bool, true), opts.no_emit);
 }
 
 test "parseArgs: boolean library and config flags preserve positional files" {
@@ -1631,6 +1695,111 @@ test "parseArgs: --watch and -w both work" {
         defer T.allocator.free(opts.files);
         try T.expect(opts.watch);
     }
+}
+
+test "parseArgs: normal watch aliases consume booleans and retain source paths" {
+    for ([_][]const u8{ "--watch", "-watch", "-w", "--w", "--WATCH", "--W" }) |flag| {
+        for ([_]bool{ false, true }) |enabled| {
+            const enabled_args = [_][]const u8{ flag, if (enabled) "true" else "false", "Src/Entry.TS" };
+            const enabled_options = try parseArgs(T.allocator, &enabled_args);
+            defer T.allocator.free(enabled_options.files);
+            try T.expectEqual(enabled, enabled_options.watch);
+            try T.expectEqual(@as(usize, 1), enabled_options.files.len);
+            try T.expectEqualStrings("Src/Entry.TS", enabled_options.files[0]);
+        }
+        const present_args = [_][]const u8{ flag, "Src/Entry.TS" };
+        const present_options = try parseArgs(T.allocator, &present_args);
+        defer T.allocator.free(present_options.files);
+        try T.expect(present_options.watch);
+        try T.expectEqual(@as(usize, 1), present_options.files.len);
+        try T.expectEqualStrings("Src/Entry.TS", present_options.files[0]);
+    }
+    const literal_args = [_][]const u8{ "--watch", "False", "Src/Entry.TS" };
+    const literal_options = try parseArgs(T.allocator, &literal_args);
+    defer T.allocator.free(literal_options.files);
+    try T.expect(literal_options.watch);
+    try T.expectEqual(@as(usize, 2), literal_options.files.len);
+    try T.expectEqualStrings("False", literal_options.files[0]);
+}
+
+test "parseArgs: explicit boolean compiler values override project settings in every phase" {
+    for ([_]bool{ false, true }) |enabled| {
+        const value = if (enabled) "true" else "false";
+        const argv = [_][]const u8{ "-NOEMIT", value, "--TRACERESOLUTION", value, "--STRICT", value, "Src/Entry.TS" };
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, enabled), opts.no_emit);
+        try T.expectEqual(@as(?bool, enabled), opts.trace_resolution);
+        try T.expectEqual(@as(?bool, enabled), opts.strict);
+        try T.expectEqual(@as(usize, 1), opts.files.len);
+        var loop_arena = std.heap.ArenaAllocator.init(T.allocator);
+        defer loop_arena.deinit();
+        var config = try tsconfig_mod.parseString(T.allocator, loop_arena.allocator(), "{}");
+        config.compiler_options.no_emit = !enabled;
+        config.compiler_options.trace_resolution = !enabled;
+        config.compiler_options.strict = !enabled;
+        applyConfigOverrides(&config, opts);
+        try T.expectEqual(@as(?bool, enabled), config.compiler_options.no_emit);
+        try T.expectEqual(@as(?bool, enabled), config.compiler_options.trace_resolution);
+        try T.expectEqual(@as(?bool, enabled), config.compiler_options.strict);
+        var compile_opts: ts_driver.CompileOptions = .{ .no_emit = !enabled, .strict = !enabled };
+        applyCompileOptions(&compile_opts, opts);
+        try T.expectEqual(enabled, compile_opts.no_emit);
+        try T.expectEqual(@as(?bool, enabled), compile_opts.strict);
+    }
+    const empty = try parseArgs(T.allocator, &.{});
+    defer T.allocator.free(empty.files);
+    try T.expectEqual(@as(?bool, null), empty.no_emit);
+    try T.expectEqual(@as(?bool, null), empty.trace_resolution);
+    var default_arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer default_arena.deinit();
+    var default_config = try tsconfig_mod.parseString(T.allocator, default_arena.allocator(), "{}");
+    default_config.compiler_options.no_emit = true;
+    default_config.compiler_options.trace_resolution = true;
+    applyConfigOverrides(&default_config, empty);
+    try T.expectEqual(@as(?bool, true), default_config.compiler_options.no_emit);
+    try T.expectEqual(@as(?bool, true), default_config.compiler_options.trace_resolution);
+    var default_compile_opts: ts_driver.CompileOptions = .{ .no_emit = true };
+    applyCompileOptions(&default_compile_opts, empty);
+    try T.expect(default_compile_opts.no_emit);
+}
+
+test "parseArgs: normal option identity preserves borrowed values and canonical diagnostics" {
+    for ([_][]const u8{ "-p", "--P", "-PROJECT", "--project" }) |flag| {
+        const project_options = try parseArgs(T.allocator, &.{ flag, "Config/Case.JSON" });
+        defer T.allocator.free(project_options.files);
+        try T.expectEqualStrings("Config/Case.JSON", project_options.project.?);
+    }
+    const argv = [_][]const u8{ "--P=Config/Case.JSON", "--M=CommonJS", "--T", "ESNext", "Src/Entry.TS" };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+    try T.expectEqualStrings("Config/Case.JSON", opts.project.?);
+    try T.expectEqualStrings("CommonJS", opts.module.?);
+    try T.expectEqualStrings("ESNext", opts.target.?);
+    try T.expect(opts.project.?.ptr == argv[0].ptr + 4);
+    try T.expect(opts.module.?.ptr == argv[1].ptr + 4);
+    try T.expectEqualStrings("Src/Entry.TS", opts.files[0]);
+    var context: ParseContext = .{};
+    try T.expectError(error.MissingValue, parseArgsCtx(T.allocator, &.{"--P"}, &context));
+    try T.expectEqualStrings("project", context.missing_value_option);
+    context = .{};
+    try T.expectError(error.ConfigOnlyBooleanOption, parseArgsCtx(T.allocator, &.{"-COMPOSITE"}, &context));
+    try T.expectEqualStrings("composite", context.config_only_option);
+}
+
+test "parseArgsCtx: watch names keep canonical diagnostics and source paths" {
+    var context: ParseContext = .{};
+    try T.expectError(error.WatchOptionTypeMismatch, parseArgsCtx(T.allocator, &.{ "-WATCHINTERVAL", "bad" }, &context));
+    try T.expectEqualStrings("watchInterval", context.watch_option);
+    try T.expectEqualStrings("number", context.watch_option_type);
+    context = .{};
+    try T.expectError(error.WatchOptionTypeMismatch, parseArgsCtx(T.allocator, &.{"--WATCHFILE"}, &context));
+    try T.expectEqualStrings("watchFile", context.watch_option);
+    try T.expectEqualStrings("string", context.watch_option_type);
+    const opts = try parseArgs(T.allocator, &.{ "-SYNCHRONOUSWATCHDIRECTORY", "false", "Src/Entry.TS" });
+    defer T.allocator.free(opts.files);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("Src/Entry.TS", opts.files[0]);
 }
 
 test "parseArgs: --project=path" {
@@ -1794,7 +1963,7 @@ test "parseArgs: --traceResolution toggles resolver tracing" {
     const argv = [_][]const u8{"--traceResolution"};
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
-    try T.expect(opts.trace_resolution);
+    try T.expectEqual(@as(?bool, true), opts.trace_resolution);
 }
 
 test "parseArgs: --pretty default + tsc_main resolution semantics" {
@@ -1929,7 +2098,7 @@ test "parseArgs: mixed flags + files" {
     const argv = [_][]const u8{ "--noEmit", "a.ts", "--strict", "b.ts" };
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
-    try T.expect(opts.no_emit);
+    try T.expectEqual(@as(?bool, true), opts.no_emit);
     try T.expectEqual(@as(?bool, true), opts.strict);
     try T.expectEqual(@as(usize, 2), opts.files.len);
     try T.expectEqualStrings("a.ts", opts.files[0]);
@@ -2499,4 +2668,22 @@ test "formatOutputCollision: TS5055 / TS5068 hint / TS5056 message text" {
     const m3 = try formatOutputCollision(T.allocator, .{ .code = 5056, .output_path = "a.js" });
     defer T.allocator.free(m3);
     try T.expectEqualStrings("error TS5056: Cannot write file 'a.js' because it would be overwritten by multiple input files.", m3);
+}
+
+test "CLI: JSON resolution boolean aliases override config and direct options" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "--resolveJsonModule", "--RESOLVEJSONMODULE", "-resolveJsonModule" }) |flag| {
+        for ([_]bool{ true, false }) |enabled| {
+            const opts = try parseArgs(T.allocator, &.{ flag, if (enabled) "true" else "false" });
+            defer T.allocator.free(opts.files);
+            var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+            cfg.compiler_options.resolve_json_module = !enabled;
+            var direct: ts_driver.CompileOptions = .{};
+            applyConfigOverrides(&cfg, opts);
+            applyCompileOptions(&direct, opts);
+            try T.expectEqual(@as(?bool, enabled), cfg.compiler_options.resolve_json_module);
+            try T.expectEqual(enabled, ts_driver.effectiveResolveJsonModule(direct));
+        }
+    }
 }

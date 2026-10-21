@@ -175,6 +175,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .relation_display_base,
         .this_type_markers,
         .declaration_this_types,
+        .ordered_overload_types,
         .no_infer_types,
         .tuple_trailing_rest_types,
         .tuple_trailing_variadic_types,

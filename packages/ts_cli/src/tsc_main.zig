@@ -1087,6 +1087,7 @@ fn buildInfoOptionsJson(gpa: std.mem.Allocator, cfg: tsconfig_mod.TsConfig) ![]u
         .{ .name = "verbatimModuleSyntax", .field = "verbatim_module_syntax" },
         .{ .name = "allowSyntheticDefaultImports", .field = "allow_synthetic_default_imports" },
         .{ .name = "noLib", .field = "no_lib" },
+        .{ .name = "noResolve", .field = "no_resolve" },
         .{ .name = "declaration", .field = "declaration" },
         .{ .name = "declarationMap", .field = "declaration_map" },
         .{ .name = "emitDeclarationOnly", .field = "emit_declaration_only" },
@@ -1268,6 +1269,7 @@ fn resolverConfigFromConfig(
 ) ts_resolver.Config {
     const co = cfg.compiler_options;
     var resolver_config: ts_resolver.Config = .{};
+    resolver_config.resolve_json = tsconfig_mod.effectiveResolveJsonModule(co);
     if (co.module_resolution) |mr| {
         resolver_config.strategy = switch (mr) {
             .classic => .classic,
@@ -1874,6 +1876,55 @@ fn printImportIncludeReasonLine(
     printStdout("{s}\n", .{message});
 }
 
+fn listingLibraryPriority(path: []const u8, library_directory: []const u8) usize {
+    const unknown = std.math.maxInt(usize);
+    const directory = std.mem.trimEnd(u8, library_directory, "/");
+    if (directory.len == 0 or !std.mem.startsWith(u8, path, directory) or
+        path.len <= directory.len or path[directory.len] != '/') return unknown;
+    const basename = std.fs.path.basename(path);
+    if (std.mem.eql(u8, basename, "lib.d.ts") or std.mem.eql(u8, basename, "lib.es6.d.ts")) return 0;
+    if (!std.mem.startsWith(u8, basename, "lib.") or !std.mem.endsWith(u8, basename, ".d.ts")) return unknown;
+    const name = basename[4 .. basename.len - 5];
+    // The generated option table preserves native LibMap order and groups
+    // aliases together. Reuse that order instead of maintaining a second map.
+    for (ts_cli.all_options) |option| {
+        if (!std.mem.eql(u8, option.name, "lib")) continue;
+        var groups = std.mem.tokenizeScalar(u8, option.possible_values, ',');
+        var priority: usize = 1;
+        while (groups.next()) |group| : (priority += 1) {
+            var aliases = std.mem.tokenizeScalar(u8, std.mem.trim(u8, group, " "), '/');
+            while (aliases.next()) |alias| if (std.mem.eql(u8, alias, name)) return priority;
+        }
+        break;
+    }
+    return unknown;
+}
+
+fn sourceFileDisplayOrder(gpa: std.mem.Allocator, program: *const ts_program.Program) error{OutOfMemory}![]ts_program.FileId {
+    const collected = try program.sourceFileOrder();
+    defer program.gpa.free(collected);
+    const result = try gpa.alloc(ts_program.FileId, collected.len);
+    var count: usize = 0;
+    for (collected) |entry| if (entry.is_library) {
+        result[count] = entry.file_id;
+        count += 1;
+    };
+    const Context = struct {
+        program: *const ts_program.Program,
+        directory: []const u8,
+        fn lessThan(context: @This(), left: ts_program.FileId, right: ts_program.FileId) bool {
+            return listingLibraryPriority(context.program.files.items[left].path, context.directory) <
+                listingLibraryPriority(context.program.files.items[right].path, context.directory);
+        }
+    };
+    std.sort.insertion(ts_program.FileId, result[0..count], Context{ .program = program, .directory = program.installed_library_path orelse "" }, Context.lessThan);
+    for (collected) |entry| if (!entry.is_library) {
+        result[count] = entry.file_id;
+        count += 1;
+    };
+    return result;
+}
+
 /// `--explainFiles`: print each program file with the reason it is part of
 /// the compilation, mirroring tsc's `ExplainFiles`. Root (input) files use
 /// the provenance-derived reason; transitively-added files use their recorded
@@ -1968,7 +2019,10 @@ fn printExplainFiles(
     _ = code_cjs_package_type_not_module;
     _ = code_cjs_package_no_type;
     _ = code_cjs_package_not_found;
-    for (program.files.items) |f| {
+    const order = sourceFileDisplayOrder(gpa, program) catch return;
+    defer gpa.free(order);
+    for (order) |file_id| {
+        const f = program.files.items[file_id];
         printStdout("{s}\n", .{explainFileDisplayPath(f)});
         const is_root = pathInList(roots, f.path);
         if (is_root) {
@@ -2658,14 +2712,34 @@ const CheckerResolverAdapter = struct {
     }
 
     fn setProgramSources(self: *CheckerResolverAdapter, program: *const ts_program.Program, options: ts_driver.CompileOptions) void {
+        // A new source snapshot invalidates export facts and owned bound
+        // fallbacks, including results cached before a noResolve revision.
+        const resolver = self.resolver;
+        const gpa = self.export_origin_query.gpa;
+        self.deinit();
+        self.* = CheckerResolverAdapter.init(gpa, resolver);
         self.admitted_program = program;
+        self.export_origin_query.source_filter = .{ .context = program, .allows = programSourceAllowed };
         self.js_sources_enabled = options.allow_js or options.check_js;
     }
 
+    fn programSourceAllowed(context: *const anyopaque, path: []const u8) bool {
+        const program: *const ts_program.Program = @ptrCast(@alignCast(context));
+        return !program.no_resolve or program.lookupPath(path) != null;
+    }
+
+    fn sourceAllowed(self: *const CheckerResolverAdapter, path: []const u8) bool {
+        const program = self.admitted_program orelse return true;
+        return programSourceAllowed(program, path);
+    }
+
+    fn javaScriptPath(path: []const u8) bool {
+        return std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".mjs") or std.mem.endsWith(u8, path, ".cjs");
+    }
+
     fn admittedJavaScript(self: *CheckerResolverAdapter, path: []const u8) bool {
-        if (!self.js_sources_enabled) return false;
-        if (!(std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx") or
-            std.mem.endsWith(u8, path, ".mjs") or std.mem.endsWith(u8, path, ".cjs"))) return false;
+        if (!self.js_sources_enabled or !javaScriptPath(path)) return false;
         const program = self.admitted_program orelse return false;
         return program.lookupPath(path) != null;
     }
@@ -2694,6 +2768,7 @@ const CheckerResolverAdapter = struct {
         self: *CheckerResolverAdapter,
         path: []const u8,
     ) ?*ts_driver.Compilation {
+        if (!self.sourceAllowed(path)) return null;
         if (self.admitted_program) |program| {
             if (program.lookupPath(path)) |id| {
                 if (program.fileById(id).compilation) |compilation| return compilation;
@@ -2762,14 +2837,19 @@ const CheckerResolverAdapter = struct {
         }, result) catch {};
     }
 
+    fn physicalResolution(self: *CheckerResolverAdapter, specifier: []const u8, containing_file: []const u8) ?ts_resolver.Resolution {
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        return self.resolver.resolve(specifier, containing_file) catch null;
+    }
+
     fn resolveModule(
         self: *CheckerResolverAdapter,
         specifier: []const u8,
         containing_file: []const u8,
     ) ?ts_resolver.Resolution {
-        self.resolver_mutex.lock();
-        defer self.resolver_mutex.unlock();
-        return self.resolver.resolve(specifier, containing_file) catch null;
+        const resolved = self.physicalResolution(specifier, containing_file) orelse return null;
+        return if (self.sourceAllowed(resolved.path)) resolved else null;
     }
 
     fn resolveTypeReference(
@@ -2780,7 +2860,8 @@ const CheckerResolverAdapter = struct {
     ) ?ts_resolver.Resolution {
         self.resolver_mutex.lock();
         defer self.resolver_mutex.unlock();
-        return self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch null;
+        const resolved = self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch return null;
+        return if (self.sourceAllowed(resolved.path)) resolved else null;
     }
 
     pub const vtable = ts_driver.ExternalResolver.VTable{
@@ -2829,6 +2910,7 @@ const CheckerResolverAdapter = struct {
 
     fn moduleExportNamesForPathImpl(self_ptr: *anyopaque, owner_path: []const u8) ?[]const []const u8 {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        if (!self.sourceAllowed(owner_path)) return null;
 
         self.cache_mutex.lock();
         if (self.module_export_names_cache.get(owner_path)) |cached| {
@@ -2885,7 +2967,10 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        const r = self.resolveModule(specifier, containing_file) orelse return null;
+        const r = self.physicalResolution(specifier, containing_file) orelse return null;
+        // Excluded JS still resolves as an untyped physical module (TS7016).
+        // Its source cannot supply inferred exports or declaration facts.
+        if (!self.sourceAllowed(r.path) and !javaScriptPath(r.path)) return null;
         return .{
             .path = r.path,
             .source_is_admitted = if (self.admitted_program) |program| program.lookupPath(r.path) != null else false,
@@ -2920,6 +3005,7 @@ const CheckerResolverAdapter = struct {
 
     fn moduleExportForPathImpl(self_ptr: *anyopaque, owner_path: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        if (!self.sourceAllowed(owner_path)) return null;
         const cache_key: ModuleExportCacheKey = .{ .path = owner_path, .name = name, .mode = .normal };
         if (self.cachedModuleExport(cache_key)) |cached| return cached;
         const compilation = self.moduleCompilation(owner_path) orelse return null;
@@ -2951,6 +3037,17 @@ const CheckerResolverAdapter = struct {
             const module_name = ts_program.renderModuleDisplayName(arena, owner_path) catch return null;
             const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else owner_path) catch return null) else "";
             const origins = self.boundExportOrigins(owner_path, compilation, name);
+            // An unresolved alias is unknown, rather than a proof that a
+            // syntactically exported name is absent. Keep authoritative
+            // type-only and concrete declaration facts when available.
+            if (origins) |owner| {
+                if ((!owner.complete or owner.ambiguous) and !facts.exported_type and
+                    !facts.exported_value and facts.type_only_pos == null and !facts.type_only_import)
+                {
+                    if (owner.ambiguous or (self.export_origin_query.hasExplicitExport(owner_path, name) catch return null))
+                        return null;
+                }
+            }
             break :blk .{
                 .module_name = module_name,
                 .exported_type = exported,
@@ -3025,6 +3122,17 @@ const CheckerResolverAdapter = struct {
             defer self.resolver_mutex.unlock();
             const arena = self.resolver.arena.allocator();
             const origins = self.boundExportOrigins(resolved.path, compilation, name);
+            // An unresolved alias is unknown, rather than a proof that a
+            // syntactically exported name is absent. Keep authoritative
+            // type-only and concrete declaration facts when available.
+            if (origins) |owner| {
+                if ((!owner.complete or owner.ambiguous) and !facts.exported_type and
+                    !facts.exported_value and facts.type_only_pos == null and !facts.type_only_import)
+                {
+                    if (owner.ambiguous or (self.export_origin_query.hasExplicitExport(resolved.path, name) catch return null))
+                        return null;
+                }
+            }
             break :blk .{
                 .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
                 .exported_type = facts.exported_type,
@@ -3062,17 +3170,20 @@ const CheckerResolverAdapter = struct {
         const query = &self.export_origin_query;
         if (!query.files.contains(path)) query.borrow(path, compilation) catch return null;
         const origins = query.resolve(path, name) catch return null;
-        if (!origins.complete or origins.ambiguous) return null;
         return origins;
     }
 
     fn namespaceExportOwner(origins: ?ts_program.export_origins.Origins) ?[]const u8 {
-        const origin = (origins orelse return null).value orelse return null;
+        const known = origins orelse return null;
+        if (!known.complete or known.ambiguous) return null;
+        const origin = known.value orelse return null;
         return if (origin.kind == .namespace) origin.path else null;
     }
 
     fn runtimeValueFromExportFacts(origins: ?ts_program.export_origins.Origins, exported_value: bool) ?bool {
-        if (origins) |known| return known.value != null;
+        if (origins) |known| {
+            if (known.complete and !known.ambiguous) return known.value != null;
+        }
         return if (exported_value) true else null;
     }
 
@@ -3085,6 +3196,7 @@ const CheckerResolverAdapter = struct {
         self.resolver_mutex.lock();
         defer self.resolver_mutex.unlock();
         const resolved = self.resolver.resolve(specifier, containing_file) catch return null;
+        if (!self.sourceAllowed(resolved.path)) return null;
         const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
         defer self.resolver.gpa.free(source);
         const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
@@ -3350,7 +3462,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
                 },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
-            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
+            // Parsing failed before any outputs could be generated.
+            // Native tsc reports these diagnostics with outputs skipped.
+            std.process.exit(@backingInt(if (err == error.OutOfMemory)
+                ts_cli.ExitCode.internal_error
+            else
+                ts_cli.diagnosticsExitCode(true)));
         };
         opts_files_owned = true;
 
@@ -3666,7 +3783,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
     resolver.watch_failed_lookup_capture = opts.watch;
-    const trace_resolution = opts.trace_resolution or blk: {
+    const trace_resolution = opts.trace_resolution orelse blk: {
         if (loaded_cfg) |c| break :blk (c.compiler_options.trace_resolution orelse false);
         break :blk false;
     };
@@ -3767,7 +3884,12 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // lets `--explainFiles` report imported files with their TS1393
     // "Imported via … from file …" reason. Best-effort: resolution gaps
     // simply leave the program partial, as they did before.
-    _ = program.loadImportClosureParallel(compile_opts, null) catch {};
+    const option_diagnostics_present = extension_diagnostics.hasErrors() or pending_config_summary.hasErrors();
+    var discovery_options = compile_opts;
+    // Discover and bind every source before choosing a diagnostic phase.
+    // A syntax failure in any file precedes options and semantic diagnostics.
+    discovery_options.bind_only = true;
+    _ = program.loadImportClosureParallel(discovery_options, null) catch {};
     if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
 
     // Stream diagnostics as each file finishes compiling. Brings
@@ -3807,14 +3929,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // semantic diagnostics. `--listFilesOnly` follows the same syntax/options
     // path but never asks for semantic diagnostics. Preserve streaming for
     // ordinary clean configs; defer only for these exceptional paths.
-    const option_diagnostics_present = extension_diagnostics.hasErrors() or pending_config_summary.hasErrors();
-    const defer_program_diagnostics = option_diagnostics_present or opts.list_files_only;
+    var syntax_probe: SyntaxDiagnosticProbe = .{};
+    program.compileAllStreaming(discovery_options, &syntax_probe, SyntaxDiagnosticProbe.receive) catch |err| {
+        std.debug.print("compile error: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
+    const defer_program_diagnostics = option_diagnostics_present or opts.list_files_only or syntax_probe.has_errors;
     if (defer_program_diagnostics) {
-        var syntax_probe: SyntaxDiagnosticProbe = .{};
-        program.compileAllStreaming(compile_opts, &syntax_probe, SyntaxDiagnosticProbe.receive) catch |err| {
-            std.debug.print("compile error: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
         if (syntax_probe.has_errors) {
             stream_ctx.filter = .syntax_only;
             for (program.files.items) |file| {
@@ -3855,6 +3976,17 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         }
     } else {
         program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
+            std.debug.print("compile error: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
+    // Emission may still need checked metadata and JS buffers after syntax
+    // or option diagnostics. Compute those only when outputs are selected;
+    // their semantic diagnostics must not escape the chosen preflight phase.
+    if (defer_program_diagnostics and !opts.list_files_only and !compile_opts.no_emit) {
+        var emit_context = stream_ctx;
+        emit_context.filter = .none;
+        program.compileAllStreaming(compile_opts, &emit_context, streamDiagsCallback) catch |err| {
             std.debug.print("compile error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -3932,8 +4064,16 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // tsc lists files after reporting diagnostics and after deciding whether
     // emit is skipped. `--listFilesOnly` never reaches the emit loop.
     if (opts.list_files or opts.list_files_only) {
-        for (program.files.items) |file| {
-            printStdout("{s}\n", .{file.path});
+        const order = try sourceFileDisplayOrder(gpa, &program);
+        defer gpa.free(order);
+        for (order) |file_id| {
+            const file = program.files.items[file_id];
+            // Source identities may be relative internally. The CLI listing
+            // uses absolute lexical paths, retaining symlink identities.
+            const absolute = try std.fs.path.resolve(gpa, &.{ diagnostic_paths.directory, file.path });
+            defer gpa.free(absolute);
+            if (builtin.os.tag == .windows) std.mem.replaceScalar(u8, absolute, '\\', '/');
+            printStdout("{s}\n", .{absolute});
         }
         if (opts.list_files_only) {
             reportErrorSummary(
@@ -4358,7 +4498,7 @@ fn mapPhaseToCode(phase: ts_driver.Diagnostic.Phase) u32 {
     };
 }
 
-const DiagnosticFilter = enum { all, syntax_only };
+const DiagnosticFilter = enum { all, syntax_only, none };
 
 const SyntaxDiagnosticProbe = struct {
     has_errors: bool = false,
@@ -4366,7 +4506,7 @@ const SyntaxDiagnosticProbe = struct {
     fn receive(self: *SyntaxDiagnosticProbe, _: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
         for (diagnostics) |diagnostic| {
             if (diagnostic.category == .error_ and
-                (diagnostic.phase == .lex or diagnostic.phase == .parse))
+                diagnostic.isSyntactic())
             {
                 self.has_errors = true;
                 return;
@@ -4465,12 +4605,13 @@ const ErrorFileCount = struct {
 /// used to use, but earlier — diagnostics for file 0 surface before
 /// file N has even been parsed.
 fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts_driver.Diagnostic) void {
+    if (ctx.filter == .none) return;
     const fid = ctx.program.lookupPath(file_path) orelse return;
     const f = ctx.program.fileById(fid);
     var file_had_error = false;
     var file_error_count: usize = 0;
     for (diags) |d| {
-        if (ctx.filter == .syntax_only and d.phase != .lex and d.phase != .parse) continue;
+        if (ctx.filter == .syntax_only and !d.isSyntactic()) continue;
         const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
         const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
@@ -5153,9 +5294,10 @@ fn resolveTsConfigPath(gpa: std.mem.Allocator, project: ?[]const u8) !?[]u8 {
     const cwd = std.Io.Dir.cwd();
 
     if (project) |p| {
-        // If the path ends with .json, treat as the file directly;
-        // otherwise treat as a directory and append `tsconfig.json`.
-        if (std.mem.endsWith(u8, p, ".json")) {
+        // The explicit-project check already verified this path. Preserve
+        // every file name verbatim, including .JSON and custom suffixes;
+        // only an actual directory needs a tsconfig.json appended.
+        if (!directoryExistsOnDisk(gpa, p)) {
             return try gpa.dupe(u8, p);
         }
         const joined = try std.fmt.allocPrint(gpa, "{s}/tsconfig.json", .{p});
@@ -5242,6 +5384,24 @@ test "tsc_main: option-diagnostic precedence probes syntax errors only" {
         .message = "Type mismatch.",
     }};
     probe.receive("/repo/a.ts", &semantic);
+    try std.testing.expect(!probe.has_errors);
+
+    const grammar = [_]ts_driver.Diagnostic{ .{
+        .phase = .parse,
+        .is_syntactic = false,
+        .pos = 0,
+        .line = 1,
+        .code = 1155,
+        .message = "A const declaration requires an initializer.",
+    }, .{
+        .phase = .parse,
+        .is_global = true,
+        .pos = 0,
+        .line = 1,
+        .code = 5052,
+        .message = "Option validation diagnostic.",
+    } };
+    probe.receive("/repo/a.ts", &grammar);
     try std.testing.expect(!probe.has_errors);
 
     const syntax = [_]ts_driver.Diagnostic{.{
@@ -6198,4 +6358,116 @@ test "CLI resolver: canonical relative export owner paths are distinct from modu
     const value = CheckerResolverAdapter.moduleExportForPathImpl(&adapter, owner.path, "convert") orelse return error.TestUnexpectedResult;
     try std.testing.expect(value.exported_value);
     try std.testing.expect(CheckerResolverAdapter.moduleExportNamesImpl(&adapter, "project/owner.d.ts", "project/use.ts") == null);
+}
+
+test "tsc_main: source listing libraries use native priority and directory identity" {
+    const expect = std.testing.expect;
+    try std.testing.expectEqual(@as(usize, 0), listingLibraryPriority("/lib/lib.d.ts", "/lib"));
+    try std.testing.expectEqual(@as(usize, 0), listingLibraryPriority("/lib/lib.es6.d.ts", "/lib/"));
+    try expect(listingLibraryPriority("/lib/lib.es5.d.ts", "/lib") < listingLibraryPriority("/lib/lib.dom.d.ts", "/lib"));
+    try expect(listingLibraryPriority("/lib/lib.dom.d.ts", "/lib") < listingLibraryPriority("/lib/lib.es2015.promise.d.ts", "/lib"));
+    try std.testing.expectEqual(std.math.maxInt(usize), listingLibraryPriority("/library/lib.es5.d.ts", "/lib"));
+    try std.testing.expectEqual(std.math.maxInt(usize), listingLibraryPriority("/lib/lib.custom.d.ts", "/lib"));
+}
+
+test "tsc_main: project files keep arbitrary suffixes and directories keep their kind" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    for ([_][]const u8{ "Project.Case.JSON", "project.custom", "as.json/tsconfig.json" }) |name| {
+        if (std.fs.path.dirname(name)) |directory| try temporary.dir.createDirPath(io, directory);
+        var file = try temporary.dir.createFile(io, name, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "{}");
+    }
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    for ([_][]const u8{ "Project.Case.JSON", "project.custom", "as.json" }) |name| {
+        const supplied = try std.fs.path.join(std.testing.allocator, &.{ directory, name });
+        defer std.testing.allocator.free(supplied);
+        const resolved = (try resolveTsConfigPath(std.testing.allocator, supplied)).?;
+        defer std.testing.allocator.free(resolved);
+        const expected = if (std.mem.eql(u8, name, "as.json"))
+            try std.fs.path.join(std.testing.allocator, &.{ supplied, "tsconfig.json" })
+        else
+            try std.testing.allocator.dupe(u8, supplied);
+        defer std.testing.allocator.free(expected);
+        try std.testing.expectEqualStrings(expected, resolved);
+    }
+}
+
+test "tsc_main: noResolve source snapshots gate semantic resolution and cached export owners" {
+    const allocator = std.testing.allocator;
+    var vfs = ts_resolver.VirtualFs.init(allocator);
+    defer vfs.deinit();
+    const main_source = "import { value } from './dep'; export { value };";
+    try vfs.addFile("/proj/main.ts", main_source);
+    try vfs.addFile("/proj/dep.ts", "export const value = 1;");
+    try vfs.addFile("/proj/plain.js", "export const value = 1;");
+    var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = ts_program.Program.init(allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/main.ts", main_source);
+    var adapter = CheckerResolverAdapter.init(allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .bind_only = true, .no_lib = true };
+    _ = try program.loadImportClosure(options);
+    adapter.setProgramSources(&program, options);
+    try std.testing.expect(CheckerResolverAdapter.resolveImpl(&adapter, "./dep", "/proj/main.ts") != null);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/dep.ts", "value") != null);
+    try std.testing.expect(try adapter.export_origin_query.compilation("/proj/dep.ts") != null);
+    options.no_resolve = true;
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    adapter.setProgramSources(&program, options);
+    try std.testing.expect(CheckerResolverAdapter.resolveImpl(&adapter, "./dep", "/proj/main.ts") == null);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/dep.ts", "value") == null);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportNamesForPathImpl(&adapter, "/proj/dep.ts") == null);
+    try std.testing.expect(try adapter.export_origin_query.compilation("/proj/dep.ts") == null);
+    const untyped = CheckerResolverAdapter.resolveImpl(&adapter, "./plain.js", "/proj/main.ts") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!untyped.is_declaration and !untyped.source_is_admitted);
+    try std.testing.expect(adapter.moduleCompilation("/proj/plain.js") == null);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/plain.js", "value") == null);
+    options.no_resolve = false;
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    adapter.setProgramSources(&program, options);
+    try std.testing.expect(CheckerResolverAdapter.resolveImpl(&adapter, "./dep", "/proj/main.ts") != null);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/dep.ts", "value") != null);
+}
+
+test "tsc_main: incomplete reexports are unknown while absent names remain known missing" {
+    const allocator = std.testing.allocator;
+    var vfs = ts_resolver.VirtualFs.init(allocator);
+    defer vfs.deinit();
+    const bridge_source = "export { value } from './leaf'; export * from './more';";
+    try vfs.addFile("/proj/bridge.ts", bridge_source);
+    try vfs.addFile("/proj/leaf.ts", "export const value = 1;");
+    try vfs.addFile("/proj/more.ts", "export const other = 1;");
+    var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = ts_program.Program.init(allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/bridge.ts", bridge_source);
+    const options: ts_driver.CompileOptions = .{ .bind_only = true, .no_lib = true, .no_resolve = true };
+    _ = try program.loadImportClosure(options);
+    var adapter = CheckerResolverAdapter.init(allocator, &resolver);
+    defer adapter.deinit();
+    adapter.setProgramSources(&program, options);
+    try std.testing.expect(CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/bridge.ts", "value") == null);
+    const absent = CheckerResolverAdapter.moduleExportForPathImpl(&adapter, "/proj/bridge.ts", "absent") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!absent.exported_type and !absent.exported_value);
+    try std.testing.expect(!adapter.export_origin_query.files.contains("/proj/leaf.ts"));
+}
+
+test "tsc_main: resolver JSON policy preserves configured false and resolution defaults" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(), "{}");
+    for ([_]tsconfig_mod.ModuleResolution{ .bundler, .nodenext, .node16 }) |mode| {
+        cfg.compiler_options.module_resolution = mode;
+        cfg.compiler_options.resolve_json_module = null;
+        try std.testing.expectEqual(mode != .node16, resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
+        cfg.compiler_options.resolve_json_module = false;
+        try std.testing.expect(!resolverConfigFromConfig(arena.allocator(), cfg, null).resolve_json);
+    }
 }

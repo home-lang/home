@@ -205,7 +205,6 @@ pub const Context = struct {
     }
 };
 
-
 /// Resolve `config_path` (absolute) and everything it extends. Returned
 /// strings and config slices borrow from `arena`.
 pub fn resolve(
@@ -334,4 +333,3 @@ fn dirname(path: []const u8) []const u8 {
     if (slash == 0) return "/";
     return path[0..slash];
 }
-

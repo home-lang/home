@@ -33,6 +33,7 @@ pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const source_owners = @import("source_owners.zig");
 pub const StringInterner = string_interner.Interner;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
+pub const interface_merge = ts_checker.interface_merge;
 pub const ProgramGlobalBinding = ts_checker.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
@@ -87,6 +88,9 @@ pub const Diagnostic = struct {
     /// `has_errors`; suggestions are only surfaced when requested.
     pub const Category = enum { error_, warning, suggestion };
     phase: Phase,
+    /// Parser lowering also produces grammar diagnostics. Only true syntax
+    /// belongs in the preflight that precedes options and semantic checks.
+    is_syntactic: bool = true,
     pos: u32,
     line: u32,
     /// Source-span length used for TypeScript-compatible diagnostic
@@ -110,6 +114,10 @@ pub const Diagnostic = struct {
     related: []const RelatedInfo = &.{},
     /// Error vs suggestion. Defaults to `.error_`.
     category: Category = .error_,
+
+    pub fn isSyntactic(self: Diagnostic) bool {
+        return !self.is_global and (self.phase == .lex or (self.phase == .parse and self.is_syntactic));
+    }
 };
 
 /// Free a `gpa`-owned related-info array (each entry's `message` and
@@ -334,6 +342,9 @@ pub const CompileOptions = struct {
     /// Type-check only. Used by `--noEmit` and conformance surveys
     /// that are checking diagnostics rather than JS output.
     no_emit: bool = false,
+    no_lib: bool = false,
+    no_resolve: bool = false,
+    resolve_json_module: ?bool = null,
     /// Stop after lexing, parsing, and binding. Internal module-graph queries
     /// use this when they need immutable symbol/export metadata but no
     /// semantic diagnostics or JavaScript output.
@@ -633,20 +644,7 @@ fn reportDeprecatedOptionDirectives(
     }
 
     const ignore_deprecations = ignoresTypeScriptSixDeprecations(source, options);
-    const effective_resolve_json_module = blk: {
-        if (directiveBool(source, "resolveJsonModule")) |explicit| break :blk explicit;
-        if (options.pub_tsconfig) |cfg| {
-            if (cfg.compiler_options.resolve_json_module) |explicit| break :blk explicit;
-            if (cfg.compiler_options.module_resolution) |mr| {
-                if (mr == .bundler) break :blk true;
-            }
-        }
-        const module_resolution = if (options.module_resolution.len > 0)
-            options.module_resolution
-        else
-            (directiveValue(source, "moduleResolution") orelse "");
-        break :blk std.ascii.eqlIgnoreCase(module_resolution, "bundler");
-    };
+    const effective_resolve_json_module = tsconfig_mod.effectiveResolveJsonModule(jsonCompilerOptions(options, source));
     if (effective_resolve_json_module) {
         const module_raw = if (directiveValue(source, "module")) |m|
             m
@@ -665,21 +663,13 @@ fn reportDeprecatedOptionDirectives(
         const effective_classic_resolution = if (module_resolution_raw.len > 0)
             std.ascii.eqlIgnoreCase(module_resolution_raw, "classic")
         else blk_classic: {
-            // No explicit moduleResolution → it follows `module`. An
-            // unspecified `module` defaults to commonjs (node resolution),
-            // and commonjs/node* modules all use node resolution, so the
-            // classic-only TS5070 must not fire for them. Only an explicit
-            // non-node module kind (amd/system/umd/es*, etc.) falls back to
-            // classic. Mirrors `jsDeclarationsPackageJson`/`nonTSExtensions`.
-            if (module_raw.len == 0) break :blk_classic false;
-            // `@module` may list several kinds (`node18,node20,nodenext`);
-            // classify by the first, which is the configuration run here.
+            // Current ES module modes default to bundler, including ESNext
+            // used by declaration projects. Only legacy module modes in the
+            // in-memory directive harness retain classic's restriction.
             const first_module = std.mem.trim(u8, firstCsvField(module_raw), " \t");
-            break :blk_classic !(std.ascii.eqlIgnoreCase(first_module, "commonjs") or
-                std.ascii.eqlIgnoreCase(first_module, "node16") or
-                std.ascii.eqlIgnoreCase(first_module, "node18") or
-                std.ascii.eqlIgnoreCase(first_module, "node20") or
-                std.ascii.eqlIgnoreCase(first_module, "nodenext"));
+            break :blk_classic std.ascii.eqlIgnoreCase(first_module, "amd") or
+                std.ascii.eqlIgnoreCase(first_module, "system") or
+                std.ascii.eqlIgnoreCase(first_module, "umd");
         };
         if (effective_classic_resolution) {
             try c.diagnostics.append(gpa, .{
@@ -1865,10 +1855,48 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     opts.check_js_disabled = cfg.compiler_options.check_js == false;
     opts.max_node_module_js_depth = cfg.compiler_options.max_node_module_js_depth orelse 0;
     opts.no_emit = cfg.compiler_options.no_emit orelse false;
+    opts.no_lib = cfg.compiler_options.no_lib orelse false;
+    opts.no_resolve = cfg.compiler_options.no_resolve orelse false;
     if (cfg.compiler_options.types) |names| {
         opts.compiler_type_reference_names = names;
     }
     return opts;
+}
+
+test "driver: config library and resolution gates retain true and false" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    for ([_]bool{ true, false }) |enabled| {
+        var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+        config.compiler_options.no_lib = enabled;
+        config.compiler_options.no_resolve = enabled;
+        const options = optionsFromConfig(&config);
+        try T.expectEqual(enabled, options.no_lib);
+        try T.expectEqual(enabled, options.no_resolve);
+    }
+}
+
+fn jsonCompilerOptions(options: CompileOptions, source: []const u8) tsconfig_mod.CompilerOptions {
+    var co: tsconfig_mod.CompilerOptions = if (options.pub_tsconfig) |cfg| cfg.compiler_options else .{};
+    if (co.module == null) {
+        if (tsconfig_mod.Module.fromString(options.module_kind)) |module| co.module = module;
+    }
+    if (co.module_resolution == null) {
+        if (tsconfig_mod.ModuleResolution.fromString(options.module_resolution)) |mode| co.module_resolution = mode;
+    }
+    if (options.resolve_json_module) |enabled| co.resolve_json_module = enabled;
+    if (directiveValue(source, "module")) |name| {
+        if (tsconfig_mod.Module.fromString(name)) |module| co.module = module;
+    }
+    if (directiveValue(source, "moduleResolution")) |name| {
+        if (tsconfig_mod.ModuleResolution.fromString(name)) |mode| co.module_resolution = mode;
+    }
+    if (directiveBool(source, "resolveJsonModule")) |enabled| co.resolve_json_module = enabled;
+    return co;
+}
+
+pub fn effectiveResolveJsonModule(options: CompileOptions) bool {
+    return tsconfig_mod.effectiveResolveJsonModule(jsonCompilerOptions(options, ""));
 }
 
 /// Apply one resolved JSX option to every compiler phase that consumes it.
@@ -2165,7 +2193,10 @@ pub fn prepareSource(
     parser.setTargetEs2015OrLater(options.syntax_target_es2015);
     defer parser.deinit();
 
-    c.root = parser.parseSourceFile() catch |err| switch (err) {
+    c.root = (if (pathIsJsonModule(options.importer_path) and !source_has_virtual_filename)
+        parser.parseJsonSourceFile()
+    else
+        parser.parseSourceFile()) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => blk: {
             c.has_errors = true;
@@ -2189,7 +2220,8 @@ pub fn prepareSource(
             !ts_parser.diagnosticIsSyntacticParseError(d) and
             !parserDiagnosticSurvivesParseErrors(d, source)) continue;
         if (options.suppress_js_check_diagnostics and d.code == 8013) continue;
-        if (diagnosticLineHasTsIgnore(source, d.pos)) continue;
+        const is_syntactic = ts_parser.diagnosticIsSyntacticParseError(d) or d.code == 8009 or d.code == 8012;
+        if (!is_syntactic and diagnosticLineHasTsIgnore(source, d.pos)) continue;
         // Copy parser-level related-info anchors (TS1007 matched-pair
         // hints, etc.) into the unified driver diagnostic. Parser
         // entries live in `diag_arena`; we dup each message to gpa so
@@ -2209,6 +2241,9 @@ pub fn prepareSource(
         };
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
+            // JS-only syntax has its own upstream syntactic bucket even
+            // when the same code is not a SourceFile.parseDiagnostics entry.
+            .is_syntactic = is_syntactic,
             .pos = d.pos,
             .line = d.line,
             .code = d.code,
@@ -2444,9 +2479,10 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     if (options.module_resolution.len > 0) checker.setModuleResolution(options.module_resolution);
     if (options.module_kind.len > 0) checker.setModuleKind(options.module_kind);
     checker.setPackageTypeModule(options.package_type_module);
+    checker.setConfiguredLibraries(null, options.no_lib);
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
-        checker.setConfiguredLibraries(cfg.compiler_options.lib, cfg.compiler_options.no_lib orelse false);
+        checker.setConfiguredLibraries(cfg.compiler_options.lib, cfg.compiler_options.no_lib orelse options.no_lib);
         // TypeScript's unspecified target resolves through LatestStandard,
         // which is ES2025 at the pinned typescript-go revision.
         checker.setConfiguredTargetLibTier(switch (cfg.compiler_options.target orelse .es2025) {
@@ -2465,6 +2501,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .esnext => std.math.maxInt(u16),
         });
     }
+    checker.strict_flags.resolve_json_module = tsconfig_mod.effectiveResolveJsonModule(jsonCompilerOptions(options, source));
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
     // override, then tsconfig, then tsc's default (`false`).
@@ -2502,7 +2539,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             // `composite` implies `declaration` in tsc (unless the user
             // explicitly disables it, which tsconfig validation rejects).
             .declaration = (co.declaration orelse false) or (co.composite orelse false),
-            .resolve_json_module = co.resolve_json_module orelse false,
+            .resolve_json_module = effectiveResolveJsonModule(options),
             .no_implicit_override = co.no_implicit_override orelse false,
             // `noImplicitReturns` is independent of `strict` in tsc.
             .no_implicit_returns = co.no_implicit_returns orelse false,
@@ -2536,7 +2573,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
         }
     }
     const suppress_declaration_semantic_diagnostics = options.skip_lib_check and c.is_declaration_file;
-    for (checker.diagnostics.items) |d| {
+    checker_diagnostics: for (checker.diagnostics.items) |d| {
         // `skipLibCheck` skips semantic diagnostics originating in `.d.ts`
         // files, but those files still have to be checked so their resolved
         // metadata survives the driver pass. Lexer/parser/binder diagnostics
@@ -2550,6 +2587,13 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
         {
             diag_pos = c.hir.spanOf(d.node).start;
             diagnostic_message = "'import type' declarations can only be used in TypeScript files.";
+        }
+        // Discovery already owns syntactic diagnostics. Legacy checker paths
+        // can inspect the same syntax, but must not publish it a second time.
+        for (c.diagnostics.items) |existing| {
+            if (existing.isSyntactic() and existing.code == d.code and
+                existing.pos == diag_pos and std.mem.eql(u8, existing.message, diagnostic_message))
+                continue :checker_diagnostics;
         }
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
             sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js, options.check_js);
@@ -4011,14 +4055,7 @@ fn pathIsJsLike(path: []const u8) bool {
 }
 
 fn pathIsJsonModule(path: []const u8) bool {
-    if (!std.mem.endsWith(u8, path, ".json")) return false;
-    var p = path;
-    while (std.mem.startsWith(u8, p, "/")) p = p[1..];
-    while (std.mem.startsWith(u8, p, "./")) p = p[2..];
-    return !std.ascii.eqlIgnoreCase(p, "package.json") and
-        !std.mem.endsWith(u8, p, "/package.json") and
-        !std.mem.endsWith(u8, p, "/tsconfig.json") and
-        !std.ascii.eqlIgnoreCase(p, "tsconfig.json");
+    return std.mem.endsWith(u8, path, ".json");
 }
 
 fn pathIsDeclarationLike(path: []const u8) bool {
@@ -4089,7 +4126,7 @@ fn appendJsonModuleValidationDiagnostics(
     source: []const u8,
     path: []const u8,
 ) CompileError!void {
-    if (!pathIsJsonModule(path)) return;
+    if (!pathIsJsonModule(path) or sourceHasNonDeclarationVirtualSection(source)) return;
     var i: usize = 0;
     while (i < source.len) {
         i = skipJsonTrivia(source, i);
@@ -4207,6 +4244,7 @@ fn appendJsonDoubleQuoteDiagnostic(
 ) CompileError!void {
     try c.diagnostics.append(gpa, .{
         .phase = .parse,
+        .is_syntactic = true,
         .pos = pos_byte,
         .line = 0,
         .span_len = span_len,
@@ -5541,9 +5579,31 @@ test "driver: checked alias display and arguments own their borrowed leaves" {
     try T.expect(!c.has_errors);
     // result storage must outlive both the checker arena and caller's source.
     const output = try testCheckedValueType(c, "output");
-    try T.expectEqualStrings("Result<string>", c.checked_types.alias_display_names.get(output).?);
+    // Object aliases retain a lazy display recipe so anonymous generic
+    // arguments are not expanded merely to transfer the checked result.
+    try T.expectEqualStrings("Result", c.interner.get(c.checked_types.substituted_interface_display_names.get(output).?));
+    try T.expectEqualSlices(ts_checker.TypeId, &.{ts_checker.Primitive.string_t}, c.checked_types.substituted_interface_display_args.get(output).?);
     try T.expectEqualSlices(ts_checker.TypeId, &.{ts_checker.Primitive.string_t}, c.checked_types.alias_type_args.get(output).?);
     try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
+}
+
+test "driver: checked alias display text owns its borrowed leaves" {
+    const c = blk: {
+        const source = try T.allocator.dupe(u8,
+            \\type Result<T> = { value: T } | null;
+            \\declare const output: Result<string>;
+        );
+        defer T.allocator.free(source);
+        break :blk try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    };
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    const output = try testCheckedValueType(c, "output");
+    try T.expectEqualStrings("Result<string>", c.checked_types.alias_display_names.get(output).?);
+    try T.expectEqualSlices(ts_checker.TypeId, &.{ts_checker.Primitive.string_t}, c.checked_types.alias_type_args.get(output).?);
 }
 
 test "driver: checked transfer preserves real declarations and distinct callable identities" {
@@ -8876,4 +8936,94 @@ test "driver: skipLibCheck suppresses computed key grammar and keeps index metad
     const name = indexed.interner.lookup("Definitions").?;
     const object = indexed.checked_types.type_names.get(name).?;
     try T.expectEqual(ts_checker.types.Primitive.number_t, indexed.type_interner.objectStringIndex(object));
+}
+
+test "driver: prepared diagnostics retain syntactic versus semantic grammar provenance" {
+    const cases = [_]struct { source: []const u8, path: []const u8 = "/main.ts", is_js: bool = false, code: u32, syntactic: bool }{
+        .{ .source = "export const missing;", .code = 1155, .syntactic = false },
+        .{ .source = "export function call(first?:string, second:string){}", .code = 1016, .syntactic = false },
+        .{ .source = "export const broken = ;", .code = 1109, .syntactic = true },
+        .{ .source = "export const value: number = 1;", .path = "/main.js", .is_js = true, .code = 8010, .syntactic = true },
+        .{ .source = "// @ts-ignore\nexport const value:number=1;", .path = "/main.js", .is_js = true, .code = 8010, .syntactic = true },
+        .{ .source = "export class C {constructor(public value){}}", .path = "/main.js", .is_js = true, .code = 8012, .syntactic = true },
+        .{ .source = "export class C {public value=1;}", .path = "/main.js", .is_js = true, .code = 8009, .syntactic = true },
+    };
+    for (cases) |case| {
+        var compilation = try prepareSource(T.allocator, case.source, .{ .importer_path = case.path, .allow_js = case.is_js, .no_emit = true });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != case.code) continue;
+            found = true;
+            try T.expectEqual(case.syntactic, diagnostic.isSyntactic());
+        }
+        try T.expect(found);
+        if (case.code == 8010) {
+            try checkPreparedSource(compilation, .{ .importer_path = case.path, .allow_js = case.is_js, .check_js = true, .no_emit = true });
+            var count: usize = 0;
+            for (compilation.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == 8010) count += 1;
+            }
+            try T.expectEqual(@as(usize, 1), count);
+        }
+    }
+}
+
+test "driver: physical metadata JSON uses the JSON source parser in discovery and checking" {
+    for ([_][]const u8{ "/proj/package.json", "/proj/nested/tsconfig.json", "/proj/data.json" }) |path| {
+        for ([_]bool{ true, false }) |bind_only| {
+            const compilation = try compileSource(T.allocator, "{\"name\":\"fixture\",\"items\":[1,true,null],\"nested\":{\"version\":2}}", .{ .importer_path = path, .bind_only = bind_only, .no_emit = true });
+            defer {
+                compilation.deinit();
+                T.allocator.destroy(compilation);
+            }
+            try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+            const expressions = hir_mod.blockStmts(&compilation.hir, compilation.root);
+            try T.expectEqual(@as(usize, 1), expressions.len);
+            try T.expect(compilation.hir.kindOf(expressions[0]) == .object_literal);
+        }
+    }
+}
+
+test "driver: JSON defaults are shared by config and direct compile options" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+    for ([_]tsconfig_mod.ModuleResolution{ .bundler, .nodenext, .node16 }) |mode| {
+        cfg.compiler_options.module_resolution = mode;
+        cfg.compiler_options.resolve_json_module = null;
+        const configured = optionsFromConfig(&cfg);
+        var direct: CompileOptions = .{};
+        applyModuleResolutionOption(&direct, mode);
+        try T.expectEqual(mode != .node16, effectiveResolveJsonModule(configured));
+        try T.expectEqual(effectiveResolveJsonModule(configured), effectiveResolveJsonModule(direct));
+        direct.resolve_json_module = false;
+        try T.expect(!effectiveResolveJsonModule(direct));
+        direct.resolve_json_module = true;
+        try T.expect(effectiveResolveJsonModule(direct));
+    }
+}
+
+test "driver: modern module defaults do not invent classic JSON option errors" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    for ([_]tsconfig_mod.Module{ .commonjs, .es2015, .es2020, .es2022, .esnext, .preserve }) |module| {
+        var cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+        cfg.compiler_options.module = module;
+        const configured = optionsFromConfig(&cfg);
+        const direct: CompileOptions = .{ .module_kind = @tagName(module), .no_emit = true };
+        for ([_]CompileOptions{ configured, direct }) |options| {
+            const compilation = try compileSource(T.allocator, "export const value: number = 1;", options);
+            defer {
+                compilation.deinit();
+                T.allocator.destroy(compilation);
+            }
+            for (compilation.diagnostics.items) |diagnostic| {
+                try T.expect(diagnostic.code != 5070 and diagnostic.code != 5071);
+            }
+        }
+    }
 }

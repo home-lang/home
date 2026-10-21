@@ -18,6 +18,7 @@
 //! Phase 4's emitter) a stable surface to compile against.
 
 pub const types = @import("types.zig");
+pub const interface_merge = @import("interface_merge.zig");
 pub const interner = @import("interner.zig");
 pub const relation = @import("relation.zig");
 pub const lower = @import("lower.zig");
@@ -68,6 +69,7 @@ const std = @import("std");
 const T = std.testing;
 
 test {
+    _ = interface_merge;
     _ = types;
     _ = interner;
     _ = relation;

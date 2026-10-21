@@ -605,7 +605,10 @@ pub const ParamFlags = packed struct(u16) {
     /// (`{ key: target }`). The key identifier is stored in the element's
     /// `default_value`; the following element is the binding target.
     is_rename_binding_key: bool = false,
-    _pad: u7 = 0,
+    /// The annotation is syntactically a literal type, before parentheses
+    /// are erased. Used for declaration overload priority.
+    has_literal_type_annotation: bool = false,
+    _pad: u6 = 0,
 };
 
 pub const TypeAliasPayload = struct {

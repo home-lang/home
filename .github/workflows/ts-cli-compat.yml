@@ -119,6 +119,38 @@ jobs:
             --home zig-out/bin/home-tsc \
             --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
             --output "$RUNNER_TEMP/home-ts-installed-library-contracts"
+      - name: Compare scoped ambient declaration contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-ambient-owner-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-ambient-owner-contracts"
+      - name: Compare global interface ownership and overload contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-global-owner-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-global-owner-contracts"
+      - name: Compare syntax-only file discovery contracts
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-list-files-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-list-files-contracts"
+      - name: Compare option aliases and boolean overrides
+        env:
+          HOME_RUN_MAX_MB: '3840'
+        run: |
+          perl scripts/run-bounded.pl 600 python3 scripts/tests/test-ts-option-identity-cli.py \
+            --home zig-out/bin/home-tsc \
+            --reference "$RUNNER_TEMP/home-ts-reference/node_modules/typescript/bin/tsc" \
+            --output "$RUNNER_TEMP/home-ts-option-identity-contracts"
       - name: Retain reference and Home observations
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,5 +167,9 @@ jobs:
             ${{ runner.temp }}/home-ts-library-array-contracts
             ${{ runner.temp }}/home-ts-declaration-index-contracts
             ${{ runner.temp }}/home-ts-installed-library-contracts
+            ${{ runner.temp }}/home-ts-ambient-owner-contracts
+            ${{ runner.temp }}/home-ts-global-owner-contracts
+            ${{ runner.temp }}/home-ts-list-files-contracts
+            ${{ runner.temp }}/home-ts-option-identity-contracts
           if-no-files-found: ignore
           retention-days: 14

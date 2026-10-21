@@ -1199,8 +1199,18 @@ pub const Parser = struct {
     // Public entry
     // ========================================================================
 
-    /// Parse a TS source file into HIR. Returns the source-file root
-    /// `NodeId` (currently a synthesized block).
+    /// JSON source files contain a value expression, rather than a list of
+    /// TypeScript declarations. Keep the original bytes and source spans.
+    pub fn parseJsonSourceFile(self: *Parser) ParseError!NodeId {
+        const expression = try self.parseExpression();
+        if (self.peek().kind != .eof) {
+            const unexpected = self.peek();
+            try self.reportCodeAt(unexpected.span.start, unexpected.line, 1012, "Unexpected token.");
+        }
+        return try self.builder.addBlock(.{ .start = 0, .end = @intCast(self.source.len) }, &.{expression});
+    }
+
+    /// Parse TypeScript source elements into a source-file block.
     pub fn parseSourceFile(self: *Parser) ParseError!NodeId {
         try self.reportJSDocTypeArgumentSyntaxDiagnostics();
         if (self.sourceHasStrictTrueDirective()) {
@@ -1251,6 +1261,7 @@ pub const Parser = struct {
         // infer_type node and verifies its position via the parent
         // chain. See `validateInferTypePositions` for the algorithm.
         try self.validateInferTypePositions();
+        try self.reportJavaScriptTypeAnnotations();
         self.suppressVarLetStrictGrammarWhenFileHasParseErrors();
         self.suppressOutsidePrivateBrandGrammarWhenFileHasParseErrors();
         self.suppressOptionalParameterInitializerGrammarWhenFileHasParseErrors();
@@ -1259,6 +1270,40 @@ pub const Parser = struct {
         self.suppressJsxRecoveryCascades();
         try self.normalizeJsxClosingSpreadRecovery();
         return root;
+    }
+
+    // JavaScript syntax checks belong to discovery, even when checkJs is
+    // disabled. Inspect declaration annotations after their HIR parents exist;
+    // nested TypeScript type syntax is already covered by its outer diagnostic.
+    fn reportJavaScriptTypeAnnotations(self: *Parser) ParseError!void {
+        if (!self.is_javascript_file and !self.has_virtual_sections) return;
+        const count = self.hir.nodeCount();
+        var node: NodeId = 1;
+        while (node < count) : (node += 1) {
+            const annotation = switch (self.hir.kindOf(node)) {
+                .var_decl, .let_decl, .const_decl => hir_mod.varDeclOf(self.hir, node).type_annotation,
+                .parameter => hir_mod.parameterOf(self.hir, node).type_annotation,
+                .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnDeclOf(self.hir, node).return_type,
+                .object_property => hir_mod.objectPropertyOf(self.hir, node).type_annotation,
+                else => continue,
+            };
+            if (annotation == hir_mod.none_node_id) continue;
+            const annotation_span = self.hir.spanOf(annotation);
+            if (!self.isJavaScriptSyntaxAt(annotation_span.start)) continue;
+            var parent = self.hir.parentOf(node);
+            var in_type_syntax = false;
+            while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+                const kind = self.hir.kindOf(parent);
+                if (kind.isType() or kind == .type_alias_decl or kind == .interface_decl or
+                    kind == .namespace_decl or kind == .module_decl or kind == .enum_decl)
+                {
+                    in_type_syntax = true;
+                    break;
+                }
+            }
+            if (in_type_syntax or self.hasDiagnosticAt(8010, annotation_span.start)) continue;
+            try self.reportCodeAt(annotation_span.start, self.lineForPos(annotation_span.start), 8010, "Type annotations can only be used in TypeScript files.");
+        }
     }
 
     fn suppressJsxRecoveryCascades(self: *Parser) void {
@@ -5196,7 +5241,9 @@ pub const Parser = struct {
                 // Modifiers on parameter properties: `readonly`, `public`, etc.
                 var saw_override_modifier = false;
                 var saw_readonly_modifier = false;
-                while (isParameterPropertyModifier(self.peek().kind)) {
+                while (isParameterPropertyModifier(self.peek().kind) and
+                    (parameterModifierIsFollowedByName(self.peekAt(1).kind) or self.peekAt(1).kind == .at))
+                {
                     const mod = self.advance();
                     if (first_parameter_modifier == null) first_parameter_modifier = mod;
                     switch (mod.kind) {
@@ -5326,11 +5373,12 @@ pub const Parser = struct {
                         );
                     }
                     var this_ann: NodeId = hir_mod.none_node_id;
-                    if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
+                    var this_flags: hir_mod.ParamFlags = .{};
+                    if (self.match(.colon)) this_ann = try self.parseParameterTypeAnnotation(&this_flags);
                     if (self.peek().kind == .question) {
                         const q_tok = self.advance();
                         try self.reportCodeAt(q_tok.span.start, q_tok.line, 1005, "',' expected.");
-                        if (self.match(.colon)) this_ann = try self.parseTypeAnnotation();
+                        if (self.match(.colon)) this_ann = try self.parseParameterTypeAnnotation(&this_flags);
                     }
                     var recovered_this_initializer = false;
                     if (self.peek().kind == .equal) {
@@ -5372,7 +5420,7 @@ pub const Parser = struct {
                         this_ident,
                         this_ann,
                         hir_mod.none_node_id,
-                        .{},
+                        this_flags,
                         param_decorators.items,
                     );
                     try params.append(self.gpa, this_param);
@@ -5541,7 +5589,7 @@ pub const Parser = struct {
                     try self.recordParameterPatternNames(name_node, &seen_names, &pattern_names);
                 }
                 var type_ann: NodeId = hir_mod.none_node_id;
-                if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
+                if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation(&flags);
                 var default_value: NodeId = hir_mod.none_node_id;
                 if (self.match(.equal)) {
                     self.param_initializer_depth += 1;
@@ -12109,7 +12157,21 @@ pub const Parser = struct {
         return try self.parseTypeAnnotation();
     }
 
-    fn parseParameterTypeAnnotation(self: *Parser) ParseError!NodeId {
+    fn parseParameterTypeAnnotation(self: *Parser, flags: *hir_mod.ParamFlags) ParseError!NodeId {
+        const first = self.peek();
+        const annotation = try self.parseParameterTypeAnnotationBody();
+        // Parentheses are normalized out of HIR, but tsc's specialized
+        // overload flag depends on the original top-level type syntax.
+        flags.has_literal_type_annotation = first.kind != .open_paren and
+            (self.hir.kindOf(annotation) == .type_literal or
+                (first.kind == .kw_null and self.hir.kindOf(annotation) == .type_ref and
+                    self.hir.spanOf(annotation).end == first.span.end) or
+                (first.kind == .no_substitution_template and self.hir.kindOf(annotation) == .template_literal_type and
+                    self.hir.spanOf(annotation).end == first.span.end));
+        return annotation;
+    }
+
+    fn parseParameterTypeAnnotationBody(self: *Parser) ParseError!NodeId {
         const starts_assertion = self.peek().kind == .kw_asserts and
             (self.peekAt(1).kind == .identifier or self.peekAt(1).kind == .kw_this) and
             !self.peekAt(1).flags.preceded_by_newline;
@@ -13270,7 +13332,7 @@ pub const Parser = struct {
                     name_node = try self.parseBindingPattern();
                     name_span = self.hir.spanOf(name_node);
                     if (self.match(.question)) flags.is_optional = true;
-                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
+                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation(&flags);
                 } else if (self.peek().kind == .identifier or
                     self.peek().kind == .kw_this or
                     (self.peek().kind.isKeyword() and (self.peekAt(1).kind == .colon or self.peekAt(1).kind == .question)))
@@ -13278,7 +13340,7 @@ pub const Parser = struct {
                     const name_tok = self.advance();
                     name_span = tokenSpan(name_tok);
                     if (self.match(.question)) flags.is_optional = true;
-                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation();
+                    if (self.match(.colon)) type_ann = try self.parseParameterTypeAnnotation(&flags);
                     const name_id = try self.internToken(name_tok);
                     name_node = try self.builder.addIdentifier(name_span, name_id);
                     seen_name = name_id;
@@ -37084,6 +37146,24 @@ test "parser: contextual keyword index parameters retain index signature structu
     }
 }
 
+test "parser: parameter literal priority retains original annotation syntax" {
+    const s = try newTestSetup("declare function pick(a:\"ok\",b:(\"ok\"),c:null,d:null|string,e:Holder[\"value\"],f:true,g:-1,h:Alias,i:`ok`,j:(`ok`),k:`${\"ok\"}`):void;declare function receiver(this:\"scope\",value:string):void;");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const declaration = hir_mod.blockStmts(&s.hir, root)[0];
+    const params = hir_mod.fnParams(&s.hir, declaration);
+    const expected = [_]bool{ true, false, true, false, false, true, true, false, true, false, false };
+    try T.expectEqual(expected.len, params.len);
+    for (params, expected) |node, literal| {
+        try T.expectEqual(literal, hir_mod.parameterOf(&s.hir, node).flags.has_literal_type_annotation);
+    }
+    const receiver = hir_mod.blockStmts(&s.hir, root)[1];
+    const receiver_params = hir_mod.fnParams(&s.hir, receiver);
+    try T.expect(hir_mod.parameterOf(&s.hir, receiver_params[0]).flags.has_literal_type_annotation);
+    try T.expect(!hir_mod.parameterOf(&s.hir, receiver_params[1]).flags.has_literal_type_annotation);
+}
+
 test "parser: import type nodes retain module identity and member positions" {
     const source = "type Imported=import('./owner').Inner.Token<number>;type Plain=Token;type Bare=typeof import(\"./owner\");type Named=import('./owner').unknown;";
     var s = try newTestSetup(source);
@@ -37121,4 +37201,58 @@ test "parser: adjacent type argument and generic function openers split without 
     for (args) |argument| try T.expect(setup.hir.kindOf(argument) == .fn_type);
     const shift = hir_mod.varDeclOf(&setup.hir, declarations[3]).init;
     try T.expectEqual(hir_mod.BinOp.shl, hir_mod.binopOf(&setup.hir, shift).op);
+}
+
+test "parser: JavaScript annotations are syntax errors without checking and skip nested type syntax" {
+    const cases = [_]struct { source: []const u8, count: usize }{
+        .{ .source = "export const value:number=1;", .count = 1 },
+        .{ .source = "export function call(value:number):string {return \"\";}", .count = 2 },
+        .{ .source = "export class C {field:string;}", .count = 1 },
+        .{ .source = "export const f: (value:number)=>string = (v)=>\"\";", .count = 1 },
+        .{ .source = "export type A={value:number;};", .count = 0 },
+    };
+    for (cases) |case| {
+        var s = try newTestSetup(case.source);
+        defer destroyTestSetup(s);
+        s.parser.setJavaScriptFile(true);
+        _ = try s.parser.parseSourceFile();
+        try T.expectEqual(case.count, countDiag(s, 8010));
+        for (s.parser.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 8010) try T.expect(diagnosticIsSyntacticParseError(diagnostic));
+        }
+    }
+    var virtual = try newTestSetup("// @filename: a.js\nexport const js:number=1;\n// @filename: b.ts\nexport const ts:number=1;");
+    defer destroyTestSetup(virtual);
+    _ = try virtual.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 1), countDiag(virtual, 8010));
+    var typed = try newTestSetup("export function call(value:number):number{return value;}");
+    defer destroyTestSetup(typed);
+    _ = try typed.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(typed, 8010));
+}
+
+test "parser: contextual parameter names do not become parameter property modifiers" {
+    for ([_][]const u8{
+        "declare class Redis { duplicate(override?: { port?: number }): Redis; }",
+        "declare function take(override: number, readonly?: string): void;",
+        "class Base { value = 1; } class Derived extends Base { constructor(public override value: number) { super(); } }",
+    }) |source| {
+        var setup = try newTestSetup(source);
+        defer destroyTestSetup(setup);
+        _ = try setup.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    }
+}
+
+test "parser: physical JSON objects parse as values without source rewriting" {
+    const source = "{\"name\":\"fixture\",\"items\":[1,true,null],\"nested\":{\"version\":2}}";
+    var setup = try newTestSetup(source);
+    defer destroyTestSetup(setup);
+    const root = try setup.parser.parseJsonSourceFile();
+    try T.expectEqual(@as(usize, 0), setup.parser.diagnostics.items.len);
+    const expressions = hir_mod.blockStmts(&setup.hir, root);
+    try T.expectEqual(@as(usize, 1), expressions.len);
+    try T.expect(setup.hir.kindOf(expressions[0]) == .object_literal);
+    try T.expectEqual(@as(u32, 0), setup.hir.spanOf(expressions[0]).start);
+    try T.expectEqual(@as(u32, @intCast(source.len)), setup.hir.spanOf(expressions[0]).end);
 }

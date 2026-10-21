@@ -1061,7 +1061,11 @@ pub const Engine = struct {
             // whose union no single target member may accept on its own.
             if (!sf.is_conditional) return false;
         }
-        if (sf.is_conditional and tf.is_conditional) {
+        // Union headers also contain their members' flags. After the
+        // target-union alternatives fail, a conditional source must relate
+        // its branches to the whole union, not read a union payload as a
+        // conditional payload.
+        if (sf.is_conditional and tf.is_conditional and !tf.is_union) {
             const source_conditional = self.interner.conditionalPayload(source);
             const target_conditional = self.interner.conditionalPayload(target);
             if (source_conditional.is_distributive == target_conditional.is_distributive and
@@ -1072,7 +1076,7 @@ pub const Engine = struct {
                 return self.isAssignableTo(source_conditional.false_branch, target_conditional.false_branch);
             }
         }
-        if (tf.is_conditional) {
+        if (tf.is_conditional and !tf.is_union) {
             const conditional = self.interner.conditionalPayload(target);
             if (!try self.isAssignableTo(source, conditional.true_branch)) return false;
             return self.isAssignableTo(source, conditional.false_branch);
@@ -2072,6 +2076,9 @@ pub const Engine = struct {
             const receiver = if (payload.has_this_type) self.validOrUnknown(try walk.rewrite(payload.this_type, effective, depth + 1, effective_memo)) else Primitive.none;
             if (std.mem.eql(TypeId, params, originals) and ret == payload.return_type and receiver == payload.this_type and std.mem.eql(TypeId, preserved.items, source_binders)) return t;
             const result = try self.interner.internSignatureWithThisType(params, ret, payload.is_construct, payload.is_abstract_construct, receiver);
+            const metadata = &self.interner.pool.signature_payloads.items[self.interner.pool.payloadOf(result)];
+            metadata.has_literal_types = payload.has_literal_types;
+            metadata.has_parameter_declaration_origin = payload.has_parameter_declaration_origin;
             if (preserved.items.len != 0) {
                 const start: u32 = @intCast(self.interner.pool.type_arg_pool.items.len);
                 try self.interner.pool.type_arg_pool.appendSlice(self.interner.gpa, preserved.items);
@@ -3817,6 +3824,8 @@ test "Engine: graph substitution shares declaration surfaces and retains receive
     defer e.deinit();
     const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
     const callable = try ti.internSignatureWithThisType(&.{parameter}, parameter, false, false, parameter);
+    ti.pool.signature_payloads.items[ti.pool.payloadOf(callable)].has_literal_types = true;
+    ti.pool.signature_payloads.items[ti.pool.payloadOf(callable)].has_parameter_declaration_origin = true;
     var private = mkMember(2, callable, false);
     private.visibility = .private;
     private.declaration_origin = 3;
@@ -3837,6 +3846,7 @@ test "Engine: graph substitution shares declaration surfaces and retains receive
     try T.expectEqualSlices(TypeId, &.{Primitive.string_t}, ti.signatureParams(next.type));
     const signature = ti.pool.signature_payloads.items[ti.pool.payloadOf(next.type)];
     try T.expect(signature.has_this_type);
+    try T.expect(signature.has_literal_types and signature.has_parameter_declaration_origin);
     try T.expectEqual(Primitive.string_t, signature.this_type);
     try T.expectEqual(Primitive.string_t, signature.return_type);
 }

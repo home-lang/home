@@ -411,12 +411,18 @@ const Builder = struct {
                 if (result < self.relocation.destination_start) {
                     const existing = target.pool.signature_payloads.items[index];
                     const existing_params = target.pool.type_arg_pool.items[existing.type_params_start..][0..existing.type_params_len];
-                    if (!std.mem.eql(types.TypeId, generics, existing_params)) return error.InvalidTypeGraph;
+                    if (!std.mem.eql(types.TypeId, generics, existing_params) or
+                        existing.has_literal_types != p.has_literal_types or
+                        existing.has_parameter_declaration_origin != p.has_parameter_declaration_origin) return error.InvalidTypeGraph;
                 } else if (generics.len != 0) {
                     const start: u32 = @intCast(target.pool.type_arg_pool.items.len);
                     try target.pool.type_arg_pool.appendSlice(allocator, generics);
                     target.pool.signature_payloads.items[index].type_params_start = start;
                     target.pool.signature_payloads.items[index].type_params_len = @intCast(generics.len);
+                }
+                if (result >= self.relocation.destination_start) {
+                    target.pool.signature_payloads.items[index].has_literal_types = p.has_literal_types;
+                    target.pool.signature_payloads.items[index].has_parameter_declaration_origin = p.has_parameter_declaration_origin;
                 }
                 break :blk result;
             },
@@ -756,6 +762,8 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     ti.pool.type_parameter_payloads.items[ti.pool.payloadOf(parameter)].constraint = object;
     const signature = try ti.internSignatureWithThisType(&.{ parameter, object }, object, true, true, object);
     const signature_payload = ti.pool.payloadOf(signature);
+    ti.pool.signature_payloads.items[signature_payload].has_literal_types = true;
+    ti.pool.signature_payloads.items[signature_payload].has_parameter_declaration_origin = true;
     const tp_start: u32 = @intCast(ti.pool.type_arg_pool.items.len);
     try ti.pool.type_arg_pool.append(ti.gpa, parameter);
     ti.pool.signature_payloads.items[signature_payload].type_params_start = tp_start;
@@ -842,6 +850,7 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     try T.expectEqual(try relocation.typeId(graph.bigint), obj.symbol_index_type);
     const sig = pool.signature_payloads.items[pool.payloadOf(signature)];
     try T.expect(sig.is_construct and sig.is_abstract_construct and sig.has_this_type);
+    try T.expect(sig.has_literal_types and sig.has_parameter_declaration_origin);
     try T.expectEqual(object, sig.return_type);
     try T.expectEqual(object, sig.this_type);
     try T.expectEqualSlices(types.TypeId, &.{ parameter, object }, destination.signatureParams(signature));
