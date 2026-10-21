@@ -157,6 +157,36 @@ fn appendNamespaceValueRoute(
             });
             continue;
         }
+        if (c.hir.kindOf(member) == .class_decl) {
+            const name = declarationName(c, member) orelse continue;
+            const declaration = try builder.declaration(.{ .source = source_index, .node = member });
+            const support = try supported.getOrPut(arena, declaration);
+            if (!support.found_existing) support.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+            var exact = support.value_ptr.*;
+            if (exact) if (declaration.constructors) |constructors| {
+                exact = try driver.ProgramClassSchema.Schema.expressionSupported(constructors, gpa);
+            };
+            if (exact and (try builder.classStaticMembers(.{ .source = source_index, .node = member })) == null) exact = false;
+            const expression = try arena.create(driver.ProgramClassSchema.Expression);
+            expression.* = .{ .typeof_class = declaration };
+            const wrapper = try arena.create(driver.ProgramClassSchema.Declaration);
+            wrapper.* = .{
+                .path = declaration.path,
+                .position = declaration.position,
+                .name = declaration.name,
+                .body = expression,
+                .value_side = true,
+            };
+            try values.append(arena, .{
+                .target_path = target_path,
+                .namespace_path = namespace_path,
+                .export_name = name,
+                .kind = .variable,
+                .declaration = wrapper,
+                .projection_only = !exact,
+            });
+            continue;
+        }
         switch (c.hir.kindOf(member)) {
             .fn_decl, .var_decl, .let_decl, .const_decl => {},
             else => continue,
@@ -257,6 +287,51 @@ fn scopeFor(c: *const driver.Compilation, node: hir.NodeId) ?*const @import("bin
     return null;
 }
 
+fn collectClassNamespaceNames(
+    arena: std.mem.Allocator,
+    c: *const driver.Compilation,
+    node: hir.NodeId,
+    path: []const u8,
+    classes: *std.StringHashMapUnmanaged(void),
+    namespaces: *std.StringHashMapUnmanaged(void),
+) !void {
+    for (hir.namespaceBody(&c.hir, node)) |raw| {
+        const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else raw;
+        if (member == hir.none_node_id) continue;
+        const kind = c.hir.kindOf(member);
+        if (kind != .class_decl and kind != .namespace_decl) continue;
+        const leaf = declarationName(c, member) orelse continue;
+        const full = try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, leaf });
+        if (kind == .class_decl) {
+            try classes.put(arena, full, {});
+        } else {
+            try namespaces.put(arena, full, {});
+            try collectClassNamespaceNames(arena, c, member, full, classes, namespaces);
+        }
+    }
+}
+
+fn classNamespaceMergeConflict(arena: std.mem.Allocator, sources: []const Source, owners: []const ModuleOwner, name: []const u8) !bool {
+    var count: usize = 0;
+    var classes: std.StringHashMapUnmanaged(void) = .empty;
+    var namespaces: std.StringHashMapUnmanaged(void) = .empty;
+    for (owners) |owner| {
+        const c = sources[owner.source].compilation;
+        const scope = scopeFor(c, owner.node) orelse continue;
+        const id = c.interner.lookup(name) orelse continue;
+        const symbol = scope.namespaces.get(id) orelse continue;
+        for (symbol.decls.items) |decl| {
+            if (c.hir.kindOf(decl) != .namespace_decl) continue;
+            count += 1;
+            try collectClassNamespaceNames(arena, c, decl, name, &classes, &namespaces);
+        }
+    }
+    if (count < 2) return false;
+    var class_names = classes.keyIterator();
+    while (class_names.next()) |class_name| if (namespaces.contains(class_name.*)) return true;
+    return false;
+}
+
 fn originKey(by_path: *const std.StringHashMapUnmanaged(usize), declarations: *const std.AutoHashMapUnmanaged(Position, hir.NodeId), origin: export_origins.Origin) ?schemas.Key {
     const source = by_path.get(origin.path) orelse return null;
     const node = declarations.get(.{ .source = source, .position = origin.position }) orelse return null;
@@ -307,6 +382,10 @@ fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilat
                 if (!hir.enumOf(&c.hir, member).is_const or
                     (try literalConstEnumMembers(arena, c, member)) == null) return null;
                 counts.values += 1;
+            },
+            .class_decl => {
+                counts.values += 1;
+                counts.types += 1;
             },
             .fn_decl, .var_decl, .let_decl, .const_decl => counts.values += 1,
             .interface_decl, .type_alias_decl => counts.types += 1,
@@ -365,6 +444,18 @@ fn mergedAmbientNamespace(
     }
     if (declarations.items.len < 2) return null;
 
+    // A class and a same-named namespace form one value in TypeScript.
+    // Class static schemas do not yet combine namespace augmentation members
+    // from separate fragments, so the complete route is not transferable.
+    var classes: std.StringHashMapUnmanaged(void) = .empty;
+    var namespaces: std.StringHashMapUnmanaged(void) = .empty;
+    for (declarations.items) |declaration| {
+        const c = sources[declaration.source].compilation;
+        try collectClassNamespaceNames(arena, c, declaration.node, name, &classes, &namespaces);
+    }
+    var class_names = classes.keyIterator();
+    while (class_names.next()) |class_name| if (namespaces.contains(class_name.*)) return null;
+
     var collected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     var collected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
     var expected: NamespaceRouteCounts = .{};
@@ -414,7 +505,13 @@ fn mergedAmbientNamespace(
         }
         for (values.items) |value| {
             if (std.mem.eql(u8, value.namespace_path, route.namespace_path) and
-                std.mem.eql(u8, value.export_name, route.export_name)) return null;
+                std.mem.eql(u8, value.export_name, route.export_name))
+            {
+                const value_declaration = value.declaration orelse return null;
+                const body = value_declaration.body orelse return null;
+                if (!route.declaration.is_class or body.* != .typeof_class or
+                    body.typeof_class != route.declaration) return null;
+            }
         }
     }
     return .{ .values = try values.toOwnedSlice(arena), .types = try collected_types.toOwnedSlice(arena) };
@@ -479,6 +576,7 @@ fn collectAmbientModules(
                 try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*)
             else
                 null;
+            const unresolved_merge = merged == null and try classNamespaceMergeConflict(arena, sources, owners, name.*);
             const merged_has_value = if (merged) |routes| routes.values.len != 0 else false;
             const known = merged != null or (resolved.complete and !resolved.ambiguous and
                 (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null));
@@ -546,6 +644,7 @@ fn collectAmbientModules(
                 }
                 continue;
             }
+            if (unresolved_merge) continue;
             if (resolved.type) |origin| if (originKey(by_path, declarations, origin)) |key| {
                 const c = sources[key.source].compilation;
                 if (c.hir.kindOf(key.node) != .namespace_decl) {

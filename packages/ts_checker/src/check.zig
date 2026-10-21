@@ -668,6 +668,10 @@ pub const ProgramExportedClass = struct {
     is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
+    /// Source-owned static declarations. Null means that at least one static
+    /// member could not be transferred exactly; the legacy name-only facts
+    /// remain available for unrelated top-level class projections.
+    static_schema_members: ?[]const ProgramClassSchema.Member = null,
 
     pub fn exportedName(self: ProgramExportedClass) []const u8 {
         return if (self.export_name.len > 0) self.export_name else self.class_name;
@@ -115533,7 +115537,11 @@ pub const Checker = struct {
                         if (position != class_declaration.position) continue;
                     }
                     const class_name = self.string_interner.intern(class_declaration.name) catch return error.OutOfMemory;
-                    return self.syntheticProgramClassStaticType(exported_class, class_name, null, hir_mod.none_node_id);
+                    // Exact source-owned statics are collected only for class
+                    // values admitted by merged ambient namespace routes.
+                    // Other `typeof Class` references retain the existing
+                    // projection behavior.
+                    return self.syntheticProgramClassStaticTypeImpl(exported_class, class_name, null, hir_mod.none_node_id, exported_class.static_schema_members != null);
                 }
                 return error.UnsupportedProgramType;
             },
@@ -115750,6 +115758,20 @@ pub const Checker = struct {
         local_name: ?hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!TypeId {
+        return self.syntheticProgramClassStaticTypeImpl(exported_class, class_name, local_name, anchor, false) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedProgramType => unreachable,
+        };
+    }
+
+    fn syntheticProgramClassStaticTypeImpl(
+        self: *Checker,
+        exported_class: ProgramExportedClass,
+        class_name: hir_mod.StringId,
+        local_name: ?hir_mod.StringId,
+        anchor: NodeId,
+        strict: bool,
+    ) ProgramTypeError!TypeId {
         _ = anchor;
         const origin = try self.syntheticProgramClassOrigin(exported_class);
         var class_params: std.ArrayListUnmanaged(TypeId) = .empty;
@@ -115815,18 +115837,21 @@ pub const Checker = struct {
             });
         }
         var instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
-        if (!exported_class.schema_member_projection_only) {
+        if (!exported_class.schema_member_projection_only or strict) {
             if (exported_class.schema) |schema| {
                 const declaration = schema.declaration;
                 if (declaration.parameters.len == class_params.items.len and
                     try self.programSchemaSupported(schema))
                 {
                     if (declaration.body) |body| {
-                        const schema_t = self.lowerProgramExpression(body, declaration, class_params.items) catch instance_t;
+                        const schema_t = self.lowerProgramExpression(body, declaration, class_params.items) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.UnsupportedProgramType => if (strict) return error.UnsupportedProgramType else instance_t,
+                        };
                         instance_t = self.resolveGenericType(schema_t) catch schema_t;
                     }
-                }
-            }
+                } else if (strict) return error.UnsupportedProgramType;
+            } else if (strict) return error.UnsupportedProgramType;
         }
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
@@ -115839,10 +115864,10 @@ pub const Checker = struct {
                 if (try ProgramClassSchema.Schema.expressionSupported(constructors, self.gpa)) {
                     const donor = self.lowerProgramExpression(constructors, schema.declaration, class_params.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
-                        error.UnsupportedProgramType => null,
+                        error.UnsupportedProgramType => if (strict) return error.UnsupportedProgramType else null,
                     };
                     if (donor) |signature| construct_sig = try self.programClassConstructResult(signature, instance_t, class_params.items, schema.declaration);
-                }
+                } else if (strict) return error.UnsupportedProgramType;
             }
         }
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
@@ -115871,22 +115896,49 @@ pub const Checker = struct {
             .is_readonly = true,
             .is_method = false,
         });
-        for (exported_class.static_members) |member| {
-            const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
-            const member_t = try self.programExportedClassMemberType(member.type_name);
-            try static_members.append(self.gpa, .{
-                .name = member_name,
-                .type = member_t,
-                .is_optional = false,
-                .is_readonly = false,
-                .is_method = member.is_method,
-                .visibility = switch (member.visibility) {
-                    .public => .public,
-                    .protected => .protected,
-                    .private => .private,
-                },
-                .declaration_origin = if (member.visibility == .public) 0 else origin,
-            });
+        if (exported_class.static_schema_members) |source_members| {
+            const schema = exported_class.schema orelse return error.UnsupportedProgramType;
+            for (source_members) |member| {
+                const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+                const member_t = self.lowerProgramExpression(member.type, schema.declaration, class_params.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.UnsupportedProgramType => blk: {
+                        if (strict) return error.UnsupportedProgramType;
+                        for (exported_class.static_members) |legacy| {
+                            if (std.mem.eql(u8, legacy.name, member.name)) break :blk try self.programExportedClassMemberType(legacy.type_name);
+                        }
+                        break :blk types.Primitive.any;
+                    },
+                };
+                try static_members.append(self.gpa, .{
+                    .name = member_name,
+                    .type = member_t,
+                    .is_optional = member.optional,
+                    .is_readonly = member.readonly,
+                    .is_method = member.method,
+                    .visibility = member.visibility,
+                    .declaration_origin = if (member.visibility == .public) 0 else origin,
+                });
+            }
+        } else {
+            if (strict) return error.UnsupportedProgramType;
+            for (exported_class.static_members) |member| {
+                const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+                const member_t = try self.programExportedClassMemberType(member.type_name);
+                try static_members.append(self.gpa, .{
+                    .name = member_name,
+                    .type = member_t,
+                    .is_optional = false,
+                    .is_readonly = false,
+                    .is_method = member.is_method,
+                    .visibility = switch (member.visibility) {
+                        .public => .public,
+                        .protected => .protected,
+                        .private => .private,
+                    },
+                    .declaration_origin = if (member.visibility == .public) 0 else origin,
+                });
+            }
         }
         const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
         const display = if (exported_class.is_default)

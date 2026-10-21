@@ -133,12 +133,13 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         for (c.hir.kinds.items, 0..) |kind, index| {
             if (kind != .class_decl) continue;
             const node: hir.NodeId = @intCast(index);
-            if (hir.classOf(&c.hir, node).type_params_len == 0) continue;
+            if (hir.classOf(&c.hir, node).type_params_len == 0 and !nestedInAmbientModule(c, node)) continue;
             const position = c.hir.spanOf(node).start;
             if (represented_classes.contains(.{ .source = source_index, .position = position })) continue;
             var class = try classFacts(gpa, &schemas, source, node);
             errdefer freeClass(gpa, class);
             class.local_only = true;
+            if (nestedInAmbientModule(c, node)) class.static_schema_members = try schemas.staticMembers(source, node);
             try out.append(gpa, class);
         }
     }
@@ -248,6 +249,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
     errdefer gpa.free(owned_members);
     const owned_statics = try statics.toOwnedSlice(gpa);
     errdefer gpa.free(owned_statics);
+    const source_schema = try schemas.collect(source, node);
     return .{
         .target_path = source.path,
         .declaration_path = source.path,
@@ -259,7 +261,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
         // plain class fall back to name-only `any` methods, so callbacks lost
         // their contextual parameter types across an otherwise ordinary
         // module boundary.
-        .schema = try schemas.collect(source, node),
+        .schema = source_schema,
         .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0 and !requires_schema_members,
         .members = owned_members,
         .static_members = owned_statics,
@@ -311,6 +313,18 @@ fn namespaceStatics(gpa: std.mem.Allocator, c: *const driver.Compilation, statem
 
 fn hasExplicitExports(c: *const driver.Compilation, statements: []const hir.NodeId) bool {
     for (statements) |statement| if (c.hir.kindOf(statement) == .export_decl) return true;
+    return false;
+}
+
+fn nestedInAmbientModule(c: *const driver.Compilation, node: hir.NodeId) bool {
+    var parent = c.hir.parentOf(node);
+    var nested = false;
+    while (parent != 0) : (parent = c.hir.parentOf(parent)) {
+        if (c.hir.kindOf(parent) != .namespace_decl) continue;
+        const namespace = hir.namespaceOf(&c.hir, parent);
+        if (namespace.is_string_named) return nested and (namespace.is_ambient or c.is_declaration_file);
+        nested = true;
+    }
     return false;
 }
 

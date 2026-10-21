@@ -78,6 +78,13 @@ pub const Collection = struct {
         }
         unreachable;
     }
+
+    pub fn staticMembers(self: *Collection, source: Source, node: hir.NodeId) !?[]const schema.Member {
+        for (self.builder.sources, 0..) |owner, index| {
+            if (owner.compilation == source.compilation) return self.builder.classStaticMembers(.{ .source = index, .node = node });
+        }
+        unreachable;
+    }
 };
 
 pub const Builder = struct {
@@ -1028,6 +1035,56 @@ pub const Builder = struct {
         for (bases, members[0..bases.len]) |base, *result| result.* = try self.lower(context, base);
         members[bases.len] = own;
         return self.expression(.{ .intersection = members });
+    }
+
+    pub fn classStaticMembers(self: *Builder, key: Key) !?[]const schema.Member {
+        const c = self.sources[key.source].compilation;
+        const source_decl = try self.declaration(key);
+        const context: Context = .{ .source = key.source, .declaration = source_decl };
+        var members: std.ArrayListUnmanaged(schema.Member) = .empty;
+        for (hir.classMembers(&c.hir, key.node)) |member| {
+            const kind = c.hir.kindOf(member);
+            const is_static = switch (kind) {
+                .object_property => hir.objectPropertyOf(&c.hir, member).is_static,
+                .fn_decl, .fn_expr, .arrow_fn => hir.fnDeclOf(&c.hir, member).flags.is_static,
+                else => false,
+            };
+            if (!is_static) continue;
+            const name_node = switch (kind) {
+                .object_property => hir.objectPropertyOf(&c.hir, member).key,
+                .fn_decl, .fn_expr, .arrow_fn => hir.fnDeclOf(&c.hir, member).name,
+                else => unreachable,
+            };
+            if (c.hir.kindOf(name_node) != .identifier) return null;
+            const name = c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+            const type_expression = switch (kind) {
+                .object_property => blk: {
+                    const property = hir.objectPropertyOf(&c.hir, member);
+                    if (property.type_annotation == hir.none_node_id or property.is_computed) return null;
+                    break :blk try self.lower(context, property.type_annotation);
+                },
+                .fn_decl, .fn_expr, .arrow_fn => blk: {
+                    const function = hir.fnDeclOf(&c.hir, member);
+                    if (function.flags.is_getter or function.flags.is_setter) return null;
+                    break :blk try self.functionType(context, hir.fnTypeParams(&c.hir, member), hir.fnParams(&c.hir, member), function.return_type, false);
+                },
+                else => unreachable,
+            };
+            if (!try schema.Schema.expressionSupported(type_expression, self.gpa)) return null;
+            try members.append(self.arena, .{
+                .name = name,
+                .type = type_expression,
+                .optional = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_optional else hir.fnDeclOf(&c.hir, member).flags.is_optional,
+                .readonly = kind == .object_property and hir.objectPropertyOf(&c.hir, member).is_readonly,
+                .method = kind != .object_property,
+                .visibility = if (kind == .object_property) switch (hir.objectPropertyOf(&c.hir, member).visibility) {
+                    .public => .public,
+                    .private => .private,
+                    .protected => .protected,
+                } else if (hir.fnDeclOf(&c.hir, member).flags.is_private) .private else if (hir.fnDeclOf(&c.hir, member).flags.is_protected) .protected else .public,
+            });
+        }
+        return try members.toOwnedSlice(self.arena);
     }
 
     fn classBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {

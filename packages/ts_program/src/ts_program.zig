@@ -7382,6 +7382,99 @@ test "Program: merged ambient namespaces retain exact function and variable rout
     }
 }
 
+test "Program: merged ambient class retains instance constructor and static contracts" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box {
+        \\      static readonly flag: 2;
+        \\      static pick(value: "ready"): 3;
+        \\      readonly id: 1;
+        \\      constructor(value: "ready");
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export type Tag = "ready"; }
+        \\}
+    ;
+    const consumer =
+        \\import pkg = require("pkg");
+        \\import { Nested as Selected } from "pkg";
+        \\const one: Selected.Box = new pkg.Nested.Box("ready");
+        \\const wrongInstance: 2 = one.id;
+        \\const wrongStatic: 1 = Selected.Box.flag;
+        \\const goodMethod: 3 = pkg.Nested.Box.pick("ready");
+        \\Selected.Box.pick("late");
+        \\new Selected.Box("late");
+        \\const tag: Selected.Tag = "ready";
+    ;
+    inline for (.{ false, true }) |split_files| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const combined = if (split_files) "" else first ++ "\n" ++ second;
+        try vfs.addFile("/first.d.ts", if (split_files) first else combined);
+        if (split_files) try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        try vfs.addFile("/top.ts", "import { Box } from 'pkg'; new Box();");
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", if (split_files) first else combined);
+        if (split_files) _ = try program.add("/second.d.ts", second);
+        const consumer_id = try program.add("/main.ts", consumer);
+        const top_id = try program.add("/top.ts", "import { Box } from 'pkg'; new Box();");
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict = true });
+        const compilation = program.fileById(consumer_id).compilation.?;
+        var bad_literal: usize = 0;
+        var bad_argument: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2322 => bad_literal += 1,
+            2345 => bad_argument += 1,
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, 2), bad_literal);
+        try T.expectEqual(@as(usize, 2), bad_argument);
+        const top = program.fileById(top_id).compilation.?;
+        try T.expectEqual(@as(usize, 1), top.diagnostics.items.len);
+        try T.expectEqual(@as(u32, 2305), top.diagnostics.items[0].code);
+    }
+}
+
+test "Program: class namespace augmentation cannot publish a partial merged class" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export class Box { readonly id: 1; } }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export namespace Box { export const extra: 2; } }
+        \\}
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/first.d.ts", first);
+    try vfs.addFile("/second.d.ts", second);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/first.d.ts", first);
+    _ = try program.add("/second.d.ts", second);
+    try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    for (graph.values) |value| {
+        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
+            std.mem.eql(u8, value.namespace_path, "Nested") and
+            std.mem.eql(u8, value.export_name, "Box")));
+    }
+}
+
 test "Program: unsupported merged namespace leaf cannot publish a partial function route" {
     const first =
         \\declare module "pkg" {
