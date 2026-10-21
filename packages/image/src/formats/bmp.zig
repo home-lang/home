@@ -56,7 +56,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
     if (planes != 1) return error.InvalidFormat;
 
     const bit_depth = std.mem.readInt(u16, data[28..30], .little);
-    const compression: CompressionMethod = @enumFromInt(std.mem.readInt(u32, data[30..34], .little));
+    const compression: CompressionMethod = @fromBackingInt(@intCast(std.mem.readInt(u32, data[30..34], .little)));
 
     // Determine output format
     const output_format: PixelFormat = switch (bit_depth) {
@@ -296,6 +296,10 @@ fn decodeRLE8(img: *Image, pixel_data: []const u8, top_down: bool) !void {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
+    if (img.format != .indexed8) {
+        const raster = @import("raster_encoder.zig");
+        return raster.bmp(allocator, try raster.fromImage(img));
+    }
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -413,6 +417,17 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
 test "BMP signature" {
     try std.testing.expectEqual(@as(u8, 'B'), BMP_SIGNATURE[0]);
     try std.testing.expectEqual(@as(u8, 'M'), BMP_SIGNATURE[1]);
+}
+test "BMP V4 encoding preserves unassociated alpha in the public image API" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 1, 1, .rgba8);
+    defer img.deinit();
+    img.setPixel(0, 0, .{ .r = 12, .g = 34, .b = 56, .a = 78 });
+    const bytes = try encode(a, &img);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualDeep(img.getPixel(0, 0).?, decoded.getPixel(0, 0).?);
 }
 
 test "BMP encode/decode roundtrip" {

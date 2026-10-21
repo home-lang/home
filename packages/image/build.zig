@@ -9,7 +9,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/image.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+    image_module.linkSystemLibrary("z", .{});
 
     if (optimize != .debug) {
         image_module.addCMacro("ENABLE_SIMD", "1");

@@ -6,6 +6,7 @@ const image = @import("../image.zig");
 const Image = image.Image;
 const Color = image.Color;
 const PixelFormat = image.PixelFormat;
+const raster = @import("raster_encoder.zig");
 
 // ============================================================================
 // PNG Constants
@@ -436,6 +437,7 @@ fn paethPredictor(a: u8, b: u8, c: u8) u8 {
 
 fn convertScanline(img: *Image, y: u32, scanline: []const u8, header: PngHeader) void {
     const output_bpp = img.format.bytesPerPixel();
+    const sample_bytes: usize = if (header.bit_depth == 16) 2 else 1;
 
     var x: u32 = 0;
     while (x < header.width) : (x += 1) {
@@ -450,28 +452,28 @@ fn convertScanline(img: *Image, y: u32, scanline: []const u8, header: PngHeader)
                 }
             },
             .rgb => {
-                const src_idx = @as(usize, x) * 3;
+                const src_idx = @as(usize, x) * 3 * sample_bytes;
                 img.pixels[out_idx] = scanline[src_idx];
-                img.pixels[out_idx + 1] = scanline[src_idx + 1];
-                img.pixels[out_idx + 2] = scanline[src_idx + 2];
+                img.pixels[out_idx + 1] = scanline[src_idx + sample_bytes];
+                img.pixels[out_idx + 2] = scanline[src_idx + 2 * sample_bytes];
             },
             .indexed => {
                 img.pixels[out_idx] = scanline[x];
             },
             .grayscale_alpha => {
-                const src_idx = @as(usize, x) * 2;
+                const src_idx = @as(usize, x) * 2 * sample_bytes;
                 const gray = scanline[src_idx];
                 img.pixels[out_idx] = gray;
                 img.pixels[out_idx + 1] = gray;
                 img.pixels[out_idx + 2] = gray;
-                img.pixels[out_idx + 3] = scanline[src_idx + 1];
+                img.pixels[out_idx + 3] = scanline[src_idx + sample_bytes];
             },
             .rgba => {
-                const src_idx = @as(usize, x) * 4;
+                const src_idx = @as(usize, x) * 4 * sample_bytes;
                 img.pixels[out_idx] = scanline[src_idx];
-                img.pixels[out_idx + 1] = scanline[src_idx + 1];
-                img.pixels[out_idx + 2] = scanline[src_idx + 2];
-                img.pixels[out_idx + 3] = scanline[src_idx + 3];
+                img.pixels[out_idx + 1] = scanline[src_idx + sample_bytes];
+                img.pixels[out_idx + 2] = scanline[src_idx + 2 * sample_bytes];
+                img.pixels[out_idx + 3] = scanline[src_idx + 3 * sample_bytes];
             },
         }
     }
@@ -492,17 +494,12 @@ fn decompressZlib(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 }
 
 fn compressZlib(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    var output = try std.Io.Writer.Allocating.initCapacity(allocator, 4096);
-    errdefer output.deinit();
-    var compression_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-    var compressor = try std.compress.flate.Compress.init(&output.writer, &compression_buffer, .zlib, .default);
-
-    try compressor.writer.writeAll(data);
-    try compressor.finish();
-    return output.toOwnedSlice();
+    return @import("zlib_stream.zig").compress(allocator, data, 1);
 }
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
+    if (img.format != .indexed8 and (img.frames == null or img.frames.?.len == 0))
+        return raster.png(allocator, try raster.fromImage(img), .{});
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -761,6 +758,17 @@ test "PNG magic bytes" {
         @as(u8, 0x89),
         PNG_SIGNATURE[0],
     );
+}
+test "PNG public image encoding preserves sixteen-bit little-endian input in network byte order" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 1, 1, .rgb16);
+    defer img.deinit();
+    @memcpy(img.pixels, &[_]u8{ 0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a });
+    const bytes = try encode(a, &img);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x56, 0x9a }, decoded.pixels);
 }
 
 test "Paeth predictor" {

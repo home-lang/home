@@ -992,6 +992,8 @@ pub fn build(b: *std.Build) void {
 
     // Image processing package
     const image_pkg = createPackage(b, "packages/image/src/image.zig", target, optimize, zig_test_framework);
+    image_pkg.link_libc = true;
+    image_pkg.linkSystemLibrary("z", .{});
 
     // Home Runtime (Phase 12 substrate — Bun source copy in progress)
     // home_rt imports itself: copied-from-Bun source uses both

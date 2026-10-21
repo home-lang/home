@@ -318,8 +318,6 @@ fn decodeStrips(
     is_little_endian: bool,
     allocator: std.mem.Allocator,
 ) !void {
-    _ = is_little_endian;
-
     var y: u32 = 0;
 
     for (strip_offsets, 0..) |offset, strip_idx| {
@@ -341,13 +339,13 @@ fn decodeStrips(
                 const dec = try decompressLZW(allocator, strip_data);
                 break :blk dec;
             },
-            else => strip_data,
+            else => return error.UnsupportedCompression,
         };
         defer if (compression != COMPRESSION_NONE) allocator.free(decompressed);
 
         // Decode pixels
         const strip_rows = @min(rows_per_strip, img.height - y);
-        try decodePixels(img, decompressed, y, strip_rows, photometric, bits_per_sample, samples_per_pixel);
+        try decodePixels(img, decompressed, y, strip_rows, photometric, bits_per_sample, samples_per_pixel, is_little_endian);
 
         y += strip_rows;
         if (y >= img.height) break;
@@ -362,8 +360,10 @@ fn decodePixels(
     photometric: u16,
     bits_per_sample: u16,
     samples_per_pixel: u16,
+    is_little_endian: bool,
 ) !void {
     const bytes_per_sample = (bits_per_sample + 7) / 8;
+    if (photometric == PHOTOMETRIC_RGB and samples_per_pixel < 3) return error.InvalidFormat;
     const bytes_per_pixel = bytes_per_sample * samples_per_pixel;
     const row_bytes = img.width * bytes_per_pixel;
 
@@ -376,26 +376,27 @@ fn decodePixels(
         while (x < img.width) : (x += 1) {
             const pixel_offset = row_offset + x * bytes_per_pixel;
             if (pixel_offset >= strip_data.len) break;
+            if (pixel_offset + bytes_per_pixel > strip_data.len) return error.TruncatedData;
 
             const color = switch (photometric) {
                 PHOTOMETRIC_WHITE_IS_ZERO => blk: {
-                    const val = 255 - strip_data[pixel_offset];
+                    const val = 255 - sample8(strip_data, pixel_offset, 0, bits_per_sample, is_little_endian);
                     break :blk Color{ .r = val, .g = val, .b = val, .a = 255 };
                 },
                 PHOTOMETRIC_BLACK_IS_ZERO => blk: {
-                    const val = strip_data[pixel_offset];
+                    const val = sample8(strip_data, pixel_offset, 0, bits_per_sample, is_little_endian);
                     break :blk Color{ .r = val, .g = val, .b = val, .a = 255 };
                 },
                 PHOTOMETRIC_RGB => blk: {
                     if (pixel_offset + 2 >= strip_data.len) break :blk Color.BLACK;
-                    const a: u8 = if (samples_per_pixel >= 4 and pixel_offset + 3 < strip_data.len)
-                        strip_data[pixel_offset + 3]
+                    const a: u8 = if (samples_per_pixel >= 4)
+                        sample8(strip_data, pixel_offset, 3, bits_per_sample, is_little_endian)
                     else
                         255;
                     break :blk Color{
-                        .r = strip_data[pixel_offset],
-                        .g = strip_data[pixel_offset + 1],
-                        .b = strip_data[pixel_offset + 2],
+                        .r = sample8(strip_data, pixel_offset, 0, bits_per_sample, is_little_endian),
+                        .g = sample8(strip_data, pixel_offset, 1, bits_per_sample, is_little_endian),
+                        .b = sample8(strip_data, pixel_offset, 2, bits_per_sample, is_little_endian),
                         .a = a,
                     };
                 },
@@ -414,6 +415,10 @@ fn decodePixels(
             img.setPixel(x, start_y + y, color);
         }
     }
+}
+fn sample8(data: []const u8, offset: usize, component: usize, bits: u16, little: bool) u8 {
+    const size: usize = (bits + 7) / 8;
+    return data[offset + component * size + @as(usize, if (bits == 16 and little) 1 else 0)];
 }
 
 fn decompressPackBits(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
@@ -591,87 +596,16 @@ fn readU32(data: *const [4]u8, is_little_endian: bool) u32 {
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    // Write header (little endian)
-    try output.appendSlice(allocator, &[_]u8{ 'I', 'I' }); // Little endian
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, TIFF_MAGIC)));
-
-    // IFD offset (will be at offset 8)
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 8)));
-
-    // Build IFD entries
-    const samples_per_pixel: u16 = switch (img.format) {
-        .grayscale8, .grayscale16, .indexed8 => 1,
-        .rgb8, .rgb16 => 3,
-        .rgba8, .rgba16 => 4,
+    const raster = @import("raster_encoder.zig");
+    if (img.format != .indexed8) return raster.tiff(allocator, try raster.fromImage(img));
+    // Preserve palette alpha through an explicit expansion rather than writing
+    // invalid palette TIFF tags or advertising one sample while emitting RGB.
+    var expanded = try Image.init(allocator, img.width, img.height, .rgba8);
+    defer expanded.deinit();
+    for (0..img.height) |y| for (0..img.width) |x| {
+        expanded.setPixel(@intCast(x), @intCast(y), img.getPixel(@intCast(x), @intCast(y)) orelse Color.BLACK);
     };
-
-    const photometric: u16 = switch (img.format) {
-        .grayscale8, .grayscale16 => PHOTOMETRIC_BLACK_IS_ZERO,
-        .indexed8 => PHOTOMETRIC_PALETTE,
-        else => PHOTOMETRIC_RGB,
-    };
-
-    // Calculate strip data size
-    const bytes_per_pixel = img.format.bytesPerPixel();
-    const strip_size = @as(u32, @intCast(img.width)) * img.height * bytes_per_pixel;
-
-    // Number of IFD entries
-    const num_entries: u16 = 11;
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, num_entries)));
-
-    // Calculate offsets
-    const ifd_size = 2 + num_entries * 12 + 4; // count + entries + next IFD offset
-    const strip_offset: u32 = 8 + ifd_size;
-
-    // Write IFD entries
-    try writeIFDEntry(allocator, &output, TAG_IMAGE_WIDTH, TYPE_LONG, 1, img.width);
-    try writeIFDEntry(allocator, &output, TAG_IMAGE_LENGTH, TYPE_LONG, 1, img.height);
-    try writeIFDEntry(allocator, &output, TAG_BITS_PER_SAMPLE, TYPE_SHORT, 1, 8);
-    try writeIFDEntry(allocator, &output, TAG_COMPRESSION, TYPE_SHORT, 1, COMPRESSION_NONE);
-    try writeIFDEntry(allocator, &output, TAG_PHOTOMETRIC, TYPE_SHORT, 1, photometric);
-    try writeIFDEntry(allocator, &output, TAG_STRIP_OFFSETS, TYPE_LONG, 1, strip_offset);
-    try writeIFDEntry(allocator, &output, TAG_SAMPLES_PER_PIXEL, TYPE_SHORT, 1, samples_per_pixel);
-    try writeIFDEntry(allocator, &output, TAG_ROWS_PER_STRIP, TYPE_LONG, 1, img.height);
-    try writeIFDEntry(allocator, &output, TAG_STRIP_BYTE_COUNTS, TYPE_LONG, 1, strip_size);
-    try writeIFDEntry(allocator, &output, TAG_X_RESOLUTION, TYPE_RATIONAL, 1, strip_offset + strip_size);
-    try writeIFDEntry(allocator, &output, TAG_Y_RESOLUTION, TYPE_RATIONAL, 1, strip_offset + strip_size + 8);
-
-    // Next IFD offset (0 = no more IFDs)
-    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
-
-    // Write strip data
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            const color = img.getPixel(x, y) orelse Color.BLACK;
-            switch (img.format) {
-                .grayscale8 => {
-                    try output.append(allocator, color.toGrayscale());
-                },
-                .rgb8 => {
-                    try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b });
-                },
-                .rgba8 => {
-                    try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b, color.a });
-                },
-                else => {
-                    try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b });
-                },
-            }
-        }
-    }
-
-    // Write resolution values (72 DPI)
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 72))); // numerator
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 1))); // denominator
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 72))); // numerator
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u32, 1))); // denominator
-
-    return output.toOwnedSlice(allocator);
+    return raster.tiff(allocator, try raster.fromImage(&expanded));
 }
 
 fn writeIFDEntry(allocator: std.mem.Allocator, output: *std.ArrayList(u8), tag: u16, field_type: u16, count: u32, value: u32) !void {
@@ -693,6 +627,33 @@ test "TIFF header detection" {
     const be_header = [_]u8{ 'M', 'M', 0, 42 };
     try std.testing.expectEqual(@as(u16, BIG_ENDIAN_MARKER), std.mem.readInt(u16, be_header[0..2], .big));
     try std.testing.expectEqual(@as(u16, TIFF_MAGIC), std.mem.readInt(u16, be_header[2..4], .big));
+}
+test "TIFF public image encoding preserves sixteen-bit samples and decoder scales the high bytes" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 1, 1, .rgb16);
+    defer img.deinit();
+    @memcpy(img.pixels, &[_]u8{ 0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a });
+    const bytes = try encode(a, &img);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x56, 0x9a }, decoded.pixels);
+    std.mem.writeInt(u32, bytes[10 + 7 * 12 + 8 ..][0..4], 1, .little);
+    try std.testing.expectError(error.InvalidFormat, decode(a, bytes));
+}
+test "TIFF palette expansion preserves alpha and unknown compression fails without freeing borrowed data" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 1, 1, .indexed8);
+    defer img.deinit();
+    img.palette = try a.dupe(Color, &.{.{ .r = 12, .g = 34, .b = 56, .a = 78 }});
+    img.pixels[0] = 0;
+    const bytes = try encode(a, &img);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualDeep(img.getPixel(0, 0).?, decoded.getPixel(0, 0).?);
+    std.mem.writeInt(u32, bytes[10 + 3 * 12 + 8 ..][0..4], 65000, .little);
+    try std.testing.expectError(error.UnsupportedCompression, decode(a, bytes));
 }
 
 test "PackBits decompression" {
