@@ -5,6 +5,13 @@ transfer, YCbCr matrix and range. It is separate from pixel storage and conversi
 Preset values describe sRGB, sYCC, SMPTE 170M, Rec.709, Rec.2020 and raw. Portable
 numeric IDs are descriptive enums, not codec/ISO color signaling values.
 
+`Description.signal()` maps processed YCbCr descriptions to ISO primaries,
+transfer and matrix codes plus a boolean full-range flag, for AVC/HEVC VUI and
+MP4 `nclx`. It rejects RGB (matrix none) and raw descriptions rather than guessing
+an encoder matrix. The result describes existing samples; it never transforms
+them. See [the native media adapter](native-video.md) for explicit encoder and
+container constructors and their caller-owned consistency contract.
+
 `Description.fromCodes` rejects unknown values. `processed(yuv)` rejects raw
 primaries for processed streams and requires an explicit matrix for YUV. RGB
 preserves requested primaries/transfer while normalizing matrix to none and range

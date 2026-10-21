@@ -7,6 +7,9 @@ pub const Transfer = enum(u32) { linear = 1, srgb = 2, rec709 = 3 };
 pub const Matrix = enum(u32) { none = 1, rec601 = 2, rec709 = 3, rec2020 = 4 };
 pub const Range = enum(u32) { full = 1, limited = 2 };
 pub const Preset = enum(u32) { srgb = 1, sycc = 2, smpte170m = 3, rec709 = 4, rec2020 = 5, raw = 6 };
+/// ISO/IEC color-description values for AVC/HEVC VUI and MP4 nclx. This is
+/// signaling only: supplying tags does not transform transfer, gamut or pixels.
+pub const Signal = struct { primaries: u16, transfer: u16, matrix: u16, full_range: bool };
 pub const Description = struct {
     primaries: Primaries,
     transfer: Transfer,
@@ -23,6 +26,31 @@ pub const Description = struct {
     pub fn eql(a: Description, b: Description) bool {
         return a.primaries == b.primaries and a.transfer == b.transfer and a.matrix == b.matrix and a.range == b.range;
     }
+    /// Only processed YCbCr can describe an I420 encoder input. RGB/RAW must
+    /// first be converted by the caller; never label RGB as an arbitrary matrix.
+    pub fn signal(self: Description) !Signal {
+        _ = try self.processed(true);
+        return .{
+            .primaries = switch (self.primaries) {
+                .rec709 => 1,
+                .smpte170m => 6,
+                .rec2020 => 9,
+                .raw => unreachable,
+            },
+            .transfer = switch (self.transfer) {
+                .rec709 => 1,
+                .linear => 8,
+                .srgb => 13,
+            },
+            .matrix = switch (self.matrix) {
+                .rec709 => 1,
+                .rec601 => 6,
+                .rec2020 => 9,
+                .none => unreachable,
+            },
+            .full_range = self.range == .full,
+        };
+    }
     /// Raw primaries cannot describe processed RGB/YUV. RGB preserves gamut and
     /// transfer, normalizing matrix/range. YUV must have an explicit matrix.
     pub fn processed(self: Description, yuv: bool) !Description {
@@ -37,6 +65,19 @@ pub const Description = struct {
         return result;
     }
 };
+test "ISO signaling is distinct from portable IDs and requires processed YCbCr" {
+    const t = std.testing;
+    try t.expectEqualDeep(Signal{ .primaries = 1, .transfer = 13, .matrix = 6, .full_range = true }, try preset(.sycc).signal());
+    try t.expectEqualDeep(Signal{ .primaries = 6, .transfer = 1, .matrix = 6, .full_range = false }, try preset(.smpte170m).signal());
+    try t.expectEqualDeep(Signal{ .primaries = 1, .transfer = 1, .matrix = 1, .full_range = false }, try preset(.rec709).signal());
+    try t.expectEqualDeep(Signal{ .primaries = 9, .transfer = 1, .matrix = 9, .full_range = false }, try preset(.rec2020).signal());
+    var linear = preset(.rec2020);
+    linear.transfer = .linear;
+    linear.range = .full;
+    try t.expectEqualDeep(Signal{ .primaries = 9, .transfer = 8, .matrix = 9, .full_range = true }, try linear.signal());
+    try t.expectError(error.InvalidColorSpace, preset(.srgb).signal());
+    try t.expectError(error.InvalidColorSpace, preset(.raw).signal());
+}
 pub fn preset(value: Preset) Description {
     return switch (value) {
         .srgb => .{ .primaries = .rec709, .transfer = .srgb, .matrix = .none, .range = .full },

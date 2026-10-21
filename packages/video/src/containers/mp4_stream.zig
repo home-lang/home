@@ -9,6 +9,20 @@ pub const Sink = struct {
     patch: ?*const fn (*anyopaque, u64, []const u8) anyerror!void = null,
 };
 pub const AudioConfig = struct { sample_rate: u32, channels: u32, bitrate: u32, delay: u32, config: [2]u8 };
+/// ISO color codes for nclx, describing already converted/encoded YCbCr samples.
+/// The caller must use the same description for the encoder's VUI. No SPS
+/// inference, gamut/transfer conversion or pixel relabeling is performed here.
+pub const Color = struct {
+    primaries: u16 = 1,
+    transfer: u16 = 13,
+    matrix: u16 = 6,
+    full_range: bool = false,
+    fn validate(self: Color) !void {
+        if ((self.primaries != 1 and self.primaries != 6 and self.primaries != 9) or
+            (self.transfer != 1 and self.transfer != 8 and self.transfer != 13) or
+            (self.matrix != 1 and self.matrix != 6 and self.matrix != 9)) return error.InvalidConfiguration;
+    }
+};
 const AudioOffsets = struct { track: usize = 0, media: usize = 0, empty: usize = 0, edit: usize = 0 };
 
 const Buffer = struct {
@@ -257,13 +271,20 @@ pub const Writer = struct {
     video_media_duration: usize = 0,
     audio_offsets: AudioOffsets = .{},
     pub fn initAv(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig) !Writer {
-        if (sink.patch == null) return error.InvalidConfiguration;
-        return initInternal(sink, width, height, codec, headers, audio_cfg);
+        return initAvWithColor(sink, width, height, codec, headers, audio_cfg, .{});
     }
     pub fn init(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8) !Writer {
-        return initInternal(sink, width, height, codec, headers, null);
+        return initWithColor(sink, width, height, codec, headers, .{});
     }
-    fn initInternal(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: ?AudioConfig) !Writer {
+    pub fn initAvWithColor(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig, color: Color) !Writer {
+        if (sink.patch == null) return error.InvalidConfiguration;
+        return initInternal(sink, width, height, codec, headers, audio_cfg, color);
+    }
+    pub fn initWithColor(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, color: Color) !Writer {
+        return initInternal(sink, width, height, codec, headers, null, color);
+    }
+    fn initInternal(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: ?AudioConfig, color: Color) !Writer {
+        try color.validate();
         if (width == 0 or height == 0 or width > 8192 or height > 8192) return error.InvalidConfiguration;
         var b: Buffer = .{};
         const ftyp = try b.box("ftyp");
@@ -342,10 +363,10 @@ pub const Writer = struct {
         try config(&b, codec, headers);
         const colr = try b.box("colr");
         try b.bytes("nclx");
-        try b.int16(1);
-        try b.int16(13);
-        try b.int16(6);
-        try b.bytes(&.{0});
+        try b.int16(color.primaries);
+        try b.int16(color.transfer);
+        try b.int16(color.matrix);
+        try b.bytes(&.{if (color.full_range) 128 else 0});
         b.end(colr);
         b.end(entry);
         b.end(stsd);

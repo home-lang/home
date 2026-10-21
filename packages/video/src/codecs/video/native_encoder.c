@@ -26,8 +26,16 @@ void home_encoder_close(home_encoder *e) {
     free(e->buffer); free(e);
 }
 int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
+    const home_encoder_color color={sizeof(home_encoder_color),1,13,6,0};
+    return home_encoder_open_color(c,&color,out);
+}
+int home_encoder_open_color(const home_encoder_config *c, const home_encoder_color *color, home_encoder **out) {
     if (!out) return -1;
     *out=NULL;
+    if (!color || color->struct_size!=sizeof(*color) ||
+        (color->primaries!=1 && color->primaries!=6 && color->primaries!=9) ||
+        (color->transfer!=1 && color->transfer!=8 && color->transfer!=13) ||
+        (color->matrix!=1 && color->matrix!=6 && color->matrix!=9) || color->full_range>1) return -1;
     if (!c || (c->codec!=1 && c->codec!=2) || c->width<16 || c->height<16 || c->width>8192 || c->height>8192 || (c->width|c->height)&1 || !c->fps_num || !c->fps_den || c->fps_num>1000000 || c->fps_den>1000000 || c->quality<1 || c->quality>100 || c->gop>INT_MAX || (c->bitrate && c->bitrate<1000)) return -1;
     home_encoder *e=calloc(1,sizeof(*e));
     if (!e) return -2;
@@ -44,7 +52,8 @@ int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
         p.i_threads=1; p.i_bframe=0; p.rc.i_lookahead=0;
         p.i_keyint_max=c->gop ? (int)c->gop : 60; p.i_keyint_min=1; p.i_scenecut_threshold=0;
         p.b_open_gop=0; p.b_annexb=0; p.b_repeat_headers=0; p.i_log_level=X264_LOG_ERROR;
-        p.vui.b_fullrange=0; p.vui.i_colorprim=1; p.vui.i_transfer=13; p.vui.i_colmatrix=6;
+        p.vui.b_fullrange=(int)color->full_range; p.vui.i_colorprim=(int)color->primaries;
+        p.vui.i_transfer=(int)color->transfer; p.vui.i_colmatrix=(int)color->matrix;
         p.rc.i_rc_method=c->bitrate ? X264_RC_ABR : X264_RC_CRF;
         p.rc.i_bitrate=(int)(c->bitrate/1000); p.rc.f_rf_constant=(float)(crf<1.0 ? 1.0 : crf);
         if (x264_param_apply_profile(&p,"high")<0) { x264_param_cleanup(&p); goto fail; }
@@ -64,9 +73,9 @@ int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
         p->bAnnexB=0; p->bRepeatHeaders=0; p->bEmitInfoSEI=0; p->logLevel=X265_LOG_ERROR;
         /* Fixed CTU sizes across instances avoid x265's process-global CTU conflict. */
         p->maxCUSize=16; p->minCUSize=8;
-        p->vui.bEnableVideoSignalTypePresentFlag=1; p->vui.bEnableVideoFullRangeFlag=0;
-        p->vui.bEnableColorDescriptionPresentFlag=1; p->vui.colorPrimaries=1;
-        p->vui.transferCharacteristics=13; p->vui.matrixCoeffs=6;
+        p->vui.bEnableVideoSignalTypePresentFlag=1; p->vui.bEnableVideoFullRangeFlag=(int)color->full_range;
+        p->vui.bEnableColorDescriptionPresentFlag=1; p->vui.colorPrimaries=(int)color->primaries;
+        p->vui.transferCharacteristics=(int)color->transfer; p->vui.matrixCoeffs=(int)color->matrix;
         p->rc.rateControlMode=c->bitrate ? X265_RC_ABR : X265_RC_CRF;
         p->rc.bitrate=(int)(c->bitrate/1000); p->rc.rfConstant=crf;
         if (x265_param_apply_profile(p,"main")<0) goto fail;

@@ -4,8 +4,12 @@
 const std = @import("std");
 const Handle = opaque {};
 pub const Config = extern struct { codec: u32, width: u32, height: u32, fps_num: u32, fps_den: u32, bitrate: u32, quality: u32, gop: u32 };
+/// ISO codes describing the caller's I420 samples. Metadata only, no conversion.
+/// Defaults preserve the legacy Rec.709 primaries / sRGB / BT.601 limited path.
+pub const Color = extern struct { struct_size: u32 = @sizeOf(Color), primaries: u32 = 1, transfer: u32 = 13, matrix: u32 = 6, full_range: u32 = 0 };
 const RawPacket = extern struct { data: [*]const u8, size: usize, pts: i64, key: c_int };
 extern fn home_encoder_open(*const Config, *?*Handle) c_int;
+extern fn home_encoder_open_color(*const Config, *const Color, *?*Handle) c_int;
 extern fn home_encoder_headers(*Handle, *RawPacket) c_int;
 extern fn home_encoder_encode(*Handle, *const [3][*]const u8, *const [3]c_int, i64, *RawPacket) c_int;
 extern fn home_encoder_request_keyframe(*Handle) c_int;
@@ -22,6 +26,13 @@ pub const Encoder = struct {
     pub fn init(config: Config) !Encoder {
         var out: ?*Handle = null;
         try check(home_encoder_open(&config, &out));
+        return .{ .handle = out.?, .width = config.width, .height = config.height };
+    }
+    /// Color is copied into vendor parameters during construction. Invalid tags
+    /// fail before allocation; the caller may immediately release the recipe.
+    pub fn initWithColor(config: Config, color: Color) !Encoder {
+        var out: ?*Handle = null;
+        try check(home_encoder_open_color(&config, &color, &out));
         return .{ .handle = out.?, .width = config.width, .height = config.height };
     }
     pub fn deinit(self: *Encoder) void {

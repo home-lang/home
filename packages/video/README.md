@@ -32,3 +32,6 @@ checks; physical camera performance remains a separate acceptance task.
 
 See [color descriptions and negotiation](docs/color-description.md) for checked
 requested/effective/actual metadata and strict processed-stream policy.
+The [native video adapter](docs/native-video.md) also accepts explicit ISO color
+tags for AVC/HEVC VUI and MP4 nclx, with legacy defaults preserved and independent
+SPS/container signaling tests. Callers remain responsible for matching samples.
