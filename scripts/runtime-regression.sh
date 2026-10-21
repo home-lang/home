@@ -8,11 +8,9 @@
 # bootstrap with no real network.
 #
 # The JS runtime is only linked when the build is JSC-enabled (build.zig:
-# `enable_jsc`, default true on macOS, false elsewhere). On a non-JSC build the
-# `home run` path is absent, so this runner PROBES first and SKIPS cleanly
-# (exit 0) when the runtime is unavailable — it must never break CI on a target
-# that legitimately has no JS runtime. Where the runtime IS present it gates
-# hard: any test that exits non-zero fails the run.
+# `enable_jsc`, default true on macOS, false elsewhere). An explicit build
+# capability query permits a skip only for non-JSC builds. A JSC-enabled build
+# whose native runtime fails the probe must fail the suite, not silently skip.
 #
 # Usage:   scripts/runtime-regression.sh
 # Exit 0:  all runtime tests passed, OR the build has no JS runtime (skipped).
@@ -26,7 +24,13 @@ cd "$ROOT"
 # Locate the Home binary: an explicit override, else the newest build present.
 # shellcheck source=scripts/home-bin.sh
 source "$ROOT/scripts/home-bin.sh"
-resolve_home_bin "$ROOT" || HOME_BIN=""
+if ! resolve_home_bin "$ROOT"; then
+    if [[ -n "${HOME_BIN:-}" ]]; then
+        echo "runtime-regression: explicit HOME_BIN is not executable" >&2
+        exit 1
+    fi
+    HOME_BIN=""
+fi
 
 if [[ -z "$HOME_BIN" || ! -x "$HOME_BIN" ]]; then
     echo "runtime-regression: no Home binary found (looked for zig-out/bin/home[-debug]); skipping" >&2
@@ -53,14 +57,35 @@ if [[ ${#tests[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# Probe: can this build actually run JS? A non-JSC build has no `run` runtime.
+# Ask the Home binary whether JSC was linked. A failed JS probe cannot answer
+# this question: a broken enabled runtime must fail the suite, not skip it.
+if ! capability="$("$HOME_BIN" --home-internal-native-vm-capability 2>&1)"; then
+    echo "runtime-regression: native VM capability query failed: $capability" >&2
+    exit 1
+fi
+case "$capability" in
+    disabled)
+        echo "runtime-regression: non-JSC build; skipping ${#tests[@]} test(s)"
+        exit 0
+        ;;
+    enabled) ;;
+    *)
+        echo "runtime-regression: invalid native VM capability response: $capability" >&2
+        exit 1
+        ;;
+esac
+
+# Probe the actual native JS path and executable identity before running tests.
 PROBE="$(mktemp -t home-rt-probe.XXXXXX).mjs"
 trap 'rm -f "$PROBE"' EXIT
-printf 'console.log("__home_rt_probe_ok__");\n' > "$PROBE"
-probe_out="$("$HOME_BIN" run "$PROBE" 2>/dev/null || true)"
+printf 'import { realpathSync } from "node:fs";\nif (realpathSync(process.execPath) !== realpathSync(process.env.HOME_RUNTIME_EXPECTED_BIN)) throw new Error("runtime delegated outside Home");\nconsole.log("__home_rt_probe_ok__");\n' > "$PROBE"
+if ! probe_out="$(HOME_RUNTIME_EXPECTED_BIN="$HOME_BIN" "$HOME_BIN" run "$PROBE" 2>&1)"; then
+    echo "runtime-regression: native VM probe failed: $probe_out" >&2
+    exit 1
+fi
 if [[ "$probe_out" != *"__home_rt_probe_ok__"* ]]; then
-    echo "runtime-regression: build has no JS runtime (non-JSC target); skipping ${#tests[@]} test(s)"
-    exit 0
+    echo "runtime-regression: native VM probe returned no success marker: $probe_out" >&2
+    exit 1
 fi
 
 echo "runtime-regression: JS runtime available ($HOME_BIN); running ${#tests[@]} test(s)"

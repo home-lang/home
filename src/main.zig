@@ -5725,6 +5725,15 @@ pub fn main(init: std.process.Init) !void {
 
     const command = args[1];
 
+    // Internal capability query for the runtime regression harness. A failed
+    // JavaScript probe is not evidence that this binary was built without JSC:
+    // it may be a real runtime failure, and must not become a passing skip.
+    if (std.mem.eql(u8, command, "--home-internal-native-vm-capability")) {
+        const stdout_file = std.Io.File.stdout();
+        stdout_file.writeStreamingAll(g_io, if (build_options.enable_jsc) "enabled\n" else "disabled\n") catch {};
+        return;
+    }
+
     if (std.mem.eql(u8, command, "tsc")) {
         try tsc_main.run(init.environ_map, args[2..]);
         return;
