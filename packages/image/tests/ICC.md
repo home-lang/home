@@ -29,7 +29,7 @@ sampled curves, parametric curves and malformed geometry. Run from the repo root
 ```sh
 zig test packages/image/src/metadata/icc.zig
 zig test --dep icc -Mroot=packages/image/tests/icc_profile_test.zig -Micc=packages/image/src/metadata/icc.zig
-zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=packages/image/tests/icc_fixture.zig -Micc=packages/image/src/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=packages/image/tests/icc_fixture.zig -Micc=packages/image/src/metadata/icc.zig -femit-bin=/tmp/home-icc.o
 cc -std=c11 -Wall -Wextra -Werror packages/image/tests/icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
 /tmp/home-icc-test
 ```
@@ -39,6 +39,8 @@ three generated tone curves at 65,536 input values and transforms 4,913 RGB
 patches to XYZ against the published D50 reference matrix. It tests the actual
 serialized profile through another CMM rather than round-tripping our parser.
 No camera, physical chart, sensor, display calibration or Pi timing is tested.
+The object explicitly includes Zig compiler-runtime helpers so the system C
+linker can resolve stack probes on x86; runtime safety remains enabled.
 
 References: [ICC sRGB interpretation](https://registry.color.org/rgb-registry/files/sRGB.pdf),
 [ICC specification](https://www.color.org/specification/ICC.1-2022-05.pdf).

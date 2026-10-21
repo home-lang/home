@@ -30,6 +30,6 @@ jobs:
             zig test -O "$mode" packages/image/src/metadata/icc.zig
             zig test -O "$mode" --dep icc -Mroot=packages/image/tests/icc_profile_test.zig -Micc=packages/image/src/metadata/icc.zig
           done
-          zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=packages/image/tests/icc_fixture.zig -Micc=packages/image/src/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep icc -Mroot=packages/image/tests/icc_fixture.zig -Micc=packages/image/src/metadata/icc.zig -femit-bin=/tmp/home-icc.o
           cc -std=c11 -Wall -Wextra -Werror packages/image/tests/icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
           /tmp/home-icc-test
