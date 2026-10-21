@@ -36,3 +36,38 @@ independent strides and no destination padding writes. Primaries and transfer
 functions must match: YCbCr matrix conversion alone does not change gamut/gamma.
 The destination must not overlap the source. Reference tests compare unclipped
 floating calculations, known full-to-studio values, clipping, and rejection.
+
+## Shared chroma decoding
+
+I420 decoding now computes each chroma pair's channel contributions once for its
+2x2 luma block. All four pixels keep the original fixed-point rounding and clipping;
+source/destination ownership and non-overlap requirements are unchanged. There is
+no allocation or intermediate image. The per-pixel `Conversion.toRgb` API remains
+unchanged. An exhaustive block test checks 75,264 blocks (301,056 pixels) against
+that legacy path across all six matrix/range combinations and preserves padding.
+
+The reproducible [benchmark](../benchmarks/i420-decode.zig) retains the old loop,
+uses identical deterministic padded 640x480 planes, warms each path, alternates
+execution order, checks complete output equality and records checksums. Run with
+the camera's pinned Zig 0.15.2; the helper itself also passes development-Zig tests.
+
+```sh
+zig build-exe -O ReleaseSafe --dep yuv -Mroot=packages/video/benchmarks/i420-decode.zig -Myuv=packages/video/src/core/yuv_rgb.zig -femit-bin=/tmp/home-i420-decode
+/tmp/home-i420-decode 2> /tmp/i420-decode.csv
+```
+
+Machine-local macOS/arm64 runs targeted macOS 15.0 with `-lc`. Three batches of 20
+frames per method/matrix/range are retained as raw rows:
+
+- [ReleaseFast](../benchmarks/i420-decode-releasefast-local.csv): ratios of median
+  legacy/block batch times range from 1.77 to 1.89.
+- [ReleaseSafe](../benchmarks/i420-decode-releasesafe-local.csv): ratios range from
+  0.94 to 1.46, including a small regression for full-range BT.709 in this run.
+- [Earlier concurrent ReleaseSafe run](../benchmarks/i420-decode-releasesafe-concurrent-local.csv):
+  recorded while compiler jobs ran, retained to expose timing variance rather than
+  used for the comparison above.
+
+These are shared-development-host samples, not Pi measurements, a latency guarantee,
+a camera FPS result or a Picamera2 comparison. Build mode and workload matter;
+there is no claim that every conversion/target becomes faster. CI correctness uses
+pixel equivalence and bounds tests rather than timing thresholds.

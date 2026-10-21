@@ -22,3 +22,10 @@ slots with independent watermarks and exact preparation tickets. One bounded
 history can supply several codec producers without extra capture cursors. It
 preserves fractional sample phase, never advances past missing audio, and
 quarantines history overruns without affecting healthy consumers.
+
+### Block I420 decoding
+
+[Checked YCbCr conversion](docs/yuv-rgb.md#shared-chroma-decoding) reuses each chroma
+pair across its four luma pixels while preserving legacy fixed-point bytes. The
+standalone benchmark retains the old loop, raw local timing rows and checksum
+checks; physical camera performance remains a separate acceptance task.

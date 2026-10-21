@@ -82,8 +82,18 @@ pub const I420 = struct {
 pub fn decode420(src: I420, conversion: Conversion, out: []u8, stride: u32) !void {
     try src.validate();
     try validatePlane(out.len, stride, @as(u64, src.width) * 3, src.height);
-    for (0..src.height) |y| for (0..src.width) |x| {
-        out[y * stride + x * 3 ..][0..3].* = conversion.toRgb(src.planes[0][y * src.strides[0] + x], src.planes[1][(y / 2) * src.strides[1] + x / 2], src.planes[2][(y / 2) * src.strides[2] + x / 2]);
+    // One I420 chroma pair belongs to four luma samples. Compute its fixed-point
+    // channel contributions once, preserving the existing rounding/clipping.
+    for (0..src.height / 2) |cy| for (0..src.width / 2) |cx| {
+        const cb = @as(i64, src.planes[1][cy * src.strides[1] + cx]) - 128;
+        const cr = @as(i64, src.planes[2][cy * src.strides[2] + cx]) - 128;
+        const chroma = [3]i64{ conversion.rv * cr, conversion.gu * cb + conversion.gv * cr, conversion.bu * cb };
+        inline for (0..2) |dy| inline for (0..2) |dx| {
+            const y = cy * 2 + dy;
+            const x = cx * 2 + dx;
+            const l = conversion.cy * (@as(i64, src.planes[0][y * src.strides[0] + x]) - conversion.y_offset);
+            inline for (0..3) |channel| out[y * stride + x * 3 + channel] = byte((l + chroma[channel] + scale / 2) >> 16);
+        };
     };
 }
 pub fn encode420(rgb: []const u8, width: u32, height: u32, stride: u32, planes: [3][]u8, strides: [3]u32, conversion: Conversion) !void {
@@ -183,6 +193,32 @@ test "fixed point decoding agrees with independent floating reference within one
                 const expected: i32 = @intFromFloat(@round(std.math.clamp(ref * 255, 0, 255)));
                 try std.testing.expect(@abs(@as(i32, value) - expected) <= 1);
             }
+        };
+    };
+}
+
+test "block decoding matches legacy per-pixel conversion exactly across all matrices and ranges" {
+    var ys: [10]u8 = @splat(77);
+    var us: [3]u8 = @splat(77);
+    var vs: [3]u8 = @splat(77);
+    const src = I420{ .width = 2, .height = 2, .planes = .{ &ys, &us, &vs }, .strides = .{ 6, 3, 3 } };
+    var out: [18]u8 = @splat(99);
+    for ([_]Matrix{ .bt601, .bt709, .bt2020 }) |matrix| for ([_]Range{ .full, .limited }) |range| {
+        const c = Conversion.init(matrix, range);
+        for (0..256) |sample| for ([_]u8{ 0, 16, 85, 128, 170, 240, 255 }) |u| for ([_]u8{ 0, 16, 85, 128, 170, 240, 255 }) |v| {
+            ys[0] = @intCast(sample);
+            ys[1] = @truncate(sample + 17);
+            ys[6] = @truncate(sample + 101);
+            ys[7] = @truncate(sample + 239);
+            us[0] = u;
+            vs[0] = v;
+            try decode420(src, c, &out, 10);
+            try std.testing.expectEqualSlices(u8, &c.toRgb(ys[0], u, v), out[0..3]);
+            try std.testing.expectEqualSlices(u8, &c.toRgb(ys[1], u, v), out[3..6]);
+            try std.testing.expectEqualSlices(u8, &c.toRgb(ys[6], u, v), out[10..13]);
+            try std.testing.expectEqualSlices(u8, &c.toRgb(ys[7], u, v), out[13..16]);
+            for (out[6..10]) |pad| try std.testing.expectEqual(@as(u8, 99), pad);
+            for (out[16..]) |pad| try std.testing.expectEqual(@as(u8, 99), pad);
         };
     };
 }
