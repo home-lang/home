@@ -5069,13 +5069,57 @@ pub const Parser = struct {
         return ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token));
     }
 
+    /// Decode float tokens identically in expressions and patterns.
+    fn parseFloatToken(self: *Parser, token: Token) !ast.FloatLiteral {
+        // Check for type suffix (f32, f64)
+        var type_suffix: ?[]const u8 = null;
+        var lexeme = token.lexeme;
+
+        // Find where the type suffix starts (if any)
+        for (lexeme, 0..) |c, i| {
+            if (c == 'f' and i > 0) {
+                // Check if this looks like a type suffix
+                const remaining = lexeme[i..];
+                if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
+                    type_suffix = remaining;
+                    lexeme = lexeme[0..i];
+                    break;
+                }
+            }
+        }
+
+        // Remove underscores for parsing
+        var clean_lexeme = std.ArrayList(u8).empty;
+        defer clean_lexeme.deinit(self.allocator);
+        for (lexeme) |c| {
+            if (c != '_') {
+                try clean_lexeme.append(self.allocator, c);
+            }
+        }
+
+        const value = std.fmt.parseFloat(f64, clean_lexeme.items) catch |err| {
+            if (err == error.InvalidCharacter) {
+                try self.reportError("Invalid float literal format");
+                return error.InvalidFloat;
+            }
+            return err;
+        };
+
+        // Reject non-finite numbers in expressions and patterns.
+        if (std.math.isInf(value) or std.math.isNan(value)) {
+            try self.reportError("Float literal is too large (exceeds f64 range)");
+            return error.FloatOverflow;
+        }
+        return ast.FloatLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token));
+    }
+
     /// Parse a pattern for match statements
     fn parsePattern(self: *Parser) !*ast.Pattern {
         const pattern = try self.allocator.create(ast.Pattern);
         errdefer self.allocator.destroy(pattern);
 
         // Parse signs and range bounds through the expression integer decoder.
-        const negative = self.check(.Minus) and self.peekNext().type == .Integer;
+        const negative = self.check(.Minus) and (self.peekNext().type == .Integer or self.peekNext().type == .Float);
         if (negative) _ = self.advance();
         if (self.match(&.{.Integer})) {
             const token = self.previous();
@@ -5108,16 +5152,9 @@ pub const Parser = struct {
             return pattern;
         }
 
-        // Float literal pattern — reject infinity/NaN which would
-        // silently never match any runtime value.
         if (self.match(&.{.Float})) {
-            const token = self.previous();
-            const value = try std.fmt.parseFloat(f64, token.lexeme);
-            if (std.math.isInf(value) or std.math.isNan(value)) {
-                try self.reportError("float pattern overflows to infinity or NaN and will never match");
-                return error.UnexpectedToken;
-            }
-            pattern.* = ast.Pattern{ .FloatLiteral = value };
+            const literal = try self.parseFloatToken(self.previous());
+            pattern.* = ast.Pattern{ .FloatLiteral = if (negative) -literal.value else literal.value };
             return pattern;
         }
 
@@ -8478,49 +8515,11 @@ pub const Parser = struct {
         if (self.match(&.{.Float})) {
             const token = self.previous();
 
-            // Check for type suffix (f32, f64)
-            var type_suffix: ?[]const u8 = null;
-            var lexeme = token.lexeme;
-
-            // Find where the type suffix starts (if any)
-            for (lexeme, 0..) |c, i| {
-                if (c == 'f' and i > 0) {
-                    // Check if this looks like a type suffix
-                    const remaining = lexeme[i..];
-                    if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
-                        type_suffix = remaining;
-                        lexeme = lexeme[0..i];
-                        break;
-                    }
-                }
-            }
-
-            // Remove underscores for parsing
-            var clean_lexeme = std.ArrayList(u8).empty;
-            defer clean_lexeme.deinit(self.allocator);
-            for (lexeme) |c| {
-                if (c != '_') {
-                    try clean_lexeme.append(self.allocator, c);
-                }
-            }
-
-            const value = std.fmt.parseFloat(f64, clean_lexeme.items) catch |err| {
-                if (err == error.InvalidCharacter) {
-                    try self.reportError("Invalid float literal format");
-                    return error.InvalidFloat;
-                }
-                return err;
-            };
-
-            // Check for infinity (overflow)
-            if (std.math.isInf(value)) {
-                try self.reportError("Float literal is too large (exceeds f64 range)");
-                return error.FloatOverflow;
-            }
+            const literal = try self.parseFloatToken(token);
 
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .FloatLiteral = ast.FloatLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
+                .FloatLiteral = literal,
             };
             return expr;
         }

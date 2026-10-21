@@ -2135,3 +2135,15 @@ test "parser: an overflowing integer pattern produces a diagnostic" {
     _ = try parser.parse();
     try testing.expect(parser.errors.items.len > 0);
 }
+
+test "parser: float patterns use expression suffixes and separators" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_][]const u8{ "1_2.5f32", "-12.5f64" }, [_]f64{ 12.5, -12.5 }) |literal, expected| {
+        const source = try std.fmt.allocPrint(a, "match 1.0 {{ {s} => 1, _ => 0 }}", .{literal});
+        const program = try parseSource(a, source);
+        try testing.expectEqual(@as(usize, 1), program.statements.len);
+        try testing.expectEqual(expected, program.statements[0].MatchStmt.arms[0].pattern.FloatLiteral);
+    }
+}
