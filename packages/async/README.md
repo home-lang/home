@@ -175,3 +175,11 @@ submission can still predate its acknowledgement; such a result is rejected.
 Pending, active and unsuccessful terminal jobs never accept results. This query
 does not mutate the gate, and the caller still validates resource ownership and
 result-specific metadata under its own synchronization.
+
+### Shared publication decisions
+
+[Publication batches](docs/publication-batch.md) provide fixed-capacity stable lock
+ordering and all-member readiness checks without allocation, task creation or
+callbacks. Callers own locks, commit flags, candidate cleanup and worker joins.
+Use them with the existing preparation gate when several prepared resources must
+share one publication decision.

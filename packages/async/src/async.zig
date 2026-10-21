@@ -16,6 +16,7 @@ pub const RawTask = task.RawTask;
 pub const Runtime = runtime.Runtime;
 
 test {
+    _ = @import("publication_batch.zig");
     _ = @import("preparation_gate.zig");
     _ = @import("completion_watermark.zig");
     _ = @import("completion_gate.zig");
@@ -33,3 +34,6 @@ pub const CompletionGate = @import("completion_gate.zig").Gate;
 pub const CompletionWatermark = @import("completion_watermark.zig").Watermark;
 /// Cooperative preparation with cleanup before terminal cancellation.
 pub const PreparationGate = @import("preparation_gate.zig").Gate;
+
+/// Stable lock ordering and shared readiness validation; caller owns publication.
+pub const PublicationBatch = @import("publication_batch.zig");
