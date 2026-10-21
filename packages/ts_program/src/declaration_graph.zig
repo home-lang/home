@@ -171,11 +171,217 @@ fn literalConstEnumMembers(arena: std.mem.Allocator, c: *const driver.Compilatio
             .number => |number| if (std.math.isFinite(number)) number + 1 else return null,
             .string => null,
         };
-        try result.append(arena, .{ .name = name, .value = value });
+        try result.append(arena, .{ .name = name, .value = value, .owner_hir = &c.hir, .declaration_node = node });
     }
     const owned = try result.toOwnedSlice(arena);
     return owned;
 }
+
+/// Resolve all fragments of one exported namespace together. A reference to
+/// another fragment can point forward in file order, but a reference to a
+/// later member of the *same* declaration cannot. The recursion state also
+/// makes cycles fail without publishing a partial enum route.
+const MergedEnumValues = struct {
+    const Entry = struct {
+        source: usize,
+        declaration: hir.NodeId,
+        group: []const u8,
+        enum_name: []const u8,
+        name: []const u8,
+        ordinal: usize,
+        initializer: hir.NodeId,
+        previous: ?usize,
+        state: enum { pending, resolving, resolved, invalid } = .pending,
+        value: ?driver.ProgramEnumMember.Value = null,
+    };
+    const Fragment = struct {
+        source: usize,
+        declaration: hir.NodeId,
+        group: []const u8,
+        entries: []const usize,
+        members: ?[]const driver.ProgramEnumMember = null,
+    };
+
+    arena: std.mem.Allocator,
+    sources: []const Source,
+    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    fragments: std.ArrayListUnmanaged(Fragment) = .empty,
+
+    fn collectNamespace(self: *MergedEnumValues, source_index: usize, node: hir.NodeId, namespace_path: []const u8) !bool {
+        const c = self.sources[source_index].compilation;
+        for (hir.namespaceBody(&c.hir, node)) |raw| {
+            const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else raw;
+            if (member == hir.none_node_id) continue;
+            switch (c.hir.kindOf(member)) {
+                .namespace_decl => {
+                    const name = declarationName(c, member) orelse return false;
+                    const nested = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ namespace_path, name });
+                    if (!try self.collectNamespace(source_index, member, nested)) return false;
+                },
+                .enum_decl => {
+                    if (!hir.enumOf(&c.hir, member).is_const) continue;
+                    const enum_name = declarationName(c, member) orelse return false;
+                    const group = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ namespace_path, enum_name });
+                    var indexes: std.ArrayListUnmanaged(usize) = .empty;
+                    for (hir.enumMembers(&c.hir, member), 0..) |raw_property, ordinal| {
+                        if (c.hir.kindOf(raw_property) != .object_property) return false;
+                        const property = hir.objectPropertyOf(&c.hir, raw_property);
+                        if (c.hir.kindOf(property.key) != .identifier) return false;
+                        const name = c.interner.get(hir.identifierOf(&c.hir, property.key).name);
+                        for (self.entries.items) |existing| {
+                            if (std.mem.eql(u8, existing.group, group) and std.mem.eql(u8, existing.name, name)) return false;
+                        }
+                        const index = self.entries.items.len;
+                        try self.entries.append(self.arena, .{
+                            .source = source_index,
+                            .declaration = member,
+                            .group = group,
+                            .enum_name = enum_name,
+                            .name = name,
+                            .ordinal = ordinal,
+                            .initializer = property.value,
+                            .previous = if (indexes.items.len == 0) null else indexes.items[indexes.items.len - 1],
+                        });
+                        try indexes.append(self.arena, index);
+                    }
+                    try self.fragments.append(self.arena, .{
+                        .source = source_index,
+                        .declaration = member,
+                        .group = group,
+                        .entries = try indexes.toOwnedSlice(self.arena),
+                    });
+                },
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn hasRepeatedFragment(self: *const MergedEnumValues) bool {
+        for (self.fragments.items, 0..) |fragment, index| {
+            for (self.fragments.items[0..index]) |previous| {
+                if (std.mem.eql(u8, fragment.group, previous.group)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn lookup(self: *MergedEnumValues, current: usize, name: []const u8) anyerror!?f64 {
+        const owner = self.entries.items[current];
+        for (self.entries.items, 0..) |candidate, index| {
+            if (!std.mem.eql(u8, candidate.group, owner.group) or !std.mem.eql(u8, candidate.name, name)) continue;
+            // `A = B` cannot see a later B in this declaration, even when a
+            // different declaration fragment happens to be collected first.
+            if (candidate.source == owner.source and candidate.declaration == owner.declaration and candidate.ordinal >= owner.ordinal) return null;
+            const value = (try self.resolve(index)) orelse return null;
+            return switch (value) {
+                .number => |number| number,
+                .string => null,
+            };
+        }
+        return null;
+    }
+
+    fn numeric(self: *MergedEnumValues, current: usize, node: hir.NodeId) anyerror!?f64 {
+        const c = self.sources[self.entries.items[current].source].compilation;
+        return switch (c.hir.kindOf(node)) {
+            .literal_number => hir.literalNumberOf(&c.hir, node),
+            .identifier => try self.lookup(current, c.interner.get(hir.identifierOf(&c.hir, node).name)),
+            .member_access => blk: {
+                const access = hir.memberOf(&c.hir, node);
+                if (c.hir.kindOf(access.object) != .identifier) break :blk null;
+                const object = c.interner.get(hir.identifierOf(&c.hir, access.object).name);
+                if (!std.mem.eql(u8, object, self.entries.items[current].enum_name)) break :blk null;
+                break :blk try self.lookup(current, c.interner.get(access.name));
+            },
+            .unary_op => blk: {
+                const unary = hir.unaryOf(&c.hir, node);
+                const value = (try self.numeric(current, unary.operand)) orelse break :blk null;
+                break :blk switch (unary.op) {
+                    .plus => value,
+                    .neg => -value,
+                    .bit_not => if (enumExactInt32(value)) |int| @as(f64, @floatFromInt(~int)) else null,
+                    else => null,
+                };
+            },
+            .binary_op => blk: {
+                const binary = hir.binopOf(&c.hir, node);
+                const lhs = (try self.numeric(current, binary.lhs)) orelse break :blk null;
+                const rhs = (try self.numeric(current, binary.rhs)) orelse break :blk null;
+                break :blk switch (binary.op) {
+                    .add => lhs + rhs,
+                    .sub => lhs - rhs,
+                    .mul => lhs * rhs,
+                    .div => lhs / rhs,
+                    .mod => if (rhs != 0) @rem(lhs, rhs) else null,
+                    .bit_or, .bit_and, .bit_xor => bitwiseConstEnumValue(lhs, rhs, binary.op),
+                    .shl, .shr, .shr_unsigned => shiftConstEnumValue(lhs, rhs, binary.op),
+                    else => null,
+                };
+            },
+            else => null,
+        };
+    }
+
+    fn resolve(self: *MergedEnumValues, index: usize) anyerror!?driver.ProgramEnumMember.Value {
+        const entry = self.entries.items[index];
+        switch (entry.state) {
+            .resolved => return entry.value,
+            .invalid, .resolving => return null,
+            .pending => {},
+        }
+        self.entries.items[index].state = .resolving;
+        const c = self.sources[entry.source].compilation;
+        const value: ?driver.ProgramEnumMember.Value = if (entry.initializer == hir.none_node_id) blk: {
+            const number: f64 = if (entry.previous) |previous| previous_number: {
+                const prior = (try self.resolve(previous)) orelse break :blk null;
+                break :previous_number switch (prior) {
+                    .number => |n| n + 1,
+                    .string => break :blk null,
+                };
+            } else 0;
+            if (!std.math.isFinite(number)) break :blk null;
+            break :blk .{ .number = number };
+        } else switch (c.hir.kindOf(entry.initializer)) {
+            .literal_string => blk: {
+                const raw = c.interner.get(hir.literalStringOf(&c.hir, entry.initializer).value);
+                if (std.mem.indexOfAny(u8, raw, "\\\r") == null) break :blk .{ .string = raw };
+                var cooked: std.ArrayListUnmanaged(u8) = .empty;
+                try driver.ProgramClassSchema.appendCookedStringText(self.arena, raw, &cooked);
+                break :blk .{ .string = try cooked.toOwnedSlice(self.arena) };
+            },
+            else => if (try self.numeric(index, entry.initializer)) |number|
+                if (std.math.isFinite(number)) .{ .number = number } else null
+            else
+                null,
+        };
+        self.entries.items[index].value = value;
+        self.entries.items[index].state = if (value == null) .invalid else .resolved;
+        return value;
+    }
+
+    fn finish(self: *MergedEnumValues) !bool {
+        for (self.fragments.items) |*fragment| {
+            const c = self.sources[fragment.source].compilation;
+            const members = try self.arena.alloc(driver.ProgramEnumMember, fragment.entries.len);
+            for (fragment.entries, members) |index, *member| {
+                const entry = self.entries.items[index];
+                const value = (try self.resolve(index)) orelse return false;
+                member.* = .{ .name = entry.name, .value = value, .owner_hir = &c.hir, .declaration_node = fragment.declaration };
+            }
+            fragment.members = members;
+        }
+        return true;
+    }
+
+    fn membersFor(self: *const MergedEnumValues, c: *const driver.Compilation, node: hir.NodeId) ?[]const driver.ProgramEnumMember {
+        for (self.fragments.items) |fragment| {
+            const source = self.sources[fragment.source].compilation;
+            if (source == c and fragment.declaration == node) return fragment.members;
+        }
+        return null;
+    }
+};
 
 fn singleEnumDeclarationInNamespace(c: *const driver.Compilation, namespace_node: hir.NodeId, name: []const u8) bool {
     var count: usize = 0;
@@ -199,6 +405,7 @@ fn appendNamespaceValueRoute(
     target_path: []const u8,
     namespace_path: []const u8,
     class_namespace_merges: ?*const std.StringHashMapUnmanaged(void),
+    merged_enums: ?*const MergedEnumValues,
     values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
 ) !void {
     const c = source.compilation;
@@ -215,20 +422,25 @@ fn appendNamespaceValueRoute(
                 const full = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, name });
                 break :blk class_namespace_merges.?.contains(full);
             } else false;
-            if (!visible.complete or visible.ambiguous or (!same_origin and !merged_contributor)) continue;
+            const merged_enum_contributor = !same_origin and kind == .enum_decl and merged_enums != null and
+                merged_enums.?.membersFor(c, member) != null;
+            if (!visible.complete or visible.ambiguous or (!same_origin and !merged_contributor and !merged_enum_contributor)) continue;
         }
         if (c.hir.kindOf(member) == .namespace_decl) {
             const namespace = hir.namespaceOf(&c.hir, member);
             if (c.hir.kindOf(namespace.name) != .identifier) continue;
             const nested_path = try std.fmt.allocPrint(arena, "{s}{s}{s}", .{ namespace_path, if (namespace_path.len == 0) "" else ".", c.interner.get(hir.identifierOf(&c.hir, namespace.name).name) });
-            try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, class_namespace_merges, values);
+            try appendNamespaceValueRoute(gpa, arena, builder, supported, source_index, source, member, target_path, nested_path, class_namespace_merges, merged_enums, values);
             continue;
         }
         if (c.hir.kindOf(member) == .enum_decl) {
             if (!ambient or !hir.enumOf(&c.hir, member).is_const) continue;
             const name = declarationName(c, member) orelse continue;
-            if (!singleEnumDeclarationInNamespace(c, node, name)) continue;
-            const enum_members = (try literalConstEnumMembers(arena, c, member)) orelse continue;
+            if (merged_enums == null and !singleEnumDeclarationInNamespace(c, node, name)) continue;
+            const enum_members = if (merged_enums) |resolved|
+                resolved.membersFor(c, member) orelse continue
+            else
+                (try literalConstEnumMembers(arena, c, member)) orelse continue;
             try values.append(arena, .{
                 .target_path = target_path,
                 .namespace_path = namespace_path,
@@ -442,7 +654,7 @@ fn enumIsInAmbientModule(c: *const driver.Compilation, node: hir.NodeId) bool {
 /// The merged route must account for every value or type leaf. If a contributor
 /// contains a declaration this graph cannot transfer exactly, leave the
 /// entire merge unresolved rather than exposing a misleading partial type.
-fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?NamespaceRouteCounts {
+fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, merged_enums: ?*const MergedEnumValues) !?NamespaceRouteCounts {
     const ambient = hir.namespaceOf(&c.hir, node).is_ambient or c.is_declaration_file;
     var counts: NamespaceRouteCounts = .{};
     for (hir.namespaceBody(&c.hir, node)) |raw| {
@@ -455,13 +667,15 @@ fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilat
         if (member == hir.none_node_id) return null;
         switch (c.hir.kindOf(member)) {
             .namespace_decl => {
-                const nested = (try exactNamespaceRouteCounts(arena, c, member)) orelse return null;
+                const nested = (try exactNamespaceRouteCounts(arena, c, member, merged_enums)) orelse return null;
                 counts.values += nested.values;
                 counts.types += nested.types;
             },
             .enum_decl => {
-                if (!hir.enumOf(&c.hir, member).is_const or
-                    (try literalConstEnumMembers(arena, c, member)) == null) return null;
+                if (!hir.enumOf(&c.hir, member).is_const) return null;
+                if (merged_enums) |resolved| {
+                    if (resolved.membersFor(c, member) == null) return null;
+                } else if ((try literalConstEnumMembers(arena, c, member)) == null) return null;
                 counts.values += 1;
             },
             .class_decl => {
@@ -523,7 +737,14 @@ fn mergedAmbientNamespace(
             try declarations.append(arena, .{ .source = owner.source, .node = decl });
         }
     }
-    if (declarations.items.len < 2) return null;
+    if (declarations.items.len == 0) return null;
+
+    var merged_enums = MergedEnumValues{ .arena = arena, .sources = sources };
+    for (declarations.items) |declaration| {
+        if (!try merged_enums.collectNamespace(declaration.source, declaration.node, name)) return null;
+    }
+    if (declarations.items.len == 1 and !merged_enums.hasRepeatedFragment()) return null;
+    if (!try merged_enums.finish()) return null;
 
     // A class and a namespace with the same qualified name are one exported
     // value. A single resolved origin cannot identify both declaration nodes;
@@ -545,10 +766,10 @@ fn mergedAmbientNamespace(
     var expected: NamespaceRouteCounts = .{};
     for (declarations.items) |declaration| {
         const source = sources[declaration.source];
-        const counts = (try exactNamespaceRouteCounts(arena, source.compilation, declaration.node)) orelse return null;
+        const counts = (try exactNamespaceRouteCounts(arena, source.compilation, declaration.node, &merged_enums)) orelse return null;
         expected.values += counts.values;
         expected.types += counts.types;
-        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &class_namespace_merges, &collected_values);
+        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &class_namespace_merges, &merged_enums, &collected_values);
         try appendNamespaceTypeRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_types);
     }
     if (expected.values + expected.types == 0 or
@@ -764,7 +985,7 @@ fn collectAmbientModules(
                     if (c.hir.kindOf(key.node) == .namespace_decl) {
                         const first_value = values.items.len;
                         const first_type = types.items.len;
-                        try appendNamespaceValueRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, null, values);
+                        try appendNamespaceValueRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, null, null, values);
                         try appendNamespaceTypeRoute(gpa, arena, builder, supported, key.source, sources[key.source], key.node, host.path, name.*, types);
                         for (values.items[first_value..]) |*route| route.ambient_module_name = specifier;
                         for (types.items[first_type..]) |*route| route.ambient_module_name = specifier;
@@ -852,7 +1073,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             if (by_path.get(origin.path)) |owner| {
                 if (declarations.get(.{ .source = owner, .position = origin.position })) |node| {
                     if (sources[owner].compilation.hir.kindOf(node) == .namespace_decl) {
-                        try appendNamespaceValueRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, null, &values);
+                        try appendNamespaceValueRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, null, null, &values);
                         try appendNamespaceTypeRoute(gpa, arena, &builder, &supported, owner, sources[owner], node, sources[binding.source].path, binding.name, &types);
                     }
                 }

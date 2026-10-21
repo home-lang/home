@@ -1924,6 +1924,7 @@ pub const Program = struct {
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendMergedAmbientModuleExportDiagnostics(options);
         try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
+        try self.appendMergedAmbientEnumMemberDuplicateDiagnostics(options);
     }
 
     /// Source-file enumeration is a DFS postorder, independent of admission
@@ -2202,6 +2203,7 @@ pub const Program = struct {
             previous_counts[i] = if (file.compilation) |c| c.diagnostics.items.len else 0;
         }
         try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
+        try self.appendMergedAmbientEnumMemberDuplicateDiagnostics(options);
         for (self.files.items, 0..) |file, i| {
             if (!file.present or file.redirect_target != null) continue;
             const c = file.compilation orelse continue;
@@ -2344,6 +2346,15 @@ pub const Program = struct {
             // Ambient imports need exact declaration routes even when their
             // specifiers do not resolve to a filesystem module.
             const compilation = file.compilation orelse continue;
+            // A dependency-free const enum may still reference members in a
+            // different declaration fragment. Its checker needs the merged
+            // program route even when no file imports the ambient module.
+            var node: hir_mod_ns.NodeId = 1;
+            while (node < compilation.hir.nodeCount()) : (node += 1) {
+                if (compilation.hir.kindOf(node) == .enum_decl and
+                    hir_mod_ns.enumOf(&compilation.hir, node).is_const)
+                    return self.collectProgramDeclarations();
+            }
             for (compilation.module.symbols.items) |symbol| {
                 if (symbol.flags.is_import) return self.collectProgramDeclarations();
             }
@@ -4115,6 +4126,7 @@ pub const Program = struct {
         try self.appendProgramGlobalInterfaceMemberDiagnostics(options);
         try self.appendMergedAmbientModuleExportDiagnostics(options);
         try self.appendAmbientClassNamespaceCollisionDiagnostics(options);
+        try self.appendMergedAmbientEnumMemberDuplicateDiagnostics(options);
     }
 
     fn compileFilesInDependencyBatches(
@@ -5504,6 +5516,117 @@ pub const Program = struct {
         is_block_scoped: bool,
     };
 
+    const AmbientEnumMember = struct {
+        file_index: usize,
+        module_name: []const u8,
+        enum_path: []const u8,
+        name: []const u8,
+        declaration: hir_mod_ns.NodeId,
+        pos: u32,
+        span_len: u32,
+    };
+
+    fn collectAmbientEnumMembers(
+        c: *const ts_driver.Compilation,
+        arena: std.mem.Allocator,
+        file_index: usize,
+        module_name: []const u8,
+        namespace_path: []const u8,
+        namespace_node: hir_mod_ns.NodeId,
+        out: *std.ArrayListUnmanaged(AmbientEnumMember),
+    ) ProgramError!void {
+        for (hir_mod_ns.namespaceBody(&c.hir, namespace_node)) |raw| {
+            const member = if (c.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&c.hir, raw).decl else raw;
+            if (member == hir_mod_ns.none_node_id) continue;
+            switch (c.hir.kindOf(member)) {
+                .namespace_decl => {
+                    const namespace = hir_mod_ns.namespaceOf(&c.hir, member);
+                    if (c.hir.kindOf(namespace.name) != .identifier) continue;
+                    const name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, namespace.name).name);
+                    const path = if (namespace_path.len == 0)
+                        name
+                    else
+                        try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, name });
+                    try collectAmbientEnumMembers(c, arena, file_index, module_name, path, member, out);
+                },
+                .enum_decl => {
+                    const enumeration = hir_mod_ns.enumOf(&c.hir, member);
+                    if (!enumeration.is_const or c.hir.kindOf(enumeration.name) != .identifier) continue;
+                    const enum_name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, enumeration.name).name);
+                    const path = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, enum_name });
+                    for (hir_mod_ns.enumMembers(&c.hir, member)) |raw_property| {
+                        if (c.hir.kindOf(raw_property) != .object_property) continue;
+                        const property = hir_mod_ns.objectPropertyOf(&c.hir, raw_property);
+                        const name = switch (c.hir.kindOf(property.key)) {
+                            .identifier => c.interner.get(hir_mod_ns.identifierOf(&c.hir, property.key).name),
+                            .literal_string => c.interner.get(hir_mod_ns.literalStringOf(&c.hir, property.key).value),
+                            else => continue,
+                        };
+                        const span = c.hir.spanOf(property.key);
+                        try out.append(arena, .{
+                            .file_index = file_index,
+                            .module_name = module_name,
+                            .enum_path = path,
+                            .name = name,
+                            .declaration = member,
+                            .pos = span.start,
+                            .span_len = span.end - span.start,
+                        });
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn appendMergedAmbientEnumMemberDuplicateDiagnostics(self: *Program, options: ts_driver.CompileOptions) ProgramError!void {
+        var storage = std.heap.ArenaAllocator.init(self.gpa);
+        defer storage.deinit();
+        const arena = storage.allocator();
+        var members: std.ArrayListUnmanaged(AmbientEnumMember) = .empty;
+        for (self.files.items, 0..) |file, file_index| {
+            if (!file.present or file.redirect_target != null) continue;
+            const c = file.compilation orelse continue;
+            if (c.hir.kindOf(c.root) != .block_stmt) continue;
+            for (hir_mod_ns.blockStmts(&c.hir, c.root)) |raw| {
+                const node = if (c.hir.kindOf(raw) == .export_decl) hir_mod_ns.exportOf(&c.hir, raw).decl else raw;
+                if (node == hir_mod_ns.none_node_id) continue;
+                if (c.hir.kindOf(node) != .namespace_decl and c.hir.kindOf(node) != .module_decl) continue;
+                const module = hir_mod_ns.namespaceOf(&c.hir, node);
+                if (!module.is_string_named or c.hir.kindOf(module.name) != .identifier) continue;
+                const module_name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, module.name).name);
+                try collectAmbientEnumMembers(c, arena, file_index, module_name, "", node, &members);
+            }
+        }
+        for (members.items, 0..) |member, index| {
+            for (members.items[0..index]) |prior| {
+                if (!std.mem.eql(u8, member.module_name, prior.module_name) or
+                    !std.mem.eql(u8, member.enum_path, prior.enum_path) or
+                    !std.mem.eql(u8, member.name, prior.name)) continue;
+                if (member.file_index == prior.file_index and member.declaration == prior.declaration) continue;
+                try self.appendAmbientEnumMemberDuplicateDiagnostic(prior, options);
+                try self.appendAmbientEnumMemberDuplicateDiagnostic(member, options);
+            }
+        }
+    }
+
+    fn appendAmbientEnumMemberDuplicateDiagnostic(self: *Program, member: AmbientEnumMember, options: ts_driver.CompileOptions) ProgramError!void {
+        const file = self.files.items[member.file_index];
+        if (self.skipDeclarationDiagnostics(file, options)) return;
+        const c = file.compilation orelse return;
+        if (diagnosticExistsAt(c, 2300, member.pos)) return;
+        const message = try std.fmt.allocPrint(self.gpa, "Duplicate identifier '{s}'.", .{member.name});
+        try c.diagnostics.append(self.gpa, .{
+            .phase = .bind,
+            .pos = member.pos,
+            .line = 0,
+            .span_len = member.span_len,
+            .code = 2300,
+            .message = message,
+        });
+        c.has_errors = true;
+    }
+
     const AmbientClassNamespaceMember = struct {
         file_index: usize,
         module_name: []const u8,
@@ -5737,7 +5860,8 @@ pub const Program = struct {
         defer bindings.deinit(self.gpa);
         for (self.files.items, 0..) |f, file_index| {
             if (f.redirect_target != null or !f.is_declaration) continue;
-            try collectAmbientExportBindingsFromSource(f.source, file_index, &bindings, self.gpa);
+            const compilation = f.compilation orelse continue;
+            try collectAmbientExportBindingsFromCompilation(compilation, file_index, &bindings, self.gpa);
         }
         for (bindings.items, 0..) |binding, i| {
             for (bindings.items[0..i]) |previous| {
@@ -5771,83 +5895,53 @@ pub const Program = struct {
         compilation.has_errors = true;
     }
 
-    fn collectAmbientExportBindingsFromSource(
-        source: []const u8,
+    fn collectAmbientExportBindingsFromCompilation(
+        c: *const ts_driver.Compilation,
         file_index: usize,
         out: *std.ArrayListUnmanaged(ProgramAmbientExportBinding),
         gpa: std.mem.Allocator,
     ) ProgramError!void {
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, source, search_start, "declare")) |declare_pos| {
-            search_start = declare_pos + "declare".len;
-            if (!identifierKeywordAt(source, declare_pos, "declare")) continue;
-            var module_pos = declare_pos + "declare".len;
-            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
-            if (!identifierKeywordAt(source, module_pos, "module")) continue;
-            module_pos += "module".len;
-            while (module_pos < source.len and std.ascii.isWhitespace(source[module_pos])) : (module_pos += 1) {}
-            if (module_pos >= source.len or (source[module_pos] != '"' and source[module_pos] != '\'')) continue;
-            const quote = source[module_pos];
-            const name_start = module_pos + 1;
-            const name_end = std.mem.indexOfScalarPos(u8, source, name_start, quote) orelse continue;
-            const body_open = std.mem.indexOfScalarPos(u8, source, name_end + 1, '{') orelse continue;
-            const body_close = findMatchingBrace(source, body_open) orelse continue;
-            const module_name = source[name_start..name_end];
-            var export_search = body_open + 1;
-            while (std.mem.indexOfPos(u8, source, export_search, "export")) |export_pos| {
-                if (export_pos >= body_close) break;
-                export_search = export_pos + "export".len;
-                if (!identifierKeywordAt(source, export_pos, "export")) continue;
-                var cursor = export_pos + "export".len;
-                while (cursor < body_close and std.ascii.isWhitespace(source[cursor])) : (cursor += 1) {}
-                if (cursor < body_close and source[cursor] == '{') {
-                    const close = std.mem.indexOfScalarPos(u8, source, cursor + 1, '}') orelse continue;
-                    if (close > body_close) continue;
-                    cursor += 1;
-                    while (cursor < close) {
-                        while (cursor < close and (std.ascii.isWhitespace(source[cursor]) or source[cursor] == ',')) : (cursor += 1) {}
-                        const local_end = parseIdentifierEnd(source, cursor, close) orelse break;
-                        var exported_start = cursor;
-                        var exported_end = local_end;
-                        var after = local_end;
-                        while (after < close and std.ascii.isWhitespace(source[after])) : (after += 1) {}
-                        if (identifierKeywordAt(source, after, "as")) {
-                            after += "as".len;
-                            while (after < close and std.ascii.isWhitespace(source[after])) : (after += 1) {}
-                            if (parseIdentifierEnd(source, after, close)) |alias_end| {
-                                exported_start = after;
-                                exported_end = alias_end;
-                            }
-                        }
-                        try out.append(gpa, .{
-                            .file_index = file_index,
-                            .module_name = module_name,
-                            .name = source[exported_start..exported_end],
-                            .pos = exported_start,
-                            .is_block_scoped = true,
-                        });
-                        cursor = exported_end;
-                    }
-                    export_search = close + 1;
-                    continue;
-                }
-                const keywords = [_][]const u8{ "const", "let", "var" };
-                for (keywords) |keyword| {
-                    if (!identifierKeywordAt(source, cursor, keyword)) continue;
-                    var binding_start = cursor + keyword.len;
-                    while (binding_start < body_close and std.ascii.isWhitespace(source[binding_start])) : (binding_start += 1) {}
-                    const binding_end = parseIdentifierEnd(source, binding_start, body_close) orelse break;
+        if (c.hir.kindOf(c.root) != .block_stmt) return;
+        for (hir_mod_ns.blockStmts(&c.hir, c.root)) |raw_module| {
+            const module_node = if (c.hir.kindOf(raw_module) == .export_decl)
+                hir_mod_ns.exportOf(&c.hir, raw_module).decl
+            else
+                raw_module;
+            if (module_node == hir_mod_ns.none_node_id) continue;
+            if (c.hir.kindOf(module_node) != .module_decl and c.hir.kindOf(module_node) != .namespace_decl) continue;
+            const module = hir_mod_ns.namespaceOf(&c.hir, module_node);
+            if (!module.is_string_named or c.hir.kindOf(module.name) != .identifier) continue;
+            const module_name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, module.name).name);
+            for (hir_mod_ns.namespaceBody(&c.hir, module_node)) |statement| {
+                if (c.hir.kindOf(statement) != .export_decl) continue;
+                const export_info = hir_mod_ns.exportOf(&c.hir, statement);
+                if (export_info.is_type_only or c.interner.get(export_info.module).len != 0) continue;
+                const declaration = export_info.decl;
+                if (declaration != hir_mod_ns.none_node_id) {
+                    const kind = c.hir.kindOf(declaration);
+                    if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                    const name_node = hir_mod_ns.varDeclOf(&c.hir, declaration).name;
+                    if (c.hir.kindOf(name_node) != .identifier) continue;
                     try out.append(gpa, .{
                         .file_index = file_index,
                         .module_name = module_name,
-                        .name = source[binding_start..binding_end],
-                        .pos = binding_start,
-                        .is_block_scoped = !std.mem.eql(u8, keyword, "var"),
+                        .name = c.interner.get(hir_mod_ns.identifierOf(&c.hir, name_node).name),
+                        .pos = c.hir.spanOf(name_node).start,
+                        .is_block_scoped = kind != .var_decl,
                     });
-                    break;
+                } else for (hir_mod_ns.exportNamed(&c.hir, statement)) |spec_node| {
+                    if (c.hir.kindOf(spec_node) != .import_specifier) continue;
+                    const spec = hir_mod_ns.importSpecifierOf(&c.hir, spec_node);
+                    if (spec.is_type_only) continue;
+                    try out.append(gpa, .{
+                        .file_index = file_index,
+                        .module_name = module_name,
+                        .name = c.interner.get(spec.local),
+                        .pos = spec.local_pos,
+                        .is_block_scoped = true,
+                    });
                 }
             }
-            search_start = body_close + 1;
         }
     }
 
@@ -8072,6 +8166,337 @@ test "Program: computed ambient enum members survive split declaration order" {
         try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
         try T.expectEqualStrings("Type 'Mode.Three' is not assignable to type '1'.", diagnostics[0].message);
     }
+}
+
+test "Program: merged ambient const enum expressions resolve across declaration owners" {
+    const declaration = @embedFile("testdata/ambient_cross_fragment_const_enum.d.ts");
+    const boundary = std.mem.indexOf(u8, declaration, "\n\ndeclare module").?;
+    const first = declaration[0..boundary];
+    const second = declaration[boundary + 2 ..];
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const two: 2 = Nested.Mode.Two;
+        \\const three: 3 = Nested.Mode.Three;
+        \\const wrong: 1 = Nested.Mode.Three;
+    ;
+    inline for (.{ 0, 1, 2 }) |mode| {
+        const split_files = mode != 0;
+        const reverse_files = mode == 2;
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", if (split_files) first else declaration);
+        if (split_files) try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        var second_id: ?FileId = null;
+        if (split_files and reverse_files) second_id = try program.add("/second.d.ts", second);
+        const first_id = try program.add("/first.d.ts", if (split_files) first else declaration);
+        if (split_files and !reverse_files) second_id = try program.add("/second.d.ts", second);
+        const main_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .strict = true });
+        try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
+        if (second_id) |id| try T.expectEqual(@as(usize, 0), program.fileById(id).compilation.?.diagnostics.items.len);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try T.expectEqualStrings("Type 'Mode.Three' is not assignable to type '1'.", diagnostics[0].message);
+
+        var graph = try program.collectProgramDeclarations();
+        defer graph.deinit();
+        var found = false;
+        for (graph.values) |route| {
+            if (!std.mem.eql(u8, route.ambient_module_name, "pkg") or
+                !std.mem.eql(u8, route.namespace_path, "Nested") or
+                !std.mem.eql(u8, route.export_name, "Mode")) continue;
+            const members = route.enum_members orelse continue;
+            try T.expectEqual(@as(usize, 3), members.len);
+            var one = false;
+            var two = false;
+            var three = false;
+            for (members) |member| {
+                if (std.mem.eql(u8, member.name, "One")) {
+                    try T.expectEqual(@as(f64, 1), member.value.number);
+                    one = true;
+                } else if (std.mem.eql(u8, member.name, "Two")) {
+                    try T.expectEqual(@as(f64, 2), member.value.number);
+                    two = true;
+                } else if (std.mem.eql(u8, member.name, "Three")) {
+                    try T.expectEqual(@as(f64, 3), member.value.number);
+                    three = true;
+                }
+            }
+            try T.expect(one and two and three);
+            found = true;
+        }
+        try T.expect(found);
+    }
+}
+
+test "Program: dependency-free ambient const enum fragments resolve without a consumer" {
+    const declaration = @embedFile("testdata/ambient_cross_fragment_const_enum.d.ts");
+    inline for (.{ false, true }) |streaming| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/pkg.d.ts", declaration);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const id = try program.add("/pkg.d.ts", declaration);
+        if (streaming) {
+            const Sink = struct {
+                diagnostics: usize = 0,
+
+                fn receive(self: *@This(), _: []const u8, items: []const ts_driver.Diagnostic) void {
+                    self.diagnostics += items.len;
+                }
+            };
+            var sink: Sink = .{};
+            try program.compileAllStreaming(.{ .no_emit = true, .strict = true }, &sink, Sink.receive);
+            try T.expectEqual(@as(usize, 0), sink.diagnostics);
+        } else {
+            try program.compileAll(.{ .no_emit = true, .strict = true });
+        }
+        try T.expectEqual(@as(usize, 0), program.fileById(id).compilation.?.diagnostics.items.len);
+    }
+}
+
+test "Program: const enum fragments merge within one namespace block" {
+    const declaration =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 1 }
+        \\    export const enum Mode { Two = One << 1 }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const good: 2 = Nested.Mode.Two;
+        \\const wrong: 1 = Nested.Mode.Two;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/pkg.d.ts", declaration);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const declaration_id = try program.add("/pkg.d.ts", declaration);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    try T.expectEqual(@as(usize, 0), program.fileById(declaration_id).compilation.?.diagnostics.items.len);
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    var found = false;
+    for (graph.values) |route| {
+        if (!std.mem.eql(u8, route.ambient_module_name, "pkg") or
+            !std.mem.eql(u8, route.namespace_path, "Nested") or
+            !std.mem.eql(u8, route.export_name, "Mode")) continue;
+        const members = route.enum_members orelse continue;
+        try T.expectEqual(@as(usize, 2), members.len);
+        try T.expectEqualStrings("One", members[0].name);
+        try T.expectEqual(@as(f64, 1), members[0].value.number);
+        try T.expectEqualStrings("Two", members[1].name);
+        try T.expectEqual(@as(f64, 2), members[1].value.number);
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "Program: merged enum forward references cross fragments but not declarations" {
+    const first =
+        \\declare module "pkg" { export namespace Nested {
+        \\  export const enum Mode { One = Two + 1 }
+        \\} }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested {
+        \\  export const enum Mode { Two = 2 }
+        \\} }
+    ;
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const good: 3 = Nested.Mode.One;
+        \\const wrong: 1 = Nested.Mode.One;
+    ;
+    inline for (.{ false, true }) |reverse_files| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        if (reverse_files) _ = try program.add("/second.d.ts", second);
+        const first_id = try program.add("/first.d.ts", first);
+        if (!reverse_files) _ = try program.add("/second.d.ts", second);
+        const main_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .strict = true });
+        try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    }
+}
+
+test "Program: cyclic, forward, and duplicate enum fragments stay unresolved" {
+    const declaration = @embedFile("testdata/ambient_cross_fragment_invalid.d.ts");
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/invalid.d.ts", declaration);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const id = try program.add("/invalid.d.ts", declaration);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const diagnostics = program.fileById(id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 5), diagnostics.len);
+    var invalid_initializers: usize = 0;
+    var duplicate_members: usize = 0;
+    for (diagnostics) |diagnostic| {
+        switch (diagnostic.code) {
+            2474 => invalid_initializers += 1,
+            2300 => duplicate_members += 1,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try T.expectEqual(@as(usize, 3), invalid_initializers);
+    try T.expectEqual(@as(usize, 2), duplicate_members);
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    for (graph.values) |route| {
+        if (!std.mem.eql(u8, route.export_name, "Mode")) continue;
+        try T.expect(!std.mem.eql(u8, route.ambient_module_name, "cycle") and
+            !std.mem.eql(u8, route.ambient_module_name, "forward") and
+            !std.mem.eql(u8, route.ambient_module_name, "duplicate"));
+    }
+}
+
+test "Program: streaming publishes merged ambient enum duplicate diagnostics" {
+    const declaration = @embedFile("testdata/ambient_cross_fragment_invalid.d.ts");
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/invalid.d.ts", declaration);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const id = try program.add("/invalid.d.ts", declaration);
+    const Sink = struct {
+        invalid_initializers: usize = 0,
+        duplicate_members: usize = 0,
+        unexpected: bool = false,
+
+        fn receive(self: *@This(), _: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+            for (diagnostics) |diagnostic| switch (diagnostic.code) {
+                2474 => self.invalid_initializers += 1,
+                2300 => self.duplicate_members += 1,
+                else => self.unexpected = true,
+            };
+        }
+    };
+    var sink: Sink = .{};
+    try program.compileAllStreaming(.{ .no_emit = true, .strict = true }, &sink, Sink.receive);
+    try T.expect(!sink.unexpected);
+    try T.expectEqual(@as(usize, 3), sink.invalid_initializers);
+    try T.expectEqual(@as(usize, 2), sink.duplicate_members);
+    try T.expectEqual(@as(usize, 5), program.fileById(id).compilation.?.diagnostics.items.len);
+}
+
+test "Program: cross-fragment enum references keep ambient module identity" {
+    const pkg_first =
+        \\declare module "pkg" { export namespace Nested {
+        \\  export const enum Mode { Base = 1 }
+        \\} }
+    ;
+    const pkg_second =
+        \\declare module "pkg" { export namespace Nested {
+        \\  export const enum Mode { Doubled = Base << 1 }
+        \\} }
+    ;
+    const other_first =
+        \\declare module "other" { export namespace Nested {
+        \\  export const enum Mode { Base = 5 }
+        \\} }
+    ;
+    const other_second =
+        \\declare module "other" { export namespace Nested {
+        \\  export const enum Mode { Doubled = Mode.Base << 1 }
+        \\} }
+    ;
+    const consumer =
+        \\import { Nested as Pkg } from "pkg";
+        \\import { Nested as Other } from "other";
+        \\const pkg: 2 = Pkg.Mode.Doubled;
+        \\const other: 10 = Other.Mode.Doubled;
+        \\const wrong: 2 = Other.Mode.Doubled;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/pkg-first.d.ts", pkg_first);
+    try vfs.addFile("/pkg-second.d.ts", pkg_second);
+    try vfs.addFile("/other-first.d.ts", other_first);
+    try vfs.addFile("/other-second.d.ts", other_second);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/pkg-first.d.ts", pkg_first);
+    _ = try program.add("/other-first.d.ts", other_first);
+    _ = try program.add("/pkg-second.d.ts", pkg_second);
+    _ = try program.add("/other-second.d.ts", other_second);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    try T.expectEqualStrings("Type 'Mode.Doubled' is not assignable to type '2'.", diagnostics[0].message);
+}
+
+test "Program: virtual declaration sections keep merged enum owners separate" {
+    const virtual =
+        \\// @filename: pkg-one.d.ts
+        \\declare module "pkg" { export namespace Nested { export const enum Mode { Base = 1 } } }
+        \\// @filename: other-one.d.ts
+        \\declare module "other" { export namespace Nested { export const enum Mode { Base = 7 } } }
+        \\// @filename: pkg-two.d.ts
+        \\declare module "pkg" { export namespace Nested { export const enum Mode { Doubled = Base << 1 } } }
+        \\// @filename: other-two.d.ts
+        \\declare module "other" { export namespace Nested { export const enum Mode { Doubled = Mode.Base << 1 } } }
+    ;
+    const consumer =
+        \\import { Nested as Pkg } from "pkg";
+        \\import { Nested as Other } from "other";
+        \\const pkg: 2 = Pkg.Mode.Doubled;
+        \\const other: 14 = Other.Mode.Doubled;
+        \\const wrong: 2 = Other.Mode.Doubled;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/virtual.ts", virtual);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/virtual.ts", virtual);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
 }
 
 test "Program: ambient export assignment class supplies require alias type" {

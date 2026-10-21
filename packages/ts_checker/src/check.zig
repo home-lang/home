@@ -744,6 +744,11 @@ pub const ProgramEnumMember = struct {
     pub const Value = union(enum) { number: f64, string: []const u8 };
     name: []const u8,
     value: Value,
+    /// Identity of the source declaration that supplied this member. The
+    /// checker uses this to distinguish another merged fragment from a later
+    /// member of the declaration currently being checked.
+    owner_hir: ?*const hir_mod.Hir = null,
+    declaration_node: NodeId = hir_mod.none_node_id,
 };
 
 pub const ProgramExportedValue = struct {
@@ -72734,6 +72739,15 @@ pub const Checker = struct {
         current_member_key: NodeId,
         ref_node: NodeId,
     ) CheckError!bool {
+        // Ambient const enums report an unresolved initializer as TS2474,
+        // including a forward reference within one declaration. A reference
+        // to another merged declaration is allowed even when its text occurs
+        // later in the same file; TS2651 would reject that valid merge.
+        var enclosing = self.hir.parentOf(current_member_key);
+        while (enclosing != hir_mod.none_node_id and self.hir.kindOf(enclosing) != .enum_decl) {
+            enclosing = self.hir.parentOf(enclosing);
+        }
+        if (enclosing != hir_mod.none_node_id and self.enumDeclIsAmbientConst(enclosing)) return false;
         const current_pos = self.hir.spanOf(current_member_key).start;
         const member_pos = self.enumMemberDeclarationStartInScope(enum_name, member_name, ref_node) orelse return false;
         if (member_pos <= current_pos) return false;
@@ -73402,12 +73416,78 @@ pub const Checker = struct {
         return std.fmt.bufPrint(buf, "{d}", .{value});
     }
 
+    /// Whether this reference names a member preceding the initializer in its
+    /// own ambient const-enum declaration. A program-wide `(enum, member)`
+    /// cache cannot establish that: same-named enums in another ambient module
+    /// may already have populated it, while another fragment is resolved from
+    /// the source-owned program route below.
+    fn ambientConstEnumLocalEarlierMember(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?bool {
+        var member_node: NodeId = hir_mod.none_node_id;
+        var declaration = anchor;
+        while (declaration != hir_mod.none_node_id and self.hir.kindOf(declaration) != .enum_decl) {
+            if (member_node == hir_mod.none_node_id and self.hir.kindOf(declaration) == .object_property) member_node = declaration;
+            declaration = self.hir.parentOf(declaration);
+        }
+        if (declaration == hir_mod.none_node_id or member_node == hir_mod.none_node_id or
+            !self.enumDeclIsAmbientConst(declaration)) return null;
+        for (hir_mod.enumMembers(self.hir, declaration)) |member| {
+            if (member == member_node) return false;
+            if (self.hir.kindOf(member) != .object_property) continue;
+            const property = hir_mod.objectPropertyOf(self.hir, member);
+            if (self.hir.kindOf(property.key) == .identifier and
+                hir_mod.identifierOf(self.hir, property.key).name == name) return true;
+        }
+        return false;
+    }
+
+    /// A program route is only usable for this enum when it contains a member
+    /// from the declaration enclosing `anchor`. That identity check prevents
+    /// same-named enums in other modules, namespaces, and virtual sections
+    /// from supplying a value. Members of this very declaration are excluded:
+    /// the local map already contains its earlier members, while its later
+    /// members must remain illegal forward references.
+    fn programMergedEnumNumericMember(self: *Checker, enum_name: hir_mod.StringId, member_name: hir_mod.StringId, anchor: NodeId) ?f64 {
+        if (!self.program_has_ambient_const_enum_routes) return null;
+        var declaration = self.hir.parentOf(anchor);
+        while (declaration != hir_mod.none_node_id and self.hir.kindOf(declaration) != .enum_decl) {
+            declaration = self.hir.parentOf(declaration);
+        }
+        if (declaration == hir_mod.none_node_id or !self.enumDeclIsAmbientConst(declaration)) return null;
+        const enum_text = self.string_interner.get(enum_name);
+        const member_text = self.string_interner.get(member_name);
+        for (self.program_exported_values) |route| {
+            const members = route.enum_members orelse continue;
+            if (!std.mem.eql(u8, route.export_name, enum_text)) continue;
+            var contains_declaration = false;
+            for (members) |member| {
+                if (member.owner_hir == self.hir and member.declaration_node == declaration) {
+                    contains_declaration = true;
+                    break;
+                }
+            }
+            if (!contains_declaration) continue;
+            for (members) |member| {
+                if (member.owner_hir == self.hir and member.declaration_node == declaration) continue;
+                if (!std.mem.eql(u8, member.name, member_text)) continue;
+                return switch (member.value) {
+                    .number => |number| number,
+                    .string => null,
+                };
+            }
+        }
+        return null;
+    }
+
     fn evalEnumConstExpression(self: *Checker, enum_name: hir_mod.StringId, node: NodeId) CheckError!?f64 {
         return switch (self.hir.kindOf(node)) {
             .literal_number => hir_mod.literalNumberOf(self.hir, node),
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, node);
-                if (self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name })) |v| break :blk v;
+                const local = self.ambientConstEnumLocalEarlierMember(node, id.name);
+                if (local == null or local.?) {
+                    if (self.enum_member_values.get(.{ .obj_name = enum_name, .prop_name = id.name })) |v| break :blk v;
+                }
+                if (self.programMergedEnumNumericMember(enum_name, id.name, node)) |v| break :blk v;
                 // Recognise the `NaN` and `Infinity` global identifiers
                 // so `const enum E { x = NaN }` evaluates and triggers
                 // the matching TS2477 / TS2478 diagnostic. Skip when a
@@ -73452,7 +73532,11 @@ pub const Checker = struct {
                 const m = hir_mod.memberOf(self.hir, node);
                 if (self.hir.kindOf(m.object) != .identifier) break :blk null;
                 const obj = hir_mod.identifierOf(self.hir, m.object);
-                break :blk self.enum_member_values.get(.{ .obj_name = obj.name, .prop_name = m.name });
+                const local = if (obj.name == enum_name) self.ambientConstEnumLocalEarlierMember(node, m.name) else null;
+                if (local == null or local.?) {
+                    if (self.enum_member_values.get(.{ .obj_name = obj.name, .prop_name = m.name })) |v| break :blk v;
+                }
+                break :blk self.programMergedEnumNumericMember(obj.name, m.name, node);
             },
             .unary_op => blk: {
                 const u = hir_mod.unaryOf(self.hir, node);
