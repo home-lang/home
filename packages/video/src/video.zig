@@ -1325,6 +1325,7 @@ pub const delivery_fifo = @import("core/delivery_fifo.zig");
 
 /// Source-clock epochs for shared PTS observers across segment replacement.
 pub const pts_clock = @import("core/pts_clock.zig");
+pub const frame_barrier = @import("core/frame_barrier.zig");
 
 pub const typed_catalog = @import("core/typed_catalog.zig");
 
