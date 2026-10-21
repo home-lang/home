@@ -11,11 +11,14 @@ workflow](https://github.com/home-lang/home/blob/main/.github/workflows/zig-mast
 now has two independent jobs:
 
 - The existing moving-master job detects new standard-library changes in its
-  narrow crypto, optimize-mode, and I/O tests.
+  crypto signature and consumer, optimize-mode, and I/O tests.
 - The fixed `0.18.0-dev.146+35accc06e` job builds the standalone TypeScript
-  compiler (`home-tsc`) and both compiles and runs the real `packages/io` and
-  `packages/build` package tests. Their `check` steps also compile the shipped
-  libraries, not just test-only modules.
+  compiler (`home-tsc`), runs the real basics crypto consumer tests (including
+  X25519's fallible small-order-key rejection), and both compiles and runs the
+  `packages/io` and `packages/build` package tests. Their `check` steps also
+  compile the shipped libraries, not just test-only modules. The moving-master
+  job runs the same basics crypto consumer tests alongside the narrower
+  signature-compatibility test.
 
 To reproduce the fixed gate locally with that exact Zig version on `PATH`:
 

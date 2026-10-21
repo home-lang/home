@@ -15,6 +15,7 @@ fi
 # This is a separate migration gate, not a substitute for the pinned 0.17
 # compiler/runtime test suite. Each command must succeed; none is optional.
 zig build home-tsc -j1
+zig build test -Dfilter=basics_crypto -j1 --summary all
 zig build --build-file packages/io/build.zig check -j1
 zig build --build-file packages/io/build.zig test -j1 --summary all
 zig build --build-file packages/build/build.zig check -j1

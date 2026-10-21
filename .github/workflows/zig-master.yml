@@ -54,6 +54,9 @@ jobs:
       - name: Test std.crypto signature compatibility
         run: zig build test -Dfilter=crypto_compat -j1 --summary all
 
+      - name: Test basics cryptographic consumers
+        run: zig build test -Dfilter=basics_crypto -j1 --summary all
+
       - name: Test optimize-mode and LTO compatibility
         run: zig build test -Dfilter=lto -j1 --summary all
 
