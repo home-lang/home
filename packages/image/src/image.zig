@@ -1328,3 +1328,6 @@ test "Image file APIs use caller-provided I/O" {
         Image.init(allocator, std.math.maxInt(u32), std.math.maxInt(u32), .rgba8),
     );
 }
+
+/// Checked borrowed straight-alpha RGBA8 rows and compact copying.
+pub const RgbaView = @import("ops/rgba_view.zig").View;
