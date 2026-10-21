@@ -38,6 +38,61 @@ Its SHA-256 is `00aa448c40f851f392079167514a3cf51e524925e18ce43a13b4a0980d4614cd
 all 2,655 payload hashes were verified. These results do not qualify the remaining
 real projects or their compiler API uses.
 
+## Pool lifetime correction — 2026-10-20
+
+Published compiler source `03e2d16e9518dc0d024f1356d83824414c52a9a8`
+fixes a real-project crash during variance inference. A retained object-member
+slice became invalid when resolving a deferred callback argument grew and
+relocated the member pool. Recursive traversals now retain stable IDs, counts
+and copied payloads, and reacquire pool elements after recursive resolution.
+The same rule covers related callable, contextual, union and intersection walks.
+A deterministic regression forces at least 512 new members into the pool:
+before the fix it loses the trailing type parameter and incorrectly infers
+bivariance; afterward it preserves covariance.
+
+The final ReleaseFast CLI passes **7,155 compiler unit checks** across eleven
+targets and **1,794 reference/Home observations** across all fourteen CLI workflow
+suites. The unit total includes verified cached results for unchanged config,
+parser, HIR, resolver and cache targets; the complete 4,677-test checker suite
+executed successfully. The ambient-owner suite has 61 cases/122 observations;
+the global-owner suite has 232 cases/464 observations. Listing contributes
+272 observations and option identity contributes 38. These controls also cover
+shared type ownership, interface/global merging, import admission, CLI option
+identity and modern module JSON defaults included in this compiler revision.
+
+The original real-project replay now completes without crashing: **38.102 seconds**
+under the unchanged 3,840 MB descendant-tree ceiling, with all **590 original
+inputs unchanged**. The pinned TypeScript 7.0.2 reference exits zero; Home exits
+one with **215 semantic diagnostics**. A second replay uses the project's actual
+installed TypeScript 6.0.3, additionally freezing all 140 files of that compiler
+package and its Node runtime. That reference also exits zero, while Home
+finishes normally in 72.333 seconds with byte-identical diagnostic output.
+Both replays leave the project clean. These timings are functional observations
+on a busy host, not controlled performance measurements. Neither replay
+qualifies emission, build, watch or compiler API behavior.
+
+The complete, unfiltered, stripped **ReleaseSafe conformance runner finishes
+all 1,458 tests: 1,386 pass, zero are skipped and 72 fail**. Its baseline-aware
+survey enumerates 591 cases against an unchanged hardcoded expectation of 586;
+inside that survey, 572 cases pass, ten fail and nine are skipped. Those internal
+skips are separate from the outer runner's zero skipped tests. No assertions
+were relaxed. The older 99-failure baseline lacked the corpus checkout and
+silently passed some corpus-dependent tests, so comparing 99 with 72 does not
+establish a net improvement or absence of regressions. The harness enumeration
+and corpus pins are unchanged apart from trace output. An extra baseline survey
+control was intentionally interrupted after twelve minutes; it did not finish
+and is not a pass/fail result.
+
+After integrating the latest origin/main, both compiler artifacts reproduced
+byte for byte: ReleaseFast CLI SHA-256
+`7f57b3ee5cf81d21587594f8ff67d98085f4450be05c019fbe5b5fbf8aae1ef9`
+and ReleaseSafe conformance SHA-256
+`a7dc312f7685bf891518b497cd197c99592dbe37a8ebe30508db6804b7edc62d`.
+The [public qualification evidence](../../bench/vs_tsgo/evidence/20261020-local-tsc-pool-lifetime.json)
+retains source/artifact hashes, aggregate results, failure identities and the
+corpus comparison limits without private project source. **Whole-tree and
+compiler API replacement remain unqualified.**
+
 ## Inventory
 
 Generate the inventory without executing package scripts:
@@ -121,6 +176,18 @@ cover discovery, config-only scope, common worktree identity, malformed Git
 metadata, source drift, missing files and CLI error reporting. The
 [public scope evidence](../../bench/vs_tsgo/evidence/20261018-local-tsc-inventory-scope-v11.json)
 contains aggregate counts and hashes; private project reports remain outside Git.
+
+The retained **2026-10-20** capture expands ownership to **170 canonical Git
+groups**, including five config-only groups. It contains 1,655 manifests with
+check scripts, 3,349 configs, 2,034 scripts and 1,947 literal compiler segments.
+All 5,069 source records have ownership, without hash drift or scope errors;
+65 foreign fixture parse errors remain recorded. Static routing covers all
+125 flagged entrypoints and rechecks 246 routing inputs. The unchanged inventory
+producer's fifteen hermetic tests remain passing. This is a dated capture,
+not a new scan at publication time. The
+[public v12 scope evidence](../../bench/vs_tsgo/evidence/20261020-local-tsc-inventory-scope-v12.json)
+retains aggregate counts and hashes. **All 170 groups remain unqualified**;
+static coverage does not establish compiler compatibility.
 
 ## Cyclic import memory qualification — 2026-10-18
 

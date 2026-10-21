@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "purpose": "Refreshed full project scope and static routing; no compiler qualification",
+  "all_project_replacement_verified": false,
+  "scope": {
+    "manifest_script_git_groups": 165,
+    "total_canonical_git_groups": 170,
+    "additional_config_only_git_groups": 5,
+    "additional_error_only_git_groups": 0,
+    "unresolved_ownership_records": 0,
+    "source_records": 5069,
+    "input_hash_drift": 0,
+    "scope_errors": 0,
+    "all_project_replacement_verified": false
+  },
+  "inventory": {
+    "counts": {
+      "manifests_with_check_scripts": 1655,
+      "configs": 3349,
+      "scripts": 2034,
+      "tsc_segments": 1947,
+      "unresolved_scripts": 125,
+      "errors": 65
+    },
+    "inventory_sha256": "ea19b831038584cea193c2d3d97eaf60580eb885457b097e7231722a9c9be6b3",
+    "scope_sha256": "6a3969296bf2a232546c5b938ca7b73b9b408e96d900e2c84cf561ed27f42c32",
+    "changes_since_v11": {
+      "added_input_paths": 790,
+      "removed_input_paths": 232,
+      "changed_input_hashes": 256,
+      "added_canonical_git_groups": 5,
+      "retired_canonical_git_groups": 0
+    }
+  },
+  "routing": {
+    "required_review_entrypoints": 125,
+    "indirect": 102,
+    "shell": 42,
+    "overlap": 19,
+    "covered": 125,
+    "uncovered": 0,
+    "rechecked_static_inputs": 246,
+    "inputs_unchanged": true,
+    "all_project_replacement_verified": false
+  },
+  "producer_verification": {
+    "source_hashes": {
+      "scripts/ts-project-inventory.py": "58174cb7d40fc5bdb025498b10644c2fd30dbd852e3836efb59d3149db6bda92",
+      "scripts/tests/test-ts-project-inventory.py": "01a07dff89f8a55eacf92110122a3f9398ea5623aa32f2f358e81f92696d2714"
+    },
+    "tests": 15,
+    "test_result": "passed",
+    "reused_from": "20261018-local-tsc-inventory-scope-v11.json",
+    "reuse_basis": "Producer and hermetic test source hashes are unchanged; refreshed scope and routing separately verify their input hashes.",
+    "private_project_sources_included": false
+  },
+  "capture_note": "Counts describe the retained 2026-10-20 capture; this publication does not claim a fresh filesystem rescan."
+}

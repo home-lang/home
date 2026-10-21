@@ -1,0 +1,673 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "purpose": "Pool lifetime root fix and bounded compiler qualification",
+  "published_compiler_commit": "03e2d16e9518dc0d024f1356d83824414c52a9a8",
+  "full_replacement_qualified": false,
+  "compiler_api_replacement_qualified": false,
+  "all_170_git_groups_qualified": false,
+  "source_hashes": {
+    ".github/workflows/ts-cli-compat.yml": "668e0fe592198bba33112d5f5de7c25fe49b6571471513858709110db7504743",
+    "build.zig": "c125271e4a163d07e057b664f75dd91787a1f526779688976c1558710ff0a617",
+    "packages/hir/src/hir.zig": "744e90b0c8f7bc5ddb67d27af5e7eefab4ea868793b0a8b63b42e809da63ce20",
+    "packages/ts_checker/src/check.zig": "16314b9cf5368305c9d6d89767ab2628faa454767d75573fd17681c1c060823f",
+    "packages/ts_checker/src/checked_transfer.zig": "d4ca6efbd8b310e0cc1af4574f2e00a1ee88c6d96c4a853db46af894966f5ff9",
+    "packages/ts_checker/src/program_schema.zig": "8ca1e04942f75ba7eea02c1e1607b3095a7da0bf805cd8e3e8b40eaed34ba855",
+    "packages/ts_checker/src/relation.zig": "6c9f74c3c007387701e73f78dae3e7898689b5c0d3416c0c1dd2fd4bb8ce0d5d",
+    "packages/ts_checker/src/ts_checker.zig": "4d40ff990fabe46d221abb0656c4d4e110f7fec96b31f134ca639b9179a83add",
+    "packages/ts_checker/src/type_transfer.zig": "cd5cfacbaa46d168432c03ee86f5890fd33aeaf2f807c8f161680beff5835964",
+    "packages/ts_checker/src/types.zig": "cb41aabc5b4ac0a88971c1bf23d5c32485704d96188d6fa4d796b8aef56af5da",
+    "packages/ts_cli/src/ts_cli.zig": "d1f99ccbcbf3f90294af6ddf3f2290e663fe97bde4495d05b6ca5f8e3e33fffa",
+    "packages/ts_cli/src/tsc_main.zig": "68e5d0cc4211e4098fed3bd6c9286991f02ba404050ceb145878edc3331bc9c0",
+    "packages/ts_conformance/src/ts_conformance.zig": "c246890cbbbe4f9f404e14353735f013ec84f05e169f57562100aa32fa2420c4",
+    "packages/ts_driver/src/ts_driver.zig": "1b80310491322d4b99e12bd9d3740a772fb38aee97d9edbf6da1bb1ba435296c",
+    "packages/ts_parser/src/ts_parser.zig": "d890fd9b62c90489e05d6f20a02eeb1006c4e0857861c2cc8f80b5c7bf62665c",
+    "packages/ts_program/src/checked_schema.zig": "62cc8d487ef11cb672fe034f57f1c4d7fb174fa920182018c997c9fd00586112",
+    "packages/ts_program/src/class_schema.zig": "08a8b9c4d1ef6201d4ae74342addb20703474b89e881cf472f84ca890f80a973",
+    "packages/ts_program/src/config_graph.zig": "78e371bfddbde95e79ff3e014fc1dc6d4934d98c90fcff70dcc18bf870a40539",
+    "packages/ts_program/src/export_origins.zig": "1c7edb5b5ffc9e4488d4057bee99fbf014401a0a3135eb674a3f12533afbfec8",
+    "packages/ts_program/src/ts_program.zig": "8afcf6a0da902fb4d1099886971d1b3b359812afd5cd4f38a0a05f4a3297baa0",
+    "packages/tsconfig/src/tsconfig.zig": "39025b1966aa4dd55b222f4b597987355cea16e1637d5d5dcfcde23d4bed1165",
+    "scripts/tests/test-ts-ambient-owner-cli.py": "69cc64f7fce56c834d135e66d07b07d92d4b3d8a00962e3f0417528b4490e881",
+    "scripts/tests/test-ts-declaration-cli.py": "5dcdf1bd44aaeb14af819f36f484000c536a248c01e44cd8fc10e65edcf19bec",
+    "packages/ts_checker/src/interface_merge.zig": "b96db06c9a266002d0e71b4f77d79c07198bab19bfd7eb70cb33d287b72f68a7",
+    "packages/ts_checker/src/string_literal.zig": "8c634e979ea41cc53f4ad0b4057910b2cc185974630546bcee26a5f7d2efd99e",
+    "scripts/tests/test-ts-global-owner-cli.py": "3b1332118d1ccef392f18178b994b7c3c4b0d3583eb998286e5ac153ec40dc6d",
+    "scripts/tests/test-ts-list-files-cli.py": "72dd4bf400a3cfd10d4190ab903197a88de14da112c60f2c1e23e14bff2301ac",
+    "scripts/tests/test-ts-option-identity-cli.py": "a0356c1a7f7954405d6888bb15bab5d767d405d54e27e0a283f78362fe18ae99"
+  },
+  "toolchain": {
+    "version": "0.17.0-dev.2163+89ff10d56",
+    "sha256": "5f2bb8cad081a35840e82cc9c3748f85fe725b29884f887aaea4279272cafba8"
+  },
+  "pool_lifetime": {
+    "root_cause": "Variance retained a pool-backed member slice across deferred callback materialization, which appended members and reallocated pool storage. Subsequent reads used freed storage.",
+    "correction": "Retain stable IDs, counts and copied payloads; reacquire pool elements by index after recursive resolution. Apply the same ownership rule to related signature, contextual callable, union and intersection traversals.",
+    "regression": "variance traversal survives deferred method parameter pool relocation",
+    "before": "Expected covariant, found bivariant after forced relocation.",
+    "after": "Forced relocation preserves covariance and materializes at least 512 members.",
+    "crash_analysis": {
+      "crashed_binary_sha256": "fed591337e9e997c719a5c9092f702de69bc583c4c5e128c9b350ae11f7ac3be",
+      "object_sha256": "a73b6553fa7695a0e398cbd9dfe44777ab5dbff4724f982d0a94bd6f198d8b93",
+      "signal": "SIGSEGV",
+      "frames": [
+        {
+          "function": "l_check.Checker.scanVarianceWithMappedReads",
+          "function_offset": 1708,
+          "image_offset": 4974912
+        },
+        {
+          "function": "l_check.Checker.scanVarianceWithMappedReads",
+          "function_offset": 1476,
+          "image_offset": 4974680
+        },
+        {
+          "function": "l_check.Checker.inferVariance",
+          "function_offset": 112,
+          "image_offset": 4972332
+        },
+        {
+          "function": "l_check.Checker.checkFnSignatureOnly",
+          "function_offset": 39552,
+          "image_offset": 4204420
+        },
+        {
+          "function": "l_check.Checker.checkClassDecl",
+          "function_offset": 53128,
+          "image_offset": 2175100
+        },
+        {
+          "function": "l_check.Checker.checkStatement",
+          "function_offset": 24248,
+          "image_offset": 7414092
+        },
+        {
+          "function": "l_check.Checker.checkSourceFile",
+          "function_offset": 110324,
+          "image_offset": 1591040
+        },
+        {
+          "function": "l_ts_driver.checkPreparedSource",
+          "function_offset": 29540,
+          "image_offset": 661692
+        },
+        {
+          "function": "l_ts_program.Program.compileFile",
+          "function_offset": 1408,
+          "image_offset": 631356
+        },
+        {
+          "function": "l_ts_program.Program.compileFileWithTypedGlobals",
+          "function_offset": 208,
+          "image_offset": 629404
+        },
+        {
+          "function": "l_ts_program.Program.compileAllStreaming__func_154",
+          "function_offset": 3772,
+          "image_offset": 8909420
+        },
+        {
+          "function": "l_tsc_main.run",
+          "function_offset": 81032,
+          "image_offset": 301560
+        },
+        {
+          "function": "l_start.main",
+          "function_offset": 3408,
+          "image_offset": 360948
+        }
+      ],
+      "faulting_instruction": "ldr w1, [x8, #4]",
+      "member_stride": 20,
+      "regression_before_log_sha256": "ea98a19a79a3420fc79b2d87c4c2b8ff0172364438fd64608ad97a86795e1ed4",
+      "regression_after_log_sha256": "2ac0417f2a75796c282ff8d790ce13de30971767a5bee07859342b0ad5d7ace4",
+      "before": "Expected covariant, observed bivariant after deferred callback materialization relocated the member pool.",
+      "after": "Forced relocation retains the trailing type parameter; focused tests pass."
+    }
+  },
+  "artifact_reproduction": {
+    "source_commit": "03e2d16e9518dc0d024f1356d83824414c52a9a8",
+    "source_hashes": {
+      ".github/workflows/ts-cli-compat.yml": "668e0fe592198bba33112d5f5de7c25fe49b6571471513858709110db7504743",
+      "build.zig": "c125271e4a163d07e057b664f75dd91787a1f526779688976c1558710ff0a617",
+      "packages/hir/src/hir.zig": "744e90b0c8f7bc5ddb67d27af5e7eefab4ea868793b0a8b63b42e809da63ce20",
+      "packages/ts_checker/src/check.zig": "16314b9cf5368305c9d6d89767ab2628faa454767d75573fd17681c1c060823f",
+      "packages/ts_checker/src/checked_transfer.zig": "d4ca6efbd8b310e0cc1af4574f2e00a1ee88c6d96c4a853db46af894966f5ff9",
+      "packages/ts_checker/src/program_schema.zig": "8ca1e04942f75ba7eea02c1e1607b3095a7da0bf805cd8e3e8b40eaed34ba855",
+      "packages/ts_checker/src/relation.zig": "6c9f74c3c007387701e73f78dae3e7898689b5c0d3416c0c1dd2fd4bb8ce0d5d",
+      "packages/ts_checker/src/ts_checker.zig": "4d40ff990fabe46d221abb0656c4d4e110f7fec96b31f134ca639b9179a83add",
+      "packages/ts_checker/src/type_transfer.zig": "cd5cfacbaa46d168432c03ee86f5890fd33aeaf2f807c8f161680beff5835964",
+      "packages/ts_checker/src/types.zig": "cb41aabc5b4ac0a88971c1bf23d5c32485704d96188d6fa4d796b8aef56af5da",
+      "packages/ts_cli/src/ts_cli.zig": "d1f99ccbcbf3f90294af6ddf3f2290e663fe97bde4495d05b6ca5f8e3e33fffa",
+      "packages/ts_cli/src/tsc_main.zig": "68e5d0cc4211e4098fed3bd6c9286991f02ba404050ceb145878edc3331bc9c0",
+      "packages/ts_conformance/src/ts_conformance.zig": "c246890cbbbe4f9f404e14353735f013ec84f05e169f57562100aa32fa2420c4",
+      "packages/ts_driver/src/ts_driver.zig": "1b80310491322d4b99e12bd9d3740a772fb38aee97d9edbf6da1bb1ba435296c",
+      "packages/ts_parser/src/ts_parser.zig": "d890fd9b62c90489e05d6f20a02eeb1006c4e0857861c2cc8f80b5c7bf62665c",
+      "packages/ts_program/src/checked_schema.zig": "62cc8d487ef11cb672fe034f57f1c4d7fb174fa920182018c997c9fd00586112",
+      "packages/ts_program/src/class_schema.zig": "08a8b9c4d1ef6201d4ae74342addb20703474b89e881cf472f84ca890f80a973",
+      "packages/ts_program/src/config_graph.zig": "78e371bfddbde95e79ff3e014fc1dc6d4934d98c90fcff70dcc18bf870a40539",
+      "packages/ts_program/src/export_origins.zig": "1c7edb5b5ffc9e4488d4057bee99fbf014401a0a3135eb674a3f12533afbfec8",
+      "packages/ts_program/src/ts_program.zig": "8afcf6a0da902fb4d1099886971d1b3b359812afd5cd4f38a0a05f4a3297baa0",
+      "packages/tsconfig/src/tsconfig.zig": "39025b1966aa4dd55b222f4b597987355cea16e1637d5d5dcfcde23d4bed1165",
+      "scripts/tests/test-ts-ambient-owner-cli.py": "69cc64f7fce56c834d135e66d07b07d92d4b3d8a00962e3f0417528b4490e881",
+      "scripts/tests/test-ts-declaration-cli.py": "5dcdf1bd44aaeb14af819f36f484000c536a248c01e44cd8fc10e65edcf19bec",
+      "packages/ts_checker/src/interface_merge.zig": "b96db06c9a266002d0e71b4f77d79c07198bab19bfd7eb70cb33d287b72f68a7",
+      "packages/ts_checker/src/string_literal.zig": "8c634e979ea41cc53f4ad0b4057910b2cc185974630546bcee26a5f7d2efd99e",
+      "scripts/tests/test-ts-global-owner-cli.py": "3b1332118d1ccef392f18178b994b7c3c4b0d3583eb998286e5ac153ec40dc6d",
+      "scripts/tests/test-ts-list-files-cli.py": "72dd4bf400a3cfd10d4190ab903197a88de14da112c60f2c1e23e14bff2301ac",
+      "scripts/tests/test-ts-option-identity-cli.py": "a0356c1a7f7954405d6888bb15bab5d767d405d54e27e0a283f78362fe18ae99"
+    },
+    "completed": true,
+    "artifacts": [
+      {
+        "stage": "production",
+        "exit": 0,
+        "seconds": 8.625211000442505,
+        "binary_sha256": "7f57b3ee5cf81d21587594f8ff67d98085f4450be05c019fbe5b5fbf8aae1ef9",
+        "expected_sha256": "7f57b3ee5cf81d21587594f8ff67d98085f4450be05c019fbe5b5fbf8aae1ef9",
+        "exact_tested_artifact": true,
+        "log_sha256": "30663ee3d09b6bd9909ac3b41a74711881f51a0c9d2401a7bdaac117f6af2084"
+      },
+      {
+        "stage": "conformance",
+        "exit": 0,
+        "seconds": 0.4896249771118164,
+        "binary_sha256": "a7dc312f7685bf891518b497cd197c99592dbe37a8ebe30508db6804b7edc62d",
+        "expected_sha256": "a7dc312f7685bf891518b497cd197c99592dbe37a8ebe30508db6804b7edc62d",
+        "exact_tested_artifact": true,
+        "log_sha256": "bc874ae871f25f29cbd78f1b9bac3760d5dba8c5a5157c4e398f504a7b7c2bbd"
+      }
+    ],
+    "private_receipt_sha256": "9296936478924caf1e2680c4f4b0d84e363d573215e2b4829b1f294c984e9efd"
+  },
+  "compiler_units": {
+    "total": 7155,
+    "passed": true,
+    "counts": {
+      "tsconfig": 171,
+      "ts_parser": 925,
+      "hir": 13,
+      "ts_cli": 88,
+      "tsc_main": 59,
+      "ts_driver": 221,
+      "ts_program": 351,
+      "ts_resolver": 130,
+      "ts_checker": 4677,
+      "ts_emit": 504,
+      "ts_cache": 16
+    },
+    "cache_reuse": "Unchanged Zig test results reused for config, parser, HIR, resolver and cache; other targets executed, including all 4677 checker tests.",
+    "stages": [
+      {
+        "stage": "tsconfig",
+        "exit": 0,
+        "seconds": 0.42331528663635254,
+        "log_sha256": "25cb0404ce89e323abd61016ac57791b37c3aceb7179315d11474b1c29a118de",
+        "executed_test_summaries": [],
+        "cached_runs": 2
+      },
+      {
+        "stage": "ts_parser",
+        "exit": 0,
+        "seconds": 0.11876678466796875,
+        "log_sha256": "4af30fd9d1c206c8e7ea73176b4a753276263b1246d0f7e7873876d6274b5d03",
+        "executed_test_summaries": [],
+        "cached_runs": 2
+      },
+      {
+        "stage": "hir",
+        "exit": 0,
+        "seconds": 0.11644291877746582,
+        "log_sha256": "fe6dfd19956ef0889b55f5569ee86964d9f487b3e7bd8c657dca6f4bb9a3f611",
+        "executed_test_summaries": [],
+        "cached_runs": 1
+      },
+      {
+        "stage": "ts_cli",
+        "exit": 0,
+        "seconds": 23.49059009552002,
+        "log_sha256": "b327a7688c7cc3f508fb3e289f4bab571d7ba14bb53d994d8b4ecfdea1ac8121",
+        "executed_test_summaries": [
+          [
+            "88",
+            "88"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "tsc_main",
+        "exit": 0,
+        "seconds": 32.979480028152466,
+        "log_sha256": "0aa4b524b14db4f293c6af7c478eb9c356a3bdd12bdafc6f8820c65b3e6772eb",
+        "executed_test_summaries": [
+          [
+            "59",
+            "59"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "ts_driver",
+        "exit": 0,
+        "seconds": 27.46111798286438,
+        "log_sha256": "31bf020e87120f7b0a77c0a1798442f164ecce4a602a25862d80adf22913c43c",
+        "executed_test_summaries": [
+          [
+            "221",
+            "221"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "ts_program",
+        "exit": 0,
+        "seconds": 83.56759977340698,
+        "log_sha256": "bab7a050819e746422d3b84bb6e4b485843424ca5cfeb93e9754b40ad0412bab",
+        "executed_test_summaries": [
+          [
+            "351",
+            "351"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "ts_resolver",
+        "exit": 0,
+        "seconds": 0.4106266498565674,
+        "log_sha256": "46b824680e1466816a7e1d5652358e43a9469c6edf95dc3b9b3321f9af6e5919",
+        "executed_test_summaries": [],
+        "cached_runs": 1
+      },
+      {
+        "stage": "ts_checker",
+        "exit": 0,
+        "seconds": 281.8816330432892,
+        "log_sha256": "d695ae420afbc762ef7fc6a2f7312dd63b6eb34b46890679bfc87815317023be",
+        "executed_test_summaries": [
+          [
+            "4677",
+            "4677"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "ts_emit",
+        "exit": 0,
+        "seconds": 25.34634494781494,
+        "log_sha256": "86f4432d0341d6d44ba8fa4ae325e25ec8fb4c0ea987eeb400d50997ea586ddd",
+        "executed_test_summaries": [
+          [
+            "504",
+            "504"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "ts_cache",
+        "exit": 0,
+        "seconds": 0.12101912498474121,
+        "log_sha256": "961eb1641fcf173e2ad2a1246f71bb6d7031526d8230e8378138da20729eb671",
+        "executed_test_summaries": [],
+        "cached_runs": 1
+      }
+    ]
+  },
+  "cli": {
+    "suites": 14,
+    "observations": 1794,
+    "passed": true,
+    "stages": [
+      {
+        "stage": "cli-declaration",
+        "exit": 0,
+        "seconds": 2.0895819664001465,
+        "log_sha256": "3ae4d58d3e2a5407d7199783219acc1162f218b42008995430bb48537a84f876",
+        "passed": true,
+        "observations": 58
+      },
+      {
+        "stage": "cli-recursive-interface",
+        "exit": 0,
+        "seconds": 3.3588480949401855,
+        "log_sha256": "ced625acbaef5a414dd2e264cd92c62c1b66cf522b2563afa1aa550d2bfbf413",
+        "passed": true,
+        "observations": 88
+      },
+      {
+        "stage": "cli-automatic-variable",
+        "exit": 0,
+        "seconds": 11.035663843154907,
+        "log_sha256": "8e8e5a1dad141bdde94b66bc72e9ddd3a9c92db5c1ee69be054fc00504d69df5",
+        "passed": true,
+        "observations": 360
+      },
+      {
+        "stage": "cli-optional-indexed",
+        "exit": 0,
+        "seconds": 1.476876974105835,
+        "log_sha256": "1dc54ec41582e79cf7c5d5d75961da8a22ab3f7f512ad9f450a73cdef313c60a",
+        "passed": true,
+        "observations": 48
+      },
+      {
+        "stage": "cli-generic-indexed",
+        "exit": 0,
+        "seconds": 1.0095767974853516,
+        "log_sha256": "e468d8b0be23876638e589cbfc00ab75e9100ffd16e4c58116fc146d64bcd396",
+        "passed": true,
+        "observations": 32
+      },
+      {
+        "stage": "cli-imported-generic",
+        "exit": 0,
+        "seconds": 2.4436280727386475,
+        "log_sha256": "8cbd58e88aa6659c32eac6054d57e6115ab7704784439ed11e80bec241cfce1c",
+        "passed": true,
+        "observations": 56
+      },
+      {
+        "stage": "cli-optional-object",
+        "exit": 0,
+        "seconds": 5.65858006477356,
+        "log_sha256": "adac289471dfa526fc794250b43e62779c518505939613c3d6e1fb3699e46b42",
+        "passed": true,
+        "observations": 128
+      },
+      {
+        "stage": "cli-library-array",
+        "exit": 0,
+        "seconds": 2.9135818481445312,
+        "log_sha256": "39c3db463c1da5cb1c6b2f1d37ef3b21a2c10909acb86fef8ae98b1c4a079155",
+        "passed": true,
+        "observations": 64
+      },
+      {
+        "stage": "cli-declaration-index",
+        "exit": 0,
+        "seconds": 2.76676082611084,
+        "log_sha256": "8a601e62cd569401324aae8f3247533cc50bbb93fe57334256f7336b053148eb",
+        "passed": true,
+        "observations": 56
+      },
+      {
+        "stage": "cli-installed-library",
+        "exit": 0,
+        "seconds": 11.081943035125732,
+        "log_sha256": "d8fed399860b46cfac64b3e0e9018f087954b84503d5682aedc806e068d2008b",
+        "passed": true,
+        "observations": 8
+      },
+      {
+        "stage": "cli-ambient-owner",
+        "exit": 0,
+        "seconds": 55.156838178634644,
+        "log_sha256": "25a4a96c8022a75e4ed22d820e5e4a2ba6fe82af6063bfbbc1548d2790cc8296",
+        "passed": true,
+        "observations": 122
+      },
+      {
+        "stage": "cli-global-owner",
+        "exit": 0,
+        "seconds": 253.87518215179443,
+        "log_sha256": "28b8419ad757749496e0808f9ebec5cc4ea7b0f4ffbff8e482d8d0bb94904a93",
+        "passed": true,
+        "observations": 464
+      },
+      {
+        "stage": "cli-list-files",
+        "exit": 0,
+        "seconds": 10.082068920135498,
+        "log_sha256": "ce236f077bc31fcbe39fb97ba7cb490343af2d19e84d560d25d866b88845fd7a",
+        "passed": true,
+        "observations": 272
+      },
+      {
+        "stage": "cli-option-identity",
+        "exit": 0,
+        "seconds": 0.7717530727386475,
+        "log_sha256": "4c9a3ead4437ca3e77c741ab471860aace98002fbab9cb477a73ba766db57ee1",
+        "passed": true,
+        "observations": 38
+      }
+    ]
+  },
+  "real_project_replays": [
+    {
+      "reference_version": "7.0.2 pinned native reference",
+      "mode": "original ordinary --noEmit --pretty false",
+      "original_inputs": 590,
+      "additional_installed_compiler_inputs": 0,
+      "inputs_unchanged": true,
+      "project_working_tree_clean": true,
+      "completed_without_crash": true,
+      "diagnostic_parity": false,
+      "engines": [
+        {
+          "engine": "reference",
+          "exit": 0,
+          "seconds": 0.12897008300205925,
+          "binary_sha256": "a82f731365ad69d5c4c15f5e18fba4584bf3b7b839960172a76c3462b5114bf2",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "diagnostic_counts": {}
+        },
+        {
+          "engine": "home",
+          "exit": 1,
+          "seconds": 38.102044792001834,
+          "binary_sha256": "7f57b3ee5cf81d21587594f8ff67d98085f4450be05c019fbe5b5fbf8aae1ef9",
+          "log_sha256": "c4f09f3a6f549bd03d596917eea13da075b419508b19bec937b8f2900869a338",
+          "diagnostic_counts": {
+            "2304": 17,
+            "2420": 3,
+            "2353": 28,
+            "2339": 70,
+            "7006": 9,
+            "2769": 63,
+            "2345": 7,
+            "2578": 1,
+            "1484": 5,
+            "2322": 8,
+            "2801": 1,
+            "2352": 1,
+            "7053": 1,
+            "2683": 1
+          }
+        }
+      ],
+      "private_input_manifest_sha256": "7316c13a92a56aa9fe546eed505fb64d971852395359e9c8bb7a52589eb47f59"
+    },
+    {
+      "reference_version": "6.0.3 installed project reference",
+      "mode": "original ordinary --noEmit --pretty false",
+      "original_inputs": 590,
+      "additional_installed_compiler_inputs": 140,
+      "inputs_unchanged": true,
+      "project_working_tree_clean": true,
+      "completed_without_crash": true,
+      "diagnostic_parity": false,
+      "engines": [
+        {
+          "engine": "reference",
+          "exit": 0,
+          "seconds": 1.6161973749985918,
+          "binary_sha256": "8d5fa5bd883fec0979fc2004f1fe1d99aef40570155d550eadc0b03b55513bf0",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "diagnostic_counts": {}
+        },
+        {
+          "engine": "home",
+          "exit": 1,
+          "seconds": 72.33289058299852,
+          "binary_sha256": "7f57b3ee5cf81d21587594f8ff67d98085f4450be05c019fbe5b5fbf8aae1ef9",
+          "log_sha256": "c4f09f3a6f549bd03d596917eea13da075b419508b19bec937b8f2900869a338",
+          "diagnostic_counts": {
+            "2304": 17,
+            "2420": 3,
+            "2353": 28,
+            "2339": 70,
+            "7006": 9,
+            "2769": 63,
+            "2345": 7,
+            "2578": 1,
+            "1484": 5,
+            "2322": 8,
+            "2801": 1,
+            "2352": 1,
+            "7053": 1,
+            "2683": 1
+          }
+        }
+      ],
+      "private_input_manifest_sha256": "cd082a9b667873d8bff84c45d7d4ee7763847b470439af2e7dcc8717fa38dda9"
+    }
+  ],
+  "conformance": {
+    "tests": {
+      "passed": 1386,
+      "skipped": 0,
+      "failed": 72
+    },
+    "total": 1458,
+    "unfiltered": true,
+    "optimization": "ReleaseSafe",
+    "stripped": true,
+    "exit": 1,
+    "seconds": 264.3608469963074,
+    "binary_sha256": "a7dc312f7685bf891518b497cd197c99592dbe37a8ebe30508db6804b7edc62d",
+    "log_sha256": "4ce8ab27b4a8d7a06f7a7b501e01a87e1d477e104ad1ec5393202142816125b3",
+    "all_passed": false,
+    "failure_names": [
+      "ts_conformance.test.conformance: returnStatements passes clean",
+      "ts_conformance.test.conformance: inferThisType passes clean",
+      "ts_conformance.test.conformance: controlFlowInOperator passes clean",
+      "ts_conformance.test.conformance: enumClassification passes clean",
+      "ts_conformance.test.conformance: enumBasics passes clean",
+      "ts_conformance.test.conformance: propertyAssignmentUseParentType1 passes clean",
+      "ts_conformance.test.conformance: parserParenthesizedVariableAndFunctionInTernary passes clean",
+      "ts_conformance.test.conformance: parserForOfStatement18 passes clean",
+      "ts_conformance.test.conformance: parserForOfStatement19 passes clean",
+      "ts_conformance.test.conformance: everyTypeWithInitializer passes clean",
+      "ts_conformance.test.conformance: incrementOperatorWithAnyOtherType passes clean",
+      "ts_conformance.test.conformance: decrementOperatorWithAnyOtherType passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck30 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator1 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator2 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator3 passes clean",
+      "ts_conformance.test.conformance: stringLiteralTypesInUnionTypes02 passes clean",
+      "ts_conformance.test.conformance: objectRestParameter passes clean",
+      "ts_conformance.test.conformance: classStaticBlock28 passes clean",
+      "ts_conformance.test.conformance: memberFunctionsWithPublicOverloads passes clean",
+      "ts_conformance.test.conformance: mixinClassesAnonymous passes clean",
+      "ts_conformance.test.conformance: functionExpressionContextualTyping1 passes clean",
+      "ts_conformance.test.conformance: privateNameFieldInitializer passes clean",
+      "ts_conformance.test.conformance: privateNameLateSuper passes clean",
+      "ts_conformance.test.conformance: anyAssignableToEveryType2 passes clean",
+      "ts_conformance.test.conformance: subtypesOfAny passes clean",
+      "ts_conformance.test.conformance: arrayLiteralWidened passes clean",
+      "ts_conformance.test.conformance: decoratorOnClassMethod18 passes clean",
+      "ts_conformance.test.conformance: stringLiteralTypeIsSubtypeOfString passes clean",
+      "ts_conformance.test.conformance: superCallBeforeThisAccessing1 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck46 passes clean",
+      "ts_conformance.test.conformance: emitArrowFunctionES6 passes clean",
+      "ts_conformance.test.conformance: symbolProperty48 passes clean",
+      "ts_conformance.test.conformance: TwoInternalModulesThatMergeEachWithExportedInterfacesOfTheSameName passes clean",
+      "ts_conformance.test.conformance: TwoInternalModulesThatMergeEachWithExportedAndNonExportedInterfacesOfTheSameName passes clean",
+      "ts_conformance.test.conformance: localesObjectArgument passes clean",
+      "ts_conformance.test.conformance: intlNumberFormatES2020 passes clean",
+      "ts_conformance.test.conformance: esDecorators_decoratorExpression_3 passes clean",
+      "ts_conformance.test.conformance: esDecorators_decoratorExpression_1 passes clean",
+      "ts_conformance.test.conformance: esDecorators_classExpression_namedEvaluation_10 passes clean",
+      "ts_conformance.test.conformance: builtinIteratorReturn passes clean",
+      "ts_conformance.test.conformance: arrayLiterals2ES5 passes clean",
+      "ts_conformance.test.conformance: literalTypeWidening passes clean",
+      "ts_conformance.test.conformance: arrowFunctionExpressions passes clean",
+      "ts_conformance.test.conformance: nominalSubtypeCheckOfTypeParameter passes clean",
+      "ts_conformance.test.conformance: anyAssignabilityInInheritance passes clean",
+      "ts_conformance.test.conformance: mixinClassesMembers passes clean",
+      "ts_conformance.test.conformance: reExportAliasMakesInstantiated passes clean",
+      "ts_conformance.test.conformance: accessorsOverrideProperty8 passes clean",
+      "ts_conformance.test.conformance: globalModuleExportNotInDeclarationFile matches TS1315 baseline",
+      "ts_conformance.test.conformance: thisTypeSyntacticContext passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType1_ES6 passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType2_ES6 passes clean",
+      "ts_conformance.test.conformance: symbolProperty20 passes clean",
+      "ts_conformance.test.conformance: parserForStatement9 passes clean",
+      "ts_conformance.test.conformance: superSymbolIndexedAccess1 passes clean",
+      "ts_conformance.test.conformance: thisTypeInBasePropertyAndDerivedContainerOfBase01 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck26 passes clean",
+      "ts_conformance.test.conformance: symbolProperty22 passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType3_ES6 passes clean",
+      "ts_conformance.test.conformance: parserModuleDeclaration11 passes clean",
+      "ts_conformance.test.conformance: symbolDeclarationEmit10 passes clean",
+      "ts_conformance.test.conformance: symbolProperty11 passes clean",
+      "ts_conformance.test.conformance: thisPrototypeMethodCompoundAssignment passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck27 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck29 passes clean",
+      "ts_conformance.test.conformance: es2021LocalesObjectArgument passes clean",
+      "ts_conformance.test.conformance: protectedClassPropertyAccessibleWithinSubclass passes clean",
+      "ts_conformance.test.conformance: keyofAndForIn passes clean",
+      "ts_conformance.test.conformance: option compatibility diagnostics count as expected errors",
+      "ts_conformance.test.conformance: baseline-aware type-relationship survey",
+      "ts_conformance.test.conformance: runOwnedCorpus flips synthetic @target: es5 fixture to passed via the helper"
+    ],
+    "baseline_comparison": {
+      "baseline_commit": "ec65db3bb34c885d9e2a24c4d7a243f7ab8c8801",
+      "corpus_pin_unchanged": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+      "typescript_pin_unchanged": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+      "corpus_working_trees_clean": true,
+      "conformance_sources": {
+        "packages/ts_conformance/src/ts_conformance.zig": {
+          "baseline_sha256": "c1d508b106a8121bd7e1e22120eb300aebc6d276aabb610f341df0712c3f40b6",
+          "candidate_sha256": "c246890cbbbe4f9f404e14353735f013ec84f05e169f57562100aa32fa2420c4",
+          "only_trace_prints_added": true
+        },
+        "packages/ts_conformance/src/virtual_tsconfig.zig": {
+          "baseline_sha256": "152129472f3396d1f132290be796d86944b886fcee4caae1600d13735c804a28",
+          "candidate_sha256": "152129472f3396d1f132290be796d86944b886fcee4caae1600d13735c804a28",
+          "unchanged": true
+        },
+        "packages/ts_conformance/src/fixture_variants.zig": {
+          "baseline_sha256": "cef03d8285bc7a9c79ed305aaa60995150793879ce3e0308f3e9e9d2dfae4cbd",
+          "candidate_sha256": "cef03d8285bc7a9c79ed305aaa60995150793879ce3e0308f3e9e9d2dfae4cbd",
+          "unchanged": true
+        },
+        "packages/ts_conformance/src/patience.zig": {
+          "baseline_sha256": "e4772721005b40980db9e70e9615e97bb27572a1b1ba81cbb279397a68575429",
+          "candidate_sha256": "e4772721005b40980db9e70e9615e97bb27572a1b1ba81cbb279397a68575429",
+          "unchanged": true
+        }
+      },
+      "original_baseline_corpus_absent": true,
+      "survey_expected_count": 586,
+      "current_pinned_fixture_count": 591,
+      "full_candidate_tests": {
+        "passed": 1386,
+        "failed": 72,
+        "skipped": 0
+      },
+      "comparison_limit": "The old99-failure run silently passed corpus-dependent tests without the checkout. Its counts are not a like-for-like regression baseline. Conformance enumeration and its pins are unchanged except trace output; the586count is stale independently of compiler checking."
+    },
+    "additional_baseline_control": "An extra matched baseline survey was intentionally interrupted after 12 minutes; it did not complete and is not graded pass or fail.",
+    "fixture_freeze_limit": "Initial full-suite freeze covered compiler inputs, not every corpus file. Corpus pins and clean checkout state were verified afterward; the supplemental baseline control froze all corpus files before execution."
+  },
+  "bounds": {
+    "max_descendant_tree_mb": 3840,
+    "build_parallelism": 1,
+    "start_disk_floor_mb": 1024,
+    "running_disk_floor_mb": 512
+  },
+  "limitations": [
+    "215 Home diagnostics remain on the replay while both references accept it.",
+    "72 unfiltered conformance tests fail, including a survey with an unchanged stale expected fixture count.",
+    "Old 99-failure baseline lacked corpus files and is not a like-for-like comparison.",
+    "Real-project replay covers ordinary noEmit only; emitting, build, watch and compiler API qualification remain open.",
+    "Timing observations are functional runs on a busy host, not controlled performance benchmarks."
+  ],
+  "private_project_sources_included": false
+}
