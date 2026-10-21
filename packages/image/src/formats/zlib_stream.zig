@@ -40,6 +40,7 @@ pub const Deflater = struct {
         if (level > 9) return error.InvalidCompressionLevel;
         const self = try allocator.create(Deflater);
         errdefer allocator.destroy(self);
+        errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator };
         try status(c.deflateInit_(&self.stream, @intCast(level), c.zlibVersion(), @sizeOf(c.z_stream)));
         return self;

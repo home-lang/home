@@ -44,3 +44,21 @@ linker can resolve stack probes on x86; runtime safety remains enabled.
 
 References: [ICC sRGB interpretation](https://registry.color.org/rgb-registry/files/sRGB.pdf),
 [ICC specification](https://www.color.org/specification/ICC.1-2022-05.pdf).
+
+`IccEmbedding` (or standalone `src/metadata_embed.zig`) embeds a validated RGB
+profile into JPEG APP2 segments, PNG iCCP, or the primary classic-TIFF IFD.
+JPEG preserves APP0 placement and scan bytes, splits profiles into ordered
+65519-byte parts and replaces previous ICC APP2 markers before the first scan.
+PNG checks chunk CRCs, inserts compressed iCCP after IHDR, and removes older
+profile/color/HDR-signaling chunks to prevent competing interpretations.
+TIFF preserves original strips and next-IFD links, appends a sorted replacement
+primary directory and tag 34675, and repoints the header. Old unreachable TIFF
+metadata bytes remain in the file; this API does not erase them. It accepts
+both TIFF byte orders, rejects BigTIFF and requires RGB photometric data.
+
+The caller must ensure the profile describes the pixels. Embedding neither
+transforms samples nor proves full container/profile conformance. JPEG parsing
+checks pre-scan markers and retains subsequent entropy/scans verbatim; it does
+not decode those scans. TIFF checks primary-entry geometry, not complete page
+chains or compressed strip contents. All returned bytes are owned; inputs are
+borrowed for the synchronous call only. Add `-lc -lz` when testing this module.
