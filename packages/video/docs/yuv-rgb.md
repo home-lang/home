@@ -25,3 +25,14 @@ Tests use external color-vector calculations, full/studio black and white,
 all three matrices, a floating reference grid including clipped values, padded
 planes, missing final padding, chroma averaging, and rejection before writes.
 Run `zig test packages/video/src/core/pixel_convert.zig` in Debug and ReleaseSafe.
+
+`core/yuv_remap.zig` maps planar I420 directly between BT.601/709/2020 matrices
+and full/studio ranges. It allocates no RGB intermediate and does not clamp
+through RGB before remapping. The common same-matrix path scales each plane
+independently; identity preserves all 256 codes, including footroom/headroom.
+General remapping uses one affine luma transform per pixel and one chroma transform
+per 2x2 block. Both input and output planes are checked before writing, with
+independent strides and no destination padding writes. Primaries and transfer
+functions must match: YCbCr matrix conversion alone does not change gamut/gamma.
+The destination must not overlap the source. Reference tests compare unclipped
+floating calculations, known full-to-studio values, clipping, and rejection.
