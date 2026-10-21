@@ -822,6 +822,7 @@ pub const RawAudioSource = sources.RawAudioSource;
 // ============================================================================
 
 /// Standalone checked elementary packet/PTS streaming helpers.
+pub const pcm_fanout = @import("core/pcm_fanout.zig");
 pub const frame_fanout = @import("core/frame_fanout.zig");
 pub const packet_output = @import("core/packet_output.zig");
 
@@ -1235,6 +1236,7 @@ test "Video library imports" {
     _ = dash;
     _ = subtitle_convert;
     _ = sample_convert;
+    _ = pcm_fanout;
     _ = frame_fanout;
     _ = plane_pack;
     _ = packet_ring;

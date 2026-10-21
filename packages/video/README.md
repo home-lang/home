@@ -14,3 +14,11 @@ It complements `recording_policy` and `output_recovery` for async recording.
 never-reused consumer identities and exact in-flight tickets. Wait/drop policies,
 retirement, failure isolation and saturating telemetry store no source frames or
 PCM. Existing producer owners retain their own byte/count limits and cleanup.
+
+### Shared PCM consumers
+
+[PCM fan-out](docs/pcm-fanout.md) combines the existing sample timeline and stable
+slots with independent watermarks and exact preparation tickets. One bounded
+history can supply several codec producers without extra capture cursors. It
+preserves fractional sample phase, never advances past missing audio, and
+quarantines history overruns without affecting healthy consumers.
