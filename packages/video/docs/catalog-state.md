@@ -20,7 +20,7 @@ external handle, synchronization, revision counter or device validation policy.
 Its readers borrow source memory while the replacement is prepared, so the caller
 must keep both inputs alive and unchanged for the operation.
 
-Tests cover sorted replacement, removal/reinsertion, independent owned output,
+Tests cover sorted replacement and removal, independent owned output,
 source preservation, duplicate/invalid keys, record/byte bounds and every allocation
 failure on pinned Zig 0.15.2 and development Zig. zig-camera uses this helper to
 stage typed native/vendor control replay before backend publication and to remove
