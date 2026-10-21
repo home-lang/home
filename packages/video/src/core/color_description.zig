@@ -111,6 +111,7 @@ test "negotiation distinguishes normalized requests from adjusted or unknown res
     inline for (.{ "primaries", "transfer", "matrix", "range" }) |field| {
         actual = requested;
         @field(actual, field) = @field(preset(.sycc), field);
+        if (comptime std.mem.eql(u8, field, "primaries")) actual.primaries = .rec2020;
         if (!actual.eql(requested)) {
             try t.expect((try negotiate(requested, actual, true, false)).adjusted);
             try t.expectError(error.ColorSpaceAdjusted, negotiate(requested, actual, true, true));
