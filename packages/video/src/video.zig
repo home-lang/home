@@ -856,6 +856,7 @@ pub const AudioChannelLayout = sample_convert.ChannelLayout;
 pub const plane_pack = @import("core/plane_pack.zig");
 pub const packet_ring = @import("core/packet_ring.zig");
 pub const pixel_convert = @import("core/pixel_convert.zig");
+pub const color_description = @import("core/color_description.zig");
 pub const yuv_rgb = @import("core/yuv_rgb.zig");
 pub const yuv_remap = @import("core/yuv_remap.zig");
 pub const PixelConvertFormat = pixel_convert.PixelFormat;
@@ -1239,6 +1240,7 @@ test "Video library imports" {
     _ = pcm_fanout;
     _ = frame_fanout;
     _ = plane_pack;
+    _ = color_description;
     _ = packet_ring;
     _ = pixel_convert;
     _ = nal_convert;

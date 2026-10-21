@@ -29,3 +29,6 @@ quarantines history overruns without affecting healthy consumers.
 pair across its four luma pixels while preserving legacy fixed-point bytes. The
 standalone benchmark retains the old loop, raw local timing rows and checksum
 checks; physical camera performance remains a separate acceptance task.
+
+See [color descriptions and negotiation](docs/color-description.md) for checked
+requested/effective/actual metadata and strict processed-stream policy.
