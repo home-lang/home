@@ -13,6 +13,12 @@ pub const Gate = struct {
             else => true,
         };
     }
+    /// A result may be published only after success and at or after the
+    /// observation which completed this job, not merely its submission revision.
+    /// This does not consume the result or change the immutable terminal state.
+    pub fn acceptsResult(self: Gate, revision: u64) bool {
+        return self.state == .succeeded and revision >= @max(self.revision, self.observed_revision orelse self.revision);
+    }
     fn accept(self: *Gate, revision: u64) bool {
         if (self.terminal() or revision < self.revision) return false;
         // Request completions may arrive out of order. An older completion must
@@ -43,6 +49,27 @@ pub const Gate = struct {
         if (!self.terminal()) self.state = .stopped;
     }
 };
+test "results are fenced by successful acknowledgement and its observation revision" {
+    var g: Gate = .{ .revision = 5 };
+    try std.testing.expect(!g.acceptsResult(5));
+    g.acknowledge(8, null);
+    try std.testing.expect(!g.acceptsResult(9));
+    g.acknowledge(9, true);
+    try std.testing.expect(!g.acceptsResult(5));
+    try std.testing.expect(!g.acceptsResult(8));
+    try std.testing.expect(g.acceptsResult(9));
+    try std.testing.expect(g.acceptsResult(std.math.maxInt(u64)));
+    g.acknowledge(10, false);
+    g.cancel();
+    try std.testing.expect(g.acceptsResult(9));
+    for ([_]State{ .failed, .cancelled, .stopped, .active, .pending }) |state| {
+        g = .{ .revision = 5, .state = state, .observed_revision = 9 };
+        try std.testing.expect(!g.acceptsResult(std.math.maxInt(u64)));
+    }
+    g = .{ .revision = std.math.maxInt(u64), .state = .succeeded };
+    try std.testing.expect(!g.acceptsResult(std.math.maxInt(u64) - 1));
+    try std.testing.expect(g.acceptsResult(std.math.maxInt(u64)));
+}
 test "command acknowledgement needs no active phase and fences stale responses" {
     var g: Gate = .{ .revision = 5 };
     g.acknowledge(4, true);

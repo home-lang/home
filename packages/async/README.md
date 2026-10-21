@@ -168,3 +168,10 @@ watermark while pending; stale responses and late terminal changes are ignored.
 It shares the same ordering and synchronization contract as observe. Camera
 continuous-AF pause/resume uses this path because an already paused/running
 algorithm can acknowledge directly without reporting a transition first.
+
+`CompletionGate.acceptsResult(revision)` additionally fences result publication
+against the successful observation revision. A buffered result newer than job
+submission can still predate its acknowledgement; such a result is rejected.
+Pending, active and unsuccessful terminal jobs never accept results. This query
+does not mutate the gate, and the caller still validates resource ownership and
+result-specific metadata under its own synchronization.
