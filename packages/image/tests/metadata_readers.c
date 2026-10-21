@@ -156,7 +156,8 @@ static unsigned char *big_tiff(size_t *length,toff_t *second_page) {
     }
     TIFFClose(t);
     CHECK(fseek(f,0,SEEK_END)==0); long size=ftell(f); CHECK(size>0); rewind(f);
-    unsigned char *bytes=malloc((size_t)size); CHECK(bytes); CHECK(fread(bytes,1,(size_t)size,f)==(size_t)size); rewind(f); t=TIFFFdOpen(dup(fileno(f)),"second page","r"); CHECK(t && TIFFSetDirectory(t,1));
+    unsigned char *bytes=malloc((size_t)size); CHECK(bytes); CHECK(fread(bytes,1,(size_t)size,f)==(size_t)size); CHECK(fflush(f)==0); int reader=dup(fileno(f)); CHECK(reader>=0 && lseek(reader,0,SEEK_SET)==0);
+    t=TIFFFdOpen(reader,"second page","r"); CHECK(t && TIFFSetDirectory(t,1));
     *second_page=TIFFCurrentDirOffset(t); CHECK(*second_page); TIFFClose(t); fclose(f); *length=(size_t)size; return bytes;
 }
 int main(void) {

@@ -2,9 +2,9 @@ name: Image Exif primitives
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/src/jpeg_encoder.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
   pull_request:
-    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/src/jpeg_encoder.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
   workflow_dispatch:
 permissions:
   contents: read
