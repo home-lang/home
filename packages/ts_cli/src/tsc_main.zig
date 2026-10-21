@@ -5902,6 +5902,42 @@ test "tsc_main: import-equals ambient const enum access reports TS2748" {
     }
 }
 
+test "tsc_main: CLI isolatedModules false wins over project config" {
+    const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
+    const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
+    const args = [_][]const u8{ "--isolatedModules", "false" };
+    const cli = try ts_cli.parseArgs(std.testing.allocator, &args);
+    defer std.testing.allocator.free(cli.files);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
+        \\{"compilerOptions":{"isolatedModules":true,"noEmit":true}}
+    );
+    ts_cli.applyConfigOverrides(&config, cli);
+    var options = ts_driver.optionsFromConfig(&config);
+    ts_cli.applyCompileOptions(&options, cli);
+
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/proj/ambient.d.ts", ambient_source);
+    try vfs.addFile("/proj/main.ts", main_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/proj/ambient.d.ts", ambient_source);
+    const main_id = try program.add("/proj/main.ts", main_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    _ = try program.loadImportClosure(options);
+    try program.compileAll(options);
+    for (program.fileById(main_id).compilation.?.diagnostics.items) |diagnostic| {
+        try std.testing.expect(diagnostic.code != 2748);
+    }
+}
+
 test "tsc_main: resolver adapter carries prepared local import facts" {
     var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
     defer vfs.deinit();

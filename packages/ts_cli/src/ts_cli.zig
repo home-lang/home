@@ -128,6 +128,8 @@ pub const Options = struct {
     strict: ?bool = null,
     /// `--verbatimModuleSyntax`. Null defers to tsconfig/default false.
     verbatim_module_syntax: ?bool = null,
+    /// `--isolatedModules`. Null defers to tsconfig/default false.
+    isolated_modules: ?bool = null,
     /// `--allowJs`. Null means defer to tsconfig/default false.
     allow_js: ?bool = null,
     /// `--checkJs`. Null means defer to tsconfig/default false; true implies
@@ -191,12 +193,32 @@ test "CLI: noLib and noResolve aliases override config and compile options in bo
     try T.expectEqual(@as(?bool, null), (Options{}).no_lib);
 }
 
+test "CLI: isolatedModules boolean overrides config in both directions" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    for ([_]bool{ false, true }) |enabled| {
+        const args = [_][]const u8{ "--isolatedModules", if (enabled) "true" else "false" };
+        const opts = try parseArgs(T.allocator, &args);
+        defer T.allocator.free(opts.files);
+        var config = try tsconfig_mod.parseString(T.allocator, arena.allocator(), "{}");
+        config.compiler_options.isolated_modules = !enabled;
+        applyConfigOverrides(&config, opts);
+        var compiled = ts_driver.optionsFromConfig(&config);
+        applyCompileOptions(&compiled, opts);
+        try T.expectEqual(@as(?bool, enabled), opts.isolated_modules);
+        try T.expectEqual(@as(?bool, enabled), config.compiler_options.isolated_modules);
+        try T.expectEqual(@as(?bool, enabled), compiled.isolated_modules);
+    }
+    try T.expectEqual(@as(?bool, null), (Options{}).isolated_modules);
+}
+
 /// Apply command-line compiler options after loading tsconfig. Command-line
 /// values win, and each resolved option updates every compiler phase through
 /// the driver's shared option mappers.
 pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Options) void {
     compile_opts.strict = opts.strict;
     if (opts.verbatim_module_syntax) |value| compile_opts.verbatim_module_syntax = value;
+    if (opts.isolated_modules) |value| compile_opts.isolated_modules = value;
     if (opts.no_emit) |value| compile_opts.no_emit = value;
     if (opts.no_lib) |value| compile_opts.no_lib = value;
     if (opts.no_resolve) |value| compile_opts.no_resolve = value;
@@ -248,6 +270,7 @@ pub fn applyConfigOverrides(config: *tsconfig_mod.TsConfig, opts: Options) void 
     const compiler_options = &config.compiler_options;
     if (opts.strict) |value| compiler_options.strict = value;
     if (opts.verbatim_module_syntax) |value| compiler_options.verbatim_module_syntax = value;
+    if (opts.isolated_modules) |value| compiler_options.isolated_modules = value;
     if (opts.allow_js) |value| compiler_options.allow_js = value;
     if (opts.check_js) |value| compiler_options.check_js = value;
     if (opts.no_emit) |value| compiler_options.no_emit = value;
@@ -372,6 +395,8 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.verbatim_module_syntax = parseOptionalBooleanArg(args, &i);
         } else if (optionIs(a, "--no-verbatimModuleSyntax")) {
             opts.verbatim_module_syntax = false;
+        } else if (optionIs(a, "--isolatedModules")) {
+            opts.isolated_modules = parseOptionalBooleanArg(args, &i);
         } else if (optionIs(a, "--allowJs")) {
             opts.allow_js = parseOptionalBooleanArg(args, &i);
         } else if (optionIs(a, "--checkJs")) {

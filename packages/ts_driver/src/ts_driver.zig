@@ -397,6 +397,8 @@ pub const CompileOptions = struct {
     strict: ?bool = null,
     /// CLI override; null defers to tsconfig or the TypeScript default.
     verbatim_module_syntax: ?bool = null,
+    /// CLI override; null defers to tsconfig or the TypeScript default.
+    isolated_modules: ?bool = null,
     /// Direct checker strictness override for callers that already
     /// resolved file-scoped options (for example TS conformance
     /// `// @strict: true` directives).
@@ -2508,6 +2510,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     if (options.strict_flags) |flags| {
         var merged_flags = flags;
         if (options.verbatim_module_syntax) |value| merged_flags.verbatim_module_syntax = value;
+        if (options.isolated_modules) |value| merged_flags.isolated_modules = value;
         if (options.always_strict) merged_flags.always_strict = true;
         checker.setStrictFlags(merged_flags);
     } else if (options.pub_tsconfig) |cfg| {
@@ -2532,7 +2535,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .strict_property_initialization = strict_property_initialization,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .exact_optional_property_types = co.exact_optional_property_types orelse false,
-            .isolated_modules = co.isolated_modules orelse false,
+            .isolated_modules = options.isolated_modules orelse (co.isolated_modules orelse false),
             .verbatim_module_syntax = options.verbatim_module_syntax orelse (co.verbatim_module_syntax orelse false),
             .allow_synthetic_default_imports = co.allow_synthetic_default_imports orelse true,
             .isolated_declarations = co.isolated_declarations orelse false,
@@ -2556,6 +2559,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .strict_bind_call_apply = strict_on,
             .strict_null_checks = strict_on,
             .strict_property_initialization = strict_on,
+            .isolated_modules = options.isolated_modules orelse false,
             .verbatim_module_syntax = options.verbatim_module_syntax orelse false,
             .always_strict = options.always_strict,
         });
@@ -8772,6 +8776,38 @@ test "driver: config verbatimModuleSyntax reaches checker binding diagnostics" {
             if (diagnostic.code == 2748) count += 1;
         }
         try T.expectEqual(@as(usize, if (enabled) 2 else 0), count);
+    }
+}
+
+test "driver: explicit isolatedModules overrides config and defaults" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{"compilerOptions":{"isolatedModules":true}}
+    );
+    const source =
+        \\// @filename: /ambient.d.ts
+        \\declare module "pkg" { export const enum Mode { One = 1 } }
+        \\// @filename: /main.ts
+        \\import pkg = require("pkg");
+        \\pkg.Mode.One;
+    ;
+    for ([_]bool{ false, true }) |configured| {
+        for ([_]bool{ false, true }) |enabled| {
+            var options: CompileOptions = if (configured) optionsFromConfig(&cfg) else .{};
+            options.no_emit = true;
+            options.isolated_modules = enabled;
+            const compilation = try compileSource(T.allocator, source, options);
+            defer {
+                compilation.deinit();
+                T.allocator.destroy(compilation);
+            }
+            var count: usize = 0;
+            for (compilation.diagnostics.items) |diagnostic| {
+                if (diagnostic.code == 2748) count += 1;
+            }
+            try T.expectEqual(@as(usize, if (enabled) 1 else 0), count);
+        }
     }
 }
 
