@@ -287,7 +287,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ExifData {
     errdefer exif.deinit();
     var extended_iso: ?u32 = null;
     for (checked.directories[0..checked.count]) |dir| {
-        if (dir.kind == .image) {
+        if (dir.kind == .image and exif.thumbnail == null) {
             if (checked.find(dir, 0x0201)) |offset| {
                 const length = checked.find(dir, 0x0202).?;
                 exif.thumbnail_offset = readU32(offset.bytes[0..4], checked.endian == .little);

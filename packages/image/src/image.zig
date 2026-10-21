@@ -950,6 +950,7 @@ pub const Raw = raw;
 pub const Exif = exif_metadata;
 pub const Icc = icc_metadata;
 pub const IccEmbedding = @import("metadata_embed.zig");
+pub const MetadataEmbedding = @import("metadata_embed.zig");
 pub const Xmp = xmp_metadata;
 pub const Iptc = iptc_metadata;
 

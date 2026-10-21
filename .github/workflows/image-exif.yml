@@ -2,9 +2,9 @@ name: Image Exif primitives
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', '.github/workflows/image-exif.yml']
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
   pull_request:
-    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', '.github/workflows/image-exif.yml']
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', 'packages/image/src/metadata*.zig', 'packages/image/tests/metadata*', '.github/workflows/image-exif.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,15 +21,19 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: ${{ matrix.zig }}
-      - run: sudo apt-get update && sudo apt-get install -y libexif-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y libexif-dev libjpeg-dev libpng-dev libtiff-dev liblcms2-dev zlib1g-dev pkg-config
       - name: Bounds, ownership, typed serialization and independent reader
         shell: bash
         run: |
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz packages/image/src/metadata_embed.zig
             zig test -O "$mode" packages/image/src/metadata/exif.zig
             zig test -O "$mode" --dep exif -Mroot=packages/image/tests/exif_test.zig -Mexif=packages/image/src/metadata/exif.zig
           done
           zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep exif -Mroot=packages/image/tests/exif_fixture.zig -Mexif=packages/image/src/metadata/exif.zig -femit-bin=/tmp/home-exif.o
           cc -std=c11 -Wall -Wextra -Werror packages/image/tests/exif_libexif.c /tmp/home-exif.o $(pkg-config --cflags --libs libexif) -lm -o /tmp/home-exif-test
           /tmp/home-exif-test
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep media -Mroot=packages/image/tests/metadata_fixture.zig -Mmedia=packages/image/src/metadata_test_exports.zig -femit-bin=/tmp/home-metadata.o
+          cc -std=c11 -Wall -Wextra -Werror packages/image/tests/metadata_readers.c /tmp/home-metadata.o $(pkg-config --cflags --libs libexif libjpeg libpng libtiff-4 lcms2 zlib) -lm -o /tmp/home-metadata-test
+          /tmp/home-metadata-test

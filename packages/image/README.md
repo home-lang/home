@@ -23,3 +23,10 @@ They own no pixels or renderer and export as `ViewportPlan`.
 metadata before owned reads, support typed IFD construction and copy thumbnail
 bytes. Standalone tests include an independent libexif reader/writer. This is
 metadata support; embedding and camera capture policy are separate layers.
+
+### Image metadata embedding
+
+[ICC/Exif embedding](docs/metadata-embedding.md) writes both families together in
+JPEG/PNG/classic TIFF while preserving encoded pixels. It validates metadata,
+relocates TIFF directories and uses independent container/Exif readers and pixel
+decoders in tests. Exports as `MetadataEmbedding`; `IccEmbedding` stays available.
