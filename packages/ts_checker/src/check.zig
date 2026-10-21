@@ -112051,6 +112051,28 @@ pub const Checker = struct {
         return self.programImportTargetsPath(import_node, spec, path);
     }
 
+    /// A named import can bind an exported namespace, whose value members
+    /// live below its namespace path rather than as a top-level value route.
+    /// Do not publish a partial object if distinct source owners contributed
+    /// that path; the merged graph must resolve those owners together first.
+    fn programNamespaceValueTypeForImportedRoot(self: *Checker, import_node: NodeId, spec: []const u8, root_name: []const u8) CheckError!?TypeId {
+        var owner: ?ProgramExportedValue = null;
+        for (self.program_exported_values) |value| {
+            if (!value.runtime_value or value.namespace_path.len < root_name.len) continue;
+            if (!std.mem.startsWith(u8, value.namespace_path, root_name)) continue;
+            if (value.namespace_path.len != root_name.len and value.namespace_path[root_name.len] != '.') continue;
+            if (!try self.programExportRouteMatches(import_node, spec, value.target_path, value.ambient_module_name)) continue;
+            if (owner) |existing| {
+                if (!std.mem.eql(u8, existing.target_path, value.target_path) or
+                    !std.mem.eql(u8, existing.ambient_module_name, value.ambient_module_name)) return null;
+            } else {
+                owner = value;
+            }
+        }
+        const value = owner orelse return null;
+        return self.programNamespaceValueTypeForModule(value.target_path, root_name, value.ambient_module_name);
+    }
+
     fn programExportedValueTypeForImportBinding(
         self: *Checker,
         import_node: NodeId,
@@ -112084,6 +112106,7 @@ pub const Checker = struct {
             if (matched) |value| {
                 return try self.programExportedValueType(value);
             }
+            if (try self.programNamespaceValueTypeForImportedRoot(import_node, spec, export_name)) |namespace| return namespace;
         }
         return null;
     }

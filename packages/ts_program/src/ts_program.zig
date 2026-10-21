@@ -7059,17 +7059,26 @@ test "Program: nested ambient const enum retains value members and isolated acce
         \\const wrongAlias: 2 = pkg.Nested.Alias.Again;
         \\pkg.Nested.Mode.Missing;
     ;
+    const named_consumer =
+        \\import { Nested as Selected } from "pkg";
+        \\const one: 1 = Selected.Mode.One;
+        \\const two: 2 = Selected.Mode.Two;
+        \\const wrong: 3 = Selected.Mode.Two;
+        \\Selected.Mode.Missing;
+    ;
     inline for (.{ false, true }) |isolated| {
         var vfs = ts_resolver.VirtualFs.init(T.allocator);
         defer vfs.deinit();
         try vfs.addFile("/ambient.d.ts", ambient);
         try vfs.addFile("/main.ts", consumer);
+        try vfs.addFile("/named.ts", named_consumer);
         var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
         defer resolver.deinit();
         var program = Program.init(T.allocator, &resolver);
         defer program.deinit();
         _ = try program.add("/ambient.d.ts", ambient);
         const consumer_id = try program.add("/main.ts", consumer);
+        const named_id = try program.add("/named.ts", named_consumer);
         try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict_flags = .{ .isolated_modules = isolated } });
         const compilation = program.fileById(consumer_id).compilation.?;
         var isolated_access: usize = 0;
@@ -7093,6 +7102,26 @@ test "Program: nested ambient const enum retains value members and isolated acce
         try T.expectEqual(@as(usize, 3), wrong_value);
         try T.expectEqual(@as(usize, 1), missing_member);
         try T.expect(named_one and named_two and named_alias);
+
+        const named = program.fileById(named_id).compilation.?;
+        var named_isolated_access: usize = 0;
+        var named_wrong_value: usize = 0;
+        var named_missing_member: usize = 0;
+        for (named.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2748 => named_isolated_access += 1,
+            2322 => {
+                named_wrong_value += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "Type 'Mode.Two'") != null);
+            },
+            2339 => {
+                named_missing_member += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "type 'typeof Mode'") != null);
+            },
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, if (isolated) 4 else 0), named_isolated_access);
+        try T.expectEqual(@as(usize, 1), named_wrong_value);
+        try T.expectEqual(@as(usize, 1), named_missing_member);
     }
 }
 
