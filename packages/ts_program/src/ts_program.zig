@@ -7957,10 +7957,10 @@ test "Program: incomplete or conflicting merged enums cannot publish partial mem
         \\  }
         \\}
     ;
-    const computed =
+    const unsupported =
         \\declare module "pkg" {
         \\  export namespace Nested {
-        \\    export const enum Mode { Two = 1 << 1 }
+        \\    export const enum Mode { Two = Math.random() }
         \\  }
         \\}
     ;
@@ -7971,7 +7971,7 @@ test "Program: incomplete or conflicting merged enums cannot publish partial mem
         \\  }
         \\}
     ;
-    inline for (.{ computed, duplicate }) |second| {
+    inline for (.{ unsupported, duplicate }) |second| {
         var vfs = ts_resolver.VirtualFs.init(T.allocator);
         defer vfs.deinit();
         try vfs.addFile("/first.d.ts", first);
@@ -7990,6 +7990,87 @@ test "Program: incomplete or conflicting merged enums cannot publish partial mem
                 std.mem.eql(u8, value.namespace_path, "Nested") and
                 std.mem.eql(u8, value.export_name, "Mode") and value.enum_members != null));
         }
+    }
+}
+
+test "Program: merged ambient const enums retain exact computed numeric members" {
+    const declaration = @embedFile("testdata/ambient_computed_const_enum.d.ts");
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const two: 2 = Nested.Mode.Two;
+        \\const three: 3 = Nested.Mode.Three;
+        \\const negative: -1 = Nested.Mode.Negative;
+        \\const half: 0.5 = Nested.Mode.Half;
+        \\const shifted: -2147483648 = Nested.Mode.Shifted;
+        \\const unsigned: 2147483647 = Nested.Mode.Unsigned;
+        \\const remainder: 1 = Nested.Mode.Remainder;
+        \\const trailing: 2 = Nested.Mode.Trailing;
+        \\const wrong: 1 = Nested.Mode.Three;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/pkg.d.ts", declaration);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/pkg.d.ts", declaration);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    try T.expectEqualStrings("Type 'Mode.Three' is not assignable to type '1'.", diagnostics[0].message);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, consumer, "wrong").?)), diagnostics[0].pos);
+
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    const expected = [_]f64{ 1, 2, 3, -1, 0.5, -2147483648, 2147483647, 1, 2 };
+    var found = false;
+    for (graph.values) |route| {
+        if (!std.mem.eql(u8, route.ambient_module_name, "pkg") or
+            !std.mem.eql(u8, route.namespace_path, "Nested") or
+            !std.mem.eql(u8, route.export_name, "Mode")) continue;
+        const members = route.enum_members orelse continue;
+        try T.expectEqual(expected.len, members.len);
+        for (expected, members) |number, member| {
+            try T.expectEqual(number, member.value.number);
+        }
+        found = true;
+    }
+    try T.expect(found);
+}
+
+test "Program: computed ambient enum members survive split declaration order" {
+    const declaration = @embedFile("testdata/ambient_computed_const_enum.d.ts");
+    const boundary = std.mem.indexOf(u8, declaration, "\n\ndeclare module").?;
+    const first = declaration[0..boundary];
+    const second = declaration[boundary + 2 ..];
+    const consumer =
+        \\import { Nested } from "pkg";
+        \\const good: 3 = Nested.Mode.Three;
+        \\const wrong: 1 = Nested.Mode.Three;
+    ;
+    inline for (.{ false, true }) |reverse_files| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        if (reverse_files) _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/first.d.ts", first);
+        if (!reverse_files) _ = try program.add("/second.d.ts", second);
+        const main_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .strict = true });
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 1), diagnostics.len);
+        try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try T.expectEqualStrings("Type 'Mode.Three' is not assignable to type '1'.", diagnostics[0].message);
     }
 }
 

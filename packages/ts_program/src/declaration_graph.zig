@@ -61,6 +61,87 @@ fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
     return c.interner.get(hir.identifierOf(&c.hir, name_node).name);
 }
 
+/// Evaluate only numeric enum expressions whose JavaScript value is exact
+/// from this source-owned declaration. Unsupported operands leave the whole
+/// merged route unresolved; they must not become an approximate member.
+fn numericConstEnumExpression(c: *const driver.Compilation, node: hir.NodeId, earlier: []const driver.ProgramEnumMember) ?f64 {
+    return switch (c.hir.kindOf(node)) {
+        .literal_number => hir.literalNumberOf(&c.hir, node),
+        .identifier => blk: {
+            const name = c.interner.get(hir.identifierOf(&c.hir, node).name);
+            for (earlier) |member| {
+                if (!std.mem.eql(u8, member.name, name)) continue;
+                break :blk switch (member.value) {
+                    .number => |value| value,
+                    .string => null,
+                };
+            }
+            break :blk null;
+        },
+        .unary_op => blk: {
+            const unary = hir.unaryOf(&c.hir, node);
+            const value = numericConstEnumExpression(c, unary.operand, earlier) orelse break :blk null;
+            break :blk switch (unary.op) {
+                .plus => value,
+                .neg => -value,
+                .bit_not => if (enumExactInt32(value)) |int| @as(f64, @floatFromInt(~int)) else null,
+                else => null,
+            };
+        },
+        .binary_op => blk: {
+            const binary = hir.binopOf(&c.hir, node);
+            const lhs = numericConstEnumExpression(c, binary.lhs, earlier) orelse break :blk null;
+            const rhs = numericConstEnumExpression(c, binary.rhs, earlier) orelse break :blk null;
+            break :blk switch (binary.op) {
+                .add => lhs + rhs,
+                .sub => lhs - rhs,
+                .mul => lhs * rhs,
+                .div => lhs / rhs,
+                .mod => if (rhs != 0) @rem(lhs, rhs) else null,
+                .bit_or, .bit_and, .bit_xor => bitwiseConstEnumValue(lhs, rhs, binary.op),
+                .shl, .shr, .shr_unsigned => shiftConstEnumValue(lhs, rhs, binary.op),
+                else => null,
+            };
+        },
+        else => null,
+    };
+}
+
+fn enumExactInt32(value: f64) ?i32 {
+    if (!std.math.isFinite(value) or @trunc(value) != value or
+        value < @as(f64, @floatFromInt(std.math.minInt(i32))) or
+        value > @as(f64, @floatFromInt(std.math.maxInt(i32)))) return null;
+    return @intFromFloat(value);
+}
+
+fn bitwiseConstEnumValue(lhs: f64, rhs: f64, op: hir.BinOp) ?f64 {
+    const left = enumExactInt32(lhs) orelse return null;
+    const right = enumExactInt32(rhs) orelse return null;
+    const result = switch (op) {
+        .bit_or => left | right,
+        .bit_and => left & right,
+        .bit_xor => left ^ right,
+        else => unreachable,
+    };
+    return @floatFromInt(result);
+}
+
+fn shiftConstEnumValue(lhs: f64, rhs: f64, op: hir.BinOp) ?f64 {
+    const left = enumExactInt32(lhs) orelse return null;
+    const right = enumExactInt32(rhs) orelse return null;
+    // The remaining 32-bit shift counts are equivalent to their masked
+    // values, but are not admitted until that coercion is represented here.
+    if (right < 0 or right > 31) return null;
+    const amount: u5 = @intCast(right);
+    const bits: u32 = @bitCast(left);
+    return switch (op) {
+        .shl => @as(f64, @floatFromInt(@as(i32, @bitCast(bits << amount)))),
+        .shr => @as(f64, @floatFromInt(left >> amount)),
+        .shr_unsigned => @as(f64, @floatFromInt(bits >> amount)),
+        else => unreachable,
+    };
+}
+
 /// Transfer only enum declarations whose complete member values can be
 /// represented exactly. Other constant expressions retain their existing
 /// unresolved route instead of publishing an approximate member type.
@@ -77,7 +158,6 @@ fn literalConstEnumMembers(arena: std.mem.Allocator, c: *const driver.Compilatio
             const number = next_number orelse return null;
             break :blk .{ .number = number };
         } else switch (c.hir.kindOf(property.value)) {
-            .literal_number => .{ .number = hir.literalNumberOf(&c.hir, property.value) },
             .literal_string => blk: {
                 const raw = c.interner.get(hir.literalStringOf(&c.hir, property.value).value);
                 if (std.mem.indexOfAny(u8, raw, "\\\r") == null) break :blk .{ .string = raw };
@@ -85,13 +165,7 @@ fn literalConstEnumMembers(arena: std.mem.Allocator, c: *const driver.Compilatio
                 try driver.ProgramClassSchema.appendCookedStringText(arena, raw, &cooked);
                 break :blk .{ .string = try cooked.toOwnedSlice(arena) };
             },
-            .unary_op => blk: {
-                const unary = hir.unaryOf(&c.hir, property.value);
-                if ((unary.op != .neg and unary.op != .plus) or c.hir.kindOf(unary.operand) != .literal_number) return null;
-                const number = hir.literalNumberOf(&c.hir, unary.operand);
-                break :blk .{ .number = if (unary.op == .neg) -number else number };
-            },
-            else => return null,
+            else => .{ .number = numericConstEnumExpression(c, property.value, result.items) orelse return null },
         };
         next_number = switch (value) {
             .number => |number| if (std.math.isFinite(number)) number + 1 else return null,
