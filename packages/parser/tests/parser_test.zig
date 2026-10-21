@@ -2087,3 +2087,60 @@ test "parser: assert macro preserves a comparison condition" {
     try testing.expect(assert_stmt.message.?.* == .StringLiteral);
     try testing.expectEqualStrings("division by zero", assert_stmt.message.?.StringLiteral.value);
 }
+
+test "parser: match statement numeric patterns accept hex, binary, octal and type suffixes" {
+    const allocator = testing.allocator;
+    const source =
+        \\match x {
+        \\    0xFF => 1,
+        \\    0b101 => 2,
+        \\    0o17 => 3,
+        \\    7u8 => 4,
+        \\    -0x10 => 5,
+        \\    0x30..=0x39 => 6,
+        \\    1.5f32 => 7,
+        \\    _ => 0,
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    try testing.expect(program.statements[0] == .MatchStmt);
+
+    const arms = program.statements[0].MatchStmt.arms;
+    try testing.expectEqual(@as(usize, 8), arms.len);
+    try testing.expectEqual(@as(i64, 255), arms[0].pattern.IntLiteral);
+    try testing.expectEqual(@as(i64, 5), arms[1].pattern.IntLiteral);
+    try testing.expectEqual(@as(i64, 15), arms[2].pattern.IntLiteral);
+    try testing.expectEqual(@as(i64, 7), arms[3].pattern.IntLiteral);
+    try testing.expectEqual(@as(i64, -16), arms[4].pattern.IntLiteral);
+    try testing.expectEqual(@as(i128, 0x30), arms[5].pattern.Range.start.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 0x39), arms[5].pattern.Range.end.IntegerLiteral.value);
+    try testing.expectEqual(@as(f64, 1.5), arms[6].pattern.FloatLiteral);
+    try testing.expect(arms[7].pattern.* == .Wildcard);
+}
+
+test "parser: match statement reports numeric patterns that do not parse" {
+    const allocator = testing.allocator;
+    for ([_][]const u8{
+        "match x {\n    0xFFFFFFFFFFFFFFFF => 1,\n    _ => 0,\n}",
+        "match x {\n    1.0e+ => 1,\n    _ => 0,\n}",
+    }) |source| {
+        var lexer = Lexer.init(allocator, source);
+        var tokens = try lexer.tokenize();
+        defer tokens.deinit(allocator);
+        var parser = try Parser.init(allocator, tokens.items);
+        defer parser.deinit();
+        const program = try parser.parse();
+        defer program.deinit(allocator);
+
+        try testing.expect(parser.errors.items.len > 0);
+    }
+}
