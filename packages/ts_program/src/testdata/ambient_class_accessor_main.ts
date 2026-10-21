@@ -1,0 +1,10 @@
+import { Nested } from 'pkg';
+const box = new Nested.Box('ready');
+const wrongId: 2 = box.id;
+const wrongOwn: 'other' = Nested.Box.own;
+const wrongExtra: 4 = Nested.Box.extra;
+box.id = 1;
+Nested.Box.own = 'own';
+void wrongId;
+void wrongOwn;
+void wrongExtra;

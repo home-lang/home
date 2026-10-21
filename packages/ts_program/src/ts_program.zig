@@ -7871,6 +7871,51 @@ test "Program: merged ambient class namespace keeps static and nested contracts 
     }
 }
 
+test "Program: merged ambient class getters retain exact types and readonly modifiers" {
+    const first = @embedFile("testdata/ambient_class_accessor_first.d.ts");
+    const second = @embedFile("testdata/ambient_class_accessor_second.d.ts");
+    const consumer = @embedFile("testdata/ambient_class_accessor_main.ts");
+    const expected = [_]u32{ 2322, 2322, 2322, 2540, 2540 };
+    inline for (.{ false, true }) |split_files| {
+        inline for (.{ false, true }) |reverse_files| {
+            if (!split_files and reverse_files) continue;
+            inline for (.{ false, true }) |streaming| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                const combined = if (split_files) first else first ++ "\n" ++ second;
+                try vfs.addFile("/first.d.ts", combined);
+                if (split_files) try vfs.addFile("/second.d.ts", second);
+                try vfs.addFile("/main.ts", consumer);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                if (split_files and reverse_files) _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", combined);
+                if (split_files and !reverse_files) _ = try program.add("/second.d.ts", second);
+                const main_id = try program.add("/main.ts", consumer);
+                if (streaming) {
+                    const Sink = struct {
+                        count: usize = 0,
+
+                        fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                            if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                        }
+                    };
+                    var sink: Sink = .{};
+                    try program.compileAllStreaming(.{ .no_emit = true, .strict = true }, &sink, Sink.receive);
+                    try T.expectEqual(expected.len, sink.count);
+                } else {
+                    try program.compileAll(.{ .no_emit = true, .strict = true });
+                }
+                const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+                try T.expectEqual(expected.len, diagnostics.len);
+                for (expected, diagnostics) |code, diagnostic| try T.expectEqual(code, diagnostic.code);
+            }
+        }
+    }
+}
+
 test "Program: own class static shadows a same-named ambient namespace export" {
     const first =
         \\declare module "pkg" {
@@ -7981,7 +8026,7 @@ test "Program: unsupported class augmentation cannot publish a partial merged va
     const first =
         \\declare module "pkg" {
         \\  export namespace Nested {
-        \\    export class Box { static get computed(): 1; constructor(); }
+        \\    export class Box { static set computed(value: 1); constructor(); }
         \\  }
         \\}
     ;

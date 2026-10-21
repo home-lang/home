@@ -1065,7 +1065,11 @@ pub const Builder = struct {
                 },
                 .fn_decl, .fn_expr, .arrow_fn => blk: {
                     const function = hir.fnDeclOf(&c.hir, member);
-                    if (function.flags.is_getter or function.flags.is_setter) return null;
+                    if (function.flags.is_setter) return null;
+                    if (function.flags.is_getter) {
+                        if (function.return_type == hir.none_node_id or hir.fnParams(&c.hir, member).len != 0) return null;
+                        break :blk try self.lower(context, function.return_type);
+                    }
                     break :blk try self.functionType(context, hir.fnTypeParams(&c.hir, member), hir.fnParams(&c.hir, member), function.return_type, false);
                 },
                 else => unreachable,
@@ -1075,8 +1079,8 @@ pub const Builder = struct {
                 .name = name,
                 .type = type_expression,
                 .optional = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_optional else hir.fnDeclOf(&c.hir, member).flags.is_optional,
-                .readonly = kind == .object_property and hir.objectPropertyOf(&c.hir, member).is_readonly,
-                .method = kind != .object_property,
+                .readonly = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_readonly else hir.fnDeclOf(&c.hir, member).flags.is_getter,
+                .method = kind != .object_property and !hir.fnDeclOf(&c.hir, member).flags.is_getter,
                 .visibility = if (kind == .object_property) switch (hir.objectPropertyOf(&c.hir, member).visibility) {
                     .public => .public,
                     .private => .private,
@@ -1123,8 +1127,18 @@ pub const Builder = struct {
                         continue;
                     }
                     if (function.name == 0) return self.expression(.unsupported);
-                    if (function.flags.is_getter or function.flags.is_setter) return self.expression(.unsupported);
                     if (c.hir.kindOf(function.name) != .identifier) return self.expression(.unsupported);
+                    if (function.flags.is_setter) return self.expression(.unsupported);
+                    if (function.flags.is_getter) {
+                        if (function.return_type == hir.none_node_id or params.len != 0) return self.expression(.unsupported);
+                        try members.append(self.arena, .{
+                            .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name),
+                            .type = try self.lower(context, function.return_type),
+                            .readonly = true,
+                            .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public,
+                        });
+                        continue;
+                    }
                     try members.append(self.arena, .{ .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name), .type = try self.functionType(context, hir.fnTypeParams(&c.hir, member), params, function.return_type, false), .method = true, .optional = function.flags.is_optional, .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public });
                 },
                 .index_signature => return self.expression(.unsupported),
