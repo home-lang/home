@@ -9,35 +9,7 @@ const Color = image.Color;
 // Crop Region
 // ============================================================================
 
-pub const Region = struct {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-
-    pub fn isValid(self: Region, img_width: u32, img_height: u32) bool {
-        return self.x < img_width and
-            self.y < img_height and
-            self.width > 0 and
-            self.height > 0 and
-            self.x + self.width <= img_width and
-            self.y + self.height <= img_height;
-    }
-
-    pub fn clamp(self: Region, img_width: u32, img_height: u32) Region {
-        const x = @min(self.x, img_width);
-        const y = @min(self.y, img_height);
-        const max_width = img_width - x;
-        const max_height = img_height - y;
-
-        return Region{
-            .x = x,
-            .y = y,
-            .width = @min(self.width, max_width),
-            .height = @min(self.height, max_height),
-        };
-    }
-};
+pub const Region = @import("region.zig").Region;
 
 // ============================================================================
 // Crop Function
