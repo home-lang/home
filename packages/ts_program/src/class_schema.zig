@@ -777,6 +777,12 @@ pub const Builder = struct {
                         break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
                 }
             }
+            if (kind == .const_decl and variable.type_annotation == 0 and
+                c.hir.kindOf(variable.init) == .identifier)
+            {
+                if (try self.importedConstInitializer(context, variable.init)) |imported_type|
+                    break :blk imported_type;
+            }
             const type_source = if (variable.type_annotation != 0)
                 variable.type_annotation
             else if (kind == .const_decl)
@@ -896,6 +902,35 @@ pub const Builder = struct {
             def.body = try self.expression(.{ .intersection = try bases.toOwnedSlice(self.arena) });
         }
         return def;
+    }
+
+    /// A source-owned const initialized from a named import has the imported
+    /// value's type. Retain the resolved declaration identity across the
+    /// Program boundary; an unsupported or ambiguous owner stays unsupported
+    /// instead of manufacturing an `any` type for the consumer.
+    fn importedConstInitializer(self: *Builder, context: Context, node: hir.NodeId) !?*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        const name = hir.identifierOf(&c.hir, node).name;
+        const bound = self.scopedValueSymbol(context.source, node, name) orelse return null;
+        if (!bound.flags.is_import) return null;
+        const imported = importForSymbol(c, bound) orelse return null;
+        if (imported.namespace or imported.is_type_only) return null;
+        const specifier = c.interner.get(hir.importOf(&c.hir, imported.node).module);
+        const resolved = try self.resolveImportedValue(context.source, specifier, imported.name);
+        return switch (resolved) {
+            .declaration => |key| blk: {
+                const target = try self.declaration(key);
+                // A value-initializer cycle has no inferred type to transfer.
+                // Type aliases can be recursive, but `const a = b; const b = a`
+                // is not a productive value declaration.
+                if (target.body == null) break :blk null;
+                break :blk try self.expression(.{ .reference = .{
+                    .declaration = target,
+                    .arguments = &.{},
+                } });
+            },
+            .missing, .external, .unsupported => null,
+        };
     }
 
     fn classConstructors(self: *Builder, context: Context, node: hir.NodeId) !?*const schema.Expression {
@@ -1578,7 +1613,7 @@ pub const Builder = struct {
         return self.resolveImported(source, c.interner.get(hir.importOf(&c.hir, imported.node).module), imported.name);
     }
 
-    const ImportedBinding = struct { node: hir.NodeId, name: []const u8, namespace: bool = false };
+    const ImportedBinding = struct { node: hir.NodeId, name: []const u8, namespace: bool = false, is_type_only: bool = false };
 
     fn importForSymbol(c: *const driver.Compilation, symbol: *const binder.Symbol) ?ImportedBinding {
         var found: ?ImportedBinding = null;
@@ -1587,11 +1622,15 @@ pub const Builder = struct {
             if (statement == hir.none_node_id or c.hir.kindOf(statement) != .import_decl) return null;
             const import = hir.importOf(&c.hir, statement);
             const candidate: ImportedBinding = if (c.hir.kindOf(declaration_node) == .import_specifier)
-                .{ .node = statement, .name = c.interner.get(hir.importSpecifierOf(&c.hir, declaration_node).imported) }
+                .{
+                    .node = statement,
+                    .name = c.interner.get(hir.importSpecifierOf(&c.hir, declaration_node).imported),
+                    .is_type_only = import.is_type_only or hir.importSpecifierOf(&c.hir, declaration_node).is_type_only,
+                }
             else if (import.namespace_binding == declaration_node)
-                .{ .node = statement, .name = "", .namespace = true }
+                .{ .node = statement, .name = "", .namespace = true, .is_type_only = import.is_type_only }
             else if (import.default_binding == declaration_node and !import.is_require_equals)
-                .{ .node = statement, .name = "default" }
+                .{ .node = statement, .name = "default", .is_type_only = import.is_type_only }
             else
                 return null;
             if (found != null) return null;
@@ -1626,6 +1665,26 @@ pub const Builder = struct {
             };
         }
         return symbol;
+    }
+
+    fn scopedValueSymbol(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) ?*binder.Symbol {
+        const c = self.sources[source].compilation;
+        var current = node;
+        var scope = c.module.root;
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            var found = false;
+            for (c.module.scopes.items) |candidate| if (candidate.introducing_node == current) {
+                scope = candidate;
+                found = true;
+                break;
+            };
+            if (found) break;
+        }
+        var current_scope: ?*binder.Scope = scope;
+        while (current_scope) |candidate| : (current_scope = candidate.parent) {
+            if (candidate.values.get(name)) |symbol| return symbol;
+        }
+        return null;
     }
 
     fn scopedNamespaceSymbol(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) ?*binder.Symbol {
@@ -1719,6 +1778,37 @@ pub const Builder = struct {
                 if (span.start != origin.position) continue;
                 switch (owner.compilation.hir.kindOf(@intCast(id))) {
                     .type_alias_decl, .interface_decl, .class_decl => return .{ .declaration = .{ .source = index, .node = @intCast(id) } },
+                    else => {},
+                }
+            }
+        }
+        return .unsupported;
+    }
+
+    fn resolveImportedValue(self: *Builder, source: usize, specifier: []const u8, name: []const u8) error{OutOfMemory}!Resolution {
+        const resolved = if (try self.query.hasAmbientModule(specifier))
+            self.query.resolveModule(specifier, self.sources[source].path, name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            }
+        else filesystem: {
+            const target = self.resolver.resolve(specifier, self.sources[source].path) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            };
+            break :filesystem self.query.resolve(target.path, name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return .unsupported,
+            };
+        };
+        if (!resolved.complete or resolved.ambiguous) return .unsupported;
+        const origin = resolved.value orelse return .unsupported;
+        for (self.sources, 0..) |owner, index| {
+            if (!std.mem.eql(u8, owner.path, origin.path)) continue;
+            for (owner.compilation.hir.spans.items, 0..) |span, id| {
+                if (span.start != origin.position) continue;
+                switch (owner.compilation.hir.kindOf(@intCast(id))) {
+                    .const_decl, .let_decl, .var_decl => return .{ .declaration = .{ .source = index, .node = @intCast(id) } },
                     else => {},
                 }
             }
@@ -2301,6 +2391,59 @@ test "class schema: unannotated const literal remains exact" {
     const result = try graph.class(0, "KEY");
     defer result.deinit(T.allocator);
     try T.expectEqualStrings("~tag", result.declaration.body.?.string);
+}
+
+test "class schema: imported const initializer retains value declaration identity across hops" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/leaf.ts", .text = "export const leafValue: string = 'text';" },
+        .{ .path = "/barrel.ts", .text = "export { leafValue as renamed } from './leaf';" },
+        .{ .path = "/middle.ts", .text = "import { renamed as local } from './barrel'; export const value = local;" },
+        .{ .path = "/outer.ts", .text = "import { value } from './middle'; export const forwarded = value;" },
+    });
+    defer graph.deinit();
+    const result = try graph.class(3, "forwarded");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const middle = result.declaration.body.?.reference.declaration;
+    try T.expectEqualStrings("/middle.ts", middle.path);
+    const leaf = middle.body.?.reference.declaration;
+    try T.expectEqualStrings("/leaf.ts", leaf.path);
+    try T.expectEqual(Primitive.string_t, leaf.body.?.primitive);
+}
+
+test "class schema: ambiguous and circular imported values stay unsupported" {
+    {
+        const graph = try TestGraph.init(&.{
+            .{ .path = "/owner.ts", .text = "import { value } from './barrel'; export const forwarded = value;" },
+            .{ .path = "/barrel.ts", .text = "export * from './left'; export * from './right';" },
+            .{ .path = "/left.ts", .text = "export const value: string = 'left';" },
+            .{ .path = "/right.ts", .text = "export const value: number = 1;" },
+        });
+        defer graph.deinit();
+        const result = try graph.class(0, "forwarded");
+        defer result.deinit(T.allocator);
+        try T.expect(!try result.isSupported(T.allocator));
+    }
+    {
+        const graph = try TestGraph.init(&.{
+            .{ .path = "/a.ts", .text = "import { b } from './b'; export const a = b;" },
+            .{ .path = "/b.ts", .text = "import { a } from './a'; export const b = a;" },
+        });
+        defer graph.deinit();
+        const result = try graph.class(0, "a");
+        defer result.deinit(T.allocator);
+        try T.expect(!try result.isSupported(T.allocator));
+    }
+    {
+        const graph = try TestGraph.init(&.{
+            .{ .path = "/owner.ts", .text = "import { type value } from './leaf'; export const copied = value;" },
+            .{ .path = "/leaf.ts", .text = "export const value: string = 'text';" },
+        });
+        defer graph.deinit();
+        const result = try graph.class(0, "copied");
+        defer result.deinit(T.allocator);
+        try T.expect(!try result.isSupported(T.allocator));
+    }
 }
 
 test "class schema: unresolved imported Array is not a builtin array" {

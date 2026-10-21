@@ -12271,6 +12271,67 @@ test "Program: detached import cycle is retired and can be readmitted" {
     try T.expect(program.fileById(b_id).compilation != null);
 }
 
+test "Program: added transitive imports report errors and replacement retires their graph" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const original = "export const result: number = 0;";
+    const imported = "import { value } from './middle'; export const result: number = value;";
+    const replacement = "import { value } from './good'; export const result: number = value;";
+    const middle = "import { leafValue } from './leaf'; export const value = leafValue;";
+    try vfs.addFile("/proj/main.ts", original);
+    try vfs.addFile("/proj/middle.ts", middle);
+    try vfs.addFile("/proj/leaf.ts", "export const leafValue: string = 'bad';");
+    try vfs.addFile("/proj/good.ts", "export const value: number = 1;");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var source_exports = SourceExportResolver{
+        .resolver = &resolver,
+        .program = &program,
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+    };
+    defer source_exports.arena.deinit();
+    const main_id = try program.add("/proj/main.ts", original);
+    const options: ts_driver.CompileOptions = .{
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    };
+    try T.expectEqual(@as(usize, 0), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+    try vfs.addFile("/proj/main.ts", imported);
+    _ = try program.updateSource("/proj/main.ts", imported);
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    const middle_id = program.lookupPath("/proj/middle.ts") orelse return error.MissingMiddle;
+    const leaf_id = program.lookupPath("/proj/leaf.ts") orelse return error.MissingLeaf;
+    try T.expectEqualSlices(FileId, &.{middle_id}, program.fileById(main_id).imports.items);
+    try T.expectEqualSlices(FileId, &.{leaf_id}, program.fileById(middle_id).imports.items);
+    try expectCompilationHasDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+    try vfs.addFile("/proj/main.ts", replacement);
+    _ = try program.updateSource("/proj/main.ts", replacement);
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expect(program.lookupPath("/proj/middle.ts") == null);
+    try T.expect(program.lookupPath("/proj/leaf.ts") == null);
+    try T.expect(program.fileById(middle_id).compilation == null);
+    try T.expect(program.fileById(leaf_id).compilation == null);
+    try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+    try vfs.addFile("/proj/main.ts", imported);
+    _ = try program.updateSource("/proj/main.ts", imported);
+    resolver.invalidateCaches();
+    _ = try program.recompileChanged(&.{"/proj/main.ts"}, options);
+    try T.expectEqual(main_id, program.lookupPath("/proj/main.ts").?);
+    try T.expectEqual(middle_id, program.lookupPath("/proj/middle.ts").?);
+    try T.expectEqual(leaf_id, program.lookupPath("/proj/leaf.ts").?);
+    try expectCompilationHasDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+}
+
 test "Program: preferred TypeScript source does not inherit a retained CommonJS export" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

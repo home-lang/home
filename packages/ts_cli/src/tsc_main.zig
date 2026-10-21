@@ -5835,6 +5835,39 @@ test "tsc_main: resolver adapter uses admitted in-memory JavaScript revision" {
     try std.testing.expect(!old.exported_value);
 }
 
+test "tsc_main: real transitive imported const inference reaches the consumer" {
+    const main_source = "import { value } from './middle'; export const result: number = value;";
+    const middle_source = "import { leafValue } from './leaf'; export const value = leafValue;";
+    for ([_]bool{ false, true }) |mismatch| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/proj/main.ts", main_source);
+        try vfs.addFile("/proj/middle.ts", middle_source);
+        try vfs.addFile("/proj/leaf.ts", if (mismatch)
+            "export const leafValue: string = 'bad';"
+        else
+            "export const leafValue: number = 1;");
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        const main_id = try program.add("/proj/main.ts", main_source);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        try std.testing.expectEqual(@as(usize, 2), try program.loadImportClosure(options));
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        var count: usize = 0;
+        for (diagnostics) |diagnostic| if (diagnostic.code == 2322) {
+            count += 1;
+        };
+        try std.testing.expectEqual(@as(usize, if (mismatch) 1 else 0), count);
+    }
+}
+
 test "tsc_main: resolver adapter carries prepared local import facts" {
     var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
     defer vfs.deinit();
