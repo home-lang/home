@@ -1,5 +1,5 @@
 // EXIF Metadata Parser/Writer
-// Implements EXIF 2.32 specification
+// Selected classic-TIFF Exif metadata; not a complete conformance checker
 // Based on: https://www.exif.org/Exif2-2.PDF
 
 const std = @import("std");
@@ -52,6 +52,8 @@ pub const Tag = enum(u16) {
     f_number = 0x829D,
     exposure_program = 0x8822,
     iso_speed_ratings = 0x8827,
+    sensitivity_type = 0x8830,
+    iso_speed = 0x8833,
     exif_version = 0x9000,
     shutter_speed_value = 0x9201,
     aperture_value = 0x9202,
@@ -118,29 +120,6 @@ pub const Tag = enum(u16) {
     thumbnail_length = 0x0202,
 
     _,
-};
-
-// Field types
-const FieldType = enum(u16) {
-    byte = 1,
-    ascii = 2,
-    short = 3,
-    long = 4,
-    rational = 5,
-    undefined = 7,
-    slong = 9,
-    srational = 10,
-    _,
-
-    fn size(self: FieldType) usize {
-        return switch (self) {
-            .byte, .ascii, .undefined => 1,
-            .short => 2,
-            .long, .slong => 4,
-            .rational, .srational => 8,
-            else => 1,
-        };
-    }
 };
 
 // ============================================================================
@@ -249,6 +228,8 @@ pub const ExifData = struct {
     // Thumbnail
     thumbnail_offset: u32 = 0,
     thumbnail_length: u32 = 0,
+    /// Owned JPEG bytes, independent of the source TIFF buffer.
+    thumbnail: ?[]const u8 = null,
 
     // Raw tag storage for custom access
     raw_tags: std.AutoHashMap(u16, []const u8),
@@ -261,6 +242,7 @@ pub const ExifData = struct {
     }
 
     pub fn deinit(self: *ExifData) void {
+        if (self.thumbnail) |value| self.allocator.free(value);
         if (self.make) |m| self.allocator.free(m);
         if (self.model) |m| self.allocator.free(m);
         if (self.software) |s| self.allocator.free(s);
@@ -296,243 +278,118 @@ pub const ExifData = struct {
 // EXIF Parser
 // ============================================================================
 
+pub const layout = @import("exif_layout.zig");
+pub const validate = layout.validate;
+
 pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ExifData {
+    const checked = try layout.validate(data);
     var exif = ExifData.init(allocator);
     errdefer exif.deinit();
-
-    if (data.len < 8) return exif;
-
-    // Check for EXIF header
-    var offset: usize = 0;
-    if (std.mem.eql(u8, data[0..6], EXIF_HEADER)) {
-        offset = 6;
+    var extended_iso: ?u32 = null;
+    for (checked.directories[0..checked.count]) |dir| {
+        if (dir.kind == .image) {
+            if (checked.find(dir, 0x0201)) |offset| {
+                const length = checked.find(dir, 0x0202).?;
+                exif.thumbnail_offset = readU32(offset.bytes[0..4], checked.endian == .little);
+                exif.thumbnail_length = readU32(length.bytes[0..4], checked.endian == .little);
+                const copy = try allocator.dupe(u8, checked.data[exif.thumbnail_offset..][0..exif.thumbnail_length]);
+                if (exif.thumbnail) |old| allocator.free(old);
+                exif.thumbnail = copy;
+            }
+        }
+        // Thumbnail dimensions/orientation never overwrite primary metadata.
+        if (!dir.primary) continue;
+        if (dir.kind == .gps) {
+            try parseGps(allocator, checked, dir, &exif);
+        } else if (dir.kind == .image or dir.kind == .exif) {
+            for (0..dir.count) |i| try parseValue(allocator, checked.entry(dir, i), checked.endian == .little, &exif);
+            if (checked.find(dir, 0x8833)) |value| extended_iso = readU32(value.bytes[0..4], checked.endian == .little);
+        }
     }
-
-    // Determine byte order
-    if (offset + 4 > data.len) return exif;
-    const is_little_endian = std.mem.eql(u8, data[offset..][0..4], &TIFF_LITTLE_ENDIAN);
-    const is_big_endian = std.mem.eql(u8, data[offset..][0..4], &TIFF_BIG_ENDIAN);
-
-    if (!is_little_endian and !is_big_endian) {
-        return exif;
-    }
-
-    const tiff_start = offset;
-    offset += 4;
-
-    // Read IFD0 offset
-    if (offset + 4 > data.len) return exif;
-    const ifd0_offset = readU32(data[offset..][0..4], is_little_endian);
-    offset = std.math.add(usize, tiff_start, ifd0_offset) catch return exif;
-
-    // Parse IFD0
-    try parseIFD(allocator, data, tiff_start, &offset, is_little_endian, &exif, false);
-
+    if (extended_iso) |value| exif.iso_speed = value;
     return exif;
 }
-
-fn parseIFD(allocator: std.mem.Allocator, data: []const u8, tiff_start: usize, offset: *usize, little_endian: bool, exif: *ExifData, is_gps: bool) std.mem.Allocator.Error!void {
-    if (offset.* + 2 > data.len) return;
-
-    const num_entries = readU16(data[offset.*..][0..2], little_endian);
-    offset.* += 2;
-
-    var i: usize = 0;
-    while (i < num_entries and offset.* + 12 <= data.len) : (i += 1) {
-        const tag_id = readU16(data[offset.*..][0..2], little_endian);
-        const field_type: FieldType = @enumFromInt(readU16(data[offset.* + 2 ..][0..2], little_endian));
-        const count = readU32(data[offset.* + 4 ..][0..4], little_endian);
-        const value_offset_raw = data[offset.* + 8 ..][0..4];
-
-        const value_size = std.math.mul(usize, field_type.size(), count) catch {
-            offset.* += 12;
-            continue;
-        };
-        var value_data: []const u8 = undefined;
-
-        if (value_size <= 4) {
-            value_data = value_offset_raw[0..@min(4, value_size)];
-        } else {
-            const value_offset = readU32(value_offset_raw, little_endian);
-            const abs_offset = std.math.add(usize, tiff_start, value_offset) catch {
-                offset.* += 12;
-                continue;
-            };
-            if (abs_offset <= data.len and value_size <= data.len - abs_offset) {
-                value_data = data[abs_offset..][0..value_size];
-            } else {
-                offset.* += 12;
-                continue;
-            }
-        }
-
-        // Parse specific tags
-        const tag: Tag = @enumFromInt(tag_id);
-
-        if (is_gps) {
-            try parseGPSTag(allocator, tag, field_type, count, value_data, little_endian, exif);
-        } else {
-            try parseExifTag(allocator, tag, field_type, count, value_data, little_endian, exif, data, tiff_start);
-        }
-
-        offset.* += 12;
-    }
+fn text(allocator: std.mem.Allocator, slot: *?[]const u8, bytes: []const u8) !void {
+    const copy = try allocator.dupe(u8, trimNull(bytes));
+    if (slot.*) |old| allocator.free(old);
+    slot.* = copy;
 }
-
-fn parseExifTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData, data: []const u8, tiff_start: usize) std.mem.Allocator.Error!void {
+fn parseValue(allocator: std.mem.Allocator, value: layout.Entry, little: bool, exif: *ExifData) !void {
+    const bytes = value.bytes;
+    const tag: Tag = @enumFromInt(value.tag);
     switch (tag) {
-        .make => {
-            exif.make = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .model => {
-            exif.model = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .software => {
-            exif.software = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .artist => {
-            exif.artist = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .copyright => {
-            exif.copyright = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .lens_make => {
-            exif.lens_make = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .lens_model => {
-            exif.lens_model = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .date_time => {
-            exif.date_time = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .date_time_original => {
-            exif.date_time_original = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .date_time_digitized => {
-            exif.date_time_digitized = try allocator.dupe(u8, trimNull(value_data));
-        },
-        .pixel_x_dimension, .image_width => {
-            exif.width = if (field_type == .short) readU16(value_data[0..2], little_endian) else readU32(value_data[0..4], little_endian);
-        },
-        .pixel_y_dimension, .image_length => {
-            exif.height = if (field_type == .short) readU16(value_data[0..2], little_endian) else readU32(value_data[0..4], little_endian);
-        },
-        .orientation => {
-            exif.orientation = readU16(value_data[0..2], little_endian);
-        },
-        .exposure_time => {
-            exif.exposure_time = readRational(value_data[0..8], little_endian);
-        },
-        .f_number => {
-            exif.f_number = readRational(value_data[0..8], little_endian);
-        },
-        .iso_speed_ratings => {
-            exif.iso_speed = if (field_type == .short) readU16(value_data[0..2], little_endian) else readU32(value_data[0..4], little_endian);
-        },
-        .exposure_program => {
-            exif.exposure_program = readU16(value_data[0..2], little_endian);
-        },
-        .exposure_mode => {
-            exif.exposure_mode = readU16(value_data[0..2], little_endian);
-        },
-        .exposure_bias_value => {
-            exif.exposure_bias = readSRational(value_data[0..8], little_endian);
-        },
-        .focal_length => {
-            exif.focal_length = readRational(value_data[0..8], little_endian);
-        },
-        .focal_length_in_35mm_film => {
-            exif.focal_length_35mm = readU16(value_data[0..2], little_endian);
-        },
-        .max_aperture_value => {
-            exif.max_aperture = readRational(value_data[0..8], little_endian);
-        },
-        .flash => {
-            exif.flash = readU16(value_data[0..2], little_endian);
-        },
-        .white_balance => {
-            exif.white_balance = readU16(value_data[0..2], little_endian);
-        },
-        .light_source => {
-            exif.light_source = readU16(value_data[0..2], little_endian);
-        },
-        .metering_mode => {
-            exif.metering_mode = readU16(value_data[0..2], little_endian);
-        },
-        .scene_capture_type => {
-            exif.scene_capture_type = readU16(value_data[0..2], little_endian);
-        },
-        .color_space => {
-            exif.color_space = readU16(value_data[0..2], little_endian);
-        },
-        .thumbnail_offset => {
-            exif.thumbnail_offset = readU32(value_data[0..4], little_endian);
-        },
-        .thumbnail_length => {
-            exif.thumbnail_length = readU32(value_data[0..4], little_endian);
-        },
-        .exif_ifd_pointer => {
-            // Parse EXIF sub-IFD
-            const sub_offset = readU32(value_data[0..4], little_endian);
-            var new_offset = std.math.add(usize, tiff_start, sub_offset) catch return;
-            try parseIFD(allocator, data, tiff_start, &new_offset, little_endian, exif, false);
-        },
-        .gps_info_ifd_pointer => {
-            // Parse GPS IFD
-            const gps_offset = readU32(value_data[0..4], little_endian);
-            var new_offset = std.math.add(usize, tiff_start, gps_offset) catch return;
-            try parseIFD(allocator, data, tiff_start, &new_offset, little_endian, exif, true);
-        },
+        .make => try text(allocator, &exif.make, bytes),
+        .model => try text(allocator, &exif.model, bytes),
+        .software => try text(allocator, &exif.software, bytes),
+        .artist => try text(allocator, &exif.artist, bytes),
+        .copyright => try text(allocator, &exif.copyright, bytes),
+        .lens_make => try text(allocator, &exif.lens_make, bytes),
+        .lens_model => try text(allocator, &exif.lens_model, bytes),
+        .date_time => try text(allocator, &exif.date_time, bytes),
+        .date_time_original => try text(allocator, &exif.date_time_original, bytes),
+        .date_time_digitized => try text(allocator, &exif.date_time_digitized, bytes),
+        .pixel_x_dimension, .image_width => exif.width = if (value.field_type == 3) readU16(bytes[0..2], little) else readU32(bytes[0..4], little),
+        .pixel_y_dimension, .image_length => exif.height = if (value.field_type == 3) readU16(bytes[0..2], little) else readU32(bytes[0..4], little),
+        .orientation => exif.orientation = readU16(bytes[0..2], little),
+        .exposure_time => exif.exposure_time = readRational(bytes[0..8], little),
+        .f_number => exif.f_number = readRational(bytes[0..8], little),
+        .iso_speed_ratings => exif.iso_speed = if (value.field_type == 3) readU16(bytes[0..2], little) else readU32(bytes[0..4], little),
+        .iso_speed => exif.iso_speed = readU32(bytes[0..4], little),
+        .exposure_program => exif.exposure_program = readU16(bytes[0..2], little),
+        .exposure_mode => exif.exposure_mode = readU16(bytes[0..2], little),
+        .exposure_bias_value => exif.exposure_bias = readSRational(bytes[0..8], little),
+        .focal_length => exif.focal_length = readRational(bytes[0..8], little),
+        .focal_length_in_35mm_film => exif.focal_length_35mm = readU16(bytes[0..2], little),
+        .max_aperture_value => exif.max_aperture = readRational(bytes[0..8], little),
+        .flash => exif.flash = readU16(bytes[0..2], little),
+        .white_balance => exif.white_balance = readU16(bytes[0..2], little),
+        .light_source => exif.light_source = readU16(bytes[0..2], little),
+        .metering_mode => exif.metering_mode = readU16(bytes[0..2], little),
+        .scene_capture_type => exif.scene_capture_type = readU16(bytes[0..2], little),
+        .color_space => exif.color_space = readU16(bytes[0..2], little),
+        .thumbnail_offset, .thumbnail_length => {}, // image IFD pairs handled together above
+        .exif_ifd_pointer, .gps_info_ifd_pointer, .interoperability_ifd_pointer => {},
         else => {
-            _ = count;
+            const copy = try allocator.dupe(u8, bytes);
+            const old = exif.raw_tags.fetchPut(value.tag, copy) catch |err| {
+                allocator.free(copy);
+                return err;
+            };
+            if (old) |previous| allocator.free(previous.value);
         },
     }
 }
-
-fn parseGPSTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, count: u32, value_data: []const u8, little_endian: bool, exif: *ExifData) std.mem.Allocator.Error!void {
-    _ = field_type;
-    _ = count;
-
-    switch (tag) {
-        .gps_latitude_ref => {
-            if (exif.gps_latitude) |*lat| {
-                lat.ref = value_data[0];
-            }
-        },
-        .gps_latitude => {
-            if (value_data.len >= 24) {
-                exif.gps_latitude = GPSCoordinate{
-                    .degrees = readRational(value_data[0..8], little_endian).toFloat(),
-                    .minutes = readRational(value_data[8..16], little_endian).toFloat(),
-                    .seconds = readRational(value_data[16..24], little_endian).toFloat(),
-                    .ref = 'N',
-                };
-            }
-        },
-        .gps_longitude_ref => {
-            if (exif.gps_longitude) |*lon| {
-                lon.ref = value_data[0];
-            }
-        },
-        .gps_longitude => {
-            if (value_data.len >= 24) {
-                exif.gps_longitude = GPSCoordinate{
-                    .degrees = readRational(value_data[0..8], little_endian).toFloat(),
-                    .minutes = readRational(value_data[8..16], little_endian).toFloat(),
-                    .seconds = readRational(value_data[16..24], little_endian).toFloat(),
-                    .ref = 'E',
-                };
-            }
-        },
-        .gps_altitude => {
-            if (value_data.len >= 8) {
-                exif.gps_altitude = readRational(value_data[0..8], little_endian).toFloat();
-            }
-        },
-        .gps_date_stamp => {
-            exif.gps_datestamp = try allocator.dupe(u8, trimNull(value_data));
-        },
-        else => {},
+fn parseGps(allocator: std.mem.Allocator, checked: layout.View, dir: layout.Directory, exif: *ExifData) !void {
+    const little = checked.endian == .little;
+    for ([_]u16{ 2, 4 }) |id| if (checked.find(dir, id)) |value| {
+        const reference = checked.find(dir, id - 1) orelse return error.InvalidExif;
+        const ref = reference.bytes[0];
+        if ((id == 2 and ref != 'N' and ref != 'S') or (id == 4 and ref != 'E' and ref != 'W')) return error.InvalidExif;
+        const coordinate = GPSCoordinate{
+            .degrees = readRational(value.bytes[0..8], little).toFloat(),
+            .minutes = readRational(value.bytes[8..16], little).toFloat(),
+            .seconds = readRational(value.bytes[16..24], little).toFloat(),
+            .ref = ref,
+        };
+        const maximum: f64 = if (id == 2) 90 else 180;
+        if (@abs(coordinate.toDecimal()) > maximum or coordinate.degrees > maximum or coordinate.minutes >= 60 or coordinate.seconds >= 60 or (coordinate.degrees == maximum and (coordinate.minutes != 0 or coordinate.seconds != 0))) return error.InvalidExif;
+        if (id == 2) exif.gps_latitude = coordinate else exif.gps_longitude = coordinate;
+    };
+    if (checked.find(dir, 6)) |value| {
+        const sign = if (checked.find(dir, 5)) |v| v.bytes[0] else 0;
+        if (sign > 1) return error.InvalidExif;
+        const altitude = readRational(value.bytes[0..8], little).toFloat();
+        exif.gps_altitude = if (sign == 1) -altitude else altitude;
+    }
+    if (checked.find(dir, 29)) |value| try text(allocator, &exif.gps_datestamp, value.bytes);
+    if (checked.find(dir, 7)) |value| {
+        const hours = readRational(value.bytes[0..8], little).toFloat();
+        const minutes = readRational(value.bytes[8..16], little).toFloat();
+        const seconds = readRational(value.bytes[16..24], little).toFloat();
+        if (hours >= 24 or minutes >= 60 or seconds >= 60 or @floor(hours) != hours or @floor(minutes) != minutes) return error.InvalidExif;
+        const copy = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}:{s}{d}", .{ @as(u8, @intFromFloat(hours)), @as(u8, @intFromFloat(minutes)), if (seconds < 10) @as([]const u8, "0") else "", seconds });
+        if (exif.gps_timestamp) |old| allocator.free(old);
+        exif.gps_timestamp = copy;
     }
 }
 
@@ -540,105 +397,99 @@ fn parseGPSTag(allocator: std.mem.Allocator, tag: Tag, field_type: FieldType, co
 // EXIF Writer
 // ============================================================================
 
+pub const serialization = @import("exif_builder.zig");
+pub const Builder = serialization.Builder;
+
+/// Serialize the selected typed fields. Zero-valued legacy scalar fields are
+/// omitted (their structure has no presence bits). raw_tags is a read-only byte
+/// projection without field types/IFD identity; use Builder for custom fields.
+pub fn encodeTiff(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
+    var writer = Builder.init(allocator);
+    defer writer.deinit();
+    inline for (.{ .{ "make", Tag.make }, .{ "model", Tag.model }, .{ "software", Tag.software }, .{ "artist", Tag.artist }, .{ "copyright", Tag.copyright }, .{ "date_time", Tag.date_time } }) |field| {
+        if (@field(exif, field[0])) |value| try writer.ascii(.image, @intFromEnum(field[1]), value);
+    }
+    inline for (.{ .{ "lens_make", Tag.lens_make }, .{ "lens_model", Tag.lens_model }, .{ "date_time_original", Tag.date_time_original }, .{ "date_time_digitized", Tag.date_time_digitized } }) |field| {
+        if (@field(exif, field[0])) |value| try writer.ascii(.exif, @intFromEnum(field[1]), value);
+    }
+    if (exif.width != 0) try writer.long(.exif, @intFromEnum(Tag.pixel_x_dimension), exif.width);
+    if (exif.height != 0) try writer.long(.exif, @intFromEnum(Tag.pixel_y_dimension), exif.height);
+    if (exif.orientation > 8) return error.InvalidExif;
+    if (exif.orientation != 0) try writer.short(.image, @intFromEnum(Tag.orientation), exif.orientation);
+    inline for (.{ .{ "exposure_time", Tag.exposure_time }, .{ "f_number", Tag.f_number }, .{ "focal_length", Tag.focal_length }, .{ "max_aperture", Tag.max_aperture_value } }) |field| {
+        if (@field(exif, field[0])) |value| try writer.rational(.exif, @intFromEnum(field[1]), value.numerator, value.denominator);
+    }
+    if (exif.exposure_bias) |value| try writer.srational(.exif, @intFromEnum(Tag.exposure_bias_value), value.numerator, value.denominator);
+    if (exif.iso_speed != 0) {
+        try writer.short(.exif, @intFromEnum(Tag.iso_speed_ratings), @intCast(@min(exif.iso_speed, 65535)));
+        try writer.short(.exif, @intFromEnum(Tag.sensitivity_type), 3);
+        try writer.long(.exif, @intFromEnum(Tag.iso_speed), exif.iso_speed);
+    }
+    inline for (.{ .{ "exposure_program", Tag.exposure_program }, .{ "exposure_mode", Tag.exposure_mode }, .{ "focal_length_35mm", Tag.focal_length_in_35mm_film }, .{ "flash", Tag.flash }, .{ "white_balance", Tag.white_balance }, .{ "light_source", Tag.light_source }, .{ "metering_mode", Tag.metering_mode }, .{ "scene_capture_type", Tag.scene_capture_type }, .{ "color_space", Tag.color_space } }) |field| {
+        const value = @field(exif, field[0]);
+        if (value != 0) try writer.short(.exif, @intFromEnum(field[1]), value);
+    }
+    if (exif.gps_latitude) |value| try writeCoordinate(&writer, value, 2);
+    if (exif.gps_longitude) |value| try writeCoordinate(&writer, value, 4);
+    if (exif.gps_altitude) |value| {
+        if (!std.math.isFinite(value)) return error.InvalidExif;
+        const reference = [_]u8{if (value < 0) 1 else 0};
+        try writer.bytes(.gps, 5, 1, 1, &reference);
+        const rational = try floatRational(@abs(value));
+        try writer.rational(.gps, 6, rational.numerator, rational.denominator);
+    }
+    if (exif.gps_datestamp) |value| try writer.ascii(.gps, 29, value);
+    if (exif.gps_timestamp) |value| {
+        var parts = std.mem.splitScalar(u8, value, ':');
+        var body: [24]u8 = undefined;
+        for (0..3) |i| {
+            const token = parts.next() orelse return error.InvalidExif;
+            const number = std.fmt.parseFloat(f64, token) catch return error.InvalidExif;
+            if (!std.math.isFinite(number) or number < 0 or number >= @as(f64, if (i == 0) 24 else 60) or (i < 2 and @floor(number) != number)) return error.InvalidExif;
+            const rational = try floatRational(number);
+            if (rational.toFloat() >= @as(f64, if (i == 0) 24 else 60)) return error.InvalidExif;
+            std.mem.writeInt(u32, body[i * 8 ..][0..4], rational.numerator, .little);
+            std.mem.writeInt(u32, body[i * 8 + 4 ..][0..4], rational.denominator, .little);
+        }
+        if (parts.next() != null) return error.InvalidExif;
+        try writer.bytes(.gps, 7, 5, 3, &body);
+    }
+    if (exif.gps_latitude != null or exif.gps_longitude != null or exif.gps_altitude != null or exif.gps_datestamp != null or exif.gps_timestamp != null) try writer.bytes(.gps, 0, 1, 4, &.{ 2, 3, 0, 0 });
+    if (exif.thumbnail == null and (exif.thumbnail_offset != 0 or exif.thumbnail_length != 0)) return error.InvalidThumbnail;
+    return writer.finish(.{ .thumbnail = exif.thumbnail });
+}
 pub fn encode(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    // EXIF header
-    try output.appendSlice(allocator, EXIF_HEADER);
-
-    // TIFF header (little endian)
-    try output.appendSlice(allocator, &TIFF_LITTLE_ENDIAN);
-
-    // IFD0 offset (8 bytes from TIFF start)
-    try output.appendSlice(allocator, &[_]u8{ 0x08, 0x00, 0x00, 0x00 });
-
-    // Build IFD0 entries
-    var entries: std.ArrayList([12]u8) = .empty;
-    defer entries.deinit(allocator);
-
-    var extra_data: std.ArrayList(u8) = .empty;
-    defer extra_data.deinit(allocator);
-
-    var num_entries: u16 = 0;
-    if (exif.make != null) num_entries += 1;
-    if (exif.model != null) num_entries += 1;
-    if (exif.software != null) num_entries += 1;
-    if (exif.orientation != 0) num_entries += 1;
-    const extra_data_offset: u32 = 8 + 2 + @as(u32, num_entries) * 12 + 4;
-
-    // Add entries for non-null fields
-    if (exif.make) |make| {
-        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .make, make);
-    }
-    if (exif.model) |model| {
-        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .model, model);
-    }
-    if (exif.software) |software| {
-        try addStringEntry(allocator, &entries, &extra_data, extra_data_offset, .software, software);
-    }
-
-    // Orientation
-    if (exif.orientation != 0) {
-        try addShortEntry(allocator, &entries, .orientation, exif.orientation);
-    }
-
-    // Write IFD0
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, num_entries)));
-
-    for (entries.items) |entry| {
-        try output.appendSlice(allocator, &entry);
-    }
-
-    // Next IFD offset (0 = no more)
-    try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
-
-    // Extra data
-    try output.appendSlice(allocator, extra_data.items);
-
-    return output.toOwnedSlice(allocator);
+    const tiff = try encodeTiff(allocator, exif);
+    defer allocator.free(tiff);
+    const output = try allocator.alloc(u8, EXIF_HEADER.len + tiff.len);
+    @memcpy(output[0..EXIF_HEADER.len], EXIF_HEADER);
+    @memcpy(output[EXIF_HEADER.len..], tiff);
+    return output;
 }
-
-fn addStringEntry(allocator: std.mem.Allocator, entries: *std.ArrayList([12]u8), extra_data: *std.ArrayList(u8), extra_data_offset: u32, tag: Tag, value: []const u8) !void {
-    var entry: [12]u8 = undefined;
-
-    // Tag
-    std.mem.writeInt(u16, entry[0..2], @intFromEnum(tag), .little);
-    // Type (ASCII)
-    std.mem.writeInt(u16, entry[2..4], 2, .little);
-    // Count
-    std.mem.writeInt(u32, entry[4..8], @intCast(value.len + 1), .little);
-
-    if (value.len + 1 <= 4) {
-        // Value fits in entry
-        @memset(entry[8..12], 0);
-        @memcpy(entry[8..][0..@min(4, value.len)], value[0..@min(4, value.len)]);
-    } else {
-        // Value offset
-        const offset = std.math.add(u32, extra_data_offset, @intCast(extra_data.items.len)) catch return error.MetadataTooLarge;
-        std.mem.writeInt(u32, entry[8..12], offset, .little);
-        try extra_data.appendSlice(allocator, value);
-        try extra_data.append(allocator, 0); // Null terminator
-    }
-
-    try entries.append(allocator, entry);
+fn floatRational(value: f64) !Rational {
+    const maximum = std.math.maxInt(u32);
+    if (!std.math.isFinite(value) or value < 0 or value > maximum) return error.InvalidExif;
+    var denominator: u32 = 1_000_000;
+    while (@round(value * @as(f64, @floatFromInt(denominator))) > maximum) denominator /= 10;
+    return .{ .numerator = @intFromFloat(@round(value * @as(f64, @floatFromInt(denominator)))), .denominator = denominator };
 }
-
-fn addShortEntry(allocator: std.mem.Allocator, entries: *std.ArrayList([12]u8), tag: Tag, value: u16) !void {
-    var entry: [12]u8 = undefined;
-
-    // Tag
-    std.mem.writeInt(u16, entry[0..2], @intFromEnum(tag), .little);
-    // Type (SHORT)
-    std.mem.writeInt(u16, entry[2..4], 3, .little);
-    // Count
-    std.mem.writeInt(u32, entry[4..8], 1, .little);
-    // Value
-    std.mem.writeInt(u16, entry[8..10], value, .little);
-    entry[10] = 0;
-    entry[11] = 0;
-
-    try entries.append(allocator, entry);
+fn writeCoordinate(writer: *Builder, coordinate: GPSCoordinate, tag: u16) !void {
+    const maximum: f64 = if (tag == 2) 90 else 180;
+    if ((tag == 2 and coordinate.ref != 'N' and coordinate.ref != 'S') or (tag == 4 and coordinate.ref != 'E' and coordinate.ref != 'W')) return error.InvalidExif;
+    const values = [_]f64{ coordinate.degrees, coordinate.minutes, coordinate.seconds };
+    for (values) |value| if (!std.math.isFinite(value) or value < 0) return error.InvalidExif;
+    if (@abs(coordinate.toDecimal()) > maximum or coordinate.degrees > maximum or coordinate.minutes >= 60 or coordinate.seconds >= 60 or (coordinate.degrees == maximum and (coordinate.minutes != 0 or coordinate.seconds != 0))) return error.InvalidExif;
+    if ((try floatRational(coordinate.degrees)).toFloat() == maximum and (coordinate.minutes != 0 or coordinate.seconds != 0)) return error.InvalidExif;
+    const reference = [_]u8{ coordinate.ref, 0 };
+    try writer.bytes(.gps, tag - 1, 2, 2, &reference);
+    var body: [24]u8 = undefined;
+    for (values, 0..) |value, i| {
+        const rational = try floatRational(value);
+        if ((i == 0 and rational.toFloat() > maximum) or (i != 0 and rational.toFloat() >= 60)) return error.InvalidExif;
+        std.mem.writeInt(u32, body[i * 8 ..][0..4], rational.numerator, .little);
+        std.mem.writeInt(u32, body[i * 8 + 4 ..][0..4], rational.denominator, .little);
+    }
+    try writer.bytes(.gps, tag, 5, 3, &body);
 }
 
 // ============================================================================

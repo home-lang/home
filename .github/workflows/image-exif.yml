@@ -1,0 +1,35 @@
+name: Image Exif primitives
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', '.github/workflows/image-exif.yml']
+  pull_request:
+    paths: ['packages/image/src/metadata/exif*', 'packages/image/tests/exif*', '.github/workflows/image-exif.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  metadata:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - run: sudo apt-get update && sudo apt-get install -y libexif-dev pkg-config
+      - name: Bounds, ownership, typed serialization and independent reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" packages/image/src/metadata/exif.zig
+            zig test -O "$mode" --dep exif -Mroot=packages/image/tests/exif_test.zig -Mexif=packages/image/src/metadata/exif.zig
+          done
+          zig build-obj -O ReleaseSafe -fcompiler-rt -lc --dep exif -Mroot=packages/image/tests/exif_fixture.zig -Mexif=packages/image/src/metadata/exif.zig -femit-bin=/tmp/home-exif.o
+          cc -std=c11 -Wall -Wextra -Werror packages/image/tests/exif_libexif.c /tmp/home-exif.o $(pkg-config --cflags --libs libexif) -lm -o /tmp/home-exif-test
+          /tmp/home-exif-test

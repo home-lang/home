@@ -16,3 +16,10 @@ rejects overflow-prone coordinates/extents without arithmetic traps. Existing
 [Viewport plans](docs/viewport.md) combine checked regions and exact orientation
 maps for integer aspect fitting, overlay placement and independent texture UVs.
 They own no pixels or renderer and export as `ViewportPlan`.
+
+### Selected Exif metadata
+
+[Exif parsing and serialization](docs/exif.md) validate bounded classic-TIFF
+metadata before owned reads, support typed IFD construction and copy thumbnail
+bytes. Standalone tests include an independent libexif reader/writer. This is
+metadata support; embedding and camera capture policy are separate layers.
