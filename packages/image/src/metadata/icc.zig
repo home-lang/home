@@ -1,14 +1,18 @@
 // ICC Profile Parser/Writer
-// Implements ICC.1:2022 specification
+// Selected ICC v2/v4 metadata and matrix/TRC primitives; not a complete CMM.
 // Based on: https://www.color.org/specification/ICC.1-2022-05.pdf
 
 const std = @import("std");
+pub const layout = @import("icc_layout.zig");
+pub const Curve = layout.Curve;
+pub const Channel = enum { red, green, blue };
+pub const validate = layout.validate;
+pub const validateRgb = layout.validateRgb;
 
 // ============================================================================
 // ICC Constants
 // ============================================================================
 
-const ICC_HEADER_SIZE = 128;
 const ICC_MAGIC = "acsp";
 
 // Profile class signatures
@@ -117,7 +121,7 @@ pub const ICCProfile = struct {
     profile_class: ProfileClass = .display_device,
     color_space: ColorSpace = .rgb,
     pcs: ColorSpace = .xyz, // Profile Connection Space
-    creation_date: [12]u8 = undefined,
+    creation_date: [12]u8 = @splat(0),
     signature: u32 = 0,
     platform: u32 = 0,
     flags: u32 = 0,
@@ -139,7 +143,8 @@ pub const ICCProfile = struct {
     // White point
     white_point: XYZNumber = .{ .x = 0.9642, .y = 1.0, .z = 0.8249 },
 
-    // TRC (Tone Response Curve) - simplified as gamma
+    // Legacy scalar summaries (sampled curves report an approximation). Use curve()
+    // for actual transfer evaluation; gamma alone cannot represent sRGB.
     red_gamma: f64 = 2.2,
     green_gamma: f64 = 2.2,
     blue_gamma: f64 = 2.2,
@@ -165,41 +170,38 @@ pub const ICCProfile = struct {
         self.tags.deinit();
     }
 
+    /// Borrowed curve bytes remain valid until this profile is deinitialized or
+    /// its public raw-tag map is changed. No caller input buffer is retained.
+    pub fn curve(self: *const ICCProfile, channel: Channel) !Curve {
+        const name: *const [4]u8 = switch (channel) {
+            .red => "rTRC",
+            .green => "gTRC",
+            .blue => "bTRC",
+        };
+        const data = self.tags.get(std.mem.readInt(u32, name, .big)) orelse return error.MissingCurve;
+        return Curve.init(data);
+    }
     pub fn isSRGB(self: *const ICCProfile) bool {
-        // Check if this profile is close to sRGB
-        if (self.color_space != .rgb) return false;
-
-        // Check colorants against sRGB primaries
-        const srgb_red = XYZNumber{ .x = 0.4358, .y = 0.2224, .z = 0.0139 };
-        const srgb_green = XYZNumber{ .x = 0.3853, .y = 0.7170, .z = 0.0971 };
-        const srgb_blue = XYZNumber{ .x = 0.1430, .y = 0.0606, .z = 0.7139 };
-
-        const tolerance = 0.01;
-
-        if (self.red_colorant) |rc| {
-            if (@abs(rc.x - srgb_red.x) > tolerance or
-                @abs(rc.y - srgb_red.y) > tolerance)
-            {
-                return false;
+        if (self.color_space != .rgb or self.pcs != .xyz) return false;
+        const actual = [_]?XYZNumber{ self.red_colorant, self.green_colorant, self.blue_colorant };
+        const expected = [_]XYZNumber{
+            .{ .x = 0.436030342570117, .y = 0.222438466210245, .z = 0.013897440074263 },
+            .{ .x = 0.385101860087134, .y = 0.716942745571917, .z = 0.097076381494207 },
+            .{ .x = 0.143067806654203, .y = 0.060618777416563, .z = 0.713926257896652 },
+        };
+        for (actual, expected) |maybe, reference| {
+            const value = maybe orelse return false;
+            if (@abs(value.x - reference.x) > 0.0002 or @abs(value.y - reference.y) > 0.0002 or @abs(value.z - reference.z) > 0.0002) return false;
+        }
+        if (@abs(self.white_point.x - 0.9642) > 0.0002 or @abs(self.white_point.y - 1) > 0.0002 or @abs(self.white_point.z - 0.8249) > 0.0002) return false;
+        for ([_]Channel{ .red, .green, .blue }) |channel| {
+            const trc = self.curve(channel) catch return false;
+            for (0..257) |i| {
+                const x = @as(f64, @floatFromInt(i)) / 256;
+                const value = trc.evaluate(x) catch return false;
+                if (@abs(value - srgbLinear(x)) > 0.00005) return false;
             }
         }
-
-        if (self.green_colorant) |gc| {
-            if (@abs(gc.x - srgb_green.x) > tolerance or
-                @abs(gc.y - srgb_green.y) > tolerance)
-            {
-                return false;
-            }
-        }
-
-        if (self.blue_colorant) |bc| {
-            if (@abs(bc.x - srgb_blue.x) > tolerance or
-                @abs(bc.y - srgb_blue.y) > tolerance)
-            {
-                return false;
-            }
-        }
-
         return true;
     }
 };
@@ -209,10 +211,10 @@ pub const ICCProfile = struct {
 // ============================================================================
 
 pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ICCProfile {
+    const checked = try layout.validate(data);
+    try checked.checkOwnedBudget(64 * 1024 * 1024);
     var profile = ICCProfile.init(allocator);
     errdefer profile.deinit();
-
-    if (data.len < ICC_HEADER_SIZE) return profile;
 
     // Parse header
     profile.size = std.mem.readInt(u32, data[0..4], .big);
@@ -226,11 +228,6 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ICCProfile {
 
     profile.signature = std.mem.readInt(u32, data[36..40], .big);
 
-    // Validate signature
-    if (!std.mem.eql(u8, data[36..40], ICC_MAGIC)) {
-        return profile;
-    }
-
     profile.platform = std.mem.readInt(u32, data[40..44], .big);
     profile.flags = std.mem.readInt(u32, data[44..48], .big);
     profile.device_manufacturer = std.mem.readInt(u32, data[48..52], .big);
@@ -242,8 +239,6 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !ICCProfile {
     profile.illuminant = XYZNumber.fromS15Fixed16(data[68..80]);
 
     // Read tag table
-    if (data.len < 132) return profile;
-
     const tag_count = std.mem.readInt(u32, data[128..132], .big);
     var pos: usize = 132;
 
@@ -302,26 +297,35 @@ fn parseTag(allocator: std.mem.Allocator, sig: u32, data: []const u8, profile: *
             }
         },
         .red_trc => {
+            _ = try Curve.init(data);
+            try rememberTag(allocator, sig, data, profile);
             profile.red_gamma = parseTRCGamma(data, tag_type);
         },
         .green_trc => {
+            _ = try Curve.init(data);
+            try rememberTag(allocator, sig, data, profile);
             profile.green_gamma = parseTRCGamma(data, tag_type);
         },
         .blue_trc => {
+            _ = try Curve.init(data);
+            try rememberTag(allocator, sig, data, profile);
             profile.blue_gamma = parseTRCGamma(data, tag_type);
         },
         else => {
             // Store raw data for unknown tags
-            const tag_copy = try allocator.dupe(u8, data);
-            const previous = profile.tags.fetchPut(sig, tag_copy) catch |err| {
-                allocator.free(tag_copy);
-                return err;
-            };
-            if (previous) |entry| allocator.free(entry.value);
+            try rememberTag(allocator, sig, data, profile);
         },
     }
 }
 
+fn rememberTag(allocator: std.mem.Allocator, sig: u32, data: []const u8, profile: *ICCProfile) !void {
+    const copy = try allocator.dupe(u8, data);
+    const previous = profile.tags.fetchPut(sig, copy) catch |err| {
+        allocator.free(copy);
+        return err;
+    };
+    if (previous) |entry| allocator.free(entry.value);
+}
 fn parseTextTag(allocator: std.mem.Allocator, data: []const u8, tag_type: TagType) !?[]const u8 {
     switch (tag_type) {
         .text => {
@@ -342,44 +346,29 @@ fn parseTextTag(allocator: std.mem.Allocator, data: []const u8, tag_type: TagTyp
             }
         },
         .mluc => {
-            // Multi-localized unicode
-            if (data.len > 16) {
-                const record_count = std.mem.readInt(u32, data[8..12], .big);
-                const record_size = std.mem.readInt(u32, data[12..16], .big);
-                _ = record_size;
-
-                if (record_count > 0 and data.len > 28) {
-                    // Get first record (usually en_US)
-                    const string_length = std.mem.readInt(u32, data[20..24], .big);
-                    const string_offset = std.mem.readInt(u32, data[24..28], .big);
-
-                    if (string_offset + string_length <= data.len) {
-                        // UTF-16BE to ASCII (simplified)
-                        const utf16_data = data[string_offset..][0..string_length];
-                        var ascii = try allocator.alloc(u8, string_length / 2);
-                        errdefer allocator.free(ascii);
-
-                        var j: usize = 0;
-                        var k: usize = 0;
-                        while (j + 1 < utf16_data.len) : (j += 2) {
-                            const char = std.mem.readInt(u16, utf16_data[j..][0..2], .big);
-                            if (char < 128) {
-                                ascii[k] = @truncate(char);
-                                k += 1;
-                            }
-                        }
-
-                        if (allocator.resize(ascii, k)) {
-                            return ascii[0..k];
-                        }
-                        // resize failed; dupe into right-sized buffer
-                        const duped = allocator.alloc(u8, k) catch return ascii[0..k];
-                        @memcpy(duped, ascii[0..k]);
-                        allocator.free(ascii);
-                        return duped;
-                    }
-                }
+            if (data.len < 16 or std.mem.readInt(u32, data[8..12], .big) == 0) return null;
+            const length: usize = std.mem.readInt(u32, data[20..24], .big);
+            const offset: usize = std.mem.readInt(u32, data[24..28], .big);
+            const text = data[offset..][0..length];
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            var at: usize = 0;
+            while (at < text.len) {
+                const first = std.mem.readInt(u16, text[at..][0..2], .big);
+                at += 2;
+                var point: u21 = first;
+                if (first >= 0xD800 and first <= 0xDBFF) {
+                    if (at == text.len) return error.InvalidText;
+                    const second = std.mem.readInt(u16, text[at..][0..2], .big);
+                    if (second < 0xDC00 or second > 0xDFFF) return error.InvalidText;
+                    at += 2;
+                    point = 0x10000 + (@as(u21, first - 0xD800) << 10) + second - 0xDC00;
+                } else if (first >= 0xDC00 and first <= 0xDFFF) return error.InvalidText;
+                var encoded: [4]u8 = undefined;
+                const count = try std.unicode.utf8Encode(point, &encoded);
+                try out.appendSlice(allocator, encoded[0..count]);
             }
+            return try out.toOwnedSlice(allocator);
         },
         else => {},
     }
@@ -436,15 +425,19 @@ pub fn createSRGBProfile(allocator: std.mem.Allocator) ![]u8 {
     // White point (D50)
     try addXYZTag(allocator, &tags, &tag_data, .media_white_point, .{ .x = 0.9642, .y = 1.0, .z = 0.8249 });
 
-    // Colorants (sRGB primaries in XYZ)
-    try addXYZTag(allocator, &tags, &tag_data, .red_colorant, .{ .x = 0.4358, .y = 0.2224, .z = 0.0139 });
-    try addXYZTag(allocator, &tags, &tag_data, .green_colorant, .{ .x = 0.3853, .y = 0.7170, .z = 0.0971 });
-    try addXYZTag(allocator, &tags, &tag_data, .blue_colorant, .{ .x = 0.1430, .y = 0.0606, .z = 0.7139 });
+    // ICC published D65-to-D50-adapted sRGB matrix columns.
+    // https://registry.color.org/rgb-registry/files/sRGB.pdf (section B.2)
+    try addXYZTag(allocator, &tags, &tag_data, .red_colorant, .{ .x = 0.436030342570117, .y = 0.222438466210245, .z = 0.013897440074263 });
+    try addXYZTag(allocator, &tags, &tag_data, .green_colorant, .{ .x = 0.385101860087134, .y = 0.716942745571917, .z = 0.097076381494207 });
+    try addXYZTag(allocator, &tags, &tag_data, .blue_colorant, .{ .x = 0.143067806654203, .y = 0.060618777416563, .z = 0.713926257896652 });
 
-    // TRC (gamma 2.2 approximation)
-    try addGammaTag(allocator, &tags, &tag_data, .red_trc, 2.2);
-    try addGammaTag(allocator, &tags, &tag_data, .green_trc, 2.2);
-    try addGammaTag(allocator, &tags, &tag_data, .blue_trc, 2.2);
+    // ICC v2 uses a sampled curve for the actual piecewise sRGB transfer.
+    // The three channel tags share an identical immutable body.
+    try addSRGBCurve(allocator, &tags, &tag_data);
+    const trc = tags.items[tags.items.len - 1];
+    try tags.append(allocator, .{ .sig = .green_trc, .offset = trc.offset, .size = trc.size });
+    try tags.append(allocator, .{ .sig = .blue_trc, .offset = trc.offset, .size = trc.size });
+    try addAdaptation(allocator, &tags, &tag_data);
 
     // Calculate sizes
     const header_size: usize = 128;
@@ -460,8 +453,8 @@ pub fn createSRGBProfile(allocator: std.mem.Allocator) ![]u8 {
     try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(ColorSpace.rgb)))); // Color space
     try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intFromEnum(ColorSpace.xyz)))); // PCS
 
-    // Date/time (zeros)
-    try output.appendNTimes(allocator, 0, 12);
+    // Deterministic profile-definition epoch, not the image capture time.
+    for ([_]u16{ 2000, 1, 1, 0, 0, 0 }) |value| try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, value)));
 
     // Signature 'acsp'
     try output.appendSlice(allocator, ICC_MAGIC);
@@ -520,15 +513,19 @@ const TagEntry = struct {
 fn addTextTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, text: []const u8) !void {
     const start = data.items.len;
 
-    // Type signature 'desc'
-    try data.appendSlice(allocator, "desc");
-    // Reserved
-    try data.appendNTimes(allocator, 0, 4);
-    // Count (including null)
-    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(text.len + 1))));
-    // Text
-    try data.appendSlice(allocator, text);
-    try data.append(allocator, 0);
+    if (sig == .copyright) {
+        try data.appendSlice(allocator, "text");
+        try data.appendNTimes(allocator, 0, 4);
+        try data.appendSlice(allocator, text);
+        try data.append(allocator, 0);
+    } else {
+        try data.appendSlice(allocator, "desc");
+        try data.appendNTimes(allocator, 0, 4);
+        try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, @intCast(text.len + 1))));
+        try data.appendSlice(allocator, text);
+        try data.append(allocator, 0);
+        try data.appendNTimes(allocator, 0, 8 + 70); // Unicode language/count + Mac ScriptCode/count/string
+    }
 
     // Pad to 4-byte boundary
     while (data.items.len % 4 != 0) {
@@ -561,29 +558,28 @@ fn addXYZTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data:
     });
 }
 
-fn addGammaTag(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8), sig: TagSignature, gamma: f64) !void {
+fn srgbLinear(x: f64) f64 {
+    return if (x <= 0.04045) x / 12.92 else std.math.pow(f64, (x + 0.055) / 1.055, 2.4);
+}
+fn addSRGBCurve(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8)) !void {
     const start = data.items.len;
-
-    // Type signature 'curv'
     try data.appendSlice(allocator, "curv");
-    // Reserved
     try data.appendNTimes(allocator, 0, 4);
-    // Count = 1 (single gamma value)
-    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, 1)));
-    // Gamma as u8Fixed8Number
-    const gamma_fixed: u16 = @intFromFloat(@round(gamma * 256.0));
-    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, gamma_fixed)));
-
-    // Pad to 4-byte boundary
-    while (data.items.len % 4 != 0) {
-        try data.append(allocator, 0);
+    const samples = 4096;
+    try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u32, samples)));
+    for (0..samples) |i| {
+        const x = @as(f64, @floatFromInt(i)) / (samples - 1);
+        const value: u16 = @intFromFloat(@round(srgbLinear(x) * 65535));
+        try data.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToBig(u16, value)));
     }
-
-    try tags.append(allocator, TagEntry{
-        .sig = sig,
-        .offset = start,
-        .size = data.items.len - start,
-    });
+    try tags.append(allocator, .{ .sig = .red_trc, .offset = start, .size = data.items.len - start });
+}
+fn addAdaptation(allocator: std.mem.Allocator, tags: *std.ArrayList(TagEntry), data: *std.ArrayList(u8)) !void {
+    const start = data.items.len;
+    try data.appendSlice(allocator, "sf32");
+    try data.appendNTimes(allocator, 0, 4);
+    for ([_]f64{ 1.047844353856414, 0.022898981050086, -0.050206647741605, 0.029549007606644, 0.990508028941971, -0.017074711360960, -0.009250984365223, 0.015072338237051, 0.751717835079977 }) |value| try data.appendSlice(allocator, &floatToS15Fixed16(value));
+    try tags.append(allocator, .{ .sig = .chromatic_adaptation, .offset = start, .size = data.items.len - start });
 }
 
 // ============================================================================

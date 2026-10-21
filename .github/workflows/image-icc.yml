@@ -1,0 +1,35 @@
+name: Image ICC primitives
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/metadata/icc*', 'packages/image/tests/icc*', '.github/workflows/image-icc.yml']
+  pull_request:
+    paths: ['packages/image/src/metadata/icc*', 'packages/image/tests/icc*', '.github/workflows/image-icc.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  profiles:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - run: sudo apt-get update && sudo apt-get install -y liblcms2-dev pkg-config
+      - name: Ownership, malformed input and independent CMM
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" packages/image/src/metadata/icc.zig
+            zig test -O "$mode" --dep icc -Mroot=packages/image/tests/icc_profile_test.zig -Micc=packages/image/src/metadata/icc.zig
+          done
+          zig build-obj -O ReleaseSafe -lc --dep icc -Mroot=packages/image/tests/icc_fixture.zig -Micc=packages/image/src/metadata/icc.zig -femit-bin=/tmp/home-icc.o
+          cc -std=c11 -Wall -Wextra -Werror packages/image/tests/icc_lcms.c /tmp/home-icc.o $(pkg-config --cflags --libs lcms2) -lm -o /tmp/home-icc-test
+          /tmp/home-icc-test
