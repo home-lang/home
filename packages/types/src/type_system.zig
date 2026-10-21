@@ -2012,6 +2012,7 @@ pub const TypeChecker = struct {
                 for (if_let_stmt.then_block.statements) |then_stmt| {
                     self.checkStatement(then_stmt) catch |err| {
                         if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                            self.env.deinit();
                             self.env = saved_env_ptr.*;
                             self.allocator.destroy(saved_env_ptr);
                             return err;
@@ -2019,6 +2020,7 @@ pub const TypeChecker = struct {
                     };
                 }
 
+                self.env.deinit();
                 self.env = saved_env_ptr.*;
                 self.allocator.destroy(saved_env_ptr);
 
@@ -2087,6 +2089,7 @@ pub const TypeChecker = struct {
                 for (for_stmt.body.statements) |body_stmt| {
                     self.checkStatement(body_stmt) catch |err| {
                         if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                            self.env.deinit();
                             self.env = saved_env_ptr.*;
                             self.allocator.destroy(saved_env_ptr);
                             return err;
@@ -2094,6 +2097,7 @@ pub const TypeChecker = struct {
                     };
                 }
 
+                self.env.deinit();
                 self.env = saved_env_ptr.*;
                 self.allocator.destroy(saved_env_ptr);
             },
