@@ -7125,6 +7125,110 @@ test "Program: nested ambient const enum retains value members and isolated acce
     }
 }
 
+test "Program: merged ambient module blocks retain nested const enum members" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 1 }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { Two = 2 }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import pkg = require("pkg");
+        \\import { Nested as Selected } from "pkg";
+        \\const one: 1 = pkg.Nested.Mode.One;
+        \\const two: 2 = Selected.Mode.Two;
+        \\const wrong: 3 = Selected.Mode.Two;
+        \\Selected.Mode.Missing;
+    ;
+    inline for (.{ false, true }) |split_files| inline for (.{ false, true }) |isolated| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const combined = if (split_files) "" else first ++ "\n" ++ second;
+        try vfs.addFile("/first.d.ts", if (split_files) first else combined);
+        if (split_files) try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", if (split_files) first else combined);
+        if (split_files) _ = try program.add("/second.d.ts", second);
+        const consumer_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict_flags = .{ .isolated_modules = isolated } });
+        const compilation = program.fileById(consumer_id).compilation.?;
+        var isolated_access: usize = 0;
+        var wrong_value: usize = 0;
+        var missing_member: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2748 => isolated_access += 1,
+            2322 => {
+                wrong_value += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "Type 'Mode.Two'") != null);
+            },
+            2339 => {
+                missing_member += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "type 'typeof Mode'") != null);
+            },
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, if (isolated) 4 else 0), isolated_access);
+        try T.expectEqual(@as(usize, 1), wrong_value);
+        try T.expectEqual(@as(usize, 1), missing_member);
+    };
+}
+
+test "Program: incomplete or conflicting merged enums cannot publish partial member routes" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 1 }
+        \\  }
+        \\}
+    ;
+    const computed =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { Two = 1 << 1 }
+        \\  }
+        \\}
+    ;
+    const duplicate =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 2 }
+        \\  }
+        \\}
+    ;
+    inline for (.{ computed, duplicate }) |second| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+        var graph = try program.collectProgramDeclarations();
+        defer graph.deinit();
+        for (graph.values) |value| {
+            try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
+                std.mem.eql(u8, value.namespace_path, "Nested") and
+                std.mem.eql(u8, value.export_name, "Mode") and value.enum_members != null));
+        }
+    }
+}
+
 test "Program: ambient export assignment class supplies require alias type" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

@@ -19,6 +19,11 @@ const BindingContext = struct {
     }
 };
 const Position = struct { source: usize, position: u32 };
+const ModuleOwner = struct { source: usize, node: hir.NodeId };
+
+const MergedAmbientNamespace = struct {
+    values: []const driver.ProgramExportedValue,
+};
 
 pub const Graph = struct {
     arena: std.heap.ArenaAllocator,
@@ -272,6 +277,119 @@ fn enumIsInAmbientModule(c: *const driver.Compilation, node: hir.NodeId) bool {
     return false;
 }
 
+/// The merged route must account for every value leaf. If any contributor
+/// contains a declaration this graph cannot transfer exactly, leave the
+/// entire merge unresolved rather than exposing a misleading partial type.
+fn exactConstEnumCountInNamespace(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?usize {
+    const ambient = hir.namespaceOf(&c.hir, node).is_ambient or c.is_declaration_file;
+    var count: usize = 0;
+    for (hir.namespaceBody(&c.hir, node)) |raw| {
+        const member = if (c.hir.kindOf(raw) == .export_decl)
+            hir.exportOf(&c.hir, raw).decl
+        else if (ambient)
+            raw
+        else
+            return null;
+        if (member == hir.none_node_id) return null;
+        switch (c.hir.kindOf(member)) {
+            .namespace_decl => count += (try exactConstEnumCountInNamespace(arena, c, member)) orelse return null,
+            .enum_decl => {
+                if (!hir.enumOf(&c.hir, member).is_const or
+                    (try literalConstEnumMembers(arena, c, member)) == null) return null;
+                count += 1;
+            },
+            else => return null,
+        }
+    }
+    return count;
+}
+
+/// A namespace export may have several declarations in one or more ambient
+/// module blocks. Distinct declaration positions are not conflicting exports
+/// when every contributor is the same namespace meaning. Collect all owners
+/// before publishing a route; a partial member set would be unsound.
+fn mergedAmbientNamespace(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    builder: *schemas.Builder,
+    supported: *std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool),
+    sources: []const Source,
+    owners: []const ModuleOwner,
+    target_path: []const u8,
+    name: []const u8,
+) !?MergedAmbientNamespace {
+    var declarations: std.ArrayListUnmanaged(ModuleOwner) = .empty;
+    for (owners) |owner| {
+        const source = sources[owner.source];
+        const c = source.compilation;
+        const scope = scopeFor(c, owner.node) orelse return null;
+        const id = c.interner.lookup(name) orelse continue;
+        // A re-export can contribute an unrelated origin with the same name.
+        // Named exports of other names do not affect this merge; export-star
+        // has an unknown name set here, so it cannot prove non-conflict.
+        for (hir.namespaceBody(&c.hir, owner.node)) |raw| {
+            if (c.hir.kindOf(raw) != .export_decl) continue;
+            const export_info = hir.exportOf(&c.hir, raw);
+            if (c.interner.get(export_info.module).len == 0) continue;
+            if (export_info.is_namespace) {
+                const alias = c.interner.get(export_info.namespace_alias);
+                if (alias.len == 0 or std.mem.eql(u8, alias, name)) return null;
+            }
+            for (hir.exportNamed(&c.hir, raw)) |alias_node| {
+                const alias = hir.importSpecifierOf(&c.hir, alias_node);
+                if (std.mem.eql(u8, c.interner.get(alias.local), name)) return null;
+            }
+        }
+        inline for (.{ "types", "values", "namespaces" }) |field| {
+            if (@field(scope, field).get(id)) |symbol| for (symbol.decls.items) |decl| {
+                if (c.hir.kindOf(decl) != .namespace_decl) return null;
+            };
+        }
+        const symbol = scope.namespaces.get(id) orelse continue;
+        for (symbol.decls.items) |decl| {
+            if (c.hir.kindOf(decl) != .namespace_decl) return null;
+            try declarations.append(arena, .{ .source = owner.source, .node = decl });
+        }
+    }
+    if (declarations.items.len < 2) return null;
+
+    var collected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
+    var expected_routes: usize = 0;
+    for (declarations.items) |declaration| {
+        const source = sources[declaration.source];
+        expected_routes += (try exactConstEnumCountInNamespace(arena, source.compilation, declaration.node)) orelse return null;
+        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_values);
+    }
+    if (expected_routes == 0 or collected_values.items.len != expected_routes) return null;
+
+    var values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
+    for (collected_values.items) |route| {
+        var existing_route: ?*driver.ProgramExportedValue = null;
+        for (values.items) |*existing| {
+            if (std.mem.eql(u8, existing.namespace_path, route.namespace_path) and
+                std.mem.eql(u8, existing.export_name, route.export_name))
+            {
+                existing_route = existing;
+                break;
+            }
+        }
+        if (existing_route) |existing| {
+            const previous = existing.enum_members orelse return null;
+            const additional = route.enum_members orelse return null;
+            for (additional) |member| for (previous) |prior| {
+                if (std.mem.eql(u8, member.name, prior.name)) return null;
+            };
+            const joined = try arena.alloc(driver.ProgramEnumMember, previous.len + additional.len);
+            @memcpy(joined[0..previous.len], previous);
+            @memcpy(joined[previous.len..], additional);
+            existing.enum_members = joined;
+        } else {
+            try values.append(arena, route);
+        }
+    }
+    return .{ .values = try values.toOwnedSlice(arena) };
+}
+
 fn collectAmbientModules(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -284,7 +402,6 @@ fn collectAmbientModules(
     values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
     types: *std.ArrayListUnmanaged(driver.ProgramExportedType),
 ) ![]const driver.ProgramAmbientModule {
-    const ModuleOwner = struct { source: usize, node: hir.NodeId };
     var modules: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ModuleOwner)) = .empty;
     for (sources, 0..) |source, index| {
         const c = source.compilation;
@@ -328,8 +445,12 @@ fn collectAmbientModules(
         var named = names.keyIterator();
         while (named.next()) |name| {
             const resolved = try builder.query.resolveModule(specifier, host.path, name.*);
-            const known = resolved.complete and !resolved.ambiguous and
-                (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null);
+            const merged = if (resolved.complete and public_names.complete)
+                try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*)
+            else
+                null;
+            const known = merged != null or (resolved.complete and !resolved.ambiguous and
+                (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null));
             var local = false;
             var renamed: []const u8 = "";
             for (owners) |owner| {
@@ -363,11 +484,11 @@ fn collectAmbientModules(
             try facts.append(arena, .{ .name = name.*, .facts = .{
                 .module_name = rendered,
                 .exported_type = known and resolved.type != null,
-                .exported_value = known and value != null,
-                .namespace_meaning = if (known) resolved.namespace != null else null,
+                .exported_value = known and (merged != null or value != null),
+                .namespace_meaning = if (known) merged != null or resolved.namespace != null else null,
                 .declares_local = local,
                 .local_exported_as = renamed,
-                .runtime_value = if (known) resolved.value != null else null,
+                .runtime_value = if (known) merged != null or resolved.value != null else null,
                 .ambient_const_enum = ambient_const_enum,
                 .generic_function = if (value) |found| found.generic_function else false,
                 .call_only_function = if (value) |found| found.call_only_function else false,
@@ -375,12 +496,20 @@ fn collectAmbientModules(
                 .type_only_import = if (resolved.restriction) |restriction| restriction.kind == .import_type else false,
                 .export_path = if (resolved.restriction) |restriction| restriction.path else "",
                 .export_pos = if (resolved.restriction) |restriction| restriction.position else 0,
-                .namespace_module_path = if (resolved.namespace) |namespace| if (namespace.kind == .namespace) namespace.path else "" else "",
+                .namespace_module_path = if (merged != null) host.path else if (resolved.namespace) |namespace| if (namespace.kind == .namespace) namespace.path else "" else "",
                 .ambient_module = true,
                 .ambient_module_exports_known = known,
                 .module_is_external = true,
             } });
             if (!known) continue;
+            if (merged) |routes| {
+                for (routes.values) |route| {
+                    var exported = route;
+                    exported.ambient_module_name = specifier;
+                    try values.append(arena, exported);
+                }
+                continue;
+            }
             if (resolved.type) |origin| if (originKey(by_path, declarations, origin)) |key| {
                 const c = sources[key.source].compilation;
                 if (c.hir.kindOf(key.node) != .namespace_decl) {
