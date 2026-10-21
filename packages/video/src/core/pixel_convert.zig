@@ -216,23 +216,13 @@ pub const Frame = struct {
 // Color Conversion Matrices
 // ============================================================================
 
-const ColorMatrix = struct {
-    kr: f32,
-    kb: f32,
-
-    // Derived values
-    fn kg(self: ColorMatrix) f32 {
-        return 1.0 - self.kr - self.kb;
-    }
-};
-
-fn getColorMatrix(colorspace: ColorSpace) ColorMatrix {
-    return switch (colorspace) {
-        .bt601 => .{ .kr = 0.299, .kb = 0.114 },
-        .bt709 => .{ .kr = 0.2126, .kb = 0.0722 },
-        .bt2020 => .{ .kr = 0.2627, .kb = 0.0593 },
-        .srgb => .{ .kr = 0.2126, .kb = 0.0722 }, // Same as BT.709
-    };
+pub const yuv_rgb = @import("yuv_rgb.zig");
+fn converter(colorspace: ColorSpace, range: ColorRange) yuv_rgb.Conversion {
+    return yuv_rgb.Conversion.init(switch (colorspace) {
+        .bt601 => .bt601,
+        .bt709, .srgb => .bt709,
+        .bt2020 => .bt2020,
+    }, if (range == .limited) .limited else .full);
 }
 
 // ============================================================================
@@ -246,6 +236,7 @@ pub fn convert(
     allocator: Allocator,
 ) !Frame {
     var dst = try Frame.alloc(src.width, src.height, dst_format, allocator);
+    errdefer dst.deinit();
     dst.colorspace = src.colorspace;
     dst.color_range = src.color_range;
 
@@ -286,80 +277,27 @@ pub fn convertInPlace(src: *const Frame, dst: *Frame) !void {
 // ============================================================================
 
 fn yuvToRgb(src: *const Frame, dst: *Frame) !void {
-    const matrix = getColorMatrix(src.colorspace);
-    const width = src.width;
-    const height = src.height;
-
-    const y_offset: f32 = if (src.color_range == .limited) 16.0 else 0.0;
-    const y_range: f32 = if (src.color_range == .limited) 219.0 else 255.0;
-    const uv_range: f32 = if (src.color_range == .limited) 224.0 else 255.0;
-
-    var y: u32 = 0;
-    while (y < height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < width) : (x += 1) {
-            // Get YUV values based on source format
-            const yuv = getYuvPixel(src, x, y);
-
-            // Normalize to 0-1 range
-            const y_norm = (@as(f32, @floatFromInt(yuv.y)) - y_offset) / y_range;
-            const u_norm = (@as(f32, @floatFromInt(yuv.u)) - 128.0) / (uv_range / 2.0);
-            const v_norm = (@as(f32, @floatFromInt(yuv.v)) - 128.0) / (uv_range / 2.0);
-
-            // YUV to RGB conversion
-            var r = y_norm + (1.0 - matrix.kr) * 2.0 * v_norm;
-            var g = y_norm - (matrix.kb * (1.0 - matrix.kb) / matrix.kg()) * 2.0 * u_norm -
-                (matrix.kr * (1.0 - matrix.kr) / matrix.kg()) * 2.0 * v_norm;
-            var b = y_norm + (1.0 - matrix.kb) * 2.0 * u_norm;
-
-            // Clamp to valid range
-            r = std.math.clamp(r, 0.0, 1.0);
-            g = std.math.clamp(g, 0.0, 1.0);
-            b = std.math.clamp(b, 0.0, 1.0);
-
-            // Convert to 8-bit and write
-            const r8: u8 = @intFromFloat(r * 255.0);
-            const g8: u8 = @intFromFloat(g * 255.0);
-            const b8: u8 = @intFromFloat(b * 255.0);
-
-            setRgbPixel(dst, x, y, r8, g8, b8, 255);
-        }
+    const conversion = converter(src.colorspace, src.color_range);
+    if (src.format == .yuv420p and dst.format == .rgb24) {
+        return yuv_rgb.decode420(.{ .width = src.width, .height = src.height, .planes = .{ src.planes[0], src.planes[1], src.planes[2] }, .strides = src.strides[0..3].* }, conversion, dst.planes[0], dst.strides[0]);
     }
+    for (0..src.height) |y| for (0..src.width) |x| {
+        const pixel = getYuvPixel(src, @intCast(x), @intCast(y));
+        const rgb = conversion.toRgb(pixel.y, pixel.u, pixel.v);
+        setRgbPixel(dst, @intCast(x), @intCast(y), rgb[0], rgb[1], rgb[2], 255);
+    };
 }
 
 fn rgbToYuv(src: *const Frame, dst: *Frame) !void {
-    const matrix = getColorMatrix(dst.colorspace);
-    const width = src.width;
-    const height = src.height;
-
-    const y_offset: f32 = if (dst.color_range == .limited) 16.0 else 0.0;
-    const y_range: f32 = if (dst.color_range == .limited) 219.0 else 255.0;
-    const uv_range: f32 = if (dst.color_range == .limited) 224.0 else 255.0;
-
-    var y: u32 = 0;
-    while (y < height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < width) : (x += 1) {
-            const rgb = getRgbPixel(src, x, y);
-
-            // Normalize to 0-1
-            const r = @as(f32, @floatFromInt(rgb.r)) / 255.0;
-            const g = @as(f32, @floatFromInt(rgb.g)) / 255.0;
-            const b = @as(f32, @floatFromInt(rgb.b)) / 255.0;
-
-            // RGB to YUV
-            const y_val = matrix.kr * r + matrix.kg() * g + matrix.kb * b;
-            const u_val = (b - y_val) / (2.0 * (1.0 - matrix.kb));
-            const v_val = (r - y_val) / (2.0 * (1.0 - matrix.kr));
-
-            // Scale to output range
-            const y8: u8 = @intFromFloat(std.math.clamp(y_val * y_range + y_offset, 0.0, 255.0));
-            const u8_val: u8 = @intFromFloat(std.math.clamp(u_val * uv_range / 2.0 + 128.0, 0.0, 255.0));
-            const v8: u8 = @intFromFloat(std.math.clamp(v_val * uv_range / 2.0 + 128.0, 0.0, 255.0));
-
-            setYuvPixel(dst, x, y, y8, u8_val, v8);
-        }
+    const conversion = converter(dst.colorspace, dst.color_range);
+    if (src.format == .rgb24 and dst.format == .yuv420p) {
+        return yuv_rgb.encode420(src.planes[0], src.width, src.height, src.strides[0], .{ dst.planes[0], dst.planes[1], dst.planes[2] }, dst.strides[0..3].*, conversion);
     }
+    for (0..src.height) |y| for (0..src.width) |x| {
+        const rgb = getRgbPixel(src, @intCast(x), @intCast(y));
+        const yuv = conversion.toYuv(rgb.r, rgb.g, rgb.b);
+        setYuvPixel(dst, @intCast(x), @intCast(y), yuv[0], yuv[1], yuv[2]);
+    };
 }
 
 fn rgbToRgb(src: *const Frame, dst: *Frame) !void {
@@ -707,4 +645,23 @@ test "RGB pixel access" {
     try testing.expectEqual(@as(u8, 128), pixel.g);
     try testing.expectEqual(@as(u8, 64), pixel.b);
     try testing.expectEqual(@as(u8, 200), pixel.a);
+}
+
+test "public converters preserve chroma scale and average RGB24 I420 blocks" {
+    const t = std.testing;
+    var yuv = try Frame.alloc(2, 2, .yuv420p, t.allocator);
+    defer yuv.deinit();
+    yuv.colorspace = .bt601;
+    yuv.color_range = .limited;
+    @memset(yuv.planes[0], 81);
+    @memset(yuv.planes[1], 90);
+    @memset(yuv.planes[2], 240);
+    var rgb = try convert(&yuv, .rgb24, t.allocator);
+    defer rgb.deinit();
+    try t.expectEqualSlices(u8, &.{ 254, 0, 0, 254, 0, 0, 254, 0, 0, 254, 0, 0 }, rgb.planes[0]);
+    @memcpy(rgb.planes[0], &[_]u8{ 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255 });
+    try convertInPlace(&rgb, &yuv);
+    try t.expectEqualSlices(u8, &.{ 81, 145, 41, 235 }, yuv.planes[0]);
+    try t.expectEqualSlices(u8, &.{128}, yuv.planes[1]);
+    try t.expectEqualSlices(u8, &.{128}, yuv.planes[2]);
 }

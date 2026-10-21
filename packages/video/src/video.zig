@@ -854,6 +854,7 @@ pub const AudioChannelLayout = sample_convert.ChannelLayout;
 pub const plane_pack = @import("core/plane_pack.zig");
 pub const packet_ring = @import("core/packet_ring.zig");
 pub const pixel_convert = @import("core/pixel_convert.zig");
+pub const yuv_rgb = @import("core/yuv_rgb.zig");
 pub const PixelConvertFormat = pixel_convert.PixelFormat;
 pub const ConvertColorSpace = pixel_convert.ColorSpace;
 pub const ConvertColorRange = pixel_convert.ColorRange;
