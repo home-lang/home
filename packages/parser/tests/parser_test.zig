@@ -2087,3 +2087,51 @@ test "parser: assert macro preserves a comparison condition" {
     try testing.expect(assert_stmt.message.?.* == .StringLiteral);
     try testing.expectEqualStrings("division by zero", assert_stmt.message.?.StringLiteral.value);
 }
+
+test "parser: match patterns use the same integer syntax as expressions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { literal: []const u8, expected: i64 }{
+        .{ .literal = "0x2a", .expected = 42 },
+        .{ .literal = "0b101010", .expected = 42 },
+        .{ .literal = "0o52", .expected = 42 },
+        .{ .literal = "4_2", .expected = 42 },
+        .{ .literal = "42i64", .expected = 42 },
+        .{ .literal = "-0x2a", .expected = -42 },
+        .{ .literal = "-9223372036854775808", .expected = std.math.minInt(i64) },
+    };
+    for (cases) |case| {
+        const source = try std.fmt.allocPrint(a, "match 42 {{ {s} => 1, _ => 0 }}", .{case.literal});
+        const program = try parseSource(a, source);
+        try testing.expectEqual(@as(usize, 1), program.statements.len);
+        try testing.expect(program.statements[0] == .MatchStmt);
+        const pattern = program.statements[0].MatchStmt.arms[0].pattern;
+        try testing.expectEqual(case.expected, pattern.IntLiteral);
+    }
+}
+
+test "parser: numeric range bounds use expression literal syntax" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const program = try parseSource(a, "match 42 { -0x2a..=0b101010 => 1, _ => 0 }");
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const range = program.statements[0].MatchStmt.arms[0].pattern.Range;
+    try testing.expectEqual(@as(i128, -42), range.start.IntegerLiteral.value);
+    try testing.expectEqual(@as(i128, 42), range.end.IntegerLiteral.value);
+    try testing.expect(range.inclusive);
+}
+
+test "parser: an overflowing integer pattern produces a diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var lexer = Lexer.init(a, "match 42 { 9223372036854775808 => 1, _ => 0 }");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(a);
+    var parser = try Parser.init(a, tokens.items);
+    defer parser.deinit();
+    _ = try parser.parse();
+    try testing.expect(parser.errors.items.len > 0);
+}

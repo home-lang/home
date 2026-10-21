@@ -5003,52 +5003,103 @@ pub const Parser = struct {
         return ast.Stmt{ .MatchStmt = stmt };
     }
 
+    /// Decode integer tokens identically in expressions and match patterns.
+    fn parseIntegerToken(self: *Parser, token: Token) !ast.IntegerLiteral {
+        // Check for type suffix (i8, i16, i32, i64, i128, u8, u16, u32, u64, u128)
+        var type_suffix: ?[]const u8 = null;
+        var lexeme = token.lexeme;
+
+        // Find where the type suffix starts (if any)
+        for (lexeme, 0..) |c, i| {
+            if ((c == 'i' or c == 'u') and i > 0) {
+                // Check if this looks like a type suffix
+                const remaining = lexeme[i..];
+                if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
+                    type_suffix = remaining;
+                    lexeme = lexeme[0..i];
+                    break;
+                }
+            }
+        }
+
+        // Remove underscores for parsing
+        var clean_lexeme = std.ArrayList(u8).empty;
+        defer clean_lexeme.deinit(self.allocator);
+        for (lexeme) |c| {
+            if (c != '_') {
+                try clean_lexeme.append(self.allocator, c);
+            }
+        }
+
+        // Determine the base (binary, hex, octal, decimal)
+        const clean = clean_lexeme.items;
+        const base: u8 = if (clean.len > 2 and clean[0] == '0')
+            switch (clean[1]) {
+                'b', 'B' => 2,
+                'x', 'X' => 16,
+                'o', 'O' => 8,
+                else => 10,
+            }
+        else
+            10;
+
+        // Skip prefix for non-decimal bases
+        const parse_str = if (base != 10) clean[2..] else clean;
+
+        // Parse as i128 so the full unsigned 64-bit range fits as a
+        // positive value. This preserves the user's intent for large
+        // hex masks like `0xFFFFFFFFFFFFFFFF` and lets the
+        // type-checker decide signedness against the destination
+        // type. Anything beyond u64 is rejected here.
+        const value: i128 = blk: {
+            if (std.fmt.parseInt(i128, parse_str, base)) |v| {
+                if (v > std.math.maxInt(u64)) {
+                    try self.reportError("Integer literal is too large (exceeds u64 range)");
+                    return error.IntegerOverflow;
+                }
+                break :blk v;
+            } else |err| {
+                if (err == error.Overflow) {
+                    try self.reportError("Integer literal is too large (exceeds u64 range)");
+                    return error.IntegerOverflow;
+                }
+                return err;
+            }
+        };
+        return ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token));
+    }
+
     /// Parse a pattern for match statements
     fn parsePattern(self: *Parser) !*ast.Pattern {
         const pattern = try self.allocator.create(ast.Pattern);
         errdefer self.allocator.destroy(pattern);
 
-        // Negative integer pattern: -N
-        if (self.match(&.{.Minus})) {
-            if (self.match(&.{.Integer})) {
-                const token = self.previous();
-                const pos_value = try std.fmt.parseInt(i64, token.lexeme, 10);
-                pattern.* = ast.Pattern{ .IntLiteral = -pos_value };
-                return pattern;
-            }
-            // Not a negative integer — backtrack the minus
-            self.current -= 1;
-        }
-
-        // Integer literal pattern (or range pattern)
+        // Parse signs and range bounds through the expression integer decoder.
+        const negative = self.check(.Minus) and self.peekNext().type == .Integer;
+        if (negative) _ = self.advance();
         if (self.match(&.{.Integer})) {
             const token = self.previous();
-            const start_value = try std.fmt.parseInt(i64, token.lexeme, 10);
+            const literal = try self.parseIntegerToken(token);
+            const signed_value = if (negative) -literal.value else literal.value;
+            const start_value = std.math.cast(i64, signed_value) orelse {
+                try self.reportError("Integer pattern is outside the signed 64-bit range");
+                return error.IntegerOverflow;
+            };
 
-            // Check for range pattern: N..M (exclusive) or N..=M (inclusive).
-            // The lexer emits DotDotEqual as a single token, so we must
-            // match both variants explicitly — DotDot followed by Equal
-            // would not work because `Equal` is its own token after any
-            // non-DotDotEqual DotDot.
             if (self.match(&.{ .DotDot, .DotDotEqual })) {
                 const inclusive = self.previous().type == .DotDotEqual;
+                const end_negative = self.match(&.{.Minus});
                 const end_token = try self.expect(.Integer, "Expected end value in range pattern");
-                const end_value = try std.fmt.parseInt(i64, end_token.lexeme, 10);
-
-                if (start_value > end_value) {
-                    std.debug.print(
-                        "Warning: range pattern {d}..{d} has start > end — arm will never match\n",
-                        .{ start_value, end_value },
-                    );
-                }
-
-                // Create IntLiteral expressions for start and end
+                const end_literal = try self.parseIntegerToken(end_token);
+                const end_value = std.math.cast(i64, if (end_negative) -end_literal.value else end_literal.value) orelse {
+                    try self.reportError("Integer pattern is outside the signed 64-bit range");
+                    return error.IntegerOverflow;
+                };
                 const start_expr = try self.allocator.create(ast.Expr);
-                start_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(start_value, ast.SourceLocation.fromToken(token)) };
-
+                errdefer self.allocator.destroy(start_expr);
+                start_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.initWithType(start_value, literal.type_suffix, ast.SourceLocation.fromToken(token)) };
                 const end_expr = try self.allocator.create(ast.Expr);
-                end_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.init(end_value, ast.SourceLocation.fromToken(end_token)) };
-
+                end_expr.* = ast.Expr{ .IntegerLiteral = ast.IntegerLiteral.initWithType(end_value, end_literal.type_suffix, ast.SourceLocation.fromToken(end_token)) };
                 pattern.* = ast.Pattern{ .Range = .{ .start = start_expr, .end = end_expr, .inclusive = inclusive } };
                 return pattern;
             }
@@ -5666,7 +5717,7 @@ pub const Parser = struct {
             }
 
             const peek_prec = Precedence.fromToken(self.peek().type);
-            if (@intFromEnum(precedence) > @intFromEnum(peek_prec)) break;
+            if (@backingInt(precedence) > @backingInt(peek_prec)) break;
             // Newline-sensitive break: if the next token both starts a
             // new line AND could begin a fresh statement as a prefix
             // operator (`*x`, `&x`, `-x`, `+x`) or a parenthesized
@@ -5804,10 +5855,10 @@ pub const Parser = struct {
         const precedence = Precedence.fromToken(op_token.type);
         // Power (**) is right-associative: use same precedence so it binds right.
         const next_prec: u8 = if (op == .Power)
-            @intFromEnum(precedence)
+            @backingInt(precedence)
         else
-            @intFromEnum(precedence) + 1;
-        const right = try self.parsePrecedence(@enumFromInt(next_prec));
+            @backingInt(precedence) + 1;
+        const right = try self.parsePrecedence(@fromBackingInt(@intCast(next_prec)));
 
         if (foldIntegerBinary(op, left, right)) |folded| {
             // The IntegerLiteral operands are leaf nodes with no nested heap
@@ -5884,7 +5935,7 @@ pub const Parser = struct {
             break :blk placeholder;
         } else blk: {
             const precedence = Precedence.fromToken(range_token.type);
-            break :blk try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+            break :blk try self.parsePrecedence(@fromBackingInt(@intCast(@backingInt(precedence) + 1)));
         };
 
         const range_expr = try ast.RangeExpr.init(
@@ -6649,7 +6700,7 @@ pub const Parser = struct {
     fn pipeExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
         const pipe_token = self.previous();
         const precedence = Precedence.fromToken(pipe_token.type);
-        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        const right = try self.parsePrecedence(@fromBackingInt(@intCast(@backingInt(precedence) + 1)));
 
         const pipe_expr = try ast.PipeExpr.init(
             self.allocator,
@@ -6667,7 +6718,7 @@ pub const Parser = struct {
     fn nullCoalesceExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
         const null_token = self.previous();
         const precedence = Precedence.fromToken(null_token.type);
-        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        const right = try self.parsePrecedence(@fromBackingInt(@intCast(@backingInt(precedence) + 1)));
 
         const null_coalesce_expr = try ast.NullCoalesceExpr.init(
             self.allocator,
@@ -6702,7 +6753,7 @@ pub const Parser = struct {
     fn elvisExpr(self: *Parser, left: *ast.Expr) !*ast.Expr {
         const elvis_token = self.previous();
         const precedence = Precedence.fromToken(elvis_token.type);
-        const right = try self.parsePrecedence(@enumFromInt(@intFromEnum(precedence) + 1));
+        const right = try self.parsePrecedence(@fromBackingInt(@intCast(@backingInt(precedence) + 1)));
 
         const elvis_expr = try ast.ElvisExpr.init(
             self.allocator,
@@ -8414,71 +8465,11 @@ pub const Parser = struct {
         if (self.match(&.{.Integer})) {
             const token = self.previous();
 
-            // Check for type suffix (i8, i16, i32, i64, i128, u8, u16, u32, u64, u128)
-            var type_suffix: ?[]const u8 = null;
-            var lexeme = token.lexeme;
-
-            // Find where the type suffix starts (if any)
-            for (lexeme, 0..) |c, i| {
-                if ((c == 'i' or c == 'u') and i > 0) {
-                    // Check if this looks like a type suffix
-                    const remaining = lexeme[i..];
-                    if (remaining.len > 1 and std.ascii.isDigit(remaining[1])) {
-                        type_suffix = remaining;
-                        lexeme = lexeme[0..i];
-                        break;
-                    }
-                }
-            }
-
-            // Remove underscores for parsing
-            var clean_lexeme = std.ArrayList(u8).empty;
-            defer clean_lexeme.deinit(self.allocator);
-            for (lexeme) |c| {
-                if (c != '_') {
-                    try clean_lexeme.append(self.allocator, c);
-                }
-            }
-
-            // Determine the base (binary, hex, octal, decimal)
-            const clean = clean_lexeme.items;
-            const base: u8 = if (clean.len > 2 and clean[0] == '0')
-                switch (clean[1]) {
-                    'b', 'B' => 2,
-                    'x', 'X' => 16,
-                    'o', 'O' => 8,
-                    else => 10,
-                }
-            else
-                10;
-
-            // Skip prefix for non-decimal bases
-            const parse_str = if (base != 10) clean[2..] else clean;
-
-            // Parse as i128 so the full unsigned 64-bit range fits as a
-            // positive value. This preserves the user's intent for large
-            // hex masks like `0xFFFFFFFFFFFFFFFF` and lets the
-            // type-checker decide signedness against the destination
-            // type. Anything beyond u64 is rejected here.
-            const value: i128 = blk: {
-                if (std.fmt.parseInt(i128, parse_str, base)) |v| {
-                    if (v > std.math.maxInt(u64)) {
-                        try self.reportError("Integer literal is too large (exceeds u64 range)");
-                        return error.IntegerOverflow;
-                    }
-                    break :blk v;
-                } else |err| {
-                    if (err == error.Overflow) {
-                        try self.reportError("Integer literal is too large (exceeds u64 range)");
-                        return error.IntegerOverflow;
-                    }
-                    return err;
-                }
-            };
+            const literal = try self.parseIntegerToken(token);
 
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .IntegerLiteral = ast.IntegerLiteral.initWithType(value, type_suffix, ast.SourceLocation.fromToken(token)),
+                .IntegerLiteral = literal,
             };
             return expr;
         }
