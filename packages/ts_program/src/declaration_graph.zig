@@ -184,6 +184,26 @@ fn originKey(by_path: *const std.StringHashMapUnmanaged(usize), declarations: *c
     return .{ .source = source, .node = node };
 }
 
+fn ambientConstEnumOrigin(
+    by_path: *const std.StringHashMapUnmanaged(usize),
+    ambient_const_enums: *const std.AutoHashMapUnmanaged(Position, void),
+    origin: export_origins.Origin,
+) bool {
+    const source = by_path.get(origin.path) orelse return false;
+    return ambient_const_enums.contains(.{ .source = source, .position = origin.position });
+}
+
+fn enumIsInAmbientModule(c: *const driver.Compilation, node: hir.NodeId) bool {
+    var parent = c.hir.parentOf(node);
+    while (parent != hir.none_node_id) : (parent = c.hir.parentOf(parent)) {
+        if (c.hir.kindOf(parent) != .namespace_decl) continue;
+        const name = hir.namespaceOf(&c.hir, parent).name;
+        const span = c.hir.spanOf(name);
+        if (span.start < c.source.len and (c.source[span.start] == '"' or c.source[span.start] == '\'')) return true;
+    }
+    return false;
+}
+
 fn collectAmbientModules(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -192,6 +212,7 @@ fn collectAmbientModules(
     sources: []const Source,
     by_path: *const std.StringHashMapUnmanaged(usize),
     declarations: *const std.AutoHashMapUnmanaged(Position, hir.NodeId),
+    ambient_const_enums: *const std.AutoHashMapUnmanaged(Position, void),
     values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
     types: *std.ArrayListUnmanaged(driver.ProgramExportedType),
 ) ![]const driver.ProgramAmbientModule {
@@ -267,6 +288,10 @@ fn collectAmbientModules(
                 }
             }
             const value = resolved.value orelse resolved.type_only_value;
+            const ambient_const_enum = if (known and value != null)
+                ambientConstEnumOrigin(by_path, ambient_const_enums, value.?)
+            else
+                false;
             try facts.append(arena, .{ .name = name.*, .facts = .{
                 .module_name = rendered,
                 .exported_type = known and resolved.type != null,
@@ -275,6 +300,7 @@ fn collectAmbientModules(
                 .declares_local = local,
                 .local_exported_as = renamed,
                 .runtime_value = if (known) resolved.value != null else null,
+                .ambient_const_enum = ambient_const_enum,
                 .generic_function = if (value) |found| found.generic_function else false,
                 .call_only_function = if (value) |found| found.call_only_function else false,
                 .type_only_export = if (resolved.restriction) |restriction| restriction.kind == .export_type else false,
@@ -344,6 +370,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
     defer builder.query.deinit();
     var by_path: std.StringHashMapUnmanaged(usize) = .empty;
     var declarations: std.AutoHashMapUnmanaged(Position, hir.NodeId) = .empty;
+    var ambient_const_enums: std.AutoHashMapUnmanaged(Position, void) = .empty;
     var pending: std.ArrayListUnmanaged(Binding) = .empty;
     var visited: std.HashMapUnmanaged(Binding, void, BindingContext, 80) = .empty;
     var supported: std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool) = .empty;
@@ -357,6 +384,12 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
         for (c.hir.kinds.items, 0..) |kind, node| {
             switch (kind) {
                 .fn_decl, .var_decl, .let_decl, .const_decl, .interface_decl, .type_alias_decl, .class_decl, .namespace_decl => try declarations.put(arena, .{ .source = index, .position = c.hir.spanOf(@intCast(node)).start }, @intCast(node)),
+                .enum_decl => {
+                    const id: hir.NodeId = @intCast(node);
+                    if (hir.enumOf(&c.hir, id).is_const and (c.is_declaration_file or enumIsInAmbientModule(c, id))) {
+                        try ambient_const_enums.put(arena, .{ .source = index, .position = c.hir.spanOf(id).start }, {});
+                    }
+                },
                 else => {},
             }
         }
@@ -365,7 +398,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             try pending.append(arena, .{ .source = index, .name = if (symbol.flags.is_default_export) "default" else c.interner.get(symbol.name) });
         }
     }
-    result.ambient_modules = try collectAmbientModules(gpa, arena, &builder, &supported, sources, &by_path, &declarations, &values, &types);
+    result.ambient_modules = try collectAmbientModules(gpa, arena, &builder, &supported, sources, &by_path, &declarations, &ambient_const_enums, &values, &types);
     for (sources, 0..) |source, index| {
         const c = source.compilation;
         if (c.root == 0 or c.hir.kindOf(c.root) != .block_stmt) continue;

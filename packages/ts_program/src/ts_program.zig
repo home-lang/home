@@ -6998,6 +6998,49 @@ test "Program: ambient module export assignment target is collected" {
     try T.expect(facts.exported_value);
 }
 
+test "Program: ambient module graph preserves const enum provenance" {
+    const source =
+        \\declare module "pkg" {
+        \\  export const enum Mode { One = 1 }
+        \\  export enum Runtime { One = 1 }
+        \\}
+    ;
+    const source_ts = "declare module \"ts-pkg\" { export const enum Mode { One = 1 } }";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/ambient.d.ts", source);
+    try vfs.addFile("/ambient.ts", source_ts);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/ambient.d.ts", source);
+    _ = try program.add("/ambient.ts", source_ts);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 2), graph.ambient_modules.len);
+    var found_mode = false;
+    var found_runtime = false;
+    var found_ts_mode = false;
+    for (graph.ambient_modules) |module| {
+        for (module.exports) |exported| {
+            if (std.mem.eql(u8, module.specifier, "pkg") and std.mem.eql(u8, exported.name, "Mode")) {
+                found_mode = true;
+                try T.expect(exported.facts.ambient_const_enum);
+            } else if (std.mem.eql(u8, module.specifier, "pkg") and std.mem.eql(u8, exported.name, "Runtime")) {
+                found_runtime = true;
+                try T.expect(!exported.facts.ambient_const_enum);
+            } else if (std.mem.eql(u8, module.specifier, "ts-pkg") and std.mem.eql(u8, exported.name, "Mode")) {
+                found_ts_mode = true;
+                try T.expect(exported.facts.ambient_const_enum);
+            }
+        }
+    }
+    try T.expect(found_mode and found_runtime and found_ts_mode);
+}
+
 test "Program: ambient export assignment class supplies require alias type" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

@@ -209339,6 +209339,20 @@ test "checker: isolated ambient enum imports report accesses not bindings" {
     }
 }
 
+test "checker: import-equals ambient const enum access reports TS2748" {
+    const b = try newBoundSetup(
+        \\// @filename: /ambient.d.ts
+        \\declare module "pkg" { export const enum Mode { One = 1 } }
+        \\// @filename: /main.ts
+        \\import pkg = require("pkg");
+        \\pkg.Mode.One;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .isolated_modules = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.ambient_const_enum_isolated_access));
+}
+
 test "checker: unused ambient enum bindings are allowed without verbatim mode" {
     const b = try newBoundSetup(
         \\// @filename: /leaf.d.ts

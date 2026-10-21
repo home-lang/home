@@ -5868,6 +5868,40 @@ test "tsc_main: real transitive imported const inference reaches the consumer" {
     }
 }
 
+test "tsc_main: import-equals ambient const enum access reports TS2748" {
+    const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
+    const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
+    for ([_]bool{ false, true }) |isolated| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/proj/ambient.d.ts", ambient_source);
+        try vfs.addFile("/proj/main.ts", main_source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/proj/ambient.d.ts", ambient_source);
+        const main_id = try program.add("/proj/main.ts", main_source);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{
+            .strict = true,
+            .no_emit = true,
+            .strict_flags = .{ .isolated_modules = isolated },
+        };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        var count: usize = 0;
+        for (diagnostics) |diagnostic| if (diagnostic.code == 2748) {
+            count += 1;
+        };
+        try std.testing.expectEqual(@as(usize, if (isolated) 1 else 0), count);
+    }
+}
+
 test "tsc_main: resolver adapter carries prepared local import facts" {
     var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
     defer vfs.deinit();
