@@ -7317,6 +7317,102 @@ test "Program: merged type-only ambient namespace stays type-only" {
     try T.expectEqualStrings("Cannot use namespace 'Types' as a value.", type_only_compilation.diagnostics.items[0].message);
 }
 
+test "Program: merged ambient namespaces retain exact function and variable routes" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export function pick(value: "ready"): 1;
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const VERSION: 2;
+        \\    export type Tag = "ready";
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import pkg = require("pkg");
+        \\import { Nested as Selected } from "pkg";
+        \\const good: 1 = Selected.pick("ready");
+        \\const bad: 2 = pkg.Nested.pick("ready");
+        \\Selected.pick("late");
+        \\const version: 2 = Selected.VERSION;
+        \\const wrongVersion: 1 = pkg.Nested.VERSION;
+        \\const tag: Selected.Tag = "ready";
+    ;
+    inline for (.{ false, true }) |split_files| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const combined = if (split_files) "" else first ++ "\n" ++ second;
+        try vfs.addFile("/first.d.ts", if (split_files) first else combined);
+        if (split_files) try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", if (split_files) first else combined);
+        if (split_files) _ = try program.add("/second.d.ts", second);
+        const consumer_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict = true });
+        const compilation = program.fileById(consumer_id).compilation.?;
+        var bad_result: usize = 0;
+        var bad_argument: usize = 0;
+        var bad_variable: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2322 => {
+                if (std.mem.indexOf(u8, diagnostic.message, "Type '1' is not assignable to type '2'") != null) {
+                    bad_result += 1;
+                } else if (std.mem.indexOf(u8, diagnostic.message, "Type '2' is not assignable to type '1'") != null) {
+                    bad_variable += 1;
+                } else return error.TestUnexpectedResult;
+            },
+            2345 => {
+                bad_argument += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "Argument of type '\"late\"' is not assignable to parameter of type '\"ready\"'") != null);
+            },
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, 1), bad_result);
+        try T.expectEqual(@as(usize, 1), bad_argument);
+        try T.expectEqual(@as(usize, 1), bad_variable);
+    }
+}
+
+test "Program: unsupported merged namespace leaf cannot publish a partial function route" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export function pick(value: "ready"): 1; }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export type Bad = `item-${string}`; }
+        \\}
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/first.d.ts", first);
+    try vfs.addFile("/second.d.ts", second);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/first.d.ts", first);
+    _ = try program.add("/second.d.ts", second);
+    try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    for (graph.values) |value| {
+        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
+            std.mem.eql(u8, value.namespace_path, "Nested") and
+            std.mem.eql(u8, value.export_name, "pick")));
+    }
+}
+
 test "Program: incomplete or conflicting merged enums cannot publish partial member routes" {
     const first =
         \\declare module "pkg" {

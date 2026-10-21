@@ -308,6 +308,7 @@ fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilat
                     (try literalConstEnumMembers(arena, c, member)) == null) return null;
                 counts.values += 1;
             },
+            .fn_decl, .var_decl, .let_decl, .const_decl => counts.values += 1,
             .interface_decl, .type_alias_decl => counts.types += 1,
             else => return null,
         }
@@ -381,6 +382,7 @@ fn mergedAmbientNamespace(
 
     var values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     for (collected_values.items) |route| {
+        if (route.projection_only or (route.declaration == null and route.enum_members == null)) return null;
         var existing_route: ?*driver.ProgramExportedValue = null;
         for (values.items) |*existing| {
             if (std.mem.eql(u8, existing.namespace_path, route.namespace_path) and
