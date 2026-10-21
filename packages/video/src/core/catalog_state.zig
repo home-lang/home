@@ -100,5 +100,14 @@ test "duplicate/invalid keys and capacity failure never alter the source" {
     try std.testing.expectError(error.CatalogFull, updated(std.testing.allocator, try wire.Reader.init(try source.finish()), try wire.Reader.init(try changes.finish()), &.{}, 5, 2, 16));
     try addRecord(&changes, 2, &.{3});
     try std.testing.expectError(error.DuplicateKey, updated(std.testing.allocator, null, try wire.Reader.init(try changes.finish()), &.{}, 5, 3, 1024));
+    for ([_]wire.RecordInfo{ .{ .id = 0, .kind = .byte, .name = "bad" }, .{ .id = 1, .group = 1, .kind = .byte, .name = "bad" } }) |invalid| {
+        var bad = try wire.Writer.init(std.testing.allocator, 6, 1024);
+        defer bad.deinit();
+        try bad.begin(invalid);
+        try bad.end();
+        const reader = try wire.Reader.init(try bad.finish());
+        try std.testing.expectError(error.InvalidKey, updated(std.testing.allocator, null, reader, &.{}, 5, 3, 1024));
+        try std.testing.expectError(error.InvalidKey, updated(std.testing.allocator, reader, try wire.Reader.init(try source.finish()), &.{1}, 5, 3, 1024));
+    }
     try std.testing.expectEqualSlices(u8, original, source.bytes.items);
 }
