@@ -1331,3 +1331,6 @@ test "Image file APIs use caller-provided I/O" {
 
 /// Checked borrowed straight-alpha RGBA8 rows and compact copying.
 pub const RgbaView = @import("ops/rgba_view.zig").View;
+
+/// Checked integer display fitting and independent image/overlay UV maps.
+pub const ViewportPlan = @import("ops/viewport.zig").Plan;

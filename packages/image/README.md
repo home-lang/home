@@ -10,3 +10,9 @@ no codec, allocator or renderer dependencies and exports as `RgbaView`.
 [Region validation](docs/region.md) is available independently of image objects and
 rejects overflow-prone coordinates/extents without arithmetic traps. Existing
 `crop.Region` and `image.Region` exports retain their fields and methods.
+
+### Display viewports
+
+[Viewport plans](docs/viewport.md) combine checked regions and exact orientation
+maps for integer aspect fitting, overlay placement and independent texture UVs.
+They own no pixels or renderer and export as `ViewportPlan`.
