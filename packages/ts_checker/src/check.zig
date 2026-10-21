@@ -63322,7 +63322,7 @@ pub const Checker = struct {
         if (info.ambient_const_enum) return .ambient_const_enum;
         if (info.runtime_value orelse info.exported_value) return .value;
         if (info.type_only_export or info.type_only_import) return .type_only_alias;
-        if (info.exported_type) return .type_only_decl;
+        if (info.exported_type or ((info.namespace_meaning orelse false) and info.runtime_value == false)) return .type_only_decl;
         if (info.ambient_module and !info.ambient_module_exports_known) return .unknown;
         return .missing;
     }
@@ -83217,6 +83217,23 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Imported namespace meanings can have no runtime side even though their
+    /// members remain available in type positions. Use the resolved export
+    /// facts for the exact import binding; a local value that shadows it must
+    /// keep its own meaning. TS2708 also applies to `import type` of a
+    /// namespace-only export, before the generic TS1361 import-type check.
+    fn importedNamespaceOnlyValueUse(self: *Checker, name: hir_mod.StringId, anchor: NodeId) bool {
+        const module = self.module orelse return false;
+        const symbol = module.root.lookup(name) orelse return false;
+        if (!symbol.flags.is_import or self.valueNameShadowsImport(name, anchor)) return false;
+        const import_info = (self.localImportModuleInfo(name, anchor) catch return false) orelse return false;
+        const exported_root = import_info.exported_root orelse return false;
+        const spec = self.string_interner.get(import_info.specifier);
+        const facts = self.externalModuleExportInfo(import_info.import_node, spec, exported_root) orelse return false;
+        if (!(facts.namespace_meaning orelse false) or (facts.runtime_value orelse facts.exported_value)) return false;
+        return facts.runtime_value != null or facts.ambient_module_exports_known;
+    }
+
     fn virtualRelativeModuleExportValueType(
         self: *Checker,
         anchor: NodeId,
@@ -83569,16 +83586,16 @@ pub const Checker = struct {
         const leaf_text = self.string_interner.get(leaf_name);
         var matched: ?ProgramExportedType = null;
         for (self.program_exported_types) |entry| {
-            if (entry.ambient_module_name.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, leaf_text) or
                 !self.programNamespacePathMatches(namespace_path, entry.namespace_path))
             {
                 continue;
             }
-            if (!try self.programImportTargetsPath(
+            if (!try self.programExportRouteMatches(
                 import_node,
                 self.string_interner.get(specifier),
                 entry.target_path,
+                entry.ambient_module_name,
             )) continue;
             if (matched) |existing| {
                 if (existing.declaration != entry.declaration or
@@ -141723,6 +141740,12 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, name_str, "arguments") and self.hasNonArrowFunctionAncestor(node)) {
             return self.argumentsObjectType() catch types.Primitive.any;
+        }
+        if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
+            self.importedNamespaceOnlyValueUse(id.name, node))
+        {
+            self.reportNamespaceAsValue(node, id.name) catch {};
+            return types.Primitive.any;
         }
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
@@ -295258,4 +295281,22 @@ test "checker: variance traversal survives deferred method parameter pool reloca
     const before = ti.pool.object_member_pool.items.len;
     try T.expectEqual(types.Variance.covariant, setup.checker.inferVariance(object, parameter));
     try T.expect(ti.pool.object_member_pool.items.len >= before + members.len);
+}
+
+test "checker: namespace-only export needs proven absent runtime value" {
+    const unresolved: ExternalResolver.ModuleExport = .{
+        .module_name = "pkg",
+        .exported_type = false,
+        .namespace_meaning = true,
+        .ambient_module = true,
+    };
+    try T.expectEqual(Checker.ModuleExportRuntimeStatus.unknown, Checker.moduleExportRuntimeStatus(unresolved));
+
+    var resolved = unresolved;
+    resolved.runtime_value = false;
+    resolved.ambient_module_exports_known = true;
+    try T.expectEqual(Checker.ModuleExportRuntimeStatus.type_only_decl, Checker.moduleExportRuntimeStatus(resolved));
+
+    resolved.runtime_value = true;
+    try T.expectEqual(Checker.ModuleExportRuntimeStatus.value, Checker.moduleExportRuntimeStatus(resolved));
 }

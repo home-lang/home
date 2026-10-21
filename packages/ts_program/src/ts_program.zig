@@ -7185,6 +7185,138 @@ test "Program: merged ambient module blocks retain nested const enum members" {
     };
 }
 
+test "Program: merged ambient namespaces retain exact type and const enum routes" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { One = 1 }
+        \\    export interface First { id: 1 }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export const enum Mode { Two = 2 }
+        \\    export interface Second { id: 2 }
+        \\    export type Tag = "ready";
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import pkg = require("pkg");
+        \\import { Nested as Selected } from "pkg";
+        \\const one: 1 = pkg.Nested.Mode.One;
+        \\const two: 2 = Selected.Mode.Two;
+        \\const first: pkg.Nested.First = { id: 1 };
+        \\const second: Selected.Second = { id: 2 };
+        \\const tag: Selected.Tag = "ready";
+        \\const wrong: Selected.Second = { id: 3 };
+        \\const wrongTag: Selected.Tag = "late";
+        \\Selected.Mode.Missing;
+    ;
+    inline for (.{ false, true }) |split_files| inline for (.{ false, true }) |isolated| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        const combined = if (split_files) "" else first ++ "\n" ++ second;
+        try vfs.addFile("/first.d.ts", if (split_files) first else combined);
+        if (split_files) try vfs.addFile("/second.d.ts", second);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", if (split_files) first else combined);
+        if (split_files) _ = try program.add("/second.d.ts", second);
+        const consumer_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true, .strict_flags = .{ .isolated_modules = isolated } });
+        const compilation = program.fileById(consumer_id).compilation.?;
+        var isolated_access: usize = 0;
+        var wrong_number: usize = 0;
+        var wrong_string: usize = 0;
+        var missing_member: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+            2748 => isolated_access += 1,
+            2322 => {
+                if (std.mem.indexOf(u8, diagnostic.message, "Type '3' is not assignable to type '2'") != null) {
+                    wrong_number += 1;
+                } else if (std.mem.indexOf(u8, diagnostic.message, "Type '\"late\"' is not assignable to type '\"ready\"'") != null) {
+                    wrong_string += 1;
+                } else return error.TestUnexpectedResult;
+            },
+            2339 => {
+                missing_member += 1;
+                try T.expect(std.mem.indexOf(u8, diagnostic.message, "type 'typeof Mode'") != null);
+            },
+            else => return error.TestUnexpectedResult,
+        };
+        try T.expectEqual(@as(usize, if (isolated) 3 else 0), isolated_access);
+        try T.expectEqual(@as(usize, 1), wrong_number);
+        try T.expectEqual(@as(usize, 1), wrong_string);
+        try T.expectEqual(@as(usize, 1), missing_member);
+    };
+}
+
+test "Program: merged type-only ambient namespace stays type-only" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Types { export interface First { id: 1 } }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Types { export type Second = "ready"; }
+        \\}
+    ;
+    const consumer =
+        \\import { Types } from "pkg";
+        \\const first: Types.First = { id: 1 };
+        \\const second: Types.Second = "ready";
+        \\const wrong: Types.Second = "late";
+        \\Types;
+    ;
+    const import_type_consumer =
+        \\import type { Types } from "pkg";
+        \\const value: Types.Second = "ready";
+        \\Types;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/first.d.ts", first);
+    try vfs.addFile("/second.d.ts", second);
+    try vfs.addFile("/main.ts", consumer);
+    try vfs.addFile("/type-only.ts", import_type_consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/first.d.ts", first);
+    _ = try program.add("/second.d.ts", second);
+    const consumer_id = try program.add("/main.ts", consumer);
+    const type_only_id = try program.add("/type-only.ts", import_type_consumer);
+    try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+    const compilation = program.fileById(consumer_id).compilation.?;
+    var wrong_literal: usize = 0;
+    var namespace_as_value: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| switch (diagnostic.code) {
+        2322 => {
+            wrong_literal += 1;
+            try T.expect(std.mem.indexOf(u8, diagnostic.message, "Type '\"late\"' is not assignable to type '\"ready\"'") != null);
+        },
+        2708 => {
+            namespace_as_value += 1;
+            try T.expect(std.mem.indexOf(u8, diagnostic.message, "Cannot use namespace 'Types' as a value") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    };
+    try T.expectEqual(@as(usize, 1), wrong_literal);
+    try T.expectEqual(@as(usize, 1), namespace_as_value);
+    const type_only_compilation = program.fileById(type_only_id).compilation.?;
+    try T.expectEqual(@as(usize, 1), type_only_compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2708), type_only_compilation.diagnostics.items[0].code);
+    try T.expectEqualStrings("Cannot use namespace 'Types' as a value.", type_only_compilation.diagnostics.items[0].message);
+}
+
 test "Program: incomplete or conflicting merged enums cannot publish partial member routes" {
     const first =
         \\declare module "pkg" {

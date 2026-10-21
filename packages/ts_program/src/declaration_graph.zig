@@ -23,6 +23,12 @@ const ModuleOwner = struct { source: usize, node: hir.NodeId };
 
 const MergedAmbientNamespace = struct {
     values: []const driver.ProgramExportedValue,
+    types: []const driver.ProgramExportedType,
+};
+
+const NamespaceRouteCounts = struct {
+    values: usize = 0,
+    types: usize = 0,
 };
 
 pub const Graph = struct {
@@ -277,12 +283,12 @@ fn enumIsInAmbientModule(c: *const driver.Compilation, node: hir.NodeId) bool {
     return false;
 }
 
-/// The merged route must account for every value leaf. If any contributor
+/// The merged route must account for every value or type leaf. If a contributor
 /// contains a declaration this graph cannot transfer exactly, leave the
 /// entire merge unresolved rather than exposing a misleading partial type.
-fn exactConstEnumCountInNamespace(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?usize {
+fn exactNamespaceRouteCounts(arena: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?NamespaceRouteCounts {
     const ambient = hir.namespaceOf(&c.hir, node).is_ambient or c.is_declaration_file;
-    var count: usize = 0;
+    var counts: NamespaceRouteCounts = .{};
     for (hir.namespaceBody(&c.hir, node)) |raw| {
         const member = if (c.hir.kindOf(raw) == .export_decl)
             hir.exportOf(&c.hir, raw).decl
@@ -292,16 +298,21 @@ fn exactConstEnumCountInNamespace(arena: std.mem.Allocator, c: *const driver.Com
             return null;
         if (member == hir.none_node_id) return null;
         switch (c.hir.kindOf(member)) {
-            .namespace_decl => count += (try exactConstEnumCountInNamespace(arena, c, member)) orelse return null,
+            .namespace_decl => {
+                const nested = (try exactNamespaceRouteCounts(arena, c, member)) orelse return null;
+                counts.values += nested.values;
+                counts.types += nested.types;
+            },
             .enum_decl => {
                 if (!hir.enumOf(&c.hir, member).is_const or
                     (try literalConstEnumMembers(arena, c, member)) == null) return null;
-                count += 1;
+                counts.values += 1;
             },
+            .interface_decl, .type_alias_decl => counts.types += 1,
             else => return null,
         }
     }
-    return count;
+    return counts;
 }
 
 /// A namespace export may have several declarations in one or more ambient
@@ -323,7 +334,6 @@ fn mergedAmbientNamespace(
         const source = sources[owner.source];
         const c = source.compilation;
         const scope = scopeFor(c, owner.node) orelse return null;
-        const id = c.interner.lookup(name) orelse continue;
         // A re-export can contribute an unrelated origin with the same name.
         // Named exports of other names do not affect this merge; export-star
         // has an unknown name set here, so it cannot prove non-conflict.
@@ -340,6 +350,7 @@ fn mergedAmbientNamespace(
                 if (std.mem.eql(u8, c.interner.get(alias.local), name)) return null;
             }
         }
+        const id = c.interner.lookup(name) orelse continue;
         inline for (.{ "types", "values", "namespaces" }) |field| {
             if (@field(scope, field).get(id)) |symbol| for (symbol.decls.items) |decl| {
                 if (c.hir.kindOf(decl) != .namespace_decl) return null;
@@ -354,13 +365,19 @@ fn mergedAmbientNamespace(
     if (declarations.items.len < 2) return null;
 
     var collected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
-    var expected_routes: usize = 0;
+    var collected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
+    var expected: NamespaceRouteCounts = .{};
     for (declarations.items) |declaration| {
         const source = sources[declaration.source];
-        expected_routes += (try exactConstEnumCountInNamespace(arena, source.compilation, declaration.node)) orelse return null;
+        const counts = (try exactNamespaceRouteCounts(arena, source.compilation, declaration.node)) orelse return null;
+        expected.values += counts.values;
+        expected.types += counts.types;
         try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_values);
+        try appendNamespaceTypeRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_types);
     }
-    if (expected_routes == 0 or collected_values.items.len != expected_routes) return null;
+    if (expected.values + expected.types == 0 or
+        collected_values.items.len != expected.values or
+        collected_types.items.len != expected.types) return null;
 
     var values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     for (collected_values.items) |route| {
@@ -387,7 +404,18 @@ fn mergedAmbientNamespace(
             try values.append(arena, route);
         }
     }
-    return .{ .values = try values.toOwnedSlice(arena) };
+    for (collected_types.items, 0..) |route, index| {
+        if (route.contextual_only or route.projection_only) return null;
+        for (collected_types.items[0..index]) |previous| {
+            if (std.mem.eql(u8, previous.namespace_path, route.namespace_path) and
+                std.mem.eql(u8, previous.export_name, route.export_name)) return null;
+        }
+        for (values.items) |value| {
+            if (std.mem.eql(u8, value.namespace_path, route.namespace_path) and
+                std.mem.eql(u8, value.export_name, route.export_name)) return null;
+        }
+    }
+    return .{ .values = try values.toOwnedSlice(arena), .types = try collected_types.toOwnedSlice(arena) };
 }
 
 fn collectAmbientModules(
@@ -449,6 +477,7 @@ fn collectAmbientModules(
                 try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*)
             else
                 null;
+            const merged_has_value = if (merged) |routes| routes.values.len != 0 else false;
             const known = merged != null or (resolved.complete and !resolved.ambiguous and
                 (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null));
             var local = false;
@@ -484,11 +513,11 @@ fn collectAmbientModules(
             try facts.append(arena, .{ .name = name.*, .facts = .{
                 .module_name = rendered,
                 .exported_type = known and resolved.type != null,
-                .exported_value = known and (merged != null or value != null),
+                .exported_value = known and (if (merged != null) merged_has_value else value != null),
                 .namespace_meaning = if (known) merged != null or resolved.namespace != null else null,
                 .declares_local = local,
                 .local_exported_as = renamed,
-                .runtime_value = if (known) merged != null or resolved.value != null else null,
+                .runtime_value = if (known) (if (merged != null) merged_has_value else resolved.value != null) else null,
                 .ambient_const_enum = ambient_const_enum,
                 .generic_function = if (value) |found| found.generic_function else false,
                 .call_only_function = if (value) |found| found.call_only_function else false,
@@ -507,6 +536,11 @@ fn collectAmbientModules(
                     var exported = route;
                     exported.ambient_module_name = specifier;
                     try values.append(arena, exported);
+                }
+                for (routes.types) |route| {
+                    var exported = route;
+                    exported.ambient_module_name = specifier;
+                    try types.append(arena, exported);
                 }
                 continue;
             }
