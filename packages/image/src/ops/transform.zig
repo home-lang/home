@@ -5,6 +5,8 @@ const std = @import("std");
 const image = @import("../image.zig");
 const Image = image.Image;
 const Color = image.Color;
+/// Allocation-free exact orientation geometry for strided image/video planes.
+pub const OrthogonalTransform = @import("orientation.zig").Transform;
 
 // ============================================================================
 // Rotation
