@@ -57,28 +57,17 @@ pub fn fromImage(img: anytype) !View {
     return view;
 }
 
-pub fn png(allocator: std.mem.Allocator, view: View, options: PngOptions) ![]u8 {
+/// Writes one complete zlib image stream to a synchronous sink. Scratch space is
+/// two scanlines plus the bounded Deflater owner, independent of image height.
+/// The sink receives compressed bytes only; callers supply IDAT/fdAT framing.
+pub fn writePngData(allocator: std.mem.Allocator, view: View, options: PngOptions, sink: anytype) !void {
     const row_bytes = try view.validate();
-    if (options.compression > 9) return error.InvalidCompressionLevel;
+    try checkPngOptions(options);
     const size = std.math.add(usize, row_bytes, 1) catch return error.InvalidGeometry;
     var best = try allocator.alloc(u8, size);
     defer allocator.free(best);
     var candidate = try allocator.alloc(u8, size);
     defer allocator.free(candidate);
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-    try output.appendSlice(allocator, &.{ 137, 80, 78, 71, 13, 10, 26, 10 });
-    var ihdr: [13]u8 = @splat(0);
-    std.mem.writeInt(u32, ihdr[0..4], view.width, .big);
-    std.mem.writeInt(u32, ihdr[4..8], view.height, .big);
-    ihdr[8] = view.bits;
-    ihdr[9] = switch (view.format) {
-        .gray => 0,
-        .rgb => 2,
-        .rgba => 6,
-    };
-    try chunk(allocator, &output, "IHDR", &ihdr);
-    var sink = PngSink{ .allocator = allocator, .output = &output };
     const compressor = try Deflater.create(allocator, options.compression);
     defer compressor.deinit();
     for (0..view.height) |y| {
@@ -92,32 +81,72 @@ pub fn png(allocator: std.mem.Allocator, view: View, options: PngOptions) ![]u8 
                 }
             }
         } else _ = filtered(view, y, row_bytes, @intCast(@intFromEnum(options.filter) - 1), best);
-        try compressor.write(best, &sink);
+        try compressor.write(best, sink);
     }
-    try compressor.finish(&sink);
-    try chunk(allocator, &output, "IEND", &.{});
+    try compressor.finish(sink);
+}
+pub fn checkPngOptions(options: PngOptions) !void {
+    if (options.compression > 9) return error.InvalidCompressionLevel;
+}
+/// Writes the signature and IHDR for a validated, noninterlaced raster.
+pub fn writePngHeader(sink: anytype, view: View) !void {
+    _ = try view.validate();
+    try sink.writeAll(&.{ 137, 80, 78, 71, 13, 10, 26, 10 });
+    var ihdr: [13]u8 = @splat(0);
+    std.mem.writeInt(u32, ihdr[0..4], view.width, .big);
+    std.mem.writeInt(u32, ihdr[4..8], view.height, .big);
+    ihdr[8] = view.bits;
+    ihdr[9] = switch (view.format) {
+        .gray => 0,
+        .rgb => 2,
+        .rgba => 6,
+    };
+    try writePngChunk(sink, "IHDR", &.{&ihdr});
+}
+/// Parts are borrowed only for this call. Splitting an fdAT sequence prefix from
+/// compressor output avoids a second allocation/copy of the compressed chunk.
+pub fn writePngChunk(sink: anytype, kind: *const [4]u8, parts: []const []const u8) !void {
+    var size: usize = 0;
+    for (parts) |part| size = std.math.add(usize, size, part.len) catch return error.InvalidGeometry;
+    if (size > std.math.maxInt(u31)) return error.InvalidGeometry;
+    var number: [4]u8 = undefined;
+    std.mem.writeInt(u32, &number, @intCast(size), .big);
+    try sink.writeAll(&number);
+    try sink.writeAll(kind);
+    var crc: std.hash.Crc32 = .init();
+    crc.update(kind);
+    for (parts) |part| {
+        crc.update(part);
+        try sink.writeAll(part);
+    }
+    std.mem.writeInt(u32, &number, crc.final(), .big);
+    try sink.writeAll(&number);
+}
+const ArraySink = struct {
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    pub fn writeAll(self: *ArraySink, bytes: []const u8) !void {
+        try self.output.appendSlice(self.allocator, bytes);
+    }
+};
+pub fn png(allocator: std.mem.Allocator, view: View, options: PngOptions) ![]u8 {
+    _ = try view.validate();
+    try checkPngOptions(options);
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    var sink = ArraySink{ .allocator = allocator, .output = &output };
+    try writePngHeader(&sink, view);
+    var compressed = PngSink{ .sink = &sink };
+    try writePngData(allocator, view, options, &compressed);
+    try writePngChunk(&sink, "IEND", &.{});
     return output.toOwnedSlice(allocator);
 }
 const PngSink = struct {
-    allocator: std.mem.Allocator,
-    output: *std.ArrayList(u8),
+    sink: *ArraySink,
     pub fn writeAll(self: *PngSink, bytes: []const u8) !void {
-        if (bytes.len != 0) try chunk(self.allocator, self.output, "IDAT", bytes);
+        if (bytes.len != 0) try writePngChunk(self.sink, "IDAT", &.{bytes});
     }
 };
-fn chunk(allocator: std.mem.Allocator, output: *std.ArrayList(u8), kind: *const [4]u8, data: []const u8) !void {
-    if (data.len > std.math.maxInt(u31)) return error.InvalidGeometry;
-    var number: [4]u8 = undefined;
-    std.mem.writeInt(u32, &number, @intCast(data.len), .big);
-    try output.appendSlice(allocator, &number);
-    try output.appendSlice(allocator, kind);
-    try output.appendSlice(allocator, data);
-    var crc: std.hash.Crc32 = .init();
-    crc.update(kind);
-    crc.update(data);
-    std.mem.writeInt(u32, &number, crc.final(), .big);
-    try output.appendSlice(allocator, &number);
-}
 fn pngByte(view: View, row: []const u8, index: usize) u8 {
     return row[if (view.bits == 16 and view.endian == .little) index ^ 1 else index];
 }

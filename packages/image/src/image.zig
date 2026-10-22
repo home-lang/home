@@ -415,6 +415,10 @@ pub const Image = struct {
     const Self = @This();
 
     pub const Frame = struct {
+        /// null retains the legacy full-canvas size. Explicit dimensions describe
+        /// a tightly packed frame rectangle at x_offset/y_offset.
+        width: ?u32 = null,
+        height: ?u32 = null,
         pixels: []u8,
         delay_ms: u32,
         x_offset: u32 = 0,
@@ -925,6 +929,7 @@ pub const ImageError = error{
 // ============================================================================
 
 pub const Png = png;
+pub const ApngEncoder = png.AnimationEncoder;
 pub const Jpeg = jpeg;
 pub const Bmp = bmp;
 pub const Gif = gif;

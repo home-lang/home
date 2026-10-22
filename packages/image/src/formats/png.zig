@@ -7,6 +7,7 @@ const Image = image.Image;
 const Color = image.Color;
 const PixelFormat = image.PixelFormat;
 const raster = @import("raster_encoder.zig");
+pub const AnimationEncoder = @import("apng_encoder.zig");
 
 // ============================================================================
 // PNG Constants
@@ -104,7 +105,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
 
     // Read IHDR (must be first)
     const ihdr = try reader.readChunk();
-    if (ihdr.chunk_type != @intFromEnum(ChunkType.IHDR)) {
+    if (ihdr.chunk_type != @backingInt(ChunkType.IHDR)) {
         return error.InvalidFormat;
     }
 
@@ -308,6 +309,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
             }
 
             frames[i] = Image.Frame{
+                .width = fc.width,
+                .height = fc.height,
                 .pixels = frame_pixels,
                 .delay_ms = delay_ms,
                 .x_offset = fc.x_offset,
@@ -493,223 +496,79 @@ fn decompressZlib(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return output.toOwnedSlice();
 }
 
-fn compressZlib(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    return @import("zlib_stream.zig").compress(allocator, data, 1);
-}
-
+/// Image.frames[0] is the default image when animation frames are present.
+/// Its pixels, rather than Image.pixels, supply the first animation frame.
+/// Indexed pixels expand to RGBA to retain the complete palette alpha channel.
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    if (img.format != .indexed8 and (img.frames == null or img.frames.?.len == 0))
-        return raster.png(allocator, try raster.fromImage(img), .{});
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    // Write PNG signature
-    try output.appendSlice(allocator, &PNG_SIGNATURE);
-
-    // Determine color type and bit depth based on image format
-    const color_type: ColorType = switch (img.format) {
-        .grayscale8, .grayscale16 => .grayscale,
-        .rgb8, .rgb16 => .rgb,
-        .rgba8, .rgba16 => .rgba,
-        .indexed8 => .indexed,
-    };
-
-    const bit_depth: u8 = switch (img.format) {
-        .grayscale16, .rgb16, .rgba16 => 16,
-        else => 8,
-    };
-
-    // Write IHDR chunk
-    var ihdr_data: [13]u8 = undefined;
-    std.mem.writeInt(u32, ihdr_data[0..4], img.width, .big);
-    std.mem.writeInt(u32, ihdr_data[4..8], img.height, .big);
-    ihdr_data[8] = bit_depth;
-    ihdr_data[9] = @intFromEnum(color_type);
-    ihdr_data[10] = 0; // Compression
-    ihdr_data[11] = 0; // Filter
-    ihdr_data[12] = 0; // Interlace
-    try writeChunk(allocator, &output, .IHDR, &ihdr_data);
-
-    // Check if this is an animated PNG
-    const is_apng = img.frames != null and img.frames.?.len > 0;
-
-    // Write acTL chunk for APNG
-    if (is_apng) {
-        var actl_data: [8]u8 = undefined;
-        std.mem.writeInt(u32, actl_data[0..4], @intCast(img.frames.?.len), .big);
-        std.mem.writeInt(u32, actl_data[4..8], img.loop_count, .big);
-        try writeChunk(allocator, &output, .acTL, &actl_data);
+    const source_frames = img.frames orelse &.{};
+    if (source_frames.len == 0) {
+        if (img.format != .indexed8) return raster.png(allocator, try raster.fromImage(img), .{});
+        const view = try indexedView(img.pixels, img.width, img.height);
+        try validateIndices(img, view);
+        const rgba = try expandIndices(allocator, img, view);
+        defer allocator.free(rgba.data);
+        return raster.png(allocator, rgba, .{});
     }
-
-    // Write PLTE chunk for indexed images
-    if (color_type == .indexed and img.palette != null) {
-        var plte_data = try allocator.alloc(u8, img.palette.?.len * 3);
-        defer allocator.free(plte_data);
-
-        for (img.palette.?, 0..) |color, i| {
-            plte_data[i * 3] = color.r;
-            plte_data[i * 3 + 1] = color.g;
-            plte_data[i * 3 + 2] = color.b;
-        }
-        try writeChunk(allocator, &output, .PLTE, plte_data);
+    if (source_frames.len > std.math.maxInt(u31)) return error.InvalidAnimation;
+    const frames = try allocator.alloc(AnimationEncoder.Frame, source_frames.len);
+    defer allocator.free(frames);
+    var expanded: usize = 0;
+    defer for (frames[0..expanded]) |frame| allocator.free(frame.view.data);
+    for (source_frames, frames) |frame, *out| {
+        const width = frame.width orelse img.width;
+        const height = frame.height orelse img.height;
+        var source = img.*;
+        source.width = width;
+        source.height = height;
+        source.pixels = frame.pixels;
+        out.* = .{
+            .view = if (img.format == .indexed8) try indexedView(frame.pixels, width, height) else try raster.fromImage(&source),
+            .x = frame.x_offset,
+            .y = frame.y_offset,
+            .delay = try AnimationEncoder.Delay.fromMilliseconds(frame.delay_ms),
+            .dispose = switch (frame.dispose_op) {
+                .none => .none,
+                .background => .background,
+                .previous => .previous,
+            },
+            .blend = switch (frame.blend_op) {
+                .source => .source,
+                .over => .over,
+            },
+        };
     }
-
-    // Prepare filtered data
-    const samples_per_pixel: u8 = switch (color_type) {
-        .grayscale => 1,
-        .rgb => 3,
-        .indexed => 1,
-        .grayscale_alpha => 2,
-        .rgba => 4,
-    };
-    const bytes_per_pixel = samples_per_pixel * (bit_depth / 8);
-    const scanline_width = @as(usize, img.width) * bytes_per_pixel;
-    const raw_size = @as(usize, img.height) * (scanline_width + 1);
-
-    var raw_data = try allocator.alloc(u8, raw_size);
-    defer allocator.free(raw_data);
-
-    // Apply filters and copy data
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        const out_idx = @as(usize, y) * (scanline_width + 1);
-        raw_data[out_idx] = 0; // No filter (simplest encoder)
-
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            const src_idx = (@as(usize, y) * @as(usize, img.width) + @as(usize, x)) * img.format.bytesPerPixel();
-            const dst_idx = out_idx + 1 + @as(usize, x) * bytes_per_pixel;
-
-            // Copy pixel data
-            for (0..bytes_per_pixel) |b| {
-                if (src_idx + b < img.pixels.len) {
-                    raw_data[dst_idx + b] = img.pixels[src_idx + b];
-                }
-            }
+    const animation = AnimationEncoder.Animation{ .width = img.width, .height = img.height, .frames = frames, .plays = img.loop_count };
+    try animation.validate();
+    if (img.format == .indexed8) {
+        for (frames) |frame| try validateIndices(img, frame.view);
+        for (frames) |*frame| {
+            frame.view = try expandIndices(allocator, img, frame.view);
+            expanded += 1;
         }
     }
-
-    // Compress with zlib
-    const compressed = try compressZlib(allocator, raw_data);
-    defer allocator.free(compressed);
-
-    // For APNG, write fcTL for first frame before IDAT
-    var sequence_number: u32 = 0;
-    if (is_apng) {
-        const first_frame = img.frames.?[0];
-        try writeFcTL(allocator, &output, sequence_number, img.width, img.height, 0, 0, first_frame.delay_ms, first_frame.dispose_op, first_frame.blend_op);
-        sequence_number += 1;
-    }
-
-    // Write IDAT chunk(s)
-    try writeChunk(allocator, &output, .IDAT, compressed);
-
-    // Write additional APNG frames
-    if (is_apng) {
-        for (img.frames.?[1..]) |frame| {
-            // Get frame dimensions (use full image size if frame is full size)
-            const frame_width = img.width;
-            const frame_height = img.height;
-
-            // Write fcTL
-            try writeFcTL(allocator, &output, sequence_number, frame_width, frame_height, frame.x_offset, frame.y_offset, frame.delay_ms, frame.dispose_op, frame.blend_op);
-            sequence_number += 1;
-
-            // Compress frame data
-            const frame_scanline_width = @as(usize, frame_width) * bytes_per_pixel;
-            const frame_raw_size = @as(usize, frame_height) * (frame_scanline_width + 1);
-
-            var frame_raw = try allocator.alloc(u8, frame_raw_size);
-            defer allocator.free(frame_raw);
-
-            // Copy frame pixels with filter byte
-            var fy: u32 = 0;
-            while (fy < frame_height) : (fy += 1) {
-                const out_idx = @as(usize, fy) * (frame_scanline_width + 1);
-                frame_raw[out_idx] = 0; // No filter
-
-                var fx: u32 = 0;
-                while (fx < frame_width) : (fx += 1) {
-                    const src_idx = (@as(usize, fy) * @as(usize, frame_width) + @as(usize, fx)) * img.format.bytesPerPixel();
-                    const dst_idx = out_idx + 1 + @as(usize, fx) * bytes_per_pixel;
-
-                    for (0..bytes_per_pixel) |b| {
-                        if (src_idx + b < frame.pixels.len) {
-                            frame_raw[dst_idx + b] = frame.pixels[src_idx + b];
-                        }
-                    }
-                }
-            }
-
-            // Compress frame
-            const frame_compressed = try compressZlib(allocator, frame_raw);
-            defer allocator.free(frame_compressed);
-
-            // Write fdAT (sequence number + compressed data)
-            var fdat = try allocator.alloc(u8, 4 + frame_compressed.len);
-            defer allocator.free(fdat);
-            std.mem.writeInt(u32, fdat[0..4], sequence_number, .big);
-            @memcpy(fdat[4..], frame_compressed);
-            try writeChunk(allocator, &output, .fdAT, fdat);
-            sequence_number += 1;
-        }
-    }
-
-    // Write IEND chunk
-    try writeChunk(allocator, &output, .IEND, &[_]u8{});
-
-    return output.toOwnedSlice(allocator);
+    return AnimationEncoder.encode(allocator, animation);
 }
-
-fn writeChunk(allocator: std.mem.Allocator, output: *std.ArrayList(u8), chunk_type: ChunkType, data: []const u8) !void {
-    // Length
-    var len_buf: [4]u8 = undefined;
-    std.mem.writeInt(u32, &len_buf, @intCast(data.len), .big);
-    try output.appendSlice(allocator, &len_buf);
-
-    // Type
-    var type_buf: [4]u8 = undefined;
-    std.mem.writeInt(u32, &type_buf, @intFromEnum(chunk_type), .big);
-    try output.appendSlice(allocator, &type_buf);
-
-    // Data
-    try output.appendSlice(allocator, data);
-
-    // CRC (over type + data)
-    var crc_hasher: std.hash.Crc32 = .init();
-    crc_hasher.update(&type_buf);
-    crc_hasher.update(data);
-    const crc = crc_hasher.final();
-    var crc_buf: [4]u8 = undefined;
-    std.mem.writeInt(u32, &crc_buf, crc, .big);
-    try output.appendSlice(allocator, &crc_buf);
+fn indexedView(pixels: []const u8, width: u32, height: u32) !raster.View {
+    const view = raster.View{ .data = pixels, .width = width, .height = height, .stride = width, .format = .gray };
+    _ = try view.validate();
+    return view;
 }
-
-fn writeFcTL(allocator: std.mem.Allocator, output: *std.ArrayList(u8), seq: u32, width: u32, height: u32, x_off: u32, y_off: u32, delay_ms: u32, dispose: Image.DisposeOp, blend: Image.BlendOp) !void {
-    var fctl_data: [26]u8 = undefined;
-    std.mem.writeInt(u32, fctl_data[0..4], seq, .big);
-    std.mem.writeInt(u32, fctl_data[4..8], width, .big);
-    std.mem.writeInt(u32, fctl_data[8..12], height, .big);
-    std.mem.writeInt(u32, fctl_data[12..16], x_off, .big);
-    std.mem.writeInt(u32, fctl_data[16..20], y_off, .big);
-
-    // Convert delay_ms to delay_num/delay_den
-    const delay_num: u16 = @intCast(@min(delay_ms, 65535));
-    const delay_den: u16 = 1000;
-    std.mem.writeInt(u16, fctl_data[20..22], delay_num, .big);
-    std.mem.writeInt(u16, fctl_data[22..24], delay_den, .big);
-
-    fctl_data[24] = switch (dispose) {
-        .none => 0,
-        .background => 1,
-        .previous => 2,
+fn validateIndices(img: *const Image, view: raster.View) !void {
+    const palette = img.palette orelse return error.InvalidPalette;
+    if (palette.len == 0 or palette.len > 256) return error.InvalidPalette;
+    for (0..view.height) |y| for (view.data[y * view.stride ..][0..view.width]) |index| {
+        if (index >= palette.len) return error.InvalidPalette;
     };
-    fctl_data[25] = switch (blend) {
-        .source => 0,
-        .over => 1,
+}
+fn expandIndices(allocator: std.mem.Allocator, img: *const Image, view: raster.View) !raster.View {
+    const stride = std.math.mul(usize, view.width, 4) catch return error.InvalidGeometry;
+    const size = std.math.mul(usize, stride, view.height) catch return error.InvalidGeometry;
+    const rgba = try allocator.alloc(u8, size);
+    for (0..view.height) |y| for (view.data[y * view.stride ..][0..view.width], 0..) |index, x| {
+        const color = img.palette.?[index];
+        @memcpy(rgba[y * stride + x * 4 ..][0..4], &[_]u8{ color.r, color.g, color.b, color.a });
     };
-
-    try writeChunk(allocator, output, .fcTL, &fctl_data);
+    return .{ .data = rgba, .width = view.width, .height = view.height, .stride = stride, .format = .rgba };
 }
 
 // ============================================================================
@@ -797,4 +656,63 @@ test "PNG encoder round trips RGBA pixels" {
     try std.testing.expectEqual(Color.GREEN, decoded.getPixel(1, 0).?);
     try std.testing.expectEqual(Color.BLUE, decoded.getPixel(0, 1).?);
     try std.testing.expectEqual(Color{ .r = 12, .g = 34, .b = 56, .a = 78 }, decoded.getPixel(1, 1).?);
+}
+
+test "Image APNG uses frame zero pixels, explicit rectangles and exact long delays" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 2, 1, .rgb16);
+    defer img.deinit();
+    const frames = try a.alloc(Image.Frame, 2);
+    @memset(frames, .{ .pixels = &.{}, .delay_ms = 0 });
+    img.frames = frames;
+    frames[0].pixels = try a.dupe(u8, &.{ 0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde, 0x22, 0x11, 0x44, 0x33 });
+    frames[0].delay_ms = 20;
+    frames[1] = .{ .pixels = try a.dupe(u8, &.{ 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef }), .width = 1, .height = 1, .x_offset = 1, .delay_ms = 65536, .dispose_op = .previous, .blend_op = .over };
+    img.loop_count = 3;
+    const encoded = try img.encode(.png);
+    defer a.free(encoded);
+    var decoded = try decode(a, encoded);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x56, 0x9a, 0xde, 0x11, 0x33 }, decoded.pixels);
+    const result = decoded.frames.?;
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqual(@as(u32, 3), decoded.loop_count);
+    try std.testing.expectEqual(@as(?u32, 1), result[1].width);
+    try std.testing.expectEqual(@as(?u32, 1), result[1].height);
+    try std.testing.expectEqual(@as(u32, 1), result[1].x_offset);
+    try std.testing.expectEqual(@as(u32, 65536), result[1].delay_ms);
+    try std.testing.expectEqual(Image.DisposeOp.previous, result[1].dispose_op);
+    try std.testing.expectEqual(Image.BlendOp.over, result[1].blend_op);
+    try std.testing.expectEqualSlices(u8, &.{ 0x78, 0xab, 0xef }, result[1].pixels);
+    frames[1].width = 2;
+    try std.testing.expectError(error.BufferTooSmall, img.encode(.png));
+}
+test "indexed PNG expands palette alpha and rejects missing or out of range palette entries" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 2, 1, .indexed8);
+    defer img.deinit();
+    img.palette = try a.dupe(Color, &.{ .{ .r = 255, .g = 0, .b = 0, .a = 0 }, .{ .r = 0, .g = 0, .b = 255, .a = 91 } });
+    @memcpy(img.pixels, &[_]u8{ 0, 1 });
+    const bytes = try img.encode(.png);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 0, 0, 0, 255, 91 }, decoded.pixels);
+    img.pixels[1] = 2;
+    try std.testing.expectError(error.InvalidPalette, img.encode(.png));
+}
+fn indexedAnimationAllocationCase(a: std.mem.Allocator) !void {
+    var img = try Image.init(a, 2, 1, .indexed8);
+    defer img.deinit();
+    img.palette = try a.dupe(Color, &.{Color.RED});
+    const frames = try a.alloc(Image.Frame, 2);
+    @memset(frames, .{ .pixels = &.{}, .delay_ms = 10 });
+    img.frames = frames;
+    frames[0].pixels = try a.dupe(u8, &.{ 0, 0 });
+    frames[1].pixels = try a.dupe(u8, &.{ 0, 0 });
+    const bytes = try img.encode(.png);
+    defer a.free(bytes);
+}
+test "indexed APNG adapter unwinds frame descriptors expansions and PNG data on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, indexedAnimationAllocationCase, .{});
 }

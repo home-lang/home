@@ -1,0 +1,49 @@
+name: APNG codec conformance
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
+  pull_request:
+    paths: ['packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Independent PNG decoder and compression dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install libpng zlib
+            echo "PNG_TEST_PREFIX=$(brew --prefix libpng)" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=$(brew --prefix zlib)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update && sudo apt-get install -y libpng-dev zlib1g-dev
+            echo "PNG_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+          fi
+      - name: Ownership, framing and independent libpng samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz -L"$ZLIB_TEST_PREFIX/lib" -rpath "$ZLIB_TEST_PREFIX/lib" packages/image/src/formats/apng_encoder.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep apng -Mroot=packages/image/tests/apng_fixture.zig -Mapng=packages/image/src/formats/apng_encoder.zig -femit-bin=/tmp/home-apng.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror packages/image/tests/apng_libpng.c /tmp/home-apng.o -I"$PNG_TEST_PREFIX/include" -L"$PNG_TEST_PREFIX/lib" -L"$ZLIB_TEST_PREFIX/lib" -Wl,-rpath,"$PNG_TEST_PREFIX/lib" -Wl,-rpath,"$ZLIB_TEST_PREFIX/lib" -lpng -lz -o /tmp/home-apng-test
+            /tmp/home-apng-test
+          done
+      - name: Full Image API on Home development Zig
+        if: matrix.zig == 'master'
+        run: zig test -O ReleaseSafe -lc -lz -L"$ZLIB_TEST_PREFIX/lib" -rpath "$ZLIB_TEST_PREFIX/lib" packages/image/src/image.zig

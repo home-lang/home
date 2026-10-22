@@ -282,6 +282,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Image {
             @memcpy(frame_pixels, temp_img.pixels);
 
             frames[i] = Image.Frame{
+                .width = anim_frame.width,
+                .height = anim_frame.height,
                 .pixels = frame_pixels,
                 .delay_ms = anim_frame.duration_ms,
                 .x_offset = anim_frame.x_offset,

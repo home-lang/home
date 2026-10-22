@@ -33,7 +33,9 @@ colours to RGBA instead of emitting inconsistent palette/strip tags.
 Home's PNG and TIFF decoders correctly select the high byte when returning RGB8
 from 16-bit samples. TIFF rejects unknown compression before attempting to free
 borrowed strip storage. These changes do not claim complete palette/APNG/metadata,
-TIFF tiling/compression or arbitrary input-decoder hardening coverage.
+TIFF tiling/compression or arbitrary input-decoder hardening coverage. Checked
+APNG frame encoding now shares the same row/filter/chunk paths; see
+[apng-encoding.md](apng-encoding.md) for animation ownership and validation scope.
 
 Tests cover strided/short/overflowing views, PNG CRCs and independently inflated
 samples, 16-bit byte order, alpha, palette expansion, immutable finish/failure
