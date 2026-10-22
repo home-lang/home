@@ -7,12 +7,19 @@ pub const Gate = struct {
     subtract_exposure: bool = true,
     last_event: ?u64 = null,
     accepted: bool = false,
+    require_ready: bool = false,
 
     /// event is a monotonically increasing completion identity, not a wrapping
     /// sensor sequence. Timestamp and threshold must use the same clock domain.
     /// Missing timing fails without changing state. Equal thresholds qualify;
     /// conservative exposure subtraction saturates at zero, never wraps.
     pub fn observe(self: *Gate, event: u64, sensor_ns: ?u64, exposure_us: ?u32) !bool {
+        return self.observeReady(event, sensor_ns, exposure_us, null);
+    }
+    /// Readiness belongs to this exact observation, not a previous/global state.
+    /// Missing or false readiness waits when required. Distinct drops/timestamp
+    /// checks still apply; a pending observation cannot qualify on a duplicate.
+    pub fn observeReady(self: *Gate, event: u64, sensor_ns: ?u64, exposure_us: ?u32, ready: ?bool) !bool {
         if (self.accepted) return true;
         if (self.last_event) |last| if (event <= last) return false;
         var effective: u64 = 0;
@@ -26,10 +33,41 @@ pub const Gate = struct {
             return false;
         }
         if (self.after_ns) |threshold| if (effective < threshold) return false;
+        if (self.require_ready and ready != true) return false;
         self.accepted = true;
         return true;
     }
 };
+
+test "readiness must come from a new qualifying observation and combines with exact drops and timing" {
+    var gate: Gate = .{ .require_ready = true, .remaining = 1, .after_ns = 100 };
+    try std.testing.expect(!try gate.observeReady(1, 101, 0, true));
+    try std.testing.expect(!try gate.observeReady(2, 99, 0, true));
+    try std.testing.expect(!try gate.observeReady(3, 100, 0, null));
+    const pending = gate;
+    try std.testing.expect(!try gate.observeReady(3, 100, 0, true));
+    try std.testing.expectEqualDeep(pending, gate);
+    try std.testing.expect(!try gate.observeReady(4, 100, 0, false));
+    try std.testing.expect(try gate.observeReady(5, 100, 0, true));
+    const accepted = gate;
+    try std.testing.expect(try gate.observeReady(6, null, null, null));
+    try std.testing.expectEqualDeep(accepted, gate);
+    var default: Gate = .{};
+    try std.testing.expect(try default.observe(0, null, null));
+    var required: Gate = .{ .require_ready = true };
+    try std.testing.expect(!try required.observe(0, null, null));
+    try std.testing.expect(try required.observeReady(1, null, null, true));
+}
+test "missing required timing does not consume an observation even when readiness is true" {
+    var gate: Gate = .{ .require_ready = true, .remaining = 1, .after_ns = 100 };
+    const before = gate;
+    try std.testing.expectError(error.MissingTimestamp, gate.observeReady(1, null, 0, true));
+    try std.testing.expectEqualDeep(before, gate);
+    try std.testing.expectError(error.MissingExposure, gate.observeReady(1, 100, null, true));
+    try std.testing.expectEqualDeep(before, gate);
+    try std.testing.expect(!try gate.observeReady(1, 100, 0, true));
+    try std.testing.expect(try gate.observeReady(2, 100, 0, true));
+}
 
 test "frame barriers drop distinct observations, then accept the inclusive timing boundary" {
     var gate: Gate = .{ .remaining = 2, .after_ns = 10_000 };

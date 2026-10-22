@@ -54,6 +54,7 @@ jobs:
           zig test packages/video/src/core/factory_policy.zig
           zig test packages/video/src/core/frame_access.zig
           zig test packages/video/src/core/frame_barrier.zig
+          zig test packages/video/src/core/frame_barrier.zig -O ReleaseSafe
           zig test packages/async/src/relative_delay.zig
           zig test packages/async/src/relative_delay.zig -O ReleaseSafe
           zig test packages/video/src/core/pts_clock.zig

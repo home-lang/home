@@ -24,3 +24,17 @@ Tests cover exact boundaries, duplicate/out-of-order observations, missing timin
 drop-only selection, immutable terminal acceptance, maximum counters and saturated
 subtraction. zig-camera uses this policy in its native capture filter ABI and Bun
 capture jobs, without implementing a second selection counter in TypeScript.
+
+Set require_ready=true and use observeReady(event, sensor_ns, exposure_us, ready)
+to require explicit per-observation readiness in addition to the existing drop
+and timestamp criteria. False or missing readiness waits; it is never inferred
+from timestamps or a previous observation. Repeating a pending completion with a
+new ready value cannot qualify that same completion. Required timing is checked
+before mutation, distinct drops are consumed first, then timing/readiness select
+the first qualifying request. Terminal acceptance remains immutable. The legacy
+observe method supplies absent readiness, so it cannot bypass require_ready.
+
+This supports software-sync capture selection when a camera's own algorithm
+reports readiness. It does not synchronize devices, estimate clock offsets or
+establish physical exposure alignment. The caller owns those algorithm and clock
+contracts and associates readiness with the exact request whose event is passed.
