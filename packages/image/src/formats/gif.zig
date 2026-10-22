@@ -1,5 +1,5 @@
 // GIF Decoder/Encoder
-// Implements GIF87a and GIF89a with animation support
+// GIF87a/GIF89a raster decode/encode. See image/docs/gif-codec.md for scope.
 // Based on: https://www.w3.org/Graphics/GIF/spec-gif89a.txt
 
 const std = @import("std");
@@ -692,48 +692,17 @@ fn findClosestPaletteIndex(color: Color, palette: *const [256]Color) u8 {
 }
 
 fn lzwEncode(allocator: std.mem.Allocator, output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !void {
-    const clear_code = @as(u16, 1) << @intCast(min_code_size);
-    const end_code = clear_code + 1;
-
-    var bit_buffer: u32 = 0;
-    var bits_in_buffer: u8 = 0;
-    const code_size: u8 = min_code_size + 1;
-
-    // Write clear code
-    bit_buffer |= @as(u32, clear_code) << @intCast(bits_in_buffer);
-    bits_in_buffer += code_size;
-
-    while (bits_in_buffer >= 8) {
-        try output.append(allocator, @intCast(bit_buffer & 0xFF));
-        bit_buffer >>= 8;
-        bits_in_buffer -= 8;
-    }
-
-    // Simple encoding: just output literals
-    for (data) |byte| {
-        bit_buffer |= @as(u32, byte) << @intCast(bits_in_buffer);
-        bits_in_buffer += code_size;
-
-        while (bits_in_buffer >= 8) {
-            try output.append(allocator, @intCast(bit_buffer & 0xFF));
-            bit_buffer >>= 8;
-            bits_in_buffer -= 8;
+    const Sink = struct {
+        allocator: std.mem.Allocator,
+        bytes: *std.ArrayList(u8),
+        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+            try self.bytes.appendSlice(self.allocator, bytes);
         }
-    }
-
-    // Write end code
-    bit_buffer |= @as(u32, end_code) << @intCast(bits_in_buffer);
-    bits_in_buffer += code_size;
-
-    while (bits_in_buffer > 0) {
-        try output.append(allocator, @intCast(bit_buffer & 0xFF));
-        bit_buffer >>= 8;
-        if (bits_in_buffer >= 8) {
-            bits_in_buffer -= 8;
-        } else {
-            bits_in_buffer = 0;
-        }
-    }
+    };
+    var sink: Sink = .{ .allocator = allocator, .bytes = output };
+    var encoder = try @import("gif_lzw.zig").Encoder.init(min_code_size);
+    try encoder.write(data, &sink);
+    try encoder.finish(&sink);
 }
 
 // ============================================================================
@@ -767,4 +736,26 @@ test "GIF encoder round trips basic palette colors" {
     try std.testing.expectEqual(@as(u32, 1), decoded.height);
     try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
     try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
+}
+
+test "GIF image encoder preserves a large grayscale pattern through dictionary width changes" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 128, 64, .rgb8);
+    defer img.deinit();
+    const values = [_]u8{ 0, 64, 128, 255 };
+    for (0..img.height) |y| for (0..img.width) |x| {
+        const v = values[(x + y) % 4];
+        img.setPixel(@intCast(x), @intCast(y), .{ .r = v, .g = v, .b = v, .a = 255 });
+    };
+    const bytes = try encode(a, &img);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqual(img.width, decoded.width);
+    try std.testing.expectEqual(img.height, decoded.height);
+    for (0..img.height) |y| for (0..img.width) |x| {
+        const c = decoded.getPixel(@intCast(x), @intCast(y)) orelse return error.MissingPixel;
+        const v = values[(x + y) % 4];
+        try std.testing.expectEqual([3]u8{ v, v, v }, [3]u8{ c.r, c.g, c.b });
+    };
 }

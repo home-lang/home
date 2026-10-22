@@ -24,7 +24,7 @@ pub const Gif = struct {
         global_color_table: bool,
         color_resolution: u3,
         sort_flag: bool,
-        global_color_table_size: u8,
+        global_color_table_size: u16,
         background_color_index: u8,
         pixel_aspect_ratio: u8,
     };
@@ -38,7 +38,7 @@ pub const Gif = struct {
         local_color_table: bool,
         interlaced: bool,
         sort_flag: bool,
-        local_color_table_size: u8,
+        local_color_table_size: u16,
         delay_centiseconds: u16, // 1/100th of a second
         disposal_method: DisposalMethod,
         transparent_color: bool,
@@ -64,6 +64,12 @@ pub const GifReader = struct {
     global_color_table: ?[]u8,
     frames: std.ArrayList(Gif.Frame),
     loop_count: u16,
+    pending_control: struct {
+        delay: u16 = 0,
+        disposal: Gif.DisposalMethod = .none,
+        transparent: bool = false,
+        index: u8 = 0,
+    } = .{},
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !GifReader {
         if (data.len < 13) return error.InvalidGif;
@@ -115,7 +121,7 @@ pub const GifReader = struct {
         self.header.color_resolution = @truncate((packed_fields >> 4) & 0x07);
         self.header.sort_flag = (packed_fields & 0x08) != 0;
         const gct_size_code: u3 = @truncate(packed_fields & 0x07);
-        self.header.global_color_table_size = @as(u8, 1) << (@as(u8, gct_size_code) + 1);
+        self.header.global_color_table_size = @as(u16, 1) << (@as(u4, gct_size_code) + 1);
 
         self.header.background_color_index = self.data[self.offset + 5];
         self.header.pixel_aspect_ratio = self.data[self.offset + 6];
@@ -125,6 +131,7 @@ pub const GifReader = struct {
         // Read global color table
         if (self.header.global_color_table) {
             const table_size = @as(usize, self.header.global_color_table_size) * 3;
+            if (table_size > self.data.len - self.offset) return error.TruncatedGif;
             self.global_color_table = try self.allocator.alloc(u8, table_size);
             @memcpy(self.global_color_table.?, self.data[self.offset .. self.offset + table_size]);
             self.offset += table_size;
@@ -146,6 +153,7 @@ pub const GifReader = struct {
     }
 
     fn parseExtension(self: *GifReader) !void {
+        if (self.offset >= self.data.len) return error.TruncatedGif;
         const label = self.data[self.offset];
         self.offset += 1;
 
@@ -153,20 +161,29 @@ pub const GifReader = struct {
             0xF9 => try self.parseGraphicControlExtension(),
             0xFF => try self.parseApplicationExtension(),
             0xFE => try self.skipDataSubBlocks(), // Comment
-            0x01 => try self.skipDataSubBlocks(), // Plain text
+            0x01 => { // Plain text consumes a preceding graphic control block.
+                try self.skipDataSubBlocks();
+                self.pending_control = .{};
+            },
             else => try self.skipDataSubBlocks(),
         }
     }
 
     fn parseGraphicControlExtension(self: *GifReader) !void {
+        if (self.offset >= self.data.len) return error.TruncatedGif;
         const block_size = self.data[self.offset];
-        self.offset += 1;
-
         if (block_size != 4) return error.InvalidGraphicControl;
-
-        // Store for next frame
-        // This is simplified - should be associated with next image
-        self.offset += block_size + 1; // +1 for block terminator
+        if (self.data.len - self.offset < 6) return error.TruncatedGif;
+        const fields = self.data[self.offset + 1];
+        const disposal = (fields >> 2) & 7;
+        if (disposal > 3 or self.data[self.offset + 5] != 0) return error.InvalidGraphicControl;
+        self.pending_control = .{
+            .delay = std.mem.readInt(u16, self.data[self.offset + 2 ..][0..2], .little),
+            .disposal = @enumFromInt(disposal),
+            .transparent = fields & 1 != 0,
+            .index = self.data[self.offset + 4],
+        };
+        self.offset += 6;
     }
 
     fn parseApplicationExtension(self: *GifReader) !void {
@@ -199,6 +216,7 @@ pub const GifReader = struct {
     }
 
     fn parseImage(self: *GifReader) !void {
+        if (self.data.len - self.offset < 9) return error.TruncatedGif;
         var frame: Gif.Frame = undefined;
 
         // Image descriptor (9 bytes)
@@ -212,13 +230,15 @@ pub const GifReader = struct {
         frame.interlaced = (packed_fields & 0x40) != 0;
         frame.sort_flag = (packed_fields & 0x20) != 0;
         const lct_size_code: u3 = @truncate(packed_fields & 0x07);
-        frame.local_color_table_size = @as(u8, 1) << (@as(u8, lct_size_code) + 1);
+        frame.local_color_table_size = @as(u16, 1) << (@as(u4, lct_size_code) + 1);
+        if (frame.width == 0 or frame.height == 0) return error.InvalidDimensions;
 
         self.offset += 9;
 
         // Read local color table
         if (frame.local_color_table) {
             const table_size = @as(usize, frame.local_color_table_size) * 3;
+            if (table_size > self.data.len - self.offset) return error.TruncatedGif;
             frame.color_table = try self.allocator.alloc(u8, table_size);
             errdefer self.allocator.free(frame.color_table.?);
             @memcpy(frame.color_table.?, self.data[self.offset .. self.offset + table_size]);
@@ -227,13 +247,13 @@ pub const GifReader = struct {
             frame.color_table = null;
         }
 
-        // Default values (would be set by graphic control extension)
-        frame.delay_centiseconds = 0;
-        frame.disposal_method = .none;
-        frame.transparent_color = false;
-        frame.transparent_color_index = 0;
+        frame.delay_centiseconds = self.pending_control.delay;
+        frame.disposal_method = self.pending_control.disposal;
+        frame.transparent_color = self.pending_control.transparent;
+        frame.transparent_color_index = self.pending_control.index;
 
         // Read LZW compressed image data
+        if (self.offset >= self.data.len) return error.TruncatedGif;
         const lzw_min_code_size = self.data[self.offset];
         self.offset += 1;
 
@@ -242,6 +262,7 @@ pub const GifReader = struct {
         errdefer self.allocator.free(frame.indices);
 
         try self.frames.append(self.allocator, frame);
+        self.pending_control = .{};
     }
 
     fn decompressLzw(self: *GifReader, min_code_size: u8, width: u16, height: u16) ![]u8 {
@@ -413,6 +434,9 @@ pub const GifWriter = struct {
     }
 
     pub fn addFrame(self: *GifWriter, rgb_data: []const u8, delay_centiseconds: u16) !void {
+        if (self.width == 0 or self.height == 0) return error.InvalidDimensions;
+        const required = try std.math.mul(usize, try std.math.mul(usize, self.width, self.height), 3);
+        if (rgb_data.len != required) return error.InvalidPixels;
         // Quantize RGB data to 256 color palette using median cut
         var quantizer = MedianCutQuantizer.init(self.allocator);
         defer quantizer.deinit();
@@ -422,8 +446,8 @@ pub const GifWriter = struct {
         errdefer self.allocator.free(indices);
 
         // Build color histogram and quantize
+        // Borrowed until quantizer.deinit; the frame retains its own copy below.
         const palette = try quantizer.quantize(rgb_data, 256);
-        defer self.allocator.free(palette);
 
         // Map pixels to palette indices
         for (0..pixel_count) |i| {
@@ -444,9 +468,25 @@ pub const GifWriter = struct {
     }
 
     pub fn write(self: *GifWriter) ![]u8 {
+        if (self.width == 0 or self.height == 0) return error.InvalidDimensions;
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
-        const writer = output.writer(self.allocator);
+        const Writer = struct {
+            allocator: std.mem.Allocator,
+            bytes: *std.ArrayList(u8),
+            pub fn writeAll(sink: @This(), bytes: []const u8) !void {
+                try sink.bytes.appendSlice(sink.allocator, bytes);
+            }
+            pub fn writeByte(sink: @This(), value: u8) !void {
+                try sink.bytes.append(sink.allocator, value);
+            }
+            pub fn writeInt(sink: @This(), comptime T: type, value: T, endian: std.builtin.Endian) !void {
+                var bytes: [@divExact(@bitSizeOf(T), 8)]u8 = undefined;
+                std.mem.writeInt(T, &bytes, value, endian);
+                try sink.writeAll(&bytes);
+            }
+        };
+        const writer = Writer{ .allocator = self.allocator, .bytes = &output };
 
         // Header
         try writer.writeAll("GIF89a");
@@ -540,12 +580,12 @@ pub const GifWriter = struct {
     }
 
     fn writeLzwData(self: *GifWriter, writer: anytype, indices: []const u8) !void {
-        _ = self;
         const min_code_size: u8 = 8;
         try writer.writeByte(min_code_size);
 
         // Simple LZW compression
         var lzw = LzwEncoder.init(min_code_size);
+        lzw.allocator = self.allocator;
         const compressed = try lzw.encode(indices);
         defer lzw.allocator.free(compressed);
 
@@ -793,9 +833,9 @@ pub const MedianCutQuantizer = struct {
                 return .{ .r = 0, .g = 0, .b = 0 };
             }
 
-            var sum_r: u32 = 0;
-            var sum_g: u32 = 0;
-            var sum_b: u32 = 0;
+            var sum_r: u64 = 0;
+            var sum_g: u64 = 0;
+            var sum_b: u64 = 0;
 
             for (self.colors.items) |c| {
                 sum_r += c.r;
@@ -803,7 +843,7 @@ pub const MedianCutQuantizer = struct {
                 sum_b += c.b;
             }
 
-            const count: u32 = @intCast(self.colors.items.len);
+            const count: u64 = @intCast(self.colors.items.len);
             return .{
                 .r = @intCast(sum_r / count),
                 .g = @intCast(sum_g / count),
@@ -826,7 +866,12 @@ pub const MedianCutQuantizer = struct {
         }
     }
 
+    /// Borrowed palette; invalidated by successful replacement or deinit.
+    /// Failed preparation preserves the previously published palette.
     pub fn quantize(self: *MedianCutQuantizer, rgb_data: []const u8, max_colors: usize) ![]u8 {
+        if (max_colors == 0 or max_colors > 256) return error.InvalidColors;
+        if (rgb_data.len == 0 or rgb_data.len % 3 != 0) return error.InvalidPixels;
+        if (rgb_data.len / 3 > std.math.maxInt(u32)) return error.ImageTooLarge;
         // Build initial color box
         var initial_box = ColorBox.init(self.allocator);
         defer initial_box.deinit();
@@ -885,8 +930,10 @@ pub const MedianCutQuantizer = struct {
             palette[i * 3 + 2] = avg.b;
         }
 
+        const previous = self.palette;
         self.palette = palette;
         self.palette_size = boxes.items.len;
+        if (previous.len != 0) self.allocator.free(previous);
 
         return palette;
     }
@@ -917,3 +964,117 @@ pub const MedianCutQuantizer = struct {
         return best_idx;
     }
 };
+
+fn gifWriterAllocationFailures(allocator: std.mem.Allocator) !void {
+    var writer = GifWriter.init(allocator, 2, 2);
+    defer writer.deinit();
+    try writer.addFrame(&.{ 255, 0, 0, 0, 0, 255, 255, 0, 0, 0, 0, 255 }, 10);
+    try writer.addFrame(&.{ 0, 255, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0 }, 20);
+    const bytes = try writer.write();
+    defer allocator.free(bytes);
+    try std.testing.expect(bytes.len > 20);
+}
+test "GIF writer owns each frame palette once and unwinds every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, gifWriterAllocationFailures, .{});
+    var writer = GifWriter.init(std.testing.allocator, 2, 2);
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidPixels, writer.addFrame(&.{ 0, 1, 2 }, 10));
+    try std.testing.expectEqual(@as(usize, 0), writer.frames.items.len);
+    var empty = GifWriter.init(std.testing.failing_allocator, 0, 2);
+    defer empty.deinit();
+    try std.testing.expectError(error.InvalidDimensions, empty.addFrame(&.{}, 0));
+    try std.testing.expectError(error.InvalidDimensions, empty.write());
+}
+test "GIF quantizer replacement retains owned palette on failure and releases previous success" {
+    const t = std.testing;
+    var q = MedianCutQuantizer.init(t.allocator);
+    defer q.deinit();
+    const first = try q.quantize(&.{ 255, 0, 0, 0, 0, 255 }, 2);
+    const address = first.ptr;
+    try t.expectEqual(@as(usize, 6), first.len);
+    try t.expectError(error.InvalidColors, q.quantize(&.{ 0, 0, 0 }, 0));
+    try t.expectError(error.InvalidColors, q.quantize(&.{ 0, 0, 0 }, 257));
+    try t.expectError(error.InvalidPixels, q.quantize(&.{ 0, 0 }, 2));
+    try t.expectError(error.InvalidPixels, q.quantize(&.{}, 2));
+    try t.expect(q.palette.ptr == address);
+    try t.expectEqual(@as(usize, 2), q.palette_size);
+    const second = try q.quantize(&.{ 0, 255, 0 }, 1);
+    try t.expectEqualSlices(u8, &.{ 0, 255, 0 }, second);
+    try t.expect(second.ptr != address);
+    try t.expectEqual(@as(usize, 1), q.palette_size);
+}
+test "GIF public writer emits two independent frames with retained delays and RGB palettes" {
+    const t = std.testing;
+    var writer = GifWriter.init(t.allocator, 2, 1);
+    defer writer.deinit();
+    try writer.addFrame(&.{ 255, 0, 0, 0, 0, 255 }, 10);
+    try writer.addFrame(&.{ 0, 255, 0, 0, 0, 0 }, 20);
+    const bytes = try writer.write();
+    defer t.allocator.free(bytes);
+    var reader = try GifReader.init(t.allocator, bytes);
+    defer reader.deinit();
+    try reader.readFrames();
+    try t.expectEqual(@as(usize, 2), reader.frames.items.len);
+    try t.expectEqual(@as(u16, 256), reader.header.global_color_table_size);
+    for (reader.frames.items, 0..) |frame, i| {
+        try t.expectEqual(@as(u16, if (i == 0) 10 else 20), frame.delay_centiseconds);
+        try t.expectEqual(@as(u16, 256), frame.local_color_table_size);
+        const palette = frame.color_table orelse return error.MissingPalette;
+        const expected = if (i == 0) [_]u8{ 255, 0, 0, 0, 0, 255 } else [_]u8{ 0, 255, 0, 0, 0, 0 };
+        for (frame.indices, 0..) |index, x| try t.expectEqualSlices(u8, expected[x * 3 ..][0..3], palette[@as(usize, index) * 3 ..][0..3]);
+    }
+}
+
+fn quantizerReplacementFailures(a: std.mem.Allocator) !void {
+    var q = MedianCutQuantizer.init(a);
+    defer q.deinit();
+    const original = try q.quantize(&.{ 255, 0, 0, 0, 0, 255 }, 2);
+    var expected: [6]u8 = undefined;
+    @memcpy(&expected, original);
+    const pointer = original.ptr;
+    const replacement = q.quantize(&.{ 0, 255, 0 }, 1) catch |err| {
+        try std.testing.expect(q.palette.ptr == pointer);
+        try std.testing.expectEqualSlices(u8, &expected, q.palette);
+        return err;
+    };
+    try std.testing.expectEqualSlices(u8, &.{ 0, 255, 0 }, replacement);
+}
+test "GIF failed quantizer reallocation retains the previously borrowed palette" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, quantizerReplacementFailures, .{});
+}
+test "GIF graphic control belongs only to its next image and truncated control/table data rejects" {
+    const t = std.testing;
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(t.allocator);
+    try data.appendSlice(t.allocator, "GIF89a");
+    try data.appendSlice(t.allocator, &.{ 1, 0, 1, 0, 0x81, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0 });
+    try data.appendSlice(t.allocator, &.{ 0x21, 0xf9, 4, 0x0d, 0x34, 0x12, 2, 0 });
+    try data.appendSlice(t.allocator, &.{ 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0 });
+    try data.appendSlice(t.allocator, &.{ 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x4c, 1, 0, 0x3b });
+    var reader = try GifReader.init(t.allocator, data.items);
+    defer reader.deinit();
+    try reader.readFrames();
+    try t.expectEqual(@as(usize, 2), reader.frames.items.len);
+    const first = reader.frames.items[0];
+    const second = reader.frames.items[1];
+    try t.expectEqual(@as(u16, 0x1234), first.delay_centiseconds);
+    try t.expectEqual(Gif.DisposalMethod.restore_previous, first.disposal_method);
+    try t.expect(first.transparent_color);
+    try t.expectEqual(@as(u8, 2), first.transparent_color_index);
+    try t.expectEqual(@as(u16, 0), second.delay_centiseconds);
+    try t.expectEqual(Gif.DisposalMethod.none, second.disposal_method);
+    try t.expect(!second.transparent_color);
+    const header = [_]u8{ 'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0, 0, 0 };
+    const control = [_]u8{ 0x21, 0xf9, 4, 0x0d, 0x34, 0x12, 2, 0 };
+    var short: [21]u8 = undefined;
+    @memcpy(short[0..13], &header);
+    @memcpy(short[13..], &control);
+    for (1..control.len) |n| {
+        var truncated = try GifReader.init(t.allocator, short[0 .. 13 + n]);
+        defer truncated.deinit();
+        try t.expectError(error.TruncatedGif, truncated.readFrames());
+    }
+    var palette_header = header;
+    palette_header[10] = 0x87;
+    try t.expectError(error.TruncatedGif, GifReader.init(std.testing.failing_allocator, &palette_header));
+}

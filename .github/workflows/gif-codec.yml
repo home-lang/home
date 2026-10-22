@@ -1,0 +1,50 @@
+name: GIF codec conformance
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+  pull_request:
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conformance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Independent decoder and image compression dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install giflib zlib
+            echo "GIF_TEST_PREFIX=$(brew --prefix giflib)" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=$(brew --prefix zlib)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update && sudo apt-get install -y libgif-dev zlib1g-dev
+            echo "GIF_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+            echo "ZLIB_TEST_PREFIX=/usr" >> "$GITHUB_ENV"
+          fi
+      - name: Dictionary widths, ownership, frame controls and independent giflib
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc packages/image/src/formats/gif_lzw.zig
+            zig test -O "$mode" -lc packages/video/src/containers/gif.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep lzw --dep gif -Mroot=packages/image/tests/gif_lzw_fixture.zig -Mlzw=packages/image/src/formats/gif_lzw.zig -Mgif=packages/video/src/containers/gif.zig -femit-bin=/tmp/home-gif-codec.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -DHOME_VIDEO_GIF packages/image/tests/gif_lzw_decode.c /tmp/home-gif-codec.o -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o /tmp/home-gif-conformance
+            /tmp/home-gif-conformance
+          done
+      - name: Full Image API on Home development Zig
+        if: matrix.zig == 'master'
+        run: zig test -O ReleaseSafe -lc -lz -L"$ZLIB_TEST_PREFIX/lib" -rpath "$ZLIB_TEST_PREFIX/lib" packages/image/src/image.zig
