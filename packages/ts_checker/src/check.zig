@@ -50697,6 +50697,37 @@ pub const Checker = struct {
         }
     }
 
+    /// Read and write sides of an imported accessor live on the receiver's
+    /// structural member, not in this compilation's name-keyed class maps.
+    fn importedAccessorWriteType(self: *Checker, receiver: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        var pending: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer pending.deinit(self.gpa);
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        try pending.append(self.gpa, receiver);
+        while (pending.pop()) |current| {
+            if (current >= self.interner.pool.typeCount() or visited.contains(current)) continue;
+            try visited.put(self.gpa, current, {});
+            const resolved = try self.resolveGenericType(current);
+            if (resolved != current) {
+                try pending.append(self.gpa, resolved);
+                continue;
+            }
+            const flags = self.interner.pool.flagsOf(current);
+            if (flags.is_intersection) {
+                // Class own members are the final intersection constituent.
+                // Push in source order so the stack visits them first.
+                try pending.appendSlice(self.gpa, self.interner.intersectionMembers(current));
+            } else if (flags.is_type_parameter and !flags.is_union) {
+                const constraint = self.typeParameterConstraint(current) orelse continue;
+                if (constraint != current) try pending.append(self.gpa, constraint);
+            } else if (flags.is_object_type) {
+                if (self.interner.objectMemberInfo(current, name)) |member| return member.write_type;
+            }
+        }
+        return null;
+    }
+
     fn classAccessorSetterAssignmentType(self: *Checker, target: NodeId) CheckError!?TypeId {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
         const m = hir_mod.memberOf(self.hir, target);
@@ -50706,6 +50737,7 @@ pub const Checker = struct {
             obj_t = self.typeParameterConstraint(obj_t) orelse obj_t;
         }
         if (try self.concretePairedGetterType(obj_t, m.name)) |setter_t| return setter_t;
+        if (try self.importedAccessorWriteType(obj_t, m.name)) |setter_t| return setter_t;
         if (self.class_name_by_instance.get(obj_t)) |class_name| {
             const setter_t = self.class_accessor_setter_types.get(.{
                 .class_name = class_name,
@@ -57239,6 +57271,7 @@ pub const Checker = struct {
         if (flags.is_object_type) {
             for (self.interner.objectMembers(t)) |member| {
                 if (self.typeContainsSubstitutionKey(member.type, subs, depth + 1)) return true;
+                if (member.write_type) |write_type| if (self.typeContainsSubstitutionKey(write_type, subs, depth + 1)) return true;
             }
             const indexes = [_]TypeId{
                 self.interner.objectStringIndex(t),
@@ -57332,6 +57365,7 @@ pub const Checker = struct {
                 try new_members.append(self.gpa, .{
                     .name = member.name,
                     .type = try self.substituteTypeNoCyclesInner(member.type, subs, visited),
+                    .write_type = if (member.write_type) |write_type| try self.substituteTypeNoCyclesInner(write_type, subs, visited) else null,
                     .is_optional = member.is_optional,
                     .is_readonly = member.is_readonly,
                     .is_method = member.is_method,
@@ -86429,7 +86463,10 @@ pub const Checker = struct {
                     self.interner.pool.type_arg_pool.items[instantiation.args_start..][0..instantiation.args_len],
                 ) catch return true;
             } else if (flags.is_object_type) {
-                for (self.interner.objectMembers(current)) |member| pending.append(allocator, member.type) catch return true;
+                for (self.interner.objectMembers(current)) |member| {
+                    pending.append(allocator, member.type) catch return true;
+                    if (member.write_type) |write_type| pending.append(allocator, write_type) catch return true;
+                }
                 pending.appendSlice(allocator, &.{
                     self.interner.objectStringIndex(current),
                     self.interner.objectNumberIndex(current),
@@ -86757,7 +86794,10 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| try self.extendSubstitutionsByMatchingTypeParamNamesInner(m.type, type_params, subs, seen);
+            for (self.interner.objectMembers(t)) |m| {
+                try self.extendSubstitutionsByMatchingTypeParamNamesInner(m.type, type_params, subs, seen);
+                if (m.write_type) |write_type| try self.extendSubstitutionsByMatchingTypeParamNamesInner(write_type, type_params, subs, seen);
+            }
             const string_idx = self.interner.objectStringIndex(t);
             if (string_idx != types.Primitive.none) try self.extendSubstitutionsByMatchingTypeParamNamesInner(string_idx, type_params, subs, seen);
             const number_idx = self.interner.objectNumberIndex(t);
@@ -86836,7 +86876,10 @@ pub const Checker = struct {
             return false;
         }
         if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| if (self.containsTemplateLiteralType(m.type)) return true;
+            for (self.interner.objectMembers(t)) |m| {
+                if (self.containsTemplateLiteralType(m.type)) return true;
+                if (m.write_type) |write_type| if (self.containsTemplateLiteralType(write_type)) return true;
+            }
             const string_idx = self.interner.objectStringIndex(t);
             if (string_idx != types.Primitive.none and self.containsTemplateLiteralType(string_idx)) return true;
             const number_idx = self.interner.objectNumberIndex(t);
@@ -86945,7 +86988,10 @@ pub const Checker = struct {
             } else if (flags.is_intersection) {
                 pending.appendSlice(self.gpa, self.interner.intersectionMembers(current)) catch return true;
             } else if (flags.is_object_type) {
-                for (self.interner.objectMembers(current)) |member| pending.append(self.gpa, member.type) catch return true;
+                for (self.interner.objectMembers(current)) |member| {
+                    pending.append(self.gpa, member.type) catch return true;
+                    if (member.write_type) |write_type| pending.append(self.gpa, write_type) catch return true;
+                }
                 pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current) }) catch return true;
             } else if (flags.is_signature) {
                 pending.appendSlice(self.gpa, self.interner.signatureParams(current)) catch return true;
@@ -97686,7 +97732,10 @@ pub const Checker = struct {
                 if (self.interner.genericDefinition(reference.origin)) |definition| try pending.append(self.gpa, definition.body);
                 try pending.appendSlice(self.gpa, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
             } else if (flags.is_object_type) {
-                for (self.interner.objectMembers(current)) |member| try pending.append(self.gpa, member.type);
+                for (self.interner.objectMembers(current)) |member| {
+                    try pending.append(self.gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
+                }
                 try pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current), self.interner.objectSymbolIndex(current) });
             } else if (flags.is_signature) {
                 try pending.appendSlice(self.gpa, self.interner.signatureParams(current));
@@ -98782,7 +98831,10 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| try self.collectFreeTypeParamDiagnosticFallbacks(m.type, use_constraints, subs, visited);
+            for (self.interner.objectMembers(t)) |m| {
+                try self.collectFreeTypeParamDiagnosticFallbacks(m.type, use_constraints, subs, visited);
+                if (m.write_type) |write_type| try self.collectFreeTypeParamDiagnosticFallbacks(write_type, use_constraints, subs, visited);
+            }
             const str_idx = self.interner.objectStringIndex(t);
             if (str_idx != types.Primitive.none) try self.collectFreeTypeParamDiagnosticFallbacks(str_idx, use_constraints, subs, visited);
             const num_idx = self.interner.objectNumberIndex(t);
@@ -107797,7 +107849,10 @@ pub const Checker = struct {
             return false;
         }
         if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| if (self.typeContainsUnknown(m.type)) return true;
+            for (self.interner.objectMembers(t)) |m| {
+                if (self.typeContainsUnknown(m.type)) return true;
+                if (m.write_type) |write_type| if (self.typeContainsUnknown(write_type)) return true;
+            }
             const string_idx = self.interner.objectStringIndex(t);
             if (string_idx != types.Primitive.none and self.typeContainsUnknown(string_idx)) return true;
             const number_idx = self.interner.objectNumberIndex(t);
@@ -113495,11 +113550,16 @@ pub const Checker = struct {
                 defer self.gpa.free(values);
                 for (members, values) |member, *value| {
                     var member_t = try self.programDeferredLowerExpression(member.type, context, active, depth + 1);
+                    const write_t = if (member.write_type) |write_type|
+                        try self.programDeferredLowerExpression(write_type, context, active, depth + 1)
+                    else
+                        null;
                     if (member.optional and !self.typeIncludesUndefined(member_t))
                         member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
                     value.* = .{
                         .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
                         .type = member_t,
+                        .write_type = write_t,
                         .is_optional = member.optional,
                         .is_readonly = member.readonly,
                         .is_method = member.method,
@@ -114987,11 +115047,17 @@ pub const Checker = struct {
                 break :blk false;
             },
             .object => |members| blk: {
-                for (members) |member| if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                for (members) |member| {
+                    if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                    if (member.write_type) |write_type| if (programExpressionHasDeclarationLeaf(write_type)) break :blk true;
+                }
                 break :blk false;
             },
             .indexed_object => |object| blk: {
-                for (object.members) |member| if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                for (object.members) |member| {
+                    if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                    if (member.write_type) |write_type| if (programExpressionHasDeclarationLeaf(write_type)) break :blk true;
+                }
                 for (object.indices) |index| if (programExpressionHasDeclarationLeaf(index.value)) break :blk true;
                 break :blk false;
             },
@@ -115122,6 +115188,10 @@ pub const Checker = struct {
                 types.Primitive.any
             else
                 try self.lowerProgramExpression(member.type, declaration, args),
+            .write_type = if (member.write_type) |write_type|
+                try self.lowerProgramExpression(write_type, declaration, args)
+            else
+                null,
             .is_optional = member.optional,
             .is_readonly = member.readonly,
             .is_method = member.method,
@@ -115953,13 +116023,19 @@ pub const Checker = struct {
         for (own.object) |member| {
             if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
             if (!try ProgramClassSchema.Schema.expressionSupported(member.type, self.gpa)) return null;
+            if (member.write_type) |write_type| if (!try ProgramClassSchema.Schema.expressionSupported(write_type, self.gpa)) return null;
             const member_t = self.lowerProgramExpression(member.type, declaration, args) catch |err| switch (err) {
                 error.UnsupportedProgramType => return null,
                 error.OutOfMemory => return error.OutOfMemory,
             };
+            const write_t = if (member.write_type) |write_type| self.lowerProgramExpression(write_type, declaration, args) catch |err| switch (err) {
+                error.UnsupportedProgramType => return null,
+                error.OutOfMemory => return error.OutOfMemory,
+            } else null;
             return .{
                 .name = member_name,
                 .type = member_t,
+                .write_type = write_t,
                 .is_optional = member.optional,
                 .is_readonly = member.readonly,
                 .is_method = member.method,
@@ -116132,6 +116208,10 @@ pub const Checker = struct {
                 try static_members.append(self.gpa, .{
                     .name = member_name,
                     .type = member_t,
+                    .write_type = if (member.write_type) |write_type| self.lowerProgramExpression(write_type, schema.declaration, class_params.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.UnsupportedProgramType => if (strict) return error.UnsupportedProgramType else null,
+                    } else null,
                     .is_optional = member.optional,
                     .is_readonly = member.readonly,
                     .is_method = member.method,
@@ -169903,7 +169983,10 @@ pub const Checker = struct {
             return;
         }
         if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| try self.collectFreeTypeParamFallbacks(m.type, subs, visited);
+            for (self.interner.objectMembers(t)) |m| {
+                try self.collectFreeTypeParamFallbacks(m.type, subs, visited);
+                if (m.write_type) |write_type| try self.collectFreeTypeParamFallbacks(write_type, subs, visited);
+            }
             const str_idx = self.interner.objectStringIndex(t);
             if (str_idx != types.Primitive.none) try self.collectFreeTypeParamFallbacks(str_idx, subs, visited);
             const num_idx = self.interner.objectNumberIndex(t);
@@ -170638,6 +170721,7 @@ pub const Checker = struct {
                 }
                 for (self.interner.objectMembers(current)) |member| {
                     try pending.append(self.gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
                     if (self.member_predicates.get(.{ .receiver_type = current, .member_name = member.name })) |predicate| try pending.append(self.gpa, predicate.target_type);
                 }
                 try pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current), self.interner.objectSymbolIndex(current) });
@@ -170972,9 +171056,11 @@ pub const Checker = struct {
             var new_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer new_members.deinit(self.gpa);
             for (orig_snapshot) |om| {
+                const write_type = if (om.write_type) |original| try self.substituteType(original, subs) else null;
                 try new_members.append(self.gpa, .{
                     .name = om.name,
                     .type = try self.substituteType(om.type, subs),
+                    .write_type = write_type,
                     .is_optional = om.is_optional,
                     .is_readonly = om.is_readonly,
                     .is_method = om.is_method,
@@ -171460,7 +171546,10 @@ pub const Checker = struct {
                 }
                 return;
             }
-            for (self.interner.objectMembers(t)) |m| try self.collectThisTypeParameterSubs(m.type, receiver_t, subs, visited);
+            for (self.interner.objectMembers(t)) |m| {
+                try self.collectThisTypeParameterSubs(m.type, receiver_t, subs, visited);
+                if (m.write_type) |write_type| try self.collectThisTypeParameterSubs(write_type, receiver_t, subs, visited);
+            }
             const str_idx = self.interner.objectStringIndex(t);
             if (str_idx != types.Primitive.none) try self.collectThisTypeParameterSubs(str_idx, receiver_t, subs, visited);
             const num_idx = self.interner.objectNumberIndex(t);

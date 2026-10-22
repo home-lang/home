@@ -7988,6 +7988,134 @@ test "Program: merged ambient generic class factory keeps its type arguments" {
     }
 }
 
+test "Program: merged ambient class accessors keep distinct read and write types" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box {
+        \\      constructor();
+        \\      get value(): string;
+        \\      set value(input: string | number);
+        \\      static get state(): string;
+        \\      static set state(input: string | number);
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export namespace Box { export const extra: 3; }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\const box = new Nested.Box();
+        \\const read: string = box.value;
+        \\box.value = 42;
+        \\box.value = true;
+        \\const wrong: number = box.value;
+        \\const state: string = Nested.Box.state;
+        \\Nested.Box.state = 42;
+        \\Nested.Box.state = true;
+        \\const wrongState: number = Nested.Box.state;
+        \\const extra: 3 = Nested.Box.extra;
+        \\void read; void wrong; void state; void wrongState; void extra;
+    ;
+    inline for (.{ false, true }) |split_files| {
+        inline for (.{ false, true }) |reverse_files| {
+            if (!split_files and reverse_files) continue;
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            const first_source = if (split_files) first else first ++ "\n" ++ second;
+            try vfs.addFile("/first.d.ts", first_source);
+            if (split_files) try vfs.addFile("/second.d.ts", second);
+            try vfs.addFile("/main.ts", consumer);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            if (split_files and reverse_files) _ = try program.add("/second.d.ts", second);
+            const first_id = try program.add("/first.d.ts", first_source);
+            const second_id = if (split_files and !reverse_files) try program.add("/second.d.ts", second) else if (split_files) program.lookupPath("/second.d.ts").? else first_id;
+            const main_id = try program.add("/main.ts", consumer);
+            try program.compileAll(.{ .no_emit = true, .strict = true });
+            try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
+            if (split_files) try T.expectEqual(@as(usize, 0), program.fileById(second_id).compilation.?.diagnostics.items.len);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 4), diagnostics.len);
+            for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        }
+    }
+}
+
+test "Program: merged ambient generic accessor substitutes its setter input" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box<T> {
+        \\      constructor();
+        \\      get value(): string;
+        \\      set value(input: T | number);
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested.Box { export const extra: 3; }
+        \\}
+        \\declare module 'other' {
+        \\  export namespace Nested {
+        \\    export class Box<T> {
+        \\      constructor();
+        \\      get value(): T;
+        \\      set value(input: T | boolean);
+        \\    }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\import { Nested as Other } from 'other';
+        \\declare const box: Nested.Box<boolean>;
+        \\const read: string = box.value;
+        \\const wrong: number = box.value;
+        \\box.value = 42;
+        \\box.value = true;
+        \\box.value = "bad";
+        \\const extra: 3 = Nested.Box.extra;
+        \\declare const other: Other.Box<number>;
+        \\const otherRead: number = other.value;
+        \\const wrongOther: string = other.value;
+        \\other.value = true;
+        \\other.value = "bad";
+        \\void read; void wrong; void extra; void otherRead; void wrongOther;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/first.d.ts", first);
+    try vfs.addFile("/second.d.ts", second);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const first_id = try program.add("/first.d.ts", first);
+    const second_id = try program.add("/second.d.ts", second);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), program.fileById(second_id).compilation.?.diagnostics.items.len);
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 4), diagnostics.len);
+    for (diagnostics, [_]u32{ 149, 210, 349, 403 }) |diagnostic, expected_pos| {
+        try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        try T.expectEqual(expected_pos, diagnostic.pos);
+    }
+}
+
 test "Program: merged ambient class route cannot cross module specifiers" {
     const other =
         \\declare module 'other' {

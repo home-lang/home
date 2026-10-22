@@ -616,9 +616,15 @@ pub const Builder = struct {
             switch (expr.*) {
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
-                .object => |members| for (members) |member| try pending.append(self.gpa, member.type),
+                .object => |members| for (members) |member| {
+                    try pending.append(self.gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
+                },
                 .indexed_object => |indexed_object| {
-                    for (indexed_object.members) |member| try pending.append(self.gpa, member.type);
+                    for (indexed_object.members) |member| {
+                        try pending.append(self.gpa, member.type);
+                        if (member.write_type) |write_type| try pending.append(self.gpa, write_type);
+                    }
                     for (indexed_object.indices) |index| {
                         try pending.append(self.gpa, index.key);
                         try pending.append(self.gpa, index.value);
@@ -1150,6 +1156,39 @@ pub const Builder = struct {
         return self.expression(.{ .intersection = members });
     }
 
+    /// Pair an annotated getter with its setter before publishing either
+    /// side. Setter inputs are independent of the getter's read type.
+    fn pairedAccessorWriteType(self: *Builder, context: Context, class_node: hir.NodeId, getter_name: []const u8, is_static: bool) !?*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        var result: ?*const schema.Expression = null;
+        for (hir.classMembers(&c.hir, class_node)) |candidate| {
+            switch (c.hir.kindOf(candidate)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const function = hir.fnDeclOf(&c.hir, candidate);
+            if (!function.flags.is_setter or function.flags.is_static != is_static or
+                function.name == hir.none_node_id or c.hir.kindOf(function.name) != .identifier) continue;
+            const name = c.interner.get(hir.identifierOf(&c.hir, function.name).name);
+            if (!std.mem.eql(u8, name, getter_name)) continue;
+            if (result != null) return self.expression(.unsupported);
+            const params = hir.fnParams(&c.hir, candidate);
+            if (params.len != 1 or c.hir.kindOf(params[0]) != .parameter) return self.expression(.unsupported);
+            const param = hir.parameterOf(&c.hir, params[0]);
+            if (param.type_annotation == hir.none_node_id or param.flags.is_optional or param.flags.is_rest)
+                return self.expression(.unsupported);
+            result = try self.lower(context, param.type_annotation);
+        }
+        return result;
+    }
+
+    fn hasWritableAccessor(members: []const schema.Member, name: []const u8) bool {
+        for (members) |member| {
+            if (std.mem.eql(u8, member.name, name) and member.write_type != null) return true;
+        }
+        return false;
+    }
+
     pub fn classStaticMembers(self: *Builder, key: Key) !?[]const schema.Member {
         const c = self.sources[key.source].compilation;
         const source_decl = try self.declaration(key);
@@ -1170,6 +1209,11 @@ pub const Builder = struct {
             };
             if (c.hir.kindOf(name_node) != .identifier) return null;
             const name = c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+            if (kind != .object_property and hir.fnDeclOf(&c.hir, member).flags.is_setter) continue;
+            const write_type = if (kind != .object_property and hir.fnDeclOf(&c.hir, member).flags.is_getter)
+                try self.pairedAccessorWriteType(context, key.node, name, true)
+            else
+                null;
             const type_expression = switch (kind) {
                 .object_property => blk: {
                     const property = hir.objectPropertyOf(&c.hir, member);
@@ -1178,7 +1222,6 @@ pub const Builder = struct {
                 },
                 .fn_decl, .fn_expr, .arrow_fn => blk: {
                     const function = hir.fnDeclOf(&c.hir, member);
-                    if (function.flags.is_setter) return null;
                     if (function.flags.is_getter) {
                         if (function.return_type == hir.none_node_id or hir.fnParams(&c.hir, member).len != 0) return null;
                         break :blk try self.lower(context, function.return_type);
@@ -1188,11 +1231,13 @@ pub const Builder = struct {
                 else => unreachable,
             };
             if (!try schema.Schema.expressionSupported(type_expression, self.gpa)) return null;
+            if (write_type) |setter_type| if (!try schema.Schema.expressionSupported(setter_type, self.gpa)) return null;
             try members.append(self.arena, .{
                 .name = name,
                 .type = type_expression,
+                .write_type = write_type,
                 .optional = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_optional else hir.fnDeclOf(&c.hir, member).flags.is_optional,
-                .readonly = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_readonly else hir.fnDeclOf(&c.hir, member).flags.is_getter,
+                .readonly = if (kind == .object_property) hir.objectPropertyOf(&c.hir, member).is_readonly else hir.fnDeclOf(&c.hir, member).flags.is_getter and write_type == null,
                 .method = kind != .object_property and !hir.fnDeclOf(&c.hir, member).flags.is_getter,
                 .visibility = if (kind == .object_property) switch (hir.objectPropertyOf(&c.hir, member).visibility) {
                     .public => .public,
@@ -1200,6 +1245,16 @@ pub const Builder = struct {
                     .protected => .protected,
                 } else if (hir.fnDeclOf(&c.hir, member).flags.is_private) .private else if (hir.fnDeclOf(&c.hir, member).flags.is_protected) .protected else .public,
             });
+        }
+        for (hir.classMembers(&c.hir, key.node)) |member| {
+            switch (c.hir.kindOf(member)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const function = hir.fnDeclOf(&c.hir, member);
+            if (!function.flags.is_static or !function.flags.is_setter) continue;
+            if (function.name == hir.none_node_id or c.hir.kindOf(function.name) != .identifier or
+                !hasWritableAccessor(members.items, c.interner.get(hir.identifierOf(&c.hir, function.name).name))) return null;
         }
         return try members.toOwnedSlice(self.arena);
     }
@@ -1241,13 +1296,16 @@ pub const Builder = struct {
                     }
                     if (function.name == 0) return self.expression(.unsupported);
                     if (c.hir.kindOf(function.name) != .identifier) return self.expression(.unsupported);
-                    if (function.flags.is_setter) return self.expression(.unsupported);
+                    if (function.flags.is_setter) continue;
                     if (function.flags.is_getter) {
                         if (function.return_type == hir.none_node_id or params.len != 0) return self.expression(.unsupported);
+                        const name = c.interner.get(hir.identifierOf(&c.hir, function.name).name);
+                        const write_type = try self.pairedAccessorWriteType(context, node, name, false);
                         try members.append(self.arena, .{
-                            .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name),
+                            .name = name,
                             .type = try self.lower(context, function.return_type),
-                            .readonly = true,
+                            .write_type = write_type,
+                            .readonly = write_type == null,
                             .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public,
                         });
                         continue;
@@ -1257,6 +1315,17 @@ pub const Builder = struct {
                 .index_signature => return self.expression(.unsupported),
                 else => {},
             }
+        }
+        for (hir.classMembers(&c.hir, node)) |member| {
+            switch (c.hir.kindOf(member)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const function = hir.fnDeclOf(&c.hir, member);
+            if (function.flags.is_static or !function.flags.is_setter) continue;
+            if (function.name == hir.none_node_id or c.hir.kindOf(function.name) != .identifier or
+                !hasWritableAccessor(members.items, c.interner.get(hir.identifierOf(&c.hir, function.name).name)))
+                return self.expression(.unsupported);
         }
         if (jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
             for (hir.classMembers(&c.hir, node)) |member| {
