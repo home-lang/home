@@ -41,5 +41,10 @@ states, multi-block input, invalid levels and host allocation failures. The
 standalone raster/stream tests run on Zig 0.15.2 and development Zig; the full Image
 API uses Home's development toolchain and adds public encode/decode regressions.
 zig-camera also decodes RGB files through platform ImageIO or libpng/libtiff/SDL.
-Native zlib workspace allocation failures are reported, but host allocator fault
-injection does not intercept zlib's separate C allocations.
+Native zlib workspace allocation failures are reported. Host allocator fault
+injection does not intercept zlib's separate C allocations, so a private factory
+initializer seam separately tests native memory/stream/version failure results.
+It validates the level and owner allocation before native init, publishes no
+failed owner, and destroys the pinned Zig owner exactly once. The prior duplicate
+cleanup crashed this injected failure path; successful compression is unchanged.
+The hook is private and has no public API/ABI or runtime setting.

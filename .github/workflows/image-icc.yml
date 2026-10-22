@@ -27,6 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz packages/image/src/formats/zlib_stream.zig
             zig test -O "$mode" packages/image/src/metadata/icc.zig
             zig test -O "$mode" -lc -lz packages/image/src/metadata_embed.zig
             zig test -O "$mode" --dep icc -Mroot=packages/image/tests/icc_profile_test.zig -Micc=packages/image/src/metadata/icc.zig

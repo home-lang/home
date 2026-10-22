@@ -27,6 +27,8 @@ jobs:
         if: matrix.zig == 'master'
         run: zig test packages/image/src/image.zig -lc -lz -O ReleaseSafe
       - run: |
+          zig test packages/image/src/formats/zlib_stream.zig -lc -lz
+          zig test packages/image/src/formats/zlib_stream.zig -lc -lz -O ReleaseSafe
           zig test packages/image/src/formats/raster_encoder.zig -lc -lz
           zig test packages/image/src/formats/raster_encoder.zig -lc -lz -O ReleaseSafe
           zig test packages/video/src/core/color_description.zig

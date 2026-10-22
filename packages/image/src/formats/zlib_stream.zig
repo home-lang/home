@@ -37,12 +37,19 @@ pub const Deflater = struct {
     state: enum { open, finished, failed } = .open,
 
     pub fn create(allocator: std.mem.Allocator, level: u32) !*Deflater {
+        return createWithInit(allocator, level, initialize);
+    }
+    fn initialize(stream: *c.z_stream, level: c_int) c_int {
+        return c.deflateInit_(stream, level, c.zlibVersion(), @sizeOf(c.z_stream));
+    }
+    // Private injection covers native workspace failures, which are outside the
+    // caller's Zig allocator. Failed initialization never publishes an owner.
+    fn createWithInit(allocator: std.mem.Allocator, level: u32, comptime init: fn (*c.z_stream, c_int) c_int) !*Deflater {
         if (level > 9) return error.InvalidCompressionLevel;
         const self = try allocator.create(Deflater);
         errdefer allocator.destroy(self);
-        errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator };
-        try status(c.deflateInit_(&self.stream, @intCast(level), c.zlibVersion(), @sizeOf(c.z_stream)));
+        try status(init(&self.stream, @intCast(level)));
         return self;
     }
     pub fn deinit(self: *Deflater) void {
@@ -164,4 +171,28 @@ test "sink failure poisons streaming state and validation precedes allocation" {
     try std.testing.expectError(error.InvalidState, stream.finish(&sink));
     try std.testing.expectError(error.InvalidCompressionLevel, Deflater.create(std.testing.failing_allocator, 10));
     try std.testing.expectError(error.OutOfMemory, Deflater.create(std.testing.failing_allocator, 1));
+}
+
+test "native initialization failure frees the pinned owner exactly once without publication" {
+    inline for (.{ c.Z_MEM_ERROR, @as(c_int, -2), @as(c_int, -6) }) |code| {
+        const NativeFailure = struct {
+            fn init(stream: *c.z_stream, level: c_int) c_int {
+                std.debug.assert(stream.state == null and stream.next_in == null and stream.next_out == null);
+                std.debug.assert(level == 1);
+                return code;
+            }
+        };
+        if (code == c.Z_MEM_ERROR) {
+            try std.testing.expectError(error.OutOfMemory, Deflater.createWithInit(std.testing.allocator, 1, NativeFailure.init));
+        } else {
+            try std.testing.expectError(error.CompressionFailed, Deflater.createWithInit(std.testing.allocator, 1, NativeFailure.init));
+        }
+    }
+    const MustNotRun = struct {
+        fn init(_: *c.z_stream, _: c_int) c_int {
+            @panic("native init called before level/owner admission");
+        }
+    };
+    try std.testing.expectError(error.InvalidCompressionLevel, Deflater.createWithInit(std.testing.allocator, 10, MustNotRun.init));
+    try std.testing.expectError(error.OutOfMemory, Deflater.createWithInit(std.testing.failing_allocator, 1, MustNotRun.init));
 }
