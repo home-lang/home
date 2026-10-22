@@ -8116,6 +8116,54 @@ test "Program: chained ambient module namespace aliases retain merged members" {
     }
 }
 
+test "Program: type-only ambient module namespace alias forbids value use" {
+    const first =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); } } }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested.Box { export const extra: 2; } }
+    ;
+    const barrel = "declare module \"barrel-type\" { export type * as API from \"pkg\"; }";
+    const consumer =
+        \\import { API } from "barrel-type";
+        \\let box: API.Nested.Box;
+        \\box = new API.Nested.Box("ready");
+        \\const extra: 2 = API.Nested.Box.extra;
+        \\void box; void extra;
+    ;
+    inline for (.{ false, true }) |streaming| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/barrel.d.ts", barrel);
+        const main_id = try program.add("/main.ts", consumer);
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+        if (streaming) {
+            const Sink = struct {
+                count: usize = 0,
+                fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                    if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                }
+            };
+            var sink: Sink = .{};
+            try program.compileAllStreaming(options, &sink, Sink.receive);
+            try T.expectEqual(@as(usize, 2), sink.count);
+        } else try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| {
+            try T.expectEqual(@as(u32, 1362), diagnostic.code);
+            try T.expectEqualStrings("'API' cannot be used as a value because it was exported using 'export type'.", diagnostic.message);
+        }
+    }
+}
+
 test "Program: unsupported ambient class merge cannot leak through a barrel" {
     const first =
         \\declare module "pkg" {

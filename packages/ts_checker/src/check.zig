@@ -67042,9 +67042,10 @@ pub const Checker = struct {
     }
 
     /// Return the module specifier of a PLAIN (non-type-only) named
-    /// import that binds `name` from a RELATIVE module, or null. Used by
-    /// TS1362: a name imported as a value whose source module nonetheless
-    /// exports it type-only. Inline `import { type X }` and whole
+    /// import that binds `name`, or null. Virtual multi-file sections only
+    /// resolve relative imports here; real files also use this for ambient
+    /// bare-specifier modules. Used by TS1362 when the source exports a
+    /// value import type-only. Inline `import { type X }` and whole
     /// `import type` clauses are excluded (those are the TS1361 path).
     const PlainNamedImport = struct {
         module: hir_mod.StringId,
@@ -67063,7 +67064,7 @@ pub const Checker = struct {
             if (imp.is_type_only) continue;
             if (imp.module == string_interner.empty_string_id) continue;
             const spec = self.string_interner.get(imp.module);
-            if (!std.mem.startsWith(u8, spec, ".")) continue;
+            if (self.sourceHasVirtualFilenameSections() and !std.mem.startsWith(u8, spec, ".")) continue;
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const sp = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -67342,11 +67343,13 @@ pub const Checker = struct {
         const spec = self.string_interner.get(import.module);
         const imported_text = self.string_interner.get(import.imported);
         var result: TypeOnlyOriginKind = .none;
+        var info = self.programAmbientModuleExportInfo(spec, import.imported);
         if (self.external_resolver) |resolver| {
-            if (resolver.moduleExport(spec, self.importer_path, imported_text)) |info| {
-                const bare_type_value_export = info.exported_value and std.mem.eql(u8, imported_text, "type");
-                result = if (info.type_only_import) .import_type else if (info.type_only_export and !bare_type_value_export) .export_type else .none;
-            }
+            if (resolver.moduleExport(spec, self.importer_path, imported_text)) |resolved| info = resolved;
+        }
+        if (info) |found| {
+            const bare_type_value_export = found.exported_value and std.mem.eql(u8, imported_text, "type");
+            result = if (found.type_only_import) .import_type else if (found.type_only_export and !bare_type_value_export) .export_type else .none;
         }
         self.cross_module_type_only_export_cache.put(self.gpa, name, result) catch {};
         return result;
@@ -142155,7 +142158,11 @@ pub const Checker = struct {
             return self.argumentsObjectType() catch types.Primitive.any;
         }
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
-            self.importedNamespaceOnlyValueUse(id.name, node))
+            self.importedNamespaceOnlyValueUse(id.name, node) and
+            // An `export type * as` alias is still a namespace, but the
+            // source restriction takes precedence: TypeScript reports TS1362
+            // at a value use, not the generic namespace-only TS2708.
+            self.externalTypeOnlyOriginKind(id.name, node) != .export_type)
         {
             self.reportNamespaceAsValue(node, id.name) catch {};
             return types.Primitive.any;

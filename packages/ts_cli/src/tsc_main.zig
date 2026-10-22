@@ -6323,6 +6323,51 @@ test "tsc_main: chained ambient module namespace aliases retain class statics" {
     }
 }
 
+test "tsc_main: type-only ambient module namespace alias reports TS1362" {
+    const first =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); } } }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested.Box { export const extra: 2; } }
+    ;
+    const barrel = "declare module \"barrel-type\" { export type * as API from \"pkg\"; }";
+    const consumer =
+        \\import { API } from "barrel-type";
+        \\let box: API.Nested.Box;
+        \\box = new API.Nested.Box("ready");
+        \\const extra: 2 = API.Nested.Box.extra;
+        \\void box; void extra;
+    ;
+    inline for (.{ false, true }) |main_first| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        var main_id: ?ts_program.FileId = null;
+        if (main_first) main_id = try program.add("/main.ts", consumer);
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/barrel.d.ts", barrel);
+        if (!main_first) main_id = try program.add("/main.ts", consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id.?).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| {
+            try std.testing.expectEqual(@as(u32, 1362), diagnostic.code);
+            try std.testing.expectEqualStrings("'API' cannot be used as a value because it was exported using 'export type'.", diagnostic.message);
+        }
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
