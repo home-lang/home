@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - 'packages/video/src/codecs/video/native_encoder.*'
+      - 'packages/video/src/codecs/video/keyframe_requests.zig'
+      - 'packages/video/docs/keyframe-requests.md'
       - 'packages/video/src/codecs/video/bit_reader.zig'
       - 'packages/video/src/codecs/video/hevc_conformance*.zig'
       - 'packages/video/src/util/bitstream.zig'
@@ -20,6 +22,8 @@ on:
   pull_request:
     paths:
       - 'packages/video/src/codecs/video/native_encoder.*'
+      - 'packages/video/src/codecs/video/keyframe_requests.zig'
+      - 'packages/video/docs/keyframe-requests.md'
       - 'packages/video/src/codecs/video/bit_reader.zig'
       - 'packages/video/src/codecs/video/hevc_conformance*.zig'
       - 'packages/video/src/util/bitstream.zig'
