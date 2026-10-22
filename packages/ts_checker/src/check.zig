@@ -64663,9 +64663,19 @@ pub const Checker = struct {
                 if (self.hir.kindOf(spec_node) != .import_specifier) continue;
                 const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
                 if (imported.local != local_name) continue;
+                var info = self.programAmbientModuleExportInfo(spec_text, imported.imported);
                 if (self.external_resolver) |resolver| {
-                    if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |info| {
-                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceTypeForPath(info.namespace_module_path, anchor);
+                    if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |resolved| info = resolved;
+                }
+                if (info) |found| {
+                    if (found.namespace_module_path.len != 0) return self.programModuleNamespaceTypeForPath(found.namespace_module_path, anchor);
+                    if (found.namespace_ambient_module.len != 0 and found.ambient_module_exports_known and
+                        found.runtime_value == true and
+                        self.programAmbientModuleHasEmptyRuntimeNamespace(found.namespace_ambient_module))
+                    {
+                        const namespace = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                        try self.registerModuleNamespaceDisplayName(namespace, found.namespace_ambient_module);
+                        return namespace;
                     }
                 }
             }
@@ -65161,6 +65171,25 @@ pub const Checker = struct {
         }
         for (self.program_ambient_module_interface_exports) |exported| {
             if (self.moduleNameMatchesSpecifier(exported.specifier, spec)) return true;
+        }
+        return false;
+    }
+
+    /// A module-namespace alias is an exact empty runtime object when the
+    /// complete source export table contains no runtime values. This covers
+    /// truly empty modules and modules that export only erased types; unknown
+    /// export facts and unmodeled value routes must not become an empty shape.
+    fn programAmbientModuleHasEmptyRuntimeNamespace(self: *Checker, spec: []const u8) bool {
+        for (self.program_ambient_modules) |module| {
+            if (!std.mem.eql(u8, module.specifier, spec)) continue;
+            if (!module.complete) return false;
+            for (module.exports) |exported| {
+                if (!exported.facts.ambient_module_exports_known or exported.facts.runtime_value != false) return false;
+            }
+            for (self.program_exported_values) |value| {
+                if (value.runtime_value and std.mem.eql(u8, value.ambient_module_name, spec)) return false;
+            }
+            return true;
         }
         return false;
     }

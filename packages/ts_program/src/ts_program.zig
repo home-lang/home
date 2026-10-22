@@ -8255,6 +8255,59 @@ test "Program: same-shaped ambient module aliases retain distinct display identi
     }
 }
 
+test "Program: ambient aliases to modules with no runtime exports have exact empty namespaces" {
+    const declarations =
+        \\declare module "empty-a" {}
+        \\declare module "empty-b" {}
+        \\declare module "types-pkg" { export interface Item { id: 1; } }
+        \\declare module "barrel" {
+        \\  export * as A from "empty-a";
+        \\  export * as B from "empty-b";
+        \\  export * as Types from "types-pkg";
+        \\}
+    ;
+    const consumer =
+        \\import { A, B, Types } from "barrel";
+        \\const a = A.missing;
+        \\const b = B.missing;
+        \\const item: Types.Item = { id: 1 };
+        \\const c = Types.missing;
+        \\void a; void b; void item; void c;
+    ;
+    inline for (.{ false, true }) |streaming| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/declarations.d.ts", declarations);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/declarations.d.ts", declarations);
+        const main_id = try program.add("/main.ts", consumer);
+        const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+        if (streaming) {
+            const Sink = struct {
+                count: usize = 0,
+                fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                    if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                }
+            };
+            var sink: Sink = .{};
+            try program.compileAllStreaming(options, &sink, Sink.receive);
+            try T.expectEqual(@as(usize, 3), sink.count);
+        } else try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_][]const u8{ "empty-a", "empty-b", "types-pkg" }) |diagnostic, specifier| {
+            try T.expectEqual(@as(u32, 2339), diagnostic.code);
+            const expected = try std.fmt.allocPrint(T.allocator, "Property 'missing' does not exist on type 'typeof import(\"{s}\")'.", .{specifier});
+            defer T.allocator.free(expected);
+            try T.expectEqualStrings(expected, diagnostic.message);
+        }
+    }
+}
+
 test "Program: unsupported ambient class merge cannot leak through a barrel" {
     const first =
         \\declare module "pkg" {

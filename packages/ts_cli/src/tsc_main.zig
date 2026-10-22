@@ -6416,6 +6416,56 @@ test "tsc_main: explicit ambient namespace alias wins star collision" {
     }
 }
 
+test "tsc_main: ambient aliases with empty runtime namespaces keep module identity" {
+    const declarations =
+        \\declare module "empty-a" {}
+        \\declare module "empty-b" {}
+        \\declare module "types-pkg" { export interface Item { id: 1; } }
+        \\declare module "barrel" {
+        \\  export * as A from "empty-a";
+        \\  export * as B from "empty-b";
+        \\  export * as Types from "types-pkg";
+        \\}
+    ;
+    const consumer =
+        \\import { A, B, Types } from "barrel";
+        \\const a = A.missing;
+        \\const b = B.missing;
+        \\const item: Types.Item = { id: 1 };
+        \\const c = Types.missing;
+        \\void a; void b; void item; void c;
+    ;
+    inline for (.{ false, true }) |main_first| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/declarations.d.ts", declarations);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        var main_id: ?ts_program.FileId = null;
+        if (main_first) main_id = try program.add("/main.ts", consumer);
+        _ = try program.add("/declarations.d.ts", declarations);
+        if (!main_first) main_id = try program.add("/main.ts", consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id.?).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_][]const u8{ "empty-a", "empty-b", "types-pkg" }) |diagnostic, specifier| {
+            try std.testing.expectEqual(@as(u32, 2339), diagnostic.code);
+            const expected = try std.fmt.allocPrint(std.testing.allocator, "Property 'missing' does not exist on type 'typeof import(\"{s}\")'.", .{specifier});
+            defer std.testing.allocator.free(expected);
+            try std.testing.expectEqualStrings(expected, diagnostic.message);
+        }
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
