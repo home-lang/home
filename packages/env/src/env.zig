@@ -9,6 +9,7 @@ pub const DotEnv = dotenv.DotEnv;
 pub const ParseError = parser.ParseError;
 pub const secure = @import("secure.zig");
 pub const cli = @import("cli.zig");
+pub const PosixEnv = @import("posix_env.zig");
 
 const builtin = @import("builtin");
 
@@ -21,23 +22,12 @@ pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
             error.EnvironmentVariableMissing => null,
             else => |e| return e,
         };
-    } else if (comptime builtin.os.tag == .linux) {
+    } else if (comptime builtin.os.tag == .linux and !builtin.link_libc) {
         // On Linux without libc, std.c.getenv is unavailable
         return null;
     } else {
         // On POSIX (macOS etc.), use C getenv directly
-        const key_z = blk: {
-            const buf = try allocator.allocSentinel(u8, key.len, 0);
-            @memcpy(buf, key);
-            break :blk buf;
-        };
-        defer allocator.free(key_z);
-
-        const result = std.c.getenv(key_z.ptr);
-        if (result) |ptr| {
-            return try allocator.dupe(u8, std.mem.sliceTo(ptr, 0));
-        }
-        return null;
+        return try PosixEnv.get(allocator, key);
     }
 }
 
@@ -56,17 +46,7 @@ pub fn set(key: []const u8, value: []const u8) !void {
         return error.NotImplemented; // Windows requires different approach
     }
 
-    const key_z = try std.posix.toPosixPath(key);
-    const value_z = try std.posix.toPosixPath(value);
-
-    const c = struct {
-        extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
-    };
-
-    const result = c.setenv(&key_z, &value_z, 1);
-    if (result != 0) {
-        return error.SetEnvironmentVariableFailed;
-    }
+    try PosixEnv.set(std.heap.page_allocator, key, value);
 }
 
 // Unset environment variable
@@ -75,16 +55,7 @@ pub fn unset(key: []const u8) !void {
         return error.NotImplemented;
     }
 
-    const key_z = try std.posix.toPosixPath(key);
-
-    const c = struct {
-        extern "c" fn unsetenv([*:0]const u8) c_int;
-    };
-
-    const result = c.unsetenv(&key_z);
-    if (result != 0) {
-        return error.UnsetEnvironmentVariableFailed;
-    }
+    try PosixEnv.unset(std.heap.page_allocator, key);
 }
 
 // Check if environment variable exists
