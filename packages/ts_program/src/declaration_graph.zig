@@ -871,6 +871,12 @@ fn ambientModuleContainingOrigin(
 }
 
 fn forwardedNamespacePath(arena: std.mem.Allocator, path: []const u8, source_name: []const u8, public_name: []const u8) !?[]const u8 {
+    // `export * as name from "ambient-module"` forwards the whole module,
+    // rather than one named namespace within it.
+    if (source_name.len == 0) {
+        if (path.len == 0) return public_name;
+        return try std.fmt.allocPrint(arena, "{s}.{s}", .{ public_name, path });
+    }
     if (std.mem.eql(u8, path, source_name)) return public_name;
     if (!std.mem.startsWith(u8, path, source_name) or path.len <= source_name.len or path[source_name.len] != '.') return null;
     if (std.mem.eql(u8, source_name, public_name)) return path;
@@ -1015,6 +1021,32 @@ fn collectAmbientModules(
                             .target_path = host.path,
                             .public_name = name.*,
                         });
+                    }
+                    if (merged == null and !forwarded_unresolved and !deferred_forward and
+                        !resolved.ambiguous and resolved.restriction == null)
+                    {
+                        // A module-namespace alias points at one arbitrary
+                        // declaration fragment. Forward the completed source
+                        // module after every fragment has contributed routes.
+                        if (resolved.namespace) |origin| {
+                            if (originKey(by_path, declarations, origin)) |key| {
+                                if (ambientModuleContainingOrigin(sources, &modules, key)) |module_owner| {
+                                    for (module_owner.owners) |owner| {
+                                        if (owner.source != key.source or owner.node != key.node) continue;
+                                        if (std.mem.eql(u8, module_owner.specifier, specifier)) break;
+                                        deferred_forward = true;
+                                        try pending_forwards.append(arena, .{
+                                            .source_module = module_owner.specifier,
+                                            .source_name = "",
+                                            .target_module = specifier,
+                                            .target_path = host.path,
+                                            .public_name = name.*,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

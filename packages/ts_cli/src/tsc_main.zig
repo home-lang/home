@@ -6225,6 +6225,58 @@ test "tsc_main: ambient class namespace statics survive barrel exports" {
     }
 }
 
+test "tsc_main: ambient module namespace reexport retains merged class and type" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { constructor(value: "ready"); readonly id: 1; }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested.Box { export const extra: 2; }
+        \\}
+    ;
+    const barrel = "declare module \"barrel\" { export * as API from \"pkg\"; }";
+    const consumer =
+        \\import { API } from "barrel";
+        \\const box = new API.Nested.Box("ready");
+        \\const typed: API.Nested.Box = box;
+        \\const badType: API.Nested.Box = 1;
+        \\const badId: 2 = box.id;
+        \\const extra: 2 = API.Nested.Box.extra;
+        \\const badExtra: 3 = API.Nested.Box.extra;
+        \\new API.Nested.Box("late");
+        \\void typed; void badType; void badId; void extra; void badExtra;
+    ;
+    inline for (.{ false, true }) |main_first| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        var main_id: ?ts_program.FileId = null;
+        if (main_first) main_id = try program.add("/main.ts", consumer);
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/barrel.d.ts", barrel);
+        if (!main_first) main_id = try program.add("/main.ts", consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id.?).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics, [_]u32{ 2322, 2322, 2322, 2345 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";

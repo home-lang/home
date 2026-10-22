@@ -296,8 +296,14 @@ pub const Query = struct {
         if (try self.hasAmbientModule(specifier)) {
             const owners = self.ambient_modules.get(specifier).?;
             for (owners.items) |owner| {
-                if (self.sourceAllowed(owner.path)) self.namespace(owner.path, owner.node, values, restriction);
+                if (!self.sourceAllowed(owner.path)) continue;
+                // All declaration fragments contribute to one ambient module
+                // namespace. Their distinct source positions are not distinct
+                // competing exports of `export * as name from "module"`.
+                self.namespace(owner.path, owner.node, values, restriction);
+                return;
             }
+            self.result.complete = false;
         } else if (try self.target(specifier, from)) |path| self.namespace(path, 0, values, restriction);
     }
 
@@ -844,6 +850,7 @@ test "export origins: ambient module stars retain the first exporting owner" {
         \\declare module 'first' { export * from 'pkg'; export * from 'other'; }
         \\declare module 'reversed' { export * from 'other'; export * from 'pkg'; }
         \\declare module 'fallback' { export * from 'empty'; export * from 'pkg'; }
+        \\declare module 'alias' { export * as API from 'pkg'; }
         },
     };
     var compilations: [files.len]*driver.Compilation = undefined;
@@ -869,6 +876,12 @@ test "export origins: ambient module stars retain the first exporting owner" {
         try T.expectEqualStrings(owner, resolved.namespace.?.path);
         try T.expectEqualStrings(owner, resolved.value.?.path);
     }
+    const namespace_alias = try query.resolveModule("alias", "/main.ts", "API");
+    try T.expect(namespace_alias.complete and !namespace_alias.ambiguous);
+    try T.expect(namespace_alias.value != null and namespace_alias.namespace != null);
+    const namespace_path = namespace_alias.namespace.?.path;
+    try T.expect(std.mem.eql(u8, namespace_path, "/pkg.d.ts") or std.mem.eql(u8, namespace_path, "/pkg-extra.d.ts"));
+    try T.expectEqualStrings(namespace_path, namespace_alias.value.?.path);
 }
 
 test "export origins: default namespace and type-only aliases preserve owner and visibility" {
