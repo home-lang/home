@@ -8140,6 +8140,81 @@ test "Program: merged ambient generic accessor substitutes its setter input" {
     }
 }
 
+test "Program: merged ambient setter-only accessors retain read and write types" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box<T> {
+        \\      constructor();
+        \\      set value(input: T | number);
+        \\      static set state(input: boolean | number);
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested.Box { export const extra: 3; }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\const box = new Nested.Box<string>();
+        \\const read: string | number = box.value;
+        \\const wrong: boolean = box.value;
+        \\box.value = 'ok';
+        \\const narrowed: string = box.value;
+        \\box.value = 42;
+        \\box.value = true;
+        \\const state: boolean | number = Nested.Box.state;
+        \\const wrongState: string = Nested.Box.state;
+        \\Nested.Box.state = true;
+        \\Nested.Box.state = 'bad';
+        \\const extra: 3 = Nested.Box.extra;
+        \\void read; void wrong; void narrowed; void state; void wrongState; void extra;
+    ;
+    const Mode = enum { split, reversed, combined };
+    inline for (.{ Mode.split, Mode.reversed, Mode.combined }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        if (mode == .combined) {
+            try vfs.addFile("/both.d.ts", first ++ "\n" ++ second);
+        } else {
+            try vfs.addFile("/first.d.ts", first);
+            try vfs.addFile("/second.d.ts", second);
+        }
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const main_id: FileId = switch (mode) {
+            .split => blk: {
+                _ = try program.add("/first.d.ts", first);
+                _ = try program.add("/second.d.ts", second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+            .reversed => blk: {
+                const id = try program.add("/main.ts", consumer);
+                _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", first);
+                break :blk id;
+            },
+            .combined => blk: {
+                _ = try program.add("/both.d.ts", first ++ "\n" ++ second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+        };
+        try program.compileAll(.{ .no_emit = true, .strict = true });
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics, [_]u32{ 115, 213, 287, 351 }) |diagnostic, expected_pos| {
+            try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            try T.expectEqual(expected_pos, diagnostic.pos);
+        }
+    }
+}
+
 test "Program: merged ambient class route cannot cross module specifiers" {
     const other =
         \\declare module 'other' {
@@ -8288,10 +8363,17 @@ test "Program: streaming publishes late ambient class collisions once and respec
 }
 
 test "Program: unsupported class augmentation cannot publish a partial merged value" {
-    const first =
+    const unannotated =
         \\declare module "pkg" {
         \\  export namespace Nested {
-        \\    export class Box { static set computed(value: 1); constructor(); }
+        \\    export class Box { static set computed(value); constructor(); }
+        \\  }
+        \\}
+    ;
+    const duplicate =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { static set computed(value: 1); static set computed(value: 2); constructor(); }
         \\  }
         \\}
     ;
@@ -8302,23 +8384,25 @@ test "Program: unsupported class augmentation cannot publish a partial merged va
         \\  }
         \\}
     ;
-    var vfs = ts_resolver.VirtualFs.init(T.allocator);
-    defer vfs.deinit();
-    try vfs.addFile("/first.d.ts", first);
-    try vfs.addFile("/second.d.ts", second);
-    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
-    defer resolver.deinit();
-    var program = Program.init(T.allocator, &resolver);
-    defer program.deinit();
-    _ = try program.add("/first.d.ts", first);
-    _ = try program.add("/second.d.ts", second);
-    try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
-    var graph = try program.collectProgramDeclarations();
-    defer graph.deinit();
-    for (graph.values) |value| {
-        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
-            std.mem.eql(u8, value.namespace_path, "Nested") and
-            std.mem.eql(u8, value.export_name, "Box")));
+    inline for (.{ unannotated, duplicate }) |first| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/first.d.ts", first);
+        try vfs.addFile("/second.d.ts", second);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+        var graph = try program.collectProgramDeclarations();
+        defer graph.deinit();
+        for (graph.values) |value| {
+            try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
+                std.mem.eql(u8, value.namespace_path, "Nested") and
+                std.mem.eql(u8, value.export_name, "Box")));
+        }
     }
 }
 
