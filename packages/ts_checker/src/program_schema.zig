@@ -17,6 +17,8 @@ pub const Parameter = struct {
 pub const Member = struct {
     name: []const u8,
     type: *const Expression,
+    /// The setter parameter type for a paired accessor. Reads use `type`.
+    write_type: ?*const Expression = null,
     optional: bool = false,
     readonly: bool = false,
     method: bool = false,
@@ -322,9 +324,13 @@ pub const Schema = struct {
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
+                    if (member.write_type) |write_type| try pending.append(gpa, write_type);
                 },
                 .indexed_object => |object| {
-                    for (object.members) |member| try pending.append(gpa, member.type);
+                    for (object.members) |member| {
+                        try pending.append(gpa, member.type);
+                        if (member.write_type) |write_type| try pending.append(gpa, write_type);
+                    }
                     for (object.indices) |index| {
                         try pending.append(gpa, index.key);
                         try pending.append(gpa, index.value);

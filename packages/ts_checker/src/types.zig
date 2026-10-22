@@ -336,6 +336,8 @@ pub const MemberVisibility = enum(u2) {
 pub const ObjectMember = struct {
     name: StringId,
     type: TypeId,
+    /// Paired accessor setter input; absent for ordinary properties.
+    write_type: ?TypeId = null,
     is_optional: bool,
     is_readonly: bool,
     is_method: bool,

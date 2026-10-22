@@ -176,7 +176,10 @@ const SourceGraph = struct {
         switch (try payloadColumn(self.source.pool.flagsOf(id))) {
             .object_type_payloads => {
                 const value = try self.payload(.object_type_payloads, id);
-                for (try self.slice(.object_member_pool, value.members_start, value.members_len)) |member| try output.append(allocator, member.type);
+                for (try self.slice(.object_member_pool, value.members_start, value.members_len)) |member| {
+                    try output.append(allocator, member.type);
+                    if (member.write_type) |write_type| try output.append(allocator, write_type);
+                }
                 try output.appendSlice(allocator, &.{ value.string_index_type, value.number_index_type, value.symbol_index_type });
                 for ([_]u32{ value.call_sig, value.construct_sig }) |signature| {
                     if (signature == 0) continue;
@@ -477,6 +480,7 @@ const Builder = struct {
                     var mapped = member;
                     mapped.name = try self.string(member.name);
                     mapped.type = try self.typeId(member.type);
+                    if (member.write_type) |write_type| mapped.write_type = try self.typeId(write_type);
                     mapped.decl_node = try self.node(member.decl_node);
                     if (member.declaration_origin != 0) mapped.declaration_origin = try self.string(member.declaration_origin);
                     target.pool.object_member_pool.appendAssumeCapacity(mapped);
@@ -753,7 +757,7 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     const enumeration = try ti.internEnumStringLiteral(10, 30, 40);
     const parameter = try ti.internFreshTypeParameterWithFlags(50, p.unknown, text, .contravariant, true);
     const object = try ti.internObjectTypeWithIndexAndSymbol(&.{
-        .{ .name = 60, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 7, .declaration_origin = 61 },
+        .{ .name = 60, .type = parameter, .write_type = number, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 7, .declaration_origin = 61 },
         .{ .name = 70, .type = parameter, .is_optional = false, .is_readonly = false, .is_method = true },
     }, text, number, bigint);
     ti.setTypeSymbol(object, 9);
@@ -838,7 +842,7 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     try T.expectEqualDeep(types.TypeParameterPayload{ .name = 150, .constraint = object, .default = text, .variance = .contravariant, .is_const = true }, tp);
     const obj = pool.object_type_payloads.items[pool.payloadOf(object)];
     try T.expectEqual(@as(u32, 1009), pool.headers.items[object].symbol);
-    try T.expectEqualDeep(types.ObjectMember{ .name = 160, .type = parameter, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 1007, .declaration_origin = 161 }, pool.object_member_pool.items[obj.members_start]);
+    try T.expectEqualDeep(types.ObjectMember{ .name = 160, .type = parameter, .write_type = number, .is_optional = true, .is_readonly = true, .is_method = false, .visibility = .private, .decl_node = 1007, .declaration_origin = 161 }, pool.object_member_pool.items[obj.members_start]);
     try T.expectEqual(parameter, pool.object_member_pool.items[obj.members_start + 1].type);
     try T.expectEqual(@as(u32, 170), pool.object_member_pool.items[obj.members_start + 1].name);
     try T.expectEqual(hir.none_node_id, pool.object_member_pool.items[obj.members_start + 1].decl_node);
@@ -1054,6 +1058,11 @@ test "type transfer: rejected names and malformed graph references roll back eve
     try T.expectError(error.InvalidTypeGraph, append(&destination, &source, names.names()));
     try T.expectEqualDeep(before, poolLengths(&destination.pool));
     source.pool.object_member_pool.items[member_index].type = member_type;
+    const member_write_type = source.pool.object_member_pool.items[member_index].write_type;
+    source.pool.object_member_pool.items[member_index].write_type = source.pool.typeCount();
+    try T.expectError(error.InvalidTypeGraph, append(&destination, &source, names.names()));
+    try T.expectEqualDeep(before, poolLengths(&destination.pool));
+    source.pool.object_member_pool.items[member_index].write_type = member_write_type;
     const original_payload = source.pool.headers.items[graph.text].payload;
     source.pool.headers.items[graph.text].payload = @intCast(source.pool.literal_payloads.items.len);
     try T.expectError(error.InvalidTypeGraph, append(&destination, &source, names.names()));
@@ -1268,6 +1277,32 @@ test "type transfer: deep forward references are iterative and unanchored key cy
     try T.expectError(error.InvalidTypeGraph, append(&target, &source, names.names()));
     try T.expectEqualDeep(before, poolLengths(&target.pool));
     try T.expectEqual(keys_before, keyCount(&target));
+}
+
+test "type transfer: reachable accessor setter type is selected and relocated" {
+    var source = try interner.Interner.initExclusive(T.allocator);
+    defer source.deinit();
+    const write_type = try source.internStringLiteral(10);
+    const object = try source.internObjectType(&.{.{
+        .name = 20,
+        .type = types.Primitive.number_t,
+        .write_type = write_type,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    var target = try interner.Interner.initExclusive(T.allocator);
+    defer target.deinit();
+    _ = try target.internObjectType(&.{});
+    var names: TestNames = .{};
+    var pending = try prepareReachable(&target, &source, names.names(), &.{object});
+    defer pending.deinit();
+    const ids = pending.ids();
+    const mapped_object = try ids.typeId(object);
+    const mapped_write = try ids.typeId(write_type);
+    try T.expect(mapped_write != write_type);
+    try T.expectEqual(mapped_write, target.objectMemberInfo(mapped_object, 120).?.write_type.?);
+    try T.expectEqual(@as(types.StringId, 110), target.pool.literal_payloads.items[target.pool.payloadOf(mapped_write)].string_lit);
 }
 
 test "type transfer: reachable payloads preserve recursive generic and callable edges" {
