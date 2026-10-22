@@ -107,7 +107,9 @@ int main(int argc,char **argv) {
         png_bytep bytes=NULL;png_uint_32 length=0;if(png_get_eXIf_1(png,info,&length,&bytes)) { carried=1;d=load(bytes,length,0); }
         png_destroy_read_struct(&png,&info,NULL);
     } else if(!strcmp(argv[1],"tiff")) {
-        if(fseek(f,0,SEEK_END)!=0)return 8;long length=ftell(f);if(length<8 || length>64*1024*1024)return 8;
+        if(fseek(f,0,SEEK_END)!=0)return 8;
+        long length=ftell(f);
+        if(length<8 || length>64*1024*1024)return 8;
         rewind(f);unsigned char *bytes=malloc((size_t)length);if(!bytes)return 9;
         if(fread(bytes,1,(size_t)length,f)!=(size_t)length)return 10;
         d=load(bytes,(size_t)length,0);free(bytes);
