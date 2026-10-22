@@ -71,3 +71,36 @@ These are shared-development-host samples, not Pi measurements, a latency guaran
 a camera FPS result or a Picamera2 comparison. Build mode and workload matter;
 there is no claim that every conversion/target becomes faster. CI correctness uses
 pixel equivalence and bounds tests rather than timing thresholds.
+
+## Checked planar and semi-planar 4:2:0 views
+
+`I420` now describes logical Y/U/V sample views. Its default `chroma_step=1`
+preserves existing planar callers. `I420.semiPlanar(width, height, y, y_stride,
+uv, uv_stride, vu)` creates checked NV12 (`vu=false`) or NV21 (`vu=true`) views
+without allocation, by borrowing U/V aliases with `chroma_step=2`. Swapping planar
+U/V views supports YV12. Positive even dimensions, step 1/2, every row span and
+all final samples are checked; final-row padding may be absent. Source owners
+must remain alive and synchronized through every operation.
+
+`decode420` uses the same block arithmetic for both planar and interleaved
+chroma. `encodeSemi420` shares the checked encoder and averages all four RGB
+contributors per chroma pair, with explicit UV/VU order and independent pitches.
+`copyI420` packs logical Y/U/V into caller-owned tight storage and validates the
+entire source, destination and overlap before writing; output suffix is untouched.
+`yuv_remap.Remap.apply` reads either chroma step directly into planar output and
+rejects overlapping source/destination or destination planes before writing.
+RGB encode/decode also reject overlapping source/destination buffers. Chroma U/V
+aliases are intentional for interleaved input/output. Ownership and allocation
+remain caller responsibilities; no kernel or camera state enters these helpers.
+
+The public `pixel_convert` RGB24-to-NV12/NV21 and NV12/NV21-to-RGB24 routes now use
+these checked helpers. This fixes corner-only chroma selection on RGB encoding
+and replaces per-pixel decode work with shared 2x2 chroma terms. Other conversion
+routes retain their existing behavior; this change does not make the whole
+conversion matrix checked or correct for arbitrary subsampling/resampling.
+
+Tests compare NV12/NV21 against canonical I420 across all matrices/ranges,
+padded/unaligned/truncated spans, U/V order, chroma averaging, direct remapping,
+packing, overlap rejection and unchanged destinations on failure. Both pinned
+Zig 0.15.2 and the development compiler pass Debug and ReleaseSafe checks. These
+are software results; no physical camera format acceptance or throughput follows.

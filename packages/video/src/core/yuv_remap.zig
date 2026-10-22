@@ -45,6 +45,10 @@ pub const Remap = struct {
     pub fn apply(self: Remap, source: color.I420, planes: [3][]u8, strides: [3]u32) !void {
         try source.validate();
         try (color.I420{ .width = source.width, .height = source.height, .planes = .{ planes[0], planes[1], planes[2] }, .strides = strides }).validate();
+        for (planes, 0..) |destination, i| {
+            for (source.planes) |src| try color.disjoint(src, destination);
+            for (planes[0..i]) |prior| try color.disjoint(prior, destination);
+        }
         if (self.same_matrix) {
             for (0..3) |i| {
                 const width = if (i == 0) source.width else source.width / 2;
@@ -53,14 +57,14 @@ pub const Remap = struct {
                 const offset = if (i == 0) self.source_offset else @as(i64, 128);
                 const target = if (i == 0) self.target_offset else @as(i64, 128);
                 for (0..height) |y| for (0..width) |x| {
-                    planes[i][y * strides[i] + x] = clamp(((coefficient * (@as(i64, source.planes[i][y * source.strides[i] + x]) - offset) + scale / 2) >> 16) + target);
+                    planes[i][y * strides[i] + x] = clamp(((coefficient * (@as(i64, source.planes[i][y * source.strides[i] + x * @as(u32, if (i == 0) 1 else source.chroma_step)]) - offset) + scale / 2) >> 16) + target);
                 };
             }
             return;
         }
         for (0..source.height / 2) |cy| for (0..source.width / 2) |cx| {
-            const u = source.planes[1][cy * source.strides[1] + cx];
-            const v = source.planes[2][cy * source.strides[2] + cx];
+            const u = source.planes[1][cy * source.strides[1] + cx * source.chroma_step];
+            const v = source.planes[2][cy * source.strides[2] + cx * source.chroma_step];
             for (0..2) |dy| for (0..2) |dx| {
                 const x = cx * 2 + dx;
                 const y = cy * 2 + dy;
@@ -124,4 +128,27 @@ test "matrix remap agrees with an independent unclipped floating reference" {
             }
         };
     };
+}
+
+test "semi-planar remapping matches I420 for every source and target matrix and range" {
+    const t = std.testing;
+    const ys = [_]u8{ 0, 16, 76, 128, 235, 255, 51, 91, 2, 42, 82, 122, 162, 202, 222, 242 };
+    const uv = [_]u8{ 0, 255, 85, 240, 240, 90, 128, 16 };
+    const semi = try color.I420.semiPlanar(4, 4, &ys, 4, &uv, 4, false);
+    var canonical: [24]u8 = undefined;
+    try semi.copyI420(&canonical);
+    const planar = color.I420{ .width = 4, .height = 4, .planes = .{ canonical[0..16], canonical[16..20], canonical[20..24] }, .strides = .{ 4, 2, 2 } };
+    for ([_]color.Matrix{ .bt601, .bt709, .bt2020 }) |src| for ([_]color.Matrix{ .bt601, .bt709, .bt2020 }) |dst| for ([_]color.Range{ .full, .limited }) |sr| for ([_]color.Range{ .full, .limited }) |dr| {
+        const map = Remap.init(src, sr, dst, dr);
+        var a: [24]u8 = undefined;
+        var b: [24]u8 = undefined;
+        try map.apply(planar, .{ a[0..16], a[16..20], a[20..24] }, .{ 4, 2, 2 });
+        try map.apply(semi, .{ b[0..16], b[16..20], b[20..24] }, .{ 4, 2, 2 });
+        try t.expectEqualSlices(u8, &a, &b);
+    };
+    const map = Remap.init(.bt601, .full, .bt709, .limited);
+    var out: [24]u8 = @splat(73);
+    try t.expectError(error.Overlap, map.apply(planar, .{ out[0..16], out[16..20], out[16..20] }, .{ 4, 2, 2 }));
+    for (out) |value| try t.expectEqual(@as(u8, 73), value);
+    try t.expectError(error.Overlap, map.apply(planar, .{ canonical[0..16], out[16..20], out[20..24] }, .{ 4, 2, 2 }));
 }

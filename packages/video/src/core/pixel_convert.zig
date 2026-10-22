@@ -282,8 +282,9 @@ pub fn convertInPlace(src: *const Frame, dst: *Frame) !void {
 
 fn yuvToRgb(src: *const Frame, dst: *Frame) !void {
     const conversion = converter(src.colorspace, src.color_range);
-    if (src.format == .yuv420p and dst.format == .rgb24) {
-        return yuv_rgb.decode420(.{ .width = src.width, .height = src.height, .planes = .{ src.planes[0], src.planes[1], src.planes[2] }, .strides = src.strides[0..3].* }, conversion, dst.planes[0], dst.strides[0]);
+    if ((src.format == .yuv420p or src.format == .nv12 or src.format == .nv21) and dst.format == .rgb24) {
+        const view = if (src.format == .yuv420p) yuv_rgb.I420{ .width = src.width, .height = src.height, .planes = .{ src.planes[0], src.planes[1], src.planes[2] }, .strides = src.strides[0..3].* } else try yuv_rgb.I420.semiPlanar(src.width, src.height, src.planes[0], src.strides[0], src.planes[1], src.strides[1], src.format == .nv21);
+        return yuv_rgb.decode420(view, conversion, dst.planes[0], dst.strides[0]);
     }
     for (0..src.height) |y| for (0..src.width) |x| {
         const pixel = getYuvPixel(src, @intCast(x), @intCast(y));
@@ -296,6 +297,9 @@ fn rgbToYuv(src: *const Frame, dst: *Frame) !void {
     const conversion = converter(dst.colorspace, dst.color_range);
     if (src.format == .rgb24 and dst.format == .yuv420p) {
         return yuv_rgb.encode420(src.planes[0], src.width, src.height, src.strides[0], .{ dst.planes[0], dst.planes[1], dst.planes[2] }, dst.strides[0..3].*, conversion);
+    }
+    if (src.format == .rgb24 and (dst.format == .nv12 or dst.format == .nv21)) {
+        return yuv_rgb.encodeSemi420(src.planes[0], src.width, src.height, src.strides[0], .{ dst.planes[0], dst.planes[1] }, .{ dst.strides[0], dst.strides[1] }, dst.format == .nv21, conversion);
     }
     for (0..src.height) |y| for (0..src.width) |x| {
         const rgb = getRgbPixel(src, @intCast(x), @intCast(y));
@@ -696,4 +700,28 @@ test "packed public RGB conversion preflights spans and ignores different row pa
     source.planes[0] = input[0..13];
     target.planes[0] = &output;
     try t.expectError(error.BufferTooSmall, convertInPlace(&source, &target));
+}
+
+test "public NV12 and NV21 conversion averages all chroma contributors and rejects truncated planes" {
+    const t = std.testing;
+    var rgb = try Frame.alloc(2, 2, .rgb24, t.allocator);
+    defer rgb.deinit();
+    @memcpy(rgb.planes[0], &[_]u8{ 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255 });
+    for ([_]PixelFormat{ .nv12, .nv21 }) |format| {
+        var nv = try convert(&rgb, format, t.allocator);
+        defer nv.deinit();
+        try t.expectEqualSlices(u8, &.{ 128, 128 }, nv.planes[1]);
+        var decoded = try convert(&nv, .rgb24, t.allocator);
+        defer decoded.deinit();
+        var planar = try convert(&rgb, .yuv420p, t.allocator);
+        defer planar.deinit();
+        var expected = try convert(&planar, .rgb24, t.allocator);
+        defer expected.deinit();
+        try t.expectEqualSlices(u8, expected.planes[0], decoded.planes[0]);
+        var truncated = nv;
+        truncated.planes[1] = nv.planes[1][0..1];
+        @memset(decoded.planes[0], 73);
+        try t.expectError(error.BufferTooSmall, convertInPlace(&truncated, &decoded));
+        for (decoded.planes[0]) |value| try t.expectEqual(@as(u8, 73), value);
+    }
 }

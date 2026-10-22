@@ -1,4 +1,4 @@
-//! Allocation-free RGB24/I420 conversion over checked strided borrowed planes.
+//! Allocation-free RGB24/4:2:0 conversion over checked borrowed planes.
 //! Matrix/range describe encoded R'G'B'/Y'CbCr values; no transfer/primaries transform.
 //! Callers own synchronization. Validation completes before any destination write.
 const std = @import("std");
@@ -73,20 +73,55 @@ pub const I420 = struct {
     height: u32,
     planes: [3][]const u8,
     strides: [3]u32,
+    /// Logical Y,U,V views. Step 2 permits borrowed interleaved chroma aliases.
+    chroma_step: u32 = 1,
+    pub fn semiPlanar(width: u32, height: u32, y: []const u8, y_stride: u32, uv: []const u8, uv_stride: u32, vu: bool) !I420 {
+        if (width == 0 or height == 0 or (width | height) & 1 != 0) return error.InvalidGeometry;
+        try validatePlane(uv.len, uv_stride, width, height / 2);
+        const view = I420{ .width = width, .height = height, .planes = .{ y, uv[@intFromBool(vu)..], uv[@intFromBool(!vu)..] }, .strides = .{ y_stride, uv_stride, uv_stride }, .chroma_step = 2 };
+        try view.validate();
+        return view;
+    }
     pub fn validate(self: I420) !void {
-        if (self.width == 0 or self.height == 0 or (self.width | self.height) & 1 != 0) return error.InvalidGeometry;
+        if (self.width == 0 or self.height == 0 or (self.width | self.height) & 1 != 0 or (self.chroma_step != 1 and self.chroma_step != 2)) return error.InvalidGeometry;
         try validatePlane(self.planes[0].len, self.strides[0], self.width, self.height);
-        for (1..3) |i| try validatePlane(self.planes[i].len, self.strides[i], self.width / 2, self.height / 2);
+        for (1..3) |i| try validatePlane(self.planes[i].len, self.strides[i], (@as(u64, self.width / 2) - 1) * self.chroma_step + 1, self.height / 2);
+    }
+    /// Canonical tight Y,U,V output. Validates source, output and overlap before
+    /// writing. Unused suffix is untouched; caller retains source ownership.
+    pub fn copyI420(self: I420, output: []u8) !void {
+        try self.validate();
+        const pixels = std.math.mul(usize, self.width, self.height) catch return error.InvalidGeometry;
+        const size = std.math.add(usize, pixels, pixels / 2) catch return error.InvalidGeometry;
+        if (output.len < size) return error.BufferTooSmall;
+        for (self.planes) |plane| try disjoint(plane, output[0..size]);
+        for (0..3) |i| {
+            const width = if (i == 0) self.width else self.width / 2;
+            const height = if (i == 0) self.height else self.height / 2;
+            const step = if (i == 0) 1 else self.chroma_step;
+            const at: usize = if (i == 0) 0 else pixels + (i - 1) * pixels / 4;
+            for (0..height) |y| {
+                const row = output[at + y * width ..][0..width];
+                if (step == 1) @memcpy(row, self.planes[i][y * self.strides[i] ..][0..width]) else for (0..width) |x| row[x] = self.planes[i][y * self.strides[i] + x * step];
+            }
+        }
     }
 };
+pub fn disjoint(source: []const u8, destination: []const u8) !void {
+    if (source.len == 0 or destination.len == 0) return;
+    const a = @intFromPtr(source.ptr);
+    const b = @intFromPtr(destination.ptr);
+    if ((a <= b and b - a < source.len) or (b < a and a - b < destination.len)) return error.Overlap;
+}
 pub fn decode420(src: I420, conversion: Conversion, out: []u8, stride: u32) !void {
     try src.validate();
     try validatePlane(out.len, stride, @as(u64, src.width) * 3, src.height);
-    // One I420 chroma pair belongs to four luma samples. Compute its fixed-point
+    for (src.planes) |plane| try disjoint(plane, out);
+    // One 4:2:0 chroma pair belongs to four luma samples. Compute its fixed-point
     // channel contributions once, preserving the existing rounding/clipping.
     for (0..src.height / 2) |cy| for (0..src.width / 2) |cx| {
-        const cb = @as(i64, src.planes[1][cy * src.strides[1] + cx]) - 128;
-        const cr = @as(i64, src.planes[2][cy * src.strides[2] + cx]) - 128;
+        const cb = @as(i64, src.planes[1][cy * src.strides[1] + cx * src.chroma_step]) - 128;
+        const cr = @as(i64, src.planes[2][cy * src.strides[2] + cx * src.chroma_step]) - 128;
         const chroma = [3]i64{ conversion.rv * cr, conversion.gu * cb + conversion.gv * cr, conversion.bu * cb };
         inline for (0..2) |dy| inline for (0..2) |dx| {
             const y = cy * 2 + dy;
@@ -97,9 +132,21 @@ pub fn decode420(src: I420, conversion: Conversion, out: []u8, stride: u32) !voi
     };
 }
 pub fn encode420(rgb: []const u8, width: u32, height: u32, stride: u32, planes: [3][]u8, strides: [3]u32, conversion: Conversion) !void {
-    const view = I420{ .width = width, .height = height, .planes = .{ planes[0], planes[1], planes[2] }, .strides = strides };
+    return encodeStrided420(rgb, width, height, stride, planes, strides, 1, conversion);
+}
+pub fn encodeSemi420(rgb: []const u8, width: u32, height: u32, stride: u32, planes: [2][]u8, strides: [2]u32, vu: bool, conversion: Conversion) !void {
+    _ = try I420.semiPlanar(width, height, planes[0], strides[0], planes[1], strides[1], vu);
+    try disjoint(planes[0], planes[1]);
+    return encodeStrided420(rgb, width, height, stride, .{ planes[0], planes[1][@intFromBool(vu)..], planes[1][@intFromBool(!vu)..] }, .{ strides[0], strides[1], strides[1] }, 2, conversion);
+}
+fn encodeStrided420(rgb: []const u8, width: u32, height: u32, stride: u32, planes: [3][]u8, strides: [3]u32, step: u32, conversion: Conversion) !void {
+    const view = I420{ .width = width, .height = height, .planes = .{ planes[0], planes[1], planes[2] }, .strides = strides, .chroma_step = step };
     try view.validate();
     try validatePlane(rgb.len, stride, @as(u64, width) * 3, height);
+    for (planes, 0..) |plane, i| {
+        try disjoint(rgb, plane);
+        if (step == 1) for (planes[0..i]) |prior| try disjoint(prior, plane);
+    }
     for (0..height / 2) |cy| for (0..width / 2) |cx| {
         var sum: [3]i64 = @splat(0);
         for (0..2) |dy| for (0..2) |dx| {
@@ -109,8 +156,8 @@ pub fn encode420(rgb: []const u8, width: u32, height: u32, stride: u32, planes: 
             planes[0][y * strides[0] + x] = conversion.component(0, .{ p[0], p[1], p[2] }, 1);
             for (0..3) |i| sum[i] += p[i];
         };
-        planes[1][cy * strides[1] + cx] = conversion.component(1, sum, 4);
-        planes[2][cy * strides[2] + cx] = conversion.component(2, sum, 4);
+        planes[1][cy * strides[1] + cx * step] = conversion.component(1, sum, 4);
+        planes[2][cy * strides[2] + cx * step] = conversion.component(2, sum, 4);
     };
 }
 test "independent full and studio range primaries and neutral endpoints" {
@@ -221,4 +268,61 @@ test "block decoding matches legacy per-pixel conversion exactly across all matr
             for (out[16..]) |pad| try std.testing.expectEqual(@as(u8, 99), pad);
         };
     };
+}
+
+test "NV12 and NV21 encode average chroma and decode and pack like planar across matrices ranges and padding" {
+    const t = std.testing;
+    var rgb: [64]u8 = @splat(47);
+    for (0..4) |y| for (0..4) |x| {
+        rgb[y * 16 + x * 3 ..][0..3].* = .{ @intCast(x * 61), @intCast(y * 53), @intCast((x + y) * 31) };
+    };
+    for ([_]Matrix{ .bt601, .bt709, .bt2020 }) |matrix| for ([_]Range{ .full, .limited }) |range| for ([_]bool{ false, true }) |vu| {
+        const conversion = Conversion.init(matrix, range);
+        var y: [24]u8 = @splat(79);
+        var u: [8]u8 = @splat(79);
+        var v: [8]u8 = @splat(79);
+        try encode420(rgb[0..60], 4, 4, 16, .{ &y, &u, &v }, .{ 6, 4, 4 }, conversion);
+        const planar = I420{ .width = 4, .height = 4, .planes = .{ &y, &u, &v }, .strides = .{ 6, 4, 4 } };
+        var sy: [24]u8 = @splat(79);
+        var uv: [16]u8 = @splat(79);
+        try encodeSemi420(rgb[0..60], 4, 4, 16, .{ sy[0..22], uv[0..12] }, .{ 6, 8 }, vu, conversion);
+        const semi = try I420.semiPlanar(4, 4, sy[0..22], 6, uv[0..12], 8, vu);
+        var a: [24]u8 = undefined;
+        var b: [26]u8 = @splat(83);
+        try planar.copyI420(&a);
+        try semi.copyI420(&b);
+        try t.expectEqualSlices(u8, &a, b[0..24]);
+        try t.expectEqualSlices(u8, &.{ 83, 83 }, b[24..]);
+        var ra: [64]u8 = @splat(91);
+        var rb: [64]u8 = @splat(91);
+        try decode420(planar, conversion, ra[0..60], 16);
+        try decode420(semi, conversion, rb[0..60], 16);
+        try t.expectEqualSlices(u8, &ra, &rb);
+        try t.expectEqualSlices(u8, &y, &sy);
+        for ([_]usize{ 4, 5, 6, 7, 12, 13, 14, 15 }) |i| try t.expectEqual(@as(u8, 79), uv[i]);
+    };
+}
+test "semi-planar invalid tails step geometry overlap and output preserve every byte" {
+    const t = std.testing;
+    var y: [32]u8 = @splat(81);
+    var uv: [16]u8 = @splat(90);
+    var out: [64]u8 = @splat(73);
+    try t.expectError(error.InvalidGeometry, I420.semiPlanar(3, 4, &y, 8, &uv, 8, false));
+    try t.expectError(error.InvalidGeometry, I420.semiPlanar(4, 3, &y, 8, &uv, 8, false));
+    try t.expectError(error.BufferTooSmall, I420.semiPlanar(4, 4, &y, 8, uv[0..11], 8, false));
+    const view = try I420.semiPlanar(4, 4, &y, 8, &uv, 8, false);
+    var bad = view;
+    bad.chroma_step = 3;
+    try t.expectError(error.InvalidGeometry, bad.copyI420(&out));
+    bad = view;
+    bad.planes[2] = uv[1..10];
+    try t.expectError(error.BufferTooSmall, bad.copyI420(&out));
+    try t.expectError(error.BufferTooSmall, view.copyI420(out[0..23]));
+    try t.expectError(error.BufferTooSmall, decode420(view, Conversion.init(.bt601, .limited), out[0..47], 12));
+    try t.expectError(error.Overlap, view.copyI420(&y));
+    const rgb: [48]u8 = @splat(10);
+    try t.expectError(error.BufferTooSmall, encodeSemi420(rgb[0..47], 4, 4, 12, .{ &y, &uv }, .{ 8, 8 }, false, Conversion.init(.bt601, .limited)));
+    for (out) |value| try t.expectEqual(@as(u8, 73), value);
+    for (y) |value| try t.expectEqual(@as(u8, 81), value);
+    for (uv) |value| try t.expectEqual(@as(u8, 90), value);
 }
