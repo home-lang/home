@@ -5,18 +5,18 @@ const layout = @import("metadata/icc_layout.zig");
 const zlib = @import("formats/zlib_stream.zig");
 pub const Format = enum { jpeg, png, tiff };
 const List = std.ArrayList(u8);
-pub const Metadata = struct { icc: ?[]const u8 = null, exif: ?[]const u8 = null };
+const jpeg_metadata = @import("jpeg_metadata.zig");
+pub const Metadata = jpeg_metadata.Metadata;
 /// Validate metadata separately from image I/O. Returned slices are borrowed;
 /// Exif is normalized to bare TIFF bytes (without the optional Exif prefix).
 pub fn check(format: Format, metadata: Metadata) !Metadata {
+    if (format == .jpeg) return jpeg_metadata.check(metadata);
     var result = metadata;
     if (metadata.icc) |profile| {
         _ = try layout.validateRgb(profile);
-        if (format == .jpeg and profile.len > jpeg_part * 255) return error.MetadataTooLarge;
     }
     if (metadata.exif) |bytes| {
         const view = try @import("metadata/exif_layout.zig").validate(bytes);
-        if (format == .jpeg and view.data.len > 65527) return error.MetadataTooLarge;
         if (format == .tiff) try @import("metadata_tiff.zig").check(view);
         result.exif = view.data;
     }
@@ -43,25 +43,9 @@ fn number(allocator: std.mem.Allocator, out: *List, comptime T: type, value: T, 
     std.mem.writeInt(T, &bytes, value, endian);
     try out.appendSlice(allocator, &bytes);
 }
-const jpeg_part = 65519;
-fn jpegProfile(allocator: std.mem.Allocator, out: *List, profile: []const u8) !void {
-    const count = (profile.len + jpeg_part - 1) / jpeg_part;
-    if (count > 255) return error.MetadataTooLarge;
-    for (0..count) |i| {
-        const bytes = profile[i * jpeg_part .. @min(profile.len, (i + 1) * jpeg_part)];
-        try out.appendSlice(allocator, "\xff\xe2");
-        try number(allocator, out, u16, @intCast(bytes.len + 16), .big);
-        try out.appendSlice(allocator, "ICC_PROFILE\x00");
-        try out.append(allocator, @intCast(i + 1));
-        try out.append(allocator, @intCast(count));
-        try out.appendSlice(allocator, bytes);
-    }
-}
 fn jpeg(allocator: std.mem.Allocator, out: *List, image: []const u8, metadata: Metadata) !void {
     if (image.len < 4 or !std.mem.eql(u8, image[0..2], "\xff\xd8") or !std.mem.eql(u8, image[image.len - 2 ..], "\xff\xd9")) return error.InvalidImage;
-    var capacity = image.len;
-    if (metadata.exif) |bytes| capacity = try extra(capacity, bytes.len + 10);
-    if (metadata.icc) |bytes| capacity = try extra(capacity, bytes.len + 18 * ((bytes.len + jpeg_part - 1) / jpeg_part));
+    const capacity = try extra(image.len, jpeg_metadata.lengthChecked(metadata));
     try out.ensureTotalCapacityPrecise(allocator, capacity);
     try out.appendSlice(allocator, image[0..2]);
     var at: usize = 2;
@@ -76,13 +60,7 @@ fn jpeg(allocator: std.mem.Allocator, out: *List, image: []const u8, metadata: M
         at += 1;
         if (marker == 0 or marker == 0xd8 or marker == 0x01 or (marker >= 0xd0 and marker <= 0xd7)) return error.InvalidImage;
         if (!inserted and marker != 0xe0) {
-            if (metadata.exif) |bytes| {
-                try out.appendSlice(allocator, "\xff\xe1");
-                try number(allocator, out, u16, @intCast(bytes.len + 8), .big);
-                try out.appendSlice(allocator, "Exif\x00\x00");
-                try out.appendSlice(allocator, bytes);
-            }
-            if (metadata.icc) |profile| try jpegProfile(allocator, out, profile);
+            try jpeg_metadata.appendChecked(allocator, out, metadata);
             inserted = true;
         }
         if (marker == 0xd9) return error.InvalidImage; // A scan is required.

@@ -59,3 +59,24 @@ validation. No Python or FFmpeg is used by these tests.
 Tag definitions follow the selected layouts in
 [CIPA DC-008 Exif 2.32](https://www.cipa.jp/std/documents/e/DC-X008-Translation-2019-E.pdf)
 and [CIPA sensitivity tag mapping](https://cipa.jp/std/documents/e/DC-X010-2017.pdf).
+
+## Shared defaults and value helpers
+
+`withDefaults(allocator, source, fields)` returns owned bare TIFF. Null source
+serializes defaults; otherwise missing primary image/Exif tags are appended.
+Caller fields win even when empty or zero. Both byte orders, original value
+locations and GPS/interoperability/thumbnail directory graphs are retained.
+Defaults can only target image/Exif groups. Original bytes remain in the output;
+this is not redaction, and proprietary MakerNote-relative pointers remain the
+caller's responsibility. Allocation-failure tests cover source/template/merge
+ownership. Independent libexif fixtures verify caller precedence in both byte
+orders and after JPEG/PNG/TIFF embedding.
+
+`appendIso` emits the three-field extended ISO bundle. `appendGpsDecimal`
+rounds total micro-arcseconds before DMS decomposition so boundary rounding
+carries correctly; `appendGpsAltitude` preserves the sign in AltitudeRef.
+`ensureGpsVersion` adds BYTE[4] 2.3.0.0 only when absent. Typed GPS validation
+also checks geographic bounds, reference signs, timestamp domains and the
+version's field shape before writing. These helpers supply representation, not
+sensor gain calibration or a GPS receiver. Capture policy and clocks stay with
+the caller.

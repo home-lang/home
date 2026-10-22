@@ -152,6 +152,16 @@ pub const GPSCoordinate = struct {
     seconds: f64,
     ref: u8, // 'N', 'S', 'E', 'W'
 
+    /// Quantize decimal degrees to micro-arcseconds before decomposition so
+    /// seconds rounding carries into minutes/degrees, including pole boundaries.
+    pub fn fromDecimal(value: f64, latitude: bool) !GPSCoordinate {
+        if (!std.math.isFinite(value) or @abs(value) > @as(f64, if (latitude) 90 else 180)) return error.InvalidExif;
+        const total = @round(@abs(value) * 3_600_000_000);
+        const degrees = @floor(total / 3_600_000_000);
+        const remainder = total - degrees * 3_600_000_000;
+        const minutes = @floor(remainder / 60_000_000);
+        return .{ .degrees = degrees, .minutes = minutes, .seconds = (remainder - minutes * 60_000_000) / 1_000_000, .ref = if (latitude) (if (value < 0) @as(u8, 'S') else 'N') else (if (value < 0) @as(u8, 'W') else 'E') };
+    }
     pub fn toDecimal(self: GPSCoordinate) f64 {
         var decimal = self.degrees + self.minutes / 60.0 + self.seconds / 3600.0;
         if (self.ref == 'S' or self.ref == 'W') {
@@ -399,6 +409,7 @@ fn parseGps(allocator: std.mem.Allocator, checked: layout.View, dir: layout.Dire
 
 pub const serialization = @import("exif_builder.zig");
 pub const Builder = serialization.Builder;
+pub const withDefaults = @import("exif_defaults.zig").apply;
 
 /// Serialize the selected typed fields. Zero-valued legacy scalar fields are
 /// omitted (their structure has no presence bits). raw_tags is a read-only byte
@@ -420,24 +431,14 @@ pub fn encodeTiff(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
         if (@field(exif, field[0])) |value| try writer.rational(.exif, @intFromEnum(field[1]), value.numerator, value.denominator);
     }
     if (exif.exposure_bias) |value| try writer.srational(.exif, @intFromEnum(Tag.exposure_bias_value), value.numerator, value.denominator);
-    if (exif.iso_speed != 0) {
-        try writer.short(.exif, @intFromEnum(Tag.iso_speed_ratings), @intCast(@min(exif.iso_speed, 65535)));
-        try writer.short(.exif, @intFromEnum(Tag.sensitivity_type), 3);
-        try writer.long(.exif, @intFromEnum(Tag.iso_speed), exif.iso_speed);
-    }
+    if (exif.iso_speed != 0) try appendIso(&writer, exif.iso_speed);
     inline for (.{ .{ "exposure_program", Tag.exposure_program }, .{ "exposure_mode", Tag.exposure_mode }, .{ "focal_length_35mm", Tag.focal_length_in_35mm_film }, .{ "flash", Tag.flash }, .{ "white_balance", Tag.white_balance }, .{ "light_source", Tag.light_source }, .{ "metering_mode", Tag.metering_mode }, .{ "scene_capture_type", Tag.scene_capture_type }, .{ "color_space", Tag.color_space } }) |field| {
         const value = @field(exif, field[0]);
         if (value != 0) try writer.short(.exif, @intFromEnum(field[1]), value);
     }
     if (exif.gps_latitude) |value| try writeCoordinate(&writer, value, 2);
     if (exif.gps_longitude) |value| try writeCoordinate(&writer, value, 4);
-    if (exif.gps_altitude) |value| {
-        if (!std.math.isFinite(value)) return error.InvalidExif;
-        const reference = [_]u8{if (value < 0) 1 else 0};
-        try writer.bytes(.gps, 5, 1, 1, &reference);
-        const rational = try floatRational(@abs(value));
-        try writer.rational(.gps, 6, rational.numerator, rational.denominator);
-    }
+    if (exif.gps_altitude) |value| try appendGpsAltitude(&writer, value);
     if (exif.gps_datestamp) |value| try writer.ascii(.gps, 29, value);
     if (exif.gps_timestamp) |value| {
         var parts = std.mem.splitScalar(u8, value, ':');
@@ -454,7 +455,7 @@ pub fn encodeTiff(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
         if (parts.next() != null) return error.InvalidExif;
         try writer.bytes(.gps, 7, 5, 3, &body);
     }
-    if (exif.gps_latitude != null or exif.gps_longitude != null or exif.gps_altitude != null or exif.gps_datestamp != null or exif.gps_timestamp != null) try writer.bytes(.gps, 0, 1, 4, &.{ 2, 3, 0, 0 });
+    if (exif.gps_latitude != null or exif.gps_longitude != null or exif.gps_altitude != null or exif.gps_datestamp != null or exif.gps_timestamp != null) try ensureGpsVersion(&writer);
     if (exif.thumbnail == null and (exif.thumbnail_offset != 0 or exif.thumbnail_length != 0)) return error.InvalidThumbnail;
     return writer.finish(.{ .thumbnail = exif.thumbnail });
 }
@@ -465,6 +466,28 @@ pub fn encode(allocator: std.mem.Allocator, exif: *const ExifData) ![]u8 {
     @memcpy(output[0..EXIF_HEADER.len], EXIF_HEADER);
     @memcpy(output[EXIF_HEADER.len..], tiff);
     return output;
+}
+/// Add the standard GPS version unless a caller already supplied one.
+pub fn ensureGpsVersion(writer: *Builder) !void {
+    for (writer.fields.items) |field| if (field.group == .gps and field.tag == 0) return;
+    try writer.bytes(.gps, 0, 1, 4, &.{ 2, 3, 0, 0 });
+}
+/// Consistent PhotographicSensitivity/SensitivityType/ISOSpeed field bundle.
+pub fn appendIso(writer: *Builder, iso: u32) !void {
+    if (iso == 0) return error.InvalidExif;
+    try writer.short(.exif, @intFromEnum(Tag.iso_speed_ratings), @intCast(@min(iso, 65535)));
+    try writer.short(.exif, @intFromEnum(Tag.sensitivity_type), 3);
+    try writer.long(.exif, @intFromEnum(Tag.iso_speed), iso);
+}
+pub fn appendGpsDecimal(writer: *Builder, value: f64, latitude: bool) !void {
+    return writeCoordinate(writer, try GPSCoordinate.fromDecimal(value, latitude), if (latitude) 2 else 4);
+}
+pub fn appendGpsAltitude(writer: *Builder, value: f64) !void {
+    if (!std.math.isFinite(value)) return error.InvalidExif;
+    const rational = try floatRational(@abs(value));
+    const reference = [_]u8{if (value < 0) 1 else 0};
+    try writer.bytes(.gps, 5, 1, 1, &reference);
+    try writer.rational(.gps, 6, rational.numerator, rational.denominator);
 }
 fn floatRational(value: f64) !Rational {
     const maximum = std.math.maxInt(u32);

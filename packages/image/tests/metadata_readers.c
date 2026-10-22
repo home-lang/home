@@ -14,6 +14,8 @@
 #include <libexif/exif-utils.h>
 extern unsigned char *home_test_metadata_base(uint32_t, size_t *);
 extern unsigned char *home_test_metadata_embed(uint32_t, const unsigned char *, size_t, const unsigned char *, size_t, int, size_t *);
+extern unsigned char *home_test_metadata_defaults(const unsigned char *, size_t, size_t *);
+extern unsigned char *home_test_metadata_inline_jpeg(const unsigned char *, size_t, int, size_t *);
 extern void home_test_metadata_free(unsigned char *, size_t);
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"metadata check failed at line %d: %s\n",__LINE__,#x); exit(1); } } while(0)
 static ExifEntry *field(ExifData *d, ExifIfd ifd, unsigned int tag, ExifFormat type, unsigned long count) {
@@ -58,13 +60,19 @@ static unsigned char *make_exif(int big, int replacement, unsigned int *length) 
     unsigned char *bytes=NULL; exif_data_save_data(d,&bytes,length);
     CHECK(bytes && *length); exif_data_unref(d); return bytes;
 }
-static void check_exif(const unsigned char *bytes, size_t length, int prefixed, int replacement) {
+static void check_exif(const unsigned char *bytes, size_t length, int prefixed, int replacement, int defaults) {
     CHECK(length < UINT32_MAX);
     unsigned char *input=malloc(length+(prefixed?0:6)); CHECK(input);
     if(prefixed) memcpy(input,bytes,length);
     else { memcpy(input,"Exif\0\0",6); memcpy(input+6,bytes,length); length+=6; }
     ExifData *d=new_exif(); exif_data_load_data(d,input,(unsigned int)length); free(input);
     ExifByteOrder order=exif_data_get_byte_order(d);
+    if(defaults) {
+        CHECK(!strcmp((char*)get(d,EXIF_IFD_0,0x0110,EXIF_FORMAT_ASCII,14)->data,"Default Model"));
+        CHECK(!strcmp((char*)get(d,EXIF_IFD_0,0x0131,EXIF_FORMAT_ASCII,11)->data,"zig-camera"));
+        ExifRational aperture=exif_get_rational(get(d,EXIF_IFD_EXIF,0x829d,EXIF_FORMAT_RATIONAL,1)->data,order);
+        CHECK(aperture.numerator==28 && aperture.denominator==10);
+    }
     CHECK(!strcmp((char*)get(d,EXIF_IFD_0,0x010f,EXIF_FORMAT_ASCII,20)->data,"Home Camera Company"));
     CHECK(exif_get_short(get(d,EXIF_IFD_0,0x0112,EXIF_FORMAT_SHORT,1)->data,order)==6);
     ExifRational exposure=exif_get_rational(get(d,EXIF_IFD_EXIF,0x829a,EXIF_FORMAT_RATIONAL,1)->data,order);
@@ -95,7 +103,7 @@ static void read_image(uint32_t format,const unsigned char *bytes,size_t length,
         jpeg_save_markers(&d,JPEG_APP0+1,0xffff); jpeg_save_markers(&d,JPEG_APP0+2,0xffff);
         CHECK(jpeg_read_header(&d,TRUE)==JPEG_HEADER_OK);
         unsigned int found=0;
-        for(jpeg_saved_marker_ptr m=d.marker_list;m;m=m->next) if(m->marker==JPEG_APP0+1 && m->data_length>=6 && !memcmp(m->data,"Exif\0\0",6)) { check_exif(m->data,m->data_length,1,metadata==2); ++found; }
+        for(jpeg_saved_marker_ptr m=d.marker_list;m;m=m->next) if(m->marker==JPEG_APP0+1 && m->data_length>=6 && !memcmp(m->data,"Exif\0\0",6)) { check_exif(m->data,m->data_length,1,metadata==2,icc); ++found; }
         CHECK(found==(metadata?1u:0u));
         JOCTET *profile=NULL; unsigned int size=0;
         int has=jpeg_read_icc_profile(&d,&profile,&size); CHECK(!!has==!!icc);
@@ -112,7 +120,7 @@ static void read_image(uint32_t format,const unsigned char *bytes,size_t length,
         png_init_io(png,f); png_read_info(png,info);
         png_bytep exif=NULL; png_uint_32 exif_length=0;
         int has=png_get_eXIf_1(png,info,&exif_length,&exif); CHECK(!!has==!!metadata);
-        if(has) check_exif(exif,exif_length,0,metadata==2);
+        if(has) check_exif(exif,exif_length,0,metadata==2,icc);
         png_charp name=NULL; int compression=0; png_bytep profile=NULL; png_uint_32 size=0;
         has=png_get_iCCP(png,info,&name,&compression,&profile,&size); CHECK(!!has==!!icc); if(has) check_icc(profile,size);
         CHECK(png_get_image_width(png,info)==1 && png_get_image_height(png,info)==1 && png_get_rowbytes(png,info)==3);
@@ -135,7 +143,7 @@ static void read_image(uint32_t format,const unsigned char *bytes,size_t length,
         uint8_t altitude_ref=0; double altitude=0;
         CHECK(TIFFGetField(t,GPSTAG_ALTITUDEREF,&altitude_ref) && altitude_ref==1);
         CHECK(TIFFGetField(t,GPSTAG_ALTITUDE,&altitude) && fabs(altitude-123.4)<1e-6);
-        check_exif(bytes,length,0,metadata==2);
+        check_exif(bytes,length,0,metadata==2,icc);
     }
     if(second_page) {
         unsigned char pixel[3]; CHECK(TIFFSetSubDirectory(t,second_page));
@@ -167,11 +175,21 @@ int main(void) {
         unsigned char expected[3]; read_image(format,base,base_length,0,0,expected,second_page);
         for(int exif_big=0;exif_big<2;++exif_big) for(int icc=0;icc<2;++icc) {
             unsigned int exif_length=0; unsigned char *exif=make_exif(exif_big,0,&exif_length);
-            size_t length=0; unsigned char *image=home_test_metadata_embed(format,base,base_length,exif,exif_length,icc,&length); CHECK(image);
+            size_t defaults_length=0; unsigned char *filled=icc?home_test_metadata_defaults(exif,exif_length,&defaults_length):NULL; CHECK(!icc || filled);
+            size_t length=0; unsigned char *image=home_test_metadata_embed(format,base,base_length,filled?filled:exif,filled?defaults_length:exif_length,icc,&length); CHECK(image);
+            if(format==0) {
+                size_t inline_length=0;
+                unsigned char *inlined=home_test_metadata_inline_jpeg(filled?filled:exif,filled?defaults_length:exif_length,icc,&inline_length); CHECK(inlined);
+                unsigned char pixel[3]; read_image(format,inlined,inline_length,1,icc,pixel,0); CHECK(!memcmp(pixel,expected,3));
+                home_test_metadata_free(inlined,inline_length);
+            }
+            if(filled) home_test_metadata_free(filled,defaults_length);
             unsigned char actual[3]; read_image(format,image,length,1,icc,actual,second_page); CHECK(!memcmp(actual,expected,3));
             /* Replacing metadata retains independent decoding and one active Exif. */
             unsigned int replacement_length=0; unsigned char *replacement=make_exif(!exif_big,1,&replacement_length);
-            size_t again_length=0; unsigned char *again=home_test_metadata_embed(format,image,length,replacement,replacement_length,icc,&again_length); CHECK(again);
+            filled=icc?home_test_metadata_defaults(replacement,replacement_length,&defaults_length):NULL; CHECK(!icc || filled);
+            size_t again_length=0; unsigned char *again=home_test_metadata_embed(format,image,length,filled?filled:replacement,filled?defaults_length:replacement_length,icc,&again_length); CHECK(again);
+            if(filled) home_test_metadata_free(filled,defaults_length);
             free(replacement);
             read_image(format,again,again_length,2,icc,actual,second_page); CHECK(!memcmp(actual,expected,3));
             home_test_metadata_free(again,again_length); home_test_metadata_free(image,length); free(exif); ++cases;

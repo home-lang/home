@@ -289,3 +289,37 @@ test "extended ISO wins independently of entry order and GPS total angle is boun
     source.gps_latitude = .{ .degrees = 89.99999999, .minutes = 0.000000001, .seconds = 0, .ref = 'N' };
     try std.testing.expectError(error.InvalidExif, exif.encodeTiff(a, &source));
 }
+
+test "shared decimal GPS and ISO builders carry rounded boundaries and preserve signs" {
+    var writer = exif.Builder.init(a);
+    defer writer.deinit();
+    try exif.appendGpsDecimal(&writer, -89.999999999999, true);
+    try exif.appendGpsDecimal(&writer, -179.999999999999, false);
+    try exif.appendGpsAltitude(&writer, -123.456);
+    try exif.appendIso(&writer, 102400);
+    const bytes = try writer.finish(.{});
+    defer a.free(bytes);
+    var parsed = try exif.parse(a, bytes);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(f64, -90), parsed.gps_latitude.?.toDecimal());
+    try std.testing.expectEqual(@as(f64, -180), parsed.gps_longitude.?.toDecimal());
+    try std.testing.expectEqual(@as(f64, -123.456), parsed.gps_altitude.?);
+    try std.testing.expectEqual(@as(u32, 102400), parsed.iso_speed);
+    try std.testing.expectError(error.InvalidExif, exif.GPSCoordinate.fromDecimal(90.00001, true));
+    try std.testing.expectError(error.InvalidExif, exif.GPSCoordinate.fromDecimal(std.math.nan(f64), false));
+    try std.testing.expectError(error.InvalidExif, exif.appendIso(&writer, 0));
+}
+
+test "typed GPS builders reject domain-invalid coordinates times and version shapes" {
+    var writer = exif.Builder.init(a);
+    defer writer.deinit();
+    var data: [24]u8 = @splat(0);
+    for (0..3) |i| std.mem.writeInt(u32, data[i * 8 + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, data[0..4], 24, .little);
+    try writer.bytes(.gps, 7, 5, 3, &data);
+    try std.testing.expectError(error.InvalidExif, writer.finish(.{}));
+    var version = exif.Builder.init(a);
+    defer version.deinit();
+    try version.short(.gps, 0, 1);
+    try std.testing.expectError(error.InvalidExif, version.finish(.{}));
+}

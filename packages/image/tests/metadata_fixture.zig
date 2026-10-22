@@ -40,3 +40,30 @@ pub export fn home_test_metadata_embed(value: u32, image: [*]const u8, image_len
 pub export fn home_test_metadata_free(bytes: [*]u8, length: usize) void {
     allocator.free(bytes[0..length]);
 }
+
+pub export fn home_test_metadata_inline_jpeg(exif: [*]const u8, exif_length: usize, icc: c_int, length: *usize) ?[*]u8 {
+    length.* = 0;
+    const profile = if (icc != 0) media.Icc.createSRGBProfile(allocator) catch return null else null;
+    defer if (profile) |bytes| allocator.free(bytes);
+    var encoder = media.Jpeg.Encoder.init(allocator);
+    defer encoder.deinit();
+    const bytes = encoder.encodeOwned("\x12\x34\x56", 1, 1, 3, 3, 98, .{ .icc = profile, .exif = exif[0..exif_length] }) catch return null;
+    length.* = bytes.len;
+    return bytes.ptr;
+}
+
+/// Defaults fixture only: caller fields, original byte order and original value
+/// locations win over these proposed defaults.
+pub export fn home_test_metadata_defaults(input: [*]const u8, input_length: usize, length: *usize) ?[*]u8 {
+    length.* = 0;
+    var fields = media.Exif.Builder.init(allocator);
+    defer fields.deinit();
+    fields.ascii(.image, 0x010f, "Do not override Make") catch return null;
+    fields.ascii(.image, 0x0110, "Default Model") catch return null;
+    fields.ascii(.image, 0x0131, "zig-camera") catch return null;
+    fields.rational(.exif, 0x829a, 1, 125) catch return null;
+    fields.rational(.exif, 0x829d, 28, 10) catch return null;
+    const bytes = media.Exif.withDefaults(allocator, input[0..input_length], fields.fields.items) catch return null;
+    length.* = bytes.len;
+    return bytes.ptr;
+}

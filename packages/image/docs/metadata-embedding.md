@@ -82,3 +82,20 @@ sensor/optical quality, CMM pixel conversion or complete Exif acceptance claims.
 References: [PNG eXIf](https://www.w3.org/TR/png-3/),
 [TIFF byte order](https://libtiff.gitlab.io/libtiff/functions/TIFFOpen.html),
 [ICC embedding](https://archive.color.org/files/technotes/ICC-Technote-ProfileEmbedding.pdf).
+
+## Metadata during JPEG encoding
+
+`jpeg_metadata.zig` independently checks and emits complete APP1/APP2 records
+without raster or compressor dependencies. `Encoder.encodeMetadata` writes
+these markers after JFIF while encoding, preserving scan bytes relative to the
+legacy encoder. `encodeOwned` transfers the encoder's output allocation to the
+caller; later encoder use cannot invalidate it. Invalid metadata is checked
+before resetting reusable encoder state. Existing `encode` remains borrowed
+output without metadata. The embedding layer shares the same marker generator.
+Tests compare scan bytes, reuse after ownership transfer, all allocation failures,
+and independent libjpeg/libexif/LCMS reads with both Exif byte orders and ICC.
+
+`tests/exif_inspect.c` is a test-only JSON inspector for actual capture outputs.
+It uses libexif and independent JPEG/PNG readers; it is never a production
+dependency. TIFF inspection reads bounded classic TIFF metadata rather than
+claiming full image validation.

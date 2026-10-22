@@ -35,22 +35,7 @@ fn findDirectory(view: exif.View, offset: u32) !usize {
     for (view.directories[0..view.count], 0..) |dir, i| if (dir.offset == offset) return i;
     return error.InvalidExif;
 }
-fn copyValue(out: []u8, input: []const u8, kind: u16, source: std.builtin.Endian, target: std.builtin.Endian) void {
-    const step: usize = switch (kind) {
-        3, 8 => 2,
-        4, 5, 9, 10, 11 => 4,
-        12 => 8,
-        else => 1,
-    };
-    if (source == target or step == 1) {
-        @memcpy(out, input);
-        return;
-    }
-    var at: usize = 0;
-    while (at < input.len) : (at += step) for (0..step) |i| {
-        out[at + i] = input[at + step - 1 - i];
-    };
-}
+const copyValue = @import("metadata/exif_value.zig").copy;
 pub fn check(view: exif.View) !void {
     for (view.directories[0..view.count], 0..) |dir, i| for (0..dir.count) |n| {
         const tag = view.entry(dir, n).tag;

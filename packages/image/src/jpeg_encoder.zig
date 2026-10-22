@@ -150,12 +150,25 @@ pub const Encoder = struct {
     /// Borrowed output is valid until the next encode/deinit. RGB/RGBA/gray input
     /// can contain row padding. 4:4:4, baseline Huffman coding, edge replication.
     pub fn encode(self: *Encoder, data: []const u8, width: usize, height: usize, stride: usize, channels: u8, quality: u8) ![]const u8 {
+        return self.encodeMetadata(data, width, height, stride, channels, quality, .{});
+    }
+    /// Complete owned JPEG; transfers encoder storage without a full-image dupe.
+    /// The encoder remains reusable and retains no caller metadata pointers.
+    pub fn encodeOwned(self: *Encoder, data: []const u8, width: usize, height: usize, stride: usize, channels: u8, quality: u8, metadata: @import("jpeg_metadata.zig").Metadata) ![]u8 {
+        _ = try self.encodeMetadata(data, width, height, stride, channels, quality, metadata);
+        return self.output.toOwnedSlice(self.allocator);
+    }
+    /// Metadata is checked before modifying reusable encoder state; it is written
+    /// before scan data, with no post-encode image copy.
+    pub fn encodeMetadata(self: *Encoder, data: []const u8, width: usize, height: usize, stride: usize, channels: u8, quality: u8, metadata: @import("jpeg_metadata.zig").Metadata) ![]const u8 {
         if (width == 0 or height == 0 or width > 65535 or height > 65535) return error.InvalidDimensions;
         if (channels != 1 and channels != 3 and channels != 4) return error.UnsupportedFormat;
         if (quality < 1 or quality > 100) return error.InvalidQuality;
         const row = std.math.mul(usize, width, channels) catch return error.InvalidDimensions;
         const needed = std.math.add(usize, std.math.mul(usize, height - 1, stride) catch return error.InvalidDimensions, row) catch return error.InvalidDimensions;
         if (stride < row or data.len < needed) return error.BufferTooSmall;
+        const checked = try @import("jpeg_metadata.zig").check(metadata);
+        if (checked.icc != null and channels == 1) return error.UnsupportedFormat;
         self.output.clearRetainingCapacity();
         self.bits = 0;
         self.bit_count = 0;
@@ -166,6 +179,7 @@ pub const Encoder = struct {
             quant[t][i] = @intCast(std.math.clamp((@as(u32, v) * scale + 50) / 100, 1, 255));
         };
         try self.bytes(&.{ 255, 216, 255, 224, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0 });
+        try @import("jpeg_metadata.zig").appendChecked(self.allocator, &self.output, checked);
         for (0..2) |t| {
             try self.bytes(&.{ 255, 219, 0, 67 });
             try self.byte(@intCast(t));
@@ -234,4 +248,43 @@ test "baseline JPEG encodes real scan data and checks input" {
     try std.testing.expectEqualSlices(u8, &.{ 255, 217 }, bytes[bytes.len - 2 ..]);
     try std.testing.expectError(error.InvalidQuality, enc.encode(&pixels, 17, 9, 51, 3, 0));
     try std.testing.expectError(error.BufferTooSmall, enc.encode(&pixels, 17, 9, 52, 3, 90));
+}
+
+test "inline metadata preserves JPEG scans exactly and owned output survives encoder reuse" {
+    const t = std.testing;
+    var fields = @import("metadata/exif_builder.zig").Builder.init(t.allocator);
+    defer fields.deinit();
+    try fields.ascii(.image, 0x0110, "Inline model");
+    const exif = try fields.finish(.{});
+    defer t.allocator.free(exif);
+    const profile = try @import("metadata/icc.zig").createSRGBProfile(t.allocator);
+    defer t.allocator.free(profile);
+    var encoder = Encoder.init(t.allocator);
+    defer encoder.deinit();
+    const pixels = "\x12\x34\x56";
+    const plain = try encoder.encodeOwned(pixels, 1, 1, 3, 3, 98, .{});
+    defer t.allocator.free(plain);
+    const markers = try @import("jpeg_metadata.zig").encode(t.allocator, .{ .exif = exif, .icc = profile });
+    defer t.allocator.free(markers);
+    const with_metadata = try encoder.encodeOwned(pixels, 1, 1, 3, 3, 98, .{ .exif = exif, .icc = profile });
+    defer t.allocator.free(with_metadata);
+    try t.expectEqualSlices(u8, plain[0..20], with_metadata[0..20]);
+    try t.expectEqualSlices(u8, markers, with_metadata[20..][0..markers.len]);
+    try t.expectEqualSlices(u8, plain[20..], with_metadata[20 + markers.len ..]);
+    const again = try encoder.encodeOwned(pixels, 1, 1, 3, 3, 98, .{});
+    defer t.allocator.free(again);
+    try t.expectEqualSlices(u8, plain, again);
+    try t.expectEqualSlices(u8, "\xff\xd8", with_metadata[0..2]);
+    try t.expectError(error.InvalidExif, encoder.encodeMetadata(pixels, 1, 1, 3, 3, 98, .{ .exif = "bad" }));
+    try t.expectEqualSlices(u8, "\xff\xd8", with_metadata[0..2]);
+}
+fn metadataOwnership(allocator: std.mem.Allocator) !void {
+    var encoder = Encoder.init(allocator);
+    defer encoder.deinit();
+    const exif = "II*\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+    const bytes = try encoder.encodeOwned("\x12\x34\x56", 1, 1, 3, 3, 90, .{ .exif = exif });
+    defer allocator.free(bytes);
+}
+test "inline JPEG allocation failures clean up reusable encoder storage" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, metadataOwnership, .{});
 }

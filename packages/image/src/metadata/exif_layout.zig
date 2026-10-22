@@ -120,6 +120,7 @@ pub fn validate(input: []const u8) !View {
             }
         }
     }
+    for (result.directories[0..result.count]) |dir| if (dir.kind == .gps) try validateGps(result, dir);
     return result;
 }
 fn pointerKind(kind: Kind, tag: u16) ?Kind {
@@ -141,6 +142,7 @@ fn shape(kind: Kind, v: Entry) !void {
     }
     if (kind == .gps) {
         switch (v.tag) {
+            0 => if (!is(v, 1, 4)) return error.InvalidExif,
             1, 3 => if (!is(v, 2, 2)) return error.InvalidExif,
             2, 4, 7 => if (!is(v, 5, 3)) return error.InvalidExif,
             5 => if (!is(v, 1, 1)) return error.InvalidExif,
@@ -159,5 +161,28 @@ fn shape(kind: Kind, v: Entry) !void {
             0x0201, 0x0202, 0x8833 => if (!is(v, 4, 1)) return error.InvalidExif,
             else => {},
         }
+    }
+}
+
+fn fraction(view: View, data: *const [8]u8) f64 {
+    return @as(f64, @floatFromInt(std.mem.readInt(u32, data[0..4], view.endian))) / @as(f64, @floatFromInt(std.mem.readInt(u32, data[4..8], view.endian)));
+}
+fn validateGps(view: View, dir: Directory) !void {
+    for ([_]u16{ 2, 4 }) |tag| if (view.find(dir, tag)) |entry| {
+        const reference = view.find(dir, tag - 1) orelse return error.InvalidExif;
+        const ref = reference.bytes[0];
+        if ((tag == 2 and ref != 'N' and ref != 'S') or (tag == 4 and ref != 'E' and ref != 'W')) return error.InvalidExif;
+        const degrees = fraction(view, entry.bytes[0..8]);
+        const minutes = fraction(view, entry.bytes[8..16]);
+        const seconds = fraction(view, entry.bytes[16..24]);
+        const maximum: f64 = if (tag == 2) 90 else 180;
+        if (minutes >= 60 or seconds >= 60 or degrees + minutes / 60 + seconds / 3600 > maximum) return error.InvalidExif;
+    };
+    if (view.find(dir, 6) != null) if (view.find(dir, 5)) |reference| if (reference.bytes[0] > 1) return error.InvalidExif;
+    if (view.find(dir, 7)) |entry| {
+        const hours = fraction(view, entry.bytes[0..8]);
+        const minutes = fraction(view, entry.bytes[8..16]);
+        const seconds = fraction(view, entry.bytes[16..24]);
+        if (hours >= 24 or minutes >= 60 or seconds >= 60 or @floor(hours) != hours or @floor(minutes) != minutes) return error.InvalidExif;
     }
 }
