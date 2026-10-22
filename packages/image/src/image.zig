@@ -1337,3 +1337,15 @@ pub const RgbaView = @import("ops/rgba_view.zig").View;
 
 /// Checked integer display fitting and independent image/overlay UV maps.
 pub const ViewportPlan = @import("ops/viewport.zig").Plan;
+
+/// Checked RGB/BGR16 word views with explicit endianness and RGB8 reduction.
+pub const Rgb16View = @import("ops/rgb16_view.zig").View;
+
+test "public RGB16 view retains words and explicitly reduces high bytes" {
+    const bytes = [_]u8{ 0x34, 0x12, 1, 0x80, 0xff, 0xfe };
+    const view = try Rgb16View.init(&bytes, 1, 1, 6, .rgb, .little);
+    try std.testing.expectEqual([3]u16{ 0x1234, 0x8001, 0xfeff }, view.sample(0, 0));
+    var rgb: [3]u8 = undefined;
+    try view.toRgb8(&rgb, 3);
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x80, 0xfe }, &rgb);
+}
