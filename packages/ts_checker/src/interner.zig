@@ -885,10 +885,18 @@ pub const Interner = struct {
         return payload.is_const;
     }
 
+    /// Distinguish a type-parameter payload from a compound that carries its flags.
+    pub fn isDirectTypeParameter(self: *const Interner, id: TypeId) bool {
+        if (id >= self.pool.typeCount()) return false;
+        const flags = self.pool.flagsOf(id);
+        // Unions OR their constituent flags. Their payload indexes the union
+        // pool, not the type-parameter pool, even when a member is generic.
+        return flags.is_type_parameter and !flags.is_union and !flags.is_intersection;
+    }
+
     /// Look up the name (StringId) of a type-parameter type.
     pub fn typeParameterName(self: *const Interner, id: TypeId) ?StringId {
-        if (id >= self.pool.typeCount()) return null;
-        if (!self.pool.flagsOf(id).is_type_parameter) return null;
+        if (!self.isDirectTypeParameter(id)) return null;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.type_parameter_payloads.items.len) return null;
         const payload = self.pool.type_parameter_payloads.items[payload_idx];
@@ -902,8 +910,7 @@ pub const Interner = struct {
     /// relation engine can consult the constraint without reaching
     /// into the checker.
     pub fn typeParameterConstraint(self: *const Interner, id: TypeId) ?TypeId {
-        if (id >= self.pool.typeCount()) return null;
-        if (!self.pool.flagsOf(id).is_type_parameter) return null;
+        if (!self.isDirectTypeParameter(id)) return null;
         const payload_idx = self.pool.payloadOf(id);
         if (payload_idx >= self.pool.type_parameter_payloads.items.len) return null;
         const tp = self.pool.type_parameter_payloads.items[payload_idx];
@@ -1954,6 +1961,25 @@ test "Interner: fresh type parameters preserve declaration identity" {
     try T.expect(outer != inner);
     try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(outer));
     try T.expectEqual(@as(?StringId, id_t), i.typeParameterName(inner));
+}
+
+test "Interner: union flags do not make its payload a type parameter" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    const this_name = try sint.intern("this");
+    const parameter = try i.internFreshTypeParameterWithVariance(this_name, types.Primitive.number_t, types.Primitive.none, .bivariant);
+    const union_t = try i.internUnion(&.{ parameter, types.Primitive.boolean_t });
+
+    // Both pools start at offset zero. The old flag-only check interpreted
+    // this union's payload as the unrelated parameter at the same offset.
+    try T.expectEqual(i.pool.payloadOf(parameter), i.pool.payloadOf(union_t));
+    try T.expect(i.pool.flagsOf(union_t).is_type_parameter);
+    try T.expect(i.isDirectTypeParameter(parameter));
+    try T.expect(!i.isDirectTypeParameter(union_t));
+    try T.expectEqual(@as(?StringId, null), i.typeParameterName(union_t));
+    try T.expectEqual(@as(?TypeId, null), i.typeParameterConstraint(union_t));
 }
 
 test "Interner: mapped payload lookup rejects aggregate union flags" {

@@ -107815,9 +107815,7 @@ pub const Checker = struct {
     }
 
     fn isThisTypeParameter(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_type_parameter) return false;
+        if (!self.interner.isDirectTypeParameter(t)) return false;
         const payload_idx = self.interner.pool.payloadOf(t);
         if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return false;
         const tp = self.interner.pool.type_parameter_payloads.items[payload_idx];

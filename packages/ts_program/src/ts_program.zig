@@ -8079,7 +8079,7 @@ test "Program: merged ambient generic accessor substitutes its setter input" {
     const consumer =
         \\import { Nested } from 'pkg';
         \\import { Nested as Other } from 'other';
-        \\declare const box: Nested.Box<boolean>;
+        \\const box = new Nested.Box<boolean>();
         \\const read: string = box.value;
         \\const wrong: number = box.value;
         \\box.value = 42;
@@ -8110,7 +8110,7 @@ test "Program: merged ambient generic accessor substitutes its setter input" {
     try T.expectEqual(@as(usize, 0), program.fileById(second_id).compilation.?.diagnostics.items.len);
     const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
     try T.expectEqual(@as(usize, 4), diagnostics.len);
-    for (diagnostics, [_]u32{ 149, 210, 349, 403 }) |diagnostic, expected_pos| {
+    for (diagnostics, [_]u32{ 148, 209, 348, 402 }) |diagnostic, expected_pos| {
         try T.expectEqual(@as(u32, 2322), diagnostic.code);
         try T.expectEqual(expected_pos, diagnostic.pos);
     }
