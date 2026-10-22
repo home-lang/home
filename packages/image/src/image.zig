@@ -948,6 +948,7 @@ pub const Raw = raw;
 
 // Metadata exports
 pub const Exif = exif_metadata;
+pub const Tuning = @import("metadata/tuning.zig");
 pub const Icc = icc_metadata;
 pub const IccEmbedding = @import("metadata_embed.zig");
 pub const MetadataEmbedding = @import("metadata_embed.zig");

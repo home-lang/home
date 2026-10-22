@@ -1,0 +1,29 @@
+name: Image tuning documents
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/metadata/tuning.zig', '.github/workflows/image-tuning.yml']
+  pull_request:
+    paths: ['packages/image/src/metadata/tuning.zig', '.github/workflows/image-tuning.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tuning:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Exact JSON, limits, transactional edits and allocation failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig test -O Debug packages/image/src/metadata/tuning.zig
+          zig test -O ReleaseSafe packages/image/src/metadata/tuning.zig

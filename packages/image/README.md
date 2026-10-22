@@ -30,3 +30,9 @@ metadata support; embedding and camera capture policy are separate layers.
 JPEG/PNG/classic TIFF while preserving encoded pixels. It validates metadata,
 relocates TIFF directories and uses independent container/Exif readers and pixel
 decoders in tests. Exports as `MetadataEmbedding`; `IccEmbedding` stays available.
+
+### Tuning documents
+
+[Owned tuning documents](docs/tuning.md) support both Raspberry Pi tuning JSON
+layouts, exact number text, bounded parsing and transactional algorithm edits.
+The standalone `Tuning` export owns data and never applies sensor/ISP settings.
