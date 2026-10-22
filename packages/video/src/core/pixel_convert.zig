@@ -250,6 +250,10 @@ pub fn convertInPlace(src: *const Frame, dst: *Frame) !void {
         return error.DimensionMismatch;
     }
 
+    // Packed RGB always uses checked row spans, including equal layouts with
+    // independent padding. Other format families keep their existing dispatch.
+    if (src.format.isRgb() and dst.format.isRgb()) return rgbToRgb(src, dst);
+
     // Handle same format (just copy)
     if (src.format == dst.format) {
         for (0..4) |i| {
@@ -300,18 +304,20 @@ fn rgbToYuv(src: *const Frame, dst: *Frame) !void {
     };
 }
 
+pub const packed_rgb = @import("packed_rgb.zig");
+fn packedLayout(format: PixelFormat) packed_rgb.Layout {
+    return switch (format) {
+        .rgb24 => .rgb,
+        .bgr24 => .bgr,
+        .rgba32 => .rgba,
+        .bgra32 => .bgra,
+        .argb32 => .argb,
+        else => unreachable,
+    };
+}
 fn rgbToRgb(src: *const Frame, dst: *Frame) !void {
-    const width = src.width;
-    const height = src.height;
-
-    var y: u32 = 0;
-    while (y < height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < width) : (x += 1) {
-            const rgba = getRgbPixel(src, x, y);
-            setRgbPixel(dst, x, y, rgba.r, rgba.g, rgba.b, rgba.a);
-        }
-    }
+    const view = try packed_rgb.View.init(src.planes[0], src.width, src.height, src.strides[0], packedLayout(src.format));
+    try view.convert(dst.planes[0], dst.strides[0], packedLayout(dst.format));
 }
 
 fn yuvToYuv(src: *const Frame, dst: *Frame) !void {
@@ -664,4 +670,30 @@ test "public converters preserve chroma scale and average RGB24 I420 blocks" {
     try t.expectEqualSlices(u8, &.{ 81, 145, 41, 235 }, yuv.planes[0]);
     try t.expectEqualSlices(u8, &.{128}, yuv.planes[1]);
     try t.expectEqualSlices(u8, &.{128}, yuv.planes[2]);
+}
+
+test "packed public RGB conversion preflights spans and ignores different row padding" {
+    const t = std.testing;
+    var input = [_]u8{ 1, 2, 3, 4, 5, 6, 99, 99, 7, 8, 9, 10, 11, 12 };
+    var output: [18]u8 = @splat(71);
+    var source = Frame{ .width = 2, .height = 2, .format = .rgb24, .planes = .{ &input, &.{}, &.{}, &.{} }, .strides = .{ 8, 0, 0, 0 }, .allocator = t.allocator };
+    var target = Frame{ .width = 2, .height = 2, .format = .bgr24, .planes = .{ &output, &.{}, &.{}, &.{} }, .strides = .{ 10, 0, 0, 0 }, .allocator = t.allocator };
+    target.planes[0] = output[0..15];
+    try t.expectError(error.BufferTooSmall, convertInPlace(&source, &target));
+    try t.expectEqualSlices(u8, &@as([18]u8, @splat(71)), &output);
+    target.planes[0] = &output;
+    try convertInPlace(&source, &target);
+    try t.expectEqualSlices(u8, &.{ 3, 2, 1, 6, 5, 4, 71, 71, 71, 71, 9, 8, 7, 12, 11, 10, 71, 71 }, &output);
+    target.format = .rgb24;
+    @memset(&output, 71);
+    try convertInPlace(&source, &target);
+    try t.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 71, 71, 71, 71, 7, 8, 9, 10, 11, 12, 71, 71 }, &output);
+    target.planes[0] = &input;
+    target.strides[0] = 8;
+    try convertInPlace(&source, &target);
+    target.format = .bgr24;
+    try t.expectError(error.Overlap, convertInPlace(&source, &target));
+    source.planes[0] = input[0..13];
+    target.planes[0] = &output;
+    try t.expectError(error.BufferTooSmall, convertInPlace(&source, &target));
 }
