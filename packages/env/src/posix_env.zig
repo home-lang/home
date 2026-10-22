@@ -15,12 +15,14 @@ fn duplicate(allocator: std.mem.Allocator, input: []const u8) ![:0]u8 {
 fn keyValid(key: []const u8) bool {
     return key.len != 0 and std.mem.indexOfAny(u8, key, "=\x00") == null;
 }
-pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[:0]u8 {
+pub fn get(allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
     try supported();
     if (!keyValid(key)) return error.InvalidEnvironmentKey;
     const name = try duplicate(allocator, key);
     defer allocator.free(name);
-    return if (std.c.getenv(name)) |value| try duplicate(allocator, std.mem.span(value)) else null;
+    // Reads expose a plain slice, matching env.get's public ownership contract.
+    // Do not hide a sentinel allocation whose extra byte callers cannot free.
+    return if (std.c.getenv(name)) |value| try allocator.dupe(u8, std.mem.span(value)) else null;
 }
 pub fn set(allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
     try supported();

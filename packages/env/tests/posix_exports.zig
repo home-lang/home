@@ -2,8 +2,15 @@
 //! legacy env/runtime tests. No Python, shell interpolation or host env leakage.
 const std = @import("std");
 const env = @import("env");
+pub const std_options: std.Options = .{ .logFn = checkedLog };
+fn checkedLog(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
+    if (level == .err) @panic("environment allocator contract violation");
+    std.log.defaultLog(level, scope, format, args);
+}
 pub fn main() !void {
-    const a = std.heap.page_allocator;
+    var checked: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(checked.deinit() == .ok);
+    const a = checked.allocator();
     const key = "HOME_ENV_PUBLIC_EXPORTS_TEST";
     const previous = try env.get(a, key);
     defer if (previous) |v| a.free(v);
