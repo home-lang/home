@@ -284,3 +284,19 @@ zig test packages/video/src/core/keyed_state.zig
 Focused tests run with Zig 0.15.2 and development Zig. Values returned by values()
 borrow the caller-owned state until its next mutation; copy before crossing an
 asynchronous ownership boundary.
+
+`parameterSetSize(headers, codec)` and `parameterSets(headers, codec, output)`
+extract length-prefixed AVC SPS/PPS (and any SPS extension) or HEVC VPS/SPS/PPS.
+They retain order, require all essential set types, validate every framing length
+and the applicable NAL header bits, and omit informational SEI/AUD/other NALs.
+They are not full parameter-set syntax or decoder-conformance validators.
+Extraction is allocation-free and checks capacity/overlap before any write.
+
+`annexBAccessUnitSize(prefix, packet)` and
+`annexBAccessUnit(prefix, packet, output)` preflight and assemble an optional
+cached header prefix plus one access unit. Both length-prefixed inputs must be
+valid before any prefix is written. Insufficient capacity or overlap leaves the
+destination unchanged. Inputs/output must not overlap. Reuse a cached full header
+prefix at the first key of an output, and a filtered parameter-set prefix on later
+keys when repeat-header policy is enabled. No encoder or container state changes;
+MP4/MKV sample data can remain separately length-prefixed and header-free.

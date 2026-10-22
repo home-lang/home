@@ -22,6 +22,99 @@ pub fn annexB(input: []const u8, output: []u8) ![]const u8 {
     }
     return output[0..input.len];
 }
+/// Codec header filtering only: framing/header bits are checked, not full SPS syntax.
+pub const Codec = enum { avc, hevc };
+fn frameLength(input: []const u8, at: usize) !usize {
+    if (input.len - at < 4) return error.InvalidPacket;
+    const n = std.mem.readInt(u32, input[at..][0..4], .big);
+    if (n == 0 or n > input.len - at - 4) return error.InvalidPacket;
+    return n;
+}
+fn validateFraming(input: []const u8) !void {
+    if (input.len == 0) return error.InvalidPacket;
+    var at: usize = 0;
+    while (at < input.len) at += 4 + try frameLength(input, at);
+}
+fn overlaps(input: []const u8, output: []const u8) bool {
+    if (input.len == 0 or output.len == 0) return false;
+    const a = @intFromPtr(input.ptr);
+    const b = @intFromPtr(output.ptr);
+    return if (a <= b) b - a < input.len else a - b < output.len;
+}
+fn parameterKind(codec: Codec, nal: []const u8) !u3 {
+    if (nal[0] & 128 != 0) return error.InvalidPacket;
+    return switch (codec) {
+        .avc => switch (nal[0] & 31) {
+            7 => 1,
+            8 => 2,
+            13 => 4,
+            else => 0,
+        },
+        .hevc => blk: {
+            if (nal.len < 2 or nal[1] & 7 == 0) return error.InvalidPacket;
+            break :blk switch ((nal[0] >> 1) & 63) {
+                32 => 1,
+                33 => 2,
+                34 => 4,
+                else => 0,
+            };
+        },
+    };
+}
+/// Size of length-prefixed SPS/PPS (+ AVC SPS extension) or HEVC VPS/SPS/PPS.
+/// Excludes SEI/AUD and other NALs; every framing length is validated first.
+pub fn parameterSetSize(headers: []const u8, codec: Codec) !usize {
+    try validateFraming(headers);
+    var at: usize = 0;
+    var size: usize = 0;
+    var seen: u3 = 0;
+    while (at < headers.len) {
+        const n = try frameLength(headers, at);
+        const kind = try parameterKind(codec, headers[at + 4 ..][0..n]);
+        if (kind != 0) {
+            size += 4 + n;
+            seen |= kind;
+        }
+        at += 4 + n;
+    }
+    const required: u3 = if (codec == .avc) 3 else 7;
+    if (seen & required != required) return error.InvalidPacket;
+    return size;
+}
+/// Copy just parameter sets, preserving their original order/length framing.
+/// Preflight failures leave output unchanged. Input/output must not overlap.
+pub fn parameterSets(headers: []const u8, codec: Codec, output: []u8) ![]const u8 {
+    const size = try parameterSetSize(headers, codec);
+    if (size > output.len) return error.BufferTooSmall;
+    if (overlaps(headers, output[0..size])) return error.InvalidPacket;
+    var at: usize = 0;
+    var written: usize = 0;
+    while (at < headers.len) {
+        const n = try frameLength(headers, at);
+        if (try parameterKind(codec, headers[at + 4 ..][0..n]) != 0) {
+            @memcpy(output[written..][0 .. 4 + n], headers[at..][0 .. 4 + n]);
+            written += 4 + n;
+        }
+        at += 4 + n;
+    }
+    return output[0..size];
+}
+/// Preflight one access unit and an optional cached header prefix. No allocation.
+pub fn annexBAccessUnitSize(headers: []const u8, packet: []const u8) !usize {
+    if (headers.len != 0) try validateFraming(headers);
+    try validateFraming(packet);
+    return std.math.add(usize, headers.len, packet.len) catch error.InvalidPacket;
+}
+/// Assemble prefix + access unit with four-byte Annex B start codes. Both inputs,
+/// capacity and overlap are checked before any write; output borrows caller storage.
+pub fn annexBAccessUnit(headers: []const u8, packet: []const u8, output: []u8) ![]const u8 {
+    const size = try annexBAccessUnitSize(headers, packet);
+    if (size > output.len) return error.BufferTooSmall;
+    if (overlaps(headers, output[0..size]) or overlaps(packet, output[0..size])) return error.InvalidPacket;
+    if (headers.len != 0) _ = try annexB(headers, output[0..headers.len]);
+    _ = try annexB(packet, output[headers.len..size]);
+    return output[0..size];
+}
 /// Microsecond PTS as milliseconds with exactly three decimals and LF. Integer
 /// arithmetic preserves zero and all u64 values without floating-point loss.
 pub fn formatPts(timestamp_us: u64, output: []u8) ![]const u8 {
@@ -173,4 +266,48 @@ test "attachment replacement preserves identity and ownership; stale replacement
     const newer = try slots.add(40);
     try std.testing.expectError(error.StaleIdentity, slots.replace(id, 50));
     try std.testing.expectEqual(@as(u32, 40), slots.get(newer).?);
+}
+
+test "parameter-set extraction keeps codec-required sets and excludes SEI/AUD" {
+    const t = std.testing;
+    const avc = [_]u8{ 0, 0, 0, 2, 6, 9, 0, 0, 0, 2, 0x67, 1, 0, 0, 0, 1, 0x68, 0, 0, 0, 1, 9 };
+    const hevc = [_]u8{ 0, 0, 0, 2, 78, 1, 0, 0, 0, 2, 64, 1, 0, 0, 0, 2, 66, 1, 0, 0, 0, 2, 68, 1 };
+    var out: [64]u8 = undefined;
+    try t.expectEqualSlices(u8, avc[6..17], try parameterSets(&avc, .avc, &out));
+    try t.expectEqualSlices(u8, hevc[6..], try parameterSets(&hevc, .hevc, &out));
+    const extension = avc[6..17].* ++ [_]u8{ 0, 0, 0, 1, 13 };
+    try t.expectEqualSlices(u8, &extension, try parameterSets(&extension, .avc, &out));
+}
+test "header extraction rejects missing sets, bad header bits, framing, capacity and overlap atomically" {
+    const t = std.testing;
+    var out: [64]u8 = @splat(0xa5);
+    for ([_][]const u8{ &.{}, &.{ 0, 0, 0, 1, 0x67 }, &.{ 0, 0, 0, 1, 0x68 }, &.{ 0, 0, 0, 1, 0xe7 }, &.{ 0, 0, 0, 2, 0x67 } }) |bad| try t.expectError(error.InvalidPacket, parameterSets(bad, .avc, &out));
+    for ([_][]const u8{ &.{ 0, 0, 0, 1, 64 }, &.{ 0, 0, 0, 2, 64, 0 }, &.{ 0, 0, 0, 2, 192, 1 } }) |bad| try t.expectError(error.InvalidPacket, parameterSets(bad, .hevc, &out));
+    var headers = [_]u8{ 0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68 };
+    try t.expectError(error.BufferTooSmall, parameterSets(&headers, .avc, out[0..9]));
+    const original = headers;
+    try t.expectError(error.InvalidPacket, parameterSets(&headers, .avc, &headers));
+    try t.expectEqualSlices(u8, &original, &headers);
+    for (out) |b| try t.expectEqual(@as(u8, 0xa5), b);
+}
+test "access-unit assembly validates both inputs before writing a prefix" {
+    const t = std.testing;
+    const headers = [_]u8{ 0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68 };
+    const packet = [_]u8{ 0, 0, 0, 2, 0x65, 9 };
+    var out: [32]u8 = @splat(0xa5);
+    try t.expectEqual(@as(usize, 16), try annexBAccessUnitSize(&headers, &packet));
+    try t.expectError(error.InvalidPacket, annexBAccessUnit(&headers, &.{ 0, 0, 0, 2, 1 }, &out));
+    try t.expectError(error.InvalidPacket, annexBAccessUnit(&.{ 0, 0, 0, 0 }, &packet, &out));
+    try t.expectError(error.BufferTooSmall, annexBAccessUnit(&headers, &packet, out[0..15]));
+    for (out) |b| try t.expectEqual(@as(u8, 0xa5), b);
+    try t.expectEqualSlices(u8, &.{ 0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65, 9 }, try annexBAccessUnit(&headers, &packet, &out));
+    try t.expectEqualSlices(u8, &.{ 0, 0, 0, 1, 0x65, 9 }, try annexBAccessUnit(&.{}, &packet, &out));
+}
+test "access-unit overlap is rejected before mutating either source" {
+    const t = std.testing;
+    var bytes = [_]u8{ 0, 0, 0, 1, 0x67, 0, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65, 0, 0, 0, 0, 0 };
+    const original = bytes;
+    try t.expectError(error.InvalidPacket, annexBAccessUnit(bytes[0..10], bytes[10..15], bytes[0..15]));
+    try t.expectError(error.InvalidPacket, annexBAccessUnit(bytes[0..10], bytes[10..15], bytes[3..18]));
+    try t.expectEqualSlices(u8, &original, &bytes);
 }

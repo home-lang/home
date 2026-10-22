@@ -64,7 +64,9 @@ jobs:
           zig test packages/video/src/core/pcm_fanout.zig -O ReleaseSafe
           zig test packages/video/src/core/frame_fanout.zig
           zig test packages/video/src/core/frame_fanout.zig -O ReleaseSafe
-          zig test packages/video/src/core/packet_output.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" packages/video/src/core/packet_output.zig
+          done
           zig test packages/video/src/core/packet_ring.zig
           zig test packages/video/src/core/plane_pack.zig
           zig test packages/video/src/core/plane_pack.zig -O ReleaseSafe
