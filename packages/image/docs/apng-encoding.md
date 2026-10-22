@@ -47,7 +47,8 @@ and rejects short frames rather than encoding uninitialized scratch bytes.
 
 Standalone tests cover descriptor preflight, exact delays, sequence overflow,
 all host allocation failures, every sink write failure boundary and a 20,000-row
-image encoded with 1 KiB of Zig scratch storage (native zlib workspace excluded).
+image encoded with a 1 KiB Zig allocation budget (bounded compression stack
+output and native zlib workspace excluded).
 An independent C harness checks CRCs, contiguous sequences, chunk ordering,
 dimensions, controls and all decoded samples using libpng for each reconstructed
 frame. Its 216 fixtures per build cover gray/RGB/RGBA, 8/16 bits, all six filter
