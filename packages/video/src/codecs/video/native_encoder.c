@@ -34,6 +34,97 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
     return home_encoder_open_options(c,color,&options,out);
 }
 int home_encoder_open_options(const home_encoder_config *c, const home_encoder_color *color, const home_encoder_options *options, home_encoder **out) {
+    const home_encoder_limits limits={sizeof(home_encoder_limits),0,0,0};
+    return home_encoder_open_limits(c,color,options,&limits,out);
+}
+/* HEVC Main-tier level facts (samples, samples/sec, kbit/sec, kbit CPB),
+ * cross-checked with the vendor's Annex A table:
+ * https://github.com/videolan/x265/blob/master/source/encoder/level.cpp
+ * Check with integer rational arithmetic before the vendor's floating-point
+ * nominal-rate conversion, so extreme rates cannot wrap its u32 intermediate. */
+static int hevc_level_fits(const home_encoder_config *c, const home_encoder_limits *limits) {
+    static const struct { uint32_t id,picture,rate,bitrate,cpb; } levels[]={
+        {10,36864,552960,128,350},{20,122880,3686400,1500,1500},
+        {21,245760,7372800,3000,3000},{30,552960,16588800,6000,6000},
+        {31,983040,33177600,10000,10000},{40,2228224,66846720,12000,12000},
+        {41,2228224,133693440,20000,20000},{50,8912896,267386880,25000,25000},
+        {51,8912896,534773760,40000,40000},{52,8912896,1069547520,60000,60000},
+        {60,35651584,1069547520,60000,60000},{61,35651584,2139095040,120000,120000},
+        {62,35651584,4278190080U,240000,240000}
+    };
+    if(!limits->level) return 1;
+    /* x265 otherwise changes CTU16 to CTU32 for a >=5.0 request, conflicting
+     * with other adapter instances. Higher ceilings can contain a <=4.1 stream;
+     * they do not lift this adapter's existing shared-CTU geometry constraint. */
+    const uint32_t effective=limits->level>=50 ? 41 : limits->level;
+    for(size_t i=0;i<sizeof(levels)/sizeof(levels[0]);i++) if(levels[i].id==effective) {
+        const uint64_t picture=(uint64_t)c->width*c->height;
+        return picture<=levels[i].picture && (uint64_t)c->width*c->width<=8*(uint64_t)levels[i].picture &&
+            (uint64_t)c->height*c->height<=8*(uint64_t)levels[i].picture &&
+            picture*c->fps_num<=(uint64_t)levels[i].rate*c->fps_den &&
+            c->bitrate<=(uint64_t)levels[i].bitrate*1000 && limits->max_bitrate<=(uint64_t)levels[i].bitrate*1000 &&
+            limits->buffer_bits<=(uint64_t)levels[i].cpb*1000;
+    }
+    return 0;
+}
+static int valid_limits(const home_encoder_config *c, const home_encoder_options *options, const home_encoder_limits *limits) {
+    if (!limits || limits->struct_size!=sizeof(*limits) || (!limits->max_bitrate)!=(!limits->buffer_bits) ||
+        limits->max_bitrate%1000 || limits->buffer_bits%1000 ||
+        (limits->max_bitrate && (options->qp || c->bitrate>limits->max_bitrate ||
+            (uint64_t)limits->buffer_bits*c->fps_num<(uint64_t)limits->max_bitrate*c->fps_den)) ||
+        (c->codec==2 && limits->level && options->qp)) return 0;
+    if (!limits->level) return 1;
+    if (c->codec==1) {
+        switch(limits->level) { case 10:case 11:case 12:case 13:case 20:case 21:case 22:case 30:case 31:case 32:case 40:case 41:case 42:case 50:case 51:case 52:case 60:case 61:case 62:break;default:return 0; }
+        for (const x264_level_t *l=x264_levels;l->level_idc;l++) if (l->level_idc==limits->level) return 1;
+        return 0;
+    }
+    switch(limits->level) { case 10:case 20:case 21:case 30:case 31:case 40:case 41:case 50:case 51:case 52:case 60:case 61:case 62:break;default:return 0; }
+    return hevc_level_fits(c,limits);
+}
+static int constrain_avc(x264_param_t *p, const home_encoder_config *c, const home_encoder_limits *limits) {
+    if (!limits->level) return 1;
+    const x264_level_t *l=x264_levels;
+    while(l->level_idc && l->level_idc!=limits->level) l++;
+    if(!l->level_idc) return 0;
+    const uint64_t w=(c->width+15)/16,h=(c->height+15)/16,frame=w*h;
+    if(frame>(uint64_t)l->frame_size || w*w>8*(uint64_t)l->frame_size || h*h>8*(uint64_t)l->frame_size ||
+        frame*c->fps_num>(uint64_t)l->mbps*c->fps_den) return 0;
+    const uint64_t factor=p->analyse.b_transform_8x8 ? 5 : 4;
+    const uint64_t rate=(uint64_t)l->bitrate*1000*factor/4,buffer=(uint64_t)l->cpb*1000*factor/4;
+    if(c->bitrate>rate || limits->max_bitrate>rate || limits->buffer_bits>buffer) return 0;
+    int references=(int)((uint64_t)l->dpb/frame);
+    if(references<1) return 0;
+    if(p->i_frame_reference>references) p->i_frame_reference=references;
+    if(p->i_dpb_size>references) p->i_dpb_size=references;
+    if(p->analyse.i_mv_range<0 || p->analyse.i_mv_range>l->mv_range) p->analyse.i_mv_range=l->mv_range;
+    p->i_level_idc=(int)limits->level;
+    return 1;
+}
+/* Vendor level requests are advisory on some versions. Validate the emitted
+ * requirement before a handle/header can escape. Payloads include 4-byte lengths. */
+static int level_fits(home_encoder *e, uint32_t level) {
+    if (!level) return 1;
+    if(e->avc) {
+        x264_nal_t *nal=NULL;int n=0;
+        if(x264_encoder_headers(e->avc,&nal,&n)<0) return 0;
+        for(int i=0;i<n;i++) if(nal[i].i_payload>=8 && (nal[i].p_payload[4]&31)==7) return nal[i].p_payload[7]>0 && nal[i].p_payload[7]<=level;
+        return 0;
+    }
+    x265_nal *nal=NULL;uint32_t n=0;
+    if(x265_encoder_headers(e->hevc,&nal,&n)<0) return 0;
+    for(uint32_t i=0;i<n;i++) if(nal[i].sizeBytes>=7 && ((nal[i].payload[4]>>1)&63)==33) {
+        uint8_t rbsp[13];size_t count=0;unsigned zeros=0;
+        for(uint32_t at=6;at<nal[i].sizeBytes && count<sizeof(rbsp);at++) {
+            const uint8_t byte=nal[i].payload[at];
+            if(zeros>=2 && byte==3) { zeros=0;continue; }
+            rbsp[count++]=byte;zeros=byte==0 ? zeros+1 : 0;
+        }
+        return count==sizeof(rbsp) && (rbsp[1]&31)==1 && !(rbsp[1]&32) && rbsp[12]>=30 && rbsp[12]<=level*3;
+    }
+    return 0;
+}
+int home_encoder_open_limits(const home_encoder_config *c, const home_encoder_color *color, const home_encoder_options *options, const home_encoder_limits *limits, home_encoder **out) {
     if (!out) return -1;
     *out=NULL;
     if (!color || color->struct_size!=sizeof(*color) ||
@@ -43,6 +134,7 @@ int home_encoder_open_options(const home_encoder_config *c, const home_encoder_c
     if (!c || (c->codec!=1 && c->codec!=2) || c->width<16 || c->height<16 || c->width>8192 || c->height>8192 || (c->width|c->height)&1 || !c->fps_num || !c->fps_den || c->fps_num>1000000 || c->fps_den>1000000 || c->quality<1 || c->quality>100 || c->gop>INT_MAX || (c->bitrate && c->bitrate<1000)) return -1;
     if (!options || options->struct_size!=sizeof(*options) || options->profile>4 || options->preset>9 || options->qp>51 ||
         (options->qp && c->bitrate) || (c->codec==2 && options->profile!=0 && options->profile!=2)) return -1;
+    if (!valid_limits(c,options,limits)) return -1;
     static const char *const presets[]={"veryfast","ultrafast","superfast","faster","fast","medium","slow","slower","veryslow","placebo"};
     home_encoder *e=calloc(1,sizeof(*e));
     if (!e) return -2;
@@ -69,6 +161,8 @@ int home_encoder_open_options(const home_encoder_config *c, const home_encoder_c
         }
         const char *profile=(options->profile==1 || options->profile==4) ? "baseline" : options->profile==2 ? "main" : "high";
         if (x264_param_apply_profile(&p,profile)<0) { x264_param_cleanup(&p); goto fail; }
+        if(!constrain_avc(&p,c,limits)) { x264_param_cleanup(&p);goto invalid; }
+        p.rc.i_vbv_max_bitrate=(int)(limits->max_bitrate/1000);p.rc.i_vbv_buffer_size=(int)(limits->buffer_bits/1000);
         e->avc=x264_encoder_open(&p);
         x264_param_cleanup(&p);
         if (!e->avc) goto fail;
@@ -99,12 +193,17 @@ int home_encoder_open_options(const home_encoder_config *c, const home_encoder_c
             p->rc.ipFactor=1.0; p->rc.pbFactor=1.0; p->rc.aqMode=0; p->rc.cuTree=0;
         }
         if (x265_param_apply_profile(p,"main")<0) goto fail;
+        p->levelIdc=(int)(limits->level>=50 ? 41 : limits->level);p->bHighTier=0;p->bAllowNonConformance=0;
+        p->rc.vbvMaxBitrate=(int)(limits->max_bitrate/1000);p->rc.vbvBufferSize=(int)(limits->buffer_bits/1000);
         e->hevc=x265_encoder_open(p);
         if (!e->hevc) goto fail;
         x265_picture_init(p,e->in); x265_picture_init(p,e->out);
         e->in->bitDepth=8;
     }
+    if(!level_fits(e,limits->level)) goto invalid;
     *out=e; return 0;
+invalid:
+    home_encoder_close(e);return -1;
 fail:
     home_encoder_close(e); return -3;
 }

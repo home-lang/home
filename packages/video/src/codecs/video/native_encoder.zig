@@ -19,10 +19,37 @@ pub const Options = extern struct {
             (codec != 1 and codec != 2) or (codec == 2 and self.profile != 0 and self.profile != 2) or (self.qp != 0 and bitrate != 0)) return error.InvalidConfiguration;
     }
 };
+/// Nominal decoder-level ceiling and VBV/CPB policy. Units are bits/sec and bits;
+/// exact multiples of 1000 avoid silent vendor kbit rounding. Zero keeps defaults.
+pub const Limits = extern struct {
+    struct_size: u32 = @sizeOf(Limits),
+    level: u32 = 0,
+    max_bitrate: u32 = 0,
+    buffer_bits: u32 = 0,
+    pub fn validate(self: Limits, config: Config, options: Options) !void {
+        try options.validate(config.codec, config.bitrate);
+        if (self.struct_size != @sizeOf(Limits)) return error.InvalidConfiguration;
+        const valid = switch (config.codec) {
+            1 => switch (self.level) {
+                0, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51, 52, 60, 61, 62 => true,
+                else => false,
+            },
+            2 => switch (self.level) {
+                0, 10, 20, 21, 30, 31, 40, 41, 50, 51, 52, 60, 61, 62 => true,
+                else => false,
+            },
+            else => false,
+        };
+        if (!valid or (config.codec == 2 and self.level != 0 and options.qp != 0) or (self.max_bitrate == 0) != (self.buffer_bits == 0) or self.max_bitrate % 1000 != 0 or self.buffer_bits % 1000 != 0 or
+            (self.max_bitrate != 0 and (options.qp != 0 or config.bitrate > self.max_bitrate or config.fps_num == 0 or config.fps_den == 0 or
+                @as(u64, self.buffer_bits) * config.fps_num < @as(u64, self.max_bitrate) * config.fps_den))) return error.InvalidConfiguration;
+    }
+};
 const RawPacket = extern struct { data: [*]const u8, size: usize, pts: i64, key: c_int };
 extern fn home_encoder_open(*const Config, *?*Handle) c_int;
 extern fn home_encoder_open_color(*const Config, *const Color, *?*Handle) c_int;
 extern fn home_encoder_open_options(*const Config, *const Color, *const Options, *?*Handle) c_int;
+extern fn home_encoder_open_limits(*const Config, *const Color, *const Options, *const Limits, *?*Handle) c_int;
 extern fn home_encoder_headers(*Handle, *RawPacket) c_int;
 extern fn home_encoder_encode(*Handle, *const [3][*]const u8, *const [3]c_int, i64, *RawPacket) c_int;
 extern fn home_encoder_request_keyframe(*Handle) c_int;
@@ -52,6 +79,12 @@ pub const Encoder = struct {
         try options.validate(config.codec, config.bitrate);
         var out: ?*Handle = null;
         try check(home_encoder_open_options(&config, &color, &options, &out));
+        return .{ .handle = out.?, .width = config.width, .height = config.height };
+    }
+    pub fn initWithLimits(config: Config, color: Color, options: Options, limits: Limits) !Encoder {
+        try limits.validate(config, options);
+        var out: ?*Handle = null;
+        try check(home_encoder_open_limits(&config, &color, &options, &limits, &out));
         return .{ .handle = out.?, .width = config.width, .height = config.height };
     }
     pub fn deinit(self: *Encoder) void {
@@ -120,4 +153,21 @@ test "codec options reject unsupported profiles and conflicting rate control bef
     };
     for ([_]Options{ .{ .struct_size = 0 }, .{ .profile = 5 }, .{ .preset = 10 }, .{ .qp = 52 } }) |value| try t.expectError(error.InvalidConfiguration, value.validate(1, 0));
     try t.expectError(error.InvalidConfiguration, (Options{}).validate(0, 0));
+}
+test "level and VBV policies reject wrong units, partial buffers and CQP conflicts" {
+    const t = std.testing;
+    var config: Config = .{ .codec = 1, .width = 128, .height = 96, .fps_num = 30, .fps_den = 1, .bitrate = 1000000, .quality = 90, .gop = 60 };
+    for ([_]u32{ 0, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51, 52, 60, 61, 62 }) |level| try (Limits{ .level = level }).validate(config, .{});
+    config.codec = 2;
+    for ([_]u32{ 0, 10, 20, 21, 30, 31, 40, 41, 50, 51, 52, 60, 61, 62 }) |level| try (Limits{ .level = level }).validate(config, .{});
+    for ([_]Limits{ .{ .struct_size = 0 }, .{ .level = 42 }, .{ .max_bitrate = 1000000 }, .{ .buffer_bits = 1000000 }, .{ .max_bitrate = 1000999, .buffer_bits = 2000000 }, .{ .max_bitrate = 500000, .buffer_bits = 2000000 } }) |bad| try t.expectError(error.InvalidConfiguration, bad.validate(config, .{}));
+    const limited: Limits = .{ .max_bitrate = 1000000, .buffer_bits = 2000000 };
+    try limited.validate(config, .{});
+    try t.expectError(error.InvalidConfiguration, (Limits{ .max_bitrate = 1000000, .buffer_bits = 1000 }).validate(config, .{}));
+    config.bitrate = 0;
+    try t.expectError(error.InvalidConfiguration, limited.validate(config, .{ .qp = 26 }));
+    try (Limits{}).validate(config, .{ .qp = 26 });
+    try t.expectError(error.InvalidConfiguration, (Limits{ .level = 20 }).validate(config, .{ .qp = 26 }));
+    config.codec = 1;
+    try (Limits{ .level = 20 }).validate(config, .{ .qp = 26 });
 }

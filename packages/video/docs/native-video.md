@@ -86,3 +86,37 @@ bounds remain checked. Pure tests cover the shorter records and unchanged
 failure buffers; zig-camera independently decodes actual MP4 output under every
 preset/profile policy on Linux. C admission tests additionally exercise null and
 malformed option recipes, clear failed handles and preserve the scalar ABI sizes.
+
+`Encoder.initWithLimits(config, color, options, limits)` /
+`home_encoder_open_limits` adds a separate copied 16-byte `Limits` recipe. Earlier
+configuration, color and options layouts stay unchanged. `level` is a decimal
+level ceiling times ten (41 is 4.1), zero automatic. AVC uses the exported x264
+level table for macroblock-rounded geometry, nominal rational frame rate,
+profile-aware bitrate/CPB, references and motion range. HEVC uses checked Main-tier
+picture/rate/CPB bounds with u64 cross-products before vendor floating-point/u32
+conversion. Explicit construction inspects actual SPS requirement/profile before
+returning ownership; a vendor warning cannot publish an over-ceiling header.
+
+`max_bitrate` is bits/sec and `buffer_bits` is CPB capacity in bits. Both are zero
+or both are positive multiples of 1000; the buffer must cover at least one nominal
+frame at the maximum rate. Nonzero target bitrate must fit the maximum, and VBV
+requires non-CQP rate control. HEVC explicit levels also reject fixed QP. C errors
+clear failed output handles. These are codec CPB controls, not container/network
+packet caps, complete HRD conformance or optical/performance measurements.
+
+The shared HEVC CTU16 policy remains in force. Higher requested ceilings are
+constrained to at most effective level 4.1 so x265 cannot silently switch CTU size
+and conflict with another instance. Inputs/rates requiring higher effective levels
+reject; a safe CTU32/higher-resolution HEVC path remains separate work. Explicit
+HEVC levels with CRF can cause the vendor to enable the level's default VBV limits
+when none are supplied. Recipes describe requested policy, not measured/effective
+vendor statistics. Legacy calls with no limits retain earlier behavior.
+
+Tests cover every represented level ID, invalid units and CQP/rate conflicts,
+failed C owners, emitted levels, IDRs/drains and exact versus fractional nominal
+rate boundaries. Camera integration additionally checks state/header preservation,
+restart/mode/recovery propagation, explicit resets, high-complexity VBV volume and
+all accepted frames. Linux supplies independent AVC/HEVC decoders; local codec
+checks and independent AAC/image readers are recorded separately. Vendor references:
+https://github.com/mirror/x264/blob/master/common/tables.c and
+https://github.com/videolan/x265/blob/master/source/encoder/level.cpp .

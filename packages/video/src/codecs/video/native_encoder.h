@@ -17,6 +17,14 @@ typedef struct { uint32_t struct_size, primaries, transfer, matrix, full_range; 
  * qp: 0 keeps quality/ABR behavior; 1..51 selects constant QP and requires
  * bitrate=0. Explicit QP disables adaptive QP and I/P/B offsets. */
 typedef struct { uint32_t struct_size, profile, preset, qp; } home_encoder_options;
+/* Level is a decoder-requirement ceiling, times 10 (41 means 4.1), 0 auto.
+ * HEVC uses Main tier. max_bitrate and buffer_bits are either both zero (legacy)
+ * or positive multiples of 1000 in bits/sec and bits. VBV requires qp=0 and
+ * target bitrate <= max_bitrate. This is CPB shaping, not a network packet cap.
+ * Capacity covers at least one nominal frame. HEVC explicit level rejects CQP;
+ * shared CTU16 constrains effective HEVC requirements to at most level 4.1.
+ * Geometry/nominal rate and emitted header levels are checked before success. */
+typedef struct { uint32_t struct_size, level, max_bitrate, buffer_bits; } home_encoder_limits;
 /* Length-prefixed NAL units; borrowed until the next call. pts uses microseconds.
  * Low latency: no B frames/lookahead; AVC VFR buffers one input for duration.
  * Empty output means buffered. Drain flush() before close; serialize calls. */
@@ -24,6 +32,7 @@ typedef struct { const uint8_t *data; size_t size; int64_t pts; int key; } home_
 int home_encoder_open(const home_encoder_config *, home_encoder **);
 int home_encoder_open_color(const home_encoder_config *, const home_encoder_color *, home_encoder **);
 int home_encoder_open_options(const home_encoder_config *, const home_encoder_color *, const home_encoder_options *, home_encoder **);
+int home_encoder_open_limits(const home_encoder_config *, const home_encoder_color *, const home_encoder_options *, const home_encoder_limits *, home_encoder **);
 int home_encoder_headers(home_encoder *, home_packet *);
 int home_encoder_encode(home_encoder *, const uint8_t *const planes[3], const int strides[3], int64_t pts, home_packet *);
 int home_encoder_request_keyframe(home_encoder *);
