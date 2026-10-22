@@ -8086,33 +8086,57 @@ test "Program: merged ambient generic accessor substitutes its setter input" {
         \\box.value = true;
         \\box.value = "bad";
         \\const extra: 3 = Nested.Box.extra;
-        \\declare const other: Other.Box<number>;
+        \\const other = new Other.Box<number>();
         \\const otherRead: number = other.value;
         \\const wrongOther: string = other.value;
         \\other.value = true;
         \\other.value = "bad";
-        \\void read; void wrong; void extra; void otherRead; void wrongOther;
+        \\const afterOther: number = other.value;
+        \\void read; void wrong; void extra; void otherRead; void wrongOther; void afterOther;
     ;
-    var vfs = ts_resolver.VirtualFs.init(T.allocator);
-    defer vfs.deinit();
-    try vfs.addFile("/first.d.ts", first);
-    try vfs.addFile("/second.d.ts", second);
-    try vfs.addFile("/main.ts", consumer);
-    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
-    defer resolver.deinit();
-    var program = Program.init(T.allocator, &resolver);
-    defer program.deinit();
-    const first_id = try program.add("/first.d.ts", first);
-    const second_id = try program.add("/second.d.ts", second);
-    const main_id = try program.add("/main.ts", consumer);
-    try program.compileAll(.{ .no_emit = true, .strict = true });
-    try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
-    try T.expectEqual(@as(usize, 0), program.fileById(second_id).compilation.?.diagnostics.items.len);
-    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
-    try T.expectEqual(@as(usize, 4), diagnostics.len);
-    for (diagnostics, [_]u32{ 148, 209, 348, 402 }) |diagnostic, expected_pos| {
-        try T.expectEqual(@as(u32, 2322), diagnostic.code);
-        try T.expectEqual(expected_pos, diagnostic.pos);
+    const Mode = enum { split, reversed, combined };
+    inline for (.{ Mode.split, Mode.reversed, Mode.combined }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        if (mode == .combined) {
+            try vfs.addFile("/both.d.ts", first ++ "\n" ++ second);
+        } else {
+            try vfs.addFile("/first.d.ts", first);
+            try vfs.addFile("/second.d.ts", second);
+        }
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const main_id: FileId = switch (mode) {
+            .split => blk: {
+                _ = try program.add("/first.d.ts", first);
+                _ = try program.add("/second.d.ts", second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+            .reversed => blk: {
+                const id = try program.add("/main.ts", consumer);
+                _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", first);
+                break :blk id;
+            },
+            .combined => blk: {
+                _ = try program.add("/both.d.ts", first ++ "\n" ++ second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+        };
+        try program.compileAll(.{ .no_emit = true, .strict = true });
+        for (program.files.items, 0..) |file, index| {
+            if (index == main_id) continue;
+            try T.expectEqual(@as(usize, 0), file.compilation.?.diagnostics.items.len);
+        }
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 4), diagnostics.len);
+        for (diagnostics, [_]u32{ 148, 209, 347, 401 }) |diagnostic, expected_pos| {
+            try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            try T.expectEqual(expected_pos, diagnostic.pos);
+        }
     }
 }
 

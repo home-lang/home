@@ -117981,10 +117981,16 @@ pub const Checker = struct {
                     if (self.identifierRootedMemberKey(a.target)) |key| {
                         const had_exact_narrow = self.lookupMemberNarrow(key) != null;
                         const had_descendant_narrow = try self.shadowMemberNarrowsForAssignment(key.obj_name, key.prop_name);
-                        // A first write establishes flow just as a write
-                        // replacing a prior guard does. Descendant paths were
-                        // invalidated above before publishing the new value.
-                        if (((a.op == null and try self.memberAssignmentCanCreateFlow(node, a.target)) or had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                        if (self.memberAssignmentAccessorReadType(a.target)) |read_t| {
+                            // An accessor write may narrow a read when its
+                            // value fits the getter type. A setter can also
+                            // accept values the getter never returns; those
+                            // writes restore the declared getter type.
+                            const flow_t = try self.memberAssignmentFlowType(node, read_t, assignment_result_t);
+                            try self.recordMemberNarrow(key, if (try self.assignmentFlowValueFitsTarget(flow_t, read_t)) flow_t else read_t);
+                        } else if (((a.op == null and try self.memberAssignmentCanCreateFlow(node, a.target)) or had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                            // A data-property write establishes flow, replacing
+                            // a prior guard after descendants are invalidated.
                             const flow_t = if (a.op == null)
                                 try self.memberAssignmentFlowType(node, target_t, assignment_result_t)
                             else
@@ -199789,6 +199795,19 @@ pub const Checker = struct {
             return (try self.identifierRootedMemberStaticType(target)) != null;
         }
         return self.hir.kindOf(target) == .element_access;
+    }
+
+    fn memberAssignmentAccessorReadType(self: *Checker, target: NodeId) ?TypeId {
+        if (self.hir.kindOf(target) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, target);
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t >= self.interner.pool.typeCount()) return null;
+        if (self.interner.objectMemberInfo(receiver_t, member.name)) |info| {
+            if (info.write_type != null or
+                self.objectTypeMemberIsGetter(receiver_t, member.name, false) or
+                self.objectTypeMemberIsGetter(receiver_t, member.name, true)) return info.type;
+        }
+        return null;
     }
 
     fn memberAssignmentFlowType(self: *Checker, assignment: NodeId, target: TypeId, value: TypeId) CheckError!TypeId {

@@ -5868,6 +5868,86 @@ test "tsc_main: real transitive imported const inference reaches the consumer" {
     }
 }
 
+test "tsc_main: accessor writes retain the getter read type through imported constructors" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box<T> {
+        \\      constructor();
+        \\      get value(): T;
+        \\      set value(input: T | boolean);
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested.Box { export const extra: 3; }
+        \\}
+    ;
+    const main_source =
+        \\import { Nested } from 'pkg';
+        \\const box = new Nested.Box<number>();
+        \\const extra: 3 = Nested.Box.extra;
+        \\box.value = true;
+        \\const read: number = box.value;
+        \\box.value = "bad";
+        \\const readAgain: number = box.value;
+        \\class Same {
+        \\  private backing: string | number = 0;
+        \\  get value(): string | number { return this.backing; }
+        \\  set value(input: string | number) { this.backing = input; }
+        \\}
+        \\const same = new Same();
+        \\same.value = "ready";
+        \\const narrowed: string = same.value;
+        \\void extra; void read; void readAgain; void narrowed;
+    ;
+    const Mode = enum { split, reversed, combined };
+    inline for (.{ Mode.split, Mode.reversed, Mode.combined }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        if (mode == .combined) {
+            try vfs.addFile("/both.d.ts", first ++ "\n" ++ second);
+        } else {
+            try vfs.addFile("/first.d.ts", first);
+            try vfs.addFile("/second.d.ts", second);
+        }
+        try vfs.addFile("/main.ts", main_source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        const main_id: ts_program.FileId = switch (mode) {
+            .split => blk: {
+                _ = try program.add("/first.d.ts", first);
+                _ = try program.add("/second.d.ts", second);
+                break :blk try program.add("/main.ts", main_source);
+            },
+            .reversed => blk: {
+                const id = try program.add("/main.ts", main_source);
+                _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", first);
+                break :blk id;
+            },
+            .combined => blk: {
+                _ = try program.add("/both.d.ts", first ++ "\n" ++ second);
+                break :blk try program.add("/main.ts", main_source);
+            },
+        };
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+        try std.testing.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
