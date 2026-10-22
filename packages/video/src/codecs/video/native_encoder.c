@@ -97,8 +97,10 @@ static int constrain_avc(x264_param_t *p, const home_encoder_config *c, const ho
     if(references<1) return 0;
     if(p->i_frame_reference>references) p->i_frame_reference=references;
     if(p->i_dpb_size>references) p->i_dpb_size=references;
-    if(p->analyse.i_mv_range<0 || p->analyse.i_mv_range>l->mv_range) p->analyse.i_mv_range=l->mv_range;
-    p->i_level_idc=(int)limits->level;
+    if(p->analyse.i_mv_range>l->mv_range) p->analyse.i_mv_range=l->mv_range;
+    /* A ceiling must not inflate a small stream to that level. Keep vendor
+     * minimum-level selection, then enforce the ceiling on emitted SPS below. */
+    p->i_level_idc=-1;
     return 1;
 }
 /* Vendor level requests are advisory on some versions. Validate the emitted
@@ -108,7 +110,11 @@ static int level_fits(home_encoder *e, uint32_t level) {
     if(e->avc) {
         x264_nal_t *nal=NULL;int n=0;
         if(x264_encoder_headers(e->avc,&nal,&n)<0) return 0;
-        for(int i=0;i<n;i++) if(nal[i].i_payload>=8 && (nal[i].p_payload[4]&31)==7) return nal[i].p_payload[7]>0 && nal[i].p_payload[7]<=level;
+        for(int i=0;i<n;i++) if(nal[i].i_payload>=8 && (nal[i].p_payload[4]&31)==7) {
+            const unsigned actual=nal[i].p_payload[7];
+            /* High-profile level 1b uses raw IDC 9 but exceeds level 1.0. */
+            return actual==9 ? level>=11 : actual>0 && actual<=level;
+        }
         return 0;
     }
     x265_nal *nal=NULL;uint32_t n=0;

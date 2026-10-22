@@ -144,7 +144,9 @@ test "level ceilings and VBV preserve headers, frame timestamps, IDRs and drain 
         const limits: native.Limits = .{ .level = level, .max_bitrate = if (vbv) 64000 else 0, .buffer_bits = if (vbv) 128000 else 0 };
         var encoder = try native.Encoder.initWithLimits(.{ .codec = codec, .width = 128, .height = 96, .fps_num = 24, .fps_den = 1, .bitrate = 0, .quality = 90, .gop = 100 }, .{}, .{}, limits);
         defer encoder.deinit();
-        try std.testing.expect(try levelHeader(try encoder.headers(), codec) <= level * (if (codec == 1) @as(u32, 1) else 3));
+        const actual = try levelHeader(try encoder.headers(), codec);
+        try std.testing.expect(actual <= level * (if (codec == 1) @as(u32, 1) else 3));
+        if (codec == 1 and level >= 50) try std.testing.expect(actual <= 20);
         var seen: [8]bool = @splat(false);
         for (0..8) |i| {
             if (i == 3 or i == 6) try encoder.requestKeyframe();
@@ -197,4 +199,13 @@ test "nominal level geometry and fractional frame-rate boundaries reject without
         cfg.height += 2;
         try std.testing.expectError(error.InvalidConfiguration, native.Encoder.initWithLimits(cfg, .{}, .{}, .{ .level = 10 }));
     }
+}
+test "automatic AVC level 1b cannot escape a 1.0 ceiling through raw IDC ordering" {
+    const cfg: native.Config = .{ .codec = 1, .width = 64, .height = 48, .fps_num = 30, .fps_den = 1, .bitrate = 64000, .quality = 90, .gop = 60 };
+    try std.testing.expectError(error.InvalidConfiguration, native.Encoder.initWithLimits(cfg, .{}, .{}, .{ .level = 10 }));
+    var compatible = try native.Encoder.initWithLimits(cfg, .{}, .{}, .{ .level = 11 });
+    compatible.deinit();
+    var shaped = try native.Encoder.initWithLimits(cfg, .{}, .{}, .{ .level = 10, .max_bitrate = 64000, .buffer_bits = 128000 });
+    defer shaped.deinit();
+    try std.testing.expectEqual(@as(u32, 10), try levelHeader(try shaped.headers(), 1));
 }

@@ -96,6 +96,10 @@ profile-aware bitrate/CPB, references and motion range. HEVC uses checked Main-t
 picture/rate/CPB bounds with u64 cross-products before vendor floating-point/u32
 conversion. Explicit construction inspects actual SPS requirement/profile before
 returning ownership; a vendor warning cannot publish an over-ceiling header.
+AVC retains automatic minimum-level selection after bounding resources; a high
+ceiling does not force a needlessly high SPS label on a small stream.
+The raw High-profile IDC 9 denotes level 1b and exceeds a 1.0 ceiling; automatic
+1b selection is accepted only for ceilings of 1.1 or above.
 
 `max_bitrate` is bits/sec and `buffer_bits` is CPB capacity in bits. Both are zero
 or both are positive multiples of 1000; the buffer must cover at least one nominal
