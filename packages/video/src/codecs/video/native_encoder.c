@@ -13,7 +13,9 @@ struct home_encoder {
     x265_picture *in, *out;
     uint8_t *buffer;
     size_t capacity;
-    uint32_t width, height;
+    uint32_t width, height, padded_width, padded_height;
+    uint8_t *padded, *hevc_headers;
+    size_t hevc_header_size;
     int force_key;
 };
 void home_encoder_close(home_encoder *e) {
@@ -23,8 +25,12 @@ void home_encoder_close(home_encoder *e) {
     if (e->in) x265_picture_free(e->in);
     if (e->out) x265_picture_free(e->out);
     if (e->param) x265_param_free(e->param);
+    free(e->padded); free(e->hevc_headers);
     free(e->buffer); free(e);
 }
+/* Crop rewriting is shared Zig policy; vendor ABI/padded picture ownership stays here. */
+extern int home_hevc_crop_sps(const uint8_t *,size_t,uint32_t,uint32_t,uint32_t,uint32_t,uint8_t *,size_t,size_t *);
+static int prepare_hevc_headers(home_encoder *e);
 int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
     const home_encoder_color color={sizeof(home_encoder_color),1,13,6,0};
     return home_encoder_open_color(c,&color,out);
@@ -53,14 +59,11 @@ static int hevc_level_fits(const home_encoder_config *c, const home_encoder_limi
         {62,35651584,4278190080U,240000,240000}
     };
     if(!limits->level) return 1;
-    /* x265 otherwise changes CTU16 to CTU32 for a >=5.0 request, conflicting
-     * with other adapter instances. Higher ceilings can contain a <=4.1 stream;
-     * they do not lift this adapter's existing shared-CTU geometry constraint. */
-    const uint32_t effective=limits->level>=50 ? 41 : limits->level;
-    for(size_t i=0;i<sizeof(levels)/sizeof(levels[0]);i++) if(levels[i].id==effective) {
-        const uint64_t picture=(uint64_t)c->width*c->height;
-        return picture<=levels[i].picture && (uint64_t)c->width*c->width<=8*(uint64_t)levels[i].picture &&
-            (uint64_t)c->height*c->height<=8*(uint64_t)levels[i].picture &&
+    for(size_t i=0;i<sizeof(levels)/sizeof(levels[0]);i++) if(levels[i].id==limits->level) {
+        const uint64_t w=c->width<32 ? 32 : (c->width+3U)&~3U,h=c->height<32 ? 32 : (c->height+3U)&~3U;
+        const uint64_t picture=w*h;
+        return picture<=levels[i].picture && w*w<=8*(uint64_t)levels[i].picture &&
+            h*h<=8*(uint64_t)levels[i].picture &&
             picture*c->fps_num<=(uint64_t)levels[i].rate*c->fps_den &&
             c->bitrate<=(uint64_t)levels[i].bitrate*1000 && limits->max_bitrate<=(uint64_t)levels[i].bitrate*1000 &&
             limits->buffer_bits<=(uint64_t)levels[i].cpb*1000;
@@ -117,12 +120,17 @@ static int level_fits(home_encoder *e, uint32_t level) {
         }
         return 0;
     }
-    x265_nal *nal=NULL;uint32_t n=0;
-    if(x265_encoder_headers(e->hevc,&nal,&n)<0) return 0;
-    for(uint32_t i=0;i<n;i++) if(nal[i].sizeBytes>=7 && ((nal[i].payload[4]>>1)&63)==33) {
+    size_t offset=0;
+    while(e->hevc_header_size-offset>=4) {
+        const uint8_t *prefix=e->hevc_headers+offset;
+        const uint32_t n=(uint32_t)prefix[0]<<24|(uint32_t)prefix[1]<<16|(uint32_t)prefix[2]<<8|prefix[3];
+        offset+=4;
+        if(n>e->hevc_header_size-offset) return 0;
+        const uint8_t *payload=e->hevc_headers+offset;offset+=n;
+        if(n<3 || ((payload[0]>>1)&63)!=33) continue;
         uint8_t rbsp[13];size_t count=0;unsigned zeros=0;
-        for(uint32_t at=6;at<nal[i].sizeBytes && count<sizeof(rbsp);at++) {
-            const uint8_t byte=nal[i].payload[at];
+        for(uint32_t at=2;at<n && count<sizeof(rbsp);at++) {
+            const uint8_t byte=payload[at];
             if(zeros>=2 && byte==3) { zeros=0;continue; }
             rbsp[count++]=byte;zeros=byte==0 ? zeros+1 : 0;
         }
@@ -177,18 +185,24 @@ int home_encoder_open_limits(const home_encoder_config *c, const home_encoder_co
         if (!e->param || !e->in || !e->out) goto fail;
         x265_param *p=e->param;
         if (x265_param_default_preset(p,presets[options->preset],"zerolatency")<0) goto fail;
-        p->sourceWidth=(int)c->width; p->sourceHeight=(int)c->height;
+        e->padded_width=c->width<32 ? 32 : c->width;
+        e->padded_height=c->height<32 ? 32 : c->height;
+        if(e->padded_width!=c->width || e->padded_height!=c->height) {
+            e->padded=malloc((size_t)e->padded_width*e->padded_height*3/2);
+            if(!e->padded) { home_encoder_close(e);return -2; }
+        }
+        p->sourceWidth=(int)e->padded_width; p->sourceHeight=(int)e->padded_height;
         p->fpsNum=c->fps_num; p->fpsDenom=c->fps_den; p->internalCsp=X265_CSP_I420; p->internalBitDepth=8;
         p->bframes=0; p->lookaheadDepth=0; p->frameNumThreads=1;
         p->numaPools="none"; p->bEnableWavefront=0;
         p->keyframeMax=c->gop ? (int)c->gop : 60; p->keyframeMin=1; p->scenecutThreshold=0; p->bOpenGOP=0;
         p->bAnnexB=0; p->bRepeatHeaders=0; p->bEmitInfoSEI=0; p->logLevel=X265_LOG_ERROR;
         /* Fixed CTU sizes across instances avoid x265's process-global CTU conflict. */
-        p->maxCUSize=16; p->minCUSize=8;
+        p->maxCUSize=32; p->minCUSize=8;
         /* Slow presets assume larger CTUs. Keep transform depth valid for the
-         * fixed CTU16 shared-instance policy (log2(16)-log2(4)+1 == 3). */
-        if (p->tuQTMaxInterDepth>3) p->tuQTMaxInterDepth=3;
-        if (p->tuQTMaxIntraDepth>3) p->tuQTMaxIntraDepth=3;
+         * fixed CTU32 shared-instance policy (log2(32)-log2(4)+1 == 4). */
+        if (p->tuQTMaxInterDepth>4) p->tuQTMaxInterDepth=4;
+        if (p->tuQTMaxIntraDepth>4) p->tuQTMaxIntraDepth=4;
         p->vui.bEnableVideoSignalTypePresentFlag=1; p->vui.bEnableVideoFullRangeFlag=(int)color->full_range;
         p->vui.bEnableColorDescriptionPresentFlag=1; p->vui.colorPrimaries=(int)color->primaries;
         p->vui.transferCharacteristics=(int)color->transfer; p->vui.matrixCoeffs=(int)color->matrix;
@@ -199,12 +213,16 @@ int home_encoder_open_limits(const home_encoder_config *c, const home_encoder_co
             p->rc.ipFactor=1.0; p->rc.pbFactor=1.0; p->rc.aqMode=0; p->rc.cuTree=0;
         }
         if (x265_param_apply_profile(p,"main")<0) goto fail;
-        p->levelIdc=(int)(limits->level>=50 ? 41 : limits->level);p->bHighTier=0;p->bAllowNonConformance=0;
+        p->levelIdc=(int)limits->level;p->bHighTier=0;p->bAllowNonConformance=0;
         p->rc.vbvMaxBitrate=(int)(limits->max_bitrate/1000);p->rc.vbvBufferSize=(int)(limits->buffer_bits/1000);
         e->hevc=x265_encoder_open(p);
         if (!e->hevc) goto fail;
         x265_picture_init(p,e->in); x265_picture_init(p,e->out);
         e->in->bitDepth=8;
+    }
+    if(e->hevc) {
+        const int status=prepare_hevc_headers(e);
+        if(status) { home_encoder_close(e);return status; }
     }
     if(!level_fits(e,limits->level)) goto invalid;
     *out=e; return 0;
@@ -232,16 +250,53 @@ static int collect(home_encoder *e, x264_nal_t *a, x265_nal *h, uint32_t count, 
     }
     out->data=e->buffer; out->size=total; return 0;
 }
+/* Headers are generated once: repeated x265 header calls append parameter sets.
+ * Tiny-input rewriting happens before publishing the handle. Encoded packets
+ * use their separate scratch buffer; bRepeatHeaders remains disabled. */
+static int prepare_hevc_headers(home_encoder *e) {
+    x265_nal *nal=NULL;uint32_t count=0;
+    if(x265_encoder_headers(e->hevc,&nal,&count)<0 || !count) return -3;
+    uint8_t sps[4096];size_t sps_size=0,total=0;uint32_t sps_index=UINT32_MAX;
+    for(uint32_t i=0;i<count;i++) {
+        const size_t n=nal[i].sizeBytes;
+        if(n<6 || n>SIZE_MAX-total) return -3;
+        total+=n;
+        if(((nal[i].payload[4]>>1)&63)==33) {
+            if(sps_index!=UINT32_MAX) return -3;
+            if(e->padded && home_hevc_crop_sps(nal[i].payload+4,n-4,
+                e->padded_width,e->padded_height,e->width,e->height,sps,sizeof(sps),&sps_size)) return -3;
+            sps_index=i;
+        }
+    }
+    if(sps_index==UINT32_MAX) return -3;
+    if(e->padded) {
+        total-=nal[sps_index].sizeBytes;
+        if(total>SIZE_MAX-4 || sps_size>SIZE_MAX-total-4) return -3;
+        total+=4+sps_size;
+    }
+    e->hevc_headers=malloc(total);
+    if(!e->hevc_headers) return -2;
+    size_t at=0;
+    for(uint32_t i=0;i<count;i++) {
+        if(e->padded && i==sps_index) {
+            for(unsigned k=0;k<4;k++) e->hevc_headers[at+k]=(uint8_t)(sps_size>>(24-8*k));
+            memcpy(e->hevc_headers+at+4,sps,sps_size);at+=4+sps_size;
+        } else {
+            memcpy(e->hevc_headers+at,nal[i].payload,nal[i].sizeBytes);at+=nal[i].sizeBytes;
+        }
+    }
+    e->hevc_header_size=total;
+    return 0;
+}
 int home_encoder_headers(home_encoder *e, home_packet *out) {
     memset(out,0,sizeof(*out));
+    if(e->hevc_headers) { out->data=e->hevc_headers;out->size=e->hevc_header_size;return 0; }
     if (e->avc) {
         x264_nal_t *nal=NULL; int n=0;
         if (x264_encoder_headers(e->avc,&nal,&n)<0 || n<=0) return -3;
         return collect(e,nal,NULL,(uint32_t)n,out);
     }
-    x265_nal *nal=NULL; uint32_t n=0;
-    if (x265_encoder_headers(e->hevc,&nal,&n)<0 || !n) return -3;
-    return collect(e,NULL,nal,n,out);
+    return -3;
 }
 int home_encoder_encode(home_encoder *e, const uint8_t *const planes[3], const int strides[3], int64_t pts, home_packet *out) {
     memset(out,0,sizeof(*out));
@@ -259,7 +314,20 @@ int home_encoder_encode(home_encoder *e, const uint8_t *const planes[3], const i
         out->pts=decoded.i_pts; out->key=decoded.b_keyframe;
         return collect(e,nal,NULL,(uint32_t)n,out);
     }
-    for (int i=0;i<3;i++) { e->in->planes[i]=(void *)planes[i]; e->in->stride[i]=strides[i]; }
+    size_t offset=0;
+    for (int i=0;i<3;i++) {
+        if(!e->padded) { e->in->planes[i]=(void *)planes[i];e->in->stride[i]=strides[i];continue; }
+        const uint32_t w=i ? e->width/2 : e->width,h=i ? e->height/2 : e->height;
+        const uint32_t pw=i ? e->padded_width/2 : e->padded_width,ph=i ? e->padded_height/2 : e->padded_height;
+        uint8_t *dest=e->padded+offset;
+        for(uint32_t y=0;y<ph;y++) {
+            const uint8_t *row=planes[i]+(size_t)(y<h ? y : h-1)*strides[i];
+            memcpy(dest+(size_t)y*pw,row,w);
+            memset(dest+(size_t)y*pw+w,row[w-1],pw-w);
+        }
+        e->in->planes[i]=dest;e->in->stride[i]=(int)pw;
+        offset+=(size_t)pw*ph;
+    }
     e->in->pts=pts;
     e->in->sliceType=e->force_key ? X265_TYPE_IDR : X265_TYPE_AUTO;e->force_key=0;
     x265_nal *nal=NULL; uint32_t n=0;

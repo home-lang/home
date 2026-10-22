@@ -1,4 +1,5 @@
-/* Home codec bridge, MIT. Compile against installed x264.h/x265.h. */
+/* Home codec bridge, MIT. Compile against installed x264.h/x265.h and link
+ * hevc_conformance_c.zig (included automatically by native_encoder.zig). */
 #ifndef HOME_NATIVE_ENCODER_H
 #define HOME_NATIVE_ENCODER_H
 #include <stddef.h>
@@ -22,7 +23,7 @@ typedef struct { uint32_t struct_size, profile, preset, qp; } home_encoder_optio
  * or positive multiples of 1000 in bits/sec and bits. VBV requires qp=0 and
  * target bitrate <= max_bitrate. This is CPB shaping, not a network packet cap.
  * Capacity covers at least one nominal frame. HEVC explicit level rejects CQP;
- * shared CTU16 constrains effective HEVC requirements to at most level 4.1.
+ * shared CTU32 supports tiny padded inputs and higher-resolution HEVC streams.
  * Geometry/nominal rate and emitted header levels are checked before success. */
 typedef struct { uint32_t struct_size, level, max_bitrate, buffer_bits; } home_encoder_limits;
 /* Length-prefixed NAL units; borrowed until the next call. pts uses microseconds.

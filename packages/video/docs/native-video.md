@@ -108,10 +108,8 @@ requires non-CQP rate control. HEVC explicit levels also reject fixed QP. C erro
 clear failed output handles. These are codec CPB controls, not container/network
 packet caps, complete HRD conformance or optical/performance measurements.
 
-The shared HEVC CTU16 policy remains in force. Higher requested ceilings are
-constrained to at most effective level 4.1 so x265 cannot silently switch CTU size
-and conflict with another instance. Inputs/rates requiring higher effective levels
-reject; a safe CTU32/higher-resolution HEVC path remains separate work. Explicit
+HEVC uses the shared CTU32 policy described below, with padded tiny inputs and
+exact visible crops. Higher level ceilings can admit larger pictures. Explicit
 HEVC levels with CRF can cause the vendor to enable the level's default VBV limits
 when none are supplied. Recipes describe requested policy, not measured/effective
 vendor statistics. Legacy calls with no limits retain earlier behavior.
@@ -124,3 +122,47 @@ all accepted frames. Linux supplies independent AVC/HEVC decoders; local codec
 checks and independent AAC/image readers are recorded separately. Vendor references:
 https://github.com/mirror/x264/blob/master/common/tables.c and
 https://github.com/videolan/x265/blob/master/source/encoder/level.cpp .
+
+### Bounded HEVC conformance-window support
+
+`codecs/video/hevc_conformance.zig` supplies an allocation-free SPS crop edit for
+single temporal-layer, layer-zero, 8-bit I420 streams. It validates the supported
+prefix, existing visible geometry and strict emulation-prevention encoding,
+retains left/top vendor crops and adds right/bottom crops in chroma units. The
+opaque SPS suffix, including VUI, is copied through the trailing stop bit.
+Input is capped at 2048 NAL bytes; output scratch is 4096 bytes. Destination
+capacity/validation errors leave destination unchanged; overlapping buffers work.
+This scoped edit is not a full SPS validator and does not detect every malformed
+or truncated opaque suffix. The editor is integrated into the native CTU32 path below.
+
+The shared allocation-free `bit_reader.zig` retains the public
+`util/bitstream.zig.BitstreamReader` type and success behavior. Failed bit, fixed
+integer, Exp-Golomb, skip, peek and aligned byte reads now preserve the cursor;
+byte reads check capacities without overflowing a caller-supplied length. Direct
+reader tests and the legacy-wrapper suite cover boundary/truncation behavior.
+
+### Shared CTU32 native encoder path
+
+HEVC instances now share CTU32, including 4K-capable level requests. Dimensions
+smaller than 32 are edge-extended into an owned I420 input buffer with each axis
+at least 32; the shared SPS editor restores the exact even visible dimensions.
+Other inputs retain the borrowed-plane path. Vendor alignment crops are retained.
+Only the tiny-input path adds a plane copy; its scratch is bounded by the admitted
+8192 maximum axis. Header edits happen during admission, not for each packet.
+
+HEVC parameter sets are generated and cached once per encoder. Repeated x265
+header calls append parameter sets in supported vendor builds; generating once
+avoids duplicates during level validation, repeated header reads and flush.
+The cache remains independent of encoded packet scratch, and is freed with the
+encoder. In-band repeated headers remain disabled. The fixed CTU32 rule applies
+to Home-managed instances; unrelated direct x265 users must obey the vendor's
+process-global CTU constraints too.
+
+The adapter now links the portable Zig helper `hevc_conformance_c.zig`.
+`native_encoder.zig` includes it automatically; C-only builds must additionally
+compile that source with `zig build-obj -O ReleaseSafe -fPIC` and link its object.
+No C struct ABI or pixel ownership contract changed. Native tests keep tiny and
+3840x2160 encoders alive together and verify frames/IDRs/drains/header stability.
+Camera Linux fixtures independently decode visible Y/U/V pixels and frame counts.
+These are software codec checks, not camera throughput, physical 4K capture or
+hardware acceleration evidence.

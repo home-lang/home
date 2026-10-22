@@ -209,3 +209,38 @@ test "automatic AVC level 1b cannot escape a 1.0 ceiling through raw IDC orderin
     defer shaped.deinit();
     try std.testing.expectEqual(@as(u32, 10), try levelHeader(try shaped.headers(), 1));
 }
+
+test "tiny and 4K HEVC encoders coexist with stable headers and every input drained" {
+    const t = std.testing;
+    const sizes = [_][2]u32{ .{ 16, 16 }, .{ 32, 24 }, .{ 18, 50 }, .{ 34, 18 }, .{ 3840, 2160 } };
+    var owners: [sizes.len]?native.Encoder = @splat(null);
+    defer for (&owners) |*owner| if (owner.*) |*encoder| encoder.deinit();
+    // Retain all instances at once, and make the next constructor larger than
+    // the tiny streams. Vendor process-global CTU conflicts must not reappear.
+    for (sizes, 0..) |size, i| owners[i] = try native.Encoder.initWithLimits(.{ .codec = 2, .width = size[0], .height = size[1], .fps_num = 30, .fps_den = 1, .quality = 95, .bitrate = 0, .gop = 100 }, .{}, .{}, .{ .level = if (i == sizes.len - 1) 50 else 10 });
+    for (&owners, sizes) |*owner, size| {
+        const e = &owner.*.?;
+        const headers = try t.allocator.dupe(u8, try e.headers());
+        defer t.allocator.free(headers);
+        const bytes = try t.allocator.alloc(u8, @as(usize, size[0]) * size[1] * 3 / 2);
+        defer t.allocator.free(bytes);
+        const pixels = @as(usize, size[0]) * size[1];
+        @memset(bytes[0..pixels], 100);
+        @memset(bytes[pixels..], 128);
+        var count: usize = 0;
+        for (0..3) |index| {
+            if (index == 2) try e.requestKeyframe();
+            if (try e.encode(.{ bytes[0..pixels], bytes[pixels..][0 .. pixels / 4], bytes[pixels + pixels / 4 ..] }, .{ size[0], size[0] / 2, size[0] / 2 }, size[0], size[1], @intCast(index * 33333))) |packet| {
+                try t.expectEqual(@as(i64, @intCast(count * 33333)), packet.pts);
+                try t.expectEqual(index == 0 or index == 2, packet.key);
+                count += 1;
+            }
+        }
+        while (try e.flush()) |packet| {
+            try t.expectEqual(@as(i64, @intCast(count * 33333)), packet.pts);
+            count += 1;
+        }
+        try t.expectEqual(@as(usize, 3), count);
+        try t.expectEqualSlices(u8, headers, try e.headers());
+    }
+}

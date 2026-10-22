@@ -1,7 +1,10 @@
 //! Safe optional Home AVC/HEVC integration. Compile native_encoder.c and link
-//! x264/x265. Only Home's fixed scalar ABI crosses the boundary, never vendor
+//! x264/x265; the shared Zig crop helper is included below. Only Home's fixed scalar ABI crosses the boundary, never vendor
 //! structures; this module works before/after Zig's removal of @cImport.
 const std = @import("std");
+comptime {
+    _ = @import("hevc_conformance_c.zig");
+}
 const Handle = opaque {};
 pub const Config = extern struct { codec: u32, width: u32, height: u32, fps_num: u32, fps_den: u32, bitrate: u32, quality: u32, gop: u32 };
 /// ISO codes describing the caller's I420 samples. Metadata only, no conversion.

@@ -3,6 +3,10 @@ on:
   push:
     paths:
       - 'packages/video/src/codecs/video/native_encoder.*'
+      - 'packages/video/src/codecs/video/bit_reader.zig'
+      - 'packages/video/src/codecs/video/hevc_conformance*.zig'
+      - 'packages/video/src/util/bitstream.zig'
+      - 'packages/video/src/bitstream_reader_tests.zig'
       - 'packages/video/src/codecs/video/rgb_i420.zig'
       - 'packages/video/src/containers/mp4_stream.zig'
       - 'packages/video/src/native_media_tests.zig'
@@ -16,6 +20,10 @@ on:
   pull_request:
     paths:
       - 'packages/video/src/codecs/video/native_encoder.*'
+      - 'packages/video/src/codecs/video/bit_reader.zig'
+      - 'packages/video/src/codecs/video/hevc_conformance*.zig'
+      - 'packages/video/src/util/bitstream.zig'
+      - 'packages/video/src/bitstream_reader_tests.zig'
       - 'packages/video/src/codecs/video/rgb_i420.zig'
       - 'packages/video/src/containers/mp4_stream.zig'
       - 'packages/video/src/native_media_tests.zig'
