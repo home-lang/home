@@ -7871,6 +7871,44 @@ test "Program: merged ambient class namespace keeps static and nested contracts 
     }
 }
 
+test "Program: same-scope ambient class namespace retains inherited static members" {
+    const declarations =
+        \\declare module 'same-scope' {
+        \\  export namespace Api {
+        \\    export class Base { constructor(value: string); }
+        \\    export class Derived extends Base {}
+        \\    export namespace Derived { export const extra: 3; }
+        \\    export class Direct { constructor(); }
+        \\    export namespace Direct { export const flag: 5; }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Api } from 'same-scope';
+        \\const good = new Api.Derived('ok');
+        \\new Api.Derived(1);
+        \\const goodExtra: 3 = Api.Derived.extra;
+        \\const badExtra: 4 = Api.Derived.extra;
+        \\const goodFlag: 5 = Api.Direct.flag;
+        \\const badFlag: 6 = Api.Direct.flag;
+        \\void good; void goodExtra; void badExtra; void goodFlag; void badFlag;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/same-scope.d.ts", declarations);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/same-scope.d.ts", declarations);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 3), diagnostics.len);
+    for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+}
+
 test "Program: merged ambient class getters retain exact types and readonly modifiers" {
     const first = @embedFile("testdata/ambient_class_accessor_first.d.ts");
     const second = @embedFile("testdata/ambient_class_accessor_second.d.ts");
@@ -8515,6 +8553,33 @@ test "Program: unsupported class augmentation cannot publish a partial merged va
                 std.mem.eql(u8, value.namespace_path, "Nested") and
                 std.mem.eql(u8, value.export_name, "Box")));
         }
+    }
+}
+
+test "Program: unsupported same-scope class namespace cannot publish a partial value" {
+    const declarations =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box { static set computed(value); constructor(); }
+        \\    export namespace Box { export const extra: 2; }
+        \\  }
+        \\}
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/same-scope.d.ts", declarations);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/same-scope.d.ts", declarations);
+    try program.compileAll(.{ .no_emit = true, .skip_lib_check = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    for (graph.values) |value| {
+        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "pkg") and
+            std.mem.eql(u8, value.namespace_path, "Nested") and
+            std.mem.eql(u8, value.export_name, "Box")));
     }
 }
 

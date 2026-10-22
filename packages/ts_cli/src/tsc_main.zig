@@ -6087,6 +6087,58 @@ test "tsc_main: merged ambient derived class inherits its generic base construct
     }
 }
 
+test "tsc_main: same-scope ambient class namespace retains static value" {
+    const declarations =
+        \\declare module 'same-scope' {
+        \\  export namespace Api {
+        \\    export class Base { constructor(value: string); }
+        \\    export class Derived extends Base {}
+        \\    export namespace Derived { export const extra: 3; }
+        \\    export class Direct { constructor(); }
+        \\    export namespace Direct { export const flag: 5; }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Api } from 'same-scope';
+        \\const good = new Api.Derived('ok');
+        \\new Api.Derived(1);
+        \\const goodExtra: 3 = Api.Derived.extra;
+        \\const badExtra: 4 = Api.Derived.extra;
+        \\const goodFlag: 5 = Api.Direct.flag;
+        \\const badFlag: 6 = Api.Direct.flag;
+        \\void good; void goodExtra; void badExtra; void goodFlag; void badFlag;
+    ;
+    inline for (.{ false, true }) |reverse_add| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/same-scope.d.ts", declarations);
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        const main_id: ts_program.FileId = if (reverse_add) blk: {
+            const id = try program.add("/main.ts", consumer);
+            _ = try program.add("/same-scope.d.ts", declarations);
+            break :blk id;
+        } else blk: {
+            _ = try program.add("/same-scope.d.ts", declarations);
+            break :blk try program.add("/main.ts", consumer);
+        };
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";

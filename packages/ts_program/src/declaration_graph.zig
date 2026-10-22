@@ -605,7 +605,6 @@ fn collectClassNamespaceNames(
 }
 
 fn classNamespaceMergeConflict(arena: std.mem.Allocator, sources: []const Source, owners: []const ModuleOwner, name: []const u8) !bool {
-    var count: usize = 0;
     var classes: std.StringHashMapUnmanaged(void) = .empty;
     var namespaces: std.StringHashMapUnmanaged(void) = .empty;
     for (owners) |owner| {
@@ -615,11 +614,12 @@ fn classNamespaceMergeConflict(arena: std.mem.Allocator, sources: []const Source
         const symbol = scope.namespaces.get(id) orelse continue;
         for (symbol.decls.items) |decl| {
             if (c.hir.kindOf(decl) != .namespace_decl) continue;
-            count += 1;
             try collectClassNamespaceNames(arena, c, decl, name, &classes, &namespaces);
         }
     }
-    if (count < 2) return false;
+    // Even one ambient module fragment may contain a class and a same-named
+    // namespace in the same scope. If exact collection fails, withhold that
+    // merge instead of publishing only the class or only its namespace.
     var class_names = classes.keyIterator();
     while (class_names.next()) |class_name| if (namespaces.contains(class_name.*)) return true;
     return false;
@@ -743,7 +743,6 @@ fn mergedAmbientNamespace(
     for (declarations.items) |declaration| {
         if (!try merged_enums.collectNamespace(declaration.source, declaration.node, name)) return null;
     }
-    if (declarations.items.len == 1 and !merged_enums.hasRepeatedFragment()) return null;
     if (!try merged_enums.finish()) return null;
 
     // A class and a namespace with the same qualified name are one exported
@@ -760,6 +759,7 @@ fn mergedAmbientNamespace(
     while (class_names.next()) |class_name| {
         if (namespaces.contains(class_name.*)) try class_namespace_merges.put(arena, class_name.*, {});
     }
+    if (declarations.items.len == 1 and !merged_enums.hasRepeatedFragment() and class_namespace_merges.count() == 0) return null;
 
     var collected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
     var collected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
