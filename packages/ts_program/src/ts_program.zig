@@ -8219,6 +8219,62 @@ test "Program: explicit ambient module alias wins star collision with source ide
     }
 }
 
+test "Program: first duplicate explicit ambient namespace export owns the consumer binding" {
+    const pkg =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); } } }
+    ;
+    const other = "declare module \"other-api\" { export const API: { marker: \"other\" }; }";
+    inline for (.{ false, true }) |other_first| {
+        const barrel = if (other_first)
+            "declare module \"barrel\" { export * as API from \"other-api\"; export * as API from \"pkg\"; }"
+        else
+            "declare module \"barrel\" { export * as API from \"pkg\"; export * as API from \"other-api\"; }";
+        const consumer =
+            \\import { API } from "barrel";
+            \\const box = new API.Nested.Box("ready");
+            \\const marker = API.marker;
+            \\void box; void marker;
+        ;
+        inline for (.{ false, true }) |streaming| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/pkg.d.ts", "/other.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ pkg, other, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/pkg.d.ts", pkg);
+            _ = try program.add("/other.d.ts", other);
+            _ = try program.add("/barrel.d.ts", barrel);
+            const main_id = try program.add("/main.ts", consumer);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+            if (streaming) {
+                const Sink = struct {
+                    count: usize = 0,
+                    fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                        if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                    }
+                };
+                var sink: Sink = .{};
+                try program.compileAllStreaming(options, &sink, Sink.receive);
+                try T.expectEqual(@as(usize, if (other_first) 2 else 1), sink.count);
+            } else try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, if (other_first) 2 else 1), diagnostics.len);
+            for (diagnostics, 0..) |diagnostic, index| {
+                try T.expectEqual(@as(u32, 2339), diagnostic.code);
+                const expected = if (other_first and index == 0)
+                    "Property 'Nested' does not exist on type 'typeof import(\"other-api\")'."
+                else if (other_first)
+                    "Property 'marker' does not exist on type 'typeof import(\"other-api\")'."
+                else
+                    "Property 'marker' does not exist on type 'typeof import(\"pkg\")'.";
+                try T.expectEqualStrings(expected, diagnostic.message);
+            }
+        }
+    }
+}
+
 test "Program: same-shaped ambient module aliases retain distinct display identities" {
     const declarations =
         \\declare module "shape-a" { export const x: 1; }

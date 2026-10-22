@@ -6466,6 +6466,53 @@ test "tsc_main: ambient aliases with empty runtime namespaces keep module identi
     }
 }
 
+test "tsc_main: duplicate explicit ambient namespace exports use the first binding" {
+    const pkg = "declare module \"pkg\" { export namespace Nested { export class Box { constructor(value: \"ready\"); } } }";
+    const other = "declare module \"other-api\" { export const API: { marker: \"other\" }; }";
+    const consumer =
+        \\import { API } from "barrel";
+        \\const box = new API.Nested.Box("ready");
+        \\const marker = API.marker;
+        \\void box; void marker;
+    ;
+    inline for (.{ false, true }) |other_first| {
+        const barrel = if (other_first)
+            "declare module \"barrel\" { export * as API from \"other-api\"; export * as API from \"pkg\"; }"
+        else
+            "declare module \"barrel\" { export * as API from \"pkg\"; export * as API from \"other-api\"; }";
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/pkg.d.ts", "/other.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ pkg, other, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/pkg.d.ts", pkg);
+        _ = try program.add("/other.d.ts", other);
+        _ = try program.add("/barrel.d.ts", barrel);
+        const main_id = try program.add("/main.ts", consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, if (other_first) 2 else 1), diagnostics.len);
+        for (diagnostics, 0..) |diagnostic, index| {
+            try std.testing.expectEqual(@as(u32, 2339), diagnostic.code);
+            const expected = if (other_first and index == 0)
+                "Property 'Nested' does not exist on type 'typeof import(\"other-api\")'."
+            else if (other_first)
+                "Property 'marker' does not exist on type 'typeof import(\"other-api\")'."
+            else
+                "Property 'marker' does not exist on type 'typeof import(\"pkg\")'.";
+            try std.testing.expectEqualStrings(expected, diagnostic.message);
+        }
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";

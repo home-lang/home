@@ -691,7 +691,13 @@ pub const Query = struct {
             if (bindings.exports.get(name)) |found| found.items else &.{}
         else
             &.{};
-        for (edges) |edge| {
+        // Explicit exports bind a name at its first declaration. A later
+        // re-export of the same name is a duplicate (even when skipLibCheck
+        // suppresses its diagnostic), not another candidate to union with the
+        // first. Local declaration merges still resolve through the bound
+        // symbol in `local`, which includes all of its declaration spaces.
+        const selected = if (edges.len == 0) edges else edges[0..1];
+        for (selected) |edge| {
             if (edge.kind == .implicit) {
                 try self.enqueue(.{ .path = state.path, .scope = state.scope, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction });
                 continue;
@@ -1020,7 +1026,7 @@ test "export origins: indexed declarations retain comma destructuring and merged
     try T.expectEqual(@as(usize, 1), query.indexes.count());
 }
 
-test "export origins: indexed explicit aliases retain restriction order and star precedence" {
+test "export origins: first explicit alias retains type-only restriction over duplicate and star" {
     var vfs = resolver_mod.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/first.ts", "export class Item {} export const value = 1;");
@@ -1036,8 +1042,10 @@ test "export origins: indexed explicit aliases retain restriction order and star
     var query = Query.init(T.allocator, &resolver);
     defer query.deinit();
     const item = try query.resolve("/barrel.ts", "Item");
-    try T.expect(item.complete and !item.ambiguous and item.value != null and item.type_only_value != null);
-    try T.expectEqualStrings("/first.ts", item.value.?.path);
+    // TypeScript binds the first explicit export. The later value re-export
+    // of the same class is a duplicate, not permission to use Item at runtime.
+    try T.expect(item.complete and !item.ambiguous and item.value == null and item.type_only_value != null and item.type != null);
+    try T.expectEqualStrings("/first.ts", item.type_only_value.?.path);
     try T.expectEqualStrings("/barrel.ts", item.restriction.?.path);
     try T.expectEqual(.export_type, item.restriction.?.kind);
     const owner = query.files.get("/barrel.ts").?.compilation;
