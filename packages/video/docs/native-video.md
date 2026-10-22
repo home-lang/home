@@ -52,3 +52,37 @@ counts every delayed/flushed frame, and rejects requests after drain. It passes
 on Zig 0.15.2 and Home's installed 0.17 development toolchain with x264/x265.
 zig-camera additionally remuxes split files and pre-roll snapshots and validates
 them with independent decoders. No FFmpeg or Libav is used in this path.
+
+`Encoder.initWithOptions(config, color, options)` /
+`home_encoder_open_options` adds a copied 16-byte `Options` recipe without
+changing either existing configuration ABI. Its profile selects a compatibility
+ceiling: 0 retains codec defaults (AVC High, HEVC Main), 1 AVC Baseline, 2 Main,
+3 AVC High, 4 AVC Constrained Baseline. x264's Baseline is constrained; a simpler
+compatible stream may signal a lower profile than the selected ceiling. HEVC
+accepts only default/Main because this bridge supplies 8-bit I420.
+
+Preset IDs are 0 veryfast (legacy default), 1 ultrafast, 2 superfast, 3 faster,
+4 fast, 5 medium, 6 slow, 7 slower, 8 veryslow, 9 placebo. Presets control codec
+search/compression work; single-thread, no-B-frame/lookahead and fixed CTU16
+ownership remain in force. HEVC transform depths are capped to fit CTU16 even
+when a slower preset assumes larger CTUs. No preset is a measured speed promise.
+
+QP zero preserves quality/ABR behavior. QP 1..51 selects constant quantization,
+disables adaptive QP and I/P/B offsets, and requires bitrate zero. It takes
+precedence over the scalar quality field. Unknown IDs, incompatible HEVC
+profiles, wrong sizes and mixed QP/bitrate policies reject before allocation;
+C failures clear the output handle. Zig's portable policy checks run on pinned
+0.15.2 and development 0.18. The standalone IDR suite also checks actual AVC SPS
+profile constraints, preset construction and complete frame/key/drain behavior
+under CQP. Independent decoded-media coverage lives in zig-camera's integration
+suite; these checks do not establish a full codec conformance corpus.
+
+The container configuration builder accepts emitted AVC Baseline (66), Main (77)
+and High (100) SPS headers. Baseline/Main omit the High-only chroma/bit-depth
+extension in avcC and Matroska CodecPrivate. High preserves its 8-bit 4:2:0
+extension. Profile/compatibility/level and parameter-set bytes are retained
+exactly, unsupported profiles reject before caller destination mutation, and
+bounds remain checked. Pure tests cover the shorter records and unchanged
+failure buffers; zig-camera independently decodes actual MP4 output under every
+preset/profile policy on Linux. C admission tests additionally exercise null and
+malformed option recipes, clear failed handles and preserve the scalar ABI sizes.

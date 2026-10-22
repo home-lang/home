@@ -7,9 +7,22 @@ pub const Config = extern struct { codec: u32, width: u32, height: u32, fps_num:
 /// ISO codes describing the caller's I420 samples. Metadata only, no conversion.
 /// Defaults preserve the legacy Rec.709 primaries / sRGB / BT.601 limited path.
 pub const Color = extern struct { struct_size: u32 = @sizeOf(Color), primaries: u32 = 1, transfer: u32 = 13, matrix: u32 = 6, full_range: u32 = 0 };
+/// Scalar policy shared with native_encoder.h. Profiles are compatibility
+/// ceilings. QP 1..51 selects CQP; zero preserves quality/bitrate behavior.
+pub const Options = extern struct {
+    struct_size: u32 = @sizeOf(Options),
+    profile: u32 = 0,
+    preset: u32 = 0,
+    qp: u32 = 0,
+    pub fn validate(self: Options, codec: u32, bitrate: u32) !void {
+        if (self.struct_size != @sizeOf(Options) or self.profile > 4 or self.preset > 9 or self.qp > 51 or
+            (codec != 1 and codec != 2) or (codec == 2 and self.profile != 0 and self.profile != 2) or (self.qp != 0 and bitrate != 0)) return error.InvalidConfiguration;
+    }
+};
 const RawPacket = extern struct { data: [*]const u8, size: usize, pts: i64, key: c_int };
 extern fn home_encoder_open(*const Config, *?*Handle) c_int;
 extern fn home_encoder_open_color(*const Config, *const Color, *?*Handle) c_int;
+extern fn home_encoder_open_options(*const Config, *const Color, *const Options, *?*Handle) c_int;
 extern fn home_encoder_headers(*Handle, *RawPacket) c_int;
 extern fn home_encoder_encode(*Handle, *const [3][*]const u8, *const [3]c_int, i64, *RawPacket) c_int;
 extern fn home_encoder_request_keyframe(*Handle) c_int;
@@ -33,6 +46,12 @@ pub const Encoder = struct {
     pub fn initWithColor(config: Config, color: Color) !Encoder {
         var out: ?*Handle = null;
         try check(home_encoder_open_color(&config, &color, &out));
+        return .{ .handle = out.?, .width = config.width, .height = config.height };
+    }
+    pub fn initWithOptions(config: Config, color: Color, options: Options) !Encoder {
+        try options.validate(config.codec, config.bitrate);
+        var out: ?*Handle = null;
+        try check(home_encoder_open_options(&config, &color, &options, &out));
         return .{ .handle = out.?, .width = config.width, .height = config.height };
     }
     pub fn deinit(self: *Encoder) void {
@@ -88,4 +107,17 @@ fn check(status: c_int) !void {
 fn view(packet: RawPacket) ?Packet {
     if (packet.size == 0) return null;
     return .{ .data = packet.data[0..packet.size], .pts = packet.pts, .key = packet.key != 0 };
+}
+test "codec options reject unsupported profiles and conflicting rate control before construction" {
+    const t = std.testing;
+    for (0..5) |profile| for (0..10) |preset| {
+        for ([_]u32{ 0, 1, 26, 51 }) |qp| {
+            const value: Options = .{ .profile = @intCast(profile), .preset = @intCast(preset), .qp = qp };
+            try value.validate(1, 0);
+            if (profile == 0 or profile == 2) try value.validate(2, 0) else try t.expectError(error.InvalidConfiguration, value.validate(2, 0));
+            if (qp != 0) try t.expectError(error.InvalidConfiguration, value.validate(1, 1000000));
+        }
+    };
+    for ([_]Options{ .{ .struct_size = 0 }, .{ .profile = 5 }, .{ .preset = 10 }, .{ .qp = 52 } }) |value| try t.expectError(error.InvalidConfiguration, value.validate(1, 0));
+    try t.expectError(error.InvalidConfiguration, (Options{}).validate(0, 0));
 }

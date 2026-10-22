@@ -30,6 +30,10 @@ int home_encoder_open(const home_encoder_config *c, home_encoder **out) {
     return home_encoder_open_color(c,&color,out);
 }
 int home_encoder_open_color(const home_encoder_config *c, const home_encoder_color *color, home_encoder **out) {
+    const home_encoder_options options={sizeof(home_encoder_options),0,0,0};
+    return home_encoder_open_options(c,color,&options,out);
+}
+int home_encoder_open_options(const home_encoder_config *c, const home_encoder_color *color, const home_encoder_options *options, home_encoder **out) {
     if (!out) return -1;
     *out=NULL;
     if (!color || color->struct_size!=sizeof(*color) ||
@@ -37,6 +41,9 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
         (color->transfer!=1 && color->transfer!=8 && color->transfer!=13) ||
         (color->matrix!=1 && color->matrix!=6 && color->matrix!=9) || color->full_range>1) return -1;
     if (!c || (c->codec!=1 && c->codec!=2) || c->width<16 || c->height<16 || c->width>8192 || c->height>8192 || (c->width|c->height)&1 || !c->fps_num || !c->fps_den || c->fps_num>1000000 || c->fps_den>1000000 || c->quality<1 || c->quality>100 || c->gop>INT_MAX || (c->bitrate && c->bitrate<1000)) return -1;
+    if (!options || options->struct_size!=sizeof(*options) || options->profile>4 || options->preset>9 || options->qp>51 ||
+        (options->qp && c->bitrate) || (c->codec==2 && options->profile!=0 && options->profile!=2)) return -1;
+    static const char *const presets[]={"veryfast","ultrafast","superfast","faster","fast","medium","slow","slower","veryslow","placebo"};
     home_encoder *e=calloc(1,sizeof(*e));
     if (!e) return -2;
     e->codec=c->codec; e->width=c->width; e->height=c->height;
@@ -45,7 +52,7 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
     const double crf=51.0*(100-c->quality)/99.0;
     if (c->codec==1) {
         x264_param_t p;
-        if (x264_param_default_preset(&p,"veryfast","zerolatency")<0) goto fail;
+        if (x264_param_default_preset(&p,presets[options->preset],"zerolatency")<0) goto fail;
         p.i_width=(int)c->width; p.i_height=(int)c->height; p.i_csp=X264_CSP_I420;
         p.i_fps_num=c->fps_num; p.i_fps_den=c->fps_den;
         p.i_timebase_num=1; p.i_timebase_den=1000000; p.b_vfr_input=1;
@@ -56,7 +63,12 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
         p.vui.i_transfer=(int)color->transfer; p.vui.i_colmatrix=(int)color->matrix;
         p.rc.i_rc_method=c->bitrate ? X264_RC_ABR : X264_RC_CRF;
         p.rc.i_bitrate=(int)(c->bitrate/1000); p.rc.f_rf_constant=(float)(crf<1.0 ? 1.0 : crf);
-        if (x264_param_apply_profile(&p,"high")<0) { x264_param_cleanup(&p); goto fail; }
+        if (options->qp) {
+            p.rc.i_rc_method=X264_RC_CQP; p.rc.i_qp_constant=(int)options->qp;
+            p.rc.f_ip_factor=1.0f; p.rc.f_pb_factor=1.0f; p.rc.i_aq_mode=0; p.rc.b_mb_tree=0;
+        }
+        const char *profile=(options->profile==1 || options->profile==4) ? "baseline" : options->profile==2 ? "main" : "high";
+        if (x264_param_apply_profile(&p,profile)<0) { x264_param_cleanup(&p); goto fail; }
         e->avc=x264_encoder_open(&p);
         x264_param_cleanup(&p);
         if (!e->avc) goto fail;
@@ -64,7 +76,7 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
         e->param=x265_param_alloc(); e->in=x265_picture_alloc(); e->out=x265_picture_alloc();
         if (!e->param || !e->in || !e->out) goto fail;
         x265_param *p=e->param;
-        if (x265_param_default_preset(p,"veryfast","zerolatency")<0) goto fail;
+        if (x265_param_default_preset(p,presets[options->preset],"zerolatency")<0) goto fail;
         p->sourceWidth=(int)c->width; p->sourceHeight=(int)c->height;
         p->fpsNum=c->fps_num; p->fpsDenom=c->fps_den; p->internalCsp=X265_CSP_I420; p->internalBitDepth=8;
         p->bframes=0; p->lookaheadDepth=0; p->frameNumThreads=1;
@@ -73,11 +85,19 @@ int home_encoder_open_color(const home_encoder_config *c, const home_encoder_col
         p->bAnnexB=0; p->bRepeatHeaders=0; p->bEmitInfoSEI=0; p->logLevel=X265_LOG_ERROR;
         /* Fixed CTU sizes across instances avoid x265's process-global CTU conflict. */
         p->maxCUSize=16; p->minCUSize=8;
+        /* Slow presets assume larger CTUs. Keep transform depth valid for the
+         * fixed CTU16 shared-instance policy (log2(16)-log2(4)+1 == 3). */
+        if (p->tuQTMaxInterDepth>3) p->tuQTMaxInterDepth=3;
+        if (p->tuQTMaxIntraDepth>3) p->tuQTMaxIntraDepth=3;
         p->vui.bEnableVideoSignalTypePresentFlag=1; p->vui.bEnableVideoFullRangeFlag=(int)color->full_range;
         p->vui.bEnableColorDescriptionPresentFlag=1; p->vui.colorPrimaries=(int)color->primaries;
         p->vui.transferCharacteristics=(int)color->transfer; p->vui.matrixCoeffs=(int)color->matrix;
         p->rc.rateControlMode=c->bitrate ? X265_RC_ABR : X265_RC_CRF;
         p->rc.bitrate=(int)(c->bitrate/1000); p->rc.rfConstant=crf;
+        if (options->qp) {
+            p->rc.rateControlMode=X265_RC_CQP; p->rc.qp=(int)options->qp;
+            p->rc.ipFactor=1.0; p->rc.pbFactor=1.0; p->rc.aqMode=0; p->rc.cuTree=0;
+        }
         if (x265_param_apply_profile(p,"main")<0) goto fail;
         e->hevc=x265_encoder_open(p);
         if (!e->hevc) goto fail;

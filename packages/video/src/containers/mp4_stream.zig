@@ -103,15 +103,16 @@ fn config(b: *Buffer, codec: Codec, headers: []const u8) !void {
     if (sps.len < 4 or pps.len < 2) return error.MissingParameterSets;
     const at = try b.box(if (codec == .h264) "avcC" else "hvcC");
     if (codec == .h264) {
-        // The adapter fixes AVC to 8-bit 4:2:0 High profile.
-        if (sps[1] != 100) return error.UnsupportedProfile;
+        // Baseline/Main omit the High-profile chroma/bit-depth extension.
+        // The adapter supplies 8-bit 4:2:0 for each supported profile.
+        if (sps[1] != 66 and sps[1] != 77 and sps[1] != 100) return error.UnsupportedProfile;
         try b.bytes(&.{ 1, sps[1], sps[2], sps[3], 255, 225 });
         try b.int16(@intCast(sps.len));
         try b.bytes(sps);
         try b.bytes(&.{1});
         try b.int16(@intCast(pps.len));
         try b.bytes(pps);
-        try b.bytes(&.{ 253, 248, 248, 0 }); // high profile: 4:2:0, 8-bit, no SPS extensions
+        if (sps[1] == 100) try b.bytes(&.{ 253, 248, 248, 0 }); // 4:2:0, 8-bit, no SPS extensions
     } else {
         if (vps.len < 2 or sps.len < 16) return error.MissingParameterSets;
         // Remove emulation prevention before reading SPS profile_tier_level.
@@ -551,6 +552,25 @@ test "Matroska CodecPrivate reuses checked config and respects destination bound
     try std.testing.expectEqualSlices(u8, &.{ 1, 100, 0, 40, 255, 225 }, data[0..6]);
     try std.testing.expectError(error.HeaderTooLarge, codecPrivate(.h264, &headers, destination[0..1]));
     try std.testing.expectError(error.MissingParameterSets, codecPrivate(.h264, &.{}, &destination));
+}
+test "AVC configuration retains exact Baseline Main High headers and profile-specific extensions" {
+    const t = std.testing;
+    var headers = [_]u8{ 0, 0, 0, 4, 0x67, 100, 0xc0, 40, 0, 0, 0, 2, 0x68, 0x80 };
+    for ([_]u8{ 66, 77, 100 }) |profile| {
+        headers[5] = profile;
+        var destination: [64]u8 = @splat(42);
+        const data = try codecPrivate(.h264, &headers, &destination);
+        try t.expectEqual(@as(usize, if (profile == 100) 21 else 17), data.len);
+        try t.expectEqualSlices(u8, &.{ 1, profile, 0xc0, 40, 255, 225, 0, 4 }, data[0..8]);
+        try t.expectEqualSlices(u8, headers[4..8], data[8..12]);
+        try t.expectEqualSlices(u8, &.{ 1, 0, 2, 0x68, 0x80 }, data[12..17]);
+        if (profile == 100) try t.expectEqualSlices(u8, &.{ 253, 248, 248, 0 }, data[17..]);
+        try t.expectEqual(@as(u8, 42), destination[data.len]);
+    }
+    headers[5] = 110; // High10 is not supplied by this 8-bit adapter.
+    var destination: [64]u8 = @splat(42);
+    try t.expectError(error.UnsupportedProfile, codecPrivate(.h264, &headers, &destination));
+    for (destination) |byte| try t.expectEqual(@as(u8, 42), byte);
 }
 test "AAC track sample clock, edit delay/tail, fixed patches and sink failure" {
     const Out = struct {
