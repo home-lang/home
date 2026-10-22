@@ -7916,6 +7916,119 @@ test "Program: merged ambient class getters retain exact types and readonly modi
     }
 }
 
+test "Program: merged ambient generic class factory keeps its type arguments" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Box<T> {
+        \\      constructor(value: T);
+        \\      readonly value: T;
+        \\    }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export namespace Box {
+        \\      export const version: 3;
+        \\      export function make<T>(value: T): Box<T>;
+        \\    }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\const box: Nested.Box<string> = Nested.Box.make('ready');
+        \\const good: string = box.value;
+        \\const wrong: number = box.value;
+        \\const wrongVersion: 4 = Nested.Box.version;
+        \\void good; void wrong; void wrongVersion;
+    ;
+    inline for (.{ false, true }) |split_files| {
+        inline for (.{ false, true }) |reverse_files| {
+            if (!split_files and reverse_files) continue;
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            const combined = if (split_files) first else first ++ "\n" ++ second;
+            try vfs.addFile("/first.d.ts", combined);
+            if (split_files) try vfs.addFile("/second.d.ts", second);
+            try vfs.addFile("/main.ts", consumer);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            if (split_files and reverse_files) _ = try program.add("/second.d.ts", second);
+            const first_id = try program.add("/first.d.ts", combined);
+            const second_id = if (split_files and !reverse_files) try program.add("/second.d.ts", second) else if (split_files) program.lookupPath("/second.d.ts").? else first_id;
+            const main_id = try program.add("/main.ts", consumer);
+            try program.compileAll(.{ .no_emit = true, .strict = true });
+            try T.expectEqual(@as(usize, 0), program.fileById(first_id).compilation.?.diagnostics.items.len);
+            if (split_files) try T.expectEqual(@as(usize, 0), program.fileById(second_id).compilation.?.diagnostics.items.len);
+            var graph = try program.collectProgramDeclarations();
+            defer graph.deinit();
+            var has_box_value = false;
+            var has_box_type = false;
+            for (graph.values) |route| {
+                if (std.mem.eql(u8, route.ambient_module_name, "pkg") and
+                    std.mem.eql(u8, route.namespace_path, "Nested") and
+                    std.mem.eql(u8, route.export_name, "Box")) has_box_value = true;
+            }
+            for (graph.types) |route| {
+                if (std.mem.eql(u8, route.ambient_module_name, "pkg") and
+                    std.mem.eql(u8, route.namespace_path, "Nested") and
+                    std.mem.eql(u8, route.export_name, "Box") and
+                    route.declaration.parameters.len == 1) has_box_type = true;
+            }
+            try T.expect(has_box_value and has_box_type);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 2), diagnostics.len);
+            for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        }
+    }
+}
+
+test "Program: merged ambient class route cannot cross module specifiers" {
+    const other =
+        \\declare module 'other' {
+        \\  export namespace Nested {
+        \\    export class Box<T> { constructor(value: T); readonly value: T; }
+        \\  }
+        \\}
+    ;
+    const pkg =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export namespace Box {
+        \\      export function make<T>(value: T): Box<T>;
+        \\    }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\void Nested.Box.make('ready');
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/other.d.ts", other);
+    try vfs.addFile("/pkg.d.ts", pkg);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const other_id = try program.add("/other.d.ts", other);
+    const pkg_id = try program.add("/pkg.d.ts", pkg);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    try T.expectEqual(@as(usize, 0), program.fileById(other_id).compilation.?.diagnostics.items.len);
+    const diagnostics = program.fileById(pkg_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2709), diagnostics[0].code);
+    try T.expectEqual(@as(usize, 0), program.fileById(main_id).compilation.?.diagnostics.items.len);
+}
+
 test "Program: own class static shadows a same-named ambient namespace export" {
     const first =
         \\declare module "pkg" {

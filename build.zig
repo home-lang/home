@@ -418,6 +418,11 @@ pub fn build(b: *std.Build) void {
         "ts-checker-test-filter",
         "Only compile/run ts_checker tests whose name contains this substring",
     );
+    const ts_program_test_filter = b.option(
+        []const u8,
+        "ts-program-test-filter",
+        "Only compile/run ts_program tests whose name contains this substring",
+    );
     const ts_driver_test_filter = b.option(
         []const u8,
         "ts-driver-test-filter",
@@ -2705,7 +2710,10 @@ pub fn build(b: *std.Build) void {
     const run_ts_diagnostics_tests = b.addRunArtifact(ts_diagnostics_tests);
     dependOnTest(test_step, &run_ts_diagnostics_tests.step, test_filter, "ts_diagnostics");
 
-    const ts_program_tests = b.addTest(.{ .root_module = ts_program_pkg });
+    const ts_program_tests = b.addTest(.{
+        .root_module = ts_program_pkg,
+        .filters = if (ts_program_test_filter) |needle| &.{needle} else &.{},
+    });
     const run_ts_program_tests = b.addRunArtifact(ts_program_tests);
     dependOnTest(test_step, &run_ts_program_tests.step, test_filter, "ts_program");
 

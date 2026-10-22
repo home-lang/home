@@ -39696,6 +39696,17 @@ pub const Checker = struct {
                 }
                 if (r.args_len != 0) {
                     if (self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, raw)) return;
+                    // A visible namespace without a type declaration is not
+                    // a non-generic type. Even `N<T>` remains TS2709; only a
+                    // class/interface/type alias can produce TS2315.
+                    if (self.findVisibleNamedTypeDecl(type_node, r.name) == null and
+                        self.programAmbientMergedClassRoute(r.name, type_node) == null and
+                        self.findVisibleNamespaceByPath(type_node, &.{r.name}) != null)
+                    {
+                        const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Cannot use namespace '{s}' as a type.", .{raw});
+                        try self.diagnostics.append(self.gpa, .{ .node = type_node, .code = TsCodes.namespace_used_as_type, .message = message });
+                        return;
+                    }
                     if (self.typeRefNameExists(r.name) or self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         try self.reportTypeNotGeneric(type_node, r.name);
                         return;
@@ -77481,6 +77492,11 @@ pub const Checker = struct {
     fn typeRefNameAcceptsTypeArgsAt(self: *Checker, anchor: NodeId, name: hir_mod.StringId, raw: []const u8) bool {
         if (self.generic_aliases.contains(name)) return true;
         if (self.visibleTypeDeclarationAcceptsTypeArgsAt(anchor, name)) return true;
+        if (self.findVisibleNamedTypeDecl(anchor, name) == null) {
+            if (self.programAmbientMergedClassRoute(name, anchor)) |route| {
+                if (route.declaration.parameters.len != 0) return true;
+            }
+        }
         if (!self.visibleTypeDeclarationExistsAt(anchor, name)) {
             for (self.program_global_types) |binding| {
                 if (binding.name == name and binding.generic_declarations.len != 0) return true;
@@ -112411,6 +112427,52 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Match the type half of an ambient class/namespace merge at its exact
+    /// module and parent namespace path. A declaration in another file is not
+    /// in this file's lexical HIR, but it is visible inside the merged
+    /// namespace itself. Never substitute an unrelated same-named class.
+    fn programAmbientMergedClassRoute(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?*const ProgramExportedType {
+        const text = self.string_interner.get(name);
+        var current = anchor;
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) != .namespace_decl) continue;
+            const namespace = hir_mod.namespaceOf(self.hir, current);
+            if (self.namespaceNameIsStringLiteral(namespace.name)) continue;
+            const namespace_name = self.declarationName(current) orelse continue;
+            if (!std.mem.eql(u8, self.string_interner.get(namespace_name), text)) continue;
+            var matching: ?*const ProgramExportedType = null;
+            for (self.program_exported_types) |*route| {
+                if (route.ambient_module_name.len == 0 or route.contextual_only or route.projection_only or
+                    !route.declaration.is_class or !std.mem.eql(u8, route.export_name, text)) continue;
+                if (!self.programAmbientMergedClassRouteMatches(route, current)) continue;
+                if (matching != null) return null;
+                matching = route;
+            }
+            if (matching) |route| return route;
+        }
+        return null;
+    }
+
+    fn programAmbientMergedClassRouteMatches(self: *Checker, route: *const ProgramExportedType, class_namespace: NodeId) bool {
+        var remaining = route.namespace_path;
+        var current = self.hir.parentOf(class_namespace);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            if (self.hir.kindOf(current) != .namespace_decl) continue;
+            const namespace = hir_mod.namespaceOf(self.hir, current);
+            const name = self.declarationName(current) orelse return false;
+            const text = self.string_interner.get(name);
+            if (self.namespaceNameIsStringLiteral(namespace.name)) {
+                return remaining.len == 0 and std.mem.eql(u8, stripAmbientModuleNameQuotes(text), route.ambient_module_name);
+            }
+            if (remaining.len == 0) return false;
+            const dot = std.mem.lastIndexOfScalar(u8, remaining, '.');
+            const leaf = if (dot) |index| remaining[index + 1 ..] else remaining;
+            if (!std.mem.eql(u8, leaf, text)) return false;
+            remaining = if (dot) |index| remaining[0..index] else "";
+        }
+        return false;
+    }
+
     fn programExportedTypeForLocal(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (self.program_exported_types.len == 0 or self.nameHasEnclosingTypeParameter(name, anchor)) return null;
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
@@ -112428,6 +112490,9 @@ pub const Checker = struct {
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
             }
             return null;
+        }
+        if (self.programAmbientMergedClassRoute(name, anchor)) |route| {
+            return self.programDeclarationTypeReference(route.declaration, anchor);
         }
         if (self.module) |module| {
             const symbol = module.root.types.get(name) orelse module.root.values.get(name) orelse return null;

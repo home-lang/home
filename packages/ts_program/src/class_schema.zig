@@ -95,6 +95,12 @@ pub const Builder = struct {
     query: origins.Query,
     declarations: std.AutoHashMapUnmanaged(Key, *schema.Declaration) = .empty,
     global_types: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Key)) = .empty,
+    ambient_class_types: std.StringHashMapUnmanaged(AmbientClassType) = .empty,
+
+    const AmbientClassType = struct {
+        class: ?Key = null,
+        conflicting_type: bool = false,
+    };
 
     const ReadMode = enum { all, pick, omit };
     const ReadCoverage = struct {
@@ -137,8 +143,115 @@ pub const Builder = struct {
                     }
                 }
             }
+            // A class merged with a same-named ambient namespace may live in
+            // another declaration fragment. Index its exact module and
+            // enclosing namespace path once, so a reference from a namespace
+            // member can resolve the class without guessing from one origin.
+            var node: hir.NodeId = 1;
+            while (node < c.hir.nodeCount()) : (node += 1) {
+                if (c.hir.kindOf(node) != .class_decl) continue;
+                const name_node = hir.classOf(&c.hir, node).name;
+                if (name_node == 0 or c.hir.kindOf(name_node) != .identifier) continue;
+                const scope = enclosingNamespace(c, node);
+                if (scope == 0) continue;
+                const parent = c.hir.parentOf(node);
+                if (c.hir.kindOf(parent) != .export_decl and !c.is_declaration_file and !hir.namespaceOf(&c.hir, scope).is_ambient) continue;
+                const text = c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+                const scope_key = (try ambientNamespaceKey(arena, c, scope, text)) orelse continue;
+                const entry = try result.ambient_class_types.getOrPut(arena, scope_key);
+                if (!entry.found_existing) entry.value_ptr.* = .{};
+                if (entry.value_ptr.class != null) entry.value_ptr.conflicting_type = true;
+                entry.value_ptr.class = .{ .source = source, .node = node };
+            }
         }
         return result;
+    }
+
+    fn enclosingNamespace(c: *const driver.Compilation, node: hir.NodeId) hir.NodeId {
+        var current = c.hir.parentOf(node);
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            if (c.hir.kindOf(current) == .namespace_decl) return current;
+        }
+        return 0;
+    }
+
+    fn ambientNamespaceKey(arena: std.mem.Allocator, c: *const driver.Compilation, scope: hir.NodeId, name: []const u8) !?[]const u8 {
+        var components: std.ArrayListUnmanaged([]const u8) = .empty;
+        var current = scope;
+        while (current != 0) : (current = enclosingNamespace(c, current)) {
+            const namespace = hir.namespaceOf(&c.hir, current);
+            if (namespace.name == 0) return null;
+            switch (c.hir.kindOf(namespace.name)) {
+                .identifier, .literal_string => {
+                    // Quoted ambient module names are represented as HIR
+                    // identifiers by the parser. The source span, not the HIR
+                    // tag, distinguishes `module "pkg"` from `namespace pkg`.
+                    const span = c.hir.spanOf(namespace.name);
+                    const quoted = span.start < c.source.len and (c.source[span.start] == '"' or c.source[span.start] == '\'');
+                    const text = if (c.hir.kindOf(namespace.name) == .identifier)
+                        c.interner.get(hir.identifierOf(&c.hir, namespace.name).name)
+                    else
+                        c.interner.get(hir.literalStringOf(&c.hir, namespace.name).value);
+                    if (!quoted) {
+                        try components.append(arena, text);
+                        continue;
+                    }
+                    const module = text;
+                    var key = try std.fmt.allocPrint(arena, "{d}:{s}", .{ module.len, module });
+                    var index = components.items.len;
+                    while (index > 0) {
+                        index -= 1;
+                        const part = components.items[index];
+                        key = try std.fmt.allocPrint(arena, "{s}{d}:{s}", .{ key, part.len, part });
+                    }
+                    return try std.fmt.allocPrint(arena, "{s}{d}:{s}", .{ key, name.len, name });
+                },
+                else => return null,
+            }
+        }
+        return null;
+    }
+
+    fn mergedAmbientClass(self: *Builder, source: usize, node: hir.NodeId, name: []const u8) !?Resolution {
+        const c = self.sources[source].compilation;
+        var current = node;
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            if (c.hir.kindOf(current) != .namespace_decl) continue;
+            const namespace = hir.namespaceOf(&c.hir, current);
+            if (namespace.name == 0 or c.hir.kindOf(namespace.name) != .identifier) continue;
+            if (!std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, namespace.name).name), name)) continue;
+            const parent_scope = enclosingNamespace(c, current);
+            if (parent_scope == 0) continue;
+            const key = (try ambientNamespaceKey(self.arena, c, parent_scope, name)) orelse continue;
+            const entry = self.ambient_class_types.get(key) orelse continue;
+            if (entry.conflicting_type) return .unsupported;
+            if (entry.class) |class| {
+                if (try self.ambientClassHasConflictingType(key, name)) return .unsupported;
+                return .{ .declaration = class };
+            }
+        }
+        return null;
+    }
+
+    fn ambientClassHasConflictingType(self: *Builder, key: []const u8, name: []const u8) !bool {
+        for (self.sources) |source| {
+            const c = source.compilation;
+            var node: hir.NodeId = 1;
+            while (node < c.hir.nodeCount()) : (node += 1) {
+                const kind = c.hir.kindOf(node);
+                if (kind != .interface_decl and kind != .type_alias_decl) continue;
+                const name_node = if (kind == .interface_decl) hir.interfaceOf(&c.hir, node).name else hir.typeAliasOf(&c.hir, node).name;
+                if (name_node == 0 or c.hir.kindOf(name_node) != .identifier or
+                    !std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, name_node).name), name)) continue;
+                const scope = enclosingNamespace(c, node);
+                if (scope == 0) continue;
+                const parent = c.hir.parentOf(node);
+                if (c.hir.kindOf(parent) != .export_decl and !c.is_declaration_file and !hir.namespaceOf(&c.hir, scope).is_ambient) continue;
+                const candidate_key = (try ambientNamespaceKey(self.arena, c, scope, name)) orelse continue;
+                if (std.mem.eql(u8, candidate_key, key)) return true;
+            }
+        }
+        return false;
     }
 
     fn globalScope(c: *const driver.Compilation, scope: *const binder.Scope) bool {
@@ -1636,6 +1749,7 @@ pub const Builder = struct {
         const c = self.sources[source].compilation;
         const bound = self.scopedSymbol(source, node, name) orelse {
             const text = c.interner.get(name);
+            if (try self.mergedAmbientClass(source, node, text)) |resolved| return resolved;
             // Canonical library identities keep the existing consumer-owned
             // lowering path; ordinary globals carry their actual owners.
             if (builtin_object_type_name_set.has(text) or builtin_generic_type_name_set.has(text) or
