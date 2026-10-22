@@ -1349,3 +1349,12 @@ test "public RGB16 view retains words and explicitly reduces high bytes" {
     try view.toRgb8(&rgb, 3);
     try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x80, 0xfe }, &rgb);
 }
+/// Checked borrowed Bayer/mono CSI-2 and driver-standard PiSP COMP1 sensor data.
+pub const SensorRaw = @import("ops/sensor_raw.zig");
+test "public sensor raw view exposes owned output without sample scaling" {
+    const bytes = [_]u8{ 1, 2, 255 };
+    const view = try SensorRaw.View.init(&bytes, 3, 1, 3, try SensorRaw.Format.parse("R8"));
+    var out: [6]u8 = undefined;
+    try view.copy16(&out, 6);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0, 2, 0, 255, 0 }, &out);
+}
