@@ -7918,6 +7918,170 @@ test "Program: same-scope ambient class namespace retains inherited static membe
     }
 }
 
+test "Program: reexported ambient class namespace retains merged static members" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { constructor(value: "ready"); readonly id: 1; }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested.Box { export const extra: 2; }
+        \\}
+    ;
+    const nested_body =
+        \\const box = new Nested.Box("ready");
+        \\const good: 1 = box.id;
+        \\const badId: 2 = box.id;
+        \\const goodExtra: 2 = Nested.Box.extra;
+        \\const badExtra: 3 = Nested.Box.extra;
+        \\new Nested.Box("late");
+        \\void good; void badId; void goodExtra; void badExtra;
+    ;
+    const aliased_body =
+        \\const box = new Api.Box("ready");
+        \\const good: 1 = box.id;
+        \\const badId: 2 = box.id;
+        \\const goodExtra: 2 = Api.Box.extra;
+        \\const badExtra: 3 = Api.Box.extra;
+        \\new Api.Box("late");
+        \\void good; void badId; void goodExtra; void badExtra;
+    ;
+    const Mode = enum { named, renamed, star, chained };
+    inline for (.{ Mode.named, Mode.renamed, Mode.star, Mode.chained }) |mode| {
+        const barrel = switch (mode) {
+            .named, .chained => "declare module \"barrel\" { export { Nested } from \"pkg\"; }",
+            .renamed => "declare module \"barrel\" { export { Nested as Api } from \"pkg\"; }",
+            .star => "declare module \"barrel\" { export * from \"pkg\"; }",
+        };
+        const chain = "declare module \"chain\" { export * from \"barrel\"; }";
+        const consumer = try std.fmt.allocPrint(T.allocator, "import {{ {s} }} from \"{s}\";\n{s}", .{
+            if (mode == .renamed) @as([]const u8, "Api") else "Nested",
+            if (mode == .chained) @as([]const u8, "chain") else "barrel",
+            if (mode == .renamed) aliased_body else nested_body,
+        });
+        defer T.allocator.free(consumer);
+        inline for (.{ false, true }) |streaming| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+            if (mode == .chained) try vfs.addFile("/chain.d.ts", chain);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/first.d.ts", first);
+            _ = try program.add("/second.d.ts", second);
+            _ = try program.add("/barrel.d.ts", barrel);
+            if (mode == .chained) _ = try program.add("/chain.d.ts", chain);
+            const main_id = try program.add("/main.ts", consumer);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+            if (streaming) {
+                const Sink = struct {
+                    count: usize = 0,
+                    fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                        if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                    }
+                };
+                var sink: Sink = .{};
+                try program.compileAllStreaming(options, &sink, Sink.receive);
+                try T.expectEqual(@as(usize, 3), sink.count);
+            } else try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2322, 2322, 2345 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+        }
+    }
+}
+
+test "Program: unsupported ambient class merge cannot leak through a barrel" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { static set computed(value); constructor(); }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested.Box { export const extra: 2; }
+        \\}
+    ;
+    const barrel = "declare module \"barrel\" { export { Nested } from \"pkg\"; }";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts" }, [_][]const u8{ first, second, barrel }) |path, source| try vfs.addFile(path, source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/first.d.ts", first);
+    _ = try program.add("/second.d.ts", second);
+    _ = try program.add("/barrel.d.ts", barrel);
+    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    for (graph.values) |value| {
+        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "barrel") and
+            std.mem.eql(u8, value.namespace_path, "Nested") and
+            std.mem.eql(u8, value.export_name, "Box")));
+        try T.expect(!(std.mem.eql(u8, value.ambient_module_name, "barrel") and
+            std.mem.eql(u8, value.namespace_path, "Nested.Box") and
+            std.mem.eql(u8, value.export_name, "extra")));
+    }
+}
+
+test "Program: first star ambient namespace determines the barrel contract" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested { export class Box { constructor(value: "ready"); } }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested.Box { export const extra: 2; }
+        \\}
+    ;
+    const other =
+        \\declare module "other" {
+        \\  export namespace Nested { export class Box { constructor(value: number); } }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from "barrel";
+        \\new Nested.Box("ready");
+        \\new Nested.Box(42);
+        \\const extra: 2 = Nested.Box.extra;
+        \\const wrong: 3 = Nested.Box.extra;
+        \\void extra; void wrong;
+    ;
+    inline for (.{ false, true }) |reverse_stars| {
+        const barrel = if (reverse_stars)
+            "declare module \"barrel\" { export * from \"other\"; export * from \"pkg\"; }"
+        else
+            "declare module \"barrel\" { export * from \"pkg\"; export * from \"other\"; }";
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/other.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, other, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/other.d.ts", other);
+        _ = try program.add("/barrel.d.ts", barrel);
+        const main_id = try program.add("/main.ts", consumer);
+        try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        const expected: []const u32 = if (reverse_stars) &.{ 2345, 2339, 2339 } else &.{ 2345, 2322 };
+        try T.expectEqual(expected.len, diagnostics.len);
+        for (diagnostics, expected) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+    }
+}
+
 test "Program: merged ambient class getters retain exact types and readonly modifiers" {
     const first = @embedFile("testdata/ambient_class_accessor_first.d.ts");
     const second = @embedFile("testdata/ambient_class_accessor_second.d.ts");

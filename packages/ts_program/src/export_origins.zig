@@ -616,6 +616,65 @@ pub const Query = struct {
         if (!found_local) self.result.complete = false;
     }
 
+    const FirstAmbientOwner = struct {
+        state: ?State = null,
+        complete: bool = true,
+    };
+
+    /// Walk one ambient star path in source order to the first declaration
+    /// that actually exports `state.name`. Keeping the current recursion path
+    /// (rather than a global visited set) lets a later edge escape a cycle.
+    fn firstAmbientStarOwner(
+        self: *Query,
+        specifier: []const u8,
+        from: []const u8,
+        state: State,
+        visiting: *std.HashMapUnmanaged(ScopedOwner, void, ScopeContext, 80),
+    ) !FirstAmbientOwner {
+        var owners: std.ArrayListUnmanaged(ScopedOwner) = .empty;
+        defer owners.deinit(self.gpa);
+        if (!try self.appendModuleScopes(&owners, specifier, from)) return .{ .complete = false };
+        for (owners.items) |owner| {
+            const seen = try visiting.getOrPut(self.gpa, owner);
+            if (seen.found_existing) continue;
+            const c = try self.compilation(owner.path) orelse {
+                _ = visiting.remove(owner);
+                return .{ .complete = false };
+            };
+            if (c.hir.kindOf(c.root) != .block_stmt or c.has_syntactic_parse_diagnostics) {
+                _ = visiting.remove(owner);
+                return .{ .complete = false };
+            }
+            const bindings = try self.index(c, owner.node);
+            if (bindings.unknown_exports) {
+                _ = visiting.remove(owner);
+                return .{ .complete = false };
+            }
+            if (c.interner.lookup(state.name)) |name| {
+                if (bindings.exports.contains(name)) {
+                    _ = visiting.remove(owner);
+                    var direct = state;
+                    direct.path = owner.path;
+                    direct.scope = owner.node;
+                    return .{ .state = direct };
+                }
+            }
+            for (bindings.stars.items) |node| {
+                const export_info = hir.exportOf(&c.hir, node);
+                var next = state;
+                next.values = state.values and !export_info.is_type_only;
+                next.restriction = restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(node).start);
+                const found = try self.firstAmbientStarOwner(c.interner.get(export_info.module), owner.path, next, visiting);
+                if (found.state != null or !found.complete) {
+                    _ = visiting.remove(owner);
+                    return found;
+                }
+            }
+            _ = visiting.remove(owner);
+        }
+        return .{};
+    }
+
     fn exported(self: *Query, c: *const driver.Compilation, state: State) !void {
         const bindings = try self.index(c, state.scope);
         const wanted = c.interner.lookup(state.name);
@@ -692,6 +751,34 @@ pub const Query = struct {
             }
         }
         if (edges.len != 0 or is_default) return;
+        const ambient_module_stars = blk: {
+            if (state.scope == 0 or c.hir.kindOf(state.scope) != .namespace_decl) break :blk false;
+            const name_node = hir.namespaceOf(&c.hir, state.scope).name;
+            if (name_node == hir.none_node_id) break :blk false;
+            const span = c.hir.spanOf(name_node);
+            break :blk span.start < c.source.len and (c.source[span.start] == '"' or c.source[span.start] == '\'');
+        };
+        if (ambient_module_stars) {
+            var visiting: std.HashMapUnmanaged(ScopedOwner, void, ScopeContext, 80) = .empty;
+            defer visiting.deinit(self.gpa);
+            try visiting.put(self.gpa, .{ .path = state.path, .node = state.scope }, {});
+            for (bindings.stars.items) |node| {
+                const export_info = hir.exportOf(&c.hir, node);
+                var next = state;
+                next.values = state.values and !export_info.is_type_only;
+                next.restriction = restrictionFor(state, export_info.is_type_only, .export_type, c.hir.spanOf(node).start);
+                const found = try self.firstAmbientStarOwner(c.interner.get(export_info.module), state.path, next, &visiting);
+                if (!found.complete) {
+                    self.result.complete = false;
+                    return;
+                }
+                if (found.state) |owner| {
+                    try self.enqueue(owner);
+                    return;
+                }
+            }
+            return;
+        }
         for (bindings.stars.items) |node| {
             const export_info = hir.exportOf(&c.hir, node);
             const specifier = c.interner.get(export_info.module);
@@ -743,6 +830,45 @@ test "export origins: aliases cycles and diamonds keep real declarations distinc
     const missing = try query.resolve("/diamond.ts", "missing");
     try T.expect(missing.complete and missing.value == null and missing.type == null);
     try T.expect(!missing.sameDeclaration(missing));
+}
+
+test "export origins: ambient module stars retain the first exporting owner" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const files = [_]struct { path: []const u8, source: []const u8 }{
+        .{ .path = "/pkg.d.ts", .source = "declare module 'pkg' { export namespace Nested { export class Box { constructor(value: 'ready'); } } }" },
+        .{ .path = "/pkg-extra.d.ts", .source = "declare module 'pkg' { export namespace Nested.Box { export const extra: 2; } }" },
+        .{ .path = "/other.d.ts", .source = "declare module 'other' { export namespace Nested { export class Box { constructor(value: number); } } }" },
+        .{ .path = "/empty.d.ts", .source = "declare module 'empty' { export const unrelated: 1; }" },
+        .{ .path = "/barrel.d.ts", .source =
+        \\declare module 'first' { export * from 'pkg'; export * from 'other'; }
+        \\declare module 'reversed' { export * from 'other'; export * from 'pkg'; }
+        \\declare module 'fallback' { export * from 'empty'; export * from 'pkg'; }
+        },
+    };
+    var compilations: [files.len]*driver.Compilation = undefined;
+    var compiled: usize = 0;
+    defer for (compilations[0..compiled]) |c| {
+        c.deinit();
+        T.allocator.destroy(c);
+    };
+    for (files) |file| {
+        try vfs.addFile(file.path, file.source);
+        const c = try program.compileModuleForExportFacts(T.allocator, file.path, file.source);
+        compilations[compiled] = c;
+        compiled += 1;
+    }
+    var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    for (files, compilations) |file, c| try query.borrow(file.path, c);
+    for ([_][]const u8{ "first", "reversed", "fallback" }, [_][]const u8{ "/pkg.d.ts", "/other.d.ts", "/pkg.d.ts" }) |module, owner| {
+        const resolved = try query.resolveModule(module, "/main.ts", "Nested");
+        try T.expect(resolved.complete and !resolved.ambiguous);
+        try T.expectEqualStrings(owner, resolved.namespace.?.path);
+        try T.expectEqualStrings(owner, resolved.value.?.path);
+    }
 }
 
 test "export origins: default namespace and type-only aliases preserve owner and visibility" {

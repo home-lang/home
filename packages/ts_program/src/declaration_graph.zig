@@ -20,6 +20,7 @@ const BindingContext = struct {
 };
 const Position = struct { source: usize, position: u32 };
 const ModuleOwner = struct { source: usize, node: hir.NodeId };
+const AmbientModuleOwners = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ModuleOwner));
 
 const MergedAmbientNamespace = struct {
     values: []const driver.ProgramExportedValue,
@@ -631,6 +632,16 @@ fn originKey(by_path: *const std.StringHashMapUnmanaged(usize), declarations: *c
     return .{ .source = source, .node = node };
 }
 
+fn namespaceContainsNode(c: *const driver.Compilation, namespace_node: hir.NodeId, target: hir.NodeId) bool {
+    if (namespace_node == target) return true;
+    for (hir.namespaceBody(&c.hir, namespace_node)) |raw| {
+        const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else raw;
+        if (member == target) return true;
+        if (member != hir.none_node_id and c.hir.kindOf(member) == .namespace_decl and namespaceContainsNode(c, member, target)) return true;
+    }
+    return false;
+}
+
 fn ambientConstEnumOrigin(
     by_path: *const std.StringHashMapUnmanaged(usize),
     ambient_const_enums: *const std.AutoHashMapUnmanaged(Position, void),
@@ -702,7 +713,8 @@ fn mergedAmbientNamespace(
     sources: []const Source,
     owners: []const ModuleOwner,
     target_path: []const u8,
-    name: []const u8,
+    lookup_name: []const u8,
+    route_name: []const u8,
 ) !?MergedAmbientNamespace {
     var declarations: std.ArrayListUnmanaged(ModuleOwner) = .empty;
     for (owners) |owner| {
@@ -718,14 +730,14 @@ fn mergedAmbientNamespace(
             if (c.interner.get(export_info.module).len == 0) continue;
             if (export_info.is_namespace) {
                 const alias = c.interner.get(export_info.namespace_alias);
-                if (alias.len == 0 or std.mem.eql(u8, alias, name)) return null;
+                if (alias.len == 0 or std.mem.eql(u8, alias, lookup_name)) return null;
             }
             for (hir.exportNamed(&c.hir, raw)) |alias_node| {
                 const alias = hir.importSpecifierOf(&c.hir, alias_node);
-                if (std.mem.eql(u8, c.interner.get(alias.local), name)) return null;
+                if (std.mem.eql(u8, c.interner.get(alias.local), lookup_name)) return null;
             }
         }
-        const id = c.interner.lookup(name) orelse continue;
+        const id = c.interner.lookup(lookup_name) orelse continue;
         inline for (.{ "types", "values", "namespaces" }) |field| {
             if (@field(scope, field).get(id)) |symbol| for (symbol.decls.items) |decl| {
                 if (c.hir.kindOf(decl) != .namespace_decl) return null;
@@ -741,7 +753,7 @@ fn mergedAmbientNamespace(
 
     var merged_enums = MergedEnumValues{ .arena = arena, .sources = sources };
     for (declarations.items) |declaration| {
-        if (!try merged_enums.collectNamespace(declaration.source, declaration.node, name)) return null;
+        if (!try merged_enums.collectNamespace(declaration.source, declaration.node, route_name)) return null;
     }
     if (!try merged_enums.finish()) return null;
 
@@ -753,7 +765,7 @@ fn mergedAmbientNamespace(
     var class_namespace_merges: std.StringHashMapUnmanaged(void) = .empty;
     for (declarations.items) |declaration| {
         const c = sources[declaration.source].compilation;
-        try collectClassNamespaceNames(arena, c, declaration.node, name, &classes, &namespaces);
+        try collectClassNamespaceNames(arena, c, declaration.node, route_name, &classes, &namespaces);
     }
     var class_names = classes.keyIterator();
     while (class_names.next()) |class_name| {
@@ -769,8 +781,8 @@ fn mergedAmbientNamespace(
         const counts = (try exactNamespaceRouteCounts(arena, source.compilation, declaration.node, &merged_enums)) orelse return null;
         expected.values += counts.values;
         expected.types += counts.types;
-        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &class_namespace_merges, &merged_enums, &collected_values);
-        try appendNamespaceTypeRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, name, &collected_types);
+        try appendNamespaceValueRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, route_name, &class_namespace_merges, &merged_enums, &collected_values);
+        try appendNamespaceTypeRoute(gpa, arena, builder, supported, declaration.source, source, declaration.node, target_path, route_name, &collected_types);
     }
     if (expected.values + expected.types == 0 or
         collected_values.items.len != expected.values or
@@ -822,6 +834,99 @@ fn mergedAmbientNamespace(
     return .{ .values = try values.toOwnedSlice(arena), .types = try collected_types.toOwnedSlice(arena) };
 }
 
+const ForwardedAmbientMerge = struct {
+    routes: ?MergedAmbientNamespace = null,
+    unresolved: bool = false,
+    source_module: []const u8 = "",
+    source_name: []const u8 = "",
+};
+
+const PendingAmbientForward = struct {
+    source_module: []const u8,
+    source_name: []const u8,
+    target_module: []const u8,
+    target_path: []const u8,
+    public_name: []const u8,
+};
+
+const AmbientOriginOwner = struct {
+    specifier: []const u8,
+    owners: []const ModuleOwner,
+};
+
+fn ambientModuleContainingOrigin(
+    sources: []const Source,
+    modules: *const AmbientModuleOwners,
+    key: schemas.Key,
+) ?AmbientOriginOwner {
+    const c = sources[key.source].compilation;
+    var iterator = modules.iterator();
+    while (iterator.next()) |entry| {
+        for (entry.value_ptr.items) |owner| {
+            if (owner.source != key.source or !namespaceContainsNode(c, owner.node, key.node)) continue;
+            return .{ .specifier = entry.key_ptr.*, .owners = entry.value_ptr.items };
+        }
+    }
+    return null;
+}
+
+fn forwardedNamespacePath(arena: std.mem.Allocator, path: []const u8, source_name: []const u8, public_name: []const u8) !?[]const u8 {
+    if (std.mem.eql(u8, path, source_name)) return public_name;
+    if (!std.mem.startsWith(u8, path, source_name) or path.len <= source_name.len or path[source_name.len] != '.') return null;
+    if (std.mem.eql(u8, source_name, public_name)) return path;
+    return try std.fmt.allocPrint(arena, "{s}{s}", .{ public_name, path[source_name.len..] });
+}
+
+fn hasDottedNamespaceAugmentation(sources: []const Source, owners: []const ModuleOwner, root_name: []const u8) bool {
+    for (owners) |owner| {
+        const c = sources[owner.source].compilation;
+        for (hir.namespaceBody(&c.hir, owner.node)) |raw| {
+            const member = if (c.hir.kindOf(raw) == .export_decl) hir.exportOf(&c.hir, raw).decl else raw;
+            if (member == hir.none_node_id or c.hir.kindOf(member) != .namespace_decl) continue;
+            const name = declarationName(c, member) orelse continue;
+            if (std.mem.startsWith(u8, name, root_name) and name.len > root_name.len and name[root_name.len] == '.') return true;
+        }
+    }
+    return false;
+}
+
+/// Resolve a barrel's namespace meaning back to its ambient module owner.
+/// An origin points at one declaration, not at all merged fragments; routing
+/// that one declaration would silently drop later class/namespace members.
+fn forwardedAmbientNamespace(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    builder: *schemas.Builder,
+    supported: *std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool),
+    sources: []const Source,
+    modules: *const AmbientModuleOwners,
+    by_path: *const std.StringHashMapUnmanaged(usize),
+    declarations: *const std.AutoHashMapUnmanaged(Position, hir.NodeId),
+    resolved: export_origins.Origins,
+    target_path: []const u8,
+    public_name: []const u8,
+) !ForwardedAmbientMerge {
+    if (!resolved.complete or resolved.ambiguous or resolved.restriction != null or resolved.value == null) return .{};
+    const origin = resolved.namespace orelse return .{};
+    const key = originKey(by_path, declarations, origin) orelse return .{};
+    const source = sources[key.source];
+    if (source.compilation.hir.kindOf(key.node) != .namespace_decl) return .{};
+    const source_name = declarationName(source.compilation, key.node) orelse return .{};
+    const module_owner = ambientModuleContainingOrigin(sources, modules, key) orelse return .{};
+    const specifier = module_owner.specifier;
+    const module_owners = module_owner.owners;
+    const source_origins = try builder.query.resolveModule(specifier, source.path, source_name);
+    if (!export_origins.Origins.sameDeclaration(resolved, source_origins)) return .{};
+    if (try mergedAmbientNamespace(gpa, arena, builder, supported, sources, module_owners, target_path, source_name, public_name)) |routes| {
+        return .{ .routes = routes, .source_module = specifier, .source_name = source_name };
+    }
+    if (try classNamespaceMergeConflict(arena, sources, module_owners, source_name)) {
+        return .{ .unresolved = true, .source_module = specifier, .source_name = source_name };
+    }
+    if (!hasDottedNamespaceAugmentation(sources, module_owners, source_name)) return .{};
+    return .{ .source_module = specifier, .source_name = source_name };
+}
+
 fn collectAmbientModules(
     gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -834,7 +939,7 @@ fn collectAmbientModules(
     values: *std.ArrayListUnmanaged(driver.ProgramExportedValue),
     types: *std.ArrayListUnmanaged(driver.ProgramExportedType),
 ) ![]const driver.ProgramAmbientModule {
-    var modules: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(ModuleOwner)) = .empty;
+    var modules: AmbientModuleOwners = .empty;
     for (sources, 0..) |source, index| {
         const c = source.compilation;
         if (c.hir.kindOf(c.root) != .block_stmt or @import("ts_program.zig").Program.boundSourceIsExternalModule(c)) continue;
@@ -854,6 +959,7 @@ fn collectAmbientModules(
         }
     }
     var result: std.ArrayListUnmanaged(driver.ProgramAmbientModule) = .empty;
+    var pending_forwards: std.ArrayListUnmanaged(PendingAmbientForward) = .empty;
     var iterator = modules.iterator();
     while (iterator.next()) |entry| {
         const specifier = entry.key_ptr.*;
@@ -877,11 +983,42 @@ fn collectAmbientModules(
         var named = names.keyIterator();
         while (named.next()) |name| {
             const resolved = try builder.query.resolveModule(specifier, host.path, name.*);
-            const merged = if (resolved.complete and public_names.complete)
-                try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*)
-            else
-                null;
-            const unresolved_merge = merged == null and try classNamespaceMergeConflict(arena, sources, owners, name.*);
+            // A star can expose a dotted augmentation independently of its
+            // root namespace. TypeScript only applies that augmentation when
+            // the winning root export comes from the same ambient module.
+            if (std.mem.indexOfScalar(u8, name.*, '.')) |dot| {
+                const root = try builder.query.resolveModule(specifier, host.path, name.*[0..dot]);
+                const root_key = if (root.namespace) |origin| originKey(by_path, declarations, origin) else null;
+                const member_key = if (resolved.namespace) |origin| originKey(by_path, declarations, origin) else null;
+                const root_owner = if (root_key) |key| ambientModuleContainingOrigin(sources, &modules, key) else null;
+                const member_owner = if (member_key) |key| ambientModuleContainingOrigin(sources, &modules, key) else null;
+                if (root_owner != null and member_owner != null and
+                    !std.mem.eql(u8, root_owner.?.specifier, member_owner.?.specifier)) continue;
+            }
+            var merged: ?MergedAmbientNamespace = null;
+            var forwarded_unresolved = false;
+            var deferred_forward = false;
+            if (resolved.complete and public_names.complete) {
+                merged = try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*, name.*);
+                if (merged == null) {
+                    const forwarded = try forwardedAmbientNamespace(gpa, arena, builder, supported, sources, &modules, by_path, declarations, resolved, host.path, name.*);
+                    merged = forwarded.routes;
+                    forwarded_unresolved = forwarded.unresolved;
+                    if (merged == null and !forwarded_unresolved and forwarded.source_module.len != 0 and
+                        !std.mem.eql(u8, forwarded.source_module, specifier))
+                    {
+                        deferred_forward = true;
+                        try pending_forwards.append(arena, .{
+                            .source_module = forwarded.source_module,
+                            .source_name = forwarded.source_name,
+                            .target_module = specifier,
+                            .target_path = host.path,
+                            .public_name = name.*,
+                        });
+                    }
+                }
+            }
+            const unresolved_merge = merged == null and (forwarded_unresolved or try classNamespaceMergeConflict(arena, sources, owners, name.*));
             const merged_has_value = if (merged) |routes| routes.values.len != 0 else false;
             const known = merged != null or (resolved.complete and !resolved.ambiguous and
                 (public_names.complete or resolved.type != null or resolved.value != null or resolved.type_only_value != null or resolved.namespace != null));
@@ -949,7 +1086,7 @@ fn collectAmbientModules(
                 }
                 continue;
             }
-            if (unresolved_merge) continue;
+            if (unresolved_merge or deferred_forward) continue;
             if (resolved.type) |origin| if (originKey(by_path, declarations, origin)) |key| {
                 const c = sources[key.source].compilation;
                 if (c.hir.kindOf(key.node) != .namespace_decl) {
@@ -995,6 +1132,48 @@ fn collectAmbientModules(
             }
         }
         try result.append(arena, .{ .specifier = specifier, .rendered_name = rendered, .exports = try facts.toOwnedSlice(arena), .complete = complete });
+    }
+    // A dotted augmentation can be a separate ambient-module export rather
+    // than another declaration of the root namespace. Forward from the
+    // complete source module route set only after every module is collected;
+    // hash-map iteration order must not decide whether the barrel gets all
+    // fragments. Never publish a partly supported source subtree.
+    const direct_values = try arena.dupe(driver.ProgramExportedValue, values.items);
+    const direct_types = try arena.dupe(driver.ProgramExportedType, types.items);
+    for (pending_forwards.items) |forward| {
+        var selected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
+        var selected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
+        var exact = true;
+        for (direct_values) |route| {
+            if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
+            const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
+            if (route.projection_only or (route.declaration == null and route.enum_members == null)) {
+                exact = false;
+                break;
+            }
+            var forwarded = route;
+            forwarded.target_path = forward.target_path;
+            forwarded.ambient_module_name = forward.target_module;
+            forwarded.namespace_path = path;
+            try selected_values.append(arena, forwarded);
+        }
+        if (!exact) continue;
+        for (direct_types) |route| {
+            if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
+            const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
+            if (route.contextual_only or route.projection_only) {
+                exact = false;
+                break;
+            }
+            var forwarded = route;
+            forwarded.target_path = forward.target_path;
+            forwarded.ambient_module_name = forward.target_module;
+            forwarded.namespace_path = path;
+            try selected_types.append(arena, forwarded);
+        }
+        if (!exact or selected_values.items.len + selected_types.items.len == 0) continue;
+        try values.appendSlice(arena, selected_values.items);
+        try types.appendSlice(arena, selected_types.items);
     }
     return result.toOwnedSlice(arena);
 }

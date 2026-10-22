@@ -6152,6 +6152,79 @@ test "tsc_main: same-scope ambient class namespace retains static value" {
     }
 }
 
+test "tsc_main: ambient class namespace statics survive barrel exports" {
+    const first =
+        \\declare module "pkg" {
+        \\  export namespace Nested {
+        \\    export class Box { constructor(value: "ready"); readonly id: 1; }
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module "pkg" {
+        \\  export namespace Nested.Box { export const extra: 2; }
+        \\}
+    ;
+    const nested_body =
+        \\const box = new Nested.Box("ready");
+        \\const wrongId: 2 = box.id;
+        \\const extra: 2 = Nested.Box.extra;
+        \\const wrongExtra: 3 = Nested.Box.extra;
+        \\new Nested.Box("late");
+        \\void wrongId; void extra; void wrongExtra;
+    ;
+    const alias_body =
+        \\const box = new Api.Box("ready");
+        \\const wrongId: 2 = box.id;
+        \\const extra: 2 = Api.Box.extra;
+        \\const wrongExtra: 3 = Api.Box.extra;
+        \\new Api.Box("late");
+        \\void wrongId; void extra; void wrongExtra;
+    ;
+    const Mode = enum { named, renamed, star, chained };
+    inline for (.{ Mode.named, Mode.renamed, Mode.star, Mode.chained }) |mode| {
+        const barrel = switch (mode) {
+            .named, .chained => "declare module \"barrel\" { export { Nested } from \"pkg\"; }",
+            .renamed => "declare module \"barrel\" { export { Nested as Api } from \"pkg\"; }",
+            .star => "declare module \"barrel\" { export * from \"pkg\"; }",
+        };
+        const chain = "declare module \"chain\" { export * from \"barrel\"; }";
+        const consumer = try std.fmt.allocPrint(std.testing.allocator, "import {{ {s} }} from \"{s}\";\n{s}", .{
+            if (mode == .renamed) @as([]const u8, "Api") else "Nested",
+            if (mode == .chained) @as([]const u8, "chain") else "barrel",
+            if (mode == .renamed) alias_body else nested_body,
+        });
+        defer std.testing.allocator.free(consumer);
+        inline for (.{ false, true }) |reverse_add| {
+            var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+            if (mode == .chained) try vfs.addFile("/chain.d.ts", chain);
+            var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = ts_program.Program.init(std.testing.allocator, &resolver);
+            defer program.deinit();
+            var main_id: ?ts_program.FileId = null;
+            if (reverse_add) main_id = try program.add("/main.ts", consumer);
+            _ = try program.add("/first.d.ts", first);
+            _ = try program.add("/second.d.ts", second);
+            _ = try program.add("/barrel.d.ts", barrel);
+            if (mode == .chained) _ = try program.add("/chain.d.ts", chain);
+            if (!reverse_add) main_id = try program.add("/main.ts", consumer);
+            var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+            defer adapter.deinit();
+            var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+            adapter.setProgramSources(&program, options);
+            options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+            _ = try program.loadImportClosure(options);
+            try program.compileAll(options);
+            const diagnostics = program.fileById(main_id.?).compilation.?.diagnostics.items;
+            try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2322, 2322, 2345 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+        }
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
