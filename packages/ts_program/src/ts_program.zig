@@ -7872,17 +7872,6 @@ test "Program: merged ambient class namespace keeps static and nested contracts 
 }
 
 test "Program: same-scope ambient class namespace retains inherited static members" {
-    const declarations =
-        \\declare module 'same-scope' {
-        \\  export namespace Api {
-        \\    export class Base { constructor(value: string); }
-        \\    export class Derived extends Base {}
-        \\    export namespace Derived { export const extra: 3; }
-        \\    export class Direct { constructor(); }
-        \\    export namespace Direct { export const flag: 5; }
-        \\  }
-        \\}
-    ;
     const consumer =
         \\import { Api } from 'same-scope';
         \\const good = new Api.Derived('ok');
@@ -7893,20 +7882,40 @@ test "Program: same-scope ambient class namespace retains inherited static membe
         \\const badFlag: 6 = Api.Direct.flag;
         \\void good; void goodExtra; void badExtra; void goodFlag; void badFlag;
     ;
-    var vfs = ts_resolver.VirtualFs.init(T.allocator);
-    defer vfs.deinit();
-    try vfs.addFile("/same-scope.d.ts", declarations);
-    try vfs.addFile("/main.ts", consumer);
-    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
-    defer resolver.deinit();
-    var program = Program.init(T.allocator, &resolver);
-    defer program.deinit();
-    _ = try program.add("/same-scope.d.ts", declarations);
-    const main_id = try program.add("/main.ts", consumer);
-    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
-    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
-    try T.expectEqual(@as(usize, 3), diagnostics.len);
-    for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+    inline for (.{
+        @embedFile("testdata/ambient_class_same_scope.d.ts"),
+        @embedFile("testdata/ambient_class_same_scope_reversed.d.ts"),
+    }) |declarations| {
+        inline for (.{ false, true }) |streaming| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/same-scope.d.ts", declarations);
+            try vfs.addFile("/main.ts", consumer);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/same-scope.d.ts", declarations);
+            const main_id = try program.add("/main.ts", consumer);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+            if (streaming) {
+                const Sink = struct {
+                    count: usize = 0,
+                    fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                        if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                    }
+                };
+                var sink: Sink = .{};
+                try program.compileAllStreaming(options, &sink, Sink.receive);
+                try T.expectEqual(@as(usize, 3), sink.count);
+            } else {
+                try program.compileAll(options);
+            }
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+        }
+    }
 }
 
 test "Program: merged ambient class getters retain exact types and readonly modifiers" {

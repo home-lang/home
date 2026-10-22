@@ -6099,6 +6099,17 @@ test "tsc_main: same-scope ambient class namespace retains static value" {
         \\  }
         \\}
     ;
+    const reversed_declarations =
+        \\declare module 'same-scope' {
+        \\  export namespace Api {
+        \\    export namespace Derived { export const extra: 3; }
+        \\    export namespace Direct { export const flag: 5; }
+        \\    export class Base { constructor(value: string); }
+        \\    export class Derived extends Base {}
+        \\    export class Direct { constructor(); }
+        \\  }
+        \\}
+    ;
     const consumer =
         \\import { Api } from 'same-scope';
         \\const good = new Api.Derived('ok');
@@ -6109,33 +6120,35 @@ test "tsc_main: same-scope ambient class namespace retains static value" {
         \\const badFlag: 6 = Api.Direct.flag;
         \\void good; void goodExtra; void badExtra; void goodFlag; void badFlag;
     ;
-    inline for (.{ false, true }) |reverse_add| {
-        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
-        defer vfs.deinit();
-        try vfs.addFile("/same-scope.d.ts", declarations);
-        try vfs.addFile("/main.ts", consumer);
-        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
-        defer resolver.deinit();
-        var program = ts_program.Program.init(std.testing.allocator, &resolver);
-        defer program.deinit();
-        const main_id: ts_program.FileId = if (reverse_add) blk: {
-            const id = try program.add("/main.ts", consumer);
-            _ = try program.add("/same-scope.d.ts", declarations);
-            break :blk id;
-        } else blk: {
-            _ = try program.add("/same-scope.d.ts", declarations);
-            break :blk try program.add("/main.ts", consumer);
-        };
-        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
-        defer adapter.deinit();
-        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
-        adapter.setProgramSources(&program, options);
-        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
-        _ = try program.loadImportClosure(options);
-        try program.compileAll(options);
-        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
-        try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
-        for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+    inline for (.{ declarations, reversed_declarations }) |source| {
+        inline for (.{ false, true }) |reverse_add| {
+            var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/same-scope.d.ts", source);
+            try vfs.addFile("/main.ts", consumer);
+            var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = ts_program.Program.init(std.testing.allocator, &resolver);
+            defer program.deinit();
+            const main_id: ts_program.FileId = if (reverse_add) blk: {
+                const id = try program.add("/main.ts", consumer);
+                _ = try program.add("/same-scope.d.ts", source);
+                break :blk id;
+            } else blk: {
+                _ = try program.add("/same-scope.d.ts", source);
+                break :blk try program.add("/main.ts", consumer);
+            };
+            var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+            defer adapter.deinit();
+            var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+            adapter.setProgramSources(&program, options);
+            options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+            _ = try program.loadImportClosure(options);
+            try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2345, 2322, 2322 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+        }
     }
 }
 
