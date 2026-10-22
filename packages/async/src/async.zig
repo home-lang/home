@@ -37,3 +37,6 @@ pub const PreparationGate = @import("preparation_gate.zig").Gate;
 
 /// Stable lock ordering and shared readiness validation; caller owns publication.
 pub const PublicationBatch = @import("publication_batch.zig");
+
+/// Checked relative idle intervals; callers supply their monotonic clock/timer.
+pub const RelativeDelay = @import("relative_delay.zig").Delay;
