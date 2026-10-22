@@ -341,6 +341,10 @@ pub const ExternalResolver = struct {
         /// For an exported module namespace alias, the actual module owner.
         /// Empty for ordinary declarations and type-only value projections.
         namespace_module_path: []const u8 = "",
+        /// Ambient module specifier named by `export * as name from "module"`.
+        /// Kept separate from file paths so diagnostics retain the exact
+        /// `typeof import("module")` identity of a module-namespace alias.
+        namespace_ambient_module: []const u8 = "",
         /// Exact value-space availability from a complete bound export query.
         /// Null means the resolver cannot safely close a namespace's shape.
         runtime_value: ?bool = null,
@@ -112247,7 +112251,12 @@ pub const Checker = struct {
             }
         }
         const value = owner orelse return null;
-        return self.programNamespaceValueTypeForModule(value.target_path, root_name, value.ambient_module_name);
+        const namespace = (try self.programNamespaceValueTypeForModule(value.target_path, root_name, value.ambient_module_name)) orelse return null;
+        const root_id = self.string_interner.intern(root_name) catch return error.OutOfMemory;
+        if (self.programAmbientModuleExportInfo(spec, root_id)) |info| {
+            if (info.namespace_ambient_module.len != 0) try self.registerModuleNamespaceDisplayName(namespace, info.namespace_ambient_module);
+        }
+        return namespace;
     }
 
     fn programExportedValueTypeForImportBinding(

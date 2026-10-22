@@ -1004,6 +1004,7 @@ fn collectAmbientModules(
             var merged: ?MergedAmbientNamespace = null;
             var forwarded_unresolved = false;
             var deferred_forward = false;
+            var module_alias_source: []const u8 = "";
             if (resolved.complete and public_names.complete) {
                 merged = try mergedAmbientNamespace(gpa, arena, builder, supported, sources, owners, host.path, name.*, name.*);
                 if (merged == null) {
@@ -1034,6 +1035,7 @@ fn collectAmbientModules(
                                     for (module_owner.owners) |owner| {
                                         if (owner.source != key.source or owner.node != key.node) continue;
                                         if (std.mem.eql(u8, module_owner.specifier, specifier)) break;
+                                        module_alias_source = module_owner.specifier;
                                         deferred_forward = true;
                                         try pending_forwards.append(arena, .{
                                             .source_module = module_owner.specifier,
@@ -1100,6 +1102,7 @@ fn collectAmbientModules(
                 .export_path = if (resolved.restriction) |restriction| restriction.path else "",
                 .export_pos = if (resolved.restriction) |restriction| restriction.position else 0,
                 .namespace_module_path = if (merged != null) host.path else if (resolved.namespace) |namespace| if (namespace.kind == .namespace) namespace.path else "" else "",
+                .namespace_ambient_module = module_alias_source,
                 .ambient_module = true,
                 .ambient_module_exports_known = known,
                 .module_is_external = true,

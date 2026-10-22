@@ -8164,6 +8164,97 @@ test "Program: type-only ambient module namespace alias forbids value use" {
     }
 }
 
+test "Program: explicit ambient module alias wins star collision with source identity" {
+    const first =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); readonly id: 1; } } }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested.Box { export const extra: 2; } }
+    ;
+    const other = "declare module \"other\" { export const API: { marker: \"other\" }; }";
+    const consumer =
+        \\import { API } from "barrel";
+        \\const box = new API.Nested.Box("ready");
+        \\const badId: 2 = box.id;
+        \\const extra: 2 = API.Nested.Box.extra;
+        \\const badExtra: 3 = API.Nested.Box.extra;
+        \\const marker = API.marker;
+        \\void badId; void extra; void badExtra; void marker;
+    ;
+    inline for (.{ false, true }) |alias_first| {
+        const barrel = if (alias_first)
+            "declare module \"barrel\" { export * as API from \"pkg\"; export * from \"other\"; }"
+        else
+            "declare module \"barrel\" { export * from \"other\"; export * as API from \"pkg\"; }";
+        inline for (.{ false, true }) |streaming| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/other.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, other, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/first.d.ts", first);
+            _ = try program.add("/second.d.ts", second);
+            _ = try program.add("/other.d.ts", other);
+            _ = try program.add("/barrel.d.ts", barrel);
+            const main_id = try program.add("/main.ts", consumer);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+            if (streaming) {
+                const Sink = struct {
+                    count: usize = 0,
+                    fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                        if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                    }
+                };
+                var sink: Sink = .{};
+                try program.compileAllStreaming(options, &sink, Sink.receive);
+                try T.expectEqual(@as(usize, 3), sink.count);
+            } else try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2322, 2322, 2339 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+            try T.expectEqualStrings("Property 'marker' does not exist on type 'typeof import(\"pkg\")'.", diagnostics[2].message);
+        }
+    }
+}
+
+test "Program: same-shaped ambient module aliases retain distinct display identities" {
+    const declarations =
+        \\declare module "shape-a" { export const x: 1; }
+        \\declare module "shape-b" { export const x: 1; }
+        \\declare module "shape-barrel" {
+        \\  export * as A from "shape-a";
+        \\  export * as B from "shape-b";
+        \\}
+    ;
+    const consumer =
+        \\import { A, B } from "shape-barrel";
+        \\const a = A.missing;
+        \\const b = B.missing;
+        \\void a; void b;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/declarations.d.ts", declarations);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/declarations.d.ts", declarations);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics, [_][]const u8{ "shape-a", "shape-b" }) |diagnostic, specifier| {
+        try T.expectEqual(@as(u32, 2339), diagnostic.code);
+        const expected = try std.fmt.allocPrint(T.allocator, "Property 'missing' does not exist on type 'typeof import(\"{s}\")'.", .{specifier});
+        defer T.allocator.free(expected);
+        try T.expectEqualStrings(expected, diagnostic.message);
+    }
+}
+
 test "Program: unsupported ambient class merge cannot leak through a barrel" {
     const first =
         \\declare module "pkg" {

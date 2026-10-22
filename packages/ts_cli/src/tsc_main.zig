@@ -6368,6 +6368,54 @@ test "tsc_main: type-only ambient module namespace alias reports TS1362" {
     }
 }
 
+test "tsc_main: explicit ambient namespace alias wins star collision" {
+    const first =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); readonly id: 1; } } }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested.Box { export const extra: 2; } }
+    ;
+    const other = "declare module \"other\" { export const API: { marker: \"other\" }; }";
+    const consumer =
+        \\import { API } from "barrel";
+        \\const box = new API.Nested.Box("ready");
+        \\const badId: 2 = box.id;
+        \\const extra: 2 = API.Nested.Box.extra;
+        \\const badExtra: 3 = API.Nested.Box.extra;
+        \\const marker = API.marker;
+        \\void badId; void extra; void badExtra; void marker;
+    ;
+    inline for (.{ false, true }) |alias_first| {
+        const barrel = if (alias_first)
+            "declare module \"barrel\" { export * as API from \"pkg\"; export * from \"other\"; }"
+        else
+            "declare module \"barrel\" { export * from \"other\"; export * as API from \"pkg\"; }";
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/other.d.ts", "/barrel.d.ts", "/main.ts" }, [_][]const u8{ first, second, other, barrel, consumer }) |path, source| try vfs.addFile(path, source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        _ = try program.add("/first.d.ts", first);
+        _ = try program.add("/second.d.ts", second);
+        _ = try program.add("/other.d.ts", other);
+        _ = try program.add("/barrel.d.ts", barrel);
+        const main_id = try program.add("/main.ts", consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        _ = try program.loadImportClosure(options);
+        try program.compileAll(options);
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_]u32{ 2322, 2322, 2339 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+        try std.testing.expectEqualStrings("Property 'marker' does not exist on type 'typeof import(\"pkg\")'.", diagnostics[2].message);
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";
