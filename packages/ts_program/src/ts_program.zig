@@ -20052,6 +20052,73 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
     }
 }
 
+test "Program: inferred object initializers retain imported nested JS and TS value types" {
+    const owner_source =
+        \\export const box = {
+        \\  value: 1,
+        \\  nested: { ready: true },
+        \\  tags: ["x", "y"],
+        \\};
+    ;
+    inline for (.{ false, true }) |javascript| {
+        const owner_path = if (javascript) "/owner.js" else "/owner.ts";
+        const consumer_source = if (javascript)
+            "import { box } from './owner.js';\nbox.value = 'bad';\nbox.nested.ready = 123;\nbox.tags[0] = 1;\nbox.missing;"
+        else
+            "import { box } from './owner';\nbox.value = 'bad';\nbox.nested.ready = 123;\nbox.tags[0] = 1;\nbox.missing;";
+        inline for (.{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile(owner_path, owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = javascript };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            _ = try p.add(owner_path, owner_source);
+            const consumer = try p.add("/consumer.ts", consumer_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = javascript,
+                .check_js = javascript,
+                .no_emit = true,
+                .strict = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+            const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 4), diagnostics.len);
+            for (diagnostics, [_]u32{ 2322, 2322, 2322, 2339 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[0].message);
+            try T.expectEqualStrings("Type 'number' is not assignable to type 'boolean'.", diagnostics[1].message);
+            try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[2].message);
+            try T.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; tags: string[]; }'.", diagnostics[3].message);
+        }
+    }
+}
+
+test "Program: dynamic object initializer cannot publish a partial imported value" {
+    const owner_source = "function make() { return 2; } export const box = { value: 1, dynamic: make() };";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/owner.js", owner_source);
+    try p.compileAll(.{ .allow_js = true, .check_js = true, .no_emit = true });
+    var graph = try p.collectProgramDeclarations();
+    defer graph.deinit();
+    var found = false;
+    for (graph.values) |value| {
+        if (!std.mem.eql(u8, value.export_name, "box")) continue;
+        found = true;
+        try T.expect(value.projection_only);
+    }
+    try T.expect(found);
+}
+
 test "Program: JavaScript const widening does not erase TypeScript literal exports" {
     const owner_source = "export const label = \"home\";";
     const consumer_source =

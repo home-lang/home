@@ -903,6 +903,9 @@ pub const Builder = struct {
                         break :blk try self.expression(.{ .primitive = schemaPrimitive(primitive) });
                 }
             }
+            if (variable.type_annotation == 0 and variable.init != hir.none_node_id and
+                (c.hir.kindOf(variable.init) == .object_literal or c.hir.kindOf(variable.init) == .array_literal))
+                break :blk try self.inferredInitializerType(context, variable.init);
             if (kind == .const_decl and variable.type_annotation == 0 and
                 c.hir.kindOf(variable.init) == .identifier)
             {
@@ -1482,6 +1485,64 @@ pub const Builder = struct {
             .members = owned_members,
             .indices = try indices.toOwnedSlice(self.arena),
         } });
+    }
+
+    /// Transfer the exact, closed shape of a data initializer. A mutable
+    /// property widens its literal value in both TypeScript and JavaScript;
+    /// computed/dynamic members cannot be represented by a finite schema, so
+    /// they invalidate the whole inferred value rather than publishing a
+    /// misleading subset of its members.
+    fn inferredInitializerType(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        if (node == hir.none_node_id) return self.expression(.unsupported);
+        switch (c.hir.kindOf(node)) {
+            .literal_string, .template_literal => return self.expression(.{ .primitive = Primitive.string_t }),
+            .literal_number => return self.expression(.{ .primitive = Primitive.number_t }),
+            .literal_bigint => return self.expression(.{ .primitive = Primitive.bigint_t }),
+            .literal_bool => return self.expression(.{ .primitive = Primitive.boolean_t }),
+            .literal_null => return self.expression(.{ .primitive = Primitive.null_t }),
+            .literal_undefined => return self.expression(.{ .primitive = Primitive.undefined_t }),
+            .object_literal => {
+                var members: std.ArrayListUnmanaged(schema.Member) = .empty;
+                for (hir.objectLiteralProps(&c.hir, node)) |property_node| {
+                    if (c.hir.kindOf(property_node) != .object_property) return self.expression(.unsupported);
+                    const property = hir.objectPropertyOf(&c.hir, property_node);
+                    if (property.is_method or property.is_shorthand or property.is_computed or
+                        property.value == hir.none_node_id or property.type_annotation != hir.none_node_id)
+                        return self.expression(.unsupported);
+                    const name = switch (c.hir.kindOf(property.key)) {
+                        .identifier => c.interner.get(hir.identifierOf(&c.hir, property.key).name),
+                        .literal_string => name: {
+                            const decoded = try self.lower(context, property.key);
+                            break :name if (decoded.* == .string) decoded.string else return self.expression(.unsupported);
+                        },
+                        else => return self.expression(.unsupported),
+                    };
+                    const value = try self.inferredInitializerType(context, property.value);
+                    if (value.* == .unsupported) return value;
+                    var previous: ?*schema.Member = null;
+                    for (members.items) |*member| if (std.mem.eql(u8, member.name, name)) {
+                        previous = member;
+                        break;
+                    };
+                    const next: schema.Member = .{ .name = name, .type = value };
+                    if (previous) |member| member.* = next else try members.append(self.arena, next);
+                }
+                return self.expression(.{ .object = try members.toOwnedSlice(self.arena) });
+            },
+            .array_literal => {
+                const elements = hir.arrayLiteralElements(&c.hir, node);
+                if (elements.len == 0) return self.expression(.unsupported);
+                const types = try self.arena.alloc(*const schema.Expression, elements.len);
+                for (elements, types) |element, *value| {
+                    value.* = try self.inferredInitializerType(context, element);
+                    if (value.*.* == .unsupported) return value.*;
+                }
+                const element_type = if (types.len == 1) types[0] else try self.expression(.{ .union_type = types });
+                return self.expression(.{ .array = element_type });
+            },
+            else => return self.expression(.unsupported),
+        }
     }
 
     fn functionType(
