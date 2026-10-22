@@ -115765,6 +115765,12 @@ pub const Checker = struct {
                     error.OutOfMemory => error.OutOfMemory,
                 };
             },
+            .inherited_constructors => |ref| {
+                var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+                defer active.deinit(self.gpa);
+                try active.put(self.gpa, declaration, {});
+                return self.lowerProgramInheritedConstructors(ref, declaration, args, &active);
+            },
             .indexed_access => |indexed| {
                 const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);
                 const index_t = try self.lowerProgramExpression(indexed.index, declaration, args);
@@ -115833,6 +115839,35 @@ pub const Checker = struct {
                 return error.UnsupportedProgramType;
             },
         }
+    }
+
+    fn lowerProgramInheritedConstructors(
+        self: *Checker,
+        reference: ProgramClassSchema.Reference,
+        owner: *const ProgramClassSchema.Declaration,
+        owner_args: []const TypeId,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) ProgramTypeError!TypeId {
+        const base = reference.declaration;
+        if (!base.is_class or reference.arguments.len > base.parameters.len) return error.UnsupportedProgramType;
+        const entry = try active.getOrPut(self.gpa, base);
+        if (entry.found_existing) return error.UnsupportedProgramType;
+        defer _ = active.remove(base);
+
+        const base_args = try self.gpa.alloc(TypeId, base.parameters.len);
+        defer self.gpa.free(base_args);
+        for (reference.arguments, base_args[0..reference.arguments.len]) |argument, *out| {
+            out.* = try self.lowerProgramExpression(argument, owner, owner_args);
+        }
+        for (base.parameters[reference.arguments.len..], reference.arguments.len..) |parameter, index| {
+            const default = parameter.default orelse return error.UnsupportedProgramType;
+            base_args[index] = try self.lowerProgramExpression(default, base, base_args[0..index]);
+        }
+        const constructors = base.constructors orelse return error.UnsupportedProgramType;
+        return switch (constructors.*) {
+            .inherited_constructors => |next| self.lowerProgramInheritedConstructors(next, base, base_args, active),
+            else => self.lowerProgramExpression(constructors, base, base_args),
+        };
     }
 
     fn programExpressionParameter(self: *Checker, parameter: *const ProgramClassSchema.Parameter) CheckError!TypeId {
@@ -133899,6 +133934,8 @@ pub const Checker = struct {
         var found_applicable = false;
         var saw_generic_record = false;
         var considered_candidate_count: usize = 0;
+        var arity_candidate_count: usize = 0;
+        var arity_candidate_sig: TypeId = types.Primitive.none;
 
         for (construct_sigs.items) |sig| {
             var effective_sig = sig;
@@ -133947,6 +133984,10 @@ pub const Checker = struct {
             const inferred_constraints_satisfied = type_arg_nodes.len > 0 or
                 !sig_is_generic or
                 try self.inferredCallSatisfiesGenericConstraints(sig, args, arg_types);
+            if (inferred_constraints_satisfied and self.callArityFitsSignature(node, effective_sig, args)) {
+                arity_candidate_count += 1;
+                arity_candidate_sig = effective_sig;
+            }
             if (inferred_constraints_satisfied and try self.signatureAccepts(node, effective_sig, args, arg_types)) {
                 selected_sig = effective_sig;
                 selected_decl_sig = sig;
@@ -134024,7 +134065,24 @@ pub const Checker = struct {
         } else if (!found_applicable and construct_sigs.items.len > 1) {
             var report_no_overload = true;
             var reported_arity = false;
-            if (callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
+            if (arity_candidate_count == 1 and
+                !already_reported_argument_mismatch and
+                !explicit_class_constraint_failed and
+                !self.newCalleeIsAbstractClass(callee_node) and
+                !selected_is_abstract_construct)
+            {
+                // Multiple declarations may be visible, but exactly one
+                // accepts this argument count. Diagnose its actual parameter
+                // mismatch rather than reporting an aggregate overload error.
+                selected_sig = arity_candidate_sig;
+                try self.checkArgsAgainstSignature(node, args, arg_types, selected_sig);
+                report_no_overload = false;
+                reported_arity = true;
+            } else if (arity_candidate_count == 0) {
+                reported_arity = try self.reportOverloadSetBoundaryArity(node, args, arg_types, construct_sigs.items);
+                if (reported_arity) report_no_overload = false;
+            }
+            if (report_no_overload and callee_node != hir_mod.none_node_id and self.hir.kindOf(callee_node) == .identifier) {
                 const callee_id = hir_mod.identifierOf(self.hir, callee_node);
                 if (self.class_constructor_overload_sigs.get(callee_id.name)) |overload_list| {
                     var any_visible_arity_fits = false;
@@ -247928,6 +247986,24 @@ test "checker: implicit derived constructor preserves base overload arities" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 0."));
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.expected_n_arguments, "Expected 1-3 arguments, but got 4."));
+}
+
+test "checker: unique constructor overload arity reports its parameter mismatch" {
+    const s = try newSetup(
+        \\declare class Base {
+        \\  constructor(value: string);
+        \\  constructor(value: string, count: number);
+        \\}
+        \\new Base(123);
+        \\new Base('ok', true);
+        \\new Base();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
 }
 
 test "checker: generic call expression heritage uses instantiated call result" {

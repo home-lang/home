@@ -7988,6 +7988,118 @@ test "Program: merged ambient generic class factory keeps its type arguments" {
     }
 }
 
+test "Program: merged ambient derived class inherits generic constructor signatures" {
+    const first =
+        \\declare module 'pkg' {
+        \\  export namespace Nested {
+        \\    export class Base<T> {
+        \\      constructor(value: T);
+        \\      readonly id: T;
+        \\    }
+        \\    export class Derived<T> extends Base<T> {}
+        \\  }
+        \\}
+    ;
+    const second =
+        \\declare module 'pkg' {
+        \\  export namespace Nested.Derived { export const extra: 3; }
+        \\}
+    ;
+    const consumer =
+        \\import { Nested } from 'pkg';
+        \\const good = new Nested.Derived<string>('ready');
+        \\const id: string = good.id;
+        \\const wrongId: number = good.id;
+        \\new Nested.Derived<string>(123);
+        \\const extra: 3 = Nested.Derived.extra;
+        \\const wrongExtra: 4 = Nested.Derived.extra;
+        \\void id; void wrongId; void extra; void wrongExtra;
+    ;
+    const Mode = enum { split, reversed, combined };
+    inline for (.{ Mode.split, Mode.reversed, Mode.combined }) |mode| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        if (mode == .combined) {
+            try vfs.addFile("/both.d.ts", first ++ "\n" ++ second);
+        } else {
+            try vfs.addFile("/first.d.ts", first);
+            try vfs.addFile("/second.d.ts", second);
+        }
+        try vfs.addFile("/main.ts", consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const main_id: FileId = switch (mode) {
+            .split => blk: {
+                _ = try program.add("/first.d.ts", first);
+                _ = try program.add("/second.d.ts", second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+            .reversed => blk: {
+                const id = try program.add("/main.ts", consumer);
+                _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", first);
+                break :blk id;
+            },
+            .combined => blk: {
+                _ = try program.add("/both.d.ts", first ++ "\n" ++ second);
+                break :blk try program.add("/main.ts", consumer);
+            },
+        };
+        try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+        const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 3), diagnostics.len);
+        for (diagnostics, [_]u32{ 2322, 2345, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+    }
+}
+
+test "Program: implicit derived constructors preserve overloads chains defaults and explicit overrides" {
+    const declarations =
+        \\declare module 'chain' {
+        \\  export namespace Api {
+        \\    export class Base<T = string> {
+        \\      constructor(value: T);
+        \\      constructor(value: T, count: number);
+        \\      readonly id: T;
+        \\    }
+        \\    export class Middle<U> extends Base<U> {}
+        \\    export class Derived<V> extends Middle<V> {}
+        \\    export class Defaulted extends Base {}
+        \\    export class Explicit extends Base<string> { constructor(value: number); }
+        \\  }
+        \\}
+    ;
+    const consumer =
+        \\import { Api } from 'chain';
+        \\const a = new Api.Derived<string>('ok');
+        \\const b = new Api.Derived<string>('ok', 1);
+        \\const c: string = a.id;
+        \\new Api.Derived<string>(2);
+        \\new Api.Derived<string>('ok', true);
+        \\new Api.Derived<string>();
+        \\new Api.Defaulted('ok');
+        \\new Api.Defaulted(2);
+        \\new Api.Explicit(1);
+        \\new Api.Explicit('bad');
+        \\void a; void b; void c;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/chain.d.ts", declarations);
+    try vfs.addFile("/main.ts", consumer);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/chain.d.ts", declarations);
+    const main_id = try program.add("/main.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true, .skip_lib_check = true });
+    const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 5), diagnostics.len);
+    for (diagnostics, [_]u32{ 2345, 2345, 2554, 2345, 2345 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+}
+
 test "Program: merged ambient class accessors keep distinct read and write types" {
     const first =
         \\declare module 'pkg' {

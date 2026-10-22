@@ -681,7 +681,7 @@ pub const Builder = struct {
                     try pending.append(self.gpa, mapped.template);
                 },
                 .infer => |parameter| if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint),
-                .opaque_leaf, .builtin_reference, .typeof_class, .unsupported => return false,
+                .opaque_leaf, .builtin_reference, .typeof_class, .inherited_constructors, .unsupported => return false,
             }
         }
         return true;
@@ -1080,8 +1080,14 @@ pub const Builder = struct {
         }
         if (signatures.items.len == 1) return signatures.items[0];
         if (signatures.items.len > 1) return self.expression(.{ .intersection = try signatures.toOwnedSlice(self.arena) });
-        // An implicit derived constructor needs its base's source-owned graph.
-        if (hir.classOf(&c.hir, node).extends != 0) return null;
+        // An implicit derived constructor inherits the base's signatures,
+        // instantiated with the exact heritage arguments. Keep that source
+        // identity until the consuming checker can lower the base signature.
+        if (hir.classOf(&c.hir, node).extends != 0) {
+            const base = try self.classHeritage(context, hir.classOf(&c.hir, node).extends);
+            if (base.* != .reference or !base.reference.declaration.is_class) return null;
+            return self.expression(.{ .inherited_constructors = base.reference });
+        }
         return self.expression(.{ .function = .{ .parameters = &.{}, .result = try self.expression(.{ .primitive = Primitive.any }), .is_construct = true } });
     }
 

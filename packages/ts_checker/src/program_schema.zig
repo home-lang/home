@@ -149,6 +149,9 @@ pub const Expression = union(enum) {
     intersection: []const *const Expression,
     function: Function,
     reference: Reference,
+    /// Implicit derived constructors retain the source-owned base class and
+    /// its type arguments, independently of the derived instance surface.
+    inherited_constructors: Reference,
     indexed_access: IndexedAccess,
     keyof: *const Expression,
     conditional: Conditional,
@@ -372,6 +375,16 @@ pub const Schema = struct {
                     }
                     if (ref.projection_only and !allow_opaque) return false;
                     try appendDeclaration(gpa, pending, ref.declaration);
+                    try pending.appendSlice(gpa, ref.arguments);
+                },
+                .inherited_constructors => |ref| {
+                    if (!ref.declaration.is_class or ref.arguments.len > ref.declaration.parameters.len) return false;
+                    for (ref.declaration.parameters[ref.arguments.len..]) |parameter| {
+                        const default = parameter.default orelse return false;
+                        try pending.append(gpa, default);
+                    }
+                    const constructors = ref.declaration.constructors orelse return false;
+                    try pending.append(gpa, constructors);
                     try pending.appendSlice(gpa, ref.arguments);
                 },
                 .indexed_access => |indexed| {
