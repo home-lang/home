@@ -1165,47 +1165,76 @@ fn collectAmbientModules(
         }
         try result.append(arena, .{ .specifier = specifier, .rendered_name = rendered, .exports = try facts.toOwnedSlice(arena), .complete = complete });
     }
-    // A dotted augmentation can be a separate ambient-module export rather
-    // than another declaration of the root namespace. Forward from the
-    // complete source module route set only after every module is collected;
-    // hash-map iteration order must not decide whether the barrel gets all
-    // fragments. Never publish a partly supported source subtree.
-    const direct_values = try arena.dupe(driver.ProgramExportedValue, values.items);
-    const direct_types = try arena.dupe(driver.ProgramExportedType, types.items);
-    for (pending_forwards.items) |forward| {
-        var selected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
-        var selected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
-        var exact = true;
-        for (direct_values) |route| {
-            if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
-            const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
-            if (route.projection_only or (route.declaration == null and route.enum_members == null)) {
-                exact = false;
-                break;
+    // Dotted augmentations and module-namespace aliases can themselves be
+    // reexported. Resolve their dependency graph after every direct module
+    // route is collected; hash-map iteration order must not decide whether a
+    // barrel sees all source fragments. A failed or cyclic dependency is never
+    // published as a partial subtree.
+    const ForwardState = enum { pending, complete, failed };
+    const states = try arena.alloc(ForwardState, pending_forwards.items.len);
+    @memset(states, .pending);
+    var remaining = states.len;
+    while (remaining != 0) {
+        var advanced = false;
+        for (pending_forwards.items, 0..) |forward, index| {
+            if (states[index] != .pending) continue;
+            var waiting = false;
+            var failed_dependency = false;
+            for (pending_forwards.items, 0..) |dependency, dependency_index| {
+                if (!std.mem.eql(u8, dependency.target_module, forward.source_module)) continue;
+                if (forward.source_name.len != 0 and
+                    !std.mem.eql(u8, dependency.public_name, forward.source_name)) continue;
+                switch (states[dependency_index]) {
+                    .pending => waiting = true,
+                    .failed => failed_dependency = true,
+                    .complete => {},
+                }
             }
-            var forwarded = route;
-            forwarded.target_path = forward.target_path;
-            forwarded.ambient_module_name = forward.target_module;
-            forwarded.namespace_path = path;
-            try selected_values.append(arena, forwarded);
-        }
-        if (!exact) continue;
-        for (direct_types) |route| {
-            if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
-            const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
-            if (route.contextual_only or route.projection_only) {
-                exact = false;
-                break;
+            if (failed_dependency) {
+                states[index] = .failed;
+                remaining -= 1;
+                advanced = true;
+                continue;
             }
-            var forwarded = route;
-            forwarded.target_path = forward.target_path;
-            forwarded.ambient_module_name = forward.target_module;
-            forwarded.namespace_path = path;
-            try selected_types.append(arena, forwarded);
+            if (waiting) continue;
+            var selected_values: std.ArrayListUnmanaged(driver.ProgramExportedValue) = .empty;
+            var selected_types: std.ArrayListUnmanaged(driver.ProgramExportedType) = .empty;
+            var exact = true;
+            for (values.items) |route| {
+                if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
+                const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
+                if (route.projection_only or (route.declaration == null and route.enum_members == null)) {
+                    exact = false;
+                    break;
+                }
+                var forwarded = route;
+                forwarded.target_path = forward.target_path;
+                forwarded.ambient_module_name = forward.target_module;
+                forwarded.namespace_path = path;
+                try selected_values.append(arena, forwarded);
+            }
+            if (exact) for (types.items) |route| {
+                if (!std.mem.eql(u8, route.ambient_module_name, forward.source_module)) continue;
+                const path = try forwardedNamespacePath(arena, route.namespace_path, forward.source_name, forward.public_name) orelse continue;
+                if (route.contextual_only or route.projection_only) {
+                    exact = false;
+                    break;
+                }
+                var forwarded = route;
+                forwarded.target_path = forward.target_path;
+                forwarded.ambient_module_name = forward.target_module;
+                forwarded.namespace_path = path;
+                try selected_types.append(arena, forwarded);
+            };
+            if (exact and selected_values.items.len + selected_types.items.len != 0) {
+                try values.appendSlice(arena, selected_values.items);
+                try types.appendSlice(arena, selected_types.items);
+                states[index] = .complete;
+            } else states[index] = .failed;
+            remaining -= 1;
+            advanced = true;
         }
-        if (!exact or selected_values.items.len + selected_types.items.len == 0) continue;
-        try values.appendSlice(arena, selected_values.items);
-        try types.appendSlice(arena, selected_types.items);
+        if (!advanced) break;
     }
     return result.toOwnedSlice(arena);
 }

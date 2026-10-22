@@ -8059,6 +8059,63 @@ test "Program: namespace reexport retains exact merged ambient class members" {
     }
 }
 
+test "Program: chained ambient module namespace aliases retain merged members" {
+    const first =
+        \\declare module "pkg" { export namespace Nested { export class Box { constructor(value: "ready"); readonly id: 1; } } }
+    ;
+    const second =
+        \\declare module "pkg" { export namespace Nested.Box { export const extra: 2; } }
+    ;
+    const barrel = "declare module \"barrel\" { export * as API from \"pkg\"; }";
+    const chain = "declare module \"chain\" { export * as Public from \"barrel\"; }";
+    const consumer =
+        \\import { Public } from "chain";
+        \\const box = new Public.API.Nested.Box("ready");
+        \\const good: 1 = box.id;
+        \\const badId: 2 = box.id;
+        \\const extra: 2 = Public.API.Nested.Box.extra;
+        \\const badExtra: 3 = Public.API.Nested.Box.extra;
+        \\new Public.API.Nested.Box("late");
+        \\void good; void badId; void extra; void badExtra;
+    ;
+    inline for (.{ false, true }) |streaming| {
+        inline for (.{ false, true }) |chain_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/first.d.ts", "/second.d.ts", "/barrel.d.ts", "/chain.d.ts", "/main.ts" }, [_][]const u8{ first, second, barrel, chain, consumer }) |path, source| try vfs.addFile(path, source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/first.d.ts", first);
+            _ = try program.add("/second.d.ts", second);
+            if (chain_first) {
+                _ = try program.add("/chain.d.ts", chain);
+                _ = try program.add("/barrel.d.ts", barrel);
+            } else {
+                _ = try program.add("/barrel.d.ts", barrel);
+                _ = try program.add("/chain.d.ts", chain);
+            }
+            const main_id = try program.add("/main.ts", consumer);
+            const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+            if (streaming) {
+                const Sink = struct {
+                    count: usize = 0,
+                    fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                        if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                    }
+                };
+                var sink: Sink = .{};
+                try program.compileAllStreaming(options, &sink, Sink.receive);
+                try T.expectEqual(@as(usize, 3), sink.count);
+            } else try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2322, 2322, 2345 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+        }
+    }
+}
+
 test "Program: unsupported ambient class merge cannot leak through a barrel" {
     const first =
         \\declare module "pkg" {
@@ -8075,6 +8132,7 @@ test "Program: unsupported ambient class merge cannot leak through a barrel" {
     const barrel =
         \\declare module "barrel" { export { Nested } from "pkg"; }
         \\declare module "alias" { export * as API from "pkg"; }
+        \\declare module "chain" { export * as Public from "alias"; }
     ;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -8097,6 +8155,7 @@ test "Program: unsupported ambient class merge cannot leak through a barrel" {
             std.mem.eql(u8, value.namespace_path, "Nested.Box") and
             std.mem.eql(u8, value.export_name, "extra")));
         try T.expect(!std.mem.eql(u8, value.ambient_module_name, "alias"));
+        try T.expect(!std.mem.eql(u8, value.ambient_module_name, "chain"));
     }
 }
 
