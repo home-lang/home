@@ -42,6 +42,27 @@ pub const Remap = struct {
         const value = m[0] * (@as(i64, y) - self.source_offset) + m[1] * (@as(i64, u) - 128) + m[2] * (@as(i64, v) - 128);
         return clamp(((value + scale / 2) >> 16) + if (index == 0) self.target_offset else @as(i64, 128));
     }
+    /// 4:2:2 luma uses each row's chroma. Output chroma averages the two source
+    /// rows (round half up) before matrix/range remapping into I420.
+    pub fn apply422(self: Remap, source: @import("packed_yuv422.zig").View, planes: [3][]u8, strides: [3]u32) !void {
+        try source.validate();
+        try (color.I420{ .width = source.width, .height = source.height, .planes = .{ planes[0], planes[1], planes[2] }, .strides = strides }).validate();
+        for (planes, 0..) |destination, i| {
+            try color.disjoint(source.data, destination);
+            for (planes[0..i]) |prior| try color.disjoint(prior, destination);
+        }
+        for (0..source.height / 2) |cy| for (0..source.width / 2) |cx| {
+            const top = source.pair(@intCast(cx), @intCast(cy * 2));
+            const bottom = source.pair(@intCast(cx), @intCast(cy * 2 + 1));
+            for ([2][4]u8{ top, bottom }, 0..) |p, dy| {
+                inline for (0..2) |dx| planes[0][(cy * 2 + dy) * strides[0] + cx * 2 + dx] = self.sample(0, p[dx * 2], p[1], p[3]);
+            }
+            const u: u8 = @intCast((@as(u16, top[1]) + bottom[1] + 1) / 2);
+            const v: u8 = @intCast((@as(u16, top[3]) + bottom[3] + 1) / 2);
+            planes[1][cy * strides[1] + cx] = self.sample(1, 0, u, v);
+            planes[2][cy * strides[2] + cx] = self.sample(2, 0, u, v);
+        };
+    }
     pub fn apply(self: Remap, source: color.I420, planes: [3][]u8, strides: [3]u32) !void {
         try source.validate();
         try (color.I420{ .width = source.width, .height = source.height, .planes = .{ planes[0], planes[1], planes[2] }, .strides = strides }).validate();
@@ -151,4 +172,25 @@ test "semi-planar remapping matches I420 for every source and target matrix and 
     try t.expectError(error.Overlap, map.apply(planar, .{ out[0..16], out[16..20], out[16..20] }, .{ 4, 2, 2 }));
     for (out) |value| try t.expectEqual(@as(u8, 73), value);
     try t.expectError(error.Overlap, map.apply(planar, .{ canonical[0..16], out[16..20], out[20..24] }, .{ 4, 2, 2 }));
+}
+
+test "packed 422 remapping uses per-row luma chroma and vertical average with atomic odd-height rejection" {
+    const t = std.testing;
+    const packed422 = @import("packed_yuv422.zig");
+    for (std.meta.tags(packed422.Layout)) |layout| {
+        var bytes: [19]u8 = @splat(99);
+        layout.write(bytes[0..], .{ 10, 0, 20, 255 });
+        layout.write(bytes[4..], .{ 30, 80, 40, 160 });
+        layout.write(bytes[11..], .{ 50, 255, 60, 0 });
+        layout.write(bytes[15..], .{ 70, 101, 80, 121 });
+        const view = try packed422.View.init(&bytes, 4, 2, 11, layout);
+        var out: [12]u8 = @splat(73);
+        try Remap.init(.bt601, .full, .bt601, .full).apply422(view, .{ out[0..8], out[8..10], out[10..12] }, .{ 4, 2, 2 });
+        try t.expectEqualSlices(u8, &.{ 10, 20, 30, 40, 50, 60, 70, 80, 128, 91, 128, 141 }, &out);
+        const top = try packed422.View.init(bytes[0..8], 4, 1, 8, layout);
+        @memset(&out, 73);
+        try t.expectError(error.InvalidGeometry, Remap.init(.bt601, .full, .bt709, .limited).apply422(top, .{ out[0..8], out[8..10], out[10..12] }, .{ 4, 2, 2 }));
+        try t.expectError(error.Overlap, Remap.init(.bt601, .full, .bt709, .limited).apply422(view, .{ bytes[0..8], out[8..10], out[10..12] }, .{ 4, 2, 2 }));
+        for (out) |value| try t.expectEqual(@as(u8, 73), value);
+    }
 }

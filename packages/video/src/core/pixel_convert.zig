@@ -30,6 +30,9 @@ pub const PixelFormat = enum {
     // Grayscale
     gray8, // 8-bit grayscale
     gray16, // 16-bit grayscale
+    // Appended to preserve older enum IDs.
+    yvyu,
+    vyuy,
 
     /// Get the number of planes for this format
     pub fn planeCount(self: PixelFormat) u8 {
@@ -62,7 +65,7 @@ pub const PixelFormat = enum {
         return switch (self) {
             .rgb24, .bgr24 => 3,
             .rgba32, .bgra32, .argb32 => 4,
-            .yuyv, .uyvy => 2, // Average per pixel
+            .yuyv, .uyvy, .yvyu, .vyuy => 2, // Average per pixel
             .gray8 => 1,
             .gray16 => 2,
             else => null, // Planar formats
@@ -191,7 +194,7 @@ pub const Frame = struct {
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 4;
             },
-            .yuyv, .uyvy => {
+            .yuyv, .uyvy, .yvyu, .vyuy => {
                 const size = w * h * 2;
                 frame.planes[0] = try allocator.alloc(u8, size);
                 frame.strides[0] = width * 2;
@@ -254,6 +257,10 @@ pub fn convertInPlace(src: *const Frame, dst: *Frame) !void {
     // independent padding. Other format families keep their existing dispatch.
     if (src.format.isRgb() and dst.format.isRgb()) return rgbToRgb(src, dst);
 
+    if (isPacked422(src.format) and isPacked422(dst.format)) {
+        const view = try packed_yuv422.View.init(src.planes[0], src.width, src.height, src.strides[0], layout422(src.format));
+        return view.copy(dst.planes[0], dst.strides[0], layout422(dst.format));
+    }
     // Handle same format (just copy)
     if (src.format == dst.format) {
         for (0..4) |i| {
@@ -282,6 +289,10 @@ pub fn convertInPlace(src: *const Frame, dst: *Frame) !void {
 
 fn yuvToRgb(src: *const Frame, dst: *Frame) !void {
     const conversion = converter(src.colorspace, src.color_range);
+    if (isPacked422(src.format)) {
+        const view = try packed_yuv422.View.init(src.planes[0], src.width, src.height, src.strides[0], layout422(src.format));
+        return view.decode(conversion, dst.planes[0], dst.strides[0], packedLayout(dst.format));
+    }
     if ((src.format == .yuv420p or src.format == .nv12 or src.format == .nv21) and dst.format == .rgb24) {
         const view = if (src.format == .yuv420p) yuv_rgb.I420{ .width = src.width, .height = src.height, .planes = .{ src.planes[0], src.planes[1], src.planes[2] }, .strides = src.strides[0..3].* } else try yuv_rgb.I420.semiPlanar(src.width, src.height, src.planes[0], src.strides[0], src.planes[1], src.strides[1], src.format == .nv21);
         return yuv_rgb.decode420(view, conversion, dst.planes[0], dst.strides[0]);
@@ -295,6 +306,10 @@ fn yuvToRgb(src: *const Frame, dst: *Frame) !void {
 
 fn rgbToYuv(src: *const Frame, dst: *Frame) !void {
     const conversion = converter(dst.colorspace, dst.color_range);
+    if (isPacked422(dst.format)) {
+        const view = try packed_rgb.View.init(src.planes[0], src.width, src.height, src.strides[0], packedLayout(src.format));
+        return packed_yuv422.encodeRgb(view, dst.planes[0], dst.strides[0], layout422(dst.format), conversion);
+    }
     if (src.format == .rgb24 and dst.format == .yuv420p) {
         return yuv_rgb.encode420(src.planes[0], src.width, src.height, src.strides[0], .{ dst.planes[0], dst.planes[1], dst.planes[2] }, dst.strides[0..3].*, conversion);
     }
@@ -325,6 +340,12 @@ fn rgbToRgb(src: *const Frame, dst: *Frame) !void {
 }
 
 fn yuvToYuv(src: *const Frame, dst: *Frame) !void {
+    if (isPacked422(src.format)) _ = try packed_yuv422.View.init(src.planes[0], src.width, src.height, src.strides[0], layout422(src.format));
+    if (isPacked422(src.format) and dst.format == .yuv420p) {
+        const view = try packed_yuv422.View.init(src.planes[0], src.width, src.height, src.strides[0], layout422(src.format));
+        const map = @import("yuv_remap.zig").Remap.init(matrixFor(src.colorspace), if (src.color_range == .full) .full else .limited, matrixFor(dst.colorspace), if (dst.color_range == .full) .full else .limited);
+        return map.apply422(view, .{ dst.planes[0], dst.planes[1], dst.planes[2] }, dst.strides[0..3].*);
+    }
     const width = src.width;
     const height = src.height;
 
@@ -404,23 +425,9 @@ fn getYuvPixel(frame: *const Frame, x: u32, y: u32) YuvPixel {
                 .v = frame.planes[1][uv_idx],
             };
         },
-        .yuyv => {
-            const base = y * frame.strides[0] + (x / 2) * 4;
-            const y_offset: usize = if (x % 2 == 0) 0 else 2;
-            return .{
-                .y = frame.planes[0][base + y_offset],
-                .u = frame.planes[0][base + 1],
-                .v = frame.planes[0][base + 3],
-            };
-        },
-        .uyvy => {
-            const base = y * frame.strides[0] + (x / 2) * 4;
-            const y_offset: usize = if (x % 2 == 0) 1 else 3;
-            return .{
-                .y = frame.planes[0][base + y_offset],
-                .u = frame.planes[0][base],
-                .v = frame.planes[0][base + 2],
-            };
+        .yuyv, .yvyu, .uyvy, .vyuy => {
+            const p = layout422(frame.format).read(frame.planes[0][y * frame.strides[0] + (x / 2) * 4 ..]);
+            return .{ .y = if (x & 1 == 0) p[0] else p[2], .u = p[1], .v = p[3] };
         },
         .gray8 => {
             const idx = y * frame.strides[0] + x;
@@ -432,6 +439,15 @@ fn getYuvPixel(frame: *const Frame, x: u32, y: u32) YuvPixel {
 
 fn setYuvPixel(frame: *Frame, x: u32, y: u32, luma: u8, u: u8, v: u8) void {
     switch (frame.format) {
+        .yuyv, .yvyu, .uyvy, .vyuy => {
+            const offsets = layout422(frame.format).offsets();
+            const at = y * frame.strides[0] + (x / 2) * 4;
+            frame.planes[0][at + offsets[if (x & 1 == 0) 0 else 2]] = luma;
+            if (x & 1 == 0) {
+                frame.planes[0][at + offsets[1]] = u;
+                frame.planes[0][at + offsets[3]] = v;
+            }
+        },
         .yuv420p => {
             const y_idx = y * frame.strides[0] + x;
             frame.planes[0][y_idx] = luma;
@@ -723,5 +739,62 @@ test "public NV12 and NV21 conversion averages all chroma contributors and rejec
         @memset(decoded.planes[0], 73);
         try t.expectError(error.BufferTooSmall, convertInPlace(&truncated, &decoded));
         for (decoded.planes[0]) |value| try t.expectEqual(@as(u8, 73), value);
+    }
+}
+
+pub const packed_yuv422 = @import("packed_yuv422.zig");
+fn isPacked422(format: PixelFormat) bool {
+    return switch (format) {
+        .yuyv, .yvyu, .uyvy, .vyuy => true,
+        else => false,
+    };
+}
+fn layout422(format: PixelFormat) packed_yuv422.Layout {
+    return switch (format) {
+        .yuyv => .yuyv,
+        .yvyu => .yvyu,
+        .uyvy => .uyvy,
+        .vyuy => .vyuy,
+        else => unreachable,
+    };
+}
+
+fn matrixFor(value: ColorSpace) yuv_rgb.Matrix {
+    return switch (value) {
+        .bt601 => .bt601,
+        .bt709, .srgb => .bt709,
+        .bt2020 => .bt2020,
+    };
+}
+
+test "public packed 422 RGB encode writes complete pairs and decode repack and downsample are checked" {
+    const t = std.testing;
+    var rgb = try Frame.alloc(2, 2, .rgb24, t.allocator);
+    defer rgb.deinit();
+    rgb.colorspace = .bt601;
+    rgb.color_range = .limited;
+    @memcpy(rgb.planes[0], &[_]u8{ 255, 0, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0 });
+    for ([_]PixelFormat{ .yuyv, .yvyu, .uyvy, .vyuy }) |format| {
+        var encoded = try convert(&rgb, format, t.allocator);
+        defer encoded.deinit();
+        const view = try packed_yuv422.View.init(encoded.planes[0], 2, 2, encoded.strides[0], layout422(format));
+        try t.expectEqual([4]u8{ 81, 72, 145, 137 }, view.pair(0, 0));
+        var rgba = try convert(&encoded, .rgba32, t.allocator);
+        defer rgba.deinit();
+        try t.expectEqual(@as(u8, 255), rgba.planes[0][3]);
+        var planar = try convert(&encoded, .yuv420p, t.allocator);
+        defer planar.deinit();
+        try t.expectEqualSlices(u8, &.{ 81, 145, 81, 145 }, planar.planes[0]);
+        try t.expectEqualSlices(u8, &.{72}, planar.planes[1]);
+        try t.expectEqualSlices(u8, &.{137}, planar.planes[2]);
+        var other = try convert(&encoded, .vyuy, t.allocator);
+        defer other.deinit();
+        const repacked = try packed_yuv422.View.init(other.planes[0], 2, 2, other.strides[0], .vyuy);
+        try t.expectEqual(view.pair(0, 0), repacked.pair(0, 0));
+        var truncated = encoded;
+        truncated.planes[0] = encoded.planes[0][0..7];
+        @memset(rgba.planes[0], 73);
+        try t.expectError(error.BufferTooSmall, convertInPlace(&truncated, &rgba));
+        for (rgba.planes[0]) |value| try t.expectEqual(@as(u8, 73), value);
     }
 }

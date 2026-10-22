@@ -58,6 +58,13 @@ pub const Conversion = struct {
         const offset: i64 = if (index == 0) self.y_offset else 128;
         return byte(@divFloor(m[0] * rgb[0] + m[1] * rgb[1] + m[2] * rgb[2] + @divTrunc(scale * count, 2), scale * count) + offset);
     }
+    pub fn luma(self: Conversion, r: u8, g: u8, b: u8) u8 {
+        return self.component(0, .{ r, g, b }, 1);
+    }
+    pub fn chromaPair(self: Conversion, first: [3]u8, second: [3]u8) [2]u8 {
+        const sum = [3]i64{ @as(i64, first[0]) + second[0], @as(i64, first[1]) + second[1], @as(i64, first[2]) + second[2] };
+        return .{ self.component(1, sum, 2), self.component(2, sum, 2) };
+    }
     pub fn toYuv(self: Conversion, r: u8, g: u8, b: u8) [3]u8 {
         const rgb: [3]i64 = .{ r, g, b };
         return .{ self.component(0, rgb, 1), self.component(1, rgb, 1), self.component(2, rgb, 1) };
