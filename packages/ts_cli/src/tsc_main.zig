@@ -6513,6 +6513,62 @@ test "tsc_main: duplicate explicit ambient namespace exports use the first bindi
     }
 }
 
+test "tsc_main: ambient module fragments preserve source order and local export precedence" {
+    const a = "declare module \"a\" { export const onlyA: 1; }";
+    const b = "declare module \"b\" { export const onlyB: 2; }";
+    const first = "declare module \"barrel\" { export * as X from \"a\"; }";
+    const second = "declare module \"barrel\" { export * as X from \"b\"; }";
+    const local = "declare module \"barrel\" { export const X: { onlyA: 1 }; }";
+    const consumer =
+        \\import { X } from "barrel";
+        \\const a = X.onlyA;
+        \\const b = X.onlyB;
+        \\void a; void b;
+    ;
+    inline for (.{ false, true }) |b_first| {
+        inline for (.{ false, true }) |with_local| {
+            var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+            defer vfs.deinit();
+            for ([_][]const u8{ "/a.d.ts", "/b.d.ts", "/first.d.ts", "/second.d.ts", "/local.d.ts", "/main.ts" }, [_][]const u8{ a, b, first, second, local, consumer }) |path, source| try vfs.addFile(path, source);
+            var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = ts_program.Program.init(std.testing.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/a.d.ts", a);
+            _ = try program.add("/b.d.ts", b);
+            if (b_first) {
+                _ = try program.add("/second.d.ts", second);
+                _ = try program.add("/first.d.ts", first);
+            } else {
+                _ = try program.add("/first.d.ts", first);
+                _ = try program.add("/second.d.ts", second);
+            }
+            if (with_local) _ = try program.add("/local.d.ts", local);
+            const main_id = try program.add("/main.ts", consumer);
+            var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+            defer adapter.deinit();
+            var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+            adapter.setProgramSources(&program, options);
+            options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+            _ = try program.loadImportClosure(options);
+            try program.compileAll(options);
+            const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+            try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+            try std.testing.expectEqual(@as(u32, 2551), diagnostics[0].code);
+            if (with_local) {
+                try std.testing.expectEqualStrings("Property 'onlyB' does not exist on type '{ onlyA: 1; }'. Did you mean 'onlyA'?", diagnostics[0].message);
+            } else {
+                const missing = if (b_first) "onlyA" else "onlyB";
+                const source_module = if (b_first) "b" else "a";
+                const present = if (b_first) "onlyB" else "onlyA";
+                const expected = try std.fmt.allocPrint(std.testing.allocator, "Property '{s}' does not exist on type 'typeof import(\"{s}\")'. Did you mean '{s}'?", .{ missing, source_module, present });
+                defer std.testing.allocator.free(expected);
+                try std.testing.expectEqualStrings(expected, diagnostics[0].message);
+            }
+        }
+    }
+}
+
 test "tsc_main: import-equals ambient const enum access reports TS2748" {
     const ambient_source = "declare module \"pkg\" { export const enum Mode { One = 1 } }";
     const main_source = "import pkg = require(\"pkg\");\nexport const value = pkg.Mode.One;";

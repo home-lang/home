@@ -161,6 +161,9 @@ pub const Query = struct {
     gpa: std.mem.Allocator,
     resolver: *resolver_mod.Resolver,
     files: std.StringHashMapUnmanaged(Entry) = .empty,
+    /// Program source order is binding order for ambient module fragments.
+    /// The hash map above is for lookup, not iteration.
+    ordered_files: std.ArrayListUnmanaged([]const u8) = .empty,
     index_arena: std.heap.ArenaAllocator,
     indexes: std.AutoHashMapUnmanaged(IndexKey, *const SourceIndex) = .empty,
     ambient_indexed: std.AutoHashMapUnmanaged(*const driver.Compilation, void) = .empty,
@@ -191,11 +194,14 @@ pub const Query = struct {
             self.gpa.free(source);
         }
         self.files.deinit(self.gpa);
+        self.ordered_files.deinit(self.gpa);
     }
 
     pub fn borrow(self: *Query, path: []const u8, source: *driver.Compilation) !void {
         std.debug.assert(!self.files.contains(path));
+        try self.ordered_files.ensureUnusedCapacity(self.gpa, 1);
         try self.files.put(self.gpa, path, .{ .compilation = source, .owned = false });
+        self.ordered_files.appendAssumeCapacity(path);
     }
 
     fn sourceAllowed(self: *const Query, path: []const u8) bool {
@@ -218,7 +224,9 @@ pub const Query = struct {
             c.deinit();
             self.gpa.destroy(c);
         }
+        try self.ordered_files.ensureUnusedCapacity(self.gpa, 1);
         try self.files.put(self.gpa, path, .{ .compilation = c, .owned = true });
+        self.ordered_files.appendAssumeCapacity(path);
         return c;
     }
 
@@ -234,10 +242,9 @@ pub const Query = struct {
 
     fn indexAmbientModules(self: *Query) !void {
         const arena = self.index_arena.allocator();
-        var files = self.files.iterator();
-        while (files.next()) |entry| {
-            if (!self.sourceAllowed(entry.key_ptr.*)) continue;
-            const c = entry.value_ptr.compilation;
+        for (self.ordered_files.items) |path| {
+            if (!self.sourceAllowed(path)) continue;
+            const c = self.files.get(path).?.compilation;
             if (self.ambient_indexed.contains(c)) continue;
             if (c.hir.kindOf(c.root) != .block_stmt) continue;
             const body = hir.blockStmts(&c.hir, c.root);
@@ -257,11 +264,11 @@ pub const Query = struct {
                 if (!modules.found_existing) modules.value_ptr.* = .empty;
                 // Allocation failure must not leave a duplicate on retry.
                 var present = false;
-                for (modules.value_ptr.items) |owner| if (owner.node == node and std.mem.eql(u8, owner.path, entry.key_ptr.*)) {
+                for (modules.value_ptr.items) |owner| if (owner.node == node and std.mem.eql(u8, owner.path, path)) {
                     present = true;
                     break;
                 };
-                if (!present) try modules.value_ptr.append(arena, .{ .path = entry.key_ptr.*, .node = node });
+                if (!present) try modules.value_ptr.append(arena, .{ .path = path, .node = node });
             };
             try self.ambient_indexed.put(self.gpa, c, {});
         }
@@ -274,11 +281,44 @@ pub const Query = struct {
         return false;
     }
 
+    const DirectBinding = enum { local, forwarded };
+
+    fn directBinding(self: *Query, owner: ScopedOwner, name: []const u8) !?DirectBinding {
+        const c = try self.compilation(owner.path) orelse return null;
+        const bindings = try self.index(c, owner.node);
+        const edges = if (std.mem.eql(u8, name, "default"))
+            bindings.defaults.items
+        else if (c.interner.lookup(name)) |id|
+            if (bindings.exports.get(id)) |found| found.items else &.{}
+        else
+            &.{};
+        // A declared member occupies the module's local symbol. Its
+        // declaration fragments can merge; a forwarded alias with the same
+        // spelling cannot replace it, regardless of source-file order.
+        for (edges) |edge| if (edge.kind == .local or edge.kind == .implicit) return .local;
+        return if (edges.len == 0) null else .forwarded;
+    }
+
     fn enqueueModule(self: *Query, specifier: []const u8, from: []const u8, state: State) !void {
         if (try self.hasAmbientModule(specifier)) {
             const owners = self.ambient_modules.get(specifier).?;
+            var has_local = false;
+            var first_forwarded: ?ScopedOwner = null;
             for (owners.items) |owner| {
                 if (!self.sourceAllowed(owner.path)) continue;
+                switch (try self.directBinding(owner, state.name) orelse continue) {
+                    .local => has_local = true,
+                    .forwarded => if (first_forwarded == null) {
+                        first_forwarded = owner;
+                    },
+                }
+            }
+            for (owners.items) |owner| {
+                if (!self.sourceAllowed(owner.path)) continue;
+                const binding = try self.directBinding(owner, state.name);
+                if (has_local and binding != .local) continue;
+                if (!has_local and first_forwarded != null and
+                    (owner.node != first_forwarded.?.node or !std.mem.eql(u8, owner.path, first_forwarded.?.path))) continue;
                 var next = state;
                 next.path = owner.path;
                 next.scope = owner.node;
@@ -691,12 +731,19 @@ pub const Query = struct {
             if (bindings.exports.get(name)) |found| found.items else &.{}
         else
             &.{};
-        // Explicit exports bind a name at its first declaration. A later
-        // re-export of the same name is a duplicate (even when skipLibCheck
-        // suppresses its diagnostic), not another candidate to union with the
-        // first. Local declaration merges still resolve through the bound
-        // symbol in `local`, which includes all of its declaration spaces.
-        const selected = if (edges.len == 0) edges else edges[0..1];
+        // A local declaration owns its bound symbol even if a forwarded alias
+        // appeared first. Otherwise the first explicit re-export owns the
+        // name; later duplicates are not candidates to union with it, even
+        // when skipLibCheck suppresses their declaration diagnostics. Local
+        // declaration merges resolve through `local` across symbol spaces.
+        var selected_index: usize = 0;
+        for (edges, 0..) |edge, edge_index| {
+            if (edge.kind == .local or edge.kind == .implicit) {
+                selected_index = edge_index;
+                break;
+            }
+        }
+        const selected = if (edges.len == 0) edges else edges[selected_index .. selected_index + 1];
         for (selected) |edge| {
             if (edge.kind == .implicit) {
                 try self.enqueue(.{ .path = state.path, .scope = state.scope, .name = state.name, .local = true, .values = state.values, .restriction = state.restriction });
@@ -888,6 +935,33 @@ test "export origins: ambient module stars retain the first exporting owner" {
     const namespace_path = namespace_alias.namespace.?.path;
     try T.expect(std.mem.eql(u8, namespace_path, "/pkg.d.ts") or std.mem.eql(u8, namespace_path, "/pkg-extra.d.ts"));
     try T.expectEqualStrings(namespace_path, namespace_alias.value.?.path);
+}
+
+test "export origins: ambient fragments choose first forwarded alias but merge local declarations" {
+    var vfs = resolver_mod.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/a.d.ts", "declare module 'a' { export const onlyA: 1; }");
+    try vfs.addFile("/b.d.ts", "declare module 'b' { export const onlyB: 2; }");
+    try vfs.addFile("/a-alias.d.ts", "declare module 'barrel' { export * as X from 'a'; }");
+    try vfs.addFile("/b-alias.d.ts", "declare module 'barrel' { export * as X from 'b'; }");
+    try vfs.addFile("/local.d.ts", "declare module 'barrel' { export const X: { onlyLocal: 3 }; }");
+    inline for (.{ false, true }) |b_first| {
+        inline for (.{ false, true }) |with_local| {
+            var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var query = Query.init(T.allocator, &resolver);
+            defer query.deinit();
+            _ = try query.compilation("/a.d.ts");
+            _ = try query.compilation("/b.d.ts");
+            _ = try query.compilation(if (b_first) "/b-alias.d.ts" else "/a-alias.d.ts");
+            _ = try query.compilation(if (b_first) "/a-alias.d.ts" else "/b-alias.d.ts");
+            if (with_local) _ = try query.compilation("/local.d.ts");
+            const origin = try query.resolveModule("barrel", "/main.ts", "X");
+            try T.expect(origin.complete and !origin.ambiguous and origin.value != null);
+            const expected = if (with_local) "/local.d.ts" else if (b_first) "/b.d.ts" else "/a.d.ts";
+            try T.expectEqualStrings(expected, origin.value.?.path);
+        }
+    }
 }
 
 test "export origins: default namespace and type-only aliases preserve owner and visibility" {

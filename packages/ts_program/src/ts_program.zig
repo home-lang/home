@@ -8275,6 +8275,70 @@ test "Program: first duplicate explicit ambient namespace export owns the consum
     }
 }
 
+test "Program: ambient fragments retain first forwarded alias and local binding precedence" {
+    const a = "declare module \"a\" { export const onlyA: 1; }";
+    const b = "declare module \"b\" { export const onlyB: 2; }";
+    const first = "declare module \"barrel\" { export * as X from \"a\"; }";
+    const second = "declare module \"barrel\" { export * as X from \"b\"; }";
+    const local = "declare module \"barrel\" { export const X: { onlyA: 1 }; }";
+    const consumer =
+        \\import { X } from "barrel";
+        \\const a = X.onlyA;
+        \\const b = X.onlyB;
+        \\void a; void b;
+    ;
+    inline for (.{ false, true }) |b_first| {
+        inline for (.{ false, true }) |with_local| {
+            inline for (.{ false, true }) |streaming| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                for ([_][]const u8{ "/a.d.ts", "/b.d.ts", "/first.d.ts", "/second.d.ts", "/local.d.ts", "/main.ts" }, [_][]const u8{ a, b, first, second, local, consumer }) |path, source| try vfs.addFile(path, source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                _ = try program.add("/a.d.ts", a);
+                _ = try program.add("/b.d.ts", b);
+                if (b_first) {
+                    _ = try program.add("/second.d.ts", second);
+                    _ = try program.add("/first.d.ts", first);
+                } else {
+                    _ = try program.add("/first.d.ts", first);
+                    _ = try program.add("/second.d.ts", second);
+                }
+                if (with_local) _ = try program.add("/local.d.ts", local);
+                const main_id = try program.add("/main.ts", consumer);
+                const options: ts_driver.CompileOptions = .{ .no_emit = true, .strict = true, .skip_lib_check = true };
+                if (streaming) {
+                    const Sink = struct {
+                        count: usize = 0,
+                        fn receive(self: *@This(), path: []const u8, diagnostics: []const ts_driver.Diagnostic) void {
+                            if (std.mem.eql(u8, path, "/main.ts")) self.count += diagnostics.len;
+                        }
+                    };
+                    var sink: Sink = .{};
+                    try program.compileAllStreaming(options, &sink, Sink.receive);
+                    try T.expectEqual(@as(usize, 1), sink.count);
+                } else try program.compileAll(options);
+                const diagnostics = program.fileById(main_id).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 1), diagnostics.len);
+                if (with_local) {
+                    try T.expectEqual(@as(u32, 2551), diagnostics[0].code);
+                    try T.expectEqualStrings("Property 'onlyB' does not exist on type '{ onlyA: 1; }'. Did you mean 'onlyA'?", diagnostics[0].message);
+                } else {
+                    try T.expectEqual(@as(u32, 2551), diagnostics[0].code);
+                    const missing = if (b_first) "onlyA" else "onlyB";
+                    const present = if (b_first) "onlyB" else "onlyA";
+                    const source_module = if (b_first) "b" else "a";
+                    const expected = try std.fmt.allocPrint(T.allocator, "Property '{s}' does not exist on type 'typeof import(\"{s}\")'. Did you mean '{s}'?", .{ missing, source_module, present });
+                    defer T.allocator.free(expected);
+                    try T.expectEqualStrings(expected, diagnostics[0].message);
+                }
+            }
+        }
+    }
+}
+
 test "Program: same-shaped ambient module aliases retain distinct display identities" {
     const declarations =
         \\declare module "shape-a" { export const x: 1; }
