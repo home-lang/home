@@ -1339,6 +1339,7 @@ pub const stream_alignment = @import("core/stream_alignment.zig");
 pub const frame_access = @import("core/frame_access.zig");
 
 pub const typed_catalog = @import("core/typed_catalog.zig");
+pub const catalog_projection = @import("core/catalog_projection.zig");
 
 pub const device_identity = @import("core/device_identity.zig");
 
