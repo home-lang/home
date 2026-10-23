@@ -5982,6 +5982,33 @@ test "tsc_main: admitted JavaScript mixed-domain union shorthand stays narrow" {
     }
 }
 
+test "tsc_main: real export-equals namespace retains require-alias member mutability" {
+    const owner_source = "namespace N { export const fixed = 1; export let mutable = 2; } export = N;";
+    const consumer_source = "import N = require('./owner'); N.fixed = 3; N.mutable = 4; const alias = N; alias.fixed = 3;";
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| {
+        try std.testing.expectEqual(@as(u32, 2540), diagnostic.code);
+        try std.testing.expectEqualStrings("Cannot assign to 'fixed' because it is a read-only property.", diagnostic.message);
+    }
+}
+
 test "tsc_main: real transitive imported const inference reaches the consumer" {
     const main_source = "import { value } from './middle'; export const result: number = value;";
     const middle_source = "import { leafValue } from './leaf'; export const value = leafValue;";

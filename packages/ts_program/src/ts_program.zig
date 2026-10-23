@@ -2782,36 +2782,36 @@ pub const Program = struct {
         errdefer freeProgramCommonJsExports(self.gpa, out.items);
         for (self.files.items) |f| {
             if (!f.present or f.redirect_target != null) continue;
-            if (f.is_declaration) {
-                // A declaration-file CommonJS export requires `export =`.
-                // Avoid scanning ordinary library declarations when either
-                // required token is absent; false positives still take the
-                // syntax-aware path below using the retained owner.
-                if (!f.sourceContains("export") or
-                    !f.sourceContains("=")) continue;
+            // `export = identifier` is a whole-module export in both
+            // declaration and implementation files. Keep its checked owner
+            // type so a
+            // real `import name = require("./owner")` receives that value,
+            // not the synthetic namespace of named ESM exports. The syntax
+            // gate avoids scanning ordinary library declarations.
+            if (f.sourceContains("export") and f.sourceContains("=")) {
                 const compilation = f.compilation orelse continue;
-                const info = moduleExportAssignmentInfoFromCompilation(self.gpa, compilation) orelse continue;
-                const private_name = info.private_type_name orelse "";
-                if (private_name.len == 0 and !info.target_is_any) continue;
-                errdefer if (private_name.len > 0) self.gpa.free(private_name);
-                const module_path = try self.gpa.dupe(u8, f.path);
-                errdefer self.gpa.free(module_path);
-                const module_name = if (private_name.len > 0)
-                    try renderExternalModulePathDisplayName(self.gpa, f.path)
-                else
-                    "";
-                errdefer if (module_name.len > 0) self.gpa.free(module_name);
-                const export_name = try self.gpa.dupe(u8, "");
-                errdefer self.gpa.free(export_name);
-                try out.append(self.gpa, .{
-                    .module_path = module_path,
-                    .name = export_name,
-                    .private_type_name = private_name,
-                    .private_module_name = module_name,
-                    .whole_export_is_any = info.target_is_any,
-                });
-                continue;
+                if (moduleExportAssignmentInfoFromCompilation(self.gpa, compilation)) |info| {
+                    const private_name = info.private_type_name orelse "";
+                    errdefer if (private_name.len > 0) self.gpa.free(private_name);
+                    const module_path = try self.gpa.dupe(u8, f.path);
+                    errdefer self.gpa.free(module_path);
+                    const module_name = if (private_name.len > 0)
+                        try renderExternalModulePathDisplayName(self.gpa, f.path)
+                    else
+                        "";
+                    errdefer if (module_name.len > 0) self.gpa.free(module_name);
+                    const export_name = try self.gpa.dupe(u8, "");
+                    errdefer self.gpa.free(export_name);
+                    try out.append(self.gpa, .{
+                        .module_path = module_path,
+                        .name = export_name,
+                        .private_type_name = private_name,
+                        .private_module_name = module_name,
+                        .whole_export_is_any = info.target_is_any,
+                    });
+                }
             }
+            if (f.is_declaration) continue;
             if (!f.sourceContains("exports")) continue;
             // Export-name discovery only reads syntax. All files are already
             // prepared; do not lex, bind and check this source a second time.
@@ -9790,6 +9790,11 @@ fn commonJsExportAssignmentPosition(
     expected_name: []const u8,
 ) ?u32 {
     for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |statement| {
+        if (expected_name.len == 0 and compilation.hir.kindOf(statement) == .export_decl) {
+            const exported = hir_mod_ns.exportOf(&compilation.hir, statement);
+            if (exported.is_export_equals and exported.decl != hir_mod_ns.none_node_id)
+                return compilation.hir.spanOf(statement).start;
+        }
         if (compilation.hir.kindOf(statement) != .assignment) continue;
         const assignment = hir_mod_ns.assignmentOf(&compilation.hir, statement);
         if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
@@ -10117,6 +10122,22 @@ fn moduleExportAssignmentInfoFromCompilation(
         break;
     }
     return info;
+}
+
+fn declarationAtPositionIsConst(hir: *const hir_mod_ns.Hir, stmts: []const hir_mod_ns.NodeId, position: u32) bool {
+    for (stmts) |raw| {
+        const decl = if (hir.kindOf(raw) == .export_decl)
+            hir_mod_ns.exportOf(hir, raw).decl
+        else
+            raw;
+        if (decl == hir_mod_ns.none_node_id) continue;
+        const span = hir.spanOf(decl);
+        if (span.start == position and hir.kindOf(decl) == .const_decl) return true;
+        if (span.start > position or position >= span.end) continue;
+        if ((hir.kindOf(decl) == .namespace_decl or hir.kindOf(decl) == .module_decl) and
+            declarationAtPositionIsConst(hir, hir_mod_ns.namespaceBody(hir, decl), position)) return true;
+    }
+    return false;
 }
 
 /// Return the first private top-level type referenced by a module's
@@ -10557,6 +10578,23 @@ fn evaluateModuleExportFacts(
             compilation.root,
             name_id,
         ) orelse false;
+    }
+    // Require-assignment imports preserve the write contract of a resolved
+    // value export. Follow the bound declaration owner through local aliases
+    // and barrels: a const remains readonly, while let/var exports do not.
+    if (resolved_origins.complete and !resolved_origins.ambiguous) {
+        if (resolved_origins.value) |origin| {
+            if (origin.kind == .declaration) {
+                if (origin_query.files.get(origin.path)) |owner| {
+                    const owner_hir = &owner.compilation.hir;
+                    if (owner_hir.kindOf(owner.compilation.root) == .block_stmt and
+                        declarationAtPositionIsConst(owner_hir, hir_mod_ns.blockStmts(owner_hir, owner.compilation.root), origin.position))
+                    {
+                        facts.exported_value_readonly = true;
+                    }
+                }
+            }
+        }
     }
     if (name.len == 0) {
         for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
@@ -15359,6 +15397,63 @@ test "Program: checked CommonJS whole exports type requiring consumers in depend
             const compilation = program.fileById(app).compilation.?;
             try expectCompilationHasDiagnosticCode(compilation, 2322);
             try expectCompilationHasDiagnosticCode(compilation, 2339);
+        }
+    }
+}
+
+test "Program: export-equals namespace require alias preserves const and mutable members" {
+    const ResolveOnly = struct {
+        resolver: *ts_resolver.Resolver,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            return .{ .path = result.path, .source_is_admitted = true, .is_declaration = result.is_declaration };
+        }
+    };
+    const owner_source =
+        \\namespace N { export const fixed = 1; export let mutable = 2; }
+        \\export = N;
+    ;
+    const consumer_source =
+        \\import N = require('./owner');
+        \\N.fixed = 3;
+        \\N.mutable = 4;
+        \\const alias = N;
+        \\alias.fixed = 3;
+        \\N.missing = 5;
+    ;
+    inline for (.{ false, true }) |parallel| {
+        for ([_]bool{ false, true }) |owner_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.ts", owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            const consumer = if (owner_first) blk: {
+                _ = try p.add("/owner.ts", owner_source);
+                break :blk try p.add("/consumer.ts", consumer_source);
+            } else blk: {
+                const id = try p.add("/consumer.ts", consumer_source);
+                _ = try p.add("/owner.ts", owner_source);
+                break :blk id;
+            };
+            var checker_resolver = ResolveOnly{ .resolver = &resolver };
+            const options: ts_driver.CompileOptions = .{
+                .strict = true,
+                .no_emit = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &ResolveOnly.vtable },
+            };
+            if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+            const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 3), diagnostics.len);
+            for (diagnostics, [_]u32{ 2540, 2540, 2339 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+            try T.expectEqualStrings("Cannot assign to 'fixed' because it is a read-only property.", diagnostics[0].message);
+            try T.expectEqualStrings("Cannot assign to 'fixed' because it is a read-only property.", diagnostics[1].message);
         }
     }
 }

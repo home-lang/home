@@ -20,6 +20,15 @@ pub fn wholeExportTypes(
     errdefer result.deinit(gpa);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return result.toOwnedSlice(gpa);
     for (hir.blockStmts(&compilation.hir, compilation.root)) |statement| {
+        if (compilation.hir.kindOf(statement) == .export_decl) {
+            const exported = hir.exportOf(&compilation.hir, statement);
+            if (exported.is_export_equals and exported.decl != hir.none_node_id) {
+                const typ = compilation.hir.typeOf(exported.decl);
+                if (typ != Primitive.none and std.mem.indexOfScalar(TypeId, result.items, typ) == null)
+                    try result.append(gpa, typ);
+            }
+            continue;
+        }
         if (compilation.hir.kindOf(statement) != .assignment) continue;
         var assignment = hir.assignmentOf(&compilation.hir, statement);
         while (true) {

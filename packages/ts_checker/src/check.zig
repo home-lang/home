@@ -51035,7 +51035,7 @@ pub const Checker = struct {
             try self.reportReadonlyMemberAssignment(target, m.name);
             return true;
         }
-        if (self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
+        if (try self.memberAccessReceiverIsWritableModuleAlias(m.object)) return false;
         if (try self.importedDefaultMemberIsReadonly(m.object, m.name)) {
             try self.reportReadonlyMemberAssignment(target, m.name);
             return true;
@@ -51078,11 +51078,11 @@ pub const Checker = struct {
         const local_name = hir_mod.identifierOf(self.hir, object).name;
         const spec = self.requireSpecifierForLocal(local_name, object) orelse return false;
         if (self.external_resolver) |resolver| {
-            const info = resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name)) orelse return false;
-            return info.exported_value_readonly;
+            if (resolver.moduleExport(spec, self.importer_path, self.string_interner.get(member_name))) |info|
+                return info.exported_value_readonly;
         }
         if (try self.virtualRequireExportIsConst(object, spec, member_name)) return true;
-        if (!self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name)) return false;
+        if (!try self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name)) return false;
         const module_t = (try self.moduleNamespaceTypeForLocalImport(local_name, object)) orelse
             (try self.commonJsWholeExportTypeForRequireVariable(object)) orelse return false;
         const info = self.interner.objectMemberInfo(module_t, member_name) orelse return false;
@@ -51118,7 +51118,7 @@ pub const Checker = struct {
         return false;
     }
 
-    fn memberAccessReceiverIsWritableModuleAlias(self: *Checker, object: NodeId) bool {
+    fn memberAccessReceiverIsWritableModuleAlias(self: *Checker, object: NodeId) CheckError!bool {
         if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return false;
         const local_name = hir_mod.identifierOf(self.hir, object).name;
         // Upstream keeps the readonly member flags of a concrete
@@ -51127,7 +51127,7 @@ pub const Checker = struct {
         // aliases of modules without an export assignment stay writable
         // (`importsImplicitlyReadonly.ts`: `a2.x = 1` is clean).
         if (self.memberAccessReceiverIsRequireAssignmentBinding(object)) {
-            return !self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name);
+            return !try self.requireAliasTargetPreservesCommonJsMemberFlags(object, local_name);
         }
         const declaration = self.findLocalValueDeclBeforeExpression(object, local_name) orelse return false;
         const kind = self.hir.kindOf(declaration);
@@ -51137,7 +51137,7 @@ pub const Checker = struct {
         const source_name = hir_mod.identifierOf(self.hir, variable.init).name;
         if (self.namespaceImportSpecifierForLocal(source_name, variable.init) != null) return true;
         if (self.requireSpecifierForLocal(source_name, variable.init) != null) {
-            return !self.requireAliasTargetPreservesCommonJsMemberFlags(variable.init, source_name);
+            return !try self.requireAliasTargetPreservesCommonJsMemberFlags(variable.init, source_name);
         }
         return false;
     }
@@ -51145,9 +51145,11 @@ pub const Checker = struct {
     /// True when the module bound by `alias_name` exposes a CommonJS export
     /// object whose per-member readonly flags must survive through a require
     /// alias. Ordinary ES module exports remain writable through `import =`.
-    fn requireAliasTargetPreservesCommonJsMemberFlags(self: *Checker, anchor: NodeId, alias_name: hir_mod.StringId) bool {
+    fn requireAliasTargetPreservesCommonJsMemberFlags(self: *Checker, anchor: NodeId, alias_name: hir_mod.StringId) CheckError!bool {
         const specifier = self.requireSpecifierForLocal(alias_name, anchor) orelse return false;
-        const specifier_id = self.string_interner.intern(specifier) catch return false;
+        if (!self.sourceHasVirtualFilenameSections())
+            return self.programCommonJsModuleHasWholeExport(anchor, specifier);
+        const specifier_id = self.string_interner.intern(specifier) catch return error.OutOfMemory;
         return self.virtualModulePreservesCommonJsMemberFlags(anchor, specifier_id);
     }
 
@@ -84799,7 +84801,10 @@ pub const Checker = struct {
                 .name = name,
                 .type = member_t,
                 .is_optional = false,
-                .is_readonly = false,
+                // A namespace's exported const is a read-only property of
+                // the namespace value. Let/var, functions, classes, enums
+                // and nested namespaces remain writable in TypeScript.
+                .is_readonly = self.hir.kindOf(decl) == .const_decl,
                 .is_method = self.hir.kindOf(decl) == .fn_decl or self.hir.kindOf(decl) == .fn_expr,
             });
         }
@@ -206627,6 +206632,30 @@ test "checker: non-circular import alias chain stays clean (no TS2303)" {
             try T.expect(false);
         }
     }
+}
+
+test "checker: namespace const members are readonly while other value members remain writable" {
+    const s = try newSetup(
+        \\namespace N {
+        \\  export const fixed = 1;
+        \\  export let mutable = 2;
+        \\  export var variable = 3;
+        \\  export function run() {}
+        \\  export class Class {}
+        \\  export enum Enum { A }
+        \\}
+        \\N.fixed = 2;
+        \\N.mutable = 3;
+        \\N.variable = 4;
+        \\N.run = () => {};
+        \\N.Class = class {};
+        \\N.Enum = { A: 0 };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.readonly_property), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("Cannot assign to 'fixed' because it is a read-only property.", s.checker.diagnostics.items[0].message);
 }
 
 test "checker: circular type-only re-export emits TS2303 for every alias" {
