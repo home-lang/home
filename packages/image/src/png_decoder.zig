@@ -88,8 +88,7 @@ pub const Result = struct {
         if (self.metadata.exif) |bytes| self.allocator.free(bytes);
         self.* = undefined;
     }
-    /// Rebase only after the caller has disowned every allocation from a budget
-    /// wrapper. No native zlib workspace survives decoding.
+    /// Sum surviving owned allocations. No native zlib workspace survives decode.
     pub fn ownedBytes(self: Result) usize {
         var total = self.default_image.pixels.len + self.frames.len * @sizeOf(Frame);
         for (self.frames) |frame| total += frame.raster.pixels.len;
@@ -477,6 +476,7 @@ const Rows = struct {
         const row = self.current[0..self.pass.row];
         const previous = self.previous[0..self.pass.row];
         for (row, 0..) |*byte, i| {
+            if (i % 32768 == 0) try self.options.checkpoint.check();
             const a = if (i >= bpp) row[i - bpp] else 0;
             const b = previous[i];
             const c = if (i >= bpp) previous[i - bpp] else 0;
@@ -494,6 +494,7 @@ const Rows = struct {
         const out_channels = channels(self.target.format);
         const out_bytes: usize = self.target.bits / 8;
         for (0..self.pass.width) |x| {
+            if (x % 4096 == 0) try self.options.checkpoint.check();
             var values: [4]u16 = .{ 0, 0, 0, target_max };
             const at = x * self.header.samples();
             switch (self.header.color) {
@@ -888,5 +889,35 @@ test "APNG rejects sequence controls counts and missing frame data with allocati
             var owner = result;
             owner.deinit();
         } else |err| try std.testing.expectEqual(error.Cancelled, err);
+    }
+}
+
+test "PNG wide-row filtering and sample expansion have bounded cancellation checkpoints" {
+    const t = std.testing;
+    const width = 65537;
+    const input = try t.allocator.alloc(u8, width * 2);
+    defer t.allocator.free(input);
+    const output = try t.allocator.alloc(u8, width);
+    defer t.allocator.free(output);
+    const header = Header{ .width = width, .height = 1, .color = 0, .depth = 8, .interlace = false };
+    const doc = Document{ .header = header };
+    const Counter = struct {
+        calls: usize = 0,
+        limit: usize,
+        fn call(ctx: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.calls += 1;
+            return self.calls <= self.limit;
+        }
+    };
+    // First filter checkpoint, first expanded sample, then within sample expansion.
+    for ([_]usize{ 0, 3, 4 }) |limit| {
+        @memset(input, 37);
+        @memset(output, 0);
+        var counter = Counter{ .limit = limit };
+        var target = Raster{ .pixels = output, .width = width, .height = 1, .stride = width, .format = .gray, .bits = 8 };
+        var rows = Rows{ .doc = &doc, .header = header, .target = &target, .options = .{ .checkpoint = .{ .context = &counter, .call = Counter.call } }, .current = input[0..width], .previous = input[width..], .filter = 0, .pass = try passFor(header, 0) };
+        try t.expectError(error.Cancelled, rows.finishRow());
+        try t.expectEqual(limit + 1, counter.calls);
     }
 }
