@@ -1,0 +1,31 @@
+name: Bounded media allocation
+on:
+  push:
+    branches: [main]
+    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', '.github/workflows/media-allocation-budget.yml']
+  pull_request:
+    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', '.github/workflows/media-allocation-budget.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  budget:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Budget accounting and native zlib workspace failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" packages/video/src/core/budget_allocator.zig
+            zig test -O "$mode" -lc -lz packages/image/src/formats/zlib_stream.zig
+          done

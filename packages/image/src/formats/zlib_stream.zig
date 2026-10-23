@@ -42,15 +42,39 @@ pub const Deflater = struct {
     fn initialize(stream: *c.z_stream, level: c_int) c_int {
         return c.deflateInit_(stream, level, c.zlibVersion(), @sizeOf(c.z_stream));
     }
-    // Private injection covers native workspace failures, which are outside the
-    // caller's Zig allocator. Failed initialization never publishes an owner.
+    // Native workspace uses the caller allocator too; failed initialization
+    // never publishes an owner, including partial native allocation failures.
     fn createWithInit(allocator: std.mem.Allocator, level: u32, comptime init: fn (*c.z_stream, c_int) c_int) !*Deflater {
         if (level > 9) return error.InvalidCompressionLevel;
         const self = try allocator.create(Deflater);
         errdefer allocator.destroy(self);
         self.* = .{ .allocator = allocator };
+        self.stream.zalloc = allocateWorkspace;
+        self.stream.zfree = freeWorkspace;
+        self.stream.opaque_context = self;
+        errdefer if (self.stream.state != null) {
+            _ = c.deflateEnd(&self.stream);
+        };
         try status(init(&self.stream, @intCast(level)));
         return self;
+    }
+    // A fixed aligned prefix records the exact allocation length for zfree.
+    // All zlib blocks are covered by caller allocation budgets/failure injection.
+    fn allocateWorkspace(ctx: ?*anyopaque, count: c_uint, size: c_uint) callconv(.c) ?*anyopaque {
+        const self: *Deflater = @ptrCast(@alignCast(ctx.?));
+        const payload = std.math.mul(usize, count, size) catch return null;
+        const total = std.math.add(usize, payload, 16) catch return null;
+        const bytes = self.allocator.alignedAlloc(u8, .@"16", total) catch return null;
+        @memset(bytes, 0);
+        std.mem.writeInt(usize, bytes[0..@sizeOf(usize)], total, .little);
+        return @ptrCast(bytes.ptr + 16);
+    }
+    fn freeWorkspace(ctx: ?*anyopaque, address: ?*anyopaque) callconv(.c) void {
+        const block = address orelse return;
+        const self: *Deflater = @ptrCast(@alignCast(ctx.?));
+        const start: [*]align(16) u8 = @alignCast(@as([*]u8, @ptrCast(block)) - 16);
+        const length = std.mem.readInt(usize, start[0..@sizeOf(usize)], .little);
+        self.allocator.free(start[0..length]);
     }
     pub fn deinit(self: *Deflater) void {
         // Aborting an unfinished stream may return DATA_ERROR after freeing its
@@ -195,4 +219,15 @@ test "native initialization failure frees the pinned owner exactly once without 
     };
     try std.testing.expectError(error.InvalidCompressionLevel, Deflater.createWithInit(std.testing.allocator, 10, MustNotRun.init));
     try std.testing.expectError(error.OutOfMemory, Deflater.createWithInit(std.testing.failing_allocator, 1, MustNotRun.init));
+}
+
+fn workspaceFailureProbe(allocator: std.mem.Allocator) !void {
+    const bytes = try compress(allocator, "caller-owned native zlib workspace and output", 1);
+    defer allocator.free(bytes);
+}
+test "all native workspace allocation failures unwind exactly once through the caller allocator" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, workspaceFailureProbe, .{});
+    var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, Deflater.create(fail.allocator(), 1));
+    try std.testing.expectEqual(fail.allocated_bytes, fail.freed_bytes);
 }
