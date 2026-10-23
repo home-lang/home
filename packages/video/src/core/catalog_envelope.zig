@@ -171,8 +171,15 @@ test "envelope prefix output overlap alias and writer failure are rejected atomi
 fn failures(a: std.mem.Allocator) !void {
     var w = try wire.Writer.init(a, 4, 4096);
     defer w.deinit();
+    // Allocate fixture storage separately: the failing allocator must reach
+    // append growth, rather than only failing writer/fixture construction.
+    var inner = try fixture(std.testing.allocator);
+    defer inner.deinit();
+    const payload = try inner.finish();
+    const extra = wire.record_size + wire.value_size + test_spec.name.len + test_spec.vendor.len + payload.len;
+    try std.testing.expect(extra > w.bytes.capacity - w.bytes.items.len);
     const before = std.hash.Wyhash.hash(0, try w.finish());
-    append(&w, test_spec, empty) catch |err| {
+    append(&w, test_spec, payload) catch |err| {
         try std.testing.expectEqual(@as(u32, 0), w.count);
         try std.testing.expect(w.open == null);
         try std.testing.expectEqual(before, std.hash.Wyhash.hash(0, try w.finish()));
