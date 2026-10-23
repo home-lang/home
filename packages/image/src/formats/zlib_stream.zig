@@ -24,15 +24,20 @@ const c = struct {
     const Z_OK = 0;
     const Z_STREAM_END = 1;
     const Z_MEM_ERROR = -4;
+    const Z_BUF_ERROR = -5;
     const Z_NO_FLUSH = 0;
     const Z_FINISH = 4;
     extern fn zlibVersion() [*:0]const u8;
     extern fn deflateInit_(*z_stream, c_int, [*:0]const u8, c_int) c_int;
     extern fn deflate(*z_stream, c_int) c_int;
     extern fn deflateEnd(*z_stream) c_int;
+    extern fn inflateInit_(*z_stream, [*:0]const u8, c_int) c_int;
+    extern fn inflate(*z_stream, c_int) c_int;
+    extern fn inflateEnd(*z_stream) c_int;
 };
 pub const Deflater = struct {
     allocator: std.mem.Allocator,
+    workspace: Workspace,
     stream: c.z_stream = std.mem.zeroes(c.z_stream),
     state: enum { open, finished, failed } = .open,
 
@@ -48,33 +53,15 @@ pub const Deflater = struct {
         if (level > 9) return error.InvalidCompressionLevel;
         const self = try allocator.create(Deflater);
         errdefer allocator.destroy(self);
-        self.* = .{ .allocator = allocator };
-        self.stream.zalloc = allocateWorkspace;
-        self.stream.zfree = freeWorkspace;
-        self.stream.opaque_context = self;
+        self.* = .{ .allocator = allocator, .workspace = .{ .allocator = allocator } };
+        self.stream.zalloc = Workspace.allocate;
+        self.stream.zfree = Workspace.release;
+        self.stream.opaque_context = &self.workspace;
         errdefer if (self.stream.state != null) {
             _ = c.deflateEnd(&self.stream);
         };
         try status(init(&self.stream, @intCast(level)));
         return self;
-    }
-    // A fixed aligned prefix records the exact allocation length for zfree.
-    // All zlib blocks are covered by caller allocation budgets/failure injection.
-    fn allocateWorkspace(ctx: ?*anyopaque, count: c_uint, size: c_uint) callconv(.c) ?*anyopaque {
-        const self: *Deflater = @ptrCast(@alignCast(ctx.?));
-        const payload = std.math.mul(usize, count, size) catch return null;
-        const total = std.math.add(usize, payload, 16) catch return null;
-        const bytes = self.allocator.alignedAlloc(u8, .@"16", total) catch return null;
-        @memset(bytes, 0);
-        std.mem.writeInt(usize, bytes[0..@sizeOf(usize)], total, .little);
-        return @ptrCast(bytes.ptr + 16);
-    }
-    fn freeWorkspace(ctx: ?*anyopaque, address: ?*anyopaque) callconv(.c) void {
-        const block = address orelse return;
-        const self: *Deflater = @ptrCast(@alignCast(ctx.?));
-        const start: [*]align(16) u8 = @alignCast(@as([*]u8, @ptrCast(block)) - 16);
-        const length = std.mem.readInt(usize, start[0..@sizeOf(usize)], .little);
-        self.allocator.free(start[0..length]);
     }
     pub fn deinit(self: *Deflater) void {
         // Aborting an unfinished stream may return DATA_ERROR after freeing its
@@ -135,6 +122,122 @@ pub const Deflater = struct {
         self.state = .finished;
     }
 };
+// Native allocation callbacks shared by pinned compression/inflation owners.
+const Workspace = struct {
+    allocator: std.mem.Allocator,
+    limit: usize = std.math.maxInt(usize),
+    live: usize = 0,
+    fn allocate(ctx: ?*anyopaque, count: c_uint, size: c_uint) callconv(.c) ?*anyopaque {
+        const self: *Workspace = @ptrCast(@alignCast(ctx.?));
+        const payload = std.math.mul(usize, count, size) catch return null;
+        const total = std.math.add(usize, payload, 16) catch return null;
+        if (total > self.limit - self.live) return null;
+        const bytes = self.allocator.alignedAlloc(u8, .@"16", total) catch return null;
+        @memset(bytes, 0);
+        std.mem.writeInt(usize, bytes[0..@sizeOf(usize)], total, .little);
+        self.live += total;
+        return @ptrCast(bytes.ptr + 16);
+    }
+    fn release(ctx: ?*anyopaque, address: ?*anyopaque) callconv(.c) void {
+        const block = address orelse return;
+        const self: *Workspace = @ptrCast(@alignCast(ctx.?));
+        const start: [*]align(16) u8 = @alignCast(@as([*]u8, @ptrCast(block)) - 16);
+        const length = std.mem.readInt(usize, start[0..@sizeOf(usize)], .little);
+        std.debug.assert(length <= self.live);
+        self.allocator.free(start[0..length]);
+        self.live -= length;
+    }
+};
+/// A conservative hard ceiling for one native inflate context, including block
+/// prefixes. PNG planners include this in their live-workspace bound.
+pub const inflate_workspace_limit = 256 * 1024;
+fn checkInflate(input: []const u8, output_length: usize) !void {
+    if (input.len < 6) return error.InvalidCompressedData;
+    if (input.len > std.math.maxInt(c_uint) or output_length >= @min(std.math.maxInt(c_uint), std.math.maxInt(c_ulong))) return error.StreamTooLarge;
+    if (input[0] & 15 != 8 or input[0] >> 4 > 7 or input[1] & 32 != 0 or (@as(u16, input[0]) * 256 + input[1]) % 31 != 0) return error.InvalidCompressedData;
+}
+const Inflater = struct {
+    stream: c.z_stream = std.mem.zeroes(c.z_stream),
+    workspace: Workspace,
+};
+/// Stream one checksum-verified zlib stream to a provisional sink under a hard
+/// output ceiling. At most 32 KiB is offered per synchronous sink call. Errors
+/// can leave a sink prefix; callers own staging/publication and cancellation.
+/// Native workspace uses the caller allocator and is retired on every outcome.
+pub fn inflateTo(allocator: std.mem.Allocator, input: []const u8, sink: anytype, limit: usize) !usize {
+    try checkInflate(input, limit);
+    const self = try allocator.create(Inflater);
+    defer allocator.destroy(self);
+    self.* = .{ .workspace = .{ .allocator = allocator, .limit = inflate_workspace_limit } };
+    self.stream.zalloc = Workspace.allocate;
+    self.stream.zfree = Workspace.release;
+    self.stream.opaque_context = &self.workspace;
+    const init = c.inflateInit_(&self.stream, c.zlibVersion(), @sizeOf(c.z_stream));
+    defer {
+        if (self.stream.state != null) _ = c.inflateEnd(&self.stream);
+        std.debug.assert(self.workspace.live == 0);
+    }
+    if (init == c.Z_MEM_ERROR) return error.OutOfMemory;
+    if (init != c.Z_OK) return error.InvalidCompressedData;
+    self.stream.next_in = input.ptr;
+    self.stream.avail_in = @intCast(input.len);
+    defer {
+        self.stream.next_in = null;
+        self.stream.next_out = null;
+        self.stream.avail_in = 0;
+        self.stream.avail_out = 0;
+    }
+    var total: usize = 0;
+    while (true) {
+        const before = self.stream.avail_in;
+        var bytes: [32768]u8 = undefined;
+        const capacity = @min(bytes.len, limit - total + 1);
+        self.stream.next_out = &bytes;
+        self.stream.avail_out = @intCast(capacity);
+        const rc = c.inflate(&self.stream, c.Z_NO_FLUSH);
+        const written = capacity - self.stream.avail_out;
+        if (written > limit - total) return error.InflateOutputLimit;
+        if (written != 0) try sink.writeAll(bytes[0..written]);
+        total += written;
+        if (rc == c.Z_STREAM_END) {
+            if (self.stream.avail_in != 0 or self.stream.total_in != input.len) return error.InvalidCompressedData;
+            return total;
+        }
+        if (rc == c.Z_MEM_ERROR) return error.OutOfMemory;
+        if (rc != c.Z_OK and rc != c.Z_BUF_ERROR) return error.InvalidCompressedData;
+        if (before == self.stream.avail_in and written == 0) return error.InvalidCompressedData;
+    }
+}
+/// Decode to bounded provisional output. Output can contain a prefix on error;
+/// source/output overlap rejects before native allocation or the first write.
+pub fn inflateInto(allocator: std.mem.Allocator, input: []const u8, output: []u8) !usize {
+    try checkInflate(input, output.len);
+    if (output.len != 0) {
+        const a = @intFromPtr(input.ptr);
+        const b = @intFromPtr(output.ptr);
+        if ((a <= b and b - a < input.len) or (b < a and a - b < output.len)) return error.Overlap;
+    }
+    const Sink = struct {
+        bytes: []u8,
+        offset: usize = 0,
+        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+            if (bytes.len > self.bytes.len - self.offset) return error.InflateOutputLimit;
+            @memcpy(self.bytes[self.offset..][0..bytes.len], bytes);
+            self.offset += bytes.len;
+        }
+    };
+    var sink = Sink{ .bytes = output };
+    return inflateTo(allocator, input, &sink, output.len);
+}
+/// Compact owned inflated bytes under an explicit output ceiling.
+pub fn inflateOwned(allocator: std.mem.Allocator, input: []const u8, limit: usize) ![]u8 {
+    try checkInflate(input, limit);
+    const bytes = try allocator.alloc(u8, limit);
+    errdefer allocator.free(bytes);
+    const size = try inflateInto(allocator, input, bytes);
+    return allocator.realloc(bytes, size);
+}
+
 fn status(rc: c_int) !void {
     return switch (rc) {
         c.Z_OK => {},
@@ -230,4 +333,80 @@ test "all native workspace allocation failures unwind exactly once through the c
     var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
     try std.testing.expectError(error.OutOfMemory, Deflater.create(fail.allocator(), 1));
     try std.testing.expectEqual(fail.allocated_bytes, fail.freed_bytes);
+}
+
+test "bounded inflate verifies exact checksums end and output length with no retained native workspace" {
+    const t = std.testing;
+    const large: [90000]u8 = @splat(0x37);
+    for ([_][]const u8{ "", "pixels", &large }) |plain| {
+        const compressed = try compress(t.allocator, plain, 6);
+        defer t.allocator.free(compressed);
+        const out = try t.allocator.alloc(u8, plain.len);
+        defer t.allocator.free(out);
+        try t.expectEqual(plain.len, try inflateInto(t.allocator, compressed, out));
+        try t.expectEqualSlices(u8, plain, out);
+        if (plain.len != 0) try t.expectError(error.InflateOutputLimit, inflateInto(t.allocator, compressed, out[0 .. out.len - 1]));
+        for (0..compressed.len) |length| try t.expectError(error.InvalidCompressedData, inflateInto(t.allocator, compressed[0..length], out));
+        const extra = try std.mem.concat(t.allocator, u8, &.{ compressed, &.{0} });
+        defer t.allocator.free(extra);
+        try t.expectError(error.InvalidCompressedData, inflateInto(t.allocator, extra, out));
+        const corrupt = try t.allocator.dupe(u8, compressed);
+        defer t.allocator.free(corrupt);
+        corrupt[corrupt.len - 1] ^= 1;
+        try t.expectError(error.InvalidCompressedData, inflateInto(t.allocator, corrupt, out));
+    }
+}
+fn inflateFailureProbe(a: std.mem.Allocator, compressed: []const u8) !void {
+    const decoded = try inflateOwned(a, compressed, 256);
+    defer a.free(decoded);
+    try std.testing.expectEqualStrings("allocator owned bounded inflation", decoded);
+}
+test "bounded inflate allocation failures retire native workspace and unpublished output exactly once" {
+    const t = std.testing;
+    const compressed = try compress(t.allocator, "allocator owned bounded inflation", 6);
+    defer t.allocator.free(compressed);
+    try std.testing.checkAllAllocationFailures(t.allocator, inflateFailureProbe, .{compressed});
+    try t.expectError(error.InvalidCompressedData, inflateInto(t.failing_allocator, &.{}, &.{}));
+    try t.expectError(error.OutOfMemory, inflateInto(t.failing_allocator, compressed, &.{}));
+}
+
+test "inflate preflight rejects malformed headers dictionaries and overlap before native allocation or writes" {
+    const t = std.testing;
+    const compressed = try compress(t.allocator, "pixels", 1);
+    defer t.allocator.free(compressed);
+    const before = try t.allocator.dupe(u8, compressed);
+    defer t.allocator.free(before);
+    try t.expectError(error.Overlap, inflateInto(t.failing_allocator, compressed, compressed[1..]));
+    try t.expectEqualSlices(u8, before, compressed);
+    for ([_][2]u8{ .{ 0, 0 }, .{ 0x78, 0x20 }, .{ 0x88, 0x98 } }) |header| {
+        const bytes = [_]u8{ header[0], header[1], 1, 0, 0, 0, 0, 0 };
+        try t.expectError(error.InvalidCompressedData, inflateOwned(t.failing_allocator, &bytes, 100));
+    }
+}
+
+test "streaming inflate offers bounded chunks and joins sink failure without retaining source or workspace" {
+    const t = std.testing;
+    const plain = try t.allocator.alloc(u8, 90000);
+    defer t.allocator.free(plain);
+    @memset(plain, 0x35);
+    const compressed = try compress(t.allocator, plain, 6);
+    defer t.allocator.free(compressed);
+    const Sink = struct {
+        count: usize = 0,
+        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+            try t.expect(bytes.len <= 32768);
+            try t.expect(std.mem.allEqual(u8, bytes, 0x35));
+            self.count += bytes.len;
+        }
+    };
+    var sink: Sink = .{};
+    try t.expectEqual(plain.len, try inflateTo(t.allocator, compressed, &sink, plain.len));
+    try t.expectEqual(plain.len, sink.count);
+    const Failed = struct {
+        pub fn writeAll(_: *@This(), _: []const u8) !void {
+            return error.Cancelled;
+        }
+    };
+    var failed: Failed = .{};
+    try t.expectError(error.Cancelled, inflateTo(t.allocator, compressed, &failed, plain.len));
 }

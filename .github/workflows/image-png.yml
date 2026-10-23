@@ -1,0 +1,46 @@
+name: Image PNG decoding
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/png*', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/tests/png_decode*', '.github/workflows/image-png.yml']
+  pull_request:
+    paths: ['packages/image/src/png*', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/tests/png_decode*', '.github/workflows/image-png.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  png:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Strict decoder and independent libpng reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install libpng zlib
+            png=$(brew --prefix libpng)
+            zlib=$(brew --prefix zlib)
+          else
+            sudo apt-get update && sudo apt-get install -y libpng-dev zlib1g-dev
+            png=/usr
+            zlib=/usr
+          fi
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz -L"$zlib/lib" -rpath "$zlib/lib" packages/image/src/png_decoder.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep png -Mroot=packages/image/tests/png_decode_fixture.zig -Mpng=packages/image/src/png_decoder.zig -femit-bin=/tmp/png-decode.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -I"$png/include" packages/image/tests/png_decode_libpng.c /tmp/png-decode.o -L"$png/lib" -lpng16 -L"$zlib/lib" -lz -Wl,-rpath,"$png/lib" -Wl,-rpath,"$zlib/lib" -o /tmp/png-decode
+            /tmp/png-decode
+            if [ '${{ matrix.zig }}' = master ]; then
+              zig test -O "$mode" -lc -lz -L"$zlib/lib" -rpath "$zlib/lib" packages/image/src/png_test.zig --test-filter PNG
+              zig test -O "$mode" -lc -lz -L"$zlib/lib" -rpath "$zlib/lib" packages/image/src/png_test.zig --test-filter APNG
+            fi
+          done
