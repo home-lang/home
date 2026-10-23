@@ -2,9 +2,9 @@ name: POSIX shared memory ownership
 on:
   push:
     branches: [main]
-    paths: ['packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
+    paths: ['packages/io/src/descriptor_channel.zig', 'packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
   pull_request:
-    paths: ['packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
+    paths: ['packages/io/src/descriptor_channel.zig', 'packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,5 +27,6 @@ jobs:
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" -lc packages/io/src/posix_shared_memory.zig
+            zig test -O "$mode" -lc packages/io/src/descriptor_channel.zig
             zig test -O "$mode" packages/video/src/core/owned_admission.zig
           done

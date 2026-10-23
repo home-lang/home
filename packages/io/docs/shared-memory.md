@@ -28,6 +28,10 @@ processes, transfer descriptors, provide acknowledgements or retain device frame
 A raw integer fd is not an inter-process transfer and is not a camera lease.
 Kernel/device and consumer ownership must remain explicit in the application.
 
+The companion [descriptor channel](descriptor-channel.md) now provides bounded
+atomic SCM_RIGHTS records independently of the VM. Application acknowledgements,
+process supervision and device lifetime remain explicit caller responsibilities.
+
 The companion `video/core/owned_admission.Registry.resize` reconciles an existing
 reservation with an exact payload cost without changing its identity, count or
 cleanup fence. Reserve a bounded preparation allowance first; resize before

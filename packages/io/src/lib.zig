@@ -24,3 +24,4 @@ pub const StringBuilder = String.StringBuilder;
 
 /// Hosted Linux/Darwin descriptor owners; use with libc and caller synchronization.
 pub const PosixSharedMemory = if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) @import("posix_shared_memory.zig") else struct {};
+pub const DescriptorChannel = if (@import("builtin").os.tag == .linux or @import("builtin").os.tag == .macos) @import("descriptor_channel.zig") else struct {};
