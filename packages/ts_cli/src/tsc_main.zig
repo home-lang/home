@@ -5928,6 +5928,33 @@ test "tsc_main: admitted JavaScript JSDoc literal shorthand stays narrow" {
     try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
 }
 
+test "tsc_main: admitted JavaScript union shorthand uses source flow type" {
+    const owner_source = "/** @type {'ready' | 'idle'} */ const state = 'ready'; export const box = { state, nested: { state } };";
+    const consumer_source = "import { box } from './owner.js'; box.state = 'idle'; box.nested.state = 'idle';";
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| {
+        try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+        try std.testing.expectEqualStrings("Type '\"idle\"' is not assignable to type '\"ready\"'.", diagnostic.message);
+    }
+}
+
 test "tsc_main: real transitive imported const inference reaches the consumer" {
     const main_source = "import { value } from './middle'; export const result: number = value;";
     const middle_source = "import { leafValue } from './leaf'; export const value = leafValue;";

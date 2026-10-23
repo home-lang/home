@@ -34,6 +34,7 @@ pub const Container = enum {
 pub const TypeExpression = struct {
     base: union(enum) {
         primitive: Primitive,
+        string_literal: []u8,
         number_literal: f64,
         boolean_literal: bool,
         unsupported,
@@ -45,6 +46,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) gpa.free(self.containers);
         switch (self.base) {
             .primitive, .number_literal, .boolean_literal, .unsupported => {},
+            .string_literal => |value| gpa.free(value),
             .union_type => |members| {
                 for (members) |member| member.deinit(gpa);
                 gpa.free(members);
@@ -56,7 +58,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) return null;
         return switch (self.base) {
             .primitive => |primitive| primitive,
-            .number_literal, .boolean_literal, .unsupported, .union_type => null,
+            .string_literal, .number_literal, .boolean_literal, .unsupported, .union_type => null,
         };
     }
 };
@@ -307,7 +309,7 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     }
     var base: TypeExpression = if (parsePrimitive(current)) |primitive|
         .{ .base = .{ .primitive = primitive } }
-    else if (parseLiteral(current)) |literal|
+    else if (try parseLiteral(gpa, current)) |literal|
         literal
     else if (outerGroupBody(current)) |body|
         (try parseTypeExpression(gpa, body) orelse {
@@ -334,7 +336,22 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     return base;
 }
 
-fn parseLiteral(text: []const u8) ?TypeExpression {
+fn parseLiteral(gpa: std.mem.Allocator, text: []const u8) error{OutOfMemory}!?TypeExpression {
+    if (text.len >= 2 and (text[0] == '\'' or text[0] == '"') and text[text.len - 1] == text[0]) {
+        const raw = text[1 .. text.len - 1];
+        var index: usize = 0;
+        while (index < raw.len) : (index += 1) {
+            if (raw[index] == '\n' or raw[index] == '\r' or raw[index] == text[0]) return null;
+            if (raw[index] == '\\') {
+                if (index + 1 == raw.len) return null;
+                index += 1;
+            }
+        }
+        var cooked: std.ArrayListUnmanaged(u8) = .empty;
+        errdefer cooked.deinit(gpa);
+        try driver.ProgramClassSchema.appendCookedStringText(gpa, raw, &cooked);
+        return .{ .base = .{ .string_literal = try cooked.toOwnedSlice(gpa) } };
+    }
     if (std.mem.eql(u8, text, "true")) return .{ .base = .{ .boolean_literal = true } };
     if (std.mem.eql(u8, text, "false")) return .{ .base = .{ .boolean_literal = false } };
     if (text.len == 0) return null;
@@ -363,45 +380,81 @@ fn topLevelUnionEnd(text: []const u8) ?usize {
     var paren: usize = 0;
     var bracket: usize = 0;
     var brace: usize = 0;
-    for (text, 0..) |byte, index| switch (byte) {
-        '<' => angle += 1,
-        '>' => {
-            if (angle == 0) return null;
-            angle -= 1;
-        },
-        '(' => paren += 1,
-        ')' => {
-            if (paren == 0) return null;
-            paren -= 1;
-        },
-        '[' => bracket += 1,
-        ']' => {
-            if (bracket == 0) return null;
-            bracket -= 1;
-        },
-        '{' => brace += 1,
-        '}' => {
-            if (brace == 0) return null;
-            brace -= 1;
-        },
-        '|' => if (angle == 0 and paren == 0 and bracket == 0 and brace == 0) return index,
-        else => {},
-    };
+    var quote: u8 = 0;
+    var escaped = false;
+    for (text, 0..) |byte, index| {
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (byte == '\'' or byte == '"') {
+            quote = byte;
+            continue;
+        }
+        switch (byte) {
+            '<' => angle += 1,
+            '>' => {
+                if (angle == 0) return null;
+                angle -= 1;
+            },
+            '(' => paren += 1,
+            ')' => {
+                if (paren == 0) return null;
+                paren -= 1;
+            },
+            '[' => bracket += 1,
+            ']' => {
+                if (bracket == 0) return null;
+                bracket -= 1;
+            },
+            '{' => brace += 1,
+            '}' => {
+                if (brace == 0) return null;
+                brace -= 1;
+            },
+            '|' => if (angle == 0 and paren == 0 and bracket == 0 and brace == 0) return index,
+            else => {},
+        }
+    }
     return null;
 }
 
 fn outerGroupBody(text: []const u8) ?[]const u8 {
     if (text.len < 2 or text[0] != '(' or text[text.len - 1] != ')') return null;
     var depth: usize = 0;
-    for (text, 0..) |byte, index| switch (byte) {
-        '(' => depth += 1,
-        ')' => {
-            if (depth == 0) return null;
-            depth -= 1;
-            if (depth == 0 and index + 1 != text.len) return null;
-        },
-        else => {},
-    };
+    var quote: u8 = 0;
+    var escaped = false;
+    for (text, 0..) |byte, index| {
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (byte == '\'' or byte == '"') {
+            quote = byte;
+            continue;
+        }
+        switch (byte) {
+            '(' => depth += 1,
+            ')' => {
+                if (depth == 0) return null;
+                depth -= 1;
+                if (depth == 0 and index + 1 != text.len) return null;
+            },
+            else => {},
+        }
+    }
     if (depth != 0) return null;
     return std.mem.trim(u8, text[1 .. text.len - 1], " \t\r\n");
 }
@@ -431,15 +484,33 @@ fn genericBody(text: []const u8, name: []const u8) ?[]const u8 {
     if (cursor < text.len and text[cursor] == '.') cursor += 1;
     if (cursor >= text.len or text[cursor] != '<' or text[text.len - 1] != '>') return null;
     var depth: usize = 0;
-    for (text[cursor..], cursor..) |byte, index| switch (byte) {
-        '<' => depth += 1,
-        '>' => {
-            if (depth == 0) return null;
-            depth -= 1;
-            if (depth == 0 and index + 1 != text.len) return null;
-        },
-        else => {},
-    };
+    var quote: u8 = 0;
+    var escaped = false;
+    for (text[cursor..], cursor..) |byte, index| {
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (byte == '\'' or byte == '"') {
+            quote = byte;
+            continue;
+        }
+        switch (byte) {
+            '<' => depth += 1,
+            '>' => {
+                if (depth == 0) return null;
+                depth -= 1;
+                if (depth == 0 and index + 1 != text.len) return null;
+            },
+            else => {},
+        }
+    }
     if (depth != 0) return null;
     return std.mem.trim(u8, text[cursor + 1 .. text.len - 1], " \t\r\n");
 }
@@ -469,7 +540,34 @@ test "JSDoc numeric and boolean literal annotations retain exact values" {
         defer parsed.deinit(std.testing.allocator);
         try std.testing.expectEqual(case[1], parsed.base.boolean_literal);
     }
-    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "'unhandled'")) == null);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "'unterminated")) == null);
+}
+
+test "JSDoc string literal annotations retain cooked values and union boundaries" {
+    for ([_]struct { []const u8, []const u8 }{
+        .{ "'ready'", "ready" },
+        .{ "\"ready\"", "ready" },
+        .{ "'a|b'", "a|b" },
+        .{ "'a\\'b'", "a'b" },
+        .{ "'a\\u{1F600}'", "a😀" },
+    }) |case| {
+        const parsed = (try parseTypeExpression(std.testing.allocator, case[0])).?;
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings(case[1], parsed.base.string_literal);
+    }
+    const union_value = (try parseTypeExpression(std.testing.allocator, "'a|b' | 'idle'")).?;
+    defer union_value.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), union_value.base.union_type.len);
+    try std.testing.expectEqualStrings("a|b", union_value.base.union_type[0].base.string_literal);
+    try std.testing.expectEqualStrings("idle", union_value.base.union_type[1].base.string_literal);
+    const grouped = (try parseTypeExpression(std.testing.allocator, "('a)b' | 'c')")).?;
+    defer grouped.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("a)b", grouped.base.union_type[0].base.string_literal);
+    const array = (try parseTypeExpression(std.testing.allocator, "Array<'a>b'>")).?;
+    defer array.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(Container, &.{.array}, array.containers);
+    try std.testing.expectEqualStrings("a>b", array.base.string_literal);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "'bad' tail")) == null);
 }
 
 test "JSDoc union expression parser preserves precedence and nested wrappers" {

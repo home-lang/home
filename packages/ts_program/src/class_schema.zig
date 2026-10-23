@@ -1140,6 +1140,7 @@ pub const Builder = struct {
     fn jsdocType(self: *Builder, type_expression: jsdoc_types.TypeExpression) !*const schema.Expression {
         var result = switch (type_expression.base) {
             .primitive => |primitive| try self.expression(.{ .primitive = schemaPrimitive(primitive) }),
+            .string_literal => |value| try self.expression(.{ .string = try self.arena.dupe(u8, value) }),
             .number_literal => |number| try self.expression(.{ .number = number }),
             .boolean_literal => |boolean| try self.expression(.{ .boolean = boolean }),
             .unsupported => try self.expression(.unsupported),
@@ -1494,6 +1495,33 @@ pub const Builder = struct {
         } });
     }
 
+    /// A const binding cannot change between its initializer and a shorthand
+    /// property read. TypeScript narrows a literal-only annotation union to
+    /// that initializer's member, even when the property itself is mutable.
+    /// This graph is built before checking, so use only closed syntax facts:
+    /// do not guess at aliases, assignments, or non-literal union members.
+    fn constUnionMember(self: *Builder, context: Context, initializer: hir.NodeId, declared: *const schema.Expression) error{OutOfMemory}!?*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        if (declared.* != .union_type) return null;
+        const kind = c.hir.kindOf(initializer);
+        if (kind != .literal_string and kind != .literal_number) return null;
+        const literal = try self.lower(context, initializer);
+        var found = false;
+        for (declared.union_type) |member| {
+            if (std.meta.activeTag(member.*) != std.meta.activeTag(literal.*)) return null;
+            switch (literal.*) {
+                .string => |value| {
+                    if (std.mem.eql(u8, member.string, value)) found = true;
+                },
+                .number => |value| {
+                    if (member.number == value) found = true;
+                },
+                else => return null,
+            }
+        }
+        return if (found) literal else null;
+    }
+
     /// Transfer the exact, closed shape of a data initializer. A mutable
     /// property widens its literal value in both TypeScript and JavaScript;
     /// computed/dynamic members cannot be represented by a finite schema, so
@@ -1523,11 +1551,19 @@ pub const Builder = struct {
                 if (active.contains(key)) return self.expression(.unsupported);
                 try active.put(self.gpa, key, {});
                 defer _ = active.remove(key);
-                if (variable.type_annotation != hir.none_node_id) return self.lower(context, variable.type_annotation);
+                if (variable.type_annotation != hir.none_node_id) {
+                    const declared = try self.lower(context, variable.type_annotation);
+                    if (kind == .const_decl and variable.init != hir.none_node_id)
+                        if (try self.constUnionMember(context, variable.init, declared)) |member| return member;
+                    return declared;
+                }
                 if (jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
                     if (try jsdoc_types.declarationType(self.gpa, c, declaration_node)) |type_expression| {
                         defer type_expression.deinit(self.gpa);
-                        return self.jsdocType(type_expression);
+                        const declared = try self.jsdocType(type_expression);
+                        if (kind == .const_decl and variable.init != hir.none_node_id)
+                            if (try self.constUnionMember(context, variable.init, declared)) |member| return member;
+                        return declared;
                     }
                 }
                 return self.inferredInitializerType(context, variable.init, active);
@@ -2795,6 +2831,40 @@ test "class schema: unannotated const literal remains exact" {
     const result = try graph.class(0, "KEY");
     defer result.deinit(T.allocator);
     try T.expectEqualStrings("~tag", result.declaration.body.?.string);
+}
+
+test "class schema: annotated const union shorthand uses its initialized member" {
+    inline for (.{ false, true }) |javascript| {
+        const graph = try TestGraph.init(&.{.{
+            .path = if (javascript) "/owner.js" else "/owner.ts",
+            .text = if (javascript)
+                "/** @type {'ready' | 'idle'} */ const state = 'ready'; export const box = { state, nested: { state } };"
+            else
+                "const state: 'ready' | 'idle' = 'ready'; export const box = { state, nested: { state } };",
+        }});
+        defer graph.deinit();
+        const result = try graph.class(0, "box");
+        defer result.deinit(T.allocator);
+        try T.expect(try result.isSupported(T.allocator));
+        const members = result.declaration.body.?.object;
+        try T.expectEqualStrings("ready", members[0].type.string);
+        try T.expectEqualStrings("ready", members[1].type.object[0].type.string);
+    }
+}
+
+test "class schema: broad annotated union does not acquire an initializer literal" {
+    const graph = try TestGraph.init(&.{.{
+        .path = "/owner.ts",
+        .text = "const state: 'ready' | string = 'ready'; export const box = { state };",
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "box");
+    defer result.deinit(T.allocator);
+    const state = result.declaration.body.?.object[0].type;
+    try T.expect(state.* == .union_type);
+    try T.expectEqual(@as(usize, 2), state.union_type.len);
+    try T.expectEqualStrings("ready", state.union_type[0].string);
+    try T.expectEqual(Primitive.string_t, state.union_type[1].primitive);
 }
 
 test "class schema: imported const initializer retains value declaration identity across hops" {

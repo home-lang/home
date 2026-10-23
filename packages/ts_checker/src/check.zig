@@ -227031,6 +227031,25 @@ test "checker: unresolved shorthand property reports TS18004" {
     try T.expect(found);
 }
 
+test "checker: annotated const shorthand reads its flow-narrowed union member" {
+    const s = try newSetup(
+        \\const state: "ready" | "idle" = "ready";
+        \\const box = { state, nested: { state } };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const box_initializer = hir_mod.varDeclOf(&s.hir, statements[1]).init;
+    const properties = hir_mod.objectLiteralProps(&s.hir, box_initializer);
+    const direct = hir_mod.objectPropertyOf(&s.hir, properties[0]).value;
+    const nested_object = hir_mod.objectPropertyOf(&s.hir, properties[1]).value;
+    const nested_property = hir_mod.objectLiteralProps(&s.hir, nested_object)[0];
+    const nested = hir_mod.objectPropertyOf(&s.hir, nested_property).value;
+    const ready = try s.ti.internStringLiteral(try s.sint.intern("ready"));
+    try T.expectEqual(ready, s.hir.typeOf(direct));
+    try T.expectEqual(ready, s.hir.typeOf(nested));
+}
+
 test "checker: recovered shorthand access tails suppress duplicate property diagnostics" {
     const s = try newSetup(
         \\var v = {
