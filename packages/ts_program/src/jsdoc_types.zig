@@ -34,6 +34,9 @@ pub const Container = enum {
 pub const TypeExpression = struct {
     base: union(enum) {
         primitive: Primitive,
+        number_literal: f64,
+        boolean_literal: bool,
+        unsupported,
         union_type: []TypeExpression,
     },
     containers: []Container = &.{},
@@ -41,7 +44,7 @@ pub const TypeExpression = struct {
     pub fn deinit(self: TypeExpression, gpa: std.mem.Allocator) void {
         if (self.containers.len > 0) gpa.free(self.containers);
         switch (self.base) {
-            .primitive => {},
+            .primitive, .number_literal, .boolean_literal, .unsupported => {},
             .union_type => |members| {
                 for (members) |member| member.deinit(gpa);
                 gpa.free(members);
@@ -53,7 +56,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) return null;
         return switch (self.base) {
             .primitive => |primitive| primitive,
-            .union_type => null,
+            .number_literal, .boolean_literal, .unsupported, .union_type => null,
         };
     }
 };
@@ -107,7 +110,7 @@ pub fn declarationType(gpa: std.mem.Allocator, c: *const driver.Compilation, nod
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
     for (tags) |tag| {
-        if (tag.kind == .type_tag) return parseTypeExpression(gpa, tag.type_text);
+        if (tag.kind == .type_tag) return (try parseTypeExpression(gpa, tag.type_text)) orelse TypeExpression{ .base = .unsupported };
     }
     return null;
 }
@@ -304,6 +307,8 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     }
     var base: TypeExpression = if (parsePrimitive(current)) |primitive|
         .{ .base = .{ .primitive = primitive } }
+    else if (parseLiteral(current)) |literal|
+        literal
     else if (outerGroupBody(current)) |body|
         (try parseTypeExpression(gpa, body) orelse {
             containers.deinit(gpa);
@@ -327,6 +332,17 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     base.containers = combined;
     containers.deinit(gpa);
     return base;
+}
+
+fn parseLiteral(text: []const u8) ?TypeExpression {
+    if (std.mem.eql(u8, text, "true")) return .{ .base = .{ .boolean_literal = true } };
+    if (std.mem.eql(u8, text, "false")) return .{ .base = .{ .boolean_literal = false } };
+    if (text.len == 0) return null;
+    const first_digit: usize = if (text[0] == '-') 1 else 0;
+    if (first_digit >= text.len or !std.ascii.isDigit(text[first_digit])) return null;
+    const number = std.fmt.parseFloat(f64, text) catch return null;
+    if (!std.math.isFinite(number)) return null;
+    return .{ .base = .{ .number_literal = number } };
 }
 
 /// JSDoc accepts both prefix `?T` and postfix `T?` nullable forms. Parse
@@ -433,6 +449,27 @@ test "JSDoc primitive array expressions preserve nested mutable and readonly wra
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expectEqual(Primitive.string_t, parsed.base.primitive);
     try std.testing.expectEqualSlices(Container, &.{ .array, .readonly_array, .array }, parsed.containers);
+}
+
+test "JSDoc numeric and boolean literal annotations retain exact values" {
+    for ([_]struct { []const u8, f64 }{
+        .{ "1", 1 },
+        .{ "-2", -2 },
+        .{ "1e2", 100 },
+    }) |case| {
+        const parsed = (try parseTypeExpression(std.testing.allocator, case[0])).?;
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqual(case[1], parsed.base.number_literal);
+    }
+    for ([_]struct { []const u8, bool }{
+        .{ "true", true },
+        .{ "false", false },
+    }) |case| {
+        const parsed = (try parseTypeExpression(std.testing.allocator, case[0])).?;
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqual(case[1], parsed.base.boolean_literal);
+    }
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "'unhandled'")) == null);
 }
 
 test "JSDoc union expression parser preserves precedence and nested wrappers" {

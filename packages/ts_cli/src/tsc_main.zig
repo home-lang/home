@@ -5875,6 +5875,59 @@ test "tsc_main: admitted JavaScript object initializer constrains imported reads
     try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; tags: string[]; }'.", diagnostics[3].message);
 }
 
+test "tsc_main: admitted JavaScript shorthand properties retain local binding types" {
+    const owner_source = "const value = 1; const alias = value; export const box = { value: alias, nested: { ready: true } };";
+    const consumer_source = "import { box } from './owner.js'; box.value = 'bad'; box.nested.ready = 123; box.missing;";
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+    for (diagnostics, [_]u32{ 2322, 2322, 2339 }) |diagnostic, code| try std.testing.expectEqual(code, diagnostic.code);
+    try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[0].message);
+    try std.testing.expectEqualStrings("Type 'number' is not assignable to type 'boolean'.", diagnostics[1].message);
+    try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; }'.", diagnostics[2].message);
+}
+
+test "tsc_main: admitted JavaScript JSDoc literal shorthand stays narrow" {
+    const owner_source = "/** @type {1} */ const narrow = 1; const wide = 1; export const box = { narrow, wide };";
+    const consumer_source = "import { box } from './owner.js'; box.narrow = 2; box.wide = 'bad';";
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+    try std.testing.expectEqualStrings("Type '2' is not assignable to type '1'.", diagnostics[0].message);
+    try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+}
+
 test "tsc_main: real transitive imported const inference reaches the consumer" {
     const main_source = "import { value } from './middle'; export const result: number = value;";
     const middle_source = "import { leafValue } from './leaf'; export const value = leafValue;";

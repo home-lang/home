@@ -905,7 +905,11 @@ pub const Builder = struct {
             }
             if (variable.type_annotation == 0 and variable.init != hir.none_node_id and
                 (c.hir.kindOf(variable.init) == .object_literal or c.hir.kindOf(variable.init) == .array_literal))
-                break :blk try self.inferredInitializerType(context, variable.init);
+            {
+                var active: std.AutoHashMapUnmanaged(Key, void) = .empty;
+                defer active.deinit(self.gpa);
+                break :blk try self.inferredInitializerType(context, variable.init, &active);
+            }
             if (kind == .const_decl and variable.type_annotation == 0 and
                 c.hir.kindOf(variable.init) == .identifier)
             {
@@ -1136,6 +1140,9 @@ pub const Builder = struct {
     fn jsdocType(self: *Builder, type_expression: jsdoc_types.TypeExpression) !*const schema.Expression {
         var result = switch (type_expression.base) {
             .primitive => |primitive| try self.expression(.{ .primitive = schemaPrimitive(primitive) }),
+            .number_literal => |number| try self.expression(.{ .number = number }),
+            .boolean_literal => |boolean| try self.expression(.{ .boolean = boolean }),
+            .unsupported => try self.expression(.unsupported),
             .union_type => |members| union_expression: {
                 const expressions = try self.arena.alloc(*const schema.Expression, members.len);
                 for (members, expressions) |member, *result| result.* = try self.jsdocType(member);
@@ -1492,7 +1499,7 @@ pub const Builder = struct {
     /// computed/dynamic members cannot be represented by a finite schema, so
     /// they invalidate the whole inferred value rather than publishing a
     /// misleading subset of its members.
-    fn inferredInitializerType(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+    fn inferredInitializerType(self: *Builder, context: Context, node: hir.NodeId, active: *std.AutoHashMapUnmanaged(Key, void)) error{OutOfMemory}!*const schema.Expression {
         const c = self.sources[context.source].compilation;
         if (node == hir.none_node_id) return self.expression(.unsupported);
         switch (c.hir.kindOf(node)) {
@@ -1502,12 +1509,35 @@ pub const Builder = struct {
             .literal_bool => return self.expression(.{ .primitive = Primitive.boolean_t }),
             .literal_null => return self.expression(.{ .primitive = Primitive.null_t }),
             .literal_undefined => return self.expression(.{ .primitive = Primitive.undefined_t }),
+            .identifier => {
+                const name = hir.identifierOf(&c.hir, node).name;
+                const bound = self.scopedValueSymbol(context.source, node, name) orelse return self.expression(.unsupported);
+                if (bound.flags.is_import or bound.decls.items.len != 1) return self.expression(.unsupported);
+                const declaration_node = bound.decls.items[0];
+                const kind = c.hir.kindOf(declaration_node);
+                if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return self.expression(.unsupported);
+                const variable = hir.varDeclOf(&c.hir, declaration_node);
+                if (c.hir.kindOf(variable.name) != .identifier or
+                    hir.identifierOf(&c.hir, variable.name).name != name) return self.expression(.unsupported);
+                const key: Key = .{ .source = context.source, .node = declaration_node };
+                if (active.contains(key)) return self.expression(.unsupported);
+                try active.put(self.gpa, key, {});
+                defer _ = active.remove(key);
+                if (variable.type_annotation != hir.none_node_id) return self.lower(context, variable.type_annotation);
+                if (jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
+                    if (try jsdoc_types.declarationType(self.gpa, c, declaration_node)) |type_expression| {
+                        defer type_expression.deinit(self.gpa);
+                        return self.jsdocType(type_expression);
+                    }
+                }
+                return self.inferredInitializerType(context, variable.init, active);
+            },
             .object_literal => {
                 var members: std.ArrayListUnmanaged(schema.Member) = .empty;
                 for (hir.objectLiteralProps(&c.hir, node)) |property_node| {
                     if (c.hir.kindOf(property_node) != .object_property) return self.expression(.unsupported);
                     const property = hir.objectPropertyOf(&c.hir, property_node);
-                    if (property.is_method or property.is_shorthand or property.is_computed or
+                    if (property.is_method or property.is_computed or
                         property.value == hir.none_node_id or property.type_annotation != hir.none_node_id)
                         return self.expression(.unsupported);
                     const name = switch (c.hir.kindOf(property.key)) {
@@ -1518,7 +1548,7 @@ pub const Builder = struct {
                         },
                         else => return self.expression(.unsupported),
                     };
-                    const value = try self.inferredInitializerType(context, property.value);
+                    const value = try self.inferredInitializerType(context, property.value, active);
                     if (value.* == .unsupported) return value;
                     var previous: ?*schema.Member = null;
                     for (members.items) |*member| if (std.mem.eql(u8, member.name, name)) {
@@ -1535,7 +1565,7 @@ pub const Builder = struct {
                 if (elements.len == 0) return self.expression(.unsupported);
                 const types = try self.arena.alloc(*const schema.Expression, elements.len);
                 for (elements, types) |element, *value| {
-                    value.* = try self.inferredInitializerType(context, element);
+                    value.* = try self.inferredInitializerType(context, element, active);
                     if (value.*.* == .unsupported) return value.*;
                 }
                 const element_type = if (types.len == 1) types[0] else try self.expression(.{ .union_type = types });
