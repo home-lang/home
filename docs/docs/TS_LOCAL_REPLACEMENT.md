@@ -38,6 +38,56 @@ Its SHA-256 is `00aa448c40f851f392079167514a3cf51e524925e18ce43a13b4a0980d4614cd
 all 2,655 payload hashes were verified. These results do not qualify the remaining
 real projects or their compiler API uses.
 
+## Imported heritage name resolution — 2026-10-23
+
+Published compiler source `21cbca046d061f24ca38d706cdf22e24b987d4a5`
+separates an imported symbol's declaration meaning from its member-type
+projection. Previously, an interface containing an unsupported template member
+could produce TS2304 at an `extends` or `implements` use even though its owner
+exported the type. The checker now consults the resolved export facts. A proven
+value-only export still produces TS2749, including when brought in with
+`import type`. Unsupported member-shape transfer remains qualification work.
+
+The permanent controls cover named, renamed and default imports, named/default
+barrels, and missing-name, missing-export and value-only negatives. All **112
+imported-generic CLI observations pass**; before the correction, all 56 reference
+observations passed while Home failed 28 of its 56 observations. Program controls
+exercise serial/streaming checking and both root orders. All eleven compiler
+gates pass, covering **7,255 unit checks**, including verified cached results
+for unchanged configuration, parser and HIR targets. The complete checker suite
+executes 4,684 tests and Program executes 419. All fourteen workflow CLI suites
+pass **1,850 observations**.
+
+The unchanged real project is accepted by both its installed TypeScript 6.0.3
+and the pinned native TypeScript 7.0.2. Home completes normally in 40.354 seconds
+with **222 diagnostics**, down from **232** on current baseline
+`2d58f3f7c8f0ad26919472dc1dd09c14685e9783`: ten diagnostic headers are removed
+and none added by this correction. All 590 original inputs, the installed
+compiler's 140 files and its Node runtime remain frozen; the project stays
+clean. The newer upstream baseline added seventeen Redis member diagnostics
+compared with the earlier 215-diagnostic replay. Those remain visible, alongside
+the EventEmitter lookup and other semantic gaps. Timing is a functional
+observation, not a controlled performance benchmark.
+
+The unfiltered compiled ReleaseSafe runner finishes **1,458 test functions:
+1,386 pass, zero are skipped and 72 fail**, with the same failing identities as
+the prior run with the corpus initialized. **The two exhaustive upstream corpus
+surveys are separate opt-in tests and were disabled.** Their early returns are
+not counted as Zig skips, so the zero-skip footer does not establish exhaustive
+upstream coverage. Full conformance/compiler corpus surveys remain required.
+The existing baseline-aware survey also retains its stale 586-case assertion
+against 591 cases; no assertion was relaxed.
+
+All **130,633 corpus, baseline and library files** are unchanged before/after
+this qualification. After integrating origin/main's video changes, both tested
+artifacts reproduce byte for byte. The ReleaseFast CLI SHA-256 is
+`9fe637d48c6d5182faf97584a0ce8fdfea3c7bdecc6c6af1c764744b19890f3c`;
+the ReleaseSafe conformance image SHA-256 is
+`ca24b0fb862150fb8111b2db3cc224007212b7f4f5b7bfaf2dd90cdedc2b6127`.
+[Public qualification evidence](../../bench/vs_tsgo/evidence/20261023-local-tsc-imported-heritage.json)
+retains aggregate results, failure identities and source/artifact hashes.
+**Whole-tree and compiler API replacement remain unqualified.**
+
 ## Pool lifetime correction — 2026-10-20
 
 Published compiler source `03e2d16e9518dc0d024f1356d83824414c52a9a8`
@@ -188,6 +238,21 @@ not a new scan at publication time. The
 [public v12 scope evidence](../../bench/vs_tsgo/evidence/20261020-local-tsc-inventory-scope-v12.json)
 retains aggregate counts and hashes. **All 170 groups remain unqualified**;
 static coverage does not establish compiler compatibility.
+
+The **2026-10-23** capture now contains **192 current canonical Git groups**,
+including five config-only groups: 2,292 manifests with check scripts, 4,272
+configs, 2,796 scripts and 2,661 literal compiler segments. All 6,629 source
+records have ownership, without hash drift or scope errors. The 65 manifest
+parse errors remain recorded. Relative to the previous capture, 26 groups are
+new and four earlier checkout directories are confirmed absent; those four
+retain an unqualified status. No disappearance counts as successful replacement.
+
+All **184 flagged entrypoints** have static review records, with 389 routing
+inputs rechecked unchanged. One dynamic command registration still needs
+further resolution. The inventory producer's fifteen hermetic tests pass again.
+The [public v13 scope evidence](../../bench/vs_tsgo/evidence/20261023-local-tsc-inventory-scope-v13.json)
+retains aggregate counts and hashes. **All 192 current groups, the four absent
+prior groups and compiler API uses remain unqualified.**
 
 ## Cyclic import memory qualification — 2026-10-18
 

@@ -1,0 +1,508 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "purpose": "Imported heritage symbol meaning correction and bounded replacement qualification",
+  "published_compiler_commit": "21cbca046d061f24ca38d706cdf22e24b987d4a5",
+  "full_replacement_qualified": false,
+  "compiler_api_replacement_qualified": false,
+  "source_hashes": {
+    "packages/ts_checker/src/check.zig": "da8084f6f92f90df84c51238b4599d44ccf9498526748db4b8fc4d0b42943d50",
+    "packages/ts_program/src/ts_program.zig": "ca9491c33a6888c9f677a629445ea4f1c354942c835b535c17a7e0a2c582e32e",
+    "scripts/tests/test-ts-imported-generic-cli.py": "f1dad0011fa5fdb5d4c44485511ba326aafbeb6ca6f95759d42092bba8acc476"
+  },
+  "protected_input_manifest_sha256": "c311d2c4a15798db079a78919797e1a68a49b0dca0a347f718eb85cab4918a2c",
+  "protected_input_files": 121,
+  "toolchain": {
+    "version": "0.17.0-dev.2163+89ff10d56",
+    "sha256": "5f2bb8cad081a35840e82cc9c3748f85fe725b29884f887aaea4279272cafba8"
+  },
+  "correction": {
+    "root_cause": "Type heritage checked whether an imported declaration could be materialized through the shared schema, conflating unsupported member projection with absence of the symbol.",
+    "behavior": "Use resolved export facts for type-space presence. Preserve value-only TS2749 diagnostics, including explicit import type. Type lowering retains its existing checks and limits.",
+    "routes": [
+      "named import",
+      "renamed import",
+      "default import",
+      "named barrel re-export",
+      "default barrel re-export"
+    ],
+    "negative_controls": [
+      "unbound base name",
+      "missing exported member",
+      "value-only import",
+      "type-only import of a value"
+    ],
+    "program_modes": [
+      "serial",
+      "streaming"
+    ],
+    "root_orders": 2
+  },
+  "before_cli": {
+    "observations": 112,
+    "reference_observations": 56,
+    "reference_passed": 56,
+    "home_observations": 56,
+    "home_failed": 28,
+    "binary_sha256": "c8bf5027ae97f2982f1c504351052ce42d443c842318b3d65c02cd09aeb8a46e"
+  },
+  "compiler_units": {
+    "total": 7255,
+    "all_gates_passed": true,
+    "counts": {
+      "tsconfig": 171,
+      "ts_parser": 925,
+      "hir": 13,
+      "ts_cli": 89,
+      "tsc_main": 82,
+      "ts_driver": 222,
+      "ts_program": 419,
+      "ts_resolver": 130,
+      "ts_checker": 4684,
+      "ts_emit": 504,
+      "ts_cache": 16
+    },
+    "cached_targets": [
+      "tsconfig",
+      "ts_parser",
+      "hir"
+    ],
+    "cache_basis": "Zig verified cached runs; those targets and their parser/HIR/lexer/interner/config sources are unchanged from the earlier 7155-check qualification. Other eight targets executed.",
+    "stages": [
+      {
+        "stage": "unit-tsconfig",
+        "exit": 0,
+        "seconds": 0.13976383300905582,
+        "log_sha256": "a9c9a2316a8f92f7ae931195113d0ee240db68308b912b0cc9e1be4ca5492578",
+        "executed_tests": [],
+        "cached_runs": 2
+      },
+      {
+        "stage": "unit-ts_parser",
+        "exit": 0,
+        "seconds": 0.11232304200530052,
+        "log_sha256": "7c45ffae46935fcb3b0bd20c5965c3df483a59a3895ff8820a8ec26e51160087",
+        "executed_tests": [],
+        "cached_runs": 2
+      },
+      {
+        "stage": "unit-hir",
+        "exit": 0,
+        "seconds": 0.10927858299692161,
+        "log_sha256": "cd1f35c428882cd713c6ae76e5a0d53e900b5fd4ba821ae487f2801c43cf2527",
+        "executed_tests": [],
+        "cached_runs": 1
+      },
+      {
+        "stage": "unit-ts_cli",
+        "exit": 0,
+        "seconds": 21.016147875008755,
+        "log_sha256": "41f257c496e624ae05d5b0b0dbbdbe3b848e611378b835661614d45fc6e74505",
+        "executed_tests": [
+          [
+            "89",
+            "89"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-tsc_main",
+        "exit": 0,
+        "seconds": 36.80152320799243,
+        "log_sha256": "8b76753872bc98ed393f62b0efa2176d2967a8c1ef478baf1f3f7e7be7cb44d2",
+        "executed_tests": [
+          [
+            "82",
+            "82"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_driver",
+        "exit": 0,
+        "seconds": 27.2972492500121,
+        "log_sha256": "57d38f8332dd3cd5ed8f6d73e31ff9c36b505f0131d42e4e14b618575c7dccc4",
+        "executed_tests": [
+          [
+            "222",
+            "222"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_program",
+        "exit": 0,
+        "seconds": 87.5189970000065,
+        "log_sha256": "74fc5f8668ebd49ecadfe03bdd8aaabdb5fa6060a6a79967a641757e97f0eaae",
+        "executed_tests": [
+          [
+            "419",
+            "419"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_resolver",
+        "exit": 0,
+        "seconds": 2.9406297499954235,
+        "log_sha256": "be5f4e37cd43525bc498028b86a5847d21b6e82ef351d96d3e6631dc397535b3",
+        "executed_tests": [
+          [
+            "130",
+            "130"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_checker",
+        "exit": 0,
+        "seconds": 258.5320803749928,
+        "log_sha256": "79effe7c2b57a4c9222918c1741ce69535e7e2b217d85b6c8a9233c29c2b6b6d",
+        "executed_tests": [
+          [
+            "4684",
+            "4684"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_emit",
+        "exit": 0,
+        "seconds": 22.32876204198692,
+        "log_sha256": "65d5a1ae62c95a71af100f90aad92284cc02c1367b1c5c83e93828651a87b572",
+        "executed_tests": [
+          [
+            "504",
+            "504"
+          ]
+        ],
+        "cached_runs": 0
+      },
+      {
+        "stage": "unit-ts_cache",
+        "exit": 0,
+        "seconds": 1.985580791006214,
+        "log_sha256": "9ecb6217b5153d97ed5aa8067a8925313f23806c05bc1418ff6a78098c0ec326",
+        "executed_tests": [
+          [
+            "16",
+            "16"
+          ]
+        ],
+        "cached_runs": 0
+      }
+    ]
+  },
+  "cli": {
+    "suites": 14,
+    "observations": 1850,
+    "passed": true,
+    "stages": [
+      {
+        "stage": "cli-declaration",
+        "exit": 0,
+        "seconds": 2.303692832996603,
+        "log_sha256": "c64fb98bdb85d1ad78974db997d146a9923e8b30c16253827d041ab729df6567",
+        "observations": 58
+      },
+      {
+        "stage": "cli-recursive-interface",
+        "exit": 0,
+        "seconds": 2.6686357500002487,
+        "log_sha256": "e6ce13ac3b693229c144744ea0db85d055ac207efafe871e4748e7c53d51216b",
+        "observations": 88
+      },
+      {
+        "stage": "cli-automatic-variable",
+        "exit": 0,
+        "seconds": 11.617258375001256,
+        "log_sha256": "ac3dc56475afcb773d3e410bb7844a42c1595c0fed169b397afd9e012ae96794",
+        "observations": 360
+      },
+      {
+        "stage": "cli-optional-indexed",
+        "exit": 0,
+        "seconds": 1.3891362919966923,
+        "log_sha256": "1dc54ec41582e79cf7c5d5d75961da8a22ab3f7f512ad9f450a73cdef313c60a",
+        "observations": 48
+      },
+      {
+        "stage": "cli-generic-indexed",
+        "exit": 0,
+        "seconds": 0.9170602910016896,
+        "log_sha256": "e468d8b0be23876638e589cbfc00ab75e9100ffd16e4c58116fc146d64bcd396",
+        "observations": 32
+      },
+      {
+        "stage": "cli-imported-generic",
+        "exit": 0,
+        "seconds": 3.148433541995473,
+        "log_sha256": "5a14ee8bbe451c75d4cff09300a09448246bd8a3b8abd5b7739d795ab1fbeba5",
+        "observations": 112
+      },
+      {
+        "stage": "cli-optional-object",
+        "exit": 0,
+        "seconds": 3.7567030000063824,
+        "log_sha256": "adac289471dfa526fc794250b43e62779c518505939613c3d6e1fb3699e46b42",
+        "observations": 128
+      },
+      {
+        "stage": "cli-library-array",
+        "exit": 0,
+        "seconds": 1.921173209004337,
+        "log_sha256": "39c3db463c1da5cb1c6b2f1d37ef3b21a2c10909acb86fef8ae98b1c4a079155",
+        "observations": 64
+      },
+      {
+        "stage": "cli-declaration-index",
+        "exit": 0,
+        "seconds": 1.7177864169934765,
+        "log_sha256": "8a601e62cd569401324aae8f3247533cc50bbb93fe57334256f7336b053148eb",
+        "observations": 56
+      },
+      {
+        "stage": "cli-installed-library",
+        "exit": 0,
+        "seconds": 8.645216250006342,
+        "log_sha256": "d8fed399860b46cfac64b3e0e9018f087954b84503d5682aedc806e068d2008b",
+        "observations": 8
+      },
+      {
+        "stage": "cli-ambient-owner",
+        "exit": 0,
+        "seconds": 36.66549675000715,
+        "log_sha256": "25a4a96c8022a75e4ed22d820e5e4a2ba6fe82af6063bfbbc1548d2790cc8296",
+        "observations": 122
+      },
+      {
+        "stage": "cli-global-owner",
+        "exit": 0,
+        "seconds": 150.33220666699344,
+        "log_sha256": "28b8419ad757749496e0808f9ebec5cc4ea7b0f4ffbff8e482d8d0bb94904a93",
+        "observations": 464
+      },
+      {
+        "stage": "cli-list-files",
+        "exit": 0,
+        "seconds": 2.8159779999987222,
+        "log_sha256": "ce236f077bc31fcbe39fb97ba7cb490343af2d19e84d560d25d866b88845fd7a",
+        "observations": 272
+      },
+      {
+        "stage": "cli-option-identity",
+        "exit": 0,
+        "seconds": 0.3655631250003353,
+        "log_sha256": "4c9a3ead4437ca3e77c741ab471860aace98002fbab9cb477a73ba766db57ee1",
+        "observations": 38
+      }
+    ]
+  },
+  "real_project": {
+    "mode": "original ordinary --noEmit --pretty false",
+    "original_inputs": 590,
+    "additional_installed_compiler_files": 140,
+    "node_runtime_frozen": true,
+    "inputs_unchanged": true,
+    "project_clean": true,
+    "before_source_commit": "2d58f3f7c8f0ad26919472dc1dd09c14685e9783",
+    "before_diagnostics": 232,
+    "after_diagnostics": 222,
+    "removed_diagnostic_headers": 10,
+    "added_diagnostic_headers": 0,
+    "diagnostic_parity": false,
+    "engines": [
+      {
+        "stage": "real-reference-native7",
+        "exit": 0,
+        "seconds": 0.10460291701019742,
+        "binary_sha256": "a82f731365ad69d5c4c15f5e18fba4584bf3b7b839960172a76c3462b5114bf2",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "diagnostic_counts": {}
+      },
+      {
+        "stage": "real-reference-installed6",
+        "exit": 0,
+        "seconds": 0.9338787500018952,
+        "binary_sha256": "8d5fa5bd883fec0979fc2004f1fe1d99aef40570155d550eadc0b03b55513bf0",
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "diagnostic_counts": {}
+      },
+      {
+        "stage": "real-home",
+        "exit": 1,
+        "seconds": 40.353969667005,
+        "binary_sha256": "9fe637d48c6d5182faf97584a0ce8fdfea3c7bdecc6c6af1c764744b19890f3c",
+        "log_sha256": "d7f0378fa79194fe151844c412c7fdc9da76a22483162d4b2e9e748039348171",
+        "diagnostic_counts": {
+          "2304": 7,
+          "2420": 3,
+          "2353": 28,
+          "2339": 87,
+          "7006": 9,
+          "2769": 63,
+          "2345": 7,
+          "2578": 1,
+          "1484": 5,
+          "2322": 8,
+          "2801": 1,
+          "2352": 1,
+          "7053": 1,
+          "2683": 1
+        }
+      }
+    ],
+    "private_input_manifest_sha256": "133f83b8d8e2b7dfa21483e95ad42bac7674863a04c507e0c6607971d4f36f4d",
+    "timing_is_performance_benchmark": false
+  },
+  "compiled_conformance_runner": {
+    "test_functions": 1458,
+    "passed": 1386,
+    "failed": 72,
+    "skipped": 0,
+    "optimization": "ReleaseSafe",
+    "stripped": true,
+    "unfiltered_compiled_runner": true,
+    "opt_in_full_conformance_survey_enabled": false,
+    "opt_in_full_compiler_survey_enabled": false,
+    "exhaustive_upstream_qualification": false,
+    "exit": 1,
+    "binary_sha256": "ca24b0fb862150fb8111b2db3cc224007212b7f4f5b7bfaf2dd90cdedc2b6127",
+    "log_sha256": "4ce8ab27b4a8d7a06f7a7b501e01a87e1d477e104ad1ec5393202142816125b3",
+    "same_72_failure_names_as_prior_initialized_corpus_run": true,
+    "added_failure_names": [],
+    "removed_failure_names": [],
+    "failure_names": [
+      "ts_conformance.test.conformance: returnStatements passes clean",
+      "ts_conformance.test.conformance: inferThisType passes clean",
+      "ts_conformance.test.conformance: controlFlowInOperator passes clean",
+      "ts_conformance.test.conformance: enumClassification passes clean",
+      "ts_conformance.test.conformance: enumBasics passes clean",
+      "ts_conformance.test.conformance: propertyAssignmentUseParentType1 passes clean",
+      "ts_conformance.test.conformance: parserParenthesizedVariableAndFunctionInTernary passes clean",
+      "ts_conformance.test.conformance: parserForOfStatement18 passes clean",
+      "ts_conformance.test.conformance: parserForOfStatement19 passes clean",
+      "ts_conformance.test.conformance: everyTypeWithInitializer passes clean",
+      "ts_conformance.test.conformance: incrementOperatorWithAnyOtherType passes clean",
+      "ts_conformance.test.conformance: decrementOperatorWithAnyOtherType passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck30 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator1 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator2 passes clean",
+      "ts_conformance.test.conformance: parserAmbiguityWithBinaryOperator3 passes clean",
+      "ts_conformance.test.conformance: stringLiteralTypesInUnionTypes02 passes clean",
+      "ts_conformance.test.conformance: objectRestParameter passes clean",
+      "ts_conformance.test.conformance: classStaticBlock28 passes clean",
+      "ts_conformance.test.conformance: memberFunctionsWithPublicOverloads passes clean",
+      "ts_conformance.test.conformance: mixinClassesAnonymous passes clean",
+      "ts_conformance.test.conformance: functionExpressionContextualTyping1 passes clean",
+      "ts_conformance.test.conformance: privateNameFieldInitializer passes clean",
+      "ts_conformance.test.conformance: privateNameLateSuper passes clean",
+      "ts_conformance.test.conformance: anyAssignableToEveryType2 passes clean",
+      "ts_conformance.test.conformance: subtypesOfAny passes clean",
+      "ts_conformance.test.conformance: arrayLiteralWidened passes clean",
+      "ts_conformance.test.conformance: decoratorOnClassMethod18 passes clean",
+      "ts_conformance.test.conformance: stringLiteralTypeIsSubtypeOfString passes clean",
+      "ts_conformance.test.conformance: superCallBeforeThisAccessing1 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck46 passes clean",
+      "ts_conformance.test.conformance: emitArrowFunctionES6 passes clean",
+      "ts_conformance.test.conformance: symbolProperty48 passes clean",
+      "ts_conformance.test.conformance: TwoInternalModulesThatMergeEachWithExportedInterfacesOfTheSameName passes clean",
+      "ts_conformance.test.conformance: TwoInternalModulesThatMergeEachWithExportedAndNonExportedInterfacesOfTheSameName passes clean",
+      "ts_conformance.test.conformance: localesObjectArgument passes clean",
+      "ts_conformance.test.conformance: intlNumberFormatES2020 passes clean",
+      "ts_conformance.test.conformance: esDecorators_decoratorExpression_3 passes clean",
+      "ts_conformance.test.conformance: esDecorators_decoratorExpression_1 passes clean",
+      "ts_conformance.test.conformance: esDecorators_classExpression_namedEvaluation_10 passes clean",
+      "ts_conformance.test.conformance: builtinIteratorReturn passes clean",
+      "ts_conformance.test.conformance: arrayLiterals2ES5 passes clean",
+      "ts_conformance.test.conformance: literalTypeWidening passes clean",
+      "ts_conformance.test.conformance: arrowFunctionExpressions passes clean",
+      "ts_conformance.test.conformance: nominalSubtypeCheckOfTypeParameter passes clean",
+      "ts_conformance.test.conformance: anyAssignabilityInInheritance passes clean",
+      "ts_conformance.test.conformance: mixinClassesMembers passes clean",
+      "ts_conformance.test.conformance: reExportAliasMakesInstantiated passes clean",
+      "ts_conformance.test.conformance: accessorsOverrideProperty8 passes clean",
+      "ts_conformance.test.conformance: globalModuleExportNotInDeclarationFile matches TS1315 baseline",
+      "ts_conformance.test.conformance: thisTypeSyntacticContext passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType1_ES6 passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType2_ES6 passes clean",
+      "ts_conformance.test.conformance: symbolProperty20 passes clean",
+      "ts_conformance.test.conformance: parserForStatement9 passes clean",
+      "ts_conformance.test.conformance: superSymbolIndexedAccess1 passes clean",
+      "ts_conformance.test.conformance: thisTypeInBasePropertyAndDerivedContainerOfBase01 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck26 passes clean",
+      "ts_conformance.test.conformance: symbolProperty22 passes clean",
+      "ts_conformance.test.conformance: computedPropertyNamesContextualType3_ES6 passes clean",
+      "ts_conformance.test.conformance: parserModuleDeclaration11 passes clean",
+      "ts_conformance.test.conformance: symbolDeclarationEmit10 passes clean",
+      "ts_conformance.test.conformance: symbolProperty11 passes clean",
+      "ts_conformance.test.conformance: thisPrototypeMethodCompoundAssignment passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck27 passes clean",
+      "ts_conformance.test.conformance: generatorTypeCheck29 passes clean",
+      "ts_conformance.test.conformance: es2021LocalesObjectArgument passes clean",
+      "ts_conformance.test.conformance: protectedClassPropertyAccessibleWithinSubclass passes clean",
+      "ts_conformance.test.conformance: keyofAndForIn passes clean",
+      "ts_conformance.test.conformance: option compatibility diagnostics count as expected errors",
+      "ts_conformance.test.conformance: baseline-aware type-relationship survey",
+      "ts_conformance.test.conformance: runOwnedCorpus flips synthetic @target: es5 fixture to passed via the helper"
+    ],
+    "fixture_verification": {
+      "files": 130633,
+      "inputs_unchanged": true,
+      "roots": {
+        "_submodules/typescript-go/internal/bundled/libs": true,
+        "_submodules/typescript-go/_submodules/TypeScript/tests/cases": true,
+        "_submodules/typescript-go/testdata/tests/cases": true,
+        "_submodules/typescript-go/testdata/baselines/reference": true,
+        "_submodules/typescript-go/_submodules/TypeScript/tests/baselines/reference": true,
+        "_submodules/typescript-go/_submodules/TypeScript/tests/lib": true
+      },
+      "go_pin": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+      "typescript_pin": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+      "before_manifest_sha256": "9921586f92ebd1679d06c0398de0c825a65ece1b74721de920cd15d84587531e",
+      "full_corpus_surveys_enabled": false
+    }
+  },
+  "artifact_reproduction": {
+    "completed": true,
+    "source_commit": "21cbca046d061f24ca38d706cdf22e24b987d4a5",
+    "protected_inputs_unchanged": true,
+    "artifacts": [
+      {
+        "stage": "production",
+        "seconds": 0.35587574999954086,
+        "binary_sha256": "9fe637d48c6d5182faf97584a0ce8fdfea3c7bdecc6c6af1c764744b19890f3c",
+        "exact_tested_artifact": true,
+        "log_sha256": "48e46eb3160898c17c034746021c08c8e3261eddec6cf0b761daf29f9cf236c9"
+      },
+      {
+        "stage": "conformance",
+        "seconds": 0.30564654199406505,
+        "binary_sha256": "ca24b0fb862150fb8111b2db3cc224007212b7f4f5b7bfaf2dd90cdedc2b6127",
+        "exact_tested_artifact": true,
+        "log_sha256": "3349836539b80ce4ae67b9b231ee367013e42d0dda19a8a1a31877b9d4774924"
+      }
+    ]
+  },
+  "bounds": {
+    "max_descendant_tree_mb": 3840,
+    "build_parallelism": 1,
+    "start_disk_floor_mb": 1024,
+    "running_disk_floor_mb": 512,
+    "qualifier_peak_tree_mb": 2743
+  },
+  "limitations": [
+    "222 diagnostics remain where both the installed TypeScript6.0.3 and pinned native TypeScript7.0.2 accept the real project.",
+    "The newer upstream baseline had17 Redis member diagnostics absent from the earlier published replay; this change retains those diagnostics.",
+    "72 compiled conformance tests still fail; the unchanged survey includes a stale586expectedcount for591cases.",
+    "The two opt-in exhaustive upstream corpus surveys were disabled and are outstanding, even though the Zig runner reports0skipped.",
+    "192 current Git groups,4absent prior checkout groups, emitting/build/watch behavior and compiler API uses remain unqualified."
+  ],
+  "private_project_sources_included": false
+}

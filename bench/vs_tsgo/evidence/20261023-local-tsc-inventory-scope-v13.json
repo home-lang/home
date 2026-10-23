@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "purpose": "Current full project inventory and static entrypoint review; no compiler qualification",
+  "all_project_replacement_verified": false,
+  "scope": {
+    "manifest_script_git_groups": 187,
+    "total_canonical_git_groups": 192,
+    "additional_config_only_git_groups": 5,
+    "additional_error_only_git_groups": 0,
+    "unresolved_ownership_records": 0,
+    "source_records": 6629,
+    "input_hash_drift": 0,
+    "scope_errors": 0,
+    "all_project_replacement_verified": false
+  },
+  "inventory": {
+    "counts": {
+      "manifests_with_check_scripts": 2292,
+      "configs": 4272,
+      "scripts": 2796,
+      "tsc_segments": 2661,
+      "unresolved_scripts": 184,
+      "errors": 65
+    },
+    "inventory_sha256": "6b4a38b3a7d1ffb85f851ecbea96da58d06b6f6ae9501f1e0a09f35bafd253c2",
+    "scope_sha256": "48db27eeb499deb09c5094773370d1794d037d993db98d1d5c3c1e631e8b6eb0",
+    "changes_since_v12": {
+      "added_input_paths": 2096,
+      "removed_input_paths": 536,
+      "changed_input_hashes": 176,
+      "added_canonical_git_groups": 26,
+      "retired_canonical_git_groups": 4
+    }
+  },
+  "historical_scope": {
+    "prior_groups": 170,
+    "current_groups": 192,
+    "new_groups": 26,
+    "absent_prior_groups": 4,
+    "absent_group_checkout_existence_checked": true,
+    "absent_group_replacement_qualified": false,
+    "absence_is_not_qualification": true
+  },
+  "routing": {
+    "required_review_entrypoints": 184,
+    "indirect": 154,
+    "shell": 68,
+    "overlap": 38,
+    "reviewed": 184,
+    "unreviewed": 0,
+    "rechecked_static_inputs": 389,
+    "inputs_unchanged": true,
+    "dynamic_command_registrations_requiring_further_resolution": 1,
+    "all_project_replacement_verified": false
+  },
+  "producer_verification": {
+    "source_hashes": {
+      "scripts/ts-project-inventory.py": "58174cb7d40fc5bdb025498b10644c2fd30dbd852e3836efb59d3149db6bda92",
+      "scripts/tests/test-ts-project-inventory.py": "01a07dff89f8a55eacf92110122a3f9398ea5623aa32f2f358e81f92696d2714"
+    },
+    "tests": 15,
+    "test_result": "passed",
+    "test_log_sha256": "174f661e0ae782023312c3c52500f8cc0a58ca558c4744b611fd1a11de8d7e38",
+    "private_routing_producer_hashes": {
+      "resolve-indirect-entrypoints-302.py": "5844b639274e4ec68f3e9eceb931648c7ffa3151107e4b478b9c154826cda7cb",
+      "resolve-shell-context-301.py": "d3929d8479bb9fd0374ebcacb5004dd39e268d8ebf538d450040268bed474509"
+    },
+    "private_project_sources_included": false
+  },
+  "capture_note": "Counts describe the retained capture; filesystem changes after capture are not compiler qualification."
+}
