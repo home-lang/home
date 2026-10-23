@@ -2,9 +2,9 @@ name: GIF codec conformance
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
   pull_request:
-    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
   workflow_dispatch:
 permissions:
   contents: read

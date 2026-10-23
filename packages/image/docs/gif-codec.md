@@ -34,7 +34,7 @@ Its reader now represents 256-entry global/local tables as u16 counts, checks
 those palette spans, and applies graphic-control delay/disposal/transparency to
 only the following image. Missing controls reset to defaults, and truncated GCE
 blocks reject. The additional checks are scoped: the complete generic decoder,
-compositing/interlacing, quantizer resource behavior and advanced GIF features
+compositing/interlacing and advanced GIF features
 are not declared fully hardened or complete by these tests.
 
 Standalone unit tests run Debug/ReleaseSafe on Zig 0.15.2 and development Zig.
@@ -55,3 +55,40 @@ Shared codecs remain Home stdlib code; no OS source is copied, modified or run.
 The [GIF89a specification](https://www.w3.org/Graphics/GIF/spec-gif89a.txt) defines
 variable code widths, clear/EOI and graphic-control scope. Tests use giflib rather
 than treating a round trip through Home alone as independent conformance proof.
+
+The video writer now reuses `video/src/containers/palette_quantizer.zig` through
+its existing `MedianCutQuantizer` public name. The previous implementation copied
+every RGB pixel into growing color arrays, sorted and copied those arrays again
+for each split, and split uniform-color boxes into duplicate palette entries.
+The replacement consumes packed RGB8 synchronously without retaining or changing
+it. A fixed open-addressed sparse pass preserves every exact color when the input
+fits the requested 1..256-color palette. A uniform million-pixel input needs only
+three allocated palette bytes, rather than a pixel-sized workspace or duplicate
+colors.
+
+Larger color sets use a 32,768-bin histogram over five bits per channel, retain
+the actual channel sums and population counts, then partition occupied bins in
+place using population-weighted median cuts on the widest channel. Preparation
+allocates one fixed 1 MiB histogram and at most 768 output bytes, independent of
+pixel count; bounded sparse/box arrays additionally use about 10 KiB of stack.
+An already published palette remains live until replacement succeeds. The input
+limit remains u32 pixels. Nearest-color search returns immediately on exact
+matches. Histogram cells may merge distinct colors once the exact sparse path
+overflows; there is no dithering, alpha, perceptual color-space metric or promise
+of identical palettes to the previous algorithm.
+
+The four pinned/development Zig Debug/ReleaseSafe builds each pass 12 video and
+palette tests, three LZW tests, 357 independent LZW fixtures and 11 two-frame
+giflib writer fixtures. Cases preserve all 256 exact hues, independent delays,
+disposal and source retirement, and bound decoded channel error for a 4,096-color
+RGB cube reduced to 256 colors. Separate tests bound a 512-color cube reduced to
+64 colors, preserve population-weighted low channel bits, prepare two million
+pixels within fixed scratch space, and retain the previous owner across every
+histogram/output allocation failure. These are scoped deterministic software
+fixtures, not optical quality or Pi throughput measurements. The Image GIF
+adapter's palette/alpha policy and camera GIF integration remain separate work.
+
+This follow-up again checks unchanged clean Home OS main at
+151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3, camera and media sources. There
+is no working raster palette quantizer to substitute there. The shared algorithm
+stays in Home's standard library; no OS code is copied, changed or executed.

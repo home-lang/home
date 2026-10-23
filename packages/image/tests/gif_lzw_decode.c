@@ -34,11 +34,22 @@ static int check(unsigned minimum,size_t count,unsigned pattern){
 }
 #ifdef HOME_VIDEO_GIF
 extern int home_video_gif(const uint8_t *,size_t,uint16_t,uint16_t,uint8_t *,size_t,size_t *);
-static int check_video(unsigned width,unsigned height){
+static void video_color(uint8_t out[3],unsigned frame,size_t pixel,unsigned pattern){
+    const uint8_t colors[2][2][3]={{{255,0,0},{0,0,255}},{{0,255,0},{0,0,0}}};
+    if(!pattern){memcpy(out,colors[frame][pixel%2],3);return;}
+    if(pattern==2){
+        const unsigned value=(unsigned)(pixel+frame*37)%4096;
+        out[0]=(uint8_t)(((value>>8)&15)*17);out[1]=(uint8_t)(((value>>4)&15)*17);out[2]=(uint8_t)((value&15)*17);return;
+    }
+    /* 256 exact, equal-frequency hues; never collapse them by luminance or
+     * by 5-bit histogram cells when the requested palette can represent all. */
+    const unsigned value=(unsigned)(pixel+frame*37)%256;
+    out[0]=(uint8_t)value;out[1]=(uint8_t)(value*73);out[2]=(uint8_t)(value*151);
+}
+static int check_video(unsigned width,unsigned height,unsigned pattern){
     const size_t pixels=(size_t)width*height,frame_bytes=pixels*3;
     const size_t capacity=frame_bytes*2+8192;uint8_t *input=malloc(frame_bytes*2),*output=malloc(capacity);if(!input||!output)return 10;
-    const uint8_t colors[2][2][3]={{{255,0,0},{0,0,255}},{{0,255,0},{0,0,0}}};
-    for(unsigned frame=0;frame<2;frame++)for(size_t p=0;p<pixels;p++)memcpy(input+frame*frame_bytes+p*3,colors[frame][p%2],3);
+    for(unsigned frame=0;frame<2;frame++)for(size_t p=0;p<pixels;p++)video_color(input+frame*frame_bytes+p*3,frame,p,pattern);
     size_t written=0;int code=home_video_gif(input,frame_bytes*2,(uint16_t)width,(uint16_t)height,output,capacity,&written);
     if(code){fprintf(stderr,"video GIF fixture failed code=%d\n",code);return 11;}
     memset(input,0x7f,frame_bytes*2); /* no input or writer owner remains */
@@ -50,12 +61,13 @@ static int check_video(unsigned width,unsigned height){
         const ColorMapObject *map=saved->ImageDesc.ColorMap;
         if(!map||map->ColorCount!=256)return 14;
         for(size_t p=0;p<pixels;p++){
-            const GifColorType c=map->Colors[saved->RasterBits[p]];const uint8_t *wanted=colors[frame][p%2];
-            if(c.Red!=wanted[0]||c.Green!=wanted[1]||c.Blue!=wanted[2])return 15;
+            const GifColorType c=map->Colors[saved->RasterBits[p]];uint8_t wanted[3];video_color(wanted,frame,p,pattern);
+            const int tolerance=pattern==2?34:0;
+            if(abs((int)c.Red-wanted[0])>tolerance||abs((int)c.Green-wanted[1])>tolerance||abs((int)c.Blue-wanted[2])>tolerance)return 15;
         }
     }
     DGifCloseFile(image,&error);free(output);free(input);
-    puts("giflib decoded Home video GIF frames, local palettes, disposal and independent delays exactly");return 0;
+    printf("giflib decoded Home video GIF %ux%u pattern=%u, local palettes, disposal and delays; channel bound=%u\n",width,height,pattern,pattern==2?34:0);return 0;
 }
 #endif
 int main(void){
@@ -64,7 +76,8 @@ int main(void){
     printf("giflib decoded %u Home LZW fixtures exactly across code widths, dictionary resets and large images\n",cases);
 #ifdef HOME_VIDEO_GIF
     const unsigned dimensions[][2]={{1,1},{17,9},{257,1},{256,256},{256,4096}};
-    for(size_t i=0;i<sizeof(dimensions)/sizeof(dimensions[0]);i++){int result=check_video(dimensions[i][0],dimensions[i][1]);if(result)return result;}
+    for(unsigned pattern=0;pattern<2;pattern++)for(size_t i=0;i<sizeof(dimensions)/sizeof(dimensions[0]);i++){int result=check_video(dimensions[i][0],dimensions[i][1],pattern);if(result)return result;}
+    {int result=check_video(64,64,2);if(result)return result;}
     return 0;
 #else
     return 0;
