@@ -854,8 +854,17 @@ pub const Builder = struct {
             }
         }
         const declaration_parameters = if (overload_declarations == null) info.params else &.{};
-        def.parameters = try self.arena.alloc(schema.Parameter, declaration_parameters.len);
-        for (declaration_parameters, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
+        const jsdoc_parameter_names = if (def.is_class and declaration_parameters.len == 0 and jsdoc_types.isJavaScriptPath(source.path))
+            try jsdoc_types.classTemplateNames(self.gpa, c, key.node)
+        else
+            null;
+        defer if (jsdoc_parameter_names) |names| if (names.len > 0) self.gpa.free(names);
+        def.parameters = try self.arena.alloc(schema.Parameter, if (jsdoc_parameter_names) |names| names.len else declaration_parameters.len);
+        if (jsdoc_parameter_names) |names| {
+            for (names, def.parameters) |name, *param| param.* = .{ .name = name };
+        } else {
+            for (declaration_parameters, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
+        }
         const allow_opaque = switch (kind) {
             .type_alias_decl => switch (c.hir.kindOf(hir.typeAliasOf(&c.hir, key.node).aliased)) {
                 .fn_type, .constructor_type => true,
@@ -872,7 +881,7 @@ pub const Builder = struct {
             else => false,
         };
         const context: Context = .{ .source = key.source, .declaration = def, .allow_opaque = allow_opaque };
-        for (declaration_parameters, def.parameters) |node, *param| {
+        for (declaration_parameters, def.parameters[0..declaration_parameters.len]) |node, *param| {
             const value = hir.typeParameterOf(&c.hir, node);
             param.variance = value.variance;
             param.is_const = value.is_const;
@@ -1079,7 +1088,24 @@ pub const Builder = struct {
             if (c.hir.kindOf(member) != .fn_decl and c.hir.kindOf(member) != .fn_expr and c.hir.kindOf(member) != .arrow_fn) continue;
             const function = hir.fnDeclOf(&c.hir, member);
             if (!function.flags.is_constructor or (overloads != 0 and function.body != 0)) continue;
-            const signature = try self.functionType(context, &.{}, hir.fnParams(&c.hir, member), 0, true);
+            var signature = try self.functionType(context, &.{}, hir.fnParams(&c.hir, member), 0, true);
+            if (context.declaration.parameters.len > 0 and jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
+                const parameter_names = try self.contextParameterNames(context);
+                if (try jsdoc_types.constructorParameters(self.gpa, c, member, parameter_names)) |jsdoc_parameters| {
+                    defer jsdoc_types.deinitFunctionParameters(self.gpa, jsdoc_parameters);
+                    const elements = try self.arena.alloc(schema.Element, jsdoc_parameters.len);
+                    for (jsdoc_parameters, elements) |parameter, *out| out.* = .{
+                        .type = try self.jsdocTypeInContext(parameter.type_expression, context),
+                        .optional = parameter.optional,
+                        .rest = parameter.rest,
+                    };
+                    signature = try self.expression(.{ .function = .{
+                        .parameters = elements,
+                        .result = try self.expression(.{ .primitive = Primitive.any }),
+                        .is_construct = true,
+                    } });
+                }
+            }
             var constructor = signature.function;
             constructor.construct_visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public;
             constructor.result = try self.expression(.{ .primitive = Primitive.any });
@@ -1138,15 +1164,28 @@ pub const Builder = struct {
     }
 
     fn jsdocType(self: *Builder, type_expression: jsdoc_types.TypeExpression) !*const schema.Expression {
+        return self.jsdocTypeInContext(type_expression, null);
+    }
+
+    fn jsdocTypeInContext(self: *Builder, type_expression: jsdoc_types.TypeExpression, context: ?Context) !*const schema.Expression {
         var result = switch (type_expression.base) {
             .primitive => |primitive| try self.expression(.{ .primitive = schemaPrimitive(primitive) }),
             .string_literal => |value| try self.expression(.{ .string = try self.arena.dupe(u8, value) }),
             .number_literal => |number| try self.expression(.{ .number = number }),
             .boolean_literal => |boolean| try self.expression(.{ .boolean = boolean }),
+            .parameter => |name| blk: {
+                if (context) |ctx| {
+                    for (ctx.declaration.parameters) |*parameter| {
+                        if (std.mem.eql(u8, parameter.name, name))
+                            break :blk try self.expression(.{ .parameter = parameter });
+                    }
+                }
+                break :blk try self.expression(.unsupported);
+            },
             .unsupported => try self.expression(.unsupported),
             .union_type => |members| union_expression: {
                 const expressions = try self.arena.alloc(*const schema.Expression, members.len);
-                for (members, expressions) |member, *result| result.* = try self.jsdocType(member);
+                for (members, expressions) |member, *out| out.* = try self.jsdocTypeInContext(member, context);
                 break :union_expression try self.expression(.{ .union_type = expressions });
             },
         };
@@ -1159,6 +1198,12 @@ pub const Builder = struct {
             });
         }
         return result;
+    }
+
+    fn contextParameterNames(self: *Builder, context: Context) ![]const []const u8 {
+        const names = try self.arena.alloc([]const u8, context.declaration.parameters.len);
+        for (context.declaration.parameters, names) |parameter, *out| out.* = parameter.name;
+        return names;
     }
 
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
@@ -1398,18 +1443,19 @@ pub const Builder = struct {
                 return self.expression(.unsupported);
         }
         if (jsdoc_types.isJavaScriptPath(self.sources[context.source].path)) {
+            const parameter_names = try self.contextParameterNames(context);
             for (hir.classMembers(&c.hir, node)) |member| {
                 switch (c.hir.kindOf(member)) {
                     .fn_decl, .fn_expr, .arrow_fn => {
                         const function = hir.fnDeclOf(&c.hir, member);
                         if (!function.flags.is_constructor) continue;
-                        const fields = try jsdoc_types.constructorAssignedFields(self.gpa, c, member);
+                        const fields = try jsdoc_types.constructorAssignedFields(self.gpa, c, member, parameter_names);
                         defer jsdoc_types.deinitAssignedFields(self.gpa, fields);
                         for (fields) |field| {
                             if (hasMember(members.items, field.name)) continue;
                             try members.append(self.arena, .{
                                 .name = field.name,
-                                .type = try self.jsdocType(field.type_expression),
+                                .type = try self.jsdocTypeInContext(field.type_expression, context),
                             });
                         }
                     },

@@ -20153,6 +20153,114 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
     }
 }
 
+test "Program: imported JSDoc generic constructor field instantiates at the consumer" {
+    const annotated_owner_source =
+        \\/** @template T */
+        \\export class Box {
+        \\  /** @param {T} value */
+        \\  constructor(value) {
+        \\    /** @type {T} */
+        \\    this.value = value;
+        \\  }
+        \\}
+    ;
+    const inferred_owner_source =
+        \\/** @template T */
+        \\export class Box {
+        \\  /** @param {T} value */
+        \\  constructor(value) { this.value = value; }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const box = new Box('ready');
+        \\box.value = 'next';
+        \\const good: string = box.value;
+        \\box.value = 1;
+        \\const bad: number = box.value;
+    ;
+    for ([_][]const u8{ annotated_owner_source, inferred_owner_source }) |owner_source| {
+        for ([_]bool{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            _ = try p.add("/owner.js", owner_source);
+            const consumer = try p.add("/consumer.ts", consumer_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = true,
+                .no_emit = true,
+                .strict = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+            const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 2), diagnostics.len);
+            for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+        }
+    }
+}
+
+test "Program: multiple JSDoc class templates instantiate independent constructor fields" {
+    const owner_source =
+        \\/** @template T, U */
+        \\export class Pair {
+        \\  /**
+        \\   * @param {T} first
+        \\   * @param {U} second
+        \\   */
+        \\  constructor(first, second) {
+        \\    /** @type {T} */
+        \\    this.first = first;
+        \\    /** @type {U} */
+        \\    this.second = second;
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Pair } from './owner.js';
+        \\const pair = new Pair('ready', 42);
+        \\pair.first = 1;
+        \\pair.second = 'wrong';
+        \\const firstAsNumber: number = pair.first;
+        \\const secondAsString: string = pair.second;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/owner.js", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 4), diagnostics.len);
+    for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[2].message);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[3].message);
+}
+
 test "Program: inferred object initializers retain imported nested JS and TS value types" {
     const owner_source =
         \\export const box = {

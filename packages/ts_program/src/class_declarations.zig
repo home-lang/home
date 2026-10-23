@@ -162,12 +162,6 @@ fn unwrap(c: *const driver.Compilation, node: hir.NodeId) hir.NodeId {
 fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source: Source, node: hir.NodeId) !driver.ProgramExportedClass {
     const c = source.compilation;
     const class = hir.classOf(&c.hir, node);
-    var params: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer params.deinit(gpa);
-    for (c.hir.child_pool.items[class.type_params_start..][0..class.type_params_len]) |param| {
-        const parameter = hir.typeParameterOf(&c.hir, param);
-        try params.append(gpa, c.interner.get(parameter.name));
-    }
     var members: std.ArrayListUnmanaged(driver.ProgramExportedClassMember) = .empty;
     defer members.deinit(gpa);
     var statics: std.ArrayListUnmanaged(driver.ProgramExportedClassMember) = .empty;
@@ -213,7 +207,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
                 .fn_decl, .fn_expr, .arrow_fn => {
                     const function = hir.fnDeclOf(&c.hir, member_node);
                     if (!function.flags.is_constructor) continue;
-                    const fields = try jsdoc_types.constructorAssignedFields(gpa, c, member_node);
+                    const fields = try jsdoc_types.constructorAssignedFields(gpa, c, member_node, &.{});
                     defer jsdoc_types.deinitAssignedFields(gpa, fields);
                     for (fields) |field| {
                         if (hasMember(members.items, field.name)) continue;
@@ -243,13 +237,15 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
     else
         &.{};
     try namespaceStatics(gpa, c, siblings, name, &statics);
-    const owned_params = try params.toOwnedSlice(gpa);
+    const source_schema = try schemas.collect(source, node);
+    errdefer @constCast(source_schema).deinit(gpa);
+    const owned_params = try gpa.alloc([]const u8, source_schema.declaration.parameters.len);
     errdefer gpa.free(owned_params);
+    for (source_schema.declaration.parameters, owned_params) |parameter, *out_name| out_name.* = parameter.name;
     const owned_members = try members.toOwnedSlice(gpa);
     errdefer gpa.free(owned_members);
     const owned_statics = try statics.toOwnedSlice(gpa);
     errdefer gpa.free(owned_statics);
-    const source_schema = try schemas.collect(source, node);
     return .{
         .target_path = source.path,
         .declaration_path = source.path,
@@ -262,7 +258,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
         // their contextual parameter types across an otherwise ordinary
         // module boundary.
         .schema = source_schema,
-        .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0 and !requires_schema_members,
+        .schema_member_projection_only = owned_params.len == 0 and class.extends == 0 and !requires_schema_members,
         .members = owned_members,
         .static_members = owned_statics,
     };

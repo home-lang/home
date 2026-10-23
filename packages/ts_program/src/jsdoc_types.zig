@@ -37,6 +37,7 @@ pub const TypeExpression = struct {
         string_literal: []u8,
         number_literal: f64,
         boolean_literal: bool,
+        parameter: []const u8,
         unsupported,
         union_type: []TypeExpression,
     },
@@ -45,7 +46,7 @@ pub const TypeExpression = struct {
     pub fn deinit(self: TypeExpression, gpa: std.mem.Allocator) void {
         if (self.containers.len > 0) gpa.free(self.containers);
         switch (self.base) {
-            .primitive, .number_literal, .boolean_literal, .unsupported => {},
+            .primitive, .number_literal, .boolean_literal, .parameter, .unsupported => {},
             .string_literal => |value| gpa.free(value),
             .union_type => |members| {
                 for (members) |member| member.deinit(gpa);
@@ -58,7 +59,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) return null;
         return switch (self.base) {
             .primitive => |primitive| primitive,
-            .string_literal, .number_literal, .boolean_literal, .unsupported, .union_type => null,
+            .string_literal, .number_literal, .boolean_literal, .parameter, .unsupported, .union_type => null,
         };
     }
 
@@ -119,13 +120,56 @@ pub fn widenedInitializerPrimitive(c: *const driver.Compilation, node: hir.NodeI
 }
 
 pub fn declarationType(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?TypeExpression {
+    return declarationTypeWithParameters(gpa, c, node, &.{});
+}
+
+fn declarationTypeWithParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?TypeExpression {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
     for (tags) |tag| {
-        if (tag.kind == .type_tag) return (try parseTypeExpression(gpa, tag.type_text)) orelse TypeExpression{ .base = .unsupported };
+        if (tag.kind == .type_tag) return (try parseTypeExpressionWithParameters(gpa, tag.type_text, parameter_names)) orelse TypeExpression{ .base = .unsupported };
     }
     return null;
+}
+
+/// Simple class-level JSDoc templates become source-owned schema parameters.
+/// Constraints and defaults need their own semantic transfer, so they are
+/// deliberately left to the existing unsupported path.
+pub fn classTemplateNames(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]const []const u8 {
+    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return &.{};
+    if (std.mem.indexOf(u8, body, "@template") == null) return &.{};
+    const tags = try jsdoc.parse(gpa, body);
+    defer gpa.free(tags);
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer names.deinit(gpa);
+    for (tags) |tag| {
+        if (tag.kind != .template_tag) continue;
+        if (!identifierName(tag.name) or tag.type_text.len != 0 or tag.has_default or tag.is_const or tag.template_variance != .none or
+            matchingParameter(tag.name, names.items) != null)
+        {
+            names.deinit(gpa);
+            return null;
+        }
+        try names.append(gpa, tag.name);
+        const extra = std.mem.trim(u8, tag.description, " \t\r\n");
+        if (extra.len == 0) continue;
+        if (extra[0] != ',') {
+            names.deinit(gpa);
+            return null;
+        }
+        var parts = std.mem.splitScalar(u8, extra[1..], ',');
+        while (parts.next()) |part| {
+            const name = std.mem.trim(u8, part, " \t\r\n");
+            if (!identifierName(name) or matchingParameter(name, names.items) != null) {
+                names.deinit(gpa);
+                return null;
+            }
+            try names.append(gpa, name);
+        }
+    }
+    if (names.items.len == 0) return &.{};
+    return try names.toOwnedSlice(gpa);
 }
 
 pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?FunctionSignature {
@@ -174,7 +218,7 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
     return .{ .parameters = parameters, .result = return_type };
 }
 
-pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) ![]AssignedField {
+pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) ![]AssignedField {
     const function = hir.fnDeclOf(&c.hir, node);
     if (!function.flags.is_constructor or function.body == hir.none_node_id or c.hir.kindOf(function.body) != .block_stmt) return &.{};
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse "";
@@ -197,11 +241,11 @@ pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compil
         // A declaration-adjacent @type on the assignment is the field's
         // declared type. Without one, a direct assignment from an annotated
         // constructor parameter carries that parameter's type.
-        const type_expression = (try declarationType(gpa, c, statement)) orelse blk: {
+        const type_expression = (try declarationTypeWithParameters(gpa, c, statement, parameter_names)) orelse blk: {
             if (c.hir.kindOf(assignment.value) != .identifier) break :blk null;
             const value_name = hir.identifierOf(&c.hir, assignment.value).name;
             if (!isParameter(c, node, value_name)) break :blk null;
-            break :blk try parameterType(gpa, tags, c.interner.get(value_name));
+            break :blk try parameterType(gpa, tags, c.interner.get(value_name), parameter_names);
         } orelse continue;
         if (!type_expression.transferable()) {
             type_expression.deinit(gpa);
@@ -216,6 +260,49 @@ pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compil
 pub fn deinitAssignedFields(gpa: std.mem.Allocator, fields: []AssignedField) void {
     for (fields) |field| field.type_expression.deinit(gpa);
     gpa.free(fields);
+}
+
+/// Return a complete JSDoc constructor parameter list for source-owned class
+/// schema transfer. A partial list cannot safely drive generic inference.
+pub fn constructorParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?[]FunctionParameter {
+    const function = hir.fnDeclOf(&c.hir, node);
+    if (!function.flags.is_constructor) return null;
+    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
+    const tags = try jsdoc.parse(gpa, body);
+    defer gpa.free(tags);
+    const nodes = hir.fnParams(&c.hir, node);
+    if (nodes.len == 0) return null;
+    const parameters = try gpa.alloc(FunctionParameter, nodes.len);
+    var initialized: usize = 0;
+    var transferred = false;
+    defer if (!transferred) {
+        for (parameters[0..initialized]) |parameter| parameter.type_expression.deinit(gpa);
+        gpa.free(parameters);
+    };
+    for (nodes, parameters) |parameter_node, *out| {
+        const parameter = hir.parameterOf(&c.hir, parameter_node);
+        if (parameter.flags.is_rest or c.hir.kindOf(parameter.name) != .identifier) return null;
+        const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
+        const tag = uniqueParameterTag(tags, name) orelse return null;
+        const typ = try parseTypeExpressionWithParameters(gpa, tag.type_text, parameter_names) orelse return null;
+        if (!typ.transferable()) {
+            typ.deinit(gpa);
+            return null;
+        }
+        out.* = .{
+            .type_expression = typ,
+            .optional = tag.optional or parameter.flags.is_optional or parameter.default_value != hir.none_node_id,
+            .rest = false,
+        };
+        initialized += 1;
+    }
+    transferred = true;
+    return parameters;
+}
+
+pub fn deinitFunctionParameters(gpa: std.mem.Allocator, parameters: []FunctionParameter) void {
+    for (parameters) |parameter| parameter.type_expression.deinit(gpa);
+    gpa.free(parameters);
 }
 
 pub fn typeName(primitive: Primitive) []const u8 {
@@ -235,9 +322,9 @@ pub fn typeName(primitive: Primitive) []const u8 {
     };
 }
 
-fn parameterType(gpa: std.mem.Allocator, tags: []const jsdoc.Tag, name: []const u8) !?TypeExpression {
+fn parameterType(gpa: std.mem.Allocator, tags: []const jsdoc.Tag, name: []const u8, parameter_names: []const []const u8) !?TypeExpression {
     for (tags) |tag| {
-        if (tag.kind == .param_tag and std.mem.eql(u8, tag.name, name)) return parseTypeExpression(gpa, tag.type_text);
+        if (tag.kind == .param_tag and std.mem.eql(u8, tag.name, name)) return parseTypeExpressionWithParameters(gpa, tag.type_text, parameter_names);
     }
     return null;
 }
@@ -273,6 +360,10 @@ fn parsePrimitive(text: []const u8) ?Primitive {
 }
 
 fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpression {
+    return parseTypeExpressionWithParameters(gpa, text, &.{});
+}
+
+fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) !?TypeExpression {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (topLevelUnionEnd(trimmed)) |first_end| {
         var members: std.ArrayListUnmanaged(TypeExpression) = .empty;
@@ -283,7 +374,7 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
         var start: usize = 0;
         var end = first_end;
         while (true) {
-            const member = try parseTypeExpression(gpa, trimmed[start..end]) orelse {
+            const member = try parseTypeExpressionWithParameters(gpa, trimmed[start..end], parameter_names) orelse {
                 for (members.items) |item| item.deinit(gpa);
                 members.deinit(gpa);
                 return null;
@@ -299,7 +390,7 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
         return .{ .base = .{ .union_type = try members.toOwnedSlice(gpa) } };
     }
     if (nullableBody(trimmed)) |body| {
-        const value = try parseTypeExpression(gpa, body) orelse return null;
+        const value = try parseTypeExpressionWithParameters(gpa, body, parameter_names) orelse return null;
         errdefer value.deinit(gpa);
         const members = try gpa.alloc(TypeExpression, 2);
         members[0] = value;
@@ -332,13 +423,15 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
         .{ .base = .{ .primitive = primitive } }
     else if (try parseLiteral(gpa, current)) |literal|
         literal
+    else if (matchingParameter(current, parameter_names)) |name|
+        .{ .base = .{ .parameter = name } }
     else if (outerGroupBody(current)) |body|
-        (try parseTypeExpression(gpa, body) orelse {
+        (try parseTypeExpressionWithParameters(gpa, body, parameter_names) orelse {
             containers.deinit(gpa);
             return null;
         })
     else if (topLevelUnionEnd(current) != null or nullableBody(current) != null)
-        (try parseTypeExpression(gpa, current) orelse {
+        (try parseTypeExpressionWithParameters(gpa, current, parameter_names) orelse {
             containers.deinit(gpa);
             return null;
         })
@@ -355,6 +448,11 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     base.containers = combined;
     containers.deinit(gpa);
     return base;
+}
+
+fn matchingParameter(name: []const u8, parameters: []const []const u8) ?[]const u8 {
+    for (parameters) |parameter| if (std.mem.eql(u8, name, parameter)) return parameter;
+    return null;
 }
 
 fn parseLiteral(gpa: std.mem.Allocator, text: []const u8) error{OutOfMemory}!?TypeExpression {
@@ -683,6 +781,12 @@ fn contains(fields: []const AssignedField, name: []const u8) bool {
 
 fn isIdentChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
+}
+
+fn identifierName(name: []const u8) bool {
+    if (name.len == 0 or (!std.ascii.isAlphabetic(name[0]) and name[0] != '_' and name[0] != '$')) return false;
+    for (name[1..]) |byte| if (!isIdentChar(byte)) return false;
+    return true;
 }
 
 fn leadingBody(source: []const u8, declaration_start: u32) ?[]const u8 {
