@@ -1,0 +1,30 @@
+name: Bounded capture dispatch
+on:
+  push:
+    branches: [main]
+    paths: ['packages/video/src/core/dispatch_pool.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/video-process-dispatch.yml']
+  pull_request:
+    paths: ['packages/video/src/core/dispatch_pool.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/video-process-dispatch.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dispatch:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Bounded dispatch and joined ownership transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" packages/video/src/core/dispatch_pool.zig
+          done
