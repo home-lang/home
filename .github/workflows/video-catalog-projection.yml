@@ -1,10 +1,10 @@
-name: Catalog projection
+name: Catalog projection and envelopes
 on:
   push:
     branches: [main]
-    paths: ['packages/video/src/core/catalog_projection.zig', 'packages/video/src/core/typed_catalog.zig', '.github/workflows/video-catalog-projection.yml']
+    paths: ['packages/video/src/core/catalog_projection.zig', 'packages/video/src/core/catalog_envelope.zig', 'packages/video/src/core/typed_catalog.zig', '.github/workflows/video-catalog-projection.yml']
   pull_request:
-    paths: ['packages/video/src/core/catalog_projection.zig', 'packages/video/src/core/typed_catalog.zig', '.github/workflows/video-catalog-projection.yml']
+    paths: ['packages/video/src/core/catalog_projection.zig', 'packages/video/src/core/catalog_envelope.zig', 'packages/video/src/core/typed_catalog.zig', '.github/workflows/video-catalog-projection.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,4 +27,5 @@ jobs:
           set -euo pipefail
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" packages/video/src/core/catalog_projection.zig
+            zig test -O "$mode" packages/video/src/core/catalog_envelope.zig
           done
