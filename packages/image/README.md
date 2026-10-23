@@ -65,7 +65,8 @@ must remain immutable during decode and is never retained on return.
 
 `Png.decode`/`Image.loadFromMemory` adopt the same checked pixels/palette/frame
 owners. The legacy `Image` adapter exposes millisecond delays and has no ICC/Exif
-fields; use the core result to retain exact fractions and metadata. Encoding
+fields or excluded-poster flag; use the core result for exact fractions, metadata
+and poster-preserving APNG re-encoding with `AnimationEncoder`. Encoding
 metadata remains an explicit caller choice. The `Image` root requires development
 Zig; the leaf decoder remains portable. Independent libpng fixtures exercise 936
 color/depth/interlace/filter/transparency/geometry combinations per build mode.

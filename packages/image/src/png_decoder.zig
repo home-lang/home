@@ -301,7 +301,7 @@ const Document = struct {
                 }
                 doc.chromaticities = values;
             } else if (chunk.is("cICP")) {
-                if (idat or doc.palette_count != 0 or doc.cicp != null or chunk.data.len != 4 or chunk.data[3] > 1) return error.InvalidMetadata;
+                if (idat or doc.palette_count != 0 or doc.cicp != null or chunk.data.len != 4 or chunk.data[2] != 0 or chunk.data[3] > 1) return error.InvalidMetadata;
                 doc.cicp = chunk.data[0..4].*;
             } else if (chunk.is("IEND")) {
                 if (!idat or doc.default_range.size == 0 or chunk.data.len != 0 or reader.pos != data.len) return error.InvalidChunkOrder;
@@ -920,4 +920,22 @@ test "PNG wide-row filtering and sample expansion have bounded cancellation chec
         try t.expectError(error.Cancelled, rows.finishRow());
         try t.expectEqual(limit + 1, counter.calls);
     }
+}
+
+test "PNG color metadata requires an RGB matrix and Exif starts at its TIFF header" {
+    const a = std.testing.allocator;
+    for ([_][]const u8{ &.{ 9, 16, 1, 1 }, &.{ 9, 16, 0, 2 }, &.{ 9, 16, 0 } }) |cicp| {
+        var extra: std.ArrayList(u8) = .empty;
+        defer extra.deinit(a);
+        try testChunk(&extra, "cICP", cicp);
+        const input = try testPng(&.{ 0, 11, 22, 33 }, testHeader(8, 2), extra.items);
+        defer a.free(input);
+        try std.testing.expectError(error.InvalidMetadata, decode(std.testing.failing_allocator, input, .{}));
+    }
+    var extra: std.ArrayList(u8) = .empty;
+    defer extra.deinit(a);
+    try testChunk(&extra, "eXIf", "Exif\x00\x00II\x2a\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    const input = try testPng(&.{ 0, 11, 22, 33 }, testHeader(8, 2), extra.items);
+    defer a.free(input);
+    try std.testing.expectError(error.InvalidMetadata, decode(std.testing.failing_allocator, input, .{}));
 }
