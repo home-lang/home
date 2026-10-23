@@ -2,41 +2,8 @@
 //! encoders. Rows may be padded; no image object or full RGB copy is required.
 const std = @import("std");
 const Deflater = @import("zlib_stream.zig").Deflater;
-pub const Format = enum {
-    gray,
-    rgb,
-    rgba,
-    pub fn channels(self: Format) usize {
-        return switch (self) {
-            .gray => 1,
-            .rgb => 3,
-            .rgba => 4,
-        };
-    }
-};
-pub const View = struct {
-    data: []const u8,
-    width: u32,
-    height: u32,
-    stride: usize,
-    format: Format = .rgb,
-    bits: u8 = 8,
-    endian: std.builtin.Endian = .little,
-
-    pub fn validate(self: View) !usize {
-        if (self.width == 0 or self.height == 0 or self.width > std.math.maxInt(i32) or self.height > std.math.maxInt(i32) or (self.bits != 8 and self.bits != 16)) return error.InvalidGeometry;
-        const bytes = std.math.mul(usize, self.format.channels(), self.bits / 8) catch return error.InvalidGeometry;
-        const row_bytes = std.math.mul(usize, self.width, bytes) catch return error.InvalidGeometry;
-        if (self.stride < row_bytes) return error.InvalidGeometry;
-        const last = std.math.mul(usize, self.height - 1, self.stride) catch return error.InvalidGeometry;
-        const needed = std.math.add(usize, last, row_bytes) catch return error.InvalidGeometry;
-        if (self.data.len < needed) return error.BufferTooSmall;
-        return row_bytes;
-    }
-    fn row(self: View, y: usize, row_bytes: usize) []const u8 {
-        return self.data[y * self.stride ..][0..row_bytes];
-    }
-};
+pub const Format = @import("pixel_view.zig").Format;
+pub const View = @import("pixel_view.zig").View;
 pub const Filter = enum(u32) { adaptive, none, sub, up, average, paeth };
 pub const PngOptions = struct { compression: u32 = 1, filter: Filter = .adaptive };
 /// Home Image's interleaved 16-bit samples use little-endian storage. Indexed

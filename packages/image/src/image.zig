@@ -344,6 +344,7 @@ pub const ImageFormat = enum {
     }
 };
 
+pub const Color16 = struct { r: u16, g: u16, b: u16, a: u16 = 65535 };
 pub const Color = struct {
     r: u8,
     g: u8,
@@ -472,24 +473,25 @@ pub const Image = struct {
     }
 
     pub fn clone(self: *const Self) !Self {
-        const new_pixels = try self.allocator.alloc(u8, self.pixels.len);
-        errdefer self.allocator.free(new_pixels);
-        @memcpy(new_pixels, self.pixels);
-
-        var new_palette: ?[]Color = null;
-        if (self.palette) |pal| {
-            new_palette = try self.allocator.alloc(Color, pal.len);
-            @memcpy(new_palette.?, pal);
+        var result = self.*;
+        result.pixels = try self.allocator.dupe(u8, self.pixels);
+        errdefer self.allocator.free(result.pixels);
+        result.palette = if (self.palette) |p| try self.allocator.dupe(Color, p) else null;
+        errdefer if (result.palette) |p| self.allocator.free(p);
+        result.frames = null;
+        if (self.frames) |frames| {
+            const copy = try self.allocator.alloc(Frame, frames.len);
+            errdefer self.allocator.free(copy);
+            var done: usize = 0;
+            errdefer for (copy[0..done]) |frame| self.allocator.free(frame.pixels);
+            for (frames, copy) |frame, *target| {
+                target.* = frame;
+                target.pixels = try self.allocator.dupe(u8, frame.pixels);
+                done += 1;
+            }
+            result.frames = copy;
         }
-
-        return Self{
-            .width = self.width,
-            .height = self.height,
-            .format = self.format,
-            .pixels = new_pixels,
-            .palette = new_palette,
-            .allocator = self.allocator,
-        };
+        return result;
     }
 
     // ========================================================================
@@ -631,7 +633,7 @@ pub const Image = struct {
                 }
                 return null;
             },
-            else => null,
+            .rgb16, .rgba16, .grayscale16 => if (self.getPixel16(x, y)) |value| .{ .r = @intCast(value.r >> 8), .g = @intCast(value.g >> 8), .b = @intCast(value.b >> 8), .a = @intCast(value.a >> 8) } else null,
         };
     }
 
@@ -656,7 +658,35 @@ pub const Image = struct {
             .grayscale8 => {
                 self.pixels[idx] = color.toGrayscale();
             },
-            else => {},
+            .grayscale16 => std.mem.writeInt(u16, self.pixels[idx..][0..2], @as(u16, color.toGrayscale()) * 257, .little),
+            .rgb16, .rgba16 => self.setPixel16(x, y, .{ .r = @as(u16, color.r) * 257, .g = @as(u16, color.g) * 257, .b = @as(u16, color.b) * 257, .a = @as(u16, color.a) * 257 }),
+            .indexed8 => {},
+        }
+    }
+    pub fn getPixel16(self: *const Self, x: u32, y: u32) ?Color16 {
+        if (x >= self.width or y >= self.height) return null;
+        if (self.format != .rgb16 and self.format != .rgba16 and self.format != .grayscale16) {
+            const value = self.getPixel(x, y) orelse return null;
+            return .{ .r = @as(u16, value.r) * 257, .g = @as(u16, value.g) * 257, .b = @as(u16, value.b) * 257, .a = @as(u16, value.a) * 257 };
+        }
+        const view = @import("formats/raster_encoder.zig").fromImage(self) catch return null;
+        const value = view.sample16(x, y);
+        return .{ .r = value[0], .g = value[1], .b = value[2], .a = value[3] };
+    }
+    pub fn setPixel16(self: *Self, x: u32, y: u32, color: Color16) void {
+        if (x >= self.width or y >= self.height) return;
+        if (self.format != .rgb16 and self.format != .rgba16 and self.format != .grayscale16) {
+            self.setPixel(x, y, .{ .r = @intCast(color.r >> 8), .g = @intCast(color.g >> 8), .b = @intCast(color.b >> 8), .a = @intCast(color.a >> 8) });
+            return;
+        }
+        const view = @import("formats/raster_encoder.zig").fromImage(self) catch return;
+        const at = @as(usize, y) * view.stride + @as(usize, x) * view.format.channels() * 2;
+        if (view.format == .gray) {
+            std.mem.writeInt(u16, self.pixels[at..][0..2], @intCast((@as(u32, color.r) * 299 + @as(u32, color.g) * 587 + @as(u32, color.b) * 114) / 1000), .little);
+        } else {
+            for ([_]u16{ color.r, color.g, color.b, color.a }, 0..) |value, ch| {
+                if (ch < view.format.channels()) std.mem.writeInt(u16, self.pixels[at + ch * 2 ..][0..2], value, .little);
+            }
         }
     }
 
@@ -664,43 +694,66 @@ pub const Image = struct {
     // Format Conversion
     // ========================================================================
 
+    fn checkedView(self: *const Self, pixels: []const u8, width: u32, height: u32) !@import("formats/pixel_view.zig").View {
+        var source = self.*;
+        source.width = width;
+        source.height = height;
+        source.pixels = @constCast(pixels);
+        if (self.format != .indexed8) return @import("formats/raster_encoder.zig").fromImage(&source);
+        const indexed = @import("formats/indexed_raster.zig");
+        const view = try indexed.indexedView(pixels, width, height);
+        try indexed.validateIndices(self, view);
+        return view;
+    }
+    fn convertedPixels(self: *const Self, pixels: []const u8, width: u32, height: u32, target: PixelFormat) ![]u8 {
+        const sample = @import("formats/pixel_view.zig");
+        const source_view = try self.checkedView(pixels, width, height);
+        const expanded = if (self.format == .indexed8) try @import("formats/indexed_raster.zig").expandIndices(self.allocator, self, source_view) else null;
+        defer if (expanded) |view| self.allocator.free(view.data);
+        const format: sample.Format = switch (target) {
+            .rgb8, .rgb16 => .rgb,
+            .rgba8, .rgba16 => .rgba,
+            .grayscale8, .grayscale16 => .gray,
+            .indexed8 => return error.UnsupportedFormat,
+        };
+        const bits: u8 = switch (target) {
+            .rgb16, .rgba16, .grayscale16 => 16,
+            else => 8,
+        };
+        const owned = try sample.Owned.copy(self.allocator, expanded orelse source_view, format, bits, .little);
+        return @constCast(owned.view.data);
+    }
+    /// Transactional conversion, including frame rectangles. RGB/gray/RGBA8/16
+    /// preserve source precision; indexed sources require a checked palette.
+    /// Indexed destination quantization must be requested through a codec.
     pub fn toFormat(self: *Self, new_format: PixelFormat) !void {
         if (self.format == new_format) return;
-
-        const new_bpp = new_format.bytesPerPixel();
-        const new_size = @as(usize, self.width) * @as(usize, self.height) * new_bpp;
-        const new_pixels = try self.allocator.alloc(u8, new_size);
-
-        var y: u32 = 0;
-        while (y < self.height) : (y += 1) {
-            var x: u32 = 0;
-            while (x < self.width) : (x += 1) {
-                const color = self.getPixel(x, y) orelse Color.BLACK;
-                const new_idx = (@as(usize, y) * @as(usize, self.width) + @as(usize, x)) * new_bpp;
-
-                switch (new_format) {
-                    .rgba8 => {
-                        new_pixels[new_idx] = color.r;
-                        new_pixels[new_idx + 1] = color.g;
-                        new_pixels[new_idx + 2] = color.b;
-                        new_pixels[new_idx + 3] = color.a;
-                    },
-                    .rgb8 => {
-                        new_pixels[new_idx] = color.r;
-                        new_pixels[new_idx + 1] = color.g;
-                        new_pixels[new_idx + 2] = color.b;
-                    },
-                    .grayscale8 => {
-                        new_pixels[new_idx] = color.toGrayscale();
-                    },
-                    else => {},
-                }
+        if (new_format == .indexed8) return error.UnsupportedFormat;
+        // Validate every source before creating any replacement owner.
+        _ = try self.checkedView(self.pixels, self.width, self.height);
+        if (self.frames) |frames| for (frames) |frame| {
+            _ = try self.checkedView(frame.pixels, frame.width orelse self.width, frame.height orelse self.height);
+        };
+        var result = self.*;
+        result.format = new_format;
+        result.pixels = try self.convertedPixels(self.pixels, self.width, self.height, new_format);
+        errdefer self.allocator.free(result.pixels);
+        result.palette = null;
+        result.frames = null;
+        if (self.frames) |frames| {
+            const copy = try self.allocator.alloc(Frame, frames.len);
+            errdefer self.allocator.free(copy);
+            var done: usize = 0;
+            errdefer for (copy[0..done]) |frame| self.allocator.free(frame.pixels);
+            for (frames, copy) |frame, *out| {
+                out.* = frame;
+                out.pixels = try self.convertedPixels(frame.pixels, frame.width orelse self.width, frame.height orelse self.height, new_format);
+                done += 1;
             }
+            result.frames = copy;
         }
-
-        self.allocator.free(self.pixels);
-        self.pixels = new_pixels;
-        self.format = new_format;
+        self.deinit();
+        self.* = result;
     }
 
     // ========================================================================
@@ -1357,10 +1410,83 @@ test "public RGB16 view retains words and explicitly reduces high bytes" {
 /// Checked borrowed Bayer/mono CSI-2 and driver-standard PiSP COMP1 sensor data.
 pub const SensorRaw = @import("ops/sensor_raw.zig");
 pub const GifEncoder = @import("formats/gif_encoder.zig");
+pub const PixelView = @import("formats/pixel_view.zig");
 test "public sensor raw view exposes owned output without sample scaling" {
     const bytes = [_]u8{ 1, 2, 255 };
     const view = try SensorRaw.View.init(&bytes, 3, 1, 3, try SensorRaw.Format.parse("R8"));
     var out: [6]u8 = undefined;
     try view.copy16(&out, 6);
     try std.testing.expectEqualSlices(u8, &.{ 1, 0, 2, 0, 255, 0 }, &out);
+}
+
+test "image conversion retains sixteen-bit samples alpha and frame controls and clone has independent owners" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 2, 1, .rgba16);
+    defer img.deinit();
+    img.setPixel16(0, 0, .{ .r = 0x1234, .g = 0x8001, .b = 0xfedc, .a = 0x4567 });
+    img.setPixel(1, 0, Color.GREEN);
+    try std.testing.expectEqual(Color16{ .r = 0x1234, .g = 0x8001, .b = 0xfedc, .a = 0x4567 }, img.getPixel16(0, 0).?);
+    try std.testing.expectEqual(Color{ .r = 0x12, .g = 0x80, .b = 0xfe, .a = 0x45 }, img.getPixel(0, 0).?);
+    const frames = try a.alloc(Image.Frame, 1);
+    frames[0] = .{ .pixels = &.{}, .width = 1, .height = 1, .x_offset = 1, .delay_ms = 70, .dispose_op = .previous, .blend_op = .over };
+    img.frames = frames;
+    frames[0].pixels = try a.dupe(u8, img.pixels[0..8]);
+    img.loop_count = 3;
+    var copy = try img.clone();
+    defer copy.deinit();
+    try std.testing.expectEqual(@as(u32, 3), copy.loop_count);
+    try std.testing.expect(copy.pixels.ptr != img.pixels.ptr);
+    try std.testing.expect(copy.frames.?.ptr != frames.ptr);
+    try std.testing.expect(copy.frames.?[0].pixels.ptr != frames[0].pixels.ptr);
+    try copy.toFormat(.rgb16);
+    try std.testing.expectEqualSlices(u8, img.pixels[0..6], copy.pixels[0..6]);
+    try std.testing.expectEqualSlices(u8, img.pixels[0..6], copy.frames.?[0].pixels);
+    try std.testing.expectEqual(@as(u32, 70), copy.frames.?[0].delay_ms);
+    try std.testing.expectEqual(Image.DisposeOp.previous, copy.frames.?[0].dispose_op);
+    try std.testing.expectEqual(Image.BlendOp.over, copy.frames.?[0].blend_op);
+    try copy.toFormat(.rgba8);
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x80, 0xfe, 255, 0, 255, 0, 255 }, copy.pixels);
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x80, 0xfe, 255 }, copy.frames.?[0].pixels);
+    try std.testing.expectEqual(@as(usize, 8), img.frames.?[0].pixels.len);
+}
+fn cloneConversionFailures(a: std.mem.Allocator) !void {
+    var img = try Image.init(a, 2, 1, .indexed8);
+    defer img.deinit();
+    img.palette = try a.dupe(Color, &.{ Color.RED, .{ .r = 2, .g = 3, .b = 4, .a = 128 } });
+    img.pixels[1] = 1;
+    const frames = try a.alloc(Image.Frame, 1);
+    frames[0] = .{ .pixels = &.{}, .delay_ms = 10 };
+    img.frames = frames;
+    frames[0].pixels = try a.dupe(u8, &.{ 1, 0 });
+    var copy = try img.clone();
+    defer copy.deinit();
+    const previous = copy.pixels.ptr;
+    const palette = copy.palette.?.ptr;
+    const frame = copy.frames.?[0].pixels.ptr;
+    copy.toFormat(.rgba16) catch |err| {
+        try std.testing.expect(copy.pixels.ptr == previous and copy.palette.?.ptr == palette and copy.frames.?[0].pixels.ptr == frame);
+        try std.testing.expectEqual(PixelFormat.indexed8, copy.format);
+        try std.testing.expectEqualSlices(u8, &.{ 0, 1 }, copy.pixels);
+        return err;
+    };
+    try std.testing.expect(copy.palette == null);
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 0, 0, 0, 0, 255, 255, 2, 2, 3, 3, 4, 4, 128, 128 }, copy.pixels);
+}
+test "image clone and multi-frame indexed conversion unwind all allocations without replacing partial owners" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneConversionFailures, .{});
+}
+test "image conversion validates every frame before allocating and rejects unsupported destinations" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 1, 1, .rgb8);
+    defer img.deinit();
+    const address = img.pixels.ptr;
+    try std.testing.expectError(error.UnsupportedFormat, img.toFormat(.indexed8));
+    const frames = try a.alloc(Image.Frame, 1);
+    frames[0] = .{ .pixels = &.{}, .delay_ms = 10 };
+    img.frames = frames;
+    img.allocator = std.testing.failing_allocator;
+    try std.testing.expectError(error.BufferTooSmall, img.toFormat(.rgb16));
+    img.allocator = a;
+    try std.testing.expect(img.pixels.ptr == address);
+    try std.testing.expectEqual(PixelFormat.rgb8, img.format);
 }

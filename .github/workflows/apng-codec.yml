@@ -2,9 +2,9 @@ name: APNG codec conformance
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
   pull_request:
-    paths: ['packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/apng*.zig', 'packages/image/src/formats/png.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/webp.zig', 'packages/image/src/image.zig', 'packages/image/tests/apng*', 'packages/image/docs/apng-encoding.md', '.github/workflows/apng-codec.yml']
   workflow_dispatch:
 permissions:
   contents: read
