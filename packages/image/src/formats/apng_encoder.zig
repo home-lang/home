@@ -222,11 +222,19 @@ test "APNG streaming scratch allocations remain bounded independently of frame h
     defer a.free(pixels);
     @memset(pixels, 71);
     const tall = raster.View{ .data = pixels, .width = 1, .height = 20000, .stride = 3 };
-    // Bounded Zig scratch; zlib's native workspace is separately owned by C.
-    var storage: [1024]u8 = undefined;
-    var bounded = std.heap.FixedBufferAllocator.init(&storage);
+    // Count ALL allocation requests, including zlib's native workspace. The
+    // same two frames at heights 1 and 20000 must use identical total scratch.
+    var short_stats = std.testing.FailingAllocator.init(a, .{});
+    var tall_stats = std.testing.FailingAllocator.init(a, .{});
+    var short = tall;
+    short.height = 1;
     var sink = Sink{};
-    try write(bounded.allocator(), .{ .width = 1, .height = 20000, .frames = &.{ .{ .view = tall }, .{ .view = tall } } }, &sink);
+    try write(short_stats.allocator(), .{ .width = 1, .height = 1, .frames = &.{ .{ .view = short }, .{ .view = short } } }, &sink);
+    try write(tall_stats.allocator(), .{ .width = 1, .height = 20000, .frames = &.{ .{ .view = tall }, .{ .view = tall } } }, &sink);
+    try std.testing.expectEqual(short_stats.allocated_bytes, tall_stats.allocated_bytes);
+    try std.testing.expectEqual(tall_stats.allocated_bytes, tall_stats.freed_bytes);
+    try std.testing.expectEqual(short_stats.allocated_bytes, short_stats.freed_bytes);
+    try std.testing.expect(tall_stats.allocated_bytes < 1024 * 1024);
 }
 
 test "APNG checkpoints abort before allocation or within buffered rows and retain caller inputs" {

@@ -2,9 +2,9 @@ name: Bounded media allocation
 on:
   push:
     branches: [main]
-    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', '.github/workflows/media-allocation-budget.yml']
+    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/apng_encoder.zig', 'packages/image/src/formats/raster_encoder.zig', '.github/workflows/media-allocation-budget.yml']
   pull_request:
-    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', '.github/workflows/media-allocation-budget.yml']
+    paths: ['packages/video/src/core/budget_allocator.zig', 'packages/image/src/formats/zlib_stream.zig', 'packages/image/src/formats/apng_encoder.zig', 'packages/image/src/formats/raster_encoder.zig', '.github/workflows/media-allocation-budget.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,4 +28,6 @@ jobs:
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" packages/video/src/core/budget_allocator.zig
             zig test -O "$mode" -lc -lz packages/image/src/formats/zlib_stream.zig
+            zig test -O "$mode" -lc -lz packages/image/src/formats/apng_encoder.zig
+            zig test -O "$mode" -lc -lz packages/image/src/formats/raster_encoder.zig
           done
