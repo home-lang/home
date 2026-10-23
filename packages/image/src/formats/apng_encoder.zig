@@ -66,6 +66,7 @@ const Sequence = struct {
 /// own staging/rollback. The owned encode convenience publishes only on success.
 pub fn write(allocator: std.mem.Allocator, animation: Animation, sink: anytype) !void {
     try animation.validate();
+    try raster.checkpoint(sink);
     try raster.writePngHeader(sink, animation.default_image orelse animation.frames[0].view);
     var control: [8]u8 = undefined;
     std.mem.writeInt(u32, control[0..4], @intCast(animation.frames.len), .big);
@@ -97,6 +98,9 @@ fn ImageSink(comptime Sink: type) type {
     return struct {
         sink: Sink,
         sequence: ?*Sequence,
+        pub fn checkpoint(self: *@This()) !void {
+            try raster.checkpoint(self.sink);
+        }
         pub fn writeAll(self: *@This(), bytes: []const u8) !void {
             if (bytes.len == 0) return;
             if (self.sequence) |seq| {
@@ -223,4 +227,33 @@ test "APNG streaming scratch allocations remain bounded independently of frame h
     var bounded = std.heap.FixedBufferAllocator.init(&storage);
     var sink = Sink{};
     try write(bounded.allocator(), .{ .width = 1, .height = 20000, .frames = &.{ .{ .view = tall }, .{ .view = tall } } }, &sink);
+}
+
+test "APNG checkpoints abort before allocation or within buffered rows and retain caller inputs" {
+    const Sink = struct {
+        calls: usize = 0,
+        writes: usize = 0,
+        stop: usize,
+        pub fn checkpoint(self: *@This()) !void {
+            if (self.calls == self.stop) return error.CaptureCancelled;
+            self.calls += 1;
+        }
+        pub fn writeAll(self: *@This(), _: []const u8) !void {
+            self.writes += 1;
+        }
+    };
+    const a = std.testing.allocator;
+    const pixels = try a.alloc(u8, 3 * 20000);
+    defer a.free(pixels);
+    @memset(pixels, 71);
+    const tall = raster.View{ .data = pixels, .width = 1, .height = 20000, .stride = 3 };
+    const animation = Animation{ .width = 1, .height = 20000, .frames = &.{ .{ .view = tall }, .{ .view = tall } } };
+    var early = Sink{ .stop = 0 };
+    try std.testing.expectError(error.CaptureCancelled, write(std.testing.failing_allocator, animation, &early));
+    try std.testing.expectEqual(@as(usize, 0), early.writes);
+    var middle = Sink{ .stop = 5000 };
+    try std.testing.expectError(error.CaptureCancelled, write(a, animation, &middle));
+    try std.testing.expectEqual(@as(usize, 5000), middle.calls);
+    try std.testing.expect(middle.writes > 0);
+    for (pixels) |value| try std.testing.expectEqual(@as(u8, 71), value);
 }

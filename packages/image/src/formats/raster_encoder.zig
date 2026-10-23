@@ -63,6 +63,7 @@ pub fn fromImage(img: anytype) !View {
 pub fn writePngData(allocator: std.mem.Allocator, view: View, options: PngOptions, sink: anytype) !void {
     const row_bytes = try view.validate();
     try checkPngOptions(options);
+    try checkpoint(sink);
     const size = std.math.add(usize, row_bytes, 1) catch return error.InvalidGeometry;
     var best = try allocator.alloc(u8, size);
     defer allocator.free(best);
@@ -71,6 +72,7 @@ pub fn writePngData(allocator: std.mem.Allocator, view: View, options: PngOption
     const compressor = try Deflater.create(allocator, options.compression);
     defer compressor.deinit();
     for (0..view.height) |y| {
+        try checkpoint(sink);
         if (options.filter == .adaptive) {
             var score = filtered(view, y, row_bytes, 0, best);
             for (1..5) |kind| {
@@ -83,7 +85,17 @@ pub fn writePngData(allocator: std.mem.Allocator, view: View, options: PngOption
         } else _ = filtered(view, y, row_bytes, @intCast(@intFromEnum(options.filter) - 1), best);
         try compressor.write(best, sink);
     }
+    try checkpoint(sink);
     try compressor.finish(sink);
+}
+/// Optional synchronous cancellation/progress boundary. Existing writeAll-only
+/// sinks are unchanged. A checkpoint error aborts the current image stream.
+pub fn checkpoint(sink: anytype) !void {
+    const T = switch (@typeInfo(@TypeOf(sink))) {
+        .pointer => |p| p.child,
+        else => @TypeOf(sink),
+    };
+    if (@hasDecl(T, "checkpoint")) try sink.checkpoint();
 }
 pub fn checkPngOptions(options: PngOptions) !void {
     if (options.compression > 9) return error.InvalidCompressionLevel;

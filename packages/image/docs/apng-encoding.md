@@ -68,3 +68,14 @@ This does not complete generic APNG decoder validation, animation compositing,
 interlacing, additional metadata, GIF palette quality/animation or camera-facing
 animation capture. Those remain separate required work. No physical camera or
 performance result is inferred from these software fixtures.
+
+Sinks may optionally implement synchronous `checkpoint() !void`. APNG forwards
+it through the frame-data adapter into PNG's row loop, before scratch allocation,
+before each filtered row and before compressor finish. This lets a hosted worker
+observe cancellation even when highly compressible rows emit no chunk yet.
+WriteAll-only sinks retain their existing behavior and encoded bytes. Checkpoint
+errors abort the stream, unwind scratch/native workspace and never publish an
+owned result; a streaming caller still disposes its partial sink. The checkpoint
+is not an asynchronous callback and keeps no borrowed pointer. A 20,000-row
+regression rejects before allocation and partway through buffered rows while
+verifying unchanged input. The four-build independent libpng matrix is unchanged.
