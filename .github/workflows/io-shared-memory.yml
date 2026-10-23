@@ -1,0 +1,31 @@
+name: POSIX shared memory ownership
+on:
+  push:
+    branches: [main]
+    paths: ['packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
+  pull_request:
+    paths: ['packages/io/src/posix_shared_memory.zig', 'packages/video/src/core/owned_admission.zig', '.github/workflows/io-shared-memory.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  owners:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Descriptor mapping and admission ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc packages/io/src/posix_shared_memory.zig
+            zig test -O "$mode" packages/video/src/core/owned_admission.zig
+          done

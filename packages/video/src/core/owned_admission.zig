@@ -45,6 +45,21 @@ pub fn Registry(comptime capacity: usize) type {
             s.slots[ticket.slot] = null;
             s.released += 1;
         }
+        /// Adjust a live payload reservation without issuing another identity.
+        /// Reserve a bounded preparation allowance first, then reconcile the
+        /// exact cost before allocating the payload. Failure preserves ownership.
+        pub fn resize(s: *Self, ticket: Ticket, bytes: usize) !void {
+            errdefer s.rejected +|= 1;
+            if (ticket.slot >= capacity) return error.StaleTicket;
+            const old = s.slots[ticket.slot] orelse return error.StaleTicket;
+            if (old.id != ticket.id) return error.StaleTicket;
+            if (bytes > s.max_bytes) return error.PayloadTooLarge;
+            const other = s.used - old.bytes;
+            if (bytes > s.max_bytes - other) return error.BufferFull;
+            s.slots[ticket.slot] = .{ .id = old.id, .bytes = bytes };
+            s.used = other + bytes;
+            s.high_bytes = @max(s.high_bytes, s.used);
+        }
         /// True while any payload admitted at/before target still owns storage.
         /// Out-of-order releases and later admissions cannot extend this prefix.
         /// This is a cleanup fence, not an operation-success watermark.
@@ -100,4 +115,27 @@ test "limits, oversized payloads and ticket exhaustion preserve ownership" {
     try r.release(last);
     try std.testing.expectError(error.SequenceOverflow, r.reserve(1));
     try std.testing.expectEqual(@as(usize, 0), r.used);
+}
+test "reservation resizing preserves identity cleanup fences and accounting on rejected growth" {
+    const t = std.testing;
+    var r = try Registry(2).init(10, 2);
+    const a = try r.reserve(2);
+    const b = try r.reserve(3);
+    try r.resize(a, 7);
+    try t.expectEqual(@as(usize, 10), r.used);
+    try t.expectError(error.BufferFull, r.resize(b, 4));
+    try t.expectError(error.PayloadTooLarge, r.resize(a, 11));
+    try t.expectEqual(@as(usize, 10), r.used);
+    try t.expectEqual(@as(usize, 2), r.count);
+    try t.expectEqual(@as(u64, 2), r.issued);
+    try r.resize(a, 0);
+    try t.expect(try r.pendingThrough(a.id));
+    try r.release(a);
+    const next = try r.reserve(4);
+    try t.expectError(error.StaleTicket, r.resize(a, 0));
+    try t.expectEqual(@as(usize, 7), r.used);
+    try r.release(next);
+    try r.release(b);
+    try t.expectEqual(@as(usize, 0), r.used);
+    try t.expectEqual(@as(usize, 10), r.high_bytes);
 }
