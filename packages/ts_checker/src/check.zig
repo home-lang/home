@@ -78671,7 +78671,29 @@ pub const Checker = struct {
         if (self.bareTypeNodeIsTypeParam(type_ref_node, type_params)) return;
         if (try self.typeRefHeritageNameResolves(type_ref_node, r.name)) return;
         if (self.sourceHasVirtualFilenameSections() and self.classDeclInAnyVirtualSection(r.name) != null) return;
+        if (try self.importedHeritageExportInfo(type_ref_node, r.name)) |facts| {
+            if (facts.exported_value and !facts.exported_type) {
+                try self.reportKnownValueUsedAsTypeOnce(type_ref_node, r.name);
+                return;
+            }
+        }
         try self.reportCannotFindNamePlainOnce(type_ref_node, r.name);
+    }
+
+    fn importedHeritageExportInfo(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?ExternalResolver.ModuleExport {
+        if (self.module) |module| {
+            const symbol = module.root.types.get(name) orelse module.root.values.get(name) orelse return null;
+            if (!symbol.flags.is_import) return null;
+        }
+        const imported = (try self.localImportModuleInfo(name, anchor)) orelse return null;
+        // A module namespace import does not itself name a type. Named and
+        // default imports query the exact exported symbol, including aliases.
+        const exported = imported.exported_root orelse return null;
+        return self.externalModuleExportInfo(imported.import_node, self.string_interner.get(imported.specifier), exported);
     }
 
     /// TS2312 ÃÂ¢ÃÂÃÂ an interface may only extend an object type (or an
@@ -78893,6 +78915,13 @@ pub const Checker = struct {
         if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
         if (self.numeric_enums.contains(name)) return true;
         if (self.enumDeclForNameAt(name, anchor) != null) return true;
+        // Declaration-space meaning is independent of whether every member
+        // can be projected through the shared schema. Consult the bound export
+        // facts before asking lowering to materialize that graph; an opaque
+        // member must not turn an existing imported type into a missing name.
+        if (try self.importedHeritageExportInfo(anchor, name)) |facts| {
+            if (facts.exported_type) return true;
+        }
         // Imported program declarations are materialized from their shared
         // source-owned schema rather than registered in this file's lexical
         // type tables. Heritage resolution must consult that same graph or it
@@ -151611,6 +151640,15 @@ pub const Checker = struct {
                     if (info.exported_type) return;
                 }
             }
+        }
+        try self.reportKnownValueUsedAsTypeOnce(node, name);
+    }
+
+    /// The exact resolved export establishes a value-only meaning. Import
+    /// syntax and opaque type projections cannot override that owner fact.
+    fn reportKnownValueUsedAsTypeOnce(self: *Checker, node: NodeId, name: hir_mod.StringId) !void {
+        for (self.diagnostics.items) |d| {
+            if (d.node == node and d.code == TsCodes.value_used_as_type_did_you_mean_typeof) return;
         }
         const raw = self.string_interner.get(name);
         const msg = try std.fmt.allocPrint(

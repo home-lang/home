@@ -42,6 +42,38 @@ CASES['contradictory-intersection'] = (
     (9, 15, 2322))
 
 
+# Name resolution must retain the owner's type-space meaning even when a
+# member's template pattern cannot yet be projected through the shared schema.
+heritage_files = {
+    'types.ts': ('export interface Contract { value: `prefix-${string}`; }\n'
+                 'export default interface DefaultContract { value: `prefix-${string}`; }\n'
+                 'export const valueOnly = 1;\n'),
+    'named.ts': 'export type { Contract } from "./types";\n',
+    'barrel.ts': ('export type { Contract as Forwarded } from "./types";\n'
+                  'export { default, valueOnly } from "./types";\n'),
+}
+for route, binding in (
+    ('direct', 'import type { Contract as Base } from "./types";\n'),
+    ('barrel', 'import type { Forwarded as Base } from "./barrel";\n'),
+    ('default', 'import type Base from "./types";\n'),
+    ('default-barrel', 'import type Base from "./barrel";\n'),
+):
+    valid_heritage = (binding + 'interface Derived extends Base {}\n'
+                      'class Implementation implements Base { value: `prefix-${string}` = "prefix-ok"; }\n')
+    CASES[f'heritage-{route}'] = (
+        heritage_files, valid_heritage, 'interface Unbound extends NotDeclared {}\n', (4, 27, 2304))
+
+_, valid_heritage, _, _ = CASES['heritage-direct']
+CASES['heritage-value-only'] = (
+    heritage_files, valid_heritage,
+    'import { valueOnly } from "./types";\ninterface ValueBase extends valueOnly {}\n', (5, 29, 2749))
+CASES['heritage-type-only-value'] = (
+    heritage_files, valid_heritage,
+    'import type { valueOnly } from "./types";\ninterface ValueBase extends valueOnly {}\n', (5, 29, 2749))
+CASES['heritage-missing-export'] = (
+    heritage_files, valid_heritage, 'import type { Missing } from "./named";\n', (4, 15, 2305))
+
+
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()

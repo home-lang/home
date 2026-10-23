@@ -23241,3 +23241,71 @@ test "Program: noLib suppresses per-source library reference admission" {
         }
     }
 }
+
+test "Program: imported heritage meaning survives an unprojectable member" {
+    const Mode = enum { serial, streaming };
+    inline for (.{ Mode.serial, Mode.streaming }) |mode| {
+        for ([_]bool{ false, true }) |consumer_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+            defer checker_resolver.arena.deinit();
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            checker_resolver.program = &p;
+            const owner =
+                \\export interface Contract { value: `prefix-${string}`; }
+                \\export default interface DefaultContract { value: `default-${string}`; }
+                \\export const valueOnly = 1;
+            ;
+            const main =
+                \\import type DefaultContract from './barrel';
+                \\import type { Contract as Renamed } from './barrel';
+                \\interface Derived extends Renamed {}
+                \\interface DefaultDerived extends DefaultContract {}
+                \\class Implementation implements Renamed { value: `prefix-${string}` = 'prefix-ok'; }
+            ;
+            const invalid =
+                \\import type { Missing } from './named';
+                \\import { valueOnly } from './owner';
+                \\import type { valueOnly as TypeOnlyValue } from './owner';
+                \\interface Unbound extends NotDeclared {}
+                \\interface ValueBase extends valueOnly {}
+                \\interface TypeOnlyValueBase extends TypeOnlyValue {}
+            ;
+            const barrel = "export { default } from './owner'; export type { Contract } from './owner';";
+            const paths = [_][]const u8{ "/owner.ts", "/barrel.ts", "/main.ts", "/invalid.ts", "/named.ts" };
+            const sources = [_][]const u8{ owner, barrel, main, invalid, "export type { Contract } from './owner';" };
+            for (paths, sources) |path, source| try vfs.addFile(path, source);
+            if (consumer_first) {
+                var index = paths.len;
+                while (index > 0) {
+                    index -= 1;
+                    _ = try p.add(paths[index], sources[index]);
+                }
+            } else {
+                for (paths, sources) |path, source| {
+                    _ = try p.add(path, source);
+                }
+            }
+            const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .external_resolver = .{ .ptr = &checker_resolver, .vtable = &SourceExportResolver.vtable } };
+            const Sink = struct {
+                fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+            };
+            switch (mode) {
+                .serial => try p.compileAll(options),
+                .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+            }
+            const valid_compilation = p.fileById(p.lookupPath("/main.ts").?).compilation.?;
+            for (valid_compilation.diagnostics.items) |d| std.debug.print("imported heritage TS{d}: {s}\n", .{ d.code, d.message });
+            try T.expectEqual(@as(usize, 0), valid_compilation.diagnostics.items.len);
+            const invalid_compilation = p.fileById(p.lookupPath("/invalid.ts").?).compilation.?;
+            try T.expectEqual(@as(usize, 4), invalid_compilation.diagnostics.items.len);
+            try expectCompilationHasDiagnosticCode(invalid_compilation, 2305);
+            try expectCompilationHasDiagnosticCode(invalid_compilation, 2304);
+            try expectCompilationHasDiagnosticCode(invalid_compilation, 2749);
+        }
+    }
+}
