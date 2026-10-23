@@ -27,6 +27,36 @@ pub const Value = struct {
     count: u32 = 1,
     label: []const u8 = "",
     data: []const u8,
+    /// Exact supported primitive; payload order is explicit. No numeric coercion,
+    /// array-of-one acceptance, opaque interpretation or finite-value policy.
+    pub fn scalar(value: Value, comptime T: type) !T {
+        if (value.kind != scalarKind(T) or value.count != 1 or value.flags & ~@as(u32, little_endian) != 0) return error.InvalidScalar;
+        try validValue(value);
+        if (T == bool) return value.data[0] != 0;
+        const endian: std.builtin.Endian = if (value.flags & little_endian != 0) .little else .big;
+        if (T == f32) return @bitCast(std.mem.readInt(u32, value.data[0..4], endian));
+        return std.mem.readInt(T, value.data[0..@sizeOf(T)], endian);
+    }
+};
+fn scalarKind(comptime T: type) Kind {
+    if (T == bool) return .boolean;
+    if (T == u8) return .byte;
+    if (T == u16) return .u16;
+    if (T == u32) return .u32;
+    if (T == i32) return .i32;
+    if (T == i64) return .i64;
+    if (T == f32) return .f32;
+    @compileError("catalog scalar supports bool, u8/u16/u32, i32/i64 and f32");
+}
+/// Explicit identity/role selection; callers choose provenance and record flags.
+/// An empty vendor string may be explicitly accepted for older source schemas.
+pub const ScalarQuery = struct {
+    group: u32 = 0,
+    name: []const u8,
+    vendors: []const []const u8,
+    role: u32 = 0,
+    required_flags: u32 = 0,
+    forbidden_flags: u32 = 0,
 };
 fn put(bytes: []u8, offset: usize, value: u32) void {
     std.mem.writeInt(u32, bytes[offset..][0..4], value, .little);
@@ -182,6 +212,35 @@ pub const Reader = struct {
         while (try records_it.next()) |_| {}
         return r;
     }
+    /// Borrowed lookup, no allocation or early return that could hide a later
+    /// duplicate/malformed record. Missing identity => null; malformed/ambiguous
+    /// matching records => error, never a coerced or arbitrary first value.
+    pub fn findScalar(r: Reader, comptime T: type, query: ScalarQuery) !?T {
+        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return error.InvalidScalarQuery;
+        var result: ?T = null;
+        var matched = false;
+        var it = r.records();
+        while (try it.next()) |record| {
+            if (record.info.group != query.group or !std.mem.eql(u8, record.info.name, query.name) or record.info.flags & query.required_flags != query.required_flags or record.info.flags & query.forbidden_flags != 0) continue;
+            var accepted = false;
+            for (query.vendors) |vendor| if (std.mem.eql(u8, record.info.vendor, vendor)) {
+                accepted = true;
+                break;
+            };
+            if (!accepted) continue;
+            if (matched) return error.AmbiguousScalar;
+            matched = true;
+            if (record.info.kind != scalarKind(T)) return error.InvalidScalar;
+            var values = record.values();
+            while (try values.next()) |value| {
+                if (value.role != query.role) continue;
+                if (result != null) return error.AmbiguousScalar;
+                result = try value.scalar(T);
+            }
+            if (result == null) return error.InvalidScalar;
+        }
+        return result;
+    }
     pub fn records(r: Reader) Records {
         return .{ .bytes = r.bytes[header_size..], .remaining = r.count };
     }
@@ -240,4 +299,109 @@ test "all truncations, counts, lengths, tags and trailing bytes are validated" {
     }
     try w.bytes.append(w.allocator, 0);
     try std.testing.expectError(error.InvalidCatalog, Reader.init(w.bytes.items));
+}
+
+test "typed scalars preserve exact signed unsigned float and boolean representations in either order" {
+    const t = std.testing;
+    inline for (.{ u8, u16, u32, i32, i64 }) |T| {
+        for ([_]T{ std.math.minInt(T), std.math.maxInt(T) }) |number| for ([_]std.builtin.Endian{ .little, .big }) |endian| {
+            var bytes: [@sizeOf(T)]u8 = undefined;
+            std.mem.writeInt(T, &bytes, number, endian);
+            const value = Value{ .kind = scalarKind(T), .flags = if (endian == .little) little_endian else 0, .data = &bytes };
+            try t.expectEqual(number, try value.scalar(T));
+        };
+    }
+    for ([_]u32{ 0, 0x80000000, 0x3fa00000, 0x7f800000, 0x7fc00001 }) |bits| for ([_]std.builtin.Endian{ .little, .big }) |endian| {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, bits, endian);
+        const value = Value{ .kind = .f32, .flags = if (endian == .little) little_endian else 0, .data = &bytes };
+        try t.expectEqual(bits, @as(u32, @bitCast(try value.scalar(f32))));
+    };
+    for ([_]u8{ 0, 1 }) |byte| {
+        const value = Value{ .kind = .boolean, .data = &.{byte} };
+        try t.expectEqual(byte == 1, try value.scalar(bool));
+    }
+}
+test "typed scalar decoding refuses coerced kinds one-element arrays malformed lengths and unknown flags" {
+    const t = std.testing;
+    var value = Value{ .kind = .f32, .data = &.{ 0, 0, 128, 63 } };
+    try t.expectError(error.InvalidScalar, value.scalar(i32));
+    value.flags |= array;
+    try t.expectError(error.InvalidScalar, value.scalar(f32));
+    value.flags = little_endian | 4;
+    try t.expectError(error.InvalidScalar, value.scalar(f32));
+    value.flags = little_endian;
+    value.count = 0;
+    try t.expectError(error.InvalidScalar, value.scalar(f32));
+    value.count = 1;
+    value.data = &.{ 0, 0, 128 };
+    try t.expectError(error.InvalidCatalog, value.scalar(f32));
+    value = .{ .kind = .boolean, .data = &.{2} };
+    try t.expectError(error.InvalidCatalog, value.scalar(bool));
+    value = .{ .kind = .unknown, .data = &.{1} };
+    try t.expectError(error.InvalidScalar, value.scalar(u8));
+}
+fn scalarFixture(w: *Writer, name: []const u8, vendor: []const u8, group: u32, flags: u32, role: u32, number: i64) !void {
+    try w.begin(.{ .kind = .i64, .name = name, .vendor = vendor, .group = group, .flags = flags });
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(i64, &bytes, number, .big);
+    try w.append(.{ .kind = .i64, .flags = 0, .role = role, .data = &bytes });
+    try w.end();
+}
+test "catalog scalar identity role flag and vendor selection is explicit and absent identities stay absent" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 4, 4096);
+    defer w.deinit();
+    try scalarFixture(&w, "Timestamp", "foreign", 0, 2, 0, -1);
+    try scalarFixture(&w, "Timestamp", "standard", 1, 2, 0, -2);
+    try scalarFixture(&w, "Timestamp", "standard", 0, 1, 0, -3);
+    try scalarFixture(&w, "Timestamp", "standard", 0, 2, 7, std.math.maxInt(i64));
+    try scalarFixture(&w, "Timestamp", "", 0, 2, 7, 42);
+    const reader = try Reader.init(try w.finish());
+    const query = ScalarQuery{ .name = "Timestamp", .vendors = &.{"standard"}, .required_flags = 2, .forbidden_flags = 1, .role = 7 };
+    try t.expectEqual(@as(?i64, std.math.maxInt(i64)), try reader.findScalar(i64, query));
+    var legacy = query;
+    legacy.vendors = &.{""};
+    try t.expectEqual(@as(?i64, 42), try reader.findScalar(i64, legacy));
+    var absent = query;
+    absent.name = "Missing";
+    try t.expectEqual(@as(?i64, null), try reader.findScalar(i64, absent));
+    absent = query;
+    absent.vendors = &.{};
+    try t.expectError(error.InvalidScalarQuery, reader.findScalar(i64, absent));
+    absent = query;
+    absent.required_flags |= 1;
+    try t.expectError(error.InvalidScalarQuery, reader.findScalar(i64, absent));
+    try t.expectError(error.InvalidScalar, reader.findScalar(f32, query));
+    absent = query;
+    absent.role = 0;
+    try t.expectError(error.InvalidScalar, reader.findScalar(i64, absent));
+}
+test "catalog scalar lookup rejects late duplicates within and across provenance instead of taking the first value" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 4, 4096);
+    defer w.deinit();
+    try scalarFixture(&w, "Timestamp", "standard", 0, 2, 0, 4);
+    try scalarFixture(&w, "Timestamp", "legacy", 0, 2, 0, 5);
+    var reader = try Reader.init(try w.finish());
+    try t.expectError(error.AmbiguousScalar, reader.findScalar(i64, .{ .name = "Timestamp", .vendors = &.{ "standard", "legacy" } }));
+    try t.expectEqual(@as(?i64, 4), try reader.findScalar(i64, .{ .name = "Timestamp", .vendors = &.{"standard"} }));
+    w.deinit();
+    w = try Writer.init(t.allocator, 4, 4096);
+    try w.begin(.{ .kind = .i64, .name = "Timestamp", .vendor = "standard" });
+    for (0..2) |_| try w.append(.{ .kind = .i64, .data = &@as([8]u8, @splat(0)) });
+    try w.end();
+    reader = try Reader.init(try w.finish());
+    try t.expectError(error.AmbiguousScalar, reader.findScalar(i64, .{ .name = "Timestamp", .vendors = &.{"standard"} }));
+}
+
+test "catalog scalar lookup does not publish an early candidate before checking unrelated trailing records" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 4, 4096);
+    defer w.deinit();
+    try scalarFixture(&w, "Timestamp", "standard", 0, 2, 0, 1);
+    try scalarFixture(&w, "Other", "foreign", 0, 2, 0, 2);
+    var reader = try Reader.init(try w.finish());
+    reader.bytes = reader.bytes[0 .. reader.bytes.len - 1];
+    try t.expectError(error.InvalidCatalog, reader.findScalar(i64, .{ .name = "Timestamp", .vendors = &.{"standard"} }));
 }
