@@ -2,9 +2,9 @@ name: Checked image pixels
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/image.zig', 'packages/image/tests/pixel_*', '.github/workflows/image-pixels.yml']
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/oriented_pixels.zig', 'packages/image/src/orthogonal_test.zig', 'packages/image/src/ops/orientation.zig', 'packages/image/src/ops/transform.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/image.zig', 'packages/image/tests/pixel_*', '.github/workflows/image-pixels.yml']
   pull_request:
-    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/image.zig', 'packages/image/tests/pixel_*', '.github/workflows/image-pixels.yml']
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/oriented_pixels.zig', 'packages/image/src/orthogonal_test.zig', 'packages/image/src/ops/orientation.zig', 'packages/image/src/ops/transform.zig', 'packages/image/src/formats/raster_encoder.zig', 'packages/image/src/image.zig', 'packages/image/tests/pixel_*', '.github/workflows/image-pixels.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -30,6 +30,10 @@ jobs:
             zig build-obj -O "$mode" -fcompiler-rt -lc --dep pixel -Mroot=packages/image/tests/pixel_fixture.zig -Mpixel=packages/image/src/formats/pixel_view.zig -femit-bin=/tmp/home-pixels.o
             cc -std=c11 -O2 -Wall -Wextra -Werror packages/image/tests/pixel_reference.c /tmp/home-pixels.o -o /tmp/home-pixels
             /tmp/home-pixels
+            zig test -O "$mode" -lc packages/image/src/oriented_pixels.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep oriented -Mroot=packages/image/tests/pixel_orientation_fixture.zig -Moriented=packages/image/src/oriented_pixels.zig -femit-bin=/tmp/home-orientation.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror packages/image/tests/pixel_orientation_reference.c /tmp/home-orientation.o -o /tmp/home-orientation
+            /tmp/home-orientation
           done
       - name: Transactional Image API on Home development Zig
         if: matrix.zig == 'master'
@@ -44,3 +48,7 @@ jobs:
             prefix=/usr
           fi
           zig test -O ReleaseSafe -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" packages/image/src/image.zig
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" packages/image/src/orthogonal_test.zig --test-filter orthogonal
+            zig test -O "$mode" -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" --dep image -Mroot=packages/image/tests/pixel_orthogonal_api.zig -Mimage=packages/image/src/image.zig
+          done

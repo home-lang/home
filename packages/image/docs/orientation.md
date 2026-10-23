@@ -28,3 +28,37 @@ dimensions, explicit clockwise corner mappings, output-axis flip composition,
 tile phases, invalid inputs and maximal coordinate arithmetic. zig-camera reuses
 this module for C/Bun transform admission and synthetic stream generation. The
 module is not a camera driver, software fallback policy or image ownership API.
+
+## Checked pixels and public Image operations
+
+`oriented_pixels.zig` reuses `Transform` for exact gray/RGB/RGBA8/16 raster copies.
+`info` validates dimensions/strides and reports compact output geometry/size;
+`into` validates source and destination extents and rejects all overlap before
+writing. Destination padding is untouched. `copy` allocates an independent packed
+`PixelView.Owned` through the caller's allocator. Row copies cover identity and
+vertical flips; other orientations move whole pixels, preserving low words,
+channel order, endian and straight alpha without reading them as eight-bit colors.
+The helper imposes checked machine arithmetic and existing positive i32 geometry;
+hosted applications must impose their own allocation/admission limits.
+
+Public `Transform.orthogonal`, `rotate`, `flip`, `flop`, `flipInPlace` and
+`flopInPlace` now preserve native words and indexed palette indices. Allocating
+operations deep-copy palettes and animation frames, preserve loop counts and
+frame timing/disposal/blend, and transform subframe rectangles with the canvas.
+Nullable full-canvas frame dimensions retain their meaning after transposition.
+All frame geometry is checked before allocation or mutation; existing void
+in-place APIs leave all owners/pixels unchanged on invalid geometry. These
+operations permute pixels rather than compositing frames. General affine and
+arbitrary-angle resampling are separate policies; they are not covered by this
+native-precision claim.
+
+Nine portable raster/geometry tests cover all eight transforms with padded,
+unaligned, singleton, odd, gray/RGB/RGBA8/16/endian samples, invalid spans,
+pre-write overlap rejection and allocation cleanup. An independent C reference
+checks 480 fixtures after source retirement. Development-compiler Image tests
+exercise palette/animated rectangle ownership, native words, in-place equivalence,
+late invalid frames and all allocator failure points; an external public Image
+API test checks the original low-word regression. Dedicated entry points ensure
+these tests are actually discovered, rather than relying on a filtered image-root
+command that may omit lazy transform imports. No device/codec performance or
+camera hardware claims follow from these software checks.

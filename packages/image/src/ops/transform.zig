@@ -164,129 +164,126 @@ fn bilinearInterpolate(c00: Color, c10: Color, c01: Color, c11: Color, fx: f64, 
     };
 }
 
+const oriented = @import("../oriented_pixels.zig");
+const pixel_views = @import("../formats/pixel_view.zig");
+fn pixelView(img: *const Image, bytes: []const u8, width: u32, height: u32) !pixel_views.View {
+    const format: pixel_views.Format = switch (img.format) {
+        .grayscale8, .grayscale16, .indexed8 => .gray,
+        .rgb8, .rgb16 => .rgb,
+        .rgba8, .rgba16 => .rgba,
+    };
+    const bits: u8 = switch (img.format) {
+        .grayscale16, .rgb16, .rgba16 => 16,
+        else => 8,
+    };
+    const row = try pixel_views.packedRow(width, format, bits);
+    const view = pixel_views.View{ .data = bytes, .width = width, .height = height, .stride = row, .format = format, .bits = bits };
+    _ = try view.validate();
+    return view;
+}
+fn frameView(img: *const Image, frame: Image.Frame) !pixel_views.View {
+    const w = frame.width orelse img.width;
+    const h = frame.height orelse img.height;
+    if (frame.x_offset > img.width or frame.y_offset > img.height or w > img.width - frame.x_offset or h > img.height - frame.y_offset) return error.InvalidGeometry;
+    return pixelView(img, frame.pixels, w, h);
+}
+fn validateOrthogonal(img: *const Image) !pixel_views.View {
+    const view = try pixelView(img, img.pixels, img.width, img.height);
+    if (img.frames) |frames| {
+        for (frames) |frame| _ = try frameView(img, frame);
+    }
+    return view;
+}
+fn movedFrame(img: *const Image, frame: Image.Frame, transform: OrthogonalTransform) Image.Frame {
+    const w = frame.width orelse img.width;
+    const h = frame.height orelse img.height;
+    const x = if (transform.hflip) img.width - frame.x_offset - w else frame.x_offset;
+    const y = if (transform.vflip) img.height - frame.y_offset - h else frame.y_offset;
+    var result = frame;
+    result.width = if (transform.transpose) frame.height else frame.width;
+    result.height = if (transform.transpose) frame.width else frame.height;
+    result.x_offset = if (transform.transpose) y else x;
+    result.y_offset = if (transform.transpose) x else y;
+    return result;
+}
+/// Exact byte permutation, including native sixteen-bit samples and indexed
+/// palette entries. Animation rectangles, timing/disposal/blend and loop count
+/// retain independent owned storage and transform with the canvas.
+pub fn orthogonal(img: *const Image, transform: OrthogonalTransform) !Image {
+    const source = try validateOrthogonal(img);
+    const planned = try oriented.info(source, transform);
+    var result = try Image.init(img.allocator, planned.width, planned.height, img.format);
+    errdefer result.deinit();
+    try oriented.into(source, transform, result.pixels, planned.row_bytes);
+    result.palette = if (img.palette) |palette| try img.allocator.dupe(Color, palette) else null;
+    result.loop_count = img.loop_count;
+    if (img.frames) |frames| {
+        const targets = try img.allocator.alloc(Image.Frame, frames.len);
+        errdefer img.allocator.free(targets);
+        var done: usize = 0;
+        errdefer for (targets[0..done]) |frame| img.allocator.free(frame.pixels);
+        for (frames, targets) |frame, *target| {
+            const owned = try oriented.copy(img.allocator, try frameView(img, frame), transform);
+            target.* = movedFrame(img, frame, transform);
+            target.pixels = @constCast(owned.view.data);
+            done += 1;
+        }
+        result.frames = targets;
+    }
+    return result;
+}
 fn rotate90(img: *const Image) !Image {
-    var result = try Image.init(img.allocator, img.height, img.width, img.format);
-    errdefer result.deinit();
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            if (img.getPixel(x, y)) |color| {
-                // 90° clockwise: (x,y) → (height-1-y, x)
-                result.setPixel(img.height - 1 - y, x, color);
-            }
-        }
-    }
-
-    return result;
+    return orthogonal(img, try OrthogonalTransform.fromRotation(90, false, false));
 }
-
 fn rotate180(img: *const Image) !Image {
-    var result = try Image.init(img.allocator, img.width, img.height, img.format);
-    errdefer result.deinit();
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            if (img.getPixel(x, y)) |color| {
-                result.setPixel(img.width - 1 - x, img.height - 1 - y, color);
-            }
-        }
-    }
-
-    return result;
+    return orthogonal(img, try OrthogonalTransform.fromRotation(180, false, false));
 }
-
 fn rotate270(img: *const Image) !Image {
-    var result = try Image.init(img.allocator, img.height, img.width, img.format);
-    errdefer result.deinit();
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            if (img.getPixel(x, y)) |color| {
-                result.setPixel(y, img.width - 1 - x, color);
-            }
-        }
-    }
-
-    return result;
+    return orthogonal(img, try OrthogonalTransform.fromRotation(270, false, false));
 }
 
 // ============================================================================
 // Flip Operations
 // ============================================================================
 
-/// Flip image vertically (top to bottom)
+/// Flip vertically with exact pixels and owned palette/animation data.
 pub fn flip(img: *const Image) !Image {
-    var result = try Image.init(img.allocator, img.width, img.height, img.format);
-    errdefer result.deinit();
-
-    const bpp = img.format.bytesPerPixel();
-    const row_bytes = @as(usize, img.width) * bpp;
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        const src_offset = @as(usize, img.height - 1 - y) * row_bytes;
-        const dst_offset = @as(usize, y) * row_bytes;
-        @memcpy(result.pixels[dst_offset..][0..row_bytes], img.pixels[src_offset..][0..row_bytes]);
-    }
-
-    return result;
+    return orthogonal(img, .{ .vflip = true });
 }
-
-/// Flip image horizontally (left to right)
+/// Flip horizontally with exact pixels and owned palette/animation data.
 pub fn flop(img: *const Image) !Image {
-    var result = try Image.init(img.allocator, img.width, img.height, img.format);
-    errdefer result.deinit();
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            if (img.getPixel(x, y)) |color| {
-                result.setPixel(img.width - 1 - x, y, color);
-            }
-        }
-    }
-
-    return result;
+    return orthogonal(img, .{ .hflip = true });
 }
-
-/// Flip in-place (modifies the original image)
+fn mirror(view: pixel_views.View, pixels: []u8, vertical: bool) void {
+    const row = view.stride;
+    if (vertical) {
+        for (0..view.height / 2) |y| for (0..row) |byte| {
+            std.mem.swap(u8, &pixels[y * row + byte], &pixels[(@as(usize, view.height) - 1 - y) * row + byte]);
+        };
+    } else {
+        const bpp = view.format.channels() * (view.bits / 8);
+        for (0..view.height) |y| for (0..view.width / 2) |x| for (0..bpp) |byte| {
+            std.mem.swap(u8, &pixels[y * row + x * bpp + byte], &pixels[y * row + (@as(usize, view.width) - 1 - x) * bpp + byte]);
+        };
+    }
+}
+fn mirrorInPlace(img: *Image, vertical: bool) void {
+    // Public void methods preserve all owners/pixels if any frame is invalid.
+    const source = validateOrthogonal(img) catch return;
+    mirror(source, img.pixels, vertical);
+    const transform = OrthogonalTransform{ .hflip = !vertical, .vflip = vertical };
+    if (img.frames) |frames| for (frames) |*frame| {
+        const view = frameView(img, frame.*) catch unreachable;
+        mirror(view, frame.pixels, vertical);
+        frame.* = movedFrame(img, frame.*, transform);
+    };
+}
+/// Existing void API: invalid input leaves every pixel/frame unchanged.
 pub fn flipInPlace(img: *Image) void {
-    const bpp = img.format.bytesPerPixel();
-    const row_bytes = @as(usize, img.width) * bpp;
-
-    var y: u32 = 0;
-    while (y < img.height / 2) : (y += 1) {
-        const top_offset = @as(usize, y) * row_bytes;
-        const bottom_offset = @as(usize, img.height - 1 - y) * row_bytes;
-
-        // Swap rows
-        for (0..row_bytes) |i| {
-            const tmp = img.pixels[top_offset + i];
-            img.pixels[top_offset + i] = img.pixels[bottom_offset + i];
-            img.pixels[bottom_offset + i] = tmp;
-        }
-    }
+    mirrorInPlace(img, true);
 }
-
 pub fn flopInPlace(img: *Image) void {
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width / 2) : (x += 1) {
-            const left = img.getPixel(x, y) orelse Color.BLACK;
-            const right = img.getPixel(img.width - 1 - x, y) orelse Color.BLACK;
-
-            img.setPixel(x, y, right);
-            img.setPixel(img.width - 1 - x, y, left);
-        }
-    }
+    mirrorInPlace(img, false);
 }
 
 // ============================================================================
@@ -485,4 +482,134 @@ test "Affine matrix inverse" {
     try std.testing.expect(inv != null);
     try std.testing.expectApproxEqAbs(@as(f64, 0.5), inv.?.a, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0 / 3.0), inv.?.d, 0.001);
+}
+
+test "orthogonal Image operations preserve low words raw indices and independent palette owners" {
+    const t = std.testing;
+    for ([_]image.PixelFormat{ .rgb8, .rgba8, .grayscale8, .rgb16, .rgba16, .grayscale16, .indexed8 }) |format| {
+        var img = try Image.init(t.allocator, 3, 2, format);
+        defer img.deinit();
+        if (format == .indexed8) img.palette = try t.allocator.dupe(Color, &.{ Color.RED, Color.BLUE });
+        for (img.pixels, 0..) |*byte, i| byte.* = if (format == .indexed8) @intCast(i % 2) else @intCast((i * 37 + 0x34) % 256);
+        const bpp = format.bytesPerPixel();
+        for (0..8) |bits| {
+            const transform = try OrthogonalTransform.fromBits(@intCast(bits));
+            var result = try orthogonal(&img, transform);
+            defer result.deinit();
+            try t.expectEqual(if (bits & 4 != 0) @as(u32, 2) else 3, result.width);
+            try t.expectEqual(if (bits & 4 != 0) @as(u32, 3) else 2, result.height);
+            for (0..2) |y| for (0..3) |x| {
+                const sx = if (bits & 1 != 0) 2 - x else x;
+                const sy = if (bits & 2 != 0) 1 - y else y;
+                const dx = if (bits & 4 != 0) sy else sx;
+                const dy = if (bits & 4 != 0) sx else sy;
+                try t.expectEqualSlices(u8, img.pixels[(y * 3 + x) * bpp ..][0..bpp], result.pixels[(dy * result.width + dx) * bpp ..][0..bpp]);
+            };
+            if (format == .indexed8) {
+                try t.expectEqualSlices(Color, img.palette.?, result.palette.?);
+                result.palette.?[0] = Color.GREEN;
+                try t.expectEqual(Color.RED, img.palette.?[0]);
+            }
+        }
+        var vertical = try flip(&img);
+        defer vertical.deinit();
+        var horizontal = try flop(&img);
+        defer horizontal.deinit();
+        var in_place = try img.clone();
+        defer in_place.deinit();
+        flipInPlace(&in_place);
+        try t.expectEqualSlices(u8, vertical.pixels, in_place.pixels);
+        flipInPlace(&in_place);
+        try t.expectEqualSlices(u8, img.pixels, in_place.pixels);
+        flopInPlace(&in_place);
+        try t.expectEqualSlices(u8, horizontal.pixels, in_place.pixels);
+        flopInPlace(&in_place);
+        try t.expectEqualSlices(u8, img.pixels, in_place.pixels);
+    }
+}
+fn animatedFixture(a: std.mem.Allocator) !Image {
+    var img = try Image.init(a, 5, 4, .grayscale16);
+    errdefer img.deinit();
+    img.palette = try a.dupe(Color, &.{Color.RED});
+    img.loop_count = 7;
+    for (img.pixels, 0..) |*byte, i| byte.* = @intCast(i + 1);
+    const frames = try a.alloc(Image.Frame, 3);
+    errdefer a.free(frames);
+    var done: usize = 0;
+    errdefer for (frames[0..done]) |frame| a.free(frame.pixels);
+    const partial = try a.dupe(u8, &.{ 0x34, 0x12, 0x78, 0x56 });
+    frames[0] = .{ .width = 2, .height = 1, .x_offset = 1, .y_offset = 2, .pixels = partial, .delay_ms = 17, .dispose_op = .previous, .blend_op = .over };
+    done += 1;
+    frames[1] = .{ .pixels = try a.dupe(u8, img.pixels), .delay_ms = 23 };
+    done += 1;
+    frames[2] = .{ .height = 1, .y_offset = 1, .pixels = try a.dupe(u8, img.pixels[0..10]), .delay_ms = 31, .dispose_op = .background };
+    done += 1;
+    img.frames = frames;
+    return img;
+}
+fn animationAllocations(a: std.mem.Allocator) !void {
+    const t = std.testing;
+    var img = try animatedFixture(a);
+    defer img.deinit();
+    for (0..8) |bits| {
+        var result = try orthogonal(&img, try OrthogonalTransform.fromBits(@intCast(bits)));
+        defer result.deinit();
+        try t.expectEqual(@as(u32, 7), result.loop_count);
+        const first = result.frames.?[0];
+        try t.expectEqual(@as(u32, 17), first.delay_ms);
+        try t.expectEqual(Image.DisposeOp.previous, first.dispose_op);
+        try t.expectEqual(Image.BlendOp.over, first.blend_op);
+        const x: u32 = if (bits & 1 != 0) 2 else 1;
+        const y: u32 = if (bits & 2 != 0) 1 else 2;
+        try t.expectEqual(if (bits & 4 != 0) y else x, first.x_offset);
+        try t.expectEqual(if (bits & 4 != 0) x else y, first.y_offset);
+        try t.expectEqual(@as(?u32, if (bits & 4 != 0) 1 else 2), first.width);
+        try t.expectEqual(@as(?u32, if (bits & 4 != 0) 2 else 1), first.height);
+        const expected = if (bits & 1 != 0) &[_]u8{ 0x78, 0x56, 0x34, 0x12 } else &[_]u8{ 0x34, 0x12, 0x78, 0x56 };
+        try t.expectEqualSlices(u8, expected, first.pixels);
+        try t.expectEqual(@as(?u32, null), result.frames.?[1].width);
+        try t.expectEqual(@as(?u32, null), result.frames.?[1].height);
+        try t.expectEqualSlices(u8, result.pixels, result.frames.?[1].pixels);
+        result.frames.?[0].pixels[0] = 0;
+        try t.expectEqual(@as(u8, 0x34), img.frames.?[0].pixels[0]);
+        result.palette.?[0] = Color.BLUE;
+        try t.expectEqual(Color.RED, img.palette.?[0]);
+    }
+    var vertical = try flip(&img);
+    defer vertical.deinit();
+    flipInPlace(&img);
+    try t.expectEqualSlices(u8, vertical.pixels, img.pixels);
+    for (vertical.frames.?, img.frames.?) |expected, actual| {
+        try t.expectEqualSlices(u8, expected.pixels, actual.pixels);
+        try t.expectEqual(expected.x_offset, actual.x_offset);
+        try t.expectEqual(expected.y_offset, actual.y_offset);
+    }
+    var horizontal = try flop(&img);
+    defer horizontal.deinit();
+    flopInPlace(&img);
+    try t.expectEqualSlices(u8, horizontal.pixels, img.pixels);
+    for (horizontal.frames.?, img.frames.?) |expected, actual| {
+        try t.expectEqualSlices(u8, expected.pixels, actual.pixels);
+        try t.expectEqual(expected.x_offset, actual.x_offset);
+        try t.expectEqual(expected.y_offset, actual.y_offset);
+    }
+}
+test "orthogonal Image animation rectangles palette and disposal survive all transforms and allocator failures" {
+    try animationAllocations(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, animationAllocations, .{});
+}
+test "orthogonal malformed late frame rejects allocating and in-place changes before mutating any owner" {
+    const t = std.testing;
+    var img = try animatedFixture(t.allocator);
+    defer img.deinit();
+    const before = try img.clone();
+    var copy_before = before;
+    defer copy_before.deinit();
+    img.frames.?[2].x_offset = 1; // null width means full-canvas width, which no longer fits.
+    try t.expectError(error.InvalidGeometry, flip(&img));
+    flipInPlace(&img);
+    flopInPlace(&img);
+    try t.expectEqualSlices(u8, before.pixels, img.pixels);
+    for (before.frames.?, img.frames.?) |previous, current| try t.expectEqualSlices(u8, previous.pixels, current.pixels);
+    try t.expectEqual(@as(u32, 1), img.frames.?[2].x_offset);
 }
