@@ -20,8 +20,18 @@ pub const Quantizer = struct {
     pub fn quantize(self: *Quantizer, rgb: []const u8, max_colors: usize) ![]u8 {
         if (max_colors == 0 or max_colors > 256) return error.InvalidColors;
         if (rgb.len == 0 or rgb.len % 3 != 0) return error.InvalidPixels;
-        if (rgb.len / 3 > std.math.maxInt(u32)) return error.ImageTooLarge;
-        const replacement = try prepare(self.allocator, rgb, max_colors);
+        return self.quantizeSource(Packed{ .rgb = rgb, .len = rgb.len / 3 }, max_colors);
+    }
+    /// A checked source supplies len and synchronous pixel(index) !?[3]u8.
+    /// null pixels do not consume palette entries (for one-bit transparency).
+    /// An optional checkpoint() !void observes cancellation between phases.
+    /// All skipped pixels produce an empty palette. Source ownership is borrowed;
+    /// pixel values/count must remain stable throughout all preparation passes.
+    pub fn quantizeSource(self: *Quantizer, source: anytype, max_colors: usize) ![]u8 {
+        if (max_colors == 0 or max_colors > 256) return error.InvalidColors;
+        if (source.len == 0) return error.InvalidPixels;
+        if (source.len > std.math.maxInt(u32)) return error.ImageTooLarge;
+        const replacement = try prepare(self.allocator, source, max_colors);
         const previous = self.palette;
         self.palette = replacement;
         self.palette_size = replacement.len / 3;
@@ -46,6 +56,21 @@ pub const Quantizer = struct {
         return best;
     }
 };
+
+const Packed = struct {
+    rgb: []const u8,
+    len: usize,
+    pub fn pixel(self: Packed, index: usize) !?[3]u8 {
+        return self.rgb[index * 3 ..][0..3].*;
+    }
+};
+fn checkpoint(source: anytype) !void {
+    const T = switch (@typeInfo(@TypeOf(source))) {
+        .pointer => |p| p.child,
+        else => @TypeOf(source),
+    };
+    if (@hasDecl(T, "checkpoint")) try source.checkpoint();
+}
 
 const Bin = struct {
     count: u32 = 0,
@@ -103,25 +128,28 @@ const Box = struct {
     }
 };
 
-fn prepare(allocator: std.mem.Allocator, rgb: []const u8, max_colors: usize) ![]u8 {
+fn prepare(allocator: std.mem.Allocator, source: anytype, max_colors: usize) ![]u8 {
     // Exact sparse path avoids histogram allocation and 5-bit collisions. The
     // open-addressed table is at most half full, so probing always terminates.
     var colors: [256][3]u8 = undefined;
     var slots: [512]u16 = @splat(0);
     var count: usize = 0;
     var at: usize = 0;
-    while (at < rgb.len) : (at += 3) {
-        const key = @as(u32, rgb[at]) << 16 | @as(u32, rgb[at + 1]) << 8 | rgb[at + 2];
+    try checkpoint(source);
+    while (at < source.len) : (at += 1) {
+        const color = try source.pixel(at) orelse continue;
+        const key = @as(u32, color[0]) << 16 | @as(u32, color[1]) << 8 | color[2];
         var slot: usize = (key *% 0x9e3779b1) >> 23;
-        while (slots[slot] != 0 and !std.mem.eql(u8, &colors[slots[slot] - 1], rgb[at..][0..3])) slot = (slot + 1) & 511;
+        while (slots[slot] != 0 and !std.mem.eql(u8, &colors[slots[slot] - 1], &color)) slot = (slot + 1) & 511;
         if (slots[slot] == 0) {
             if (count == max_colors) break;
-            @memcpy(&colors[count], rgb[at..][0..3]);
+            colors[count] = color;
             count += 1;
             slots[slot] = @intCast(count);
         }
     }
-    if (at == rgb.len) return allocator.dupe(u8, std.mem.sliceAsBytes(colors[0..count]));
+    try checkpoint(source);
+    if (at == source.len) return allocator.dupe(u8, std.mem.sliceAsBytes(colors[0..count]));
 
     // Fixed histogram, independent of image size. Compact and sort occupied
     // bins in place; boxes only borrow disjoint slices of this single owner.
@@ -129,10 +157,11 @@ fn prepare(allocator: std.mem.Allocator, rgb: []const u8, max_colors: usize) ![]
     defer allocator.free(bins);
     @memset(bins, .{});
     at = 0;
-    while (at < rgb.len) : (at += 3) {
-        const key = @as(u16, rgb[at] >> 3) << 10 | @as(u16, rgb[at + 1] >> 3) << 5 | rgb[at + 2] >> 3;
+    while (at < source.len) : (at += 1) {
+        const color = try source.pixel(at) orelse continue;
+        const key = @as(u16, color[0] >> 3) << 10 | @as(u16, color[1] >> 3) << 5 | color[2] >> 3;
         bins[key].count += 1;
-        inline for (0..3) |channel| bins[key].sums[channel] += rgb[at + channel];
+        inline for (0..3) |channel| bins[key].sums[channel] += color[channel];
     }
     var used: usize = 0;
     for (bins, 0..) |bin, key| if (bin.count != 0) {
@@ -140,10 +169,12 @@ fn prepare(allocator: std.mem.Allocator, rgb: []const u8, max_colors: usize) ![]
         bins[used].key = @intCast(key);
         used += 1;
     };
+    if (used == 0) return error.InvalidPixels;
     var boxes: [256]Box = undefined;
     boxes[0] = Box.init(bins[0..used]);
     count = 1;
     while (count < max_colors) {
+        try checkpoint(source);
         var best: ?usize = null;
         var score: u64 = 0;
         for (boxes[0..count], 0..) |box, i| {
@@ -256,4 +287,32 @@ fn allocationFailures(allocator: std.mem.Allocator) !void {
 }
 test "histogram and palette allocation failures preserve the previously published owner" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationFailures, .{});
+}
+test "borrowed sparse sources skip transparency and preserve the old palette on checkpoint failure" {
+    const Source = struct {
+        len: usize = 3,
+        cancelled: bool = false,
+        pub fn checkpoint(self: @This()) !void {
+            if (self.cancelled) return error.Cancelled;
+        }
+        pub fn pixel(_: @This(), i: usize) !?[3]u8 {
+            return if (i == 1) .{ 2, 3, 4 } else null;
+        }
+    };
+    var q = Quantizer.init(std.testing.allocator);
+    defer q.deinit();
+    const palette = try q.quantizeSource(Source{}, 2);
+    try std.testing.expectEqualSlices(u8, &.{ 2, 3, 4 }, palette);
+    const address = palette.ptr;
+    try std.testing.expectError(error.Cancelled, q.quantizeSource(Source{ .cancelled = true }, 2));
+    try std.testing.expect(q.palette.ptr == address);
+    try std.testing.expectEqualSlices(u8, &.{ 2, 3, 4 }, q.palette);
+    const Empty = struct {
+        len: usize = 3,
+        pub fn pixel(_: @This(), _: usize) !?[3]u8 {
+            return null;
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 0), (try q.quantizeSource(Empty{}, 2)).len);
+    try std.testing.expectEqual(@as(usize, 0), q.palette_size);
 }

@@ -2,9 +2,9 @@ name: GIF codec conformance
 on:
   push:
     branches: [main]
-    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/src/formats/palette_quantizer.zig', 'packages/image/src/formats/indexed_raster.zig', 'packages/image/src/formats/png.zig', 'packages/image/tests/gif_*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
   pull_request:
-    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/tests/gif_lzw*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
+    paths: ['packages/image/src/formats/gif*.zig', 'packages/image/src/image.zig', 'packages/video/src/containers/gif.zig', 'packages/video/src/containers/palette_quantizer.zig', 'packages/image/src/formats/palette_quantizer.zig', 'packages/image/src/formats/indexed_raster.zig', 'packages/image/src/formats/png.zig', 'packages/image/tests/gif_*', 'packages/image/docs/gif-codec.md', '.github/workflows/gif-codec.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -38,12 +38,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cmp packages/image/src/formats/palette_quantizer.zig packages/video/src/containers/palette_quantizer.zig
           for mode in Debug ReleaseSafe; do
             zig test -O "$mode" -lc packages/image/src/formats/gif_lzw.zig
             zig test -O "$mode" -lc packages/video/src/containers/gif.zig
             zig build-obj -O "$mode" -fcompiler-rt -lc --dep lzw --dep gif -Mroot=packages/image/tests/gif_lzw_fixture.zig -Mlzw=packages/image/src/formats/gif_lzw.zig -Mgif=packages/video/src/containers/gif.zig -femit-bin=/tmp/home-gif-codec.o
             cc -std=c11 -O2 -Wall -Wextra -Werror -DHOME_VIDEO_GIF packages/image/tests/gif_lzw_decode.c /tmp/home-gif-codec.o -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o /tmp/home-gif-conformance
             /tmp/home-gif-conformance
+            zig test -O "$mode" -lc -lz -L"$ZLIB_TEST_PREFIX/lib" -rpath "$ZLIB_TEST_PREFIX/lib" packages/image/src/formats/gif_encoder.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep gif -Mroot=packages/image/tests/gif_raster_fixture.zig -Mgif=packages/image/src/formats/gif_encoder.zig -femit-bin=/tmp/home-gif-raster.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -DHOME_GIF_FIXTURE packages/image/tests/gif_readback.c /tmp/home-gif-raster.o -I"$GIF_TEST_PREFIX/include" -L"$GIF_TEST_PREFIX/lib" -Wl,-rpath,"$GIF_TEST_PREFIX/lib" -lgif -o /tmp/home-gif-raster
+            /tmp/home-gif-raster
           done
       - name: Full Image API on Home development Zig
         if: matrix.zig == 'master'

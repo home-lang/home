@@ -1,5 +1,10 @@
 # GIF codec corrections
 
+The current checked still encoder and Image adapter are documented in
+[gif-encoding.md](gif-encoding.md), including explicit precision/alpha policy,
+bounded palette/LZW streaming and independent readback. The corrections below
+describe the dictionary and video-writer foundations it reuses.
+
 `formats/gif_lzw.zig` supplies a std-only, caller-serialized `Encoder` and owned
 `encode(allocator, indices, minimum_code_size)` convenience. It improves Home's
 image encoder and follows the width/first-code tracking already present in the
@@ -16,10 +21,10 @@ usable. Code sizes outside 2..8 reject. Caller-owned encoded output survives the
 source. Repeated patterns use dictionary codes instead of one literal per pixel.
 This is software coding evidence, not a camera throughput measurement.
 
-The Image GIF adapter uses this encoder without changing its public call. Its
+The Image GIF adapter uses dictionary encoding without changing its public call. Its
 large grayscale regression verifies dimensions and every decoded pixel. Existing
-palette/alpha policy and still-only image encoding remain separate work; this
-change does not claim arbitrary image GIF animation or camera GIF/APNG capture.
+palette/alpha policy is now supplied by the checked encoder linked above;
+arbitrary Image GIF animation/compositing remain separate work.
 
 The video GIF writer already models multiple opaque RGB frames and loop counts.
 It now borrows the quantizer palette only while that owner is alive, copies the
@@ -77,7 +82,7 @@ matches. Histogram cells may merge distinct colors once the exact sparse path
 overflows; there is no dithering, alpha, perceptual color-space metric or promise
 of identical palettes to the previous algorithm.
 
-The four pinned/development Zig Debug/ReleaseSafe builds each pass 12 video and
+The initial four pinned/development Zig Debug/ReleaseSafe builds each passed 12 video and
 palette tests, three LZW tests, 357 independent LZW fixtures and 11 two-frame
 giflib writer fixtures. Cases preserve all 256 exact hues, independent delays,
 disposal and source retirement, and bound decoded channel error for a 4,096-color
@@ -85,8 +90,8 @@ RGB cube reduced to 256 colors. Separate tests bound a 512-color cube reduced to
 64 colors, preserve population-weighted low channel bits, prepare two million
 pixels within fixed scratch space, and retain the previous owner across every
 histogram/output allocation failure. These are scoped deterministic software
-fixtures, not optical quality or Pi throughput measurements. The Image GIF
-adapter's palette/alpha policy and camera GIF integration remain separate work.
+fixtures, not optical quality or Pi throughput measurements. The checked still
+encoder now reuses this quantizer through borrowed sparse raster sources.
 
 This follow-up again checks unchanged clean Home OS main at
 151269666bc09aa15a271f1c1f4603f681132e65, ADR-MC3, camera and media sources. There

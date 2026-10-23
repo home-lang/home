@@ -502,207 +502,15 @@ fn applyFrame(img: *Image, pixels: []const u8, palette: []const Color, left: u16
 // ============================================================================
 
 pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    // Header
-    try output.appendSlice(allocator, GIF89A_SIGNATURE);
-
-    // Logical screen descriptor
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
-
-    // Packed byte: Global color table flag, color resolution, sort flag, size
-    const color_table_size: u8 = 7; // 256 colors
-    const packed_flags: u8 = 0x80 | (color_table_size << 4) | color_table_size;
-    try output.append(allocator, packed_flags);
-
-    try output.append(allocator, 0); // Background color index
-    try output.append(allocator, 0); // Pixel aspect ratio
-
-    // Generate palette (color quantization)
-    var palette: [256]Color = undefined;
-    generatePalette(img, &palette);
-
-    // Write global color table
-    for (palette) |color| {
-        try output.append(allocator, color.r);
-        try output.append(allocator, color.g);
-        try output.append(allocator, color.b);
-    }
-
-    // Graphics control extension (for transparency)
-    try output.appendSlice(allocator, &[_]u8{
-        0x21, // Extension introducer
-        0xF9, // Graphics control label
-        0x04, // Block size
-        0x00, // Packed (no transparency, no disposal)
-        0x00, 0x00, // Delay time
-        0x00, // Transparent color index
-        0x00, // Block terminator
-    });
-
-    // Image descriptor
-    try output.append(allocator, 0x2C); // Image separator
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Left
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, 0))); // Top
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.width))));
-    try output.appendSlice(allocator, &std.mem.toBytes(std.mem.nativeToLittle(u16, @intCast(img.height))));
-    try output.append(allocator, 0x00); // No local color table, not interlaced
-
-    // LZW minimum code size
-    const min_code_size: u8 = 8;
-    try output.append(allocator, min_code_size);
-
-    // Convert image to indexed
-    var indexed = try allocator.alloc(u8, @as(usize, img.width) * @as(usize, img.height));
-    defer allocator.free(indexed);
-
-    var y: u32 = 0;
-    while (y < img.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += 1) {
-            const color = img.getPixel(x, y) orelse Color.BLACK;
-            indexed[@as(usize, y) * @as(usize, img.width) + @as(usize, x)] = findClosestPaletteIndex(color, &palette);
-        }
-    }
-
-    // LZW encode
-    var lzw_output: std.ArrayList(u8) = .empty;
-    defer lzw_output.deinit(allocator);
-    try lzwEncode(allocator, &lzw_output, indexed, min_code_size);
-
-    // Write sub-blocks
-    var pos: usize = 0;
-    while (pos < lzw_output.items.len) {
-        const remaining = lzw_output.items.len - pos;
-        const block_size: u8 = @intCast(@min(remaining, 255));
-        try output.append(allocator, block_size);
-        try output.appendSlice(allocator, lzw_output.items[pos..][0..block_size]);
-        pos += block_size;
-    }
-
-    try output.append(allocator, 0x00); // Block terminator
-
-    // Trailer
-    try output.append(allocator, 0x3B);
-
-    return output.toOwnedSlice(allocator);
-}
-
-fn generatePalette(img: *const Image, palette: *[256]Color) void {
-    // Analyze image to build adaptive palette using simple frequency-based approach
-    // For better quality, consider median-cut or octree quantization algorithms
-    var color_counts: [256]struct { color: Color, count: u32 } = undefined;
-    for (&color_counts) |*entry| {
-        entry.* = .{ .color = Color.BLACK, .count = 0 };
-    }
-
-    // Sample pixels to find common colors
-    var sampled: usize = 0;
-    const sample_step: u32 = @max(1, (img.width * img.height) / 10000);
-    var y: u32 = 0;
-    while (y < img.height) : (y += sample_step) {
-        var x: u32 = 0;
-        while (x < img.width) : (x += sample_step) {
-            const color = img.getPixel(x, y) orelse continue;
-            // Hash to bucket
-            const bucket: u8 = @truncate((@as(u16, color.r) + @as(u16, color.g) + @as(u16, color.b)) / 3);
-            color_counts[bucket].color = color;
-            color_counts[bucket].count +|= 1;
-            sampled += 1;
-        }
-    }
-
-    // If we sampled enough colors, use them; otherwise fall back to uniform
-    if (sampled > 0) {
-        // Sort by frequency and use most common colors
-        std.mem.sort(@TypeOf(color_counts[0]), &color_counts, {}, struct {
-            fn lessThan(_: void, a: @TypeOf(color_counts[0]), b: @TypeOf(color_counts[0])) bool {
-                return a.count > b.count;
-            }
-        }.lessThan);
-
-        for (color_counts[0..216], 0..) |entry, i| {
-            if (entry.count > 0) {
-                palette[i] = entry.color;
-            } else {
-                // Fill remaining with uniform palette
-                const r = i / 36;
-                const g = (i / 6) % 6;
-                const b = i % 6;
-                palette[i] = Color{
-                    .r = @intCast(r * 51),
-                    .g = @intCast(g * 51),
-                    .b = @intCast(b * 51),
-                    .a = 255,
-                };
-            }
-        }
-
-        // Fill remaining 40 slots with grayscale
-        for (216..256) |i| {
-            const gray: u8 = @intCast((i - 216) * 6);
-            palette[i] = Color{ .r = gray, .g = gray, .b = gray, .a = 255 };
-        }
-        return;
-    }
-
-    // Fallback: Simple uniform palette
-    var idx: usize = 0;
-    for (0..6) |r| {
-        for (0..6) |g| {
-            for (0..6) |b| {
-                if (idx >= 216) break;
-                palette[idx] = Color{
-                    .r = @intCast(r * 51),
-                    .g = @intCast(g * 51),
-                    .b = @intCast(b * 51),
-                    .a = 255,
-                };
-                idx += 1;
-            }
-        }
-    }
-
-    // Fill remaining with grayscale
-    while (idx < 256) : (idx += 1) {
-        const gray: u8 = @intCast((idx - 216) * 6);
-        palette[idx] = Color{ .r = gray, .g = gray, .b = gray, .a = 255 };
-    }
-}
-
-fn findClosestPaletteIndex(color: Color, palette: *const [256]Color) u8 {
-    var best_idx: u8 = 0;
-    var best_dist: u32 = std.math.maxInt(u32);
-
-    for (palette, 0..) |pal_color, i| {
-        const dr = @as(i32, color.r) - @as(i32, pal_color.r);
-        const dg = @as(i32, color.g) - @as(i32, pal_color.g);
-        const db = @as(i32, color.b) - @as(i32, pal_color.b);
-        const dist: u32 = @intCast(dr * dr + dg * dg + db * db);
-
-        if (dist < best_dist) {
-            best_dist = dist;
-            best_idx = @intCast(i);
-        }
-    }
-
-    return best_idx;
-}
-
-fn lzwEncode(allocator: std.mem.Allocator, output: *std.ArrayList(u8), data: []const u8, min_code_size: u8) !void {
-    const Sink = struct {
-        allocator: std.mem.Allocator,
-        bytes: *std.ArrayList(u8),
-        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
-            try self.bytes.appendSlice(self.allocator, bytes);
-        }
-    };
-    var sink: Sink = .{ .allocator = allocator, .bytes = output };
-    var encoder = try @import("gif_lzw.zig").Encoder.init(min_code_size);
-    try encoder.write(data, &sink);
-    try encoder.finish(&sink);
+    if (img.frames) |frames| if (frames.len != 0) return error.UnsupportedAnimation;
+    const encoder = @import("gif_encoder.zig");
+    if (img.format != .indexed8) return encoder.encode(allocator, try encoder.raster.fromImage(img), .{});
+    const indexed = @import("indexed_raster.zig");
+    const view = try indexed.indexedView(img.pixels, img.width, img.height);
+    try indexed.validateIndices(img, view);
+    const rgba = try indexed.expandIndices(allocator, img, view);
+    defer allocator.free(rgba.data);
+    return encoder.encode(allocator, rgba, .{});
 }
 
 // ============================================================================
@@ -736,6 +544,33 @@ test "GIF encoder round trips basic palette colors" {
     try std.testing.expectEqual(@as(u32, 1), decoded.height);
     try std.testing.expectEqual(Color.RED, decoded.getPixel(0, 0).?);
     try std.testing.expectEqual(Color.BLUE, decoded.getPixel(1, 0).?);
+}
+test "GIF public adapter preserves equal-luminance hues sixteen-bit high bytes and binary alpha" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 4, 1, .rgba16);
+    defer img.deinit();
+    const words = [_]u16{ 65535, 0, 0, 65535, 0, 65535, 0, 32768, 0, 0, 65535, 32767, 0x1234, 0x5678, 0x9abc, 65535 };
+    for (words, 0..) |word, i| std.mem.writeInt(u16, img.pixels[i * 2 ..][0..2], word, .little);
+    const bytes = try img.encode(.gif);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 0, 0, 0x12, 0x56, 0x9a, 255 }, decoded.pixels);
+}
+test "GIF indexed adapter shares validated alpha expansion and rejects missing palette entries" {
+    const a = std.testing.allocator;
+    var img = try Image.init(a, 2, 1, .indexed8);
+    defer img.deinit();
+    try std.testing.expectError(error.InvalidPalette, img.encode(.gif));
+    img.palette = try a.dupe(Color, &.{ Color.RED, .{ .r = 0, .g = 255, .b = 0, .a = 127 } });
+    img.pixels[1] = 1;
+    const bytes = try img.encode(.gif);
+    defer a.free(bytes);
+    var decoded = try decode(a, bytes);
+    defer decoded.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255, 0, 0, 0, 0 }, decoded.pixels);
+    img.pixels[1] = 2;
+    try std.testing.expectError(error.InvalidPalette, img.encode(.gif));
 }
 
 test "GIF image encoder preserves a large grayscale pattern through dictionary width changes" {

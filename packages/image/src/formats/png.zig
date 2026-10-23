@@ -548,28 +548,9 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
     }
     return AnimationEncoder.encode(allocator, animation);
 }
-fn indexedView(pixels: []const u8, width: u32, height: u32) !raster.View {
-    const view = raster.View{ .data = pixels, .width = width, .height = height, .stride = width, .format = .gray };
-    _ = try view.validate();
-    return view;
-}
-fn validateIndices(img: *const Image, view: raster.View) !void {
-    const palette = img.palette orelse return error.InvalidPalette;
-    if (palette.len == 0 or palette.len > 256) return error.InvalidPalette;
-    for (0..view.height) |y| for (view.data[y * view.stride ..][0..view.width]) |index| {
-        if (index >= palette.len) return error.InvalidPalette;
-    };
-}
-fn expandIndices(allocator: std.mem.Allocator, img: *const Image, view: raster.View) !raster.View {
-    const stride = std.math.mul(usize, view.width, 4) catch return error.InvalidGeometry;
-    const size = std.math.mul(usize, stride, view.height) catch return error.InvalidGeometry;
-    const rgba = try allocator.alloc(u8, size);
-    for (0..view.height) |y| for (view.data[y * view.stride ..][0..view.width], 0..) |index, x| {
-        const color = img.palette.?[index];
-        @memcpy(rgba[y * stride + x * 4 ..][0..4], &[_]u8{ color.r, color.g, color.b, color.a });
-    };
-    return .{ .data = rgba, .width = view.width, .height = view.height, .stride = stride, .format = .rgba };
-}
+const indexedView = @import("indexed_raster.zig").indexedView;
+const validateIndices = @import("indexed_raster.zig").validateIndices;
+const expandIndices = @import("indexed_raster.zig").expandIndices;
 
 // ============================================================================
 // PNG Reader Helper

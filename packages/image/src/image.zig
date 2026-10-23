@@ -1356,6 +1356,7 @@ test "public RGB16 view retains words and explicitly reduces high bytes" {
 }
 /// Checked borrowed Bayer/mono CSI-2 and driver-standard PiSP COMP1 sensor data.
 pub const SensorRaw = @import("ops/sensor_raw.zig");
+pub const GifEncoder = @import("formats/gif_encoder.zig");
 test "public sensor raw view exposes owned output without sample scaling" {
     const bytes = [_]u8{ 1, 2, 255 };
     const view = try SensorRaw.View.init(&bytes, 3, 1, 3, try SensorRaw.Format.parse("R8"));
