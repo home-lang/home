@@ -877,36 +877,17 @@ pub const Image = struct {
         return self.convolve(simd_ops.kernels.emboss);
     }
 
-    /// Resize image using nearest neighbor (fast)
+    /// Transactional native-precision resize. Invalid/animated input explicitly
+    /// rejects; failures retain all original owners.
     pub fn resizeNearest(self: *Self, new_width: u32, new_height: u32) !void {
-        if (self.format != .rgba8) return;
-        if (new_width == 0 or new_height == 0) return;
-
-        const new_size = @as(usize, new_width) * @as(usize, new_height) * 4;
-        const new_pixels = try self.allocator.alloc(u8, new_size);
-
-        simd_ops.scaleNearest(self.pixels, self.width, self.height, new_pixels, new_width, new_height);
-
-        self.allocator.free(self.pixels);
-        self.pixels = new_pixels;
-        self.width = new_width;
-        self.height = new_height;
+        const result = try resize_ops.resize(self, new_width, new_height, .nearest);
+        self.deinit();
+        self.* = result;
     }
-
-    /// Resize image using bilinear interpolation (smooth)
     pub fn resizeBilinear(self: *Self, new_width: u32, new_height: u32) !void {
-        if (self.format != .rgba8) return;
-        if (new_width == 0 or new_height == 0) return;
-
-        const new_size = @as(usize, new_width) * @as(usize, new_height) * 4;
-        const new_pixels = try self.allocator.alloc(u8, new_size);
-
-        simd_ops.scaleBilinear(self.pixels, self.width, self.height, new_pixels, new_width, new_height);
-
-        self.allocator.free(self.pixels);
-        self.pixels = new_pixels;
-        self.width = new_width;
-        self.height = new_height;
+        const result = try resize_ops.resize(self, new_width, new_height, .bilinear);
+        self.deinit();
+        self.* = result;
     }
 
     /// Apply histogram equalization for contrast enhancement
@@ -1411,6 +1392,18 @@ test "public RGB16 view retains words and explicitly reduces high bytes" {
 pub const SensorRaw = @import("ops/sensor_raw.zig");
 pub const GifEncoder = @import("formats/gif_encoder.zig");
 pub const PixelView = @import("formats/pixel_view.zig");
+pub const PixelResample = @import("formats/pixel_resample.zig");
+
+test "image resizing exposes the checked shared native precision resampler" {
+    var source = try Image.init(std.testing.allocator, 2, 1, .grayscale16);
+    defer source.deinit();
+    source.setPixel16(0, 0, .{ .r = 12345, .g = 12345, .b = 12345 });
+    source.setPixel16(1, 0, .{ .r = 54321, .g = 54321, .b = 54321 });
+    var resized = try Resize.resize(&source, 1, 1, .bilinear);
+    defer resized.deinit();
+    try std.testing.expectEqual(@as(u16, 33333), resized.getPixel16(0, 0).?.r);
+    try std.testing.expectEqual(@as(u32, 2), source.width);
+}
 test "public sensor raw view exposes owned output without sample scaling" {
     const bytes = [_]u8{ 1, 2, 255 };
     const view = try SensorRaw.View.init(&bytes, 3, 1, 3, try SensorRaw.Format.parse("R8"));

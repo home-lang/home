@@ -1,0 +1,46 @@
+name: Checked image resampling
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/pixel_resample.zig', 'packages/image/src/image.zig', 'packages/image/src/ops/resize.zig', 'packages/image/tests/resample_*', '.github/workflows/image-resample.yml']
+  pull_request:
+    paths: ['packages/image/src/formats/pixel_view.zig', 'packages/image/src/formats/pixel_resample.zig', 'packages/image/tests/resample_*', '.github/workflows/image-resample.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  resampling:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', 'master']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Native precision and independent 2D reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" -lc packages/image/src/formats/pixel_resample.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep resample -Mroot=packages/image/tests/resample_fixture.zig -Mresample=packages/image/src/formats/pixel_resample.zig -femit-bin=/tmp/home-resample.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror packages/image/tests/resample_reference.c /tmp/home-resample.o -lm -o /tmp/home-resample
+            /tmp/home-resample
+          done
+      - name: Image adapter ownership on Home development Zig
+        if: matrix.zig == 'master'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install zlib
+            prefix=$(brew --prefix zlib)
+          else
+            sudo apt-get update && sudo apt-get install -y zlib1g-dev
+            prefix=/usr
+          fi
+          zig test -O ReleaseSafe -lc -lz -L"$prefix/lib" -rpath "$prefix/lib" packages/image/src/image.zig
