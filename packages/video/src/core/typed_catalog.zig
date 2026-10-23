@@ -224,6 +224,7 @@ pub const Reader = struct {
     /// duplicate/malformed record. Missing identity => null; malformed/ambiguous
     /// matching records => error, never a coerced or arbitrary first value.
     pub fn findScalar(r: Reader, comptime T: type, query: ScalarQuery) !?T {
+        _ = scalarKind(T); // Preserve the primitive-only public scalar contract.
         return r.find(T, query);
     }
     /// Same explicit identity/role selection as findScalar. Returned UTF-8 borrows
