@@ -1496,25 +1496,48 @@ pub const Builder = struct {
     }
 
     /// A const binding cannot change between its initializer and a shorthand
-    /// property read. TypeScript narrows a literal-only annotation union to
-    /// that initializer's member, even when the property itself is mutable.
-    /// This graph is built before checking, so use only closed syntax facts:
-    /// do not guess at aliases, assignments, or non-literal union members.
+    /// property read. TypeScript keeps an initialized string/number literal
+    /// when its annotation contains that literal but not the corresponding
+    /// broad primitive. Other union arms may have different primitive domains:
+    /// `'ready' | number` still reads as `'ready'`, while `'ready' | string`
+    /// widens to string. This graph is built before checking, so decline
+    /// symbolic/object arms whose relationship to the literal is unresolved.
     fn constUnionMember(self: *Builder, context: Context, initializer: hir.NodeId, declared: *const schema.Expression) error{OutOfMemory}!?*const schema.Expression {
         const c = self.sources[context.source].compilation;
         if (declared.* != .union_type) return null;
         const kind = c.hir.kindOf(initializer);
         if (kind != .literal_string and kind != .literal_number) return null;
         const literal = try self.lower(context, initializer);
+        const broad_primitive = switch (literal.*) {
+            .string => Primitive.string_t,
+            .number => Primitive.number_t,
+            else => return null,
+        };
         var found = false;
         for (declared.union_type) |member| {
-            if (std.meta.activeTag(member.*) != std.meta.activeTag(literal.*)) return null;
-            switch (literal.*) {
+            switch (member.*) {
                 .string => |value| {
-                    if (std.mem.eql(u8, member.string, value)) found = true;
+                    if (literal.* == .string and std.mem.eql(u8, value, literal.string)) found = true;
                 },
                 .number => |value| {
-                    if (member.number == value) found = true;
+                    if (literal.* == .number and value == literal.number) found = true;
+                },
+                .boolean => {},
+                .primitive => |primitive| {
+                    if (primitive == broad_primitive) return null;
+                    switch (primitive) {
+                        Primitive.string_t,
+                        Primitive.number_t,
+                        Primitive.boolean_t,
+                        Primitive.bigint_t,
+                        Primitive.symbol_t,
+                        Primitive.null_t,
+                        Primitive.undefined_t,
+                        Primitive.void_t,
+                        Primitive.never,
+                        => {},
+                        else => return null,
+                    }
                 },
                 else => return null,
             }
@@ -2849,6 +2872,46 @@ test "class schema: annotated const union shorthand uses its initialized member"
         const members = result.declaration.body.?.object;
         try T.expectEqualStrings("ready", members[0].type.string);
         try T.expectEqualStrings("ready", members[1].type.object[0].type.string);
+    }
+}
+
+test "class schema: mixed-domain annotated const union keeps its initialized member" {
+    inline for (.{ false, true }) |javascript| {
+        const graph = try TestGraph.init(&.{.{
+            .path = if (javascript) "/owner.js" else "/owner.ts",
+            .text = if (javascript)
+                "/** @type {'ready' | 7} */ const state = 'ready'; export const box = { state, nested: { state } };"
+            else
+                "const state: 'ready' | 7 = 'ready'; export const box = { state, nested: { state } };",
+        }});
+        defer graph.deinit();
+        const result = try graph.class(0, "box");
+        defer result.deinit(T.allocator);
+        try T.expect(try result.isSupported(T.allocator));
+        const members = result.declaration.body.?.object;
+        try T.expectEqualStrings("ready", members[0].type.string);
+        try T.expectEqualStrings("ready", members[1].type.object[0].type.string);
+    }
+}
+
+test "class schema: a broad primitive in another domain does not erase the initialized literal" {
+    inline for (.{ false, true }) |javascript| {
+        const graph = try TestGraph.init(&.{.{
+            .path = if (javascript) "/owner.js" else "/owner.ts",
+            .text = if (javascript)
+                "/** @type {'ready' | number} */ const text = 'ready'; /** @type {7 | string} */ const count = 7; export const textBox = { text }; export const countBox = { count };"
+            else
+                "const text: 'ready' | number = 'ready'; const count: 7 | string = 7; export const textBox = { text }; export const countBox = { count };",
+        }});
+        defer graph.deinit();
+        const text_box = try graph.class(0, "textBox");
+        defer text_box.deinit(T.allocator);
+        const count_box = try graph.class(0, "countBox");
+        defer count_box.deinit(T.allocator);
+        try T.expect(try text_box.isSupported(T.allocator));
+        try T.expect(try count_box.isSupported(T.allocator));
+        try T.expectEqualStrings("ready", text_box.declaration.body.?.object[0].type.string);
+        try T.expectEqual(@as(f64, 7), count_box.declaration.body.?.object[0].type.number);
     }
 }
 

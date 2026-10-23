@@ -20233,6 +20233,47 @@ test "Program: annotated union shorthand transfers the source flow-narrowed scal
     }
 }
 
+test "Program: mixed-domain union shorthand transfers the initialized scalar" {
+    inline for (.{ false, true }) |javascript| {
+        const owner_path = if (javascript) "/owner.js" else "/owner.ts";
+        const owner_source = if (javascript)
+            "/** @type {'ready' | 7} */ const state = 'ready'; export const box = { state, nested: { state } };"
+        else
+            "const state: 'ready' | 7 = 'ready'; export const box = { state, nested: { state } };";
+        const consumer_source = if (javascript)
+            "import { box } from './owner.js'; box.state = 7; box.nested.state = 7;"
+        else
+            "import { box } from './owner'; box.state = 7; box.nested.state = 7;";
+        inline for (.{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile(owner_path, owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = javascript };
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            _ = try p.add(owner_path, owner_source);
+            const consumer = try p.add("/consumer.ts", consumer_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = javascript,
+                .check_js = javascript,
+                .strict = true,
+                .no_emit = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+            const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 2), diagnostics.len);
+            for (diagnostics) |diagnostic| {
+                try T.expectEqual(@as(u32, 2322), diagnostic.code);
+                try T.expectEqualStrings("Type '7' is not assignable to type '\"ready\"'.", diagnostic.message);
+            }
+        }
+    }
+}
+
 test "Program: cyclic shorthand bindings withhold the whole exported value" {
     const owner_source = "const a = b; const b = a; export const box = { a, safe: true };";
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
