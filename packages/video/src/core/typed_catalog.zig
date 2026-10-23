@@ -37,6 +37,14 @@ pub const Value = struct {
         if (T == f32) return @bitCast(std.mem.readInt(u32, value.data[0..4], endian));
         return std.mem.readInt(T, value.data[0..@sizeOf(T)], endian);
     }
+    /// Borrowed counted UTF-8, with no coercion or terminator convention. Strings
+    /// may carry the array flag; embedded NUL policy belongs to the consumer.
+    pub fn string(value: Value) ![]const u8 {
+        if (value.kind != .string or value.flags & ~@as(u32, array | little_endian) != 0) return error.InvalidString;
+        try validValue(value);
+        if (!std.unicode.utf8ValidateSlice(value.data)) return error.InvalidString;
+        return value.data;
+    }
 };
 fn scalarKind(comptime T: type) Kind {
     if (T == bool) return .boolean;
@@ -216,7 +224,18 @@ pub const Reader = struct {
     /// duplicate/malformed record. Missing identity => null; malformed/ambiguous
     /// matching records => error, never a coerced or arbitrary first value.
     pub fn findScalar(r: Reader, comptime T: type, query: ScalarQuery) !?T {
-        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return error.InvalidScalarQuery;
+        return r.find(T, query);
+    }
+    /// Same explicit identity/role selection as findScalar. Returned UTF-8 borrows
+    /// the catalog; empty is present, missing is null, and NUL is not a terminator.
+    pub fn findString(r: Reader, query: ScalarQuery) !?[]const u8 {
+        return r.find([]const u8, query);
+    }
+    fn find(r: Reader, comptime T: type, query: ScalarQuery) !?T {
+        const is_string = T == []const u8;
+        const invalid = if (is_string) error.InvalidString else error.InvalidScalar;
+        const ambiguous = if (is_string) error.AmbiguousString else error.AmbiguousScalar;
+        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return if (is_string) error.InvalidStringQuery else error.InvalidScalarQuery;
         var result: ?T = null;
         var matched = false;
         var it = r.records();
@@ -228,16 +247,16 @@ pub const Reader = struct {
                 break;
             };
             if (!accepted) continue;
-            if (matched) return error.AmbiguousScalar;
+            if (matched) return ambiguous;
             matched = true;
-            if (record.info.kind != scalarKind(T)) return error.InvalidScalar;
+            if (record.info.kind != (if (is_string) Kind.string else scalarKind(T))) return invalid;
             var values = record.values();
             while (try values.next()) |value| {
                 if (value.role != query.role) continue;
-                if (result != null) return error.AmbiguousScalar;
-                result = try value.scalar(T);
+                if (result != null) return ambiguous;
+                result = if (is_string) try value.string() else try value.scalar(T);
             }
-            if (result == null) return error.InvalidScalar;
+            if (result == null) return invalid;
         }
         return result;
     }
@@ -404,4 +423,92 @@ test "catalog scalar lookup does not publish an early candidate before checking 
     var reader = try Reader.init(try w.finish());
     reader.bytes = reader.bytes[0 .. reader.bytes.len - 1];
     try t.expectError(error.InvalidCatalog, reader.findScalar(i64, .{ .name = "Timestamp", .vendors = &.{"standard"} }));
+}
+
+test "counted strings borrow exact UTF-8 including empty and NUL with either array and order flag" {
+    const t = std.testing;
+    for ([_][]const u8{ "", "IMX708", "Camera 光\x00tail" }) |bytes| {
+        for ([_]u32{ 0, array, little_endian, array | little_endian }) |flags| {
+            const v = Value{ .kind = .string, .flags = flags, .count = @intCast(bytes.len), .data = bytes };
+            const found = try v.string();
+            try t.expectEqualStrings(bytes, found);
+            try t.expectEqual(@intFromPtr(bytes.ptr), @intFromPtr(found.ptr));
+        }
+    }
+    var v = Value{ .kind = .string, .count = 2, .data = "ab" };
+    v.flags = 4;
+    try t.expectError(error.InvalidString, v.string());
+    v.flags = 0;
+    v.count = 1;
+    try t.expectError(error.InvalidCatalog, v.string());
+    v.count = 2;
+    v.data = &.{ 0xc0, 0x80 };
+    try t.expectError(error.InvalidString, v.string());
+    v.kind = .byte;
+    try t.expectError(error.InvalidString, v.string());
+}
+fn stringFixture(w: *Writer, name: []const u8, vendor: []const u8, group: u32, flags: u32, role: u32, bytes: []const u8) !void {
+    try w.begin(.{ .name = name, .vendor = vendor, .group = group, .flags = flags, .kind = .string });
+    try w.append(.{ .role = role, .kind = .string, .flags = array, .count = @intCast(bytes.len), .data = bytes });
+    try w.end();
+}
+test "string lookup selects exact provenance flags and role and distinguishes empty from missing" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 2, 4096);
+    defer w.deinit();
+    try stringFixture(&w, "Model", "foreign", 0, 2, 0, "wrong vendor");
+    try stringFixture(&w, "Model", "standard", 1, 2, 0, "wrong group");
+    try stringFixture(&w, "Model", "standard", 0, 1, 0, "wrong flags");
+    try stringFixture(&w, "Model", "standard", 0, 2, 7, "光 camera");
+    try stringFixture(&w, "Model", "", 0, 2, 7, "");
+    const r = try Reader.init(try w.finish());
+    var q = ScalarQuery{ .name = "Model", .vendors = &.{"standard"}, .required_flags = 2, .forbidden_flags = 1, .role = 7 };
+    try t.expectEqualStrings("光 camera", (try r.findString(q)).?);
+    q.vendors = &.{""};
+    try t.expectEqualStrings("", (try r.findString(q)).?);
+    q.vendors = &.{"missing"};
+    try t.expectEqual(null, try r.findString(q));
+    q.vendors = &.{};
+    try t.expectError(error.InvalidStringQuery, r.findString(q));
+    q.vendors = &.{"standard"};
+    q.role = 0;
+    try t.expectError(error.InvalidString, r.findString(q));
+    q.required_flags = 1;
+    try t.expectError(error.InvalidStringQuery, r.findString(q));
+}
+test "string lookup rejects duplicate records roles wrong kinds and invalid UTF-8" {
+    const t = std.testing;
+    const q = ScalarQuery{ .name = "Model", .vendors = &.{ "standard", "legacy" } };
+    for (0..5) |scenario| {
+        var w = try Writer.init(t.allocator, 2, 4096);
+        defer w.deinit();
+        if (scenario == 0) {
+            try stringFixture(&w, "Model", "standard", 0, 2, 0, "first");
+            try stringFixture(&w, "Model", "legacy", 0, 2, 0, "second");
+        } else if (scenario == 1) {
+            try w.begin(.{ .name = "Model", .vendor = "standard", .kind = .string });
+            for (0..2) |_| try w.append(.{ .kind = .string, .count = 0, .data = "" });
+            try w.end();
+        } else if (scenario == 2) {
+            try scalarFixture(&w, "Model", "standard", 0, 2, 0, 42);
+        } else if (scenario == 3) {
+            try stringFixture(&w, "Model", "standard", 0, 2, 0, &.{0xff});
+        } else {
+            try w.begin(.{ .name = "Model", .vendor = "standard", .kind = .string });
+            try w.append(.{ .kind = .byte, .data = "x" });
+            try w.end();
+        }
+        const r = try Reader.init(try w.finish());
+        try t.expectError(if (scenario < 2) error.AmbiguousString else error.InvalidString, r.findString(q));
+    }
+}
+test "string lookup validates malformed unrelated tails before returning borrowed values" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 2, 4096);
+    defer w.deinit();
+    try stringFixture(&w, "Model", "standard", 0, 2, 0, "camera");
+    try stringFixture(&w, "Other", "foreign", 0, 2, 0, "tail");
+    var r = try Reader.init(try w.finish());
+    r.bytes = r.bytes[0 .. r.bytes.len - 1];
+    try t.expectError(error.InvalidCatalog, r.findString(.{ .name = "Model", .vendors = &.{"standard"} }));
 }

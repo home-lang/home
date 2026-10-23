@@ -43,3 +43,16 @@ Zig 0.15.2 and the development compiler pass Debug/ReleaseSafe tests on the host
 macOS target and cross-link ARM64/x86-64 Linux tests. The dedicated CI matrix runs
 both compilers/modes natively on Linux ARM64/x86-64 and macOS. This is not a claim
 about the full Home compiler suite or physical camera acceptance.
+
+## Counted strings
+
+`Value.string()` and `Reader.findString(query)` return borrowed, counted UTF-8
+without allocation or coercion. The query uses the same `ScalarQuery` identity,
+record flags and role fields. Empty strings are present; absent identities return
+null. Strings may carry the array and byte-order flags (byte order does not affect
+UTF-8); other flags, wrong kinds/counts, invalid UTF-8, missing roles and duplicate
+accepted records/roles reject. All trailing records are checked before success.
+Embedded NUL is preserved as data; consumers imposing ASCII or NUL-terminated
+file-format requirements must validate those separately. The structural HCAT
+reader still preserves opaque string payloads; strict UTF-8 checking is opt-in
+through these helpers. Twelve tests cover scalar and string lookup together.
