@@ -5982,6 +5982,45 @@ test "tsc_main: admitted JavaScript mixed-domain union shorthand stays narrow" {
     }
 }
 
+test "tsc_main: admitted JavaScript constructor assignment carries its JSDoc field type" {
+    const owner_source =
+        \\export class User {
+        \\  constructor() {
+        \\    /** @type {string} */
+        \\    this.name = 'ready';
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { User } from './owner.js';
+        \\const user = new User();
+        \\user.name = 1;
+        \\const bad: number = user.name;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    try std.testing.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    try std.testing.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+    try std.testing.expectEqual(@as(u32, 2322), diagnostics[1].code);
+    try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+}
+
 test "tsc_main: real export-equals namespace retains require-alias member mutability" {
     const owner_source = "namespace N { export const fixed = 1; export let mutable = 2; } export = N;";
     const consumer_source = "import N = require('./owner'); N.fixed = 3; N.mutable = 4; const alias = N; alias.fixed = 3;";

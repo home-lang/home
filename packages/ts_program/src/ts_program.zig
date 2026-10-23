@@ -20090,7 +20090,11 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         \\export const enabled = true;
         \\export class Box {
         \\  /** @param {number} value */
-        \\  constructor(value) { this.value = value; }
+        \\  constructor(value) {
+        \\    this.value = value;
+        \\    /** @type {string} */
+        \\    this.name = "ready";
+        \\  }
         \\}
     ;
     const consumer_source =
@@ -20102,6 +20106,8 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         \\const exactEnabled: true = enabled;
         \\const box = new Box(1);
         \\const boxAsString: string = box.value;
+        \\box.name = 1;
+        \\const nameAsNumber: number = box.name;
         \\count = 2;
     ;
     for ([_]bool{ false, true }) |parallel| {
@@ -20128,7 +20134,7 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         else
             try p.compileAll(options);
         const compilation = p.fileById(consumer).compilation.?;
-        try T.expectEqual(@as(usize, 7), compilation.diagnostics.items.len);
+        try T.expectEqual(@as(usize, 9), compilation.diagnostics.items.len);
         var assignable: usize = 0;
         var import_assignment: usize = 0;
         var widened_label = false;
@@ -20140,7 +20146,7 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
             2632 => import_assignment += 1,
             else => return error.TestUnexpectedResult,
         };
-        try T.expectEqual(@as(usize, 6), assignable);
+        try T.expectEqual(@as(usize, 8), assignable);
         try T.expectEqual(@as(usize, 1), import_assignment);
         try T.expect(widened_label);
         try expectCompilationLacksDiagnosticCode(compilation, 2339);

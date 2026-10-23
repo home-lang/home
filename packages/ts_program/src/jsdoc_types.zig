@@ -61,6 +61,17 @@ pub const TypeExpression = struct {
             .string_literal, .number_literal, .boolean_literal, .unsupported, .union_type => null,
         };
     }
+
+    pub fn transferable(self: TypeExpression) bool {
+        return switch (self.base) {
+            .unsupported => false,
+            .union_type => |members| blk: {
+                for (members) |member| if (!member.transferable()) break :blk false;
+                break :blk true;
+            },
+            else => true,
+        };
+    }
 };
 
 pub const AssignedField = struct {
@@ -166,7 +177,7 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
 pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) ![]AssignedField {
     const function = hir.fnDeclOf(&c.hir, node);
     if (!function.flags.is_constructor or function.body == hir.none_node_id or c.hir.kindOf(function.body) != .block_stmt) return &.{};
-    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return &.{};
+    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse "";
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
 
@@ -178,14 +189,24 @@ pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compil
     for (hir.blockStmts(&c.hir, function.body)) |statement| {
         if (c.hir.kindOf(statement) != .assignment) continue;
         const assignment = hir.assignmentOf(&c.hir, statement);
-        if (assignment.op != null or c.hir.kindOf(assignment.target) != .member_access or c.hir.kindOf(assignment.value) != .identifier) continue;
+        if (assignment.op != null or c.hir.kindOf(assignment.target) != .member_access) continue;
         const member = hir.memberOf(&c.hir, assignment.target);
         if (!isThisExpression(c, member.object)) continue;
-        const value_name = hir.identifierOf(&c.hir, assignment.value).name;
-        if (!isParameter(c, node, value_name)) continue;
         const field_name = c.interner.get(member.name);
         if (contains(fields.items, field_name)) continue;
-        const type_expression = try parameterType(gpa, tags, c.interner.get(value_name)) orelse continue;
+        // A declaration-adjacent @type on the assignment is the field's
+        // declared type. Without one, a direct assignment from an annotated
+        // constructor parameter carries that parameter's type.
+        const type_expression = (try declarationType(gpa, c, statement)) orelse blk: {
+            if (c.hir.kindOf(assignment.value) != .identifier) break :blk null;
+            const value_name = hir.identifierOf(&c.hir, assignment.value).name;
+            if (!isParameter(c, node, value_name)) break :blk null;
+            break :blk try parameterType(gpa, tags, c.interner.get(value_name));
+        } orelse continue;
+        if (!type_expression.transferable()) {
+            type_expression.deinit(gpa);
+            continue;
+        }
         errdefer type_expression.deinit(gpa);
         try fields.append(gpa, .{ .name = field_name, .type_expression = type_expression });
     }
