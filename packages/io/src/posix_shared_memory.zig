@@ -76,10 +76,14 @@ pub const Mapping = struct {
         return .{ .base = base, .size = size, .bytes = @as([*]u8, @ptrCast(base))[delta..][0..@intCast(span.length)] };
     }
     pub fn close(self: *Mapping) !void {
+        return self.closeUsing(c.munmap);
+    }
+    fn closeUsing(self: *Mapping, comptime unmap: anytype) !void {
         const base = self.base orelse return;
+        const Address = *align(std.heap.page_size_min) const anyopaque;
+        if (unmap(@as(Address, @alignCast(base)), self.size) != 0) return error.MappingFailed;
         self.base = null;
         self.bytes = &.{};
-        if (c.munmap(@alignCast(base), self.size) != 0) return error.MappingFailed;
         self.size = 0;
     }
 };
@@ -174,4 +178,39 @@ test "shared mappings preflight invalid extents bounds and descriptors without m
     try t.expectError(error.InvalidSpan, Mapping.init(region.fd.value, .{ .offset = 0, .length = 1, .used = 2 }, true, 64));
     try t.expectError(error.InvalidDescriptor, Fd.duplicate(-1));
     for (region.mapping.bytes) |v| try t.expectEqual(@as(u8, 73), v);
+}
+
+test "failed unmap retains the exact owned mapping and retry retires it once" {
+    const t = std.testing;
+    var region = try Region.create(8193, 16384);
+    defer region.close() catch unreachable;
+    const before = region.mapping;
+    const Unmap = struct {
+        var calls: usize = 0;
+        fn fail(_: anytype, _: usize) c_int {
+            calls += 1;
+            return -1;
+        }
+        fn succeed(base: anytype, size: usize) c_int {
+            calls += 1;
+            return c.munmap(base, size);
+        }
+    };
+    Unmap.calls = 0;
+    try t.expectError(error.MappingFailed, region.mapping.closeUsing(Unmap.fail));
+    try t.expectEqual(before.base, region.mapping.base);
+    try t.expectEqual(before.size, region.mapping.size);
+    try t.expectEqual(before.bytes.ptr, region.mapping.bytes.ptr);
+    try t.expectEqual(before.bytes.len, region.mapping.bytes.len);
+    // A live region can still close its descriptor while retaining the mapping.
+    // A later unmap retry must not need or close the old descriptor number.
+    try region.fd.close();
+    region.mapping.bytes[8192] = 91;
+    try region.mapping.closeUsing(Unmap.succeed);
+    try t.expectEqual(@as(usize, 2), Unmap.calls);
+    try t.expect(region.mapping.base == null);
+    try t.expectEqual(@as(usize, 0), region.mapping.size);
+    try t.expectEqual(@as(usize, 0), region.mapping.bytes.len);
+    try region.mapping.closeUsing(Unmap.succeed);
+    try t.expectEqual(@as(usize, 2), Unmap.calls);
 }
