@@ -40,3 +40,6 @@ pub const PublicationBatch = @import("publication_batch.zig");
 
 /// Checked relative idle intervals; callers supply their monotonic clock/timer.
 pub const RelativeDelay = @import("relative_delay.zig").Delay;
+
+/// Joined producer notification and consumer publication; caller owns synchronization.
+pub const FactoryHandoff = @import("factory_handoff.zig").Handoff;
