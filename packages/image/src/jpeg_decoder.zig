@@ -259,7 +259,6 @@ const Decoder = struct {
         const size = try std.math.mul(usize, try std.math.mul(usize, self.width, self.height), if (self.count == 1) 1 else 3);
         if (size > self.options.limits.max_output_bytes) return error.OutputLimit;
         self.progressive = code == 0xc2;
-        var samples: u32 = 0;
         for (self.components[0..self.count], 0..) |_, i| {
             const id = data[6 + i * 3];
             for (self.components[0..i]) |other| if (other.id == id) return error.InvalidComponent;
@@ -269,11 +268,9 @@ const Decoder = struct {
             c.v = data[7 + i * 3] & 15;
             c.q = data[8 + i * 3];
             if (c.h == 0 or c.h > 4 or c.v == 0 or c.v > 4 or c.q > 3) return error.InvalidSampling;
-            samples += c.h * c.v;
             self.max_h = @max(self.max_h, c.h);
             self.max_v = @max(self.max_v, c.v);
         }
-        if (samples > 10) return error.InvalidSampling;
         self.mcus_x = (self.width + 8 * self.max_h - 1) / (8 * self.max_h);
         self.mcus_y = (self.height + 8 * self.max_v - 1) / (8 * self.max_v);
         for (self.components[0..self.count]) |*c| {
@@ -484,6 +481,9 @@ const Decoder = struct {
             if ((!self.progressive or (start == 0 and high == 0)) and !self.huffman[0][table >> 4].present) return error.MissingHuffman;
             if ((!self.progressive or start != 0) and !self.huffman[1][table & 15].present) return error.MissingHuffman;
         }
+        var mcu_blocks: u32 = 0;
+        for (selected[0..count]) |item| mcu_blocks += self.components[item.index].h * self.components[item.index].v;
+        if (count > 1 and mcu_blocks > 10) return error.InvalidSampling;
         for (&self.components) |*component| component.predictor = 0;
         const single = &self.components[selected[0].index];
         const columns = if (count == 1) (single.width + 7) / 8 else self.mcus_x;
@@ -739,7 +739,10 @@ test "JPEG decoder releases every partial allocation and owns input-independent 
     @memset(data, 0);
     for (0..9 * 17) |i| {
         try t.expectApproxEqAbs(@as(f64, 213), @as(f64, @floatFromInt(result.pixels[i * 3])), 3);
-        try t.expectApproxEqAbs(@as(f64, 74), @as(f64, @floatFromInt(result.pixels[i * 3 + 1])), 3);
+        t.expectApproxEqAbs(@as(f64, 74), @as(f64, @floatFromInt(result.pixels[i * 3 + 1])), 3) catch |err| {
+            std.debug.print("JPEG uniform mismatch pixel {d},{d}, rgb={any}, first={any}, model={s}\n", .{ i % 9, i / 9, result.pixels[i * 3 ..][0..3], result.pixels[0..12], @tagName(result.color_model) });
+            return err;
+        };
         try t.expectApproxEqAbs(@as(f64, 31), @as(f64, @floatFromInt(result.pixels[i * 3 + 2])), 3);
     }
 }
@@ -810,4 +813,22 @@ test "JPEG metadata is owned bounded and partial result allocation failures clea
     try t.expectError(error.IncompleteIcc, decode(t.allocator, data, .{}));
     @memset(data, 0);
     try t.expectEqualSlices(u8, &.{ 9, 8, 7, 6 }, result.icc.?);
+}
+
+test "JPEG runtime inverse and color conversion preserve uniform component values" {
+    const t = std.testing;
+    var values: [4]u8 = .{ 110, 83, 201, 0 };
+    for ([_]i32{ -18, -45, 73 }, 0..) |level, i| {
+        var block: [64]i32 = @splat(0);
+        block[0] = level * 8;
+        std.mem.doNotOptimizeAway(&block);
+        dct.inverse(&block, &@as([64]u16, @splat(1)));
+        for (block) |sample_value| try t.expectEqual(level + 128, sample_value);
+        values[i] = @intCast(block[0]);
+    }
+    std.mem.doNotOptimizeAway(&values);
+    const rgb = Decoder.ycbcr(values);
+    try t.expectApproxEqAbs(@as(f64, 213), @as(f64, @floatFromInt(rgb[0])), 3);
+    try t.expectApproxEqAbs(@as(f64, 74), @as(f64, @floatFromInt(rgb[1])), 3);
+    try t.expectApproxEqAbs(@as(f64, 31), @as(f64, @floatFromInt(rgb[2])), 3);
 }

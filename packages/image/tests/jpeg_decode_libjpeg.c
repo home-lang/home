@@ -14,9 +14,10 @@ static const uint8_t exif_bytes[]={'I','I',42,0,8,0,0,0,0,0};
 static uint8_t *encode(unsigned w,unsigned h,unsigned mode,unsigned progressive,unsigned restart,int quality,int separate,unsigned long *size){
  struct jpeg_compress_struct c;struct jpeg_error_mgr error;c.err=jpeg_std_error(&error);error.trace_level=-1;jpeg_create_compress(&c);
  unsigned char *output=NULL;jpeg_mem_dest(&c,&output,size);
- const unsigned channels=mode==6?1:mode>=8?4:3;
+ const unsigned channels=(mode==6||mode==11)?1:(mode>=8&&mode<=11)?4:3;
  c.image_width=w;c.image_height=h;c.input_components=(int)channels;c.in_color_space=channels==1?JCS_GRAYSCALE:channels==4?JCS_CMYK:JCS_RGB;
  jpeg_set_defaults(&c);
+ if(mode==11){c.comp_info[0].h_samp_factor=4;c.comp_info[0].v_samp_factor=4;}
  if(mode==7)jpeg_set_colorspace(&c,JCS_RGB);
  if(mode==10)jpeg_set_colorspace(&c,JCS_YCCK);
  if(mode==9)c.write_Adobe_marker=FALSE;
@@ -49,7 +50,7 @@ static void run(unsigned w,unsigned h,unsigned mode,unsigned progressive,unsigne
  unsigned long size=0;uint8_t *input=encode(w,h,mode,progressive,restart,quality,separate,&size);size_t ref_size;unsigned rw,rh;uint8_t *ref=reference(input,size,nearest,&ref_size,&rw,&rh);
  void *owned=NULL;uint64_t info[11];const uint8_t *pixels=NULL,*icc=NULL,*exif=NULL;const int code=home_jpeg_decode(input,size,nearest,&owned,info,&pixels,&icc,&exif);
  if(code){fprintf(stderr,"FAILED JPEG %ux%u mode=%u progressive=%u restart=%u quality=%d separate=%d nearest=%u\n",w,h,mode,progressive,restart,quality,separate,nearest);abort();}
- assert(info[0]==rw&&info[1]==rh&&info[2]==(mode==6?1:mode>=8?4:3)&&info[3]==(progressive!=0)&&info[4]>0&&info[6]==ref_size);
+ assert(info[0]==rw&&info[1]==rh&&info[2]==((mode==6||mode==11)?1:(mode>=8&&mode<=10)?4:3)&&info[3]==(progressive!=0)&&info[4]>0&&info[6]==ref_size);
  assert(info[7]==sizeof(icc_bytes)&&info[8]==sizeof(exif_bytes)&&!memcmp(icc,icc_bytes,sizeof(icc_bytes))&&!memcmp(exif,exif_bytes,sizeof(exif_bytes)));
  unsigned max=0;size_t at=0;for(size_t i=0;i<ref_size;i++){const unsigned e=(unsigned)abs((int)pixels[i]-ref[i]);if(e>max){max=e;at=i;}}
  if(max>3){fprintf(stderr,"PIXELS JPEG %ux%u mode=%u progressive=%u restart=%u quality=%d separate=%d nearest=%u max=%u at=%zu Home=%u libjpeg=%u\n",w,h,mode,progressive,restart,quality,separate,nearest,max,at,pixels[at],ref[at]);abort();}
@@ -61,7 +62,7 @@ static void run(unsigned w,unsigned h,unsigned mode,unsigned progressive,unsigne
 static unsigned argument(const char *text,unsigned max){char *end=NULL;const unsigned long value=strtoul(text,&end,10);assert(*text&&end&&!*end&&value<=max);return (unsigned)value;}
 static void save(const char *path,const uint8_t *bytes,size_t size){FILE *file=fopen(path,"wb");assert(file);assert(fwrite(bytes,1,size,file)==size);assert(fclose(file)==0);}
 int main(int argc,char **argv){
- if(argc==6){const unsigned mode=argument(argv[3],10),progressive=argument(argv[4],2),nearest=argument(argv[5],1);unsigned long size=0;uint8_t *input=encode(35,23,mode,progressive,3,75,0,&size);size_t output_size;unsigned w,h;uint8_t *output=reference(input,size,nearest,&output_size,&w,&h);assert(w==35&&h==23);save(argv[1],input,size);save(argv[2],output,output_size);free(output);free(input);return 0;}
+ if(argc==6){const unsigned mode=argument(argv[3],11),progressive=argument(argv[4],2),nearest=argument(argv[5],1);unsigned long size=0;uint8_t *input=encode(35,23,mode,progressive,3,75,0,&size);size_t output_size;unsigned w,h;uint8_t *output=reference(input,size,nearest,&output_size,&w,&h);assert(w==35&&h==23);save(argv[1],input,size);save(argv[2],output,output_size);free(output);free(input);return 0;}
  assert(argc==1);
  const unsigned dims[][2]={{1,1},{9,17},{35,23}};const int qualities[]={1,75,100};
  for(unsigned mode=0;mode<=10;mode++)for(unsigned p=0;p<2;p++)for(unsigned d=0;d<3;d++)for(unsigned r=0;r<3;r++)for(unsigned q=0;q<3;q++){
