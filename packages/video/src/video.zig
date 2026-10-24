@@ -102,6 +102,9 @@ pub const SampleTable = mp4.SampleTable;
 pub const native_encoder = @import("codecs/video/native_encoder.zig");
 pub const rgb_i420 = @import("codecs/video/rgb_i420.zig");
 pub const mp4_stream = @import("containers/mp4_stream.zig");
+pub const kms_catalog = @import("display/kms_catalog.zig");
+pub const kms_discovery = @import("display/kms_discovery.zig");
+pub const kms_discovery_host = @import("display/kms_discovery_host.zig");
 
 pub const mp4_muxer = @import("containers/mp4_muxer.zig");
 pub const Mp4Muxer = mp4_muxer.Mp4Muxer;

@@ -147,3 +147,8 @@ terminated by the supervisor's TERM/KILL before reaching `_exit`. The harness
 accepts those documented outcomes while requiring the final result and dead
 consumer. The controlled terminal fixture has already reaped its child before
 reporting the problem, so its result must remain exactly 127.
+
+Read-only Linux display catalogs are available through
+[`kms_discovery_host`](docs/kms-discovery.md). The bounded portable collector
+retains connector/mode/CRTC/FOURCC identities and per-card failure diagnostics;
+the hosted adapter closes all query FDs and never acquires display ownership.
