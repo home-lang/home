@@ -40,3 +40,8 @@ both pinned and development Zig. Standards: RFC 3550, RFC 6184, RFC 7798, RFC 36
 priming before the presentation origin. It rounds down consistently for negative
 samples and intentionally wraps on the RTP wire; timestamps must keep their sign
 until clock conversion, rather than clamping priming to zero.
+
+`hevcProfile` reads a bounded general profile-tier-level prefix from a borrowed
+SPS NAL, including emulation-prevention handling, so SDP can carry the actual
+profile, tier, level, compatibility and constraint bits. It does not validate the
+remaining SPS or parse sublayer profiles.

@@ -297,3 +297,48 @@ test "signed RTP clocks preserve negative codec priming and all integer endpoint
     }
     try t.expectError(error.InvalidClock, signedTimestamp(0, 0, 0));
 }
+
+pub const HevcProfile = struct { space: u8, tier: u8, id: u8, level: u8, compatibility: u32, constraints: u64 };
+/// Read only the general profile-tier-level prefix of an SPS NAL, excluding
+/// framing. Bounded stack work; validates emulation prevention in this prefix.
+/// This is not an SPS syntax/conformance validator and does not parse sublayers.
+pub fn hevcProfile(nal: []const u8) !HevcProfile {
+    if (nal.len < 2 or nal[0] & 0x80 != 0 or (nal[0] >> 1) & 63 != 33 or nal[1] & 7 == 0) return error.InvalidNal;
+    var raw: [13]u8 = undefined;
+    var at: usize = 2;
+    var count: usize = 0;
+    var zeros: usize = 0;
+    while (count < raw.len) {
+        if (at == nal.len) return error.TruncatedSps;
+        const byte = nal[at];
+        at += 1;
+        if (zeros == 2) {
+            if (byte <= 2) return error.InvalidEmulationPrevention;
+            if (byte == 3) {
+                if (at == nal.len or nal[at] > 3) return error.InvalidEmulationPrevention;
+                zeros = 0;
+                continue;
+            }
+        }
+        raw[count] = byte;
+        count += 1;
+        zeros = if (byte == 0) zeros + 1 else 0;
+    }
+    if ((raw[0] >> 1) & 7 == 7 or (raw[0] & 15 == 0)) return error.InvalidSps;
+    var constraints: u64 = 0;
+    for (raw[6..12]) |byte| constraints = (constraints << 8) | byte;
+    return .{ .space = raw[1] >> 6, .tier = (raw[1] >> 5) & 1, .id = raw[1] & 31, .level = raw[12], .compatibility = std.mem.readInt(u32, raw[2..6], .big), .constraints = constraints };
+}
+test "HEVC RTP signaling extracts actual general profile tier compatibility constraints and level" {
+    const t = std.testing;
+    const nal = [_]u8{ 0x42, 1, 1, 0xa2, 0, 0, 3, 0, 1, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 156 };
+    const profile = try hevcProfile(&nal);
+    try t.expectEqualDeep(HevcProfile{ .space = 2, .tier = 1, .id = 2, .level = 156, .compatibility = 1, .constraints = 0x123456789abc }, profile);
+    for (0..nal.len) |length| try t.expectError(if (length < 2) error.InvalidNal else if (length == 7) error.InvalidEmulationPrevention else error.TruncatedSps, hevcProfile(nal[0..length]));
+    var bad = nal;
+    bad[6] = 0;
+    try t.expectError(error.InvalidEmulationPrevention, hevcProfile(&bad));
+    bad = nal;
+    bad[7] = 4;
+    try t.expectError(error.InvalidEmulationPrevention, hevcProfile(&bad));
+}
