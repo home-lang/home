@@ -203,10 +203,8 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         /// joins partially failed preparation/cleanup; active borrowers stay live.
         pub fn trim(self: *Self) !void {
             var failed = false;
-            for (self.retirements, 0..) |retirement, i| if (retirement != null) {
-                self.cleanup(@intCast(i)) catch {
-                    failed = true;
-                };
+            self.reapPending() catch {
+                failed = true;
             };
             while (self.cache.oldestIdle()) |index| {
                 self.retirements[index] = try self.cache.retireIdle(index);
@@ -214,6 +212,18 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
                     failed = true;
                 };
             }
+            if (failed) return error.CleanupPending;
+        }
+        /// Retry owned retirement without evicting idle source/rollback modes.
+        /// Factory preparation can reclaim failed target backing independently
+        /// from already provisioned profiles needed by another camera/job.
+        pub fn reapPending(self: *Self) !void {
+            var failed = false;
+            for (self.retirements, 0..) |retirement, i| if (retirement != null) {
+                self.cleanup(@intCast(i)) catch {
+                    failed = true;
+                };
+            };
             if (failed) return error.CleanupPending;
         }
         /// Owner is retained on failure. Caller must first retire all SDK users
@@ -398,4 +408,27 @@ fn importAllocationFailures(allocator: std.mem.Allocator) !void {
 }
 test "every imported allocation failure retires partially owned resources" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, importAllocationFailures, .{});
+}
+
+test "pending-only cleanup preserves an idle rollback profile and its storage" {
+    const t = std.testing;
+    var owner = try Owner(2, Ram).init(.{ .allocator = t.allocator }, 512, 2);
+    defer owner.close() catch unreachable;
+    const target = try fixture();
+    var source = target;
+    source.camera[0] = 'S';
+    const failed = try owner.checkout(&target);
+    const previous = try owner.checkout(&source);
+    const memory = try owner.view(previous.claim, 0, 0, true);
+    @memset(memory.bytes, 91);
+    try owner.discard(failed.claim);
+    try owner.release(previous.claim);
+    try owner.reapPending();
+    try t.expectEqual(@as(usize, 256), owner.cache.reservations.used);
+    try t.expectError(error.LayoutUnavailable, owner.checkoutExisting(&target));
+    const restored = try owner.checkoutExisting(&source);
+    const intact = try owner.view(restored.claim, 0, 0, false);
+    try t.expectEqual(memory.bytes.ptr, intact.bytes.ptr);
+    for (intact.bytes) |value| try t.expectEqual(@as(u8, 91), value);
+    try owner.release(restored.claim);
 }
