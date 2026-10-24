@@ -75,8 +75,8 @@ pub const NalUnit = struct {
 // ============================================================================
 
 /// Parse NAL units from Annex B format
-pub fn parseAnnexB(data: []const u8, allocator: Allocator) !std.ArrayListUnmanaged(NalUnit) {
-    var nals: std.ArrayListUnmanaged(NalUnit) = .empty;
+pub fn parseAnnexB(data: []const u8, allocator: Allocator) !std.ArrayList(NalUnit) {
+    var nals: std.ArrayList(NalUnit) = .empty;
     errdefer nals.deinit(allocator);
 
     var iterator = try NalIterator.init(data, .annex_b, 4);
@@ -120,8 +120,8 @@ pub fn parseLengthPrefixed(
     data: []const u8,
     length_size: u8, // 1, 2, or 4 bytes
     allocator: Allocator,
-) !std.ArrayListUnmanaged(NalUnit) {
-    var nals: std.ArrayListUnmanaged(NalUnit) = .empty;
+) !std.ArrayList(NalUnit) {
+    var nals: std.ArrayList(NalUnit) = .empty;
     errdefer nals.deinit(allocator);
 
     var iterator = try NalIterator.init(data, .length_prefixed, length_size);

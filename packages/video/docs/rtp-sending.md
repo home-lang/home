@@ -45,3 +45,7 @@ until clock conversion, rather than clamping priming to zero.
 SPS NAL, including emulation-prevention handling, so SDP can carry the actual
 profile, tier, level, compatibility and constraint bits. It does not validate the
 remaining SPS or parse sublayer profiles.
+
+The NAL parser uses the allocator-explicit `std.ArrayList` spelling supported by
+Zig 0.15.2 and current development Zig. This replaces the removed development
+`ArrayListUnmanaged` alias without changing list ownership or framing behavior.
