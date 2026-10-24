@@ -1,6 +1,7 @@
 //! Standalone POSIX output supervisor. fd 0 is media, 1/2 are consumer output,
 //! fd 3 is a private parent control socket. Never fork from a hosted camera
-//! thread: compile this as its own executable. CLI: grace-ms -- command argv...
+//! thread: compile this as its own executable. CLI: grace-ms [--control-fd4] -- command argv...
+//! With --control-fd4, fd 3 only sends proofs and fd 4 only receives cancellation.
 const std = @import("std");
 const builtin = @import("builtin");
 const wire = @import("../core/process_output_wire.zig");
@@ -54,32 +55,40 @@ fn childFailure(fd: std.posix.fd_t, code: u32) noreturn {
     _ = c.write(fd, &code, @sizeOf(u32));
     c._exit(127);
 }
+fn validateControl(fd: c_int) !void {
+    const flags = c.fcntl(fd, c.F_GETFL);
+    if (flags < 0 or c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.InvalidControl;
+    var socket_type: c_int = 0;
+    var socket_type_size: c.socklen_t = @sizeOf(c_int);
+    if (c.getsockopt(fd, c.SOL_SOCKET, c.SO_TYPE, &socket_type, &socket_type_size) != 0 or socket_type != c.SOCK_STREAM) return error.InvalidControl;
+}
 fn run(args: []const [:0]u8) !u8 {
-    if (args.len < 4 or args.len > 68 or !std.mem.eql(u8, args[2], "--")) return error.InvalidArguments;
+    if (args.len < 4) return error.InvalidArguments;
+    const separate_control = std.mem.eql(u8, args[2], "--control-fd4");
+    const command_start: usize = if (separate_control) 4 else 3;
+    if (args.len <= command_start or args.len > command_start + 65 or !std.mem.eql(u8, args[command_start - 1], "--")) return error.InvalidArguments;
+    const control_fd: std.posix.fd_t = if (separate_control) 4 else 3;
     const grace = try std.fmt.parseInt(u32, args[1], 10);
     if (grace == 0 or grace > 60000) return error.InvalidArguments;
     var arg_bytes: usize = 0;
-    for (args[3..]) |arg| arg_bytes = try std.math.add(usize, arg_bytes, arg.len + 1);
+    for (args[command_start..]) |arg| arg_bytes = try std.math.add(usize, arg_bytes, arg.len + 1);
     if (arg_bytes > 64 * 1024) return error.InvalidArguments;
     installSignals();
     var timer = try std.time.Timer.start();
-    const flags = c.fcntl(3, c.F_GETFL);
-    if (flags < 0 or c.fcntl(3, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.InvalidControl;
-    var socket_type: c_int = 0;
-    var socket_type_size: c.socklen_t = @sizeOf(c_int);
-    if (c.getsockopt(3, c.SOL_SOCKET, c.SO_TYPE, &socket_type, &socket_type_size) != 0 or socket_type != c.SOCK_STREAM) return error.InvalidControl;
+    try validateControl(3);
+    if (separate_control) try validateControl(4);
     if (builtin.os.tag == .linux) {
         if (c.prctl(c.PR_SET_CHILD_SUBREAPER, @as(c_ulong, 1), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) return error.SubreaperFailed;
     }
     var argv: [65:null]?[*:0]const u8 = @splat(null);
-    for (args[3..], 0..) |arg, i| argv[i] = arg.ptr;
+    for (args[command_start..], 0..) |arg, i| argv[i] = arg.ptr;
     const supervisor: u32 = @intCast(c.getpid());
-    var preflight = [_]std.posix.pollfd{.{ .fd = 3, .events = std.posix.POLL.IN, .revents = 0 }};
+    var preflight = [_]std.posix.pollfd{.{ .fd = control_fd, .events = std.posix.POLL.IN, .revents = 0 }};
     _ = std.posix.poll(&preflight, 0) catch 0;
     var cancelled_before_spawn = interrupted.load(.monotonic);
     if (preflight[0].revents != 0) {
         var command: [16]u8 = undefined;
-        if (std.posix.read(3, &command)) |_| {
+        if (std.posix.read(control_fd, &command)) |_| {
             cancelled_before_spawn = true;
         } else |err| {
             if (err != error.WouldBlock) cancelled_before_spawn = true;
@@ -99,6 +108,7 @@ fn run(args: []const [:0]u8) !u8 {
     if (child == 0) {
         std.posix.close(pipes[0]);
         std.posix.close(3);
+        if (separate_control) std.posix.close(4);
         // Only async-signal-safe libc calls occur between fork and exec.
         const default = std.posix.Sigaction{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
         for ([_]u8{ std.posix.SIG.TERM, std.posix.SIG.INT, std.posix.SIG.HUP, std.posix.SIG.USR1, std.posix.SIG.PIPE }) |sig| std.posix.sigaction(sig, &default, null);
@@ -128,13 +138,13 @@ fn run(args: []const [:0]u8) !u8 {
     var control_read_open = true;
     while (true) {
         var fds = [_]std.posix.pollfd{
-            .{ .fd = if (control_read_open) 3 else -1, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = if (control_read_open) control_fd else -1, .events = std.posix.POLL.IN, .revents = 0 },
             .{ .fd = exec_fd orelse -1, .events = std.posix.POLL.IN, .revents = 0 },
         };
         _ = std.posix.poll(&fds, 10) catch 0;
         if (fds[0].revents != 0) {
             var command: [16]u8 = undefined;
-            if (std.posix.read(3, &command)) |count| {
+            if (std.posix.read(control_fd, &command)) |count| {
                 // Any explicit command or EOF cancels. This fd is never
                 // media, so a stalled consumer cannot hide a dead parent.
                 interrupted.store(true, .monotonic);

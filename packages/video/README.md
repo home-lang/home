@@ -123,3 +123,21 @@ terminal setup error, with the original errno preserved. The regression consumer
 echoes bounded media through EOF, and is exercised through 50 joined startups by
 `process_output_host.ts` when passed as its second executable argument. The native
 host CI compiles and runs both on macOS and both Linux architectures.
+
+For hosted clients, invoke `grace-ms --control-fd4 -- executable argv...` with
+independent inherited stream sockets: fd 3 carries only readiness/problem/final
+exit records to the parent, while fd 4 receives only cancellation data or EOF.
+The consumer inherits neither. This keeps a late unread cancellation byte from
+sharing the stream carrying final joined-exit proof. Parents must drain fd 3 and
+join both channels, diagnostics and the host process. The legacy CLI without the
+flag retains duplex fd 3 for existing standalone clients. Record framing remains
+ZCO1 with at most two records. Terminal problem/result records require no further
+cancellation command from the parent.
+
+The acceptance harness runs both CLI modes and 50 native group/descriptor checks
+per mode. Split mode also receives late cancellation after failed exec. Its
+optional third executable is `tests/process_output_terminal_fixture.zig`, compiled
+with the `wire` module pointing to `src/core/process_output_wire.zig`; that peer
+joins a real child, sends a problem, waits for cancellation without consuming it,
+then sends final proof before exit. Twenty-five such cases verify independent
+proof delivery. Native CI supplies both consumer and terminal fixture explicitly.

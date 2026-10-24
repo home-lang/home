@@ -3,6 +3,7 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("unistd.h");
+    @cInclude("fcntl.h");
 });
 fn write(bytes: []const u8) !void {
     var offset: usize = 0;
@@ -19,6 +20,7 @@ fn write(bytes: []const u8) !void {
 }
 pub fn main() !void {
     if (c.getpgrp() != c.getpid()) return error.UnownedGroup;
+    if (c.fcntl(3, c.F_GETFD) >= 0 or c.fcntl(4, c.F_GETFD) >= 0) return error.PrivateDescriptorLeak;
     try write("owned-group\n");
     var bytes: [4096]u8 = undefined;
     while (true) {

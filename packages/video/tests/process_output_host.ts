@@ -4,24 +4,29 @@ import {createConnection} from 'node:net'
 const host=process.argv[2]!
 async function until(f:()=>boolean){const deadline=Date.now()+5000;while(!f()){if(Date.now()>deadline)throw Error('host acceptance deadline');await Bun.sleep(1)}}
 function alive(pid:number){try{process.kill(pid,0);return true}catch{return false}}
-function launch(command:string[]){
-  const child=Bun.spawn([host,'20','--',...command],{stdio:['pipe','pipe','pipe','socket-fd']})
+let splitControl=false
+function launch(command:string[],lateCancel=false,executable=host){
+  const child=Bun.spawn([executable,'20',...(splitControl?['--control-fd4']:[]),'--',...command],{stdio:splitControl?['pipe','pipe','pipe','socket-fd','socket-fd']:['pipe','pipe','pipe','socket-fd']})
   const fd=child.stdio[3];assert.equal(typeof fd,'number')
-  const socket=createConnection({fd} as any),records:{kind:number;status:number;supervisor:number;consumer:number}[]=[]
-  const chunks:Buffer[]=[],err:Buffer[]=[];let buffered=Buffer.alloc(0),closed=false,protocolError:unknown
+  const socket=createConnection({fd} as any),cancelSocket=splitControl?createConnection({fd:child.stdio[4]} as any):socket,records:{kind:number;status:number;supervisor:number;consumer:number}[]=[]
+  const chunks:Buffer[]=[],err:Buffer[]=[];let buffered=Buffer.alloc(0),closed=false,cancelClosed=!splitControl,protocolError:unknown
   socket.on('error',e=>{protocolError=e});socket.on('close',()=>{closed=true})
+  if(splitControl){cancelSocket.on('error',()=>{});cancelSocket.on('close',()=>{cancelClosed=true});cancelSocket.on('data',()=>{protocolError=Error('unexpected cancellation data')})}
   socket.on('data',data=>{
     buffered=Buffer.concat([buffered,data]);if(buffered.length>64){protocolError=Error('excess control data');return}
     while(buffered.length>=32){const b=buffered.subarray(0,32);buffered=buffered.subarray(32)
       if(b.subarray(0,4).toString()!=='ZCO1'||b.readUInt32LE(12)!==0){protocolError=Error('control framing');return}
       records.push({kind:b.readUInt32LE(4),status:b.readUInt32LE(8),supervisor:Number(b.readBigUInt64LE(16)),consumer:Number(b.readBigUInt64LE(24))})
+      if(lateCancel&&b.readUInt32LE(4)===3){try{cancelSocket.write(Buffer.from([1]))}catch{}}
     }
   })
   // eslint-disable-next-line pickier/no-unused-vars -- References inside for-await are missed by this rule.
   async function drain(stream:ReadableStream<Uint8Array>,out:Buffer[]){for await(const bytes of stream){out.push(Buffer.from(bytes));assert(out.reduce((n,b)=>n+b.length,0)<65536)}}
   const readers=Promise.all([drain(child.stdout,chunks),drain(child.stderr,err)])
-  return {child,socket,records,err,chunks,get closed(){return closed},async join(){const code=await child.exited;await readers;await until(()=>closed);if(protocolError)throw protocolError;return code}}
+  return {child,socket,cancelSocket,records,err,chunks,get closed(){return closed},async join(){const code=await child.exited;await readers;await until(()=>closed&&cancelClosed);if(protocolError)throw protocolError;return code}}
 }
+for(const separate of [false,true]){
+splitControl=separate
 for(const expected of [0,42]){
   const p=launch([process.execPath,'-e',`const b=await Bun.stdin.text();process.stdout.write(b);process.exit(${expected})`])
   await until(()=>p.records.some(r=>r.kind===1))
@@ -33,7 +38,7 @@ for(const expected of [0,42]){
 {
   const p=launch([process.execPath,'-e','process.on("SIGTERM",()=>{});process.stderr.write("ignoring term");setInterval(()=>{},1000)'])
   await until(()=>p.records.some(r=>r.kind===1)&&Buffer.concat(p.err).toString().includes('ignoring term'))
-  const consumer=p.records[0].consumer;p.socket.end()
+  const consumer=p.records[0].consumer;p.cancelSocket.end()
   assert.equal(await p.join(),125);await p.child.stdin.end();assert(!alive(consumer));assert(!alive(p.child.pid))
 }
 {
@@ -52,5 +57,20 @@ if(groupConsumer)for(let i=0;i<50;i++){
   assert.equal(await p.join(),0)
   assert.equal(Buffer.concat(p.chunks).toString(),'owned-group\nbounded media')
   assert.equal(p.records.at(-1)?.status,0);assert(!alive(consumer));assert(!alive(p.child.pid))
+}
+}
+for(let i=0;i<50;i++){
+const p=launch(['/no-such-home-video-consumer'],true)
+await until(()=>p.records.some(r=>r.kind===3))
+assert.equal(await p.join(),125)
+assert.equal(p.records.at(-1)?.kind,2);assert.equal(p.records.at(-1)?.status,127)
+assert(!alive(p.records[0].consumer));await p.child.stdin.end()
+}
+const terminalFixture=process.argv[4]
+if(terminalFixture)for(let i=0;i<25;i++){
+const p=launch(['terminal-probe'],true,terminalFixture)
+await until(()=>p.records.some(r=>r.kind===3))
+assert.equal(await p.join(),125);assert.equal(p.records.at(-1)?.kind,2);assert.equal(p.records.at(-1)?.status,127)
+assert(!alive(p.records[0].consumer));await p.child.stdin.end()
 }
 console.log('standalone host proves exec readiness, exact media EOF, exit status, control EOF cancellation and joined process exit')
