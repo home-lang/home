@@ -62,8 +62,12 @@ if(groupConsumer)for(let i=0;i<50;i++){
 for(let i=0;i<50;i++){
 const p=launch(['/no-such-home-video-consumer'],true)
 await until(()=>p.records.some(r=>r.kind===3))
+assert.equal(p.records[0].status,2);assert(p.records[0].consumer>0)
 assert.equal(await p.join(),125)
-assert.equal(p.records.at(-1)?.kind,2);assert.equal(p.records.at(-1)?.status,127)
+assert.equal(p.records.at(-1)?.kind,2)
+// Failed exec and cancellation race before the child's _exit; either exit
+// 127 or the supervisor's TERM/KILL signal is the actual joined outcome.
+assert([127,137,143].includes(p.records.at(-1)!.status),JSON.stringify(p.records))
 assert(!alive(p.records[0].consumer));await p.child.stdin.end()
 }
 const terminalFixture=process.argv[4]

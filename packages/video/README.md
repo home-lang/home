@@ -141,3 +141,9 @@ with the `wire` module pointing to `src/core/process_output_wire.zig`; that peer
 joins a real child, sends a problem, waits for cancellation without consuming it,
 then sends final proof before exit. Twenty-five such cases verify independent
 proof delivery. Native CI supplies both consumer and terminal fixture explicitly.
+
+In the real failed-exec/late-cancel case, the joined consumer can exit 127 or be
+terminated by the supervisor's TERM/KILL before reaching `_exit`. The harness
+accepts those documented outcomes while requiring the final result and dead
+consumer. The controlled terminal fixture has already reaped its child before
+reporting the problem, so its result must remain exactly 127.
