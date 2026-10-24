@@ -25,7 +25,7 @@ color transforms fail explicitly. Strict complete-input parsing requires an EOI
 and rejects trailing data, malformed tables, progression/restart violations and
 truncation. This is defined support, not a claim of all JPEG family conformance.
 
-The independent libjpeg C corpus generates/decodes 1,102 gray, YCbCr, RGB, CMYK
+The independent libjpeg C corpus generates/decodes 1,212 gray, YCbCr, RGB, CMYK
 and YCCK cases, including coarse quantization, multiple sampling layouts,
 separate scans, custom progressive bands/refinements, restarts, odd dimensions,
 out-of-order ICC fragments and truncations. Corrupt restart sequences reject.

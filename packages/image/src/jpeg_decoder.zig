@@ -593,7 +593,7 @@ const Decoder = struct {
         const y: i32 = values[0];
         const cb: i32 = @as(i32, values[1]) - 128;
         const cr: i32 = @as(i32, values[2]) - 128;
-        return .{ @intCast(std.math.clamp(y + @divFloor(91881 * cr + 32768, 65536), 0, 255)), @intCast(std.math.clamp(y + @divFloor(-22554 * cb - 46802 * cr + 32768, 65536), 0, 255)), @intCast(std.math.clamp(y + @divFloor(116130 * cb + 32768, 65536), 0, 255)) };
+        return .{ @intCast(std.math.clamp(y + @divFloor(91881 * cr + 32768, 65536), 0, 255)), @intCast(std.math.clamp(y + @divFloor(32768 - 22554 * cb - 46802 * cr, 65536), 0, 255)), @intCast(std.math.clamp(y + @divFloor(116130 * cb + 32768, 65536), 0, 255)) };
     }
     fn render(self: *Decoder) !Result {
         const model = try self.colorModel();
@@ -831,4 +831,17 @@ test "JPEG runtime inverse and color conversion preserve uniform component value
     try t.expectApproxEqAbs(@as(f64, 213), @as(f64, @floatFromInt(rgb[0])), 3);
     try t.expectApproxEqAbs(@as(f64, 74), @as(f64, @floatFromInt(rgb[1])), 3);
     try t.expectApproxEqAbs(@as(f64, 31), @as(f64, @floatFromInt(rgb[2])), 3);
+}
+
+test "JPEG green conversion agrees with exact dyadic floating reference across chroma" {
+    const t = std.testing;
+    for (0..256) |cb| for (0..256) |cr| {
+        var values: [4]u8 = .{ 128, @intCast(cb), @intCast(cr), 0 };
+        std.mem.doNotOptimizeAway(&values);
+        const converted = Decoder.ycbcr(values);
+        const blue = @as(f64, @floatFromInt(cb)) - 128;
+        const red = @as(f64, @floatFromInt(cr)) - 128;
+        const expected: u8 = @intFromFloat(std.math.clamp(@floor(128 - (22554.0 * blue + 46802.0 * red) / 65536.0 + 0.5), 0, 255));
+        try t.expectEqual(expected, converted[1]);
+    };
 }
