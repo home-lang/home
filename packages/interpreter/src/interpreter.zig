@@ -3464,8 +3464,10 @@ pub const Interpreter = struct {
                 if (val == .Float) {
                     const floored = @floor(val.Float);
                     // If the result fits in i64, return Int; otherwise Float.
+                    // maxInt(i64) rounds up to 2^63 as an f64, which does not fit,
+                    // so the upper bound is exclusive.
                     if (floored >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
-                        floored <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                        floored < @as(f64, @floatFromInt(std.math.maxInt(i64))))
                     {
                         return Value{ .Int = @intFromFloat(floored) };
                     }
@@ -3481,7 +3483,7 @@ pub const Interpreter = struct {
                 if (val == .Float) {
                     const ceiled = @ceil(val.Float);
                     if (ceiled >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
-                        ceiled <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                        ceiled < @as(f64, @floatFromInt(std.math.maxInt(i64))))
                     {
                         return Value{ .Int = @intFromFloat(ceiled) };
                     }
@@ -3497,7 +3499,7 @@ pub const Interpreter = struct {
                 if (val == .Float) {
                     const rounded = @round(val.Float);
                     if (rounded >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
-                        rounded <= @as(f64, @floatFromInt(std.math.maxInt(i64))))
+                        rounded < @as(f64, @floatFromInt(std.math.maxInt(i64))))
                     {
                         return Value{ .Int = @intFromFloat(rounded) };
                     }
