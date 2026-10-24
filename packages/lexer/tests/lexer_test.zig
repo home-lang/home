@@ -306,3 +306,44 @@ test "lexer: complex expression" {
     try testing.expectEqual(TokenType.AmpersandAmpersand, tokens.items[9].type);
     try testing.expectEqual(TokenType.Identifier, tokens.items[10].type);
 }
+
+test "lexer: invalid escape after an interpolation ends the interpolation" {
+    // `\ ` is not a valid escape. The lexer used to keep treating the rest of
+    // the line as interpolation code, and the next `}` underflowed the brace
+    // depth counter.
+    var lexer = Lexer.init(testing.allocator, "\"${x}\\ }\"");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    const expected = [_]TokenType{
+        .StringInterpolationStart,
+        .Identifier,
+        .Invalid,
+        .RightBrace,
+        .UnterminatedString,
+        .Eof,
+    };
+    try testing.expectEqual(expected.len, tokens.items.len);
+    for (expected, tokens.items) |token_type, token| {
+        try testing.expectEqual(token_type, token.type);
+    }
+}
+
+test "lexer: adjacent interpolations re-enter interpolation mode" {
+    var lexer = Lexer.init(testing.allocator, "\"${a}${b}\"");
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(testing.allocator);
+
+    const expected = [_]TokenType{
+        .StringInterpolationStart,
+        .Identifier,
+        .StringInterpolationMid,
+        .Identifier,
+        .StringInterpolationEnd,
+        .Eof,
+    };
+    try testing.expectEqual(expected.len, tokens.items.len);
+    for (expected, tokens.items) |token_type, token| {
+        try testing.expectEqual(token_type, token.type);
+    }
+}

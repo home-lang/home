@@ -567,6 +567,10 @@ pub const Lexer = struct {
         // The } that closes the interpolation expression was already consumed
         // Update start to skip the } for the token lexeme
         self.start = self.current;
+        // Scanning string text now, not interpolation code. Only a following
+        // `${` re-enters interpolation, so an invalid escape or unterminated
+        // string cannot leave the lexer counting braces of ordinary code.
+        self.in_interpolation = false;
 
         // Scan until next ${ or closing "
         while (!self.isAtEnd()) {
@@ -649,12 +653,12 @@ pub const Lexer = struct {
         if (self.peek() == '$' and self.peekNext() == '{') {
             _ = self.advance(); // consume $
             _ = self.advance(); // consume {
+            self.in_interpolation = true;
             self.interpolation_brace_depth = 1;
             return self.makeToken(.StringInterpolationMid);
         } else {
             // Closing "
             _ = self.advance();
-            self.in_interpolation = false;
             return self.makeToken(.StringInterpolationEnd);
         }
     }
