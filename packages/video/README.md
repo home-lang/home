@@ -157,3 +157,7 @@ the hosted adapter closes all query FDs and never acquires display ownership.
 [`kms_scanout` and `kms_host.scanout`](docs/kms-scanout.md) add two-slot linear
 DMABUF plane scanout with explicit PRIME alias references and flip-completion
 retirement. The caller retains source leases until confirmed replacement/detach.
+
+[`serial_worker`](docs/serial-worker.md) provides a bounded native serial executor
+with stable state, active-inclusive admission, cleanup fences and joined close.
+It uses the existing ownership registry and has an explicit native entry point.
