@@ -104,9 +104,15 @@ pub const rgb_i420 = @import("codecs/video/rgb_i420.zig");
 pub const mp4_stream = @import("containers/mp4_stream.zig");
 pub const kms_catalog = @import("display/kms_catalog.zig");
 pub const kms_discovery = @import("display/kms_discovery.zig");
-pub const kms_discovery_host = @import("display/kms_discovery_host.zig");
+// Native C translation is pinned to Zig 0.15. Keep unsupported host imports
+// out of the public portable root: newer Zig rejects @cImport at parse time.
+pub const kms_host_toolchain_supported = @import("builtin").zig_version.major == 0 and @import("builtin").zig_version.minor == 15;
+const UnavailableKmsHost = struct {
+    pub const available = false;
+};
+pub const kms_discovery_host = if (kms_host_toolchain_supported) @import("display/kms_discovery_host.zig") else UnavailableKmsHost;
 pub const kms_scanout = @import("display/kms_scanout.zig");
-pub const kms_scanout_host = @import("display/kms_scanout_host.zig");
+pub const kms_scanout_host = if (kms_host_toolchain_supported) @import("display/kms_scanout_host.zig") else UnavailableKmsHost;
 
 pub const mp4_muxer = @import("containers/mp4_muxer.zig");
 pub const Mp4Muxer = mp4_muxer.Mp4Muxer;
