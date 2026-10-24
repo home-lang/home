@@ -10,12 +10,14 @@ pub fn scan(result: *core.Result, card: ?[]const u8) !void {
     }
     return error.Unsupported;
 }
+pub const Driver = Linux;
 const Linux = if (available) struct {
-    const c = @cImport({
+    pub const c = @cImport({
         @cInclude("sys/ioctl.h");
         @cInclude("fcntl.h");
         @cInclude("unistd.h");
         @cInclude("errno.h");
+        @cInclude("poll.h");
         @cInclude("drm/drm.h");
         @cInclude("drm/drm_mode.h");
     });
@@ -33,7 +35,7 @@ const Linux = if (available) struct {
     pub fn close(_: *@This(), fd: Fd) void {
         _ = c.close(fd);
     }
-    fn query(self: *@This(), fd: Fd, request: c_ulong, data: anytype) !void {
+    pub fn query(self: *@This(), fd: Fd, request: c_ulong, data: anytype) !void {
         // Interrupted discovery is reported, not retried indefinitely.
         const Request = @typeInfo(@TypeOf(c.ioctl)).@"fn".params[1].type.?;
         const command: Request = if (@sizeOf(Request) == 4) @bitCast(@as(u32, @intCast(request))) else @intCast(request);

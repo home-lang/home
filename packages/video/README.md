@@ -152,3 +152,7 @@ Read-only Linux display catalogs are available through
 [`kms_discovery_host`](docs/kms-discovery.md). The bounded portable collector
 retains connector/mode/CRTC/FOURCC identities and per-card failure diagnostics;
 the hosted adapter closes all query FDs and never acquires display ownership.
+
+[`kms_scanout` and `kms_scanout_host`](docs/kms-scanout.md) add two-slot linear
+DMABUF plane scanout with explicit PRIME alias references and flip-completion
+retirement. The caller retains source leases until confirmed replacement/detach.

@@ -105,6 +105,8 @@ pub const mp4_stream = @import("containers/mp4_stream.zig");
 pub const kms_catalog = @import("display/kms_catalog.zig");
 pub const kms_discovery = @import("display/kms_discovery.zig");
 pub const kms_discovery_host = @import("display/kms_discovery_host.zig");
+pub const kms_scanout = @import("display/kms_scanout.zig");
+pub const kms_scanout_host = @import("display/kms_scanout_host.zig");
 
 pub const mp4_muxer = @import("containers/mp4_muxer.zig");
 pub const Mp4Muxer = mp4_muxer.Mp4Muxer;

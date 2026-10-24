@@ -4,16 +4,20 @@ pub const max_formats = 256;
 pub fn fourcc(text: *const [4]u8) u32 {
     return std.mem.readInt(u32, text, .little);
 }
+const entries = .{
+    .{ "RG24", "RGB888" },   .{ "BG24", "BGR888" },
+    .{ "XR24", "XRGB8888" }, .{ "XB24", "XBGR8888" },
+    .{ "YU12", "YUV420" },   .{ "YV12", "YVU420" },
+    .{ "NV12", "NV12" },     .{ "NV21", "NV21" },
+    .{ "YUYV", "YUYV" },     .{ "YVYU", "YVYU" },
+    .{ "UYVY", "UYVY" },     .{ "VYUY", "VYUY" },
+};
 pub fn processedFormat(value: u32) ?[]const u8 {
-    const entries = .{
-        .{ "RG24", "RGB888" },   .{ "BG24", "BGR888" },
-        .{ "XR24", "XRGB8888" }, .{ "XB24", "XBGR8888" },
-        .{ "YU12", "YUV420" },   .{ "YV12", "YVU420" },
-        .{ "NV12", "NV12" },     .{ "NV21", "NV21" },
-        .{ "YUYV", "YUYV" },     .{ "YVYU", "YVYU" },
-        .{ "UYVY", "UYVY" },     .{ "VYUY", "VYUY" },
-    };
     inline for (entries) |entry| if (value == fourcc(entry[0])) return entry[1];
+    return null;
+}
+pub fn fourccForProcessed(value: []const u8) ?u32 {
+    inline for (entries) |entry| if (std.mem.eql(u8, value, entry[1])) return fourcc(entry[0]);
     return null;
 }
 pub fn validIds(values: []const u32) !void {
