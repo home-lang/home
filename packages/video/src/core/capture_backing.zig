@@ -4,7 +4,14 @@
 const std = @import("std");
 pub const policy = @import("capture_allocation.zig");
 pub const ImportBuffer = struct { fd: c_int, offset: u64 = 0 };
-pub const Identity = struct { device: u64, inode: u64, bytes: u64 };
+pub const objects = @import("capture_objects.zig");
+pub const Identity = objects.Identity;
+pub const ImportPlane = objects.Plane;
+pub const ImportFrame = objects.Frame;
+const FrameViews = struct {
+    plane_count: u8 = 0,
+    planes: [objects.max_planes]objects.Binding = std.mem.zeroes([objects.max_planes]objects.Binding),
+};
 pub const Resource = struct {
     fd: c_int = -1,
     read: ?[]u8 = null,
@@ -52,7 +59,8 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         pub const Cache = policy.Cache(capacity);
         provider: Provider,
         cache: Cache,
-        resources: [capacity][policy.max_streams][policy.max_buffers]Resource = @splat(@splat(@splat(.{}))),
+        resources: [capacity][policy.max_streams][policy.max_buffers][objects.max_planes]Resource = @splat(@splat(@splat(@splat(.{})))),
+        frames: [capacity][policy.max_streams][policy.max_buffers]FrameViews = @splat(@splat(@splat(.{}))),
         retirements: [capacity]?policy.Retirement = @splat(null),
         cleanup_errors: u64 = 0,
         allocations: u64 = 0,
@@ -73,46 +81,86 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         /// ownership and mapping start only after full-byte admission. The caller
         /// keeps input fds stable and inactive until this synchronous call ends.
         pub fn importBuffers(self: *Self, requested: *const policy.Layout, inputs: []const ImportBuffer) !void {
+            const claim = try self.importBuffersBorrowed(requested, inputs);
+            try self.cache.release(claim);
+        }
+        /// Returns the newly prepared loan directly, even if an older matching
+        /// profile becomes idle while an asynchronous producer is preparing it.
+        pub fn importBuffersBorrowed(self: *Self, requested: *const policy.Layout, inputs: []const ImportBuffer) !policy.Claim {
             const layout = try requested.normalized();
             var expected: usize = 0;
             for (layout.streams[0..layout.stream_count]) |stream| expected += stream.buffer_count;
             if (inputs.len != expected) return error.InvalidResource;
-            var sources: [policy.max_streams * policy.max_buffers]Provider.Source = undefined;
+            var frames: [policy.max_streams * policy.max_buffers]ImportFrame = undefined;
+            var at: usize = 0;
+            for (layout.streams[0..layout.stream_count]) |stream| for (0..stream.buffer_count) |_| {
+                frames[at] = try ImportFrame.init(&.{.{ .fd = inputs[at].fd, .offset = inputs[at].offset, .bytes = stream.frame_bytes }});
+                at += 1;
+            };
+            return self.importFramesBorrowed(&layout, frames[0..at]);
+        }
+        /// Import one to four non-overlapping planes per frame. FD aliases may
+        /// share a physical object within one frame; all other frames/entries
+        /// must have independent objects. Charge/map each whole object once.
+        pub fn importFrames(self: *Self, requested: *const policy.Layout, inputs: []const ImportFrame) !void {
+            const claim = try self.importFramesBorrowed(requested, inputs);
+            try self.cache.release(claim);
+        }
+        pub fn importFramesBorrowed(self: *Self, requested: *const policy.Layout, inputs: []const ImportFrame) !policy.Claim {
+            const layout = try requested.normalized();
+            var expected: usize = 0;
+            for (layout.streams[0..layout.stream_count]) |stream| expected += stream.buffer_count;
+            if (inputs.len != expected) return error.InvalidResource;
+            const Prepared = struct { plan: objects.Plan, sources: [objects.max_planes]Provider.Source };
+            var prepared: [policy.max_streams * policy.max_buffers]Prepared = undefined;
             var at: usize = 0;
             var charge: usize = 0;
             for (layout.streams[0..layout.stream_count]) |stream| {
                 if (stream.allocation_bytes != stream.frame_bytes) return error.InvalidLayout;
                 for (0..stream.buffer_count) |_| {
-                    const source = try self.provider.describe(inputs[at], stream.frame_bytes);
-                    const key = source.identity;
-                    // Per-frame coherency gates cannot safely synchronize two
-                    // distinct frames backed by the same underlying DMA object.
-                    for (sources[0..at]) |other| if (sameIdentity(key, other.identity)) return error.AliasedResource;
-                    for (&self.resources) |*resources| for (resources) |*buffers| for (buffers) |*resource| {
-                        if (resource.identity) |other| if (sameIdentity(key, other)) return error.AliasedResource;
-                    };
-                    charge = std.math.add(usize, charge, std.math.cast(usize, key.bytes) orelse return error.SizeOverflow) catch return error.SizeOverflow;
-                    sources[at] = source;
+                    const frame = &inputs[at];
+                    if (frame.plane_count == 0 or frame.plane_count > objects.max_planes) return error.InvalidResource;
+                    var identities: [objects.max_planes]Identity = undefined;
+                    for (frame.planes[0..frame.plane_count], 0..) |plane, p| {
+                        try objects.validatePlane(plane);
+                        const source = try self.provider.describe(.{ .fd = plane.fd, .offset = plane.offset }, plane.bytes);
+                        identities[p] = source.identity;
+                    }
+                    const plan = try objects.Plan.init(frame, identities[0..frame.plane_count], stream.frame_bytes);
+                    for (prepared[0..at]) |*previous| if (plan.aliases(&previous.plan)) return error.AliasedResource;
+                    for (plan.objects[0..plan.object_count]) |object| {
+                        for (&self.resources) |*entries| for (entries) |*buffers| for (buffers) |*resources| for (resources) |*resource| {
+                            if (resource.identity) |other| if (objects.sameObject(object.identity, other)) return error.AliasedResource;
+                        };
+                    }
+                    charge = std.math.add(usize, charge, plan.charge) catch return error.SizeOverflow;
+                    prepared[at].plan = plan;
+                    for (plan.objects[0..plan.object_count], 0..) |object, o| {
+                        const source = try self.provider.describe(.{ .fd = object.fd, .offset = object.offset }, object.bytes);
+                        if (!std.meta.eql(source.identity, object.identity)) return error.InvalidResource;
+                        prepared[at].sources[o] = source;
+                    }
                     at += 1;
                 }
             }
             const result = try self.cache.prepareNew(&layout, charge);
-            self.prepareImported(result, &layout, sources[0..at]) catch |failure| {
+            self.prepareFrames(result, &layout, prepared[0..at]) catch |failure| {
                 self.retirements[result.slot] = try self.cache.failPreparation(result.claim);
                 try self.cleanup(result.slot);
                 return failure;
             };
             try self.cache.publish(result.claim);
-            try self.cache.release(result.claim);
+            return result.claim;
         }
-        fn sameIdentity(a: Identity, b: Identity) bool {
-            return a.device == b.device and a.inode == b.inode;
-        }
-        fn prepareImported(self: *Self, result: Cache.Checkout, layout: *const policy.Layout, sources: []const Provider.Source) !void {
+        fn prepareFrames(self: *Self, result: Cache.Checkout, layout: *const policy.Layout, prepared: anytype) !void {
             var at: usize = 0;
-            for (layout.streams[0..layout.stream_count], 0..) |stream, s| for (0..stream.buffer_count) |b| {
-                try self.provider.importPrepare(&self.resources[result.slot][s][b], sources[at]);
-                self.allocations +|= 1;
+            for (layout.streams[0..layout.stream_count], 0..) |stream, si| for (0..stream.buffer_count) |bi| {
+                const item = &prepared[at];
+                self.frames[result.slot][si][bi] = .{ .plane_count = item.plan.plane_count, .planes = item.plan.planes };
+                for (item.sources[0..item.plan.object_count], 0..) |source, oi| {
+                    try self.provider.importPrepare(&self.resources[result.slot][si][bi][oi], source);
+                    self.allocations +|= 1;
+                }
                 at += 1;
             };
         }
@@ -134,7 +182,7 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         fn prepare(self: *Self, result: Cache.Checkout, layout: *const policy.Layout) !void {
             for (layout.streams[0..layout.stream_count], 0..) |stream, s| {
                 for (0..stream.buffer_count) |b| {
-                    try self.provider.prepare(&self.resources[result.slot][s][b], @intCast(stream.allocation_bytes));
+                    try self.provider.prepare(&self.resources[result.slot][s][b][0], @intCast(stream.allocation_bytes));
                     self.allocations +|= 1;
                 }
             }
@@ -165,17 +213,42 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
                 };
             }
         }
-        pub fn view(self: *Self, claim: policy.Claim, stream: u32, buffer: u32, writable: bool) !View {
+        fn checkedBuffer(self: *Self, claim: policy.Claim, stream: u32, buffer: u32) !u32 {
             const index = try self.cache.slot(claim);
             const entry = &self.cache.entries[index].?;
             if (entry.state != .borrowed) return error.InvalidState;
             if (stream >= entry.layout.stream_count or buffer >= entry.layout.streams[stream].buffer_count) return error.InvalidResource;
-            const resource = &self.resources[index][stream][buffer];
+            return index;
+        }
+        pub fn planeCount(self: *Self, claim: policy.Claim, stream: u32, buffer: u32) !u8 {
+            const index = try self.checkedBuffer(claim, stream, buffer);
+            return @max(1, self.frames[index][stream][buffer].plane_count);
+        }
+        pub fn view(self: *Self, claim: policy.Claim, stream: u32, buffer: u32, writable: bool) !View {
+            if (try self.planeCount(claim, stream, buffer) != 1) return error.Unsupported;
+            return self.viewPlane(claim, stream, buffer, 0, writable);
+        }
+        pub fn viewPlane(self: *Self, claim: policy.Claim, stream: u32, buffer: u32, plane: u32, writable: bool) !View {
+            const index = try self.checkedBuffer(claim, stream, buffer);
+            const frame = &self.frames[index][stream][buffer];
+            if (plane >= @max(1, frame.plane_count)) return error.InvalidResource;
+            const binding: objects.Binding = if (frame.plane_count != 0) frame.planes[plane] else .{
+                .object = 0,
+                .offset = self.resources[index][stream][buffer][0].offset,
+                .bytes = self.cache.entries[index].?.layout.streams[stream].frame_bytes,
+            };
+            const resource = &self.resources[index][stream][buffer][binding.object];
             const had_write = resource.write != null;
             const memory = if (writable) try self.provider.writable(resource) else resource.read orelse return error.InvalidResource;
             if (writable and !had_write and resource.write != null) self.writable_maps +|= 1;
-            if (resource.read_offset > memory.len) return error.InvalidResource;
-            return .{ .fd = resource.fd, .bytes = memory[resource.read_offset..], .frame_bytes = @intCast(entry.layout.streams[stream].frame_bytes), .offset = resource.offset };
+            if (binding.offset < resource.offset) return error.InvalidResource;
+            const start = std.math.add(usize, resource.read_offset, std.math.cast(usize, binding.offset - resource.offset) orelse return error.InvalidResource) catch return error.InvalidResource;
+            const length = std.math.cast(usize, binding.bytes) orelse return error.InvalidResource;
+            if (start > memory.len or length > memory.len - start) return error.InvalidResource;
+            // Managed backing retains its historical allocation capacity. Each
+            // imported plane exposes only its checked declared window.
+            const visible = if (frame.plane_count != 0) memory[start..][0..length] else memory[start..];
+            return .{ .fd = resource.fd, .bytes = visible, .frame_bytes = length, .offset = binding.offset };
         }
         pub fn release(self: *Self, claim: policy.Claim) !void {
             try self.cache.release(claim);
@@ -189,7 +262,7 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         fn cleanup(self: *Self, index: u32) !void {
             const retirement = self.retirements[index] orelse return error.InvalidState;
             var failed = false;
-            for (&self.resources[index]) |*stream| for (stream) |*resource| {
+            for (&self.resources[index]) |*stream| for (stream) |*frame| for (frame) |*resource| {
                 self.provider.destroy(resource) catch {
                     self.cleanup_errors +|= 1;
                     failed = true;
@@ -198,6 +271,7 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
             if (failed) return error.CleanupPending;
             try self.cache.finishRetirement(retirement);
             self.retirements[index] = null;
+            self.frames[index] = @splat(@splat(.{}));
         }
         /// May trim idle entries while other layouts are borrowed. Retry also
         /// joins partially failed preparation/cleanup; active borrowers stay live.
@@ -431,4 +505,133 @@ test "pending-only cleanup preserves an idle rollback profile and its storage" {
     try t.expectEqual(memory.bytes.ptr, intact.bytes.ptr);
     for (intact.bytes) |value| try t.expectEqual(@as(u8, 91), value);
     try owner.release(restored.claim);
+}
+
+fn planarFixture() !policy.Layout {
+    return policy.Layout.init("planar", &.{try policy.Stream.init(8, 4, 8, 48, 2, "YUV420", 0)});
+}
+fn planeFrames() ![2]ImportFrame {
+    return .{
+        try ImportFrame.init(&.{ .{ .fd = 1, .offset = 13, .bytes = 32 }, .{ .fd = 2, .offset = 85, .bytes = 8 }, .{ .fd = 2, .offset = 101, .bytes = 8 } }),
+        try ImportFrame.init(&.{ .{ .fd = 3, .offset = 33, .bytes = 32 }, .{ .fd = 4, .offset = 65, .bytes = 8 }, .{ .fd = 5, .offset = 65, .bytes = 8 } }),
+    };
+}
+test "multiple frame objects share one map per physical inode and retain independent plane windows" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    const frames = try planeFrames();
+    try owner.importFrames(&layout, &frames);
+    try t.expectEqual(@as(u64, 5), owner.allocations);
+    try t.expectEqual(@as(usize, 5120), owner.cache.reservations.used);
+    const loan = try owner.checkoutExisting(&layout);
+    try t.expectEqual(@as(u8, 3), try owner.planeCount(loan.claim, 0, 0));
+    try t.expectError(error.Unsupported, owner.view(loan.claim, 0, 0, true));
+    const y = try owner.viewPlane(loan.claim, 0, 0, 0, true);
+    const u = try owner.viewPlane(loan.claim, 0, 0, 1, true);
+    const v = try owner.viewPlane(loan.claim, 0, 0, 2, true);
+    try t.expect(y.fd != u.fd and u.fd == v.fd);
+    try t.expectEqual(@as(u64, 85), u.offset);
+    try t.expectEqual(@as(u64, 101), v.offset);
+    try t.expectEqual(@as(usize, 16), @intFromPtr(v.bytes.ptr) - @intFromPtr(u.bytes.ptr));
+    @memset(y.bytes, 31);
+    @memset(u.bytes, 63);
+    @memset(v.bytes, 95);
+    try t.expectEqualSlices(u8, &@as([8]u8, @splat(63)), (try owner.viewPlane(loan.claim, 0, 0, 1, false)).bytes);
+    try t.expectEqualSlices(u8, &@as([8]u8, @splat(95)), (try owner.viewPlane(loan.claim, 0, 0, 2, false)).bytes);
+    try t.expectError(error.InvalidResource, owner.viewPlane(loan.claim, 0, 0, 3, false));
+    try t.expectError(error.Busy, owner.close());
+    try owner.release(loan.claim);
+    const reused = try owner.checkoutExisting(&layout);
+    try t.expectEqual(y.bytes.ptr, (try owner.viewPlane(reused.claim, 0, 0, 0, false)).bytes.ptr);
+    try owner.release(reused.claim);
+}
+test "plane aliases across frames and retained profiles, overlaps and byte budgets reject before preparation" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    var frames = try planeFrames();
+    frames[1].planes[0].fd = 1;
+    try t.expectError(error.AliasedResource, owner.importFrames(&layout, &frames));
+    try t.expectEqual(@as(usize, 0), owner.provider.prepared);
+    frames = try planeFrames();
+    frames[0].planes[2].offset = 90;
+    try t.expectError(error.OverlappingPlanes, owner.importFrames(&layout, &frames));
+    try t.expectEqual(@as(usize, 0), owner.cache.reservations.used);
+    frames = try planeFrames();
+    try owner.importFrames(&layout, &frames);
+    var other = layout;
+    other.camera[0] = 'X';
+    try t.expectError(error.AliasedResource, owner.importFrames(&other, &frames));
+    var small = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 5119, 2);
+    defer small.close() catch unreachable;
+    try t.expectError(error.PayloadTooLarge, small.importFrames(&layout, &frames));
+    try t.expectEqual(@as(usize, 0), small.provider.prepared);
+}
+test "partial multi-object import cleanup retains the whole charge through retry" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator, .fail_at = 2, .cleanup_failures = 1 }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    const frames = try planeFrames();
+    try t.expectError(error.CleanupPending, owner.importFrames(&layout, &frames));
+    try t.expectEqual(@as(usize, 5120), owner.cache.reservations.used);
+    try t.expectError(error.LayoutBusy, owner.checkoutExisting(&layout));
+    try owner.reapPending();
+    try t.expectEqual(@as(usize, 0), owner.cache.reservations.used);
+    try owner.importFrames(&layout, &frames);
+    const loan = try owner.checkoutExisting(&layout);
+    try t.expectEqual(@as(u8, 3), try owner.planeCount(loan.claim, 0, 0));
+    try owner.release(loan.claim);
+}
+fn planeAllocationFailures(allocator: std.mem.Allocator) !void {
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = allocator }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    const frames = try planeFrames();
+    try owner.importFrames(&layout, &frames);
+    const loan = try owner.checkoutExisting(&layout);
+    _ = try owner.viewPlane(loan.claim, 0, 1, 2, false);
+    try owner.release(loan.claim);
+}
+test "every plane-object allocation failure unwinds all earlier objects" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, planeAllocationFailures, .{});
+}
+
+test "factory imports reserve the newly supplied objects when an older matching profile is idle" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    const old = try planeFrames();
+    try owner.importFrames(&layout, &old);
+    var fresh = old;
+    for (&fresh) |*frame| for (frame.planes[0..frame.plane_count]) |*plane| {
+        plane.fd += 10;
+    };
+    const claim = try owner.importFramesBorrowed(&layout, &fresh);
+    const provided = try owner.viewPlane(claim, 0, 0, 0, false);
+    try t.expectEqual(@as(c_int, 111), provided.fd);
+    try t.expectEqual(@as(usize, 10240), owner.cache.reservations.used);
+    try t.expectEqual(@as(usize, 1), owner.cache.owners.used);
+    const previous = try owner.checkoutExisting(&layout);
+    try t.expectEqual(@as(c_int, 101), (try owner.viewPlane(previous.claim, 0, 0, 0, false)).fd);
+    try owner.release(previous.claim);
+    try owner.release(claim);
+}
+
+test "raw malformed frame records reject before provider arithmetic or preparation" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 10240, 2);
+    defer owner.close() catch unreachable;
+    const layout = try planarFixture();
+    var frames = try planeFrames();
+    frames[0].planes[0].offset = std.math.maxInt(u64);
+    try t.expectError(error.InvalidResource, owner.importFrames(&layout, &frames));
+    frames = try planeFrames();
+    frames[0].planes[0].bytes = std.math.maxInt(u64);
+    try t.expectError(error.InvalidResource, owner.importFrames(&layout, &frames));
+    try t.expectEqual(@as(usize, 0), owner.provider.prepared);
 }

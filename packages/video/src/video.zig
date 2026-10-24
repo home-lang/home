@@ -1333,6 +1333,7 @@ pub const lease_pool = @import("core/lease_pool.zig");
 pub const budget_allocator = @import("core/budget_allocator.zig");
 pub const owned_admission = @import("core/owned_admission.zig");
 pub const capture_allocation = @import("core/capture_allocation.zig");
+pub const capture_objects = @import("core/capture_objects.zig");
 pub const capture_backing = @import("core/capture_backing.zig");
 pub const dispatch_pool = @import("core/dispatch_pool.zig");
 pub const capacity_wait = @import("core/capacity_wait.zig");
