@@ -48,3 +48,36 @@ progress for hosted media byte sinks. TCP accepts prefixes; raw UDP accepts a
 whole bounded datagram or zero for backpressure. A cursor owns neither bytes nor
 sockets. Empty inputs, u64 endpoints, invalid advances and short final chunks are
 covered independently; transports and deadlines remain the caller's job.
+
+`ByteTail` (`core/byte_tail.zig`) retains a fixed caller-owned binary suffix
+without allocation; its exact u64 total includes discarded bytes. Append/copy
+preflight state, overlap and counter overflow before mutation. It supports zero
+capacity for drain-only diagnostics.
+
+`process_output_wire` defines 32-byte inherited-fd readiness/result/problem
+records. A problem with consumer PID zero proves failure/cancellation before a
+successful fork. Other failures are followed by a joined consumer result.
+
+The optional hosted POSIX supervisor is built with the native ABI profile:
+
+```sh
+zig build-exe -lc -O ReleaseSafe packages/video/src/process_output_host.zig -femit-bin=video-output-host
+bun packages/video/tests/process_output_host.ts "$PWD/video-output-host"
+```
+
+Use Zig 0.15.2 for this standalone tool. The pure diagnostic/framing helpers also
+run on current development Zig. The host expects media on fd 0, consumer output
+on fd 1/2, and a private inherited stream control socket on fd 3. Invoke as
+`video-output-host grace-ms -- executable argv...`; no shell is involved. Parents
+must drain stdout/stderr concurrently and retain ownership until actual exit.
+Control data/EOF cancels independently of stalled media input. Exec readiness is
+confirmed by a close-on-exec pipe. Before reaping the leader the host terminates
+its remaining group while the leader PID/PGID is still reserved; Linux also
+adopts/reaps group descendants. A disconnected parent is handled by the same
+control-fd path, and the Linux direct consumer additionally has PDEATHSIG.
+
+These are hosted stdlib I/O helpers, separate from freestanding media and HomeOS
+kernel drivers. Consumers that deliberately escape their process group, a
+hard-killed supervisor and broader process-tree recovery need separate policy;
+this interface is not a sandbox. No media encoder/muxer or external media tool
+is invoked by the supervisor.

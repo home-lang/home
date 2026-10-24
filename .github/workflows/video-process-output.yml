@@ -1,0 +1,44 @@
+name: Video process output
+on:
+  push:
+    branches: [main]
+    paths: ['packages/video/src/core/byte_tail.zig', 'packages/video/src/core/process_output_wire.zig', 'packages/video/src/io/process_output_host.zig', 'packages/video/src/process_output_host.zig', 'packages/video/src/video.zig', 'packages/video/tests/process_output*', '.github/workflows/video-process-output.yml']
+  pull_request:
+    paths: ['packages/video/src/core/byte_tail.zig', 'packages/video/src/core/process_output_wire.zig', 'packages/video/src/io/process_output_host.zig', 'packages/video/src/process_output_host.zig', 'packages/video/src/video.zig', 'packages/video/tests/process_output*', '.github/workflows/video-process-output.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  output:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Shared diagnostic tail framing and public exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" packages/video/src/core/byte_tail.zig
+            zig test -lc -O "$mode" packages/video/src/core/process_output_wire.zig
+            zig test -lc -O "$mode" --dep video -Mroot=packages/video/tests/process_output.zig -Mvideo=packages/video/src/video.zig
+          done
+      - name: Install pinned Bun for standalone host acceptance
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s 'bun-v1.4.3'
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - name: Standalone supervised POSIX media pipe on native ABI compiler
+        if: matrix.zig == '0.15.2'
+        shell: bash
+        run: |
+          zig build-exe -lc -O ReleaseSafe packages/video/src/process_output_host.zig -femit-bin=video-output-host
+          bun packages/video/tests/process_output_host.ts "$PWD/video-output-host"

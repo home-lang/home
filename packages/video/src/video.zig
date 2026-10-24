@@ -1359,3 +1359,8 @@ pub const RtpPacketizer = rtp_packetizer.Packetizer;
 /// Checked partial-stream and whole-datagram send progress; caller owns I/O.
 pub const socket_write = @import("core/socket_write.zig");
 pub const SocketWriteCursor = socket_write.Cursor;
+
+/// Fixed caller-owned diagnostic tail; no text decoding or allocation.
+pub const byte_tail = @import("core/byte_tail.zig");
+pub const ByteTail = byte_tail.Tail;
+pub const process_output_wire = @import("core/process_output_wire.zig");
