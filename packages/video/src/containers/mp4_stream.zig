@@ -432,7 +432,14 @@ pub const Writer = struct {
         if (!s.forward_only or s.audio_start_us != null) return error.InvalidConfiguration;
         std.mem.writeInt(u64, s.staging[s.audio_offsets.empty..][0..8], start_us, .big);
         errdefer s.failed = true;
-        try s.sink.write(s.sink.context, s.staging[0..s.staged]);
+        // Do not turn a bounded but possibly large delayed prefix into one
+        // oversized queue entry. Sink write boundaries are not box boundaries.
+        var offset: usize = 0;
+        while (offset < s.staged) {
+            const count = @min(s.staged - offset, 64 * 1024);
+            try s.sink.write(s.sink.context, s.staging[offset..][0..count]);
+            offset += count;
+        }
         s.audio_start_us = start_us;
         s.staged = 0;
     }
@@ -731,4 +738,43 @@ test "forward AAC staging is finite and empty PCM has an exact zero presented du
     for (0..2) |_| try sized.audio(&.{ 0x21, 0x10 });
     try sized.finish(0, 0);
     try t.expectEqual(@as(u64, 2), sized.audio_packets);
+}
+
+test "forward MP4 releases a large prefix in bounded sink writes and retains terminal partial failure" {
+    const Out = struct {
+        bytes: usize = 0,
+        largest: usize = 0,
+        fail_after: usize = std.math.maxInt(usize),
+        fn write(ctx: *anyopaque, data: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.bytes >= self.fail_after) return error.BrokenPipe;
+            self.bytes += data.len;
+            self.largest = @max(self.largest, data.len);
+        }
+    };
+    const t = std.testing;
+    const arena = try t.allocator.alloc(u8, 128 * 1024);
+    defer t.allocator.free(arena);
+    const sample = try t.allocator.alloc(u8, 70004);
+    defer t.allocator.free(sample);
+    @memset(sample, 0);
+    std.mem.writeInt(u32, sample[0..4], 70000, .big);
+    sample[4] = 0x65;
+    const headers = [_]u8{ 0, 0, 0, 4, 0x67, 100, 0, 40, 0, 0, 0, 2, 0x68, 0x80 };
+    const cfg: AudioConfig = .{ .sample_rate = 48000, .channels = 2, .bitrate = 128000, .delay = 2048, .config = .{ 0x11, 0x90 } };
+    var out: Out = .{};
+    const sink: Sink = .{ .context = &out, .write = Out.write };
+    var writer = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, arena);
+    try writer.frame(sample, 0, 40000, true);
+    const staged = writer.staged;
+    try t.expect(staged > 65536);
+    try writer.startAudio(40000);
+    try t.expectEqual(staged, out.bytes);
+    try t.expectEqual(@as(usize, 65536), out.largest);
+    out = .{ .fail_after = 65536 };
+    var failure = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, arena);
+    try failure.frame(sample, 0, 40000, true);
+    try t.expectError(error.BrokenPipe, failure.startAudio(40000));
+    try t.expectEqual(@as(usize, 65536), out.bytes);
+    try t.expectError(error.WriterFailed, failure.startAudio(40000));
 }

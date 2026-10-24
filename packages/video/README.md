@@ -90,8 +90,9 @@ finite borrowed byte arena, then call `startAudio(first_pcm_offset_us)` once
 before feeding AAC access units. Video fragments wait in that arena until the
 actual PCM start is known. Overflow is terminal and emits no partial initial
 movie; callers choose the capacity and their output failure policy. The arena
-must outlive the writer and must not overlap samples. No allocator, seek or
-file-sized buffer is introduced.
+must outlive the writer and must not overlap samples. The deferred prefix is released in writes of at most 64 KiB so a large
+startup arena does not become a single oversized downstream queue entry. No
+allocator, seek or file-sized buffer is introduced.
 
 The initial empty edit places late audio on the movie clock; the following
 media edit skips encoder delay and has duration zero to span subsequent
