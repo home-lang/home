@@ -3,13 +3,18 @@
 //! Mapping is NOT CPU access admission: the camera still owns coherency fences.
 const std = @import("std");
 pub const policy = @import("capture_allocation.zig");
+pub const ImportBuffer = struct { fd: c_int, offset: u64 = 0 };
+pub const Identity = struct { device: u64, inode: u64, bytes: u64 };
 pub const Resource = struct {
     fd: c_int = -1,
     read: ?[]u8 = null,
     write: ?[]u8 = null,
     ram: ?[]u8 = null,
+    identity: ?Identity = null,
+    offset: u64 = 0,
+    read_offset: usize = 0,
 };
-pub const View = struct { fd: c_int, bytes: []u8, frame_bytes: usize };
+pub const View = struct { fd: c_int, bytes: []u8, frame_bytes: usize, offset: u64 = 0 };
 
 /// Explicit synthetic backing, not a physical address or DMA emulation.
 pub const Ram = struct {
@@ -60,6 +65,56 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         }
         pub fn checkoutConcurrent(self: *Self, requested: *const policy.Layout) !Cache.Checkout {
             return self.checkoutImpl(requested, true);
+        }
+        pub fn checkoutExisting(self: *Self, requested: *const policy.Layout) !Cache.Checkout {
+            return self.cache.checkoutExisting(requested);
+        }
+        /// Provider-specific descriptor preflight precedes reservation; duplicate
+        /// ownership and mapping start only after full-byte admission. The caller
+        /// keeps input fds stable and inactive until this synchronous call ends.
+        pub fn importBuffers(self: *Self, requested: *const policy.Layout, inputs: []const ImportBuffer) !void {
+            const layout = try requested.normalized();
+            var expected: usize = 0;
+            for (layout.streams[0..layout.stream_count]) |stream| expected += stream.buffer_count;
+            if (inputs.len != expected) return error.InvalidResource;
+            var sources: [policy.max_streams * policy.max_buffers]Provider.Source = undefined;
+            var at: usize = 0;
+            var charge: usize = 0;
+            for (layout.streams[0..layout.stream_count]) |stream| {
+                if (stream.allocation_bytes != stream.frame_bytes) return error.InvalidLayout;
+                for (0..stream.buffer_count) |_| {
+                    const source = try self.provider.describe(inputs[at], stream.frame_bytes);
+                    const key = source.identity;
+                    // Per-frame coherency gates cannot safely synchronize two
+                    // distinct frames backed by the same underlying DMA object.
+                    for (sources[0..at]) |other| if (sameIdentity(key, other.identity)) return error.AliasedResource;
+                    for (&self.resources) |*resources| for (resources) |*buffers| for (buffers) |*resource| {
+                        if (resource.identity) |other| if (sameIdentity(key, other)) return error.AliasedResource;
+                    };
+                    charge = std.math.add(usize, charge, std.math.cast(usize, key.bytes) orelse return error.SizeOverflow) catch return error.SizeOverflow;
+                    sources[at] = source;
+                    at += 1;
+                }
+            }
+            const result = try self.cache.prepareNew(&layout, charge);
+            self.prepareImported(result, &layout, sources[0..at]) catch |failure| {
+                self.retirements[result.slot] = try self.cache.failPreparation(result.claim);
+                try self.cleanup(result.slot);
+                return failure;
+            };
+            try self.cache.publish(result.claim);
+            try self.cache.release(result.claim);
+        }
+        fn sameIdentity(a: Identity, b: Identity) bool {
+            return a.device == b.device and a.inode == b.inode;
+        }
+        fn prepareImported(self: *Self, result: Cache.Checkout, layout: *const policy.Layout, sources: []const Provider.Source) !void {
+            var at: usize = 0;
+            for (layout.streams[0..layout.stream_count], 0..) |stream, s| for (0..stream.buffer_count) |b| {
+                try self.provider.importPrepare(&self.resources[result.slot][s][b], sources[at]);
+                self.allocations +|= 1;
+                at += 1;
+            };
         }
         fn checkoutImpl(self: *Self, requested: *const policy.Layout, concurrent: bool) !Cache.Checkout {
             var layout = try requested.normalized();
@@ -119,7 +174,8 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
             const had_write = resource.write != null;
             const memory = if (writable) try self.provider.writable(resource) else resource.read orelse return error.InvalidResource;
             if (writable and !had_write and resource.write != null) self.writable_maps +|= 1;
-            return .{ .fd = resource.fd, .bytes = memory, .frame_bytes = @intCast(entry.layout.streams[stream].frame_bytes) };
+            if (resource.read_offset > memory.len) return error.InvalidResource;
+            return .{ .fd = resource.fd, .bytes = memory[resource.read_offset..], .frame_bytes = @intCast(entry.layout.streams[stream].frame_bytes), .offset = resource.offset };
         }
         pub fn release(self: *Self, claim: policy.Claim) !void {
             try self.cache.release(claim);
@@ -235,4 +291,111 @@ test "discarded coherency backing cannot be reused and cleanup precedes a bounde
     try t.expectEqual(@as(u64, 1), owner.cache.retired);
     try t.expectEqual(@as(u64, 0), owner.cache.reuses);
     try owner.release(replacement.claim);
+}
+
+const ImportFixture = struct {
+    allocator: std.mem.Allocator,
+    prepared: usize = 0,
+    fail_at: usize = 0,
+    cleanup_failures: usize = 0,
+    pub const Source = struct { input: ImportBuffer, identity: Identity, frame_bytes: u64 };
+    pub fn describe(_: *@This(), input: ImportBuffer, bytes: u64) !Source {
+        if (input.fd <= 0 or input.offset + bytes > 1024) return error.InvalidResource;
+        return .{ .input = input, .identity = .{ .device = 7, .inode = @intCast(input.fd), .bytes = 1024 }, .frame_bytes = bytes };
+    }
+    pub fn importPrepare(self: *@This(), resource: *Resource, source: Source) !void {
+        resource.ram = try self.allocator.alloc(u8, @intCast(source.frame_bytes + source.input.offset));
+        resource.read = resource.ram;
+        resource.read_offset = @intCast(source.input.offset);
+        resource.offset = source.input.offset;
+        resource.identity = source.identity;
+        resource.fd = source.input.fd + 100;
+        self.prepared += 1;
+        if (self.prepared == self.fail_at) return error.PreparationFailed;
+    }
+    pub fn writable(_: *@This(), resource: *Resource) ![]u8 {
+        return resource.ram orelse error.InvalidResource;
+    }
+    pub fn destroy(self: *@This(), resource: *Resource) !void {
+        if (resource.ram) |bytes| {
+            if (self.cleanup_failures != 0) {
+                self.cleanup_failures -= 1;
+                return error.CleanupPending;
+            }
+            self.allocator.free(bytes);
+        }
+        resource.* = .{};
+    }
+    pub fn close(_: *@This()) !void {}
+};
+
+test "imports charge full objects before preparation and reject aliases across retained entries" {
+    const t = std.testing;
+    const layout = try fixture();
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 2048, 2);
+    defer owner.close() catch unreachable;
+    try t.expectError(error.LayoutUnavailable, owner.checkoutExisting(&layout));
+    const inputs = [_]ImportBuffer{ .{ .fd = 1, .offset = 7 }, .{ .fd = 2 } };
+    try t.expectError(error.AliasedResource, owner.importBuffers(&layout, &.{ inputs[0], inputs[0] }));
+    try t.expectEqual(@as(usize, 0), owner.provider.prepared);
+    try owner.importBuffers(&layout, &inputs);
+    try t.expectEqual(@as(usize, 2048), owner.cache.reservations.used);
+    try t.expectError(error.AliasedResource, owner.importBuffers(&layout, &inputs));
+    try t.expectError(error.BufferFull, owner.importBuffers(&layout, &.{ .{ .fd = 3 }, .{ .fd = 4 } }));
+    try t.expectEqual(@as(usize, 2), owner.provider.prepared);
+    const first = try owner.checkoutExisting(&layout);
+    const view = try owner.view(first.claim, 0, 0, true);
+    try t.expectEqual(@as(usize, 128), view.bytes.len);
+    try t.expectEqual(@as(u64, 7), view.offset);
+    try t.expectEqual(@as(c_int, 101), view.fd);
+    try t.expectError(error.LayoutBusy, owner.checkoutExisting(&layout));
+    try owner.release(first.claim);
+    try owner.trim();
+    try t.expectEqual(@as(usize, 0), owner.cache.reservations.used);
+    try t.expectError(error.LayoutUnavailable, owner.checkoutExisting(&layout));
+}
+
+test "independent imported sets permit overlapping identical layouts without sharing a loan" {
+    const t = std.testing;
+    var owner = try Owner(2, ImportFixture).init(.{ .allocator = t.allocator }, 4096, 2);
+    defer owner.close() catch unreachable;
+    const layout = try fixture();
+    try owner.importBuffers(&layout, &.{ .{ .fd = 1 }, .{ .fd = 2 } });
+    try owner.importBuffers(&layout, &.{ .{ .fd = 3 }, .{ .fd = 4 } });
+    const first = try owner.checkoutExisting(&layout);
+    const second = try owner.checkoutExisting(&layout);
+    try t.expect(first.slot != second.slot);
+    try t.expectError(error.LayoutBusy, owner.checkoutExisting(&layout));
+    try t.expectError(error.Busy, owner.close());
+    try owner.discard(first.claim);
+    try t.expectEqual(@as(usize, 4096), owner.cache.reservations.used);
+    try t.expectError(error.StaleClaim, owner.view(first.claim, 0, 0, false));
+    try owner.trim();
+    try t.expectEqual(@as(usize, 2048), owner.cache.reservations.used);
+    try owner.release(second.claim);
+}
+
+test "partial import cleanup retains original admission and alias protection until retry" {
+    const t = std.testing;
+    var owner = try Owner(1, ImportFixture).init(.{ .allocator = t.allocator, .fail_at = 2, .cleanup_failures = 1 }, 2048, 1);
+    defer owner.close() catch unreachable;
+    const layout = try fixture();
+    try t.expectError(error.CleanupPending, owner.importBuffers(&layout, &.{ .{ .fd = 1 }, .{ .fd = 2 } }));
+    try t.expectEqual(@as(usize, 2048), owner.cache.reservations.used);
+    try t.expectEqual(policy.State.retiring, owner.cache.entries[0].?.state);
+    try t.expectError(error.AliasedResource, owner.importBuffers(&layout, &.{ .{ .fd = 1 }, .{ .fd = 3 } }));
+    try t.expectError(error.LayoutBusy, owner.checkoutExisting(&layout));
+    try owner.trim();
+    try t.expectEqual(@as(usize, 0), owner.cache.reservations.used);
+    try owner.importBuffers(&layout, &.{ .{ .fd = 1 }, .{ .fd = 2 } });
+}
+
+fn importAllocationFailures(allocator: std.mem.Allocator) !void {
+    var owner = try Owner(1, ImportFixture).init(.{ .allocator = allocator }, 2048, 1);
+    defer owner.close() catch unreachable;
+    const layout = try fixture();
+    try owner.importBuffers(&layout, &.{ .{ .fd = 1, .offset = 7 }, .{ .fd = 2 } });
+}
+test "every imported allocation failure retires partially owned resources" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, importAllocationFailures, .{});
 }

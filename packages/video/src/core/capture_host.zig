@@ -5,3 +5,4 @@ pub const policy = backing.policy;
 pub const Owner = backing.Owner;
 pub const Ram = backing.Ram;
 pub const LinuxHeap = @import("capture_dma_heap.zig").LinuxHeap;
+pub const LinuxImport = @import("capture_import_linux.zig").Linux;

@@ -142,6 +142,37 @@ pub fn Cache(comptime capacity: usize) type {
                 return .{ .claim = .{ .token = token }, .slot = @intCast(i), .fresh = false };
             };
             if (busy and !concurrent) return error.LayoutBusy;
+            return self.prepareNormalized(layout, bytes);
+        }
+        /// Importers prepare distinct caller-provided storage even when an idle
+        /// layout already exists. Charge the complete backing, including prefix,
+        /// suffix and padding outside the visible frame.
+        pub fn prepareNew(self: *Self, requested: *const Layout, bytes: usize) !Checkout {
+            errdefer self.rejected +|= 1;
+            const layout = try requested.normalized();
+            if (bytes < try layout.bytes()) return error.InvalidLayout;
+            return self.prepareNormalized(layout, bytes);
+        }
+        /// Borrow pre-provisioned backing only. Never synthesize a replacement
+        /// when caller storage is unavailable, busy, discarded or trimmed.
+        pub fn checkoutExisting(self: *Self, requested: *const Layout) !Checkout {
+            errdefer self.rejected +|= 1;
+            const layout = try requested.normalized();
+            var busy = false;
+            for (&self.entries, 0..) |*entry, i| if (entry.*) |*current| {
+                if (!current.layout.eql(&layout)) continue;
+                if (current.state != .idle) {
+                    busy = true;
+                    continue;
+                }
+                const token = try self.owners.acquire(@intCast(i));
+                current.state = .borrowed;
+                self.reuses +|= 1;
+                return .{ .claim = .{ .token = token }, .slot = @intCast(i), .fresh = false };
+            };
+            return if (busy) error.LayoutBusy else error.LayoutUnavailable;
+        }
+        fn prepareNormalized(self: *Self, layout: Layout, bytes: usize) !Checkout {
             const reservation = try self.reservations.reserve(bytes);
             errdefer self.reservations.release(reservation) catch unreachable;
             const token = try self.owners.acquire(@intCast(reservation.slot));
