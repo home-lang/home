@@ -42,6 +42,11 @@ never an eviction candidate. The `Concurrent` variants can prepare independent
 backing for replacement cameras while old loans survive, under the same budget.
 `trim` retries pending retirement and frees idle storage, leaving borrowers live.
 `close` returns Busy while any loan survives, trims storage and closes the provider.
+After joining all SDK/request users, `discard` retires a loan touched by failed
+coherency or device state without performing physical cleanup. It never becomes
+idle/reusable. The full reservation remains held; full-admission eviction first
+retries already-retiring cleanup before preparing fresh storage. It does not
+recycle an old FD or map as a replacement after a failed fence.
 The host must also prevent close while async opens/mode workers hold native pins.
 
 Failed preparation retires every partially owned resource. Failed unmap retains
@@ -61,7 +66,7 @@ measurements, not Pi throughput or acceleration results.
 Standalone RAM tests inject every allocation failure, retain data and addresses
 across 1,000 reuse cycles, and cover live-loan eviction/busy/stale-view cases.
 The independent Linux C peer intercepts the actual libc/UAPI calls and uses real
-memfd-backed shared mappings. Twelve scenarios validate flags, rounded sizes,
+memfd-backed shared mappings. Thirteen scenarios validate flags, rounded sizes,
 RO/RW aliasing, reuse, independent same-layout replacement loans, partial
 allocation/map/unmap/close failures, cleanup retry and current/legacy discovery.
 It is a Linux ownership test, not emulated or physical camera acceptance.

@@ -81,17 +81,17 @@ int close(int fd) {
 }
 int main(void) {
     long page=sysconf(_SC_PAGESIZE);require(page>0,"page size");page_size=(size_t)page;
-    const unsigned cases[]={0,1,2,3,4,5,6,7,8,10,11,12};
+    const unsigned cases[]={0,1,2,3,4,5,6,7,8,9,10,11,12};
     for(unsigned n=0;n<sizeof(cases)/sizeof(cases[0]);n++) {
         scenario=cases[n];heap_opens=allocs=maps=unmaps=dma_closes=heap_closes=0;injected=0;
         for(unsigned i=0;i<16;i++)dma[i]=-1;
         require(capture_backing_fixture_run(scenario)==0,"Zig owner contract");
         require(heap==-1&&live_dma==0&&live_maps==0,"all owners retired");
         require(heap_closes==(scenario==12?0u:1u),"heap lifetime");
-        if(scenario==0)require(allocs==4&&maps==5&&unmaps==5&&dma_closes==4,"reuse and concurrent replacement ownership");
+        if(scenario==0||scenario==9)require(allocs==4&&maps==5&&unmaps==5&&dma_closes==4,"reuse or discarded backing and concurrent replacement ownership");
         if(scenario==10)require(heap_opens==2,"modern CMA fallback");
         if(scenario==11)require(heap_opens==3,"legacy CMA fallback");
         if(scenario==12)require(heap_opens==1,"permission failure preserves reason");
     }
-    puts("12 Linux DMA heap ownership scenarios passed (independent memfd peer)");return 0;
+    puts("13 Linux DMA heap ownership scenarios passed (independent memfd peer)");return 0;
 }

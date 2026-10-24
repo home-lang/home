@@ -41,6 +41,9 @@ each host resource, clearing only successfully destroyed owners. Call
 no operation to return partly destroyed storage to the reuse cache.
 
 Failed preparation follows the same cleanup contract through `failPreparation`.
+After joining every borrower, `discard` similarly retires a borrowed entry whose
+coherency/device state makes reuse unsafe. It performs no physical I/O, so SDK
+destructors can hand cleanup back to the retained host owner without losing errors.
 It consumes the preparation claim and returns a retirement ticket without
 releasing its budget. Retirement tickets use the existing allocation generation,
 so cleanup remains possible even when new checkout generations are exhausted.

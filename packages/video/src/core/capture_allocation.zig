@@ -178,7 +178,15 @@ pub fn Cache(comptime capacity: usize) type {
         /// the existing allocation generation: cleanup NEVER needs a fresh lease
         /// generation and remains possible after checkout sequence exhaustion.
         pub fn failPreparation(self: *Self, claim: Claim) !Retirement {
-            const entry = try self.checked(claim, .preparing);
+            return self.beginRetirement(claim, .preparing);
+        }
+        /// The host has joined all users, but a coherency/device failure makes
+        /// reuse unsafe. Retire backing without physical I/O in a SDK destructor.
+        pub fn discard(self: *Self, claim: Claim) !Retirement {
+            return self.beginRetirement(claim, .borrowed);
+        }
+        fn beginRetirement(self: *Self, claim: Claim, state: State) !Retirement {
+            const entry = try self.checked(claim, state);
             const index = try self.slot(claim);
             const final = try self.owners.release(claim.token);
             std.debug.assert(final);

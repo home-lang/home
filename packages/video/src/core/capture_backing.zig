@@ -94,6 +94,15 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
             while (true) {
                 return self.checkoutImpl(layout, concurrent) catch |failure| {
                     if (failure != error.BufferFull) return failure;
+                    var pending: ?u32 = null;
+                    for (self.retirements, 0..) |retirement, i| if (retirement != null) {
+                        pending = @intCast(i);
+                        break;
+                    };
+                    if (pending) |index| {
+                        try self.cleanup(index);
+                        continue;
+                    }
                     const index = self.cache.oldestIdle() orelse return failure;
                     self.retirements[index] = try self.cache.retireIdle(index);
                     try self.cleanup(index);
@@ -114,6 +123,12 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         }
         pub fn release(self: *Self, claim: policy.Claim) !void {
             try self.cache.release(claim);
+        }
+        /// No I/O. All SDK/frame users must be joined first. Failed-fence backing
+        /// stays unavailable and charged until trim/close/full-admission cleanup.
+        pub fn discard(self: *Self, claim: policy.Claim) !void {
+            const index = try self.cache.slot(claim);
+            self.retirements[index] = try self.cache.discard(claim);
         }
         fn cleanup(self: *Self, index: u32) !void {
             const retirement = self.retirements[index] orelse return error.InvalidState;
@@ -202,4 +217,22 @@ test "bounded host eviction preserves active layouts and invalidates stale views
     try owner.trim();
     try t.expectEqual(@as(usize, 256), owner.cache.reservations.used);
     try owner.release(second.claim);
+}
+test "discarded coherency backing cannot be reused and cleanup precedes a bounded replacement" {
+    const t = std.testing;
+    const layout = try fixture();
+    var owner = try Owner(1, Ram).init(.{ .allocator = t.allocator }, 256, 1);
+    defer owner.close() catch unreachable;
+    const first = try owner.checkout(&layout);
+    try owner.discard(first.claim);
+    try t.expectEqual(@as(usize, 256), owner.cache.reservations.used);
+    try t.expectEqual(policy.State.retiring, owner.cache.entries[0].?.state);
+    try t.expectError(error.StaleClaim, owner.view(first.claim, 0, 0, false));
+    try t.expectError(error.StaleClaim, owner.release(first.claim));
+    const replacement = try owner.checkoutEvictingConcurrent(&layout);
+    try t.expect(replacement.fresh);
+    try t.expectEqual(@as(u64, 4), owner.allocations);
+    try t.expectEqual(@as(u64, 1), owner.cache.retired);
+    try t.expectEqual(@as(u64, 0), owner.cache.reuses);
+    try owner.release(replacement.claim);
 }

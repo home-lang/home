@@ -42,10 +42,12 @@ fn run(scenario: u32) !void {
         write.bytes[0] = 0x6a;
         if (read.bytes[0] != 0x6a) return error.Mismatch;
     }
-    try owner.release(first.claim);
-    const again = try owner.checkout(&layout);
+    if (scenario == 9) try owner.discard(first.claim) else try owner.release(first.claim);
+    const again = if (scenario == 9) try owner.checkoutConcurrent(&layout) else try owner.checkout(&layout);
     const same = try owner.view(again.claim, 0, 0, false);
-    if (again.fresh or same.bytes.ptr != read.bytes.ptr or owner.allocations != 2) return error.Mismatch;
+    if (scenario == 9) {
+        if (!again.fresh or same.bytes.ptr == read.bytes.ptr or owner.allocations != 4 or owner.retirements[first.slot] == null) return error.Mismatch;
+    } else if (again.fresh or same.bytes.ptr != read.bytes.ptr or owner.allocations != 2) return error.Mismatch;
     if (scenario == 0) {
         const parallel = try owner.checkoutConcurrent(&layout);
         const other = try owner.view(parallel.claim, 0, 0, false);
