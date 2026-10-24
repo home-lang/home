@@ -316,12 +316,7 @@ pub const Interpreter = struct {
                     }
 
                     // Execute defers at end of then block
-                    const defers = then_env.getDefers();
-                    var i: usize = defers.len;
-                    while (i > 0) {
-                        i -= 1;
-                        _ = self.evaluateExpression(defers[i], &then_env) catch {};
-                    }
+                    self.runDefers(&then_env, then_err);
 
                     if (then_err) |err| return err;
                 } else if (if_stmt.else_block) |else_block| {
@@ -338,12 +333,7 @@ pub const Interpreter = struct {
                     }
 
                     // Execute defers at end of else block
-                    const defers = else_env.getDefers();
-                    var i: usize = defers.len;
-                    while (i > 0) {
-                        i -= 1;
-                        _ = self.evaluateExpression(defers[i], &else_env) catch {};
-                    }
+                    self.runDefers(&else_env, else_err);
 
                     if (else_err) |err| return err;
                 }
@@ -372,12 +362,7 @@ pub const Interpreter = struct {
                     }
 
                     // Execute defers at end of iteration
-                    const defers = iter_env.getDefers();
-                    var i: usize = defers.len;
-                    while (i > 0) {
-                        i -= 1;
-                        _ = self.evaluateExpression(defers[i], &iter_env) catch {};
-                    }
+                    self.runDefers(&iter_env, iter_err);
 
                     // Handle errors after defers
                     if (iter_err) |err| {
@@ -438,12 +423,7 @@ pub const Interpreter = struct {
                         }
 
                         // Execute defers at end of iteration
-                        const defers = iter_env.getDefers();
-                        var di: usize = defers.len;
-                        while (di > 0) {
-                            di -= 1;
-                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
-                        }
+                        self.runDefers(&iter_env, iter_err);
 
                         if (iter_err) |err| {
                             if (err == error.Return) return err;
@@ -484,12 +464,7 @@ pub const Interpreter = struct {
                             };
                         }
 
-                        const defers = iter_env.getDefers();
-                        var di: usize = defers.len;
-                        while (di > 0) {
-                            di -= 1;
-                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
-                        }
+                        self.runDefers(&iter_env, iter_err);
 
                         if (iter_err) |err| {
                             if (err == error.Return) return err;
@@ -539,12 +514,7 @@ pub const Interpreter = struct {
                             };
                         }
 
-                        const defers = iter_env.getDefers();
-                        var di: usize = defers.len;
-                        while (di > 0) {
-                            di -= 1;
-                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
-                        }
+                        self.runDefers(&iter_env, iter_err);
 
                         if (iter_err) |err| {
                             if (err == error.Return) return err;
@@ -587,12 +557,7 @@ pub const Interpreter = struct {
                             };
                         }
 
-                        const defers = iter_env.getDefers();
-                        var di: usize = defers.len;
-                        while (di > 0) {
-                            di -= 1;
-                            _ = self.evaluateExpression(defers[di], &iter_env) catch {};
-                        }
+                        self.runDefers(&iter_env, iter_err);
 
                         if (iter_err) |err| {
                             if (err == error.Return) return err;
@@ -800,12 +765,7 @@ pub const Interpreter = struct {
                 }
 
                 // Execute defers in reverse order (LIFO)
-                const defers = block_env.getDefers();
-                var i: usize = defers.len;
-                while (i > 0) {
-                    i -= 1;
-                    _ = self.evaluateExpression(defers[i], &block_env) catch {};
-                }
+                self.runDefers(&block_env, block_err);
 
                 // Propagate any error that occurred
                 if (block_err) |err| {
@@ -9072,12 +9032,7 @@ pub const Interpreter = struct {
             }
 
             // Execute defers in reverse order before returning
-            const defers = closure_env.getDefers();
-            var i: usize = defers.len;
-            while (i > 0) {
-                i -= 1;
-                _ = self.evaluateExpression(defers[i], closure_env) catch {};
-            }
+            self.runDefers(closure_env, closure_err);
 
             // Handle return or error
             if (closure_err) |err| {
@@ -9132,12 +9087,7 @@ pub const Interpreter = struct {
             }
 
             // Execute defers in reverse order before returning
-            const defers = closure_env.getDefers();
-            var i: usize = defers.len;
-            while (i > 0) {
-                i -= 1;
-                _ = self.evaluateExpression(defers[i], &closure_env) catch {};
-            }
+            self.runDefers(&closure_env, closure_err);
 
             // Handle return or error
             if (closure_err) |err| {
@@ -9229,12 +9179,7 @@ pub const Interpreter = struct {
                 };
             }
 
-            const defers = closure_env.getDefers();
-            var i: usize = defers.len;
-            while (i > 0) {
-                i -= 1;
-                _ = self.evaluateExpression(defers[i], &closure_env) catch {};
-            }
+            self.runDefers(&closure_env, closure_err);
 
             if (closure_err) |err| {
                 if (err == error.Return) {
@@ -10948,6 +10893,22 @@ pub const Interpreter = struct {
         return error.UndefinedFunction;
     }
 
+    /// Run `env`'s deferred expressions in reverse order. `scope_err` is the
+    /// error the scope is exiting with. A deferred call to a user function
+    /// clears `return_value`, so when the scope is unwinding a `return` and the
+    /// defers leave the slot empty, the pending value is put back.
+    fn runDefers(self: *Interpreter, env: *Environment, scope_err: ?InterpreterError) void {
+        const pending_return = self.return_value;
+        const defers = env.getDefers();
+        var i: usize = defers.len;
+        while (i > 0) {
+            i -= 1;
+            _ = self.evaluateExpression(defers[i], env) catch {};
+        }
+        const returning = if (scope_err) |err| err == error.Return else false;
+        if (returning and self.return_value == null) self.return_value = pending_return;
+    }
+
     fn calculateRangeLength(range: @import("value.zig").RangeValue) i64 {
         if (range.step == 0) return 0;
         const diff = range.end - range.start;
@@ -11041,12 +11002,7 @@ pub const Interpreter = struct {
         }
 
         // Execute defers in reverse order before returning
-        const defers = func_env.getDefers();
-        var i: usize = defers.len;
-        while (i > 0) {
-            i -= 1;
-            _ = self.evaluateExpression(defers[i], &func_env) catch {};
-        }
+        self.runDefers(&func_env, func_err);
 
         // Handle return or error
         if (func_err) |err| {
@@ -11122,12 +11078,7 @@ pub const Interpreter = struct {
         }
 
         // Execute defers in reverse order before returning
-        const defers = method_env.getDefers();
-        var i: usize = defers.len;
-        while (i > 0) {
-            i -= 1;
-            _ = self.evaluateExpression(defers[i], &method_env) catch {};
-        }
+        self.runDefers(&method_env, method_err);
 
         // Handle return or error
         if (method_err) |err| {
@@ -11178,12 +11129,7 @@ pub const Interpreter = struct {
         }
 
         // Execute defers in reverse order before returning
-        const defers = method_env.getDefers();
-        var i: usize = defers.len;
-        while (i > 0) {
-            i -= 1;
-            _ = self.evaluateExpression(defers[i], &method_env) catch {};
-        }
+        self.runDefers(&method_env, method_err);
 
         // Handle return or error
         if (method_err) |err| {
