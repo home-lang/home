@@ -1,0 +1,32 @@
+name: Video capture allocation policy
+on:
+  push:
+    branches: [main]
+    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
+  pull_request:
+    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ownership:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Capture allocation ownership and public export
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig fmt --check packages/video/src/core/capture_allocation.zig packages/video/tests/capture_allocation_exports.zig
+          for mode in Debug ReleaseSafe ReleaseFast; do
+            zig test -O "$mode" packages/video/src/core/capture_allocation.zig
+            zig test -O "$mode" --dep video -Mroot=packages/video/tests/capture_allocation_exports.zig -Mvideo=packages/video/src/video.zig
+          done
