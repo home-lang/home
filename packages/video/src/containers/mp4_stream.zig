@@ -271,6 +271,12 @@ pub const Writer = struct {
     video_duration: usize = 0,
     video_media_duration: usize = 0,
     audio_offsets: AudioOffsets = .{},
+    // Borrowed, bounded staging until the first PCM timestamp is known. Keeping
+    // the initial movie here lets the empty edit precede any emitted bytes.
+    forward_only: bool = false,
+    staging: []u8 = &.{},
+    staged: usize = 0,
+    audio_start_us: ?u64 = null,
     pub fn initAv(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig) !Writer {
         return initAvWithColor(sink, width, height, codec, headers, audio_cfg, .{});
     }
@@ -279,12 +285,23 @@ pub const Writer = struct {
     }
     pub fn initAvWithColor(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig, color: Color) !Writer {
         if (sink.patch == null) return error.InvalidConfiguration;
-        return initInternal(sink, width, height, codec, headers, audio_cfg, color);
+        return initInternal(sink, width, height, codec, headers, audio_cfg, color, null);
     }
     pub fn initWithColor(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, color: Color) !Writer {
-        return initInternal(sink, width, height, codec, headers, null, color);
+        return initInternal(sink, width, height, codec, headers, null, color, null);
     }
-    fn initInternal(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: ?AudioConfig, color: Color) !Writer {
+    /// Forward-only A/V. Storage is borrowed until finish and must not alias
+    /// samples. No sink bytes are emitted until startAudio binds the first PCM
+    /// timestamp. The initial empty edit preserves late audio; the following
+    /// zero-duration media edit spans subsequent fragments. This is general
+    /// fragmented ISO BMFF, not a claim of the single-edit CMAF/MSE profile.
+    pub fn initAvForward(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig, staging: []u8) !Writer {
+        return initAvForwardWithColor(sink, width, height, codec, headers, audio_cfg, staging, .{});
+    }
+    pub fn initAvForwardWithColor(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: AudioConfig, staging: []u8, color: Color) !Writer {
+        return initInternal(sink, width, height, codec, headers, audio_cfg, color, staging);
+    }
+    fn initInternal(sink: Sink, width: u32, height: u32, codec: Codec, headers: []const u8, audio_cfg: ?AudioConfig, color: Color, staging: ?[]u8) !Writer {
         try color.validate();
         if (width == 0 or height == 0 or width > 8192 or height > 8192) return error.InvalidConfiguration;
         var b: Buffer = .{};
@@ -401,8 +418,30 @@ pub const Writer = struct {
         }
         b.end(mvex);
         b.end(moov);
-        try sink.write(sink.context, b.slice());
-        return .{ .sink = sink, .audio_config = audio_cfg, .audio_offsets = offsets, .movie_duration = movie_duration, .video_duration = video_duration, .video_media_duration = video_media_duration };
+        if (staging) |storage| {
+            if (storage.len < b.len) return error.BufferFull;
+            @memcpy(storage[0..b.len], b.slice());
+        } else try sink.write(sink.context, b.slice());
+        return .{ .sink = sink, .audio_config = audio_cfg, .audio_offsets = offsets, .movie_duration = movie_duration, .video_duration = video_duration, .video_media_duration = video_media_duration, .forward_only = staging != null, .staging = staging orelse &.{}, .staged = if (staging != null) b.len else 0 };
+    }
+    /// Bind once, before feeding AAC. Until then, video fragments consume the
+    /// caller's finite staging arena. Overflow poisons this writer; no partial
+    /// initialization segment has escaped. Sink failure is terminal as usual.
+    pub fn startAudio(s: *Writer, start_us: u64) !void {
+        if (s.failed or s.finished) return error.WriterFailed;
+        if (!s.forward_only or s.audio_start_us != null) return error.InvalidConfiguration;
+        std.mem.writeInt(u64, s.staging[s.audio_offsets.empty..][0..8], start_us, .big);
+        errdefer s.failed = true;
+        try s.sink.write(s.sink.context, s.staging[0..s.staged]);
+        s.audio_start_us = start_us;
+        s.staged = 0;
+    }
+    fn write(s: *Writer, bytes: []const u8) !void {
+        if (s.forward_only and s.audio_start_us == null) {
+            if (bytes.len > s.staging.len - s.staged) return error.BufferFull;
+            @memcpy(s.staging[s.staged..][0..bytes.len], bytes);
+            s.staged += bytes.len;
+        } else try s.sink.write(s.sink.context, bytes);
     }
     /// One complete sample. Caller supplies its actual duration, using the next
     /// capture time; the last sample uses nominal frame duration. PTS == DTS.
@@ -419,6 +458,7 @@ pub const Writer = struct {
     }
     pub fn audio(s: *Writer, sample: []const u8) !void {
         if (s.audio_config == null or s.failed or s.finished) return error.WriterFailed;
+        if (s.forward_only and s.audio_start_us == null) return error.InvalidConfiguration;
         if (sample.len == 0 or sample.len > 8192 or s.sequence == std.math.maxInt(u32)) return error.InvalidSample;
         if (s.audio_pending_len != 0) try s.flushAudio(1024);
         @memcpy(s.audio_pending[0..sample.len], sample);
@@ -444,10 +484,15 @@ pub const Writer = struct {
         if (scaled > std.math.maxInt(u64)) return error.InvalidSample;
         const duration: u64 = @intCast(scaled);
         const audio_end = try std.math.add(u64, audio_start_us, duration);
+        if (s.forward_only and (s.audio_start_us == null or s.audio_start_us.? != audio_start_us)) return error.InvalidConfiguration;
         errdefer s.failed = true;
         // A short final duration also signals tail trim to fragmented readers
         // that do not apply the finite edit duration to the last fragment.
         try s.flushAudio(@intCast(1024 - padding));
+        if (s.forward_only) {
+            s.finished = true;
+            return;
+        }
         try s.patch64(s.movie_duration, @max(s.video_end_us, audio_end));
         try s.patch64(s.video_duration, s.video_end_us);
         try s.patch64(s.video_media_duration, s.video_end_us);
@@ -499,8 +544,8 @@ pub const Writer = struct {
         try b.int32(@intCast(sample.len + 8));
         try b.bytes("mdat");
         errdefer s.failed = true;
-        try s.sink.write(s.sink.context, b.slice());
-        try s.sink.write(s.sink.context, sample);
+        try s.write(b.slice());
+        try s.write(sample);
         s.sequence += 1;
     }
 };
@@ -609,4 +654,81 @@ test "AAC track sample clock, edit delay/tail, fixed patches and sink failure" {
     out.fail = true;
     try std.testing.expectError(error.DiskFull, failure.finish(0, 0));
     try std.testing.expectError(error.WriterFailed, failure.audio(&.{1}));
+}
+
+test "forward AAC preserves late start and exact tail without seeking or rewriting emitted bytes" {
+    const Out = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        fail: bool = false,
+        fn write(ctx: *anyopaque, data: []const u8) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            if (s.fail) return error.BrokenPipe;
+            try s.bytes.appendSlice(std.testing.allocator, data);
+        }
+        fn patch(_: *anyopaque, _: u64, _: []const u8) anyerror!void {
+            return error.ForbiddenSeek;
+        }
+    };
+    const t = std.testing;
+    var out: Out = .{};
+    defer out.bytes.deinit(t.allocator);
+    var staging: [4096]u8 = undefined;
+    const headers = [_]u8{ 0, 0, 0, 4, 0x67, 100, 0, 40, 0, 0, 0, 2, 0x68, 0x80 };
+    const cfg: AudioConfig = .{ .sample_rate = 48000, .channels = 2, .bitrate = 128000, .delay = 2048, .config = .{ 0x11, 0x90 } };
+    const sink: Sink = .{ .context = &out, .write = Out.write, .patch = Out.patch };
+    var writer = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, &staging);
+    try t.expectEqual(@as(usize, 0), out.bytes.items.len);
+    try t.expectError(error.InvalidConfiguration, writer.audio(&.{1}));
+    try writer.frame(&.{ 0, 0, 0, 2, 0x65, 0x80 }, 0, 40000, true);
+    try writer.frame(&.{ 0, 0, 0, 2, 0x41, 0x80 }, 40000, 40000, false);
+    try t.expectEqual(@as(usize, 0), out.bytes.items.len);
+    try writer.startAudio(12345);
+    try t.expectError(error.InvalidConfiguration, writer.startAudio(12345));
+    const prefix = try t.allocator.dupe(u8, out.bytes.items);
+    defer t.allocator.free(prefix);
+    for (0..3) |_| try writer.audio(&.{ 0x21, 0x10 });
+    try t.expectError(error.InvalidConfiguration, writer.finish(12346, 1000));
+    try writer.finish(12345, 1000);
+    try t.expectEqualSlices(u8, prefix, out.bytes.items[0..prefix.len]);
+    try t.expectEqual(@as(u64, 12345), std.mem.readInt(u64, out.bytes.items[writer.audio_offsets.empty..][0..8], .big));
+    for ([_]usize{ writer.movie_duration, writer.video_duration, writer.video_media_duration, writer.audio_offsets.track, writer.audio_offsets.media, writer.audio_offsets.edit }) |offset| {
+        try t.expectEqual(@as(u64, 0), std.mem.readInt(u64, out.bytes.items[offset..][0..8], .big));
+    }
+    try t.expectEqual(@as(u64, 2048), std.mem.readInt(u64, out.bytes.items[writer.audio_offsets.edit + 8 ..][0..8], .big));
+    // The last audio fragment carries 1000 samples, not a full padded 1024.
+    const tail = std.mem.lastIndexOf(u8, out.bytes.items, "trun").?;
+    try t.expectEqual(@as(u32, 1000), std.mem.readInt(u32, out.bytes.items[tail + 16 ..][0..4], .big));
+    try t.expectError(error.WriterFailed, writer.finish(12345, 1000));
+
+    var failure = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, &staging);
+    out.fail = true;
+    try t.expectError(error.BrokenPipe, failure.startAudio(0));
+    try t.expectError(error.WriterFailed, failure.audio(&.{1}));
+}
+
+test "forward AAC staging is finite and empty PCM has an exact zero presented duration" {
+    const Out = struct {
+        writes: usize = 0,
+        fn write(ctx: *anyopaque, _: []const u8) anyerror!void {
+            const s: *@This() = @ptrCast(@alignCast(ctx));
+            s.writes += 1;
+        }
+    };
+    const t = std.testing;
+    var out: Out = .{};
+    var staging: [4096]u8 = undefined;
+    const headers = [_]u8{ 0, 0, 0, 4, 0x67, 100, 0, 40, 0, 0, 0, 2, 0x68, 0x80 };
+    const cfg: AudioConfig = .{ .sample_rate = 48000, .channels = 2, .bitrate = 128000, .delay = 2048, .config = .{ 0x11, 0x90 } };
+    const sink: Sink = .{ .context = &out, .write = Out.write };
+    try t.expectError(error.BufferFull, Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, staging[0..1]));
+    var sized = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, &staging);
+    const exact = sized.staged;
+    var overflow = try Writer.initAvForward(sink, 128, 96, .h264, &headers, cfg, staging[0..exact]);
+    try t.expectError(error.BufferFull, overflow.frame(&.{ 0, 0, 0, 2, 0x65, 0x80 }, 0, 40000, true));
+    try t.expectError(error.WriterFailed, overflow.startAudio(0));
+    try t.expectEqual(@as(usize, 0), out.writes);
+    try sized.startAudio(0);
+    for (0..2) |_| try sized.audio(&.{ 0x21, 0x10 });
+    try sized.finish(0, 0);
+    try t.expectEqual(@as(u64, 2), sized.audio_packets);
 }

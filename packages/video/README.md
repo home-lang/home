@@ -81,3 +81,35 @@ kernel drivers. Consumers that deliberately escape their process group, a
 hard-killed supervisor and broader process-tree recovery need separate policy;
 this interface is not a sandbox. No media encoder/muxer or external media tool
 is invoked by the supervisor.
+
+### Forward-only AAC fragmented MP4
+
+`mp4_stream.Writer.initAvForward` / `initAvForwardWithColor` use the same
+AVC/HEVC/AAC sample descriptions and fragments as the patchable writer. Supply a
+finite borrowed byte arena, then call `startAudio(first_pcm_offset_us)` once
+before feeding AAC access units. Video fragments wait in that arena until the
+actual PCM start is known. Overflow is terminal and emits no partial initial
+movie; callers choose the capacity and their output failure policy. The arena
+must outlive the writer and must not overlap samples. No allocator, seek or
+file-sized buffer is introduced.
+
+The initial empty edit places late audio on the movie clock; the following
+media edit skips encoder delay and has duration zero to span subsequent
+fragments. `finish` still validates PCM/encoded counts and shortens the last
+fragment to exclude padding, but never patches bytes or finite header durations.
+For an empty PCM session, bind offset zero before draining the encoder. Decode
+all priming access units before applying the edit; discarding them before the
+decoder loses state needed for the first audible samples.
+
+This is general fragmented ISO BMFF with two edits. It does not promise the
+single-edit CMAF/MSE profile or arbitrary player interoperability. A network
+receiver must preserve fragment bytes and honor the edit list and final sample
+duration. See ISO/IEC 14496-12 section 8.6.6 and the
+[W3C ISO BMFF byte-stream note](https://www.w3.org/TR/mse-byte-stream-format-isobmff/)
+for the distinction from its required single-edit subset. Apple's
+[AAC encoding background](https://developer.apple.com/documentation/quicktime-file-format/background_aac_encoding)
+explains why priming and remainder samples must be excluded from presentation.
+
+Run `zig test packages/video/src/containers/mp4_stream.zig` and the public API
+fixture `packages/video/tests/mp4_forward.zig`; CI checks Debug/ReleaseSafe on
+pinned and development Zig across macOS, Linux x86_64 and Linux ARM64.
