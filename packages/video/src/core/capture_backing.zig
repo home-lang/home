@@ -8,8 +8,9 @@ pub const objects = @import("capture_objects.zig");
 pub const Identity = objects.Identity;
 pub const ImportPlane = objects.Plane;
 pub const ImportFrame = objects.Frame;
-const FrameViews = struct {
-    plane_count: u8 = 0,
+const FrameObjects = struct {
+    plane_count: u8,
+    extra: [objects.max_planes - 1]Resource = @splat(.{}),
     planes: [objects.max_planes]objects.Binding = std.mem.zeroes([objects.max_planes]objects.Binding),
 };
 pub const Resource = struct {
@@ -59,14 +60,21 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         pub const Cache = policy.Cache(capacity);
         provider: Provider,
         cache: Cache,
-        resources: [capacity][policy.max_streams][policy.max_buffers][objects.max_planes]Resource = @splat(@splat(@splat(@splat(.{})))),
-        frames: [capacity][policy.max_streams][policy.max_buffers]FrameViews = @splat(@splat(@splat(.{}))),
+        resources: [capacity][policy.max_streams][policy.max_buffers]Resource = @splat(@splat(@splat(.{}))),
+        frames: [capacity][policy.max_streams][policy.max_buffers]?*FrameObjects = @splat(@splat(@splat(null))),
+        metadata_allocator: std.mem.Allocator,
         retirements: [capacity]?policy.Retirement = @splat(null),
         cleanup_errors: u64 = 0,
         allocations: u64 = 0,
         writable_maps: u64 = 0,
         pub fn init(provider: Provider, max_bytes: usize, max_entries: usize) !Self {
-            return .{ .provider = provider, .cache = try Cache.init(max_bytes, max_entries) };
+            const allocator = if (@hasField(Provider, "allocator") and @TypeOf(@field(@as(Provider, undefined), "allocator")) == std.mem.Allocator) provider.allocator else std.heap.page_allocator;
+            return initWithAllocator(provider, max_bytes, max_entries, allocator);
+        }
+        /// Only multi-plane imports allocate metadata; ordinary frames retain
+        /// inline single-object storage. Metadata is owned through cleanup retry.
+        pub fn initWithAllocator(provider: Provider, max_bytes: usize, max_entries: usize, allocator: std.mem.Allocator) !Self {
+            return .{ .provider = provider, .cache = try Cache.init(max_bytes, max_entries), .metadata_allocator = allocator };
         }
         pub fn checkout(self: *Self, requested: *const policy.Layout) !Cache.Checkout {
             return self.checkoutImpl(requested, false);
@@ -129,8 +137,11 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
                     const plan = try objects.Plan.init(frame, identities[0..frame.plane_count], stream.frame_bytes);
                     for (prepared[0..at]) |*previous| if (plan.aliases(&previous.plan)) return error.AliasedResource;
                     for (plan.objects[0..plan.object_count]) |object| {
-                        for (&self.resources) |*entries| for (entries) |*buffers| for (buffers) |*resources| for (resources) |*resource| {
+                        for (&self.resources, 0..) |*entries, ei| for (entries, 0..) |*buffers, si| for (buffers, 0..) |*resource, bi| {
                             if (resource.identity) |other| if (objects.sameObject(object.identity, other)) return error.AliasedResource;
+                            if (self.frames[ei][si][bi]) |frame_objects| for (&frame_objects.extra) |*extra| {
+                                if (extra.identity) |other| if (objects.sameObject(object.identity, other)) return error.AliasedResource;
+                            };
                         };
                     }
                     charge = std.math.add(usize, charge, plan.charge) catch return error.SizeOverflow;
@@ -156,9 +167,13 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
             var at: usize = 0;
             for (layout.streams[0..layout.stream_count], 0..) |stream, si| for (0..stream.buffer_count) |bi| {
                 const item = &prepared[at];
-                self.frames[result.slot][si][bi] = .{ .plane_count = item.plan.plane_count, .planes = item.plan.planes };
+                if (item.plan.plane_count > 1) {
+                    const metadata = try self.metadata_allocator.create(FrameObjects);
+                    metadata.* = .{ .plane_count = item.plan.plane_count, .planes = item.plan.planes };
+                    self.frames[result.slot][si][bi] = metadata;
+                }
                 for (item.sources[0..item.plan.object_count], 0..) |source, oi| {
-                    try self.provider.importPrepare(&self.resources[result.slot][si][bi][oi], source);
+                    try self.provider.importPrepare(self.resourceAt(result.slot, si, bi, oi), source);
                     self.allocations +|= 1;
                 }
                 at += 1;
@@ -182,7 +197,7 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         fn prepare(self: *Self, result: Cache.Checkout, layout: *const policy.Layout) !void {
             for (layout.streams[0..layout.stream_count], 0..) |stream, s| {
                 for (0..stream.buffer_count) |b| {
-                    try self.provider.prepare(&self.resources[result.slot][s][b][0], @intCast(stream.allocation_bytes));
+                    try self.provider.prepare(&self.resources[result.slot][s][b], @intCast(stream.allocation_bytes));
                     self.allocations +|= 1;
                 }
             }
@@ -222,7 +237,7 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         }
         pub fn planeCount(self: *Self, claim: policy.Claim, stream: u32, buffer: u32) !u8 {
             const index = try self.checkedBuffer(claim, stream, buffer);
-            return @max(1, self.frames[index][stream][buffer].plane_count);
+            return if (self.frames[index][stream][buffer]) |frame| frame.plane_count else 1;
         }
         pub fn view(self: *Self, claim: policy.Claim, stream: u32, buffer: u32, writable: bool) !View {
             if (try self.planeCount(claim, stream, buffer) != 1) return error.Unsupported;
@@ -230,14 +245,16 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         }
         pub fn viewPlane(self: *Self, claim: policy.Claim, stream: u32, buffer: u32, plane: u32, writable: bool) !View {
             const index = try self.checkedBuffer(claim, stream, buffer);
-            const frame = &self.frames[index][stream][buffer];
-            if (plane >= @max(1, frame.plane_count)) return error.InvalidResource;
-            const binding: objects.Binding = if (frame.plane_count != 0) frame.planes[plane] else .{
+            const frame = self.frames[index][stream][buffer];
+            if (plane >= (if (frame) |value| value.plane_count else @as(u8, 1))) return error.InvalidResource;
+            const primary = &self.resources[index][stream][buffer];
+            const imported = primary.identity != null;
+            const binding: objects.Binding = if (frame) |value| value.planes[plane] else .{
                 .object = 0,
-                .offset = self.resources[index][stream][buffer][0].offset,
-                .bytes = self.cache.entries[index].?.layout.streams[stream].frame_bytes,
+                .offset = primary.offset,
+                .bytes = if (imported) (primary.read orelse return error.InvalidResource).len - primary.read_offset else self.cache.entries[index].?.layout.streams[stream].frame_bytes,
             };
-            const resource = &self.resources[index][stream][buffer][binding.object];
+            const resource = self.resourceAt(index, stream, buffer, binding.object);
             const had_write = resource.write != null;
             const memory = if (writable) try self.provider.writable(resource) else resource.read orelse return error.InvalidResource;
             if (writable and !had_write and resource.write != null) self.writable_maps +|= 1;
@@ -247,8 +264,11 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
             if (start > memory.len or length > memory.len - start) return error.InvalidResource;
             // Managed backing retains its historical allocation capacity. Each
             // imported plane exposes only its checked declared window.
-            const visible = if (frame.plane_count != 0) memory[start..][0..length] else memory[start..];
+            const visible = if (imported) memory[start..][0..length] else memory[start..];
             return .{ .fd = resource.fd, .bytes = visible, .frame_bytes = length, .offset = binding.offset };
+        }
+        fn resourceAt(self: *Self, slot: usize, stream: usize, buffer: usize, object: usize) *Resource {
+            return if (object == 0) &self.resources[slot][stream][buffer] else &self.frames[slot][stream][buffer].?.extra[object - 1];
         }
         pub fn release(self: *Self, claim: policy.Claim) !void {
             try self.cache.release(claim);
@@ -262,16 +282,27 @@ pub fn Owner(comptime capacity: usize, comptime Provider: type) type {
         fn cleanup(self: *Self, index: u32) !void {
             const retirement = self.retirements[index] orelse return error.InvalidState;
             var failed = false;
-            for (&self.resources[index]) |*stream| for (stream) |*frame| for (frame) |*resource| {
+            for (&self.resources[index], 0..) |*stream, si| for (stream, 0..) |*resource, bi| {
+                var frame_failed = false;
                 self.provider.destroy(resource) catch {
                     self.cleanup_errors +|= 1;
-                    failed = true;
+                    frame_failed = true;
                 };
+                if (self.frames[index][si][bi]) |frame| {
+                    for (&frame.extra) |*extra| self.provider.destroy(extra) catch {
+                        self.cleanup_errors +|= 1;
+                        frame_failed = true;
+                    };
+                    if (!frame_failed) {
+                        self.metadata_allocator.destroy(frame);
+                        self.frames[index][si][bi] = null;
+                    }
+                }
+                failed = failed or frame_failed;
             };
             if (failed) return error.CleanupPending;
             try self.cache.finishRetirement(retirement);
             self.retirements[index] = null;
-            self.frames[index] = @splat(@splat(.{}));
         }
         /// May trim idle entries while other layouts are borrowed. Retry also
         /// joins partially failed preparation/cleanup; active borrowers stay live.
@@ -634,4 +665,33 @@ test "raw malformed frame records reject before provider arithmetic or preparati
     frames[0].planes[0].bytes = std.math.maxInt(u64);
     try t.expectError(error.InvalidResource, owner.importFrames(&layout, &frames));
     try t.expectEqual(@as(usize, 0), owner.provider.prepared);
+}
+
+test "single-plane backing needs no metadata allocation and multi-plane admission unwinds metadata failure" {
+    const t = std.testing;
+    var metadata = t.FailingAllocator.init(t.allocator, .{ .fail_index = 0 });
+    var managed = try Owner(1, Ram).initWithAllocator(.{ .allocator = t.allocator }, 10240, 1, metadata.allocator());
+    defer managed.close() catch unreachable;
+    const layout = try fixture();
+    const loan = try managed.checkout(&layout);
+    try managed.release(loan.claim);
+    try managed.trim();
+    try t.expect(!metadata.has_induced_failure);
+
+    var imported = try Owner(1, ImportFixture).initWithAllocator(.{ .allocator = t.allocator }, 10240, 1, metadata.allocator());
+    defer imported.close() catch unreachable;
+    try imported.importBuffers(&layout, &.{ .{ .fd = 21, .offset = 12 }, .{ .fd = 22, .offset = 9 } });
+    const flat = try imported.checkoutExisting(&layout);
+    const view = try imported.view(flat.claim, 0, 0, false);
+    try t.expectEqual(@as(usize, 128), view.bytes.len);
+    try t.expectEqual(@as(u64, 12), view.offset);
+    try imported.release(flat.claim);
+    try imported.trim();
+    try t.expect(!metadata.has_induced_failure);
+    const prepared = imported.provider.prepared;
+    try t.expectError(error.OutOfMemory, imported.importFrames(&try planarFixture(), &try planeFrames()));
+    try t.expect(metadata.has_induced_failure);
+    try t.expectEqual(prepared, imported.provider.prepared);
+    try t.expectEqual(@as(usize, 0), imported.cache.reservations.used);
+    try t.expectEqual(@as(usize, 0), imported.cache.owners.used);
 }

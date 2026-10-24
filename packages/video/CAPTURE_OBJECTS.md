@@ -37,3 +37,12 @@ The host serializes calls, validates pixel-format component minima and owns the
 provider. Keep caller descriptors stable/inactive until synchronous import ends;
 they remain caller-owned. The core implements no kernel allocator, GPU backend,
 pixel conversion, hardware acceptance or camera frame timing.
+
+The primary resource stays inline. Only frames with multiple physical planes
+allocate a bounded metadata record, after full-byte admission and before any
+provider import. Failed cleanup retains that record until all of its objects
+retire; metadata allocation failure unwinds the reservation and earlier frames.
+Managed and one-plane imported frames perform no metadata allocation.
+`initWithAllocator` selects its allocator explicitly. `init` uses the provider
+allocator when it exposes a `std.mem.Allocator` field, otherwise the page allocator.
+The metadata allocator and backing provider must remain valid until owner close succeeds.
