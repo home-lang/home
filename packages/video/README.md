@@ -35,3 +35,7 @@ requested/effective/actual metadata and strict processed-stream policy.
 The [native video adapter](docs/native-video.md) also accepts explicit ISO color
 tags for AVC/HEVC VUI and MP4 nclx, with legacy defaults preserved and independent
 SPS/container signaling tests. Callers remain responsible for matching samples.
+
+[Sensor control helpers](docs/sensor-controls.md) provide portable shared/exclusive
+manager admission, exact Linux device-tree sensor association and observed
+boolean-control outcomes. Hardware IO and manager lifetime remain caller-owned.

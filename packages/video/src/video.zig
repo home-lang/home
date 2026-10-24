@@ -1346,3 +1346,8 @@ pub const catalog_envelope = @import("core/catalog_envelope.zig");
 pub const device_identity = @import("core/device_identity.zig");
 
 pub const catalog_state = @import("core/catalog_state.zig");
+
+/// Shared manager exclusivity, exact sysfs sensor association and observed boolean control outcomes.
+pub const manager_gate = @import("core/manager_gate.zig");
+pub const sensor_node = @import("core/sensor_node.zig");
+pub const boolean_control = @import("core/boolean_control.zig");
