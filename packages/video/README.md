@@ -39,3 +39,6 @@ SPS/container signaling tests. Callers remain responsible for matching samples.
 [Sensor control helpers](docs/sensor-controls.md) provide portable shared/exclusive
 manager admission, exact Linux device-tree sensor association and observed
 boolean-control outcomes. Hardware IO and manager lifetime remain caller-owned.
+
+[RTP sending primitives](docs/rtp-sending.md) provide bounded allocation-free
+AVC/HEVC/AAC packetization, exact clock scaling and compound RTCP reports.

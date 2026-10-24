@@ -79,37 +79,8 @@ pub fn parseAnnexB(data: []const u8, allocator: Allocator) !std.ArrayListUnmanag
     var nals: std.ArrayListUnmanaged(NalUnit) = .empty;
     errdefer nals.deinit(allocator);
 
-    var i: usize = 0;
-
-    while (i < data.len) {
-        // Find start code
-        const start = findStartCode(data[i..]);
-        if (start == null) break;
-
-        const nal_start = i + start.?.offset + start.?.length;
-        i = nal_start;
-
-        // Find end of NAL (next start code or end of data)
-        var nal_end = data.len;
-        var j = nal_start;
-        while (j < data.len) {
-            if (findStartCode(data[j..])) |next| {
-                nal_end = j + next.offset;
-                break;
-            }
-            j += 1;
-        }
-
-        if (nal_start < nal_end) {
-            const nal_data = data[nal_start..nal_end];
-            try nals.append(allocator, .{
-                .data = nal_data,
-                .nal_type = if (nal_data.len > 0) nal_data[0] & 0x1F else 0,
-            });
-        }
-
-        i = nal_end;
-    }
+    var iterator = try NalIterator.init(data, .annex_b, 4);
+    while (try iterator.next()) |nal_data| try nals.append(allocator, .{ .data = nal_data, .nal_type = nal_data[0] & 0x1f });
 
     return nals;
 }
@@ -153,31 +124,8 @@ pub fn parseLengthPrefixed(
     var nals: std.ArrayListUnmanaged(NalUnit) = .empty;
     errdefer nals.deinit(allocator);
 
-    var i: usize = 0;
-
-    while (i + length_size <= data.len) {
-        // Read NAL length
-        const nal_length: usize = switch (length_size) {
-            1 => data[i],
-            2 => std.mem.readInt(u16, data[i..][0..2], .big),
-            4 => std.mem.readInt(u32, data[i..][0..4], .big),
-            else => return error.InvalidLengthSize,
-        };
-
-        i += length_size;
-
-        if (i + nal_length > data.len) {
-            return error.TruncatedNal;
-        }
-
-        const nal_data = data[i..][0..nal_length];
-        try nals.append(allocator, .{
-            .data = nal_data,
-            .nal_type = if (nal_data.len > 0) nal_data[0] & 0x1F else 0,
-        });
-
-        i += nal_length;
-    }
+    var iterator = try NalIterator.init(data, .length_prefixed, length_size);
+    while (try iterator.next()) |nal_data| try nals.append(allocator, .{ .data = nal_data, .nal_type = nal_data[0] & 0x1f });
 
     return nals;
 }
@@ -588,4 +536,70 @@ test "NAL unit properties" {
     try testing.expect(!h264_sps.isVcl(.h264));
     try testing.expect(!h264_sps.isKeyFrame(.h264));
     try testing.expect(h264_sps.isParameterSet(.h264));
+}
+
+/// Strict allocation-free linear NAL iterator. Returned slices borrow data.
+/// Annex B accepts zero leading/trailing bytes, never unrelated prefix bytes.
+/// Length-prefixed inputs reject zero lengths and every incomplete suffix.
+pub const NalIterator = struct {
+    pub const Format = enum { annex_b, length_prefixed };
+    data: []const u8,
+    format: Format,
+    length_size: u8,
+    position: usize = 0,
+    pub fn init(data: []const u8, format: Format, length_size: u8) !NalIterator {
+        if (format == .length_prefixed and length_size != 1 and length_size != 2 and length_size != 4) return error.InvalidLengthSize;
+        return .{ .data = data, .format = format, .length_size = length_size };
+    }
+    pub fn next(self: *NalIterator) !?[]const u8 {
+        if (self.position == self.data.len) return null;
+        const remaining = self.data[self.position..];
+        if (self.format == .length_prefixed) {
+            const size: usize = self.length_size;
+            if (remaining.len < size) return error.TruncatedNal;
+            const length: usize = switch (self.length_size) {
+                1 => remaining[0],
+                2 => std.mem.readInt(u16, remaining[0..2], .big),
+                4 => std.mem.readInt(u32, remaining[0..4], .big),
+                else => unreachable,
+            };
+            if (length == 0) return error.EmptyNal;
+            if (length > remaining.len - size) return error.TruncatedNal;
+            const result = remaining[size..][0..length];
+            self.position += size + length;
+            return result;
+        }
+        const start = findStartCode(remaining) orelse return error.MissingStartCode;
+        for (remaining[0..start.offset]) |byte| if (byte != 0) return error.InvalidPrefix;
+        const from = start.offset + start.length;
+        const following = findStartCode(remaining[from..]);
+        const boundary = if (following) |value| from + value.offset else remaining.len;
+        var end = boundary;
+        while (end > from and remaining[end - 1] == 0) end -= 1;
+        if (end == from) return error.EmptyNal;
+        const result = remaining[from..end];
+        self.position += boundary;
+        return result;
+    }
+};
+
+test "NAL iterators reject malformed prefixes and suffixes atomically and strip Annex B framing zeros" {
+    const t = std.testing;
+    var it = try NalIterator.init(&.{ 0, 0, 0, 0, 1, 0x67, 1, 0, 0, 0, 0, 1, 0x68, 2, 0, 0 }, .annex_b, 4);
+    try t.expectEqualSlices(u8, &.{ 0x67, 1 }, (try it.next()).?);
+    try t.expectEqualSlices(u8, &.{ 0x68, 2 }, (try it.next()).?);
+    try t.expect(try it.next() == null);
+    var bad = try NalIterator.init(&.{ 7, 0, 0, 1, 0x65 }, .annex_b, 4);
+    try t.expectError(error.InvalidPrefix, bad.next());
+    try t.expectEqual(@as(usize, 0), bad.position);
+    bad = try NalIterator.init(&.{ 0, 0, 1, 0, 0, 1, 0x65 }, .annex_b, 4);
+    try t.expectError(error.EmptyNal, bad.next());
+    for ([_][]const u8{ &.{ 0, 0, 0 }, &.{ 0, 0, 0, 0 }, &.{ 0, 0, 0, 2, 0x65 }, &.{ 0, 0, 0, 1, 0x65, 9 } }) |bytes| {
+        bad = try NalIterator.init(bytes, .length_prefixed, 4);
+        if (bytes.len == 6) {
+            _ = try bad.next();
+            try t.expectError(error.TruncatedNal, bad.next());
+        } else if (bytes.len == 4) try t.expectError(error.EmptyNal, bad.next()) else try t.expectError(error.TruncatedNal, bad.next());
+    }
+    try t.expectError(error.InvalidLengthSize, NalIterator.init(&.{}, .length_prefixed, 3));
 }
