@@ -4,9 +4,12 @@
 frame-retirement policy. `kms_scanout_host.Device` uses the shared discovery
 driver/UAPI adapter to import those buffers and operate one unused plane on a
 connected, already active CRTC. Host code requires Zig 0.15.2 on Linux; portable
-policy also supports development Zig. Both export through `video.zig`. On
-unsupported native toolchains the root's host namespaces expose `available=false`
-without parsing C imports, so portable video-root consumers remain usable.
+policy also supports development Zig through `video.zig`. Native host APIs use
+the explicit `src/kms_host.zig` entry point (`discovery` and `scanout` namespaces).
+They are not imported by the portable video root: newer Zig parses even unused
+conditional imports and rejects the removed C-translation builtin. The root's
+`kms_host_toolchain_supported` flag reports toolchain support; each native host's
+`available` flag reports Linux platform support on the pinned compiler.
 
 The caller owns source leases. Two resource slots carry opaque Gate tokens 1/2;
 keep their source owners live while the gate names either slot. `prepare` imports

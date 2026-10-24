@@ -149,10 +149,11 @@ consumer. The controlled terminal fixture has already reaped its child before
 reporting the problem, so its result must remain exactly 127.
 
 Read-only Linux display catalogs are available through
-[`kms_discovery_host`](docs/kms-discovery.md). The bounded portable collector
+[`kms_host.discovery`](docs/kms-discovery.md), imported from `src/kms_host.zig`
+with Zig 0.15.2. The bounded portable collector
 retains connector/mode/CRTC/FOURCC identities and per-card failure diagnostics;
 the hosted adapter closes all query FDs and never acquires display ownership.
 
-[`kms_scanout` and `kms_scanout_host`](docs/kms-scanout.md) add two-slot linear
+[`kms_scanout` and `kms_host.scanout`](docs/kms-scanout.md) add two-slot linear
 DMABUF plane scanout with explicit PRIME alias references and flip-completion
 retirement. The caller retains source leases until confirmed replacement/detach.

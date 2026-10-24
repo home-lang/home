@@ -1,9 +1,10 @@
 # Read-only hosted KMS catalogs
 
 `display/kms_discovery_host.zig::scan(result, card)` fills a fixed-capacity
-`kms_discovery.Result` on Linux. The video root also exports `kms_catalog`,
-`kms_discovery` and `kms_discovery_host`. The hosted adapter requires pinned Zig
-0.15.2/libc; the portable collector/catalog support development Zig as well.
+`kms_discovery.Result` on Linux. The video root exports `kms_catalog` and
+`kms_discovery`. Native host APIs have a separate `src/kms_host.zig` entry point
+with `discovery` and `scanout` namespaces. The hosted adapter requires pinned Zig
+0.15.2/libc; the portable root/collector/catalog support development Zig as well.
 
 With no exact card, scan tries `/dev/dri/card0` through `card63`. Missing nodes
 are normal. Permission/query errors contribute explicit card issues with stage,
