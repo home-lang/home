@@ -14,7 +14,7 @@ static const uint8_t exif_bytes[]={'I','I',42,0,8,0,0,0,0,0};
 static uint8_t *encode(unsigned w,unsigned h,unsigned mode,unsigned progressive,unsigned restart,int quality,int separate,unsigned long *size){
  struct jpeg_compress_struct c;struct jpeg_error_mgr error;c.err=jpeg_std_error(&error);error.trace_level=-1;jpeg_create_compress(&c);
  unsigned char *output=NULL;jpeg_mem_dest(&c,&output,size);
- const unsigned channels=(mode==6||mode==11)?1:(mode>=8&&mode<=11)?4:3;
+ const unsigned channels=(mode==6||mode==11)?1:(mode>=8&&mode<=10)?4:3;
  c.image_width=w;c.image_height=h;c.input_components=(int)channels;c.in_color_space=channels==1?JCS_GRAYSCALE:channels==4?JCS_CMYK:JCS_RGB;
  jpeg_set_defaults(&c);
  if(mode==11){c.comp_info[0].h_samp_factor=4;c.comp_info[0].v_samp_factor=4;}
@@ -65,10 +65,10 @@ int main(int argc,char **argv){
  if(argc==6){const unsigned mode=argument(argv[3],11),progressive=argument(argv[4],2),nearest=argument(argv[5],1);unsigned long size=0;uint8_t *input=encode(35,23,mode,progressive,3,75,0,&size);size_t output_size;unsigned w,h;uint8_t *output=reference(input,size,nearest,&output_size,&w,&h);assert(w==35&&h==23);save(argv[1],input,size);save(argv[2],output,output_size);free(output);free(input);return 0;}
  assert(argc==1);
  const unsigned dims[][2]={{1,1},{9,17},{35,23}};const int qualities[]={1,75,100};
- for(unsigned mode=0;mode<=10;mode++)for(unsigned p=0;p<2;p++)for(unsigned d=0;d<3;d++)for(unsigned r=0;r<3;r++)for(unsigned q=0;q<3;q++){
+ for(unsigned mode=0;mode<=11;mode++)for(unsigned p=0;p<2;p++)for(unsigned d=0;d<3;d++)for(unsigned r=0;r<3;r++)for(unsigned q=0;q<3;q++){
   run(dims[d][0],dims[d][1],mode,p,r==2?3:r,qualities[q],0,1);
   if(mode<4||mode>=6)run(dims[d][0],dims[d][1],mode,p,r==2?3:r,qualities[q],0,0);
  }
- for(unsigned mode=0;mode<=10;mode++){run(35,23,mode,0,3,75,1,1);run(35,23,mode,2,3,75,0,1);}
+ for(unsigned mode=0;mode<=11;mode++){run(35,23,mode,0,3,75,1,1);run(35,23,mode,2,3,75,0,1);}
  printf("%u independent JPEG grayscale/YCbCr/RGB/CMYK/YCCK sequential/progressive, sampling, restart, quantization, metadata and truncation cases passed; maximum sample difference %u\n",cases,largest_error);return 0;
 }
