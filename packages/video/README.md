@@ -114,3 +114,12 @@ explains why priming and remainder samples must be excluded from presentation.
 Run `zig test packages/video/src/containers/mp4_stream.zig` and the public API
 fixture `packages/video/tests/mp4_forward.zig`; CI checks Debug/ReleaseSafe on
 pinned and development Zig across macOS, Linux x86_64 and Linux ARM64.
+
+The supervised-output child verifies its actual process group if its redundant
+`setpgid(0, 0)` fails. The parent can already have established the same group;
+startup proceeds only when `getpgrp() == getpid()`. An unowned group remains a
+terminal setup error, with the original errno preserved. The regression consumer
+`tests/process_output_consumer.zig` independently checks group identity after exec,
+echoes bounded media through EOF, and is exercised through 50 joined startups by
+`process_output_host.ts` when passed as its second executable argument. The native
+host CI compiles and runs both on macOS and both Linux architectures.

@@ -102,7 +102,13 @@ fn run(args: []const [:0]u8) !u8 {
         // Only async-signal-safe libc calls occur between fork and exec.
         const default = std.posix.Sigaction{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
         for ([_]u8{ std.posix.SIG.TERM, std.posix.SIG.INT, std.posix.SIG.HUP, std.posix.SIG.USR1, std.posix.SIG.PIPE }) |sig| std.posix.sigaction(sig, &default, null);
-        if (c.setpgid(0, 0) != 0) childFailure(pipes[1], errnoValue(@as(c_int, -1)));
+        if (c.setpgid(0, 0) != 0) {
+            const code = errnoValue(@as(c_int, -1));
+            // Parent and child both establish this group. A redundant child
+            // call can fail after the parent has already done so. Accept only
+            // the actual required postcondition; never ignore an unowned group.
+            if (c.getpgrp() != c.getpid()) childFailure(pipes[1], code);
+        }
         if (builtin.os.tag == .linux) {
             if (c.prctl(c.PR_SET_PDEATHSIG, @as(c_ulong, c.SIGKILL), @as(c_ulong, 0), @as(c_ulong, 0), @as(c_ulong, 0)) != 0) childFailure(pipes[1], errnoValue(@as(c_int, -1)));
             if (c.getppid() != supervisor) childFailure(pipes[1], c.ECHILD);

@@ -17,6 +17,7 @@ function launch(command:string[]){
       records.push({kind:b.readUInt32LE(4),status:b.readUInt32LE(8),supervisor:Number(b.readBigUInt64LE(16)),consumer:Number(b.readBigUInt64LE(24))})
     }
   })
+  // eslint-disable-next-line pickier/no-unused-vars -- References inside for-await are missed by this rule.
   async function drain(stream:ReadableStream<Uint8Array>,out:Buffer[]){for await(const bytes of stream){out.push(Buffer.from(bytes));assert(out.reduce((n,b)=>n+b.length,0)<65536)}}
   const readers=Promise.all([drain(child.stdout,chunks),drain(child.stderr,err)])
   return {child,socket,records,err,chunks,get closed(){return closed},async join(){const code=await child.exited;await readers;await until(()=>closed);if(protocolError)throw protocolError;return code}}
@@ -40,5 +41,16 @@ for(const expected of [0,42]){
   await until(()=>p.records.some(r=>r.kind===3))
   assert(p.records.find(r=>r.kind===3)!.status>0);assert.equal(await p.join(),125)
   await p.child.stdin.end()
+}
+const groupConsumer=process.argv[3]
+if(groupConsumer)for(let i=0;i<50;i++){
+  const p=launch([groupConsumer])
+  await until(()=>p.records.length>0)
+  assert.equal(p.records[0].kind,1,JSON.stringify(p.records))
+  const consumer=p.records[0].consumer
+  await p.child.stdin.write('bounded media');await p.child.stdin.flush();await p.child.stdin.end()
+  assert.equal(await p.join(),0)
+  assert.equal(Buffer.concat(p.chunks).toString(),'owned-group\nbounded media')
+  assert.equal(p.records.at(-1)?.status,0);assert(!alive(consumer));assert(!alive(p.child.pid))
 }
 console.log('standalone host proves exec readiness, exact media EOF, exit status, control EOF cancellation and joined process exit')

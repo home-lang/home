@@ -41,4 +41,5 @@ jobs:
         shell: bash
         run: |
           zig build-exe -lc -O ReleaseSafe packages/video/src/process_output_host.zig -femit-bin=video-output-host
-          bun packages/video/tests/process_output_host.ts "$PWD/video-output-host"
+          zig build-exe -lc -O ReleaseSafe packages/video/tests/process_output_consumer.zig -femit-bin=video-group-consumer
+          bun packages/video/tests/process_output_host.ts "$PWD/video-output-host" "$PWD/video-group-consumer"
