@@ -30,6 +30,26 @@ pub const View = struct {
         if ((a <= b and b - a < self.data.len) or (b < a and a - b < dst.len)) return error.Overlap;
         for (0..self.height) |y| @memcpy(dst[y * self.width * 4 ..][0 .. self.width * 4], self.row(y));
     }
+    /// Driver ARGB8888 is byte-ordered BGRA on little-endian scanout. Coverage
+    /// keeps straight samples; premultiplication rounds (c*a+127)/255 exactly.
+    /// Validate all source/destination spans and overlap before any write.
+    pub fn toBgra(self: View, out: []u8, stride: usize, premultiply: bool) !void {
+        const src = try View.init(self.data, self.width, self.height, self.stride);
+        const dst = try View.init(out, self.width, self.height, stride);
+        const a = @intFromPtr(src.data.ptr);
+        const b = @intFromPtr(dst.data.ptr);
+        if ((a <= b and b - a < src.data.len) or (b < a and a - b < dst.data.len)) return error.Overlap;
+        for (0..src.height) |y| for (0..src.width) |x| {
+            const at = y * src.stride + x * 4;
+            const target = y * stride + x * 4;
+            const alpha = src.data[at + 3];
+            inline for (0..3) |ch| {
+                const value = src.data[at + 2 - ch];
+                out[target + ch] = if (premultiply) @intCast((@as(u16, value) * alpha + 127) / 255) else value;
+            }
+            out[target + 3] = alpha;
+        };
+    }
 };
 test "padded RGBA excludes padding and retains exact straight alpha" {
     const src = [_]u8{ 255, 1, 2, 0, 4, 5, 6, 128, 99, 99, 99, 99, 7, 8, 9, 255, 10, 11, 12, 1 };
@@ -55,4 +75,36 @@ test "invalid RGBA geometry overflow truncation and overlapping output do not wr
     for (bytes) |value| try std.testing.expectEqual(@as(u8, 91), value);
     try view.copy(bytes[0..8]);
     try view.copy(bytes[16..24]);
+}
+
+test "BGRA scanout conversion retains coverage alpha and rounds every premultiplied alpha" {
+    const t = std.testing;
+    for (0..256) |alpha| for ([_]bool{ false, true }) |premultiply| {
+        const rgba = [8]u8{ 17, 129, 255, @intCast(alpha), 0, 255, 73, @intCast(alpha) };
+        const view = try View.init(&rgba, 1, 2, 4);
+        var out: [15]u8 = @splat(91);
+        try view.toBgra(out[1..], 8, premultiply);
+        for (0..2) |y| {
+            inline for (0..3) |ch| {
+                const value = rgba[y * 4 + 2 - ch];
+                const expected: u8 = if (premultiply) @intCast((@as(u32, value) * alpha + 127) / 255) else value;
+                try t.expectEqual(expected, out[1 + y * 8 + ch]);
+            }
+            try t.expectEqual(@as(u8, @intCast(alpha)), out[1 + y * 8 + 3]);
+        }
+        try t.expectEqual(@as(u8, 91), out[0]);
+        try t.expectEqual(@as(u8, 91), out[5]);
+        try t.expectEqual(@as(u8, 91), out[14]);
+    };
+}
+test "BGRA rejects late truncation overlap and invalid stride without writes" {
+    const t = std.testing;
+    var source: [24]u8 = @splat(79);
+    var out: [24]u8 = @splat(71);
+    const view = try View.init(source[1..], 2, 2, 11);
+    const before = out;
+    try t.expectError(error.InvalidGeometry, view.toBgra(&out, 7, false));
+    try t.expectError(error.BufferTooSmall, view.toBgra(out[0..18], 11, true));
+    try t.expectError(error.Overlap, view.toBgra(source[1..], 11, false));
+    try t.expectEqualSlices(u8, &before, &out);
 }

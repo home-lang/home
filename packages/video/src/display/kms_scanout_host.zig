@@ -4,6 +4,7 @@ const std = @import("std");
 pub const policy = @import("kms_scanout.zig");
 const discovery = @import("kms_discovery_host.zig");
 pub const available = discovery.available;
+pub const Blend = enum { coverage, premultiplied };
 pub const Geometry = struct { x: i32 = 0, y: i32 = 0, width: u32, height: u32, rotation: u64 = 1, encoding: ?enum { bt601, bt709, bt2020 } = null, full_range: bool = false };
 pub const Options = struct { connector: u32 = 0, plane: u32 = 0, fourcc: u32, timeout_ms: u32 = 1000 };
 pub const Device = if (available) Linux else struct {};
@@ -30,12 +31,27 @@ const Linux = if (available) struct {
         encodings: [3]?u64 = @splat(null),
         ranges: [2]?u64 = @splat(null),
         kind: ?u64 = null,
+        zpos: ?u64 = null,
+        zpos_id: u32 = 0,
+        zpos_min: u64 = 0,
+        zpos_max: u64 = 0,
+        blend_id: u32 = 0,
+        blend_present: bool = false,
+        blend_current: u64 = 0,
+        blends: [2]?u64 = @splat(null),
         alpha: u32 = 0,
         opaque_alpha: u64 = 0,
         restore_ids: [16]u32 = @splat(0),
         restore_values: [16]u64 = @splat(0),
         restore_count: usize = 0,
         unused: bool = true,
+        fn alphaMode(p: Properties) ?Blend {
+            if (!p.blend_present) return null;
+            for ([_]Blend{ .coverage, .premultiplied }) |mode| if (p.blends[@intFromEnum(mode)]) |value| {
+                if (p.blend_id != 0 or p.blend_current == value) return mode;
+            };
+            return null;
+        }
         fn complete(p: Properties) bool {
             return p.fb != 0 and p.crtc != 0 and p.src_x != 0 and p.src_y != 0 and p.src_w != 0 and p.src_h != 0 and p.dst_x != 0 and p.dst_y != 0 and p.dst_w != 0 and p.dst_h != 0;
         }
@@ -58,6 +74,16 @@ const Linux = if (available) struct {
     needs_detach: bool = false,
     poisoned: bool = false,
     closed: bool = false,
+    parent: ?*@This() = null,
+    borrowers: u32 = 0,
+    overlay_z: ?u64 = null,
+    overlay_blend: ?Blend = null,
+    fn root(self: *@This()) *@This() {
+        return self.parent orelse self;
+    }
+    pub fn premultipliedAlpha(self: *@This()) bool {
+        return self.overlay_blend == .premultiplied;
+    }
 
     /// Exact card path; caller can use the bounded catalog to choose one. Never
     /// takes an occupied plane or changes CRTC/connector modes. One master FD.
@@ -76,6 +102,23 @@ const Linux = if (available) struct {
         if (!self.driver.capabilities(self.fd).atomic) return error.Unsupported;
         var no_argument: u32 = 0;
         try self.driver.query(self.fd, c.DRM_IOCTL_SET_MASTER, &no_argument);
+        try self.select(options, null);
+    }
+    /// Shares one master/event FD. The primary must stay at a stable address and
+    /// cannot close until this child has detached and completed cleanup. At most
+    /// one child reservation prevents two inactive owners selecting one plane.
+    pub fn openOverlay(self: *@This(), primary: *@This()) !void {
+        if (primary.parent != null or primary.borrowers != 0 or primary.fd < 0 or primary.closed or primary.poisoned or primary.gate.uncertain or primary.plane == 0) return error.State;
+        self.* = .{ .fd = primary.fd, .fourcc = policy.catalog.fourcc("AR24"), .timeout_ms = primary.timeout_ms };
+        errdefer {
+            self.fd = -1;
+            self.closed = true;
+        }
+        try self.select(.{ .connector = primary.connector, .fourcc = self.fourcc, .timeout_ms = self.timeout_ms }, primary);
+        self.parent = primary;
+        primary.borrowers += 1;
+    }
+    fn select(self: *@This(), options: Options, primary: ?*@This()) !void {
         var resources: discovery.core.Resources = .{};
         try self.driver.resources(self.fd, &resources);
         const allowed = try discovery.core.catalog.crtcMask(resources.crtc_count);
@@ -91,11 +134,17 @@ const Linux = if (available) struct {
             var crtc: discovery.core.Crtc = .{};
             try self.driver.crtc(self.fd, encoder.crtc, &crtc);
             if (!crtc.active or crtc.mode.width == 0 or crtc.mode.height == 0) continue;
+            if (primary) |owner| {
+                if (crtc.id != owner.crtc) continue;
+            }
             var planes: discovery.core.PlaneIds = .{};
             try self.driver.planes(self.fd, &planes);
             try discovery.core.catalog.validIds(planes.ids[0..planes.count]);
             for (planes.ids[0..planes.count]) |plane_id| {
                 if (options.plane != 0 and plane_id != options.plane) continue;
+                if (primary) |owner| {
+                    if (plane_id == owner.plane) continue;
+                }
                 var formats: [256]u32 = undefined;
                 var plane = std.mem.zeroes(c.struct_drm_mode_get_plane);
                 plane.plane_id = plane_id;
@@ -104,8 +153,20 @@ const Linux = if (available) struct {
                 try self.driver.query(self.fd, c.DRM_IOCTL_MODE_GETPLANE, &plane);
                 if (plane.count_format_types > formats.len) return error.TopologyLimit;
                 if (plane.fb_id != 0 or plane.crtc_id != 0 or plane.possible_crtcs & (@as(u32, 1) << @as(u5, @intCast(index))) == 0 or std.mem.indexOfScalar(u32, formats[0..plane.count_format_types], options.fourcc) == null) continue;
-                const props = try self.readProperties(plane_id);
+                const props = self.readProperties(plane_id) catch |err| {
+                    if (err == error.Unsupported) continue;
+                    return err;
+                };
                 if (!props.complete() or props.kind == null or props.kind == 2 or !props.unused) continue;
+                if (primary) |owner| {
+                    const z = policy.overlayZ(owner.properties.zpos, props.zpos, if (props.zpos_id != 0) .{ .min = props.zpos_min, .max = props.zpos_max } else null) catch |err| {
+                        if (err == error.Unsupported) continue;
+                        return err;
+                    };
+                    const mode = props.alphaMode() orelse continue;
+                    self.overlay_z = z;
+                    self.overlay_blend = mode;
+                }
                 self.connector = id;
                 self.crtc = crtc.id;
                 self.plane = plane_id;
@@ -182,6 +243,31 @@ const Linux = if (available) struct {
                     };
                 }
             }
+            if (std.mem.eql(u8, name, "zpos")) {
+                if (property.count_values != 2 or property.flags & c.DRM_MODE_PROP_RANGE == 0 or ranges[0] > ranges[1] or values[i] < ranges[0] or values[i] > ranges[1]) return error.InvalidTopology;
+                result.zpos = values[i];
+                result.zpos_min = ranges[0];
+                result.zpos_max = ranges[1];
+                if (mutable) {
+                    result.zpos_id = id;
+                    restore = true;
+                }
+            }
+            if (std.mem.eql(u8, name, "pixel blend mode")) {
+                if (property.flags & c.DRM_MODE_PROP_ENUM == 0) return error.InvalidTopology;
+                result.blend_present = true;
+                result.blend_current = values[i];
+                if (mutable) {
+                    result.blend_id = id;
+                    restore = true;
+                }
+                for (enums[0..property.count_enum_blobs]) |entry| {
+                    const text = boundedName(&entry.name) orelse return error.InvalidTopology;
+                    for ([_]struct { []const u8, Blend }{ .{ "Coverage", .coverage }, .{ "Pre-multiplied", .premultiplied } }) |wanted| {
+                        if (std.mem.eql(u8, text, wanted[0])) result.blends[@intFromEnum(wanted[1])] = entry.value;
+                    }
+                }
+            }
             if (std.mem.eql(u8, name, "alpha")) {
                 if (property.count_values != 2 or property.flags & c.DRM_MODE_PROP_RANGE == 0 or ranges[0] > ranges[1]) return error.InvalidTopology;
                 if (!mutable and values[i] != ranges[1]) return error.Unsupported;
@@ -215,7 +301,7 @@ const Linux = if (available) struct {
         }
     }
     pub fn freeSlot(self: *@This()) !usize {
-        if (self.fd < 0 or self.closed or self.poisoned or self.gate.uncertain or self.cookie >= std.math.maxInt(u64) - 1) return error.State;
+        if (self.fd < 0 or self.closed or self.poisoned or self.gate.uncertain or self.root().cookie >= std.math.maxInt(u64) - 1) return error.State;
         for (self.slots, 0..) |slot, i| if (((slot.fb == 0 and slot.count == 0 and slot.dumb == 0 and slot.mapping == null and slot.cpu_fd < 0) or (slot.dumb != 0 and slot.fb != 0 and !slot.cpu_access)) and self.gate.current != i + 1 and self.gate.candidate != i + 1) return i;
         return error.State;
     }
@@ -266,7 +352,7 @@ const Linux = if (available) struct {
     /// Bracket all returned bytes with finishCpu before submitting the framebuffer.
     pub fn prepareCpu(self: *@This(), index: usize, width: u32, height: u32) !CpuTarget {
         if (self.fd < 0 or self.closed or self.poisoned or index >= 2 or self.gate.current == index + 1 or self.gate.candidate == index + 1) return error.State;
-        if (self.fourcc != policy.catalog.fourcc("XR24") and self.fourcc != policy.catalog.fourcc("XB24")) return error.Unsupported;
+        if (self.fourcc != policy.catalog.fourcc("XR24") and self.fourcc != policy.catalog.fourcc("XB24") and self.fourcc != policy.catalog.fourcc("AR24")) return error.Unsupported;
         if (width == 0 or height == 0 or width > 16384 or height > 16384) return error.InvalidLayout;
         _ = try policy.CpuLayout.init(width, height, width * 4, @as(u64, width) * height * 4);
         const slot = &self.slots[index];
@@ -370,7 +456,8 @@ const Linux = if (available) struct {
         self.handles = .{};
         if (failure) |err| return err;
     }
-    fn atomic(self: *@This(), slot: ?usize, geometry: Geometry, flags: u32, cookie: u64) !void {
+    const Clause = struct { object: u32, ids: [16]u32, values: [16]u64, count: u32 };
+    fn clause(self: *@This(), slot: ?usize, geometry: Geometry) Clause {
         var ids: [16]u32 = undefined;
         var values: [16]u64 = undefined;
         var count: usize = 0;
@@ -400,6 +487,20 @@ const Linux = if (available) struct {
                 values[count] = p.opaque_alpha;
                 count += 1;
             }
+            if (self.overlay_z) |value| {
+                if (p.zpos_id != 0) {
+                    ids[count] = p.zpos_id;
+                    values[count] = value;
+                    count += 1;
+                }
+            }
+            if (self.overlay_blend) |mode| {
+                if (p.blend_id != 0) {
+                    ids[count] = p.blend_id;
+                    values[count] = p.blends[@intFromEnum(mode)].?;
+                    count += 1;
+                }
+            }
             if (geometry.encoding) |encoding| {
                 ids[count] = p.encoding;
                 values[count] = p.encodings[@intFromEnum(encoding)].?;
@@ -413,22 +514,40 @@ const Linux = if (available) struct {
             @memcpy(ids[0..count], p.restore_ids[0..count]);
             @memcpy(values[0..count], p.restore_values[0..count]);
         }
-        var object = self.plane;
-        var length: u32 = @intCast(count);
+        return .{ .object = self.plane, .ids = ids, .values = values, .count = @intCast(count) };
+    }
+    fn submitClauses(self: *@This(), clauses: []const Clause, flags: u32, cookie: u64) !void {
+        if (clauses.len == 0 or clauses.len > 2) return error.State;
+        var objects: [2]u32 = undefined;
+        var lengths: [2]u32 = undefined;
+        var ids: [32]u32 = undefined;
+        var values: [32]u64 = undefined;
+        var count: usize = 0;
+        for (clauses, 0..) |part, i| {
+            objects[i] = part.object;
+            lengths[i] = part.count;
+            @memcpy(ids[count..][0..part.count], part.ids[0..part.count]);
+            @memcpy(values[count..][0..part.count], part.values[0..part.count]);
+            count += part.count;
+        }
         var request = std.mem.zeroes(c.struct_drm_mode_atomic);
         request.flags = flags;
-        request.count_objs = 1;
-        request.objs_ptr = @intFromPtr(&object);
-        request.count_props_ptr = @intFromPtr(&length);
+        request.count_objs = @intCast(clauses.len);
+        request.objs_ptr = @intFromPtr(&objects);
+        request.count_props_ptr = @intFromPtr(&lengths);
         request.props_ptr = @intFromPtr(&ids);
         request.prop_values_ptr = @intFromPtr(&values);
         request.user_data = cookie;
         try self.driver.query(self.fd, c.DRM_IOCTL_MODE_ATOMIC, &request);
     }
+    fn atomic(self: *@This(), slot: ?usize, geometry: Geometry, flags: u32, cookie: u64) !void {
+        return self.submitClauses(&.{self.clause(slot, geometry)}, flags, cookie);
+    }
     fn nextCookie(self: *@This()) !u64 {
-        if (self.cookie == std.math.maxInt(u64)) return error.State;
-        self.cookie += 1;
-        return self.cookie;
+        const owner = self.root();
+        if (owner.cookie == std.math.maxInt(u64)) return error.State;
+        owner.cookie += 1;
+        return owner.cookie;
     }
     fn wait(self: *@This(), cookie: u64) !void {
         var timer = try std.time.Timer.start();
@@ -497,9 +616,61 @@ const Linux = if (available) struct {
         try self.wait(cookie);
         _ = try self.gate.confirmed();
     }
+    fn stageTarget(self: *@This(), target: ?usize) !bool {
+        if (self.closed or self.poisoned or self.gate.uncertain or self.gate.candidate != 0) return error.State;
+        if (target) |index| {
+            if (index >= 2 or self.slots[index].fb == 0 or self.slots[index].cpu_access) return error.State;
+            if (self.gate.current == index + 1) return false;
+            try self.gate.stage(index + 1);
+            return true;
+        }
+        return false;
+    }
+    fn confirmTarget(self: *@This(), target: ?usize, staged: bool) void {
+        if (staged) {
+            _ = self.gate.confirmed() catch unreachable;
+        } else if (target == null) {
+            _ = self.gate.detached();
+        } else self.gate.uncertain = false;
+        self.needs_detach = target != null;
+        self.detach_cookie = null;
+    }
+    /// Atomically replaces, repositions or hides both planes on the same CRTC.
+    /// TEST rejection changes no published gate; unknown actual submissions keep
+    /// every possible source in BOTH owners until a matching restoration proof.
+    pub fn presentPair(self: *@This(), other: *@This(), target: ?usize, geometry: Geometry, other_target: ?usize, other_geometry: Geometry) !void {
+        if (other.parent != self or self.parent != null or self.fd < 0 or other.fd != self.fd or self.crtc != other.crtc) return error.State;
+        if (target != null) try self.checkGeometry(geometry);
+        if (other_target != null) try other.checkGeometry(other_geometry);
+        const first = try self.stageTarget(target);
+        var actual = false;
+        errdefer if (!actual and first) {
+            _ = self.gate.rejected() catch unreachable;
+        };
+        const second = try other.stageTarget(other_target);
+        errdefer if (!actual and second) {
+            _ = other.gate.rejected() catch unreachable;
+        };
+        const parts = [_]Clause{ self.clause(target, geometry), other.clause(other_target, other_geometry) };
+        const cookie = try self.nextCookie();
+        try self.submitClauses(&parts, c.DRM_MODE_ATOMIC_TEST_ONLY, 0);
+        actual = true;
+        self.gate.submitted();
+        other.gate.submitted();
+        self.needs_detach = true;
+        other.needs_detach = true;
+        errdefer {
+            self.poisoned = true;
+            other.poisoned = true;
+        }
+        try self.submitClauses(&parts, c.DRM_MODE_ATOMIC_NONBLOCK | c.DRM_MODE_PAGE_FLIP_EVENT, cookie);
+        try self.wait(cookie);
+        self.confirmTarget(target, first);
+        other.confirmTarget(other_target, second);
+    }
     pub fn changeGeometry(self: *@This(), geometry: Geometry) !void {
         try self.checkGeometry(geometry);
-        if (self.closed or self.poisoned or self.gate.uncertain or self.cookie >= std.math.maxInt(u64) - 1) return error.State;
+        if (self.closed or self.poisoned or self.gate.uncertain or self.root().cookie >= std.math.maxInt(u64) - 1) return error.State;
         if (self.gate.current == 0) return;
         const cookie = try self.nextCookie();
         const index: usize = @intCast(self.gate.current - 1);
@@ -555,6 +726,7 @@ const Linux = if (available) struct {
     /// retain a retry/acknowledgement owner rather than exposing a dangling handle.
     pub fn finishClose(self: *@This()) !void {
         if (self.closed) return self.retireClosedMemory();
+        if (self.borrowers != 0) return error.State;
         if (self.needs_detach or self.gate.current != 0 or self.gate.candidate != 0) return error.State;
         var failure: ?anyerror = null;
         for (0..2) |i| self.retire(i) catch |err| {
@@ -563,6 +735,15 @@ const Linux = if (available) struct {
         self.closeUnusedHandles() catch |err| {
             failure = failure orelse err;
         };
+        if (self.parent) |owner| {
+            if (failure) |err| return err;
+            std.debug.assert(owner.borrowers == 1);
+            owner.borrowers -= 1;
+            self.parent = null;
+            self.fd = -1;
+            self.closed = true;
+            return;
+        }
         if (c.close(self.fd) < 0) {
             self.driver.last_errno = c.__errno_location().*;
             failure = failure orelse error.SystemQuery;
@@ -593,5 +774,8 @@ test "Linux scanout rejects absent and non-KMS nodes and analyzes all owned oper
         try std.testing.expectError(error.State, device.prepareCpu(0, 2, 2));
         try std.testing.expectError(error.State, device.finishCpu(0));
         try device.recycle(0);
+        var child: Device = .{};
+        try std.testing.expectError(error.State, child.openOverlay(&device));
+        try std.testing.expectError(error.State, device.presentPair(&child, null, .{ .width = 1, .height = 1 }, null, .{ .width = 1, .height = 1 }));
     }
 }

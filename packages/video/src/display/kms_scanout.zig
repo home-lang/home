@@ -184,3 +184,30 @@ test "CPU scanout validates full padded allocation extent before device mapping"
     try t.expectEqual(@as(usize, 4096), v.size);
     for ([_][4]u64{ .{ 0, 2, 16, 4096 }, .{ 3, 0, 16, 4096 }, .{ 3, 2, 11, 4096 }, .{ 3, 2, 16, 31 }, .{ 3, 2, 16, 0 }, .{ 3, 2, 16, 256 * 1024 * 1024 + 1 } }) |bad| try t.expectError(error.InvalidLayout, CpuLayout.init(@intCast(bad[0]), @intCast(bad[1]), @intCast(bad[2]), bad[3]));
 }
+
+/// Do not infer relative stacking from object IDs or normalized inactive planes.
+/// Missing/unsatisfiable zpos is unsupported rather than an invisible overlay.
+pub fn overlayZ(bottom: ?u64, current: ?u64, range: ?struct { min: u64, max: u64 }) !u64 {
+    const base = bottom orelse return error.Unsupported;
+    const top = current orelse return error.Unsupported;
+    if (range) |r| {
+        if (r.min > r.max) return error.InvalidLayout;
+        const next = std.math.add(u64, base, 1) catch return error.Unsupported;
+        const wanted = @max(r.min, next);
+        if (wanted > r.max) return error.Unsupported;
+        return if (top >= wanted and top <= r.max) top else wanted;
+    }
+    if (top <= base) return error.Unsupported;
+    return top;
+}
+test "overlay stacking proves strict order for mutable and immutable zpos" {
+    const t = std.testing;
+    try t.expectEqual(@as(u64, 4), try overlayZ(3, 1, .{ .min = 0, .max = 7 }));
+    try t.expectEqual(@as(u64, 6), try overlayZ(3, 6, .{ .min = 0, .max = 7 }));
+    try t.expectEqual(@as(u64, 4), try overlayZ(3, 4, null));
+    try t.expectError(error.Unsupported, overlayZ(null, 4, null));
+    try t.expectError(error.Unsupported, overlayZ(3, null, null));
+    try t.expectError(error.Unsupported, overlayZ(3, 3, null));
+    try t.expectError(error.Unsupported, overlayZ(3, 2, .{ .min = 0, .max = 3 }));
+    try t.expectError(error.Unsupported, overlayZ(std.math.maxInt(u64), 1, .{ .min = 0, .max = std.math.maxInt(u64) }));
+}
