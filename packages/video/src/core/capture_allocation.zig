@@ -85,7 +85,7 @@ pub const State = enum { preparing, borrowed, idle, retiring };
 pub const Claim = struct { token: u64 };
 pub const Retirement = struct { slot: u32, generation: u64 };
 
-/// One exclusive borrower per exact layout. A camera driver may internally
+/// One exclusive borrower per entry. A camera driver may internally
 /// retain many requests/frames; it releases this borrower only after joining all
 /// of them. Idle entries stay charged and are evicted explicitly, never during
 /// checkout. The host fixes its backing provider for this cache's lifetime.
@@ -116,17 +116,32 @@ pub fn Cache(comptime capacity: usize) type {
             return .{ .reservations = try Reservations.init(max_bytes, max_entries) };
         }
         pub fn checkout(self: *Self, requested: *const Layout) !Checkout {
+            return self.checkoutImpl(requested, false);
+        }
+        /// A disconnected camera can still own exported/retained frames while
+        /// its replacement uses the same identity and geometry. Allocate another
+        /// bounded entry if no matching idle storage exists; never share backing
+        /// with the old borrower. Ordinary checkout retains busy-key rejection.
+        pub fn checkoutConcurrent(self: *Self, requested: *const Layout) !Checkout {
+            return self.checkoutImpl(requested, true);
+        }
+        fn checkoutImpl(self: *Self, requested: *const Layout, concurrent: bool) !Checkout {
             errdefer self.rejected +|= 1;
             const layout = try requested.normalized();
             const bytes = try layout.bytes();
+            var busy = false;
             for (&self.entries, 0..) |*entry, i| if (entry.*) |*current| {
                 if (!current.layout.eql(&layout)) continue;
-                if (current.state != .idle) return error.LayoutBusy;
+                if (current.state != .idle) {
+                    busy = true;
+                    continue;
+                }
                 const token = try self.owners.acquire(@intCast(i));
                 current.state = .borrowed;
                 self.reuses +|= 1;
                 return .{ .claim = .{ .token = token }, .slot = @intCast(i), .fresh = false };
             };
+            if (busy and !concurrent) return error.LayoutBusy;
             const reservation = try self.reservations.reserve(bytes);
             errdefer self.reservations.release(reservation) catch unreachable;
             const token = try self.owners.acquire(@intCast(reservation.slot));
@@ -535,5 +550,29 @@ test "full identity tails and stream order participate in reuse; malformed descr
     try t.expectError(error.InvalidSlot, cache.retireIdle(1));
     try t.expectError(error.StaleRetirement, cache.finishRetirement(.{ .slot = 1, .generation = 1 }));
     try t.expectError(error.StaleClaim, cache.release(.{ .token = 0 }));
+    try t.expect(cache.empty());
+}
+
+test "replacement cameras allocate independent bounded storage while old layout borrowers remain live" {
+    const t = std.testing;
+    const layout = try fixture();
+    var cache = try Cache(2).init(512, 2);
+    const old = try cache.checkout(&layout);
+    try cache.publish(old.claim);
+    try t.expectError(error.LayoutBusy, cache.checkout(&layout));
+    const replacement = try cache.checkoutConcurrent(&layout);
+    try t.expect(replacement.fresh);
+    try t.expect(old.slot != replacement.slot);
+    try cache.publish(replacement.claim);
+    try t.expectError(error.BufferFull, cache.checkoutConcurrent(&layout));
+    try cache.release(replacement.claim);
+    const next = try cache.checkoutConcurrent(&layout);
+    try t.expect(!next.fresh);
+    try t.expectEqual(replacement.slot, next.slot);
+    try t.expectEqual(old.slot, try cache.slot(old.claim));
+    try cache.release(old.claim);
+    try cache.release(next.claim);
+    try cache.finishRetirement(try cache.retireIdle(old.slot));
+    try cache.finishRetirement(try cache.retireIdle(next.slot));
     try t.expect(cache.empty());
 }

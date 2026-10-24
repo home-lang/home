@@ -14,3 +14,13 @@ test "portable video root exposes persistent capture allocation ownership" {
     try cache.finishRetirement(try cache.retireIdle(reused.slot));
     try std.testing.expect(cache.empty());
 }
+
+test "portable video root exposes explicit owned synthetic capture backing" {
+    const backing = video.capture_backing;
+    var owner = try backing.Owner(1, backing.Ram).init(.{ .allocator = std.testing.allocator }, 1024, 1);
+    defer owner.close() catch unreachable;
+    const layout = try backing.policy.Layout.init("test", &.{try backing.policy.Stream.init(8, 4, 32, 128, 2, "BGR888", 0)});
+    const loan = try owner.checkout(&layout);
+    try std.testing.expectEqual(@as(c_int, -1), (try owner.view(loan.claim, 0, 0, false)).fd);
+    try owner.release(loan.claim);
+}

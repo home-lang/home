@@ -2,9 +2,9 @@ name: Video capture allocation policy
 on:
   push:
     branches: [main]
-    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
+    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/capture_backing.zig', 'packages/video/src/core/capture_dma_heap.zig', 'packages/video/src/core/capture_host.zig', 'packages/video/tests/capture_backing*', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
   pull_request:
-    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
+    paths: ['packages/video/src/core/capture_allocation.zig', 'packages/video/src/core/capture_backing.zig', 'packages/video/src/core/capture_dma_heap.zig', 'packages/video/src/core/capture_host.zig', 'packages/video/tests/capture_backing*', 'packages/video/src/core/lease_pool.zig', 'packages/video/src/core/owned_admission.zig', 'packages/video/src/video.zig', 'packages/video/tests/capture_allocation_exports.zig', '.github/workflows/video-capture-allocation.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,5 +28,12 @@ jobs:
           zig fmt --check packages/video/src/core/capture_allocation.zig packages/video/tests/capture_allocation_exports.zig
           for mode in Debug ReleaseSafe ReleaseFast; do
             zig test -O "$mode" packages/video/src/core/capture_allocation.zig
+            zig test -lc -O "$mode" packages/video/src/core/capture_backing.zig
+            if [ "$RUNNER_OS" = Linux ] && [ "$(zig version)" = 0.15.2 ]; then
+              zig test -lc -O "$mode" packages/video/src/core/capture_dma_heap.zig
+              zig build-obj -O "$mode" -fcompiler-rt -lc --dep backing -Mroot=packages/video/tests/capture_backing_fixture.zig -Mbacking=packages/video/src/core/capture_host.zig -femit-bin=/tmp/capture-backing.o
+              cc -std=c11 -O2 -Wall -Wextra -Werror packages/video/tests/capture_backing_linux.c /tmp/capture-backing.o -o /tmp/capture-backing
+              /tmp/capture-backing
+            fi
             zig test -O "$mode" --dep video -Mroot=packages/video/tests/capture_allocation_exports.zig -Mvideo=packages/video/src/video.zig
           done
