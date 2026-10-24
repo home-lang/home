@@ -1,0 +1,45 @@
+name: Image JPEG decoding
+on:
+  push:
+    branches: [main]
+    paths: ['packages/image/src/jpeg*.zig', 'packages/image/src/formats/jpeg.zig', 'packages/image/tests/jpeg_decode*', '.github/workflows/image-jpeg.yml']
+  pull_request:
+    paths: ['packages/image/src/jpeg*.zig', 'packages/image/src/formats/jpeg.zig', 'packages/image/tests/jpeg_decode*', '.github/workflows/image-jpeg.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  jpeg:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Native JPEG scans and independent libjpeg corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install jpeg-turbo zlib
+            jpeg=$(brew --prefix jpeg-turbo)
+            zlib=$(brew --prefix zlib)
+          else
+            sudo apt-get update && sudo apt-get install -y libjpeg-dev zlib1g-dev
+            jpeg=/usr
+            zlib=/usr
+          fi
+          for mode in Debug ReleaseSafe; do
+            zig test -O "$mode" packages/image/src/jpeg_decoder.zig
+            zig build-obj -O "$mode" -fcompiler-rt -lc --dep jpeg -Mroot=packages/image/tests/jpeg_decode_fixture.zig -Mjpeg=packages/image/src/jpeg_decoder.zig -femit-bin=/tmp/jpeg-decode.o
+            cc -std=c11 -O2 -Wall -Wextra -Werror -I"$jpeg/include" packages/image/tests/jpeg_decode_libjpeg.c /tmp/jpeg-decode.o -L"$jpeg/lib" -Wl,-rpath,"$jpeg/lib" -ljpeg -o /tmp/jpeg-decode
+            /tmp/jpeg-decode
+            if [ '${{ matrix.zig }}' = master ]; then
+              zig test -O "$mode" -lc -lz -L"$zlib/lib" -rpath "$zlib/lib" packages/image/src/jpeg_encoder_tests.zig --test-filter JPEG
+            fi
+          done
