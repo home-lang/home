@@ -35,3 +35,8 @@ and fixed-header encoding preflights the complete CSRC capacity before writing.
 
 The explicit src/rtp_test.zig root and tests/rtp_packetizer.zig public API test cover
 both pinned and development Zig. Standards: RFC 3550, RFC 6184, RFC 7798, RFC 3640.
+
+`signedTimestamp` additionally accepts signed 64-bit nanoseconds for codec
+priming before the presentation origin. It rounds down consistently for negative
+samples and intentionally wraps on the RTP wire; timestamps must keep their sign
+until clock conversion, rather than clamping priming to zero.

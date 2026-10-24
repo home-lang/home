@@ -277,3 +277,23 @@ test "RTP admission validates MTU format NAL types and all byte NAL and packet c
     cfg.format = .annex_b;
     try t.expectError(error.InvalidFormat, Packetizer.init(cfg, &good, .{}));
 }
+
+/// Signed presentation times retain encoder priming before a stream's zero.
+/// Division rounds down, including negative values; RTP's wire clock wraps.
+pub fn signedTimestamp(ns: i64, clock_rate: u32, origin: u32) !u32 {
+    if (clock_rate == 0) return error.InvalidClock;
+    const ticks = @divFloor(@as(i128, ns) * clock_rate, 1_000_000_000);
+    const word: u32 = @truncate(@as(u128, @bitCast(ticks)));
+    return origin +% word;
+}
+test "signed RTP clocks preserve negative codec priming and all integer endpoints" {
+    const t = std.testing;
+    try t.expectEqual(@as(u32, 0xfffff800), try signedTimestamp(-42_666_666, 48000, 0));
+    try t.expectEqual(@as(u32, 0xffffffff), try signedTimestamp(-1, 48000, 0));
+    try t.expectEqual(try timestamp(42_666_666, 48000, 0), try signedTimestamp(42_666_666, 48000, 0));
+    for ([_]i64{ std.math.minInt(i64), std.math.maxInt(i64) }) |value| {
+        const expected: i128 = @divFloor(@as(i128, value) * 90000, 1_000_000_000);
+        try t.expectEqual(@as(u32, @truncate(@as(u128, @bitCast(expected)))), try signedTimestamp(value, 90000, 0));
+    }
+    try t.expectError(error.InvalidClock, signedTimestamp(0, 0, 0));
+}
