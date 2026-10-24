@@ -964,6 +964,7 @@ pub const ImageError = error{
 
 pub const Png = png;
 pub const ApngEncoder = png.AnimationEncoder;
+pub const ApngCompositor = @import("apng_compositor.zig");
 pub const Jpeg = jpeg;
 pub const Bmp = bmp;
 pub const Gif = gif;

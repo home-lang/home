@@ -70,3 +70,28 @@ and poster-preserving APNG re-encoding with `AnimationEncoder`. Encoding
 metadata remains an explicit caller choice. The `Image` root requires development
 Zig; the leaf decoder remains portable. Independent libpng fixtures exercise 936
 color/depth/interlace/filter/transparency/geometry combinations per build mode.
+
+### Bounded APNG display compositing
+
+`ApngCompositor.Canvas` (also independently importable as `apng_compositor.zig`)
+accepts checked gray/RGB/RGBA rasters at matching 8/16-bit depth and retains a
+little-endian straight-alpha RGBA display canvas. `Canvas.init` checks the caller's
+working limit before allocating exactly two full canvases; `push` and `reset`
+allocate nothing. Call `deinit` once. The borrowed `view()` changes on the next
+push/reset; copy it explicitly to retain a displayed frame.
+
+Feed animation rectangles in order with x/y/dispose/blend controls. Skip an
+excluded default poster. SOURCE replaces every component including transparent
+RGB; OVER uses widened integer straight-alpha arithmetic with nearest rounding.
+NONE, BACKGROUND and PREVIOUS disposal apply before the next valid frame. First
+frame PREVIOUS acts as BACKGROUND. Bounds, stride, depth, controls and source
+aliasing are checked before disposal or pixel writes. Invalid frames preserve
+both display and restore state. `reset()` starts another play at transparent
+black. Encoded-space composition does not apply gamma/gamut conversion, timers,
+play counts or Exif orientation. This follows the [PNG3 frame controls](https://www.w3.org/TR/png-3/#fcTL-chunk).
+
+Standalone tests cover rectangular disposal, native words/endian/stride,
+transparent replacement, 10,000 independent floating-point alpha comparisons,
+working limits and exhaustive allocator failure cleanup, on Zig 0.15.2 and
+development Zig. Kernel/display ownership belongs to the consumer; this helper
+does not import Home OS or a renderer.
