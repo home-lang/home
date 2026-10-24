@@ -1355,3 +1355,7 @@ pub const boolean_control = @import("core/boolean_control.zig");
 /// Allocation-free AVC/HEVC/AAC RTP framing and correlated RTCP SR/SDES/BYE.
 pub const rtp_packetizer = @import("streaming/rtp_packetizer.zig");
 pub const RtpPacketizer = rtp_packetizer.Packetizer;
+
+/// Checked partial-stream and whole-datagram send progress; caller owns I/O.
+pub const socket_write = @import("core/socket_write.zig");
+pub const SocketWriteCursor = socket_write.Cursor;

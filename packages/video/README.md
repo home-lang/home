@@ -42,3 +42,9 @@ boolean-control outcomes. Hardware IO and manager lifetime remain caller-owned.
 
 [RTP sending primitives](docs/rtp-sending.md) provide bounded allocation-free
 AVC/HEVC/AAC packetization, exact clock scaling and compound RTCP reports.
+
+`SocketWriteCursor` (`core/socket_write.zig`) provides allocation-free checked
+progress for hosted media byte sinks. TCP accepts prefixes; raw UDP accepts a
+whole bounded datagram or zero for backpressure. A cursor owns neither bytes nor
+sockets. Empty inputs, u64 endpoints, invalid advances and short final chunks are
+covered independently; transports and deadlines remain the caller's job.

@@ -1,0 +1,31 @@
+name: Video socket write progress
+on:
+  push:
+    branches: [main]
+    paths: ['packages/video/src/core/socket_write.zig', 'packages/video/src/video.zig', 'packages/video/tests/socket_write.zig', '.github/workflows/video-socket-write.yml']
+  pull_request:
+    paths: ['packages/video/src/core/socket_write.zig', 'packages/video/src/video.zig', 'packages/video/tests/socket_write.zig', '.github/workflows/video-socket-write.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  progress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+        zig: ['0.15.2', master]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ matrix.zig }}
+      - name: Partial writes whole datagrams and public API
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in Debug ReleaseSafe; do
+            zig test -lc -O "$mode" packages/video/src/core/socket_write.zig
+            zig test -lc -O "$mode" --dep video -Mroot=packages/video/tests/socket_write.zig -Mvideo=packages/video/src/video.zig
+          done
