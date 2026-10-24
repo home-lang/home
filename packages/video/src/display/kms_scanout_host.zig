@@ -272,7 +272,10 @@ const Linux = if (available) struct {
         const slot = &self.slots[index];
         if (slot.dumb != 0) {
             if (slot.width != width or slot.height != height or slot.fb == 0 or slot.mapping == null or slot.cpu_access) return error.State;
-            try self.cpuSync(index, false);
+            self.cpuSync(index, false) catch |err| {
+                self.poisoned = true;
+                return err;
+            };
             return .{ .bytes = slot.mapping.?, .pitch = slot.pitch };
         }
         if (slot.fb != 0 or slot.count != 0 or slot.cpu_fd >= 0 or slot.mapping != null) return error.State;
