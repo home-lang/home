@@ -1,6 +1,6 @@
 //! Portable direct-scanout layout and retirement rules. No allocation/device IO.
 const std = @import("std");
-const catalog = @import("kms_catalog.zig");
+pub const catalog = @import("kms_catalog.zig");
 pub const Plane = struct { fd: i32, offset: u64, length: u64, used: u64 };
 pub const Layout = struct {
     width: u32,
@@ -163,4 +163,24 @@ test "linear scanout layouts preserve independent physical offsets and reject tr
     try t.expectError(error.InvalidLayout, Layout.init("YUV420", 4, 2, 6, &.{.{ .fd = 3, .offset = 0, .length = 15, .used = 15 }}));
     try t.expectError(error.InvalidLayout, Layout.init("NV12", 3, 2, 6, &.{.{ .fd = 3, .offset = 0, .length = 18, .used = 18 }}));
     try t.expectError(error.Unsupported, Layout.init("BGR161616", 2, 2, 12, &.{.{ .fd = 3, .offset = 0, .length = 24, .used = 24 }}));
+}
+
+/// One checked, device-owned 32-bit CPU scanout allocation. At most two slots.
+pub const CpuLayout = struct {
+    width: u32,
+    height: u32,
+    pitch: u32,
+    size: usize,
+    pub fn init(width: u32, height: u32, pitch: u32, size: u64) !CpuLayout {
+        if (width == 0 or height == 0 or width > 16384 or height > 16384 or size == 0 or size > 256 * 1024 * 1024) return error.InvalidLayout;
+        const row = std.math.mul(u32, width, 4) catch return error.InvalidLayout;
+        if (pitch < row or @as(u64, pitch) * height > size) return error.InvalidLayout;
+        return .{ .width = width, .height = height, .pitch = pitch, .size = @intCast(size) };
+    }
+};
+test "CPU scanout validates full padded allocation extent before device mapping" {
+    const t = std.testing;
+    const v = try CpuLayout.init(3, 2, 16, 4096);
+    try t.expectEqual(@as(usize, 4096), v.size);
+    for ([_][4]u64{ .{ 0, 2, 16, 4096 }, .{ 3, 0, 16, 4096 }, .{ 3, 2, 11, 4096 }, .{ 3, 2, 16, 31 }, .{ 3, 2, 16, 0 }, .{ 3, 2, 16, 256 * 1024 * 1024 + 1 } }) |bad| try t.expectError(error.InvalidLayout, CpuLayout.init(@intCast(bad[0]), @intCast(bad[1]), @intCast(bad[2]), bad[3]));
 }

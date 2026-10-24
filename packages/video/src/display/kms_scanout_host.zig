@@ -10,7 +10,7 @@ pub const Device = if (available) Linux else struct {};
 const Linux = if (available) struct {
     const Driver = discovery.Driver;
     const c = Driver.c;
-    const Slot = struct { fb: u32 = 0, handles: [4]u32 = @splat(0), count: usize = 0, width: u32 = 0, height: u32 = 0 };
+    const Slot = struct { fb: u32 = 0, handles: [4]u32 = @splat(0), count: usize = 0, width: u32 = 0, height: u32 = 0, dumb: u32 = 0, cpu_fd: c_int = -1, mapping: ?[]u8 = null, pitch: u32 = 0, cpu_access: bool = false };
     const Properties = struct {
         fb: u32 = 0,
         crtc: u32 = 0,
@@ -216,7 +216,7 @@ const Linux = if (available) struct {
     }
     pub fn freeSlot(self: *@This()) !usize {
         if (self.fd < 0 or self.closed or self.poisoned or self.gate.uncertain or self.cookie >= std.math.maxInt(u64) - 1) return error.State;
-        for (self.slots, 0..) |slot, i| if (slot.fb == 0 and slot.count == 0 and self.gate.current != i + 1 and self.gate.candidate != i + 1) return i;
+        for (self.slots, 0..) |slot, i| if (((slot.fb == 0 and slot.count == 0 and slot.dumb == 0 and slot.mapping == null and slot.cpu_fd < 0) or (slot.dumb != 0 and slot.fb != 0 and !slot.cpu_access)) and self.gate.current != i + 1 and self.gate.candidate != i + 1) return i;
         return error.State;
     }
     pub fn prepare(self: *@This(), index: usize, layout: policy.Layout) !void {
@@ -251,6 +251,121 @@ const Linux = if (available) struct {
         try self.driver.query(self.fd, c.DRM_IOCTL_MODE_ADDFB2, &frame);
         if (frame.fb_id == 0) return error.InvalidHandle;
         slot.fb = frame.fb_id;
+    }
+    pub const CpuTarget = struct { bytes: []u8, pitch: u32 };
+    fn cpuSync(self: *@This(), index: usize, ending: bool) !void {
+        const slot = &self.slots[index];
+        // linux/dma-buf.h: struct dma_buf_sync is exactly one __u64 flags;
+        // use target ioctl encoding rather than a guessed request number.
+        var flags: u64 = 2 | (if (ending) @as(u64, 4) else 0);
+        try self.driver.query(slot.cpu_fd, std.os.linux.IOCTL.IOW('b', 0, u64), &flags);
+        slot.cpu_access = !ending;
+    }
+    /// Driver-owned 32-bit scanout storage. CREATE_DUMB plus PRIME export gives
+    /// an actual dma-buf mmap, never a regular anonymous file passed as scanout.
+    /// Bracket all returned bytes with finishCpu before submitting the framebuffer.
+    pub fn prepareCpu(self: *@This(), index: usize, width: u32, height: u32) !CpuTarget {
+        if (self.fd < 0 or self.closed or self.poisoned or index >= 2 or self.gate.current == index + 1 or self.gate.candidate == index + 1) return error.State;
+        if (self.fourcc != policy.catalog.fourcc("XR24") and self.fourcc != policy.catalog.fourcc("XB24")) return error.Unsupported;
+        if (width == 0 or height == 0 or width > 16384 or height > 16384) return error.InvalidLayout;
+        _ = try policy.CpuLayout.init(width, height, width * 4, @as(u64, width) * height * 4);
+        const slot = &self.slots[index];
+        if (slot.dumb != 0) {
+            if (slot.width != width or slot.height != height or slot.fb == 0 or slot.mapping == null or slot.cpu_access) return error.State;
+            try self.cpuSync(index, false);
+            return .{ .bytes = slot.mapping.?, .pitch = slot.pitch };
+        }
+        if (slot.fb != 0 or slot.count != 0 or slot.cpu_fd >= 0 or slot.mapping != null) return error.State;
+        var cap = c.struct_drm_get_cap{ .capability = c.DRM_CAP_DUMB_BUFFER, .value = 0 };
+        try self.driver.query(self.fd, c.DRM_IOCTL_GET_CAP, &cap);
+        if (cap.value != 1) return error.Unsupported;
+        cap = .{ .capability = c.DRM_CAP_PRIME, .value = 0 };
+        try self.driver.query(self.fd, c.DRM_IOCTL_GET_CAP, &cap);
+        if (cap.value & c.DRM_PRIME_CAP_EXPORT == 0) return error.Unsupported;
+        errdefer self.poisoned = true;
+        var create = std.mem.zeroes(c.struct_drm_mode_create_dumb);
+        create.width = width;
+        create.height = height;
+        create.bpp = 32;
+        try self.driver.query(self.fd, c.DRM_IOCTL_MODE_CREATE_DUMB, &create);
+        if (create.handle == 0) return error.InvalidHandle;
+        slot.dumb = create.handle;
+        slot.width = width;
+        slot.height = height;
+        const checked = try policy.CpuLayout.init(width, height, create.pitch, create.size);
+        slot.pitch = checked.pitch;
+        var exported = c.struct_drm_prime_handle{ .handle = create.handle, .flags = c.DRM_CLOEXEC | c.DRM_RDWR, .fd = -1 };
+        try self.driver.query(self.fd, c.DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported);
+        if (exported.fd < 0) return error.InvalidHandle;
+        slot.cpu_fd = exported.fd;
+        const mapping = c.mmap(null, checked.size, c.PROT_READ | c.PROT_WRITE, c.MAP_SHARED, slot.cpu_fd, 0);
+        if (mapping == c.MAP_FAILED) {
+            self.driver.last_errno = c.__errno_location().*;
+            return error.SystemQuery;
+        }
+        slot.mapping = @as([*]u8, @ptrCast(mapping))[0..checked.size];
+        var fb = std.mem.zeroes(c.struct_drm_mode_fb_cmd2);
+        fb.width = width;
+        fb.height = height;
+        fb.pixel_format = self.fourcc;
+        fb.handles[0] = slot.dumb;
+        fb.pitches[0] = slot.pitch;
+        try self.driver.query(self.fd, c.DRM_IOCTL_MODE_ADDFB2, &fb);
+        if (fb.fb_id == 0) return error.InvalidHandle;
+        slot.fb = fb.fb_id;
+        try self.cpuSync(index, false);
+        // Initialize padding too, so driver scanout never exposes stale bytes.
+        @memset(slot.mapping.?, 0);
+        return .{ .bytes = slot.mapping.?, .pitch = slot.pitch };
+    }
+    pub fn finishCpu(self: *@This(), index: usize) !void {
+        if (index >= 2 or !self.slots[index].cpu_access) return error.State;
+        self.cpuSync(index, true) catch |err| {
+            self.poisoned = true;
+            return err;
+        };
+    }
+    /// Preserve the two driver allocations across proved flips. Failed or
+    /// incomplete preparations are retired, not returned to the reuse pool.
+    pub fn recycle(self: *@This(), index: usize) !void {
+        if (index >= 2 or self.gate.current == index + 1 or self.gate.candidate == index + 1) return error.State;
+        const slot = self.slots[index];
+        if (!self.poisoned and slot.dumb != 0 and slot.fb != 0 and !slot.cpu_access) return;
+        try self.retire(index);
+    }
+    fn retireCpuMemory(self: *@This(), index: usize) !void {
+        const slot = &self.slots[index];
+        if (slot.cpu_access) try self.cpuSync(index, true);
+        if (slot.mapping) |mapping| {
+            if (c.munmap(mapping.ptr, mapping.len) != 0) {
+                self.driver.last_errno = c.__errno_location().*;
+                return error.SystemQuery;
+            }
+            slot.mapping = null;
+        }
+        const fd = slot.cpu_fd;
+        slot.cpu_fd = -1;
+        if (fd >= 0 and c.close(fd) != 0) {
+            self.driver.last_errno = c.__errno_location().*;
+            return error.SystemQuery;
+        }
+    }
+    /// Private card close consumes GEM/framebuffer identities, but failed
+    /// userspace unmaps/syncs still require a retained cleanup owner and retry.
+    fn retireClosedMemory(self: *@This()) !void {
+        var failure: ?anyerror = null;
+        for (0..2) |index| {
+            const slot = &self.slots[index];
+            slot.fb = 0;
+            slot.dumb = 0;
+            slot.count = 0;
+            self.retireCpuMemory(index) catch |err| {
+                failure = failure orelse err;
+            };
+            if (slot.mapping == null and slot.cpu_fd < 0) slot.* = .{};
+        }
+        self.handles = .{};
+        if (failure) |err| return err;
     }
     fn atomic(self: *@This(), slot: ?usize, geometry: Geometry, flags: u32, cookie: u64) !void {
         var ids: [16]u32 = undefined;
@@ -363,7 +478,7 @@ const Linux = if (available) struct {
     }
     pub fn present(self: *@This(), index: usize, geometry: Geometry) !void {
         try self.checkGeometry(geometry);
-        if (self.closed or self.poisoned or index >= 2 or self.slots[index].fb == 0) return error.State;
+        if (self.closed or self.poisoned or index >= 2 or self.slots[index].fb == 0 or self.slots[index].cpu_access) return error.State;
         try self.gate.stage(index + 1);
         var submitted = false;
         errdefer if (!submitted) {
@@ -415,6 +530,12 @@ const Linux = if (available) struct {
             try self.driver.query(self.fd, c.DRM_IOCTL_MODE_RMFB, &id);
             slot.fb = 0;
         }
+        try self.retireCpuMemory(index);
+        if (slot.dumb != 0) {
+            var destroy = c.struct_drm_mode_destroy_dumb{ .handle = slot.dumb };
+            try self.driver.query(self.fd, c.DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+            slot.dumb = 0;
+        }
         for (slot.handles[0..slot.count]) |handle| try self.handles.release(handle);
         slot.* = .{};
         try self.closeUnusedHandles();
@@ -430,7 +551,7 @@ const Linux = if (available) struct {
     /// IO error the private FD is consumed; caller must report that error and
     /// retain a retry/acknowledgement owner rather than exposing a dangling handle.
     pub fn finishClose(self: *@This()) !void {
-        if (self.closed) return;
+        if (self.closed) return self.retireClosedMemory();
         if (self.needs_detach or self.gate.current != 0 or self.gate.candidate != 0) return error.State;
         var failure: ?anyerror = null;
         for (0..2) |i| self.retire(i) catch |err| {
@@ -445,6 +566,9 @@ const Linux = if (available) struct {
         }
         self.fd = -1;
         self.closed = true;
+        self.retireClosedMemory() catch |err| {
+            failure = failure orelse err;
+        };
         if (failure) |err| return err;
     }
 } else struct {};
@@ -463,5 +587,8 @@ test "Linux scanout rejects absent and non-KMS nodes and analyzes all owned oper
         try device.retire(0);
         device.closed = true;
         try device.finishClose();
+        try std.testing.expectError(error.State, device.prepareCpu(0, 2, 2));
+        try std.testing.expectError(error.State, device.finishCpu(0));
+        try device.recycle(0);
     }
 }

@@ -24,6 +24,15 @@ fn disjoint(a: []const u8, b: []const u8) !void {
     const y = @intFromPtr(b.ptr);
     if ((x <= y and y - x < a.len) or (y < x and x - y < b.len)) return error.Overlap;
 }
+pub const Packed8 = enum {
+    rgb,
+    bgr,
+    rgba,
+    bgra,
+    fn channels(self: Packed8) usize {
+        return if (self == .rgb or self == .bgr) 3 else 4;
+    }
+};
 pub const View = struct {
     data: []const u8,
     width: usize,
@@ -55,14 +64,22 @@ pub const View = struct {
     }
     /// Explicit high-byte reduction to RGB8 (sample >> 8); no gamma conversion.
     pub fn toRgb8(self: View, out: []u8, stride: usize) !void {
+        return self.toPacked8(out, stride, .rgb);
+    }
+    /// Explicit high-byte reduction and byte layout. Opaque alpha is 255;
+    /// no transfer, gamut conversion or dithering. Checks precede every write.
+    pub fn toPacked8(self: View, out: []u8, stride: usize, layout: Packed8) !void {
         const checked = try View.init(self.data, self.width, self.height, self.stride, self.layout, self.endian);
-        const need = try span(self.width, self.height, stride, 3);
+        const channels = layout.channels();
+        const need = try span(self.width, self.height, stride, channels);
         if (out.len < need) return error.BufferTooSmall;
         const dst = out[0..need];
         try disjoint(checked.data, dst);
         for (0..self.height) |y| for (0..self.width) |x| {
             const value = checked.sample(x, y);
-            inline for (0..3) |c| dst[y * stride + x * 3 + c] = @intCast(value[c] >> 8);
+            const at = y * stride + x * channels;
+            inline for (0..3) |ch| dst[at + ch] = @intCast(value[if (layout == .bgr or layout == .bgra) 2 - ch else ch] >> 8);
+            if (channels == 4) dst[at + 3] = 255;
         };
     }
 };
@@ -102,4 +119,31 @@ test "RGB16 invalid geometry span overflow truncation and overlap preserve outpu
     try view.convert(bytes[8..35], 15, .rgb, .little);
     for (bytes) |value| try t.expectEqual(@as(u8, 79), value);
     for (out) |value| try t.expectEqual(@as(u8, 73), value);
+}
+
+test "word reduction to RGB BGR RGBA BGRA is exact across unaligned endian layouts and preserves padding" {
+    const t = std.testing;
+    for ([_]Layout{ .rgb, .bgr }) |source_layout| for ([_]std.builtin.Endian{ .little, .big }) |endian| for ([_]Packed8{ .rgb, .bgr, .rgba, .bgra }) |layout| {
+        var bytes: [37]u8 = @splat(79);
+        const words = [3]u16{ 0x1234, 0x5678, 0x9abc };
+        for (0..2) |y| for (0..2) |x| source_layout.write(bytes[1 + y * 19 + x * 6 ..], endian, words);
+        const v = try View.init(bytes[1..], 2, 2, 19, source_layout, endian);
+        var out: [29]u8 = @splat(71);
+        try v.toPacked8(out[1..], 14, layout);
+        for (0..2) |y| for (0..2) |x| {
+            const at = 1 + y * 14 + x * layout.channels();
+            const expected = if (layout == .bgr or layout == .bgra) [_]u8{ 0x9a, 0x56, 0x12 } else [_]u8{ 0x12, 0x56, 0x9a };
+            try t.expectEqualSlices(u8, &expected, out[at..][0..3]);
+            if (layout.channels() == 4) try t.expectEqual(@as(u8, 255), out[at + 3]);
+        };
+        try t.expectEqual(@as(u8, 71), out[0]);
+        try t.expectEqual(@as(u8, 71), out[13]);
+        try t.expectEqual(@as(u8, 71), out[28]);
+        const snapshot = out;
+        try t.expectError(error.BufferTooSmall, v.toPacked8(out[0..1], 14, layout));
+        try t.expectEqualSlices(u8, &snapshot, &out);
+        try t.expectError(error.InvalidGeometry, v.toPacked8(&out, 1, layout));
+        try t.expectEqualSlices(u8, &snapshot, &out);
+        try t.expectError(error.Overlap, v.toPacked8(bytes[1..], 8, layout));
+    };
 }

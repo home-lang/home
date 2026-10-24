@@ -18,6 +18,7 @@ const Linux = if (available) struct {
         @cInclude("unistd.h");
         @cInclude("errno.h");
         @cInclude("poll.h");
+        @cInclude("sys/mman.h");
         @cInclude("drm/drm.h");
         @cInclude("drm/drm_mode.h");
     });
