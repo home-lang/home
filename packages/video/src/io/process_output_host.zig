@@ -158,8 +158,12 @@ fn run(args: []const [:0]u8) !u8 {
                 }
             }
         }
+        // Snapshot exit before processing exec status. A child can exit after
+        // poll's readiness snapshot; then its error bytes/EOF must be consumed
+        // even if poll did not mark the pipe. Never publish RESULT first.
+        const exited = childExited(child);
         if (exec_fd) |fd| {
-            if (fds[1].revents != 0) exec_read: {
+            if (fds[1].revents != 0 or exited) exec_read: {
                 const count = std.posix.read(fd, exec_status[exec_bytes..]) catch |err| {
                     if (err != error.WouldBlock) {
                         interrupted.store(true, .monotonic);
@@ -195,7 +199,7 @@ fn run(args: []const [:0]u8) !u8 {
             killed = true;
             signalGroup(child, std.posix.SIG.KILL);
         }
-        if (childExited(child)) break;
+        if (exited and exec_fd == null) break;
     }
     // The leader remains an unreaped zombie until after the last group signal,
     // keeping its PID/PGID reserved and preventing a late kill of a reused ID.
