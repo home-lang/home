@@ -17,8 +17,9 @@ Typed catalogs expose `Reader.findValue(expected_kind, query)` for borrowed
 scalars or arrays without coercion. The query explicitly selects group, name,
 vendor alternatives, record flags and role. Missing identity is null; matching
 records without the requested value, wrong kinds, duplicates and malformed tails
-are errors. Both old scalar/string selectors use this same selection primitive
-and preserve their established result/error contracts. Value payloads retain
+are errors. Existing scalar/string selectors preserve immediate value validation
+and their established error precedence, including invalid data before a later
+duplicate. Value payloads retain
 count, byte order, array flags and exact bits; consumers apply their own schema.
 The catalog owner must outlive all returned borrowed values.
 

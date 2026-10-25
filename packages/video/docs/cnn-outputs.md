@@ -10,7 +10,7 @@ Padding and unused descriptors are not interpreted.
 
 The current producer definition is [Raspberry Pi controller.h at c682979](https://github.com/raspberrypi/libcamera/blob/c682979b50695b93526adb1e66db33743484b63b/src/ipa/rpi/controller/controller.h).
 Its 16-by-16 limits differ from the 8-by-8 example still in that revision's
-control documentation. Shape/data-count consistency follows the producer parser.
+control documentation. Shape/data-count consistency follows the [producer parser](https://github.com/raspberrypi/libcamera/blob/c682979b50695b93526adb1e66db33743484b63b/src/ipa/rpi/cam_helper/imx500_tensor_parser/imx500_tensor_parser.cpp).
 [Picamera2's pinned output interpretation](https://github.com/raspberrypi/picamera2/blob/5e2a35d3bb230825c98c56d98e01b41ddeb43e86/picamera2/devices/imx500/imx500.py)
 uses first-dimension-contiguous (column-major) output arrays.
 
@@ -26,6 +26,9 @@ The code owns no camera, model firmware, network file, tensor allocation or
 inference engine. Consumers keep source snapshots alive until copying completes.
 Tests validate both profiles, malformed products/ranks/spans, scalar/empty cases,
 explicit byte order, NaN payloads, guarded output, provenance and duplicate/partial
-catalogs. All 22 standalone/dependency tests pass on Zig 0.15.2 and
+catalogs. All 23 standalone/dependency tests pass on Zig 0.15.2 and
 0.18.0-dev.567+7f0281900 in Debug, ReleaseSafe and ReleaseFast. These are software
 layout/metadata checks; they do not establish physical IMX500 operation.
+A retained `home_cnn_row_major` export links the real parser and permutation for
+freestanding ARM64 without libc or a heap on both compilers. It is a link probe,
+not an executable Home OS hardware test.
