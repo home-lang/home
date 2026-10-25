@@ -299,7 +299,10 @@ pub const RawFrameData = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, channels: u8, layout: DataLayout) !Self {
-        const size = @as(usize, width) * height * channels;
+        if (width == 0 or height == 0 or channels == 0) return error.InvalidDimensions;
+        const shape = [_]u32{ height, width, channels };
+        const geometry = try @import("../core/tensor_layout.zig").Layout.init(&shape, .row_major, std.math.maxInt(usize) / @sizeOf(f32));
+        const size = geometry.elements;
         const data = try allocator.alloc(f32, size);
         @memset(data, 0);
 

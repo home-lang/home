@@ -1346,6 +1346,7 @@ pub const delivery_fifo = @import("core/delivery_fifo.zig");
 pub const pts_clock = @import("core/pts_clock.zig");
 pub const frame_barrier = @import("core/frame_barrier.zig");
 pub const frame_match = @import("core/frame_match.zig");
+pub const tensor_layout = @import("core/tensor_layout.zig");
 pub const stream_alignment = @import("core/stream_alignment.zig");
 pub const frame_access = @import("core/frame_access.zig");
 

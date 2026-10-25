@@ -234,10 +234,20 @@ pub const Reader = struct {
     }
     fn find(r: Reader, comptime T: type, query: ScalarQuery) !?T {
         const is_string = T == []const u8;
-        const invalid = if (is_string) error.InvalidString else error.InvalidScalar;
-        const ambiguous = if (is_string) error.AmbiguousString else error.AmbiguousScalar;
-        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return if (is_string) error.InvalidStringQuery else error.InvalidScalarQuery;
-        var result: ?T = null;
+        const selected = r.findValue(if (is_string) .string else scalarKind(T), query) catch |err| switch (err) {
+            error.InvalidValueQuery => return if (is_string) error.InvalidStringQuery else error.InvalidScalarQuery,
+            error.InvalidValue => return if (is_string) error.InvalidString else error.InvalidScalar,
+            error.AmbiguousValue => return if (is_string) error.AmbiguousString else error.AmbiguousScalar,
+            else => return err,
+        };
+        if (selected) |value| return if (is_string) try value.string() else try value.scalar(T);
+        return null;
+    }
+    /// Borrow one exact typed value (including arrays) with explicit provenance.
+    /// The complete catalog is scanned so later ambiguity cannot be hidden.
+    pub fn findValue(r: Reader, expected: Kind, query: ScalarQuery) !?Value {
+        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return error.InvalidValueQuery;
+        var result: ?Value = null;
         var matched = false;
         var it = r.records();
         while (try it.next()) |record| {
@@ -248,16 +258,17 @@ pub const Reader = struct {
                 break;
             };
             if (!accepted) continue;
-            if (matched) return ambiguous;
+            if (matched) return error.AmbiguousValue;
             matched = true;
-            if (record.info.kind != (if (is_string) Kind.string else scalarKind(T))) return invalid;
+            if (record.info.kind != expected) return error.InvalidValue;
             var values = record.values();
             while (try values.next()) |value| {
                 if (value.role != query.role) continue;
-                if (result != null) return ambiguous;
-                result = if (is_string) try value.string() else try value.scalar(T);
+                if (result != null) return error.AmbiguousValue;
+                if (value.kind != expected) return error.InvalidValue;
+                result = value;
             }
-            if (result == null) return invalid;
+            if (result == null) return error.InvalidValue;
         }
         return result;
     }
@@ -512,4 +523,34 @@ test "string lookup validates malformed unrelated tails before returning borrowe
     var r = try Reader.init(try w.finish());
     r.bytes = r.bytes[0 .. r.bytes.len - 1];
     try t.expectError(error.InvalidCatalog, r.findString(.{ .name = "Model", .vendors = &.{"standard"} }));
+}
+
+test "typed value lookup borrows exact arrays without scalar coercion and validates role and provenance" {
+    const t = std.testing;
+    var w = try Writer.init(t.allocator, 4, 4096);
+    defer w.deinit();
+    const data = [_]u8{ 0x00, 0x00, 0xc0, 0x7f, 0x00, 0x00, 0x80, 0x3f };
+    try w.begin(.{ .name = "Tensor", .vendor = "rpi", .flags = 2, .kind = .f32 });
+    try w.append(.{ .kind = .f32, .flags = array | little_endian, .count = 2, .data = &data });
+    try w.end();
+    const q = ScalarQuery{ .name = "Tensor", .vendors = &.{"rpi"}, .required_flags = 2, .forbidden_flags = 1 };
+    const r = try Reader.init(try w.finish());
+    const value = (try r.findValue(.f32, q)).?;
+    try t.expectEqual(@as(u32, 2), value.count);
+    try t.expectEqualSlices(u8, &data, value.data);
+    try t.expectError(error.InvalidScalar, r.findScalar(f32, q));
+    try t.expectError(error.InvalidValue, r.findValue(.byte, q));
+    var absent = q;
+    absent.vendors = &.{"other"};
+    try t.expectEqual(@as(?Value, null), try r.findValue(.f32, absent));
+    absent = q;
+    absent.role = 5;
+    try t.expectError(error.InvalidValue, r.findValue(.f32, absent));
+    absent = q;
+    absent.required_flags = 1;
+    try t.expectError(error.InvalidValueQuery, r.findValue(.f32, absent));
+    try w.begin(.{ .name = "Tensor", .vendor = "rpi", .flags = 2, .kind = .f32 });
+    try w.append(.{ .kind = .f32, .flags = array | little_endian, .count = 2, .data = &data });
+    try w.end();
+    try t.expectError(error.AmbiguousValue, (try Reader.init(try w.finish())).findValue(.f32, q));
 }
