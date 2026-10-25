@@ -2,44 +2,11 @@
 //! that report failure after changing hardware. Caller supplies exclusive device
 //! ownership and IO methods validate(), read()!bool and write(bool)!void.
 const std = @import("std");
-pub const Outcome = struct {
-    previous: ?bool = null,
-    current: ?bool = null,
-    write_attempted: bool = false,
-    write_succeeded: bool = false,
-    failure: ?anyerror = null,
-    pub fn changed(self: Outcome) ?bool {
-        if (self.previous) |previous| if (self.current) |current| return current != previous;
-        return null;
-    }
-};
-/// Never retries a write. Read back after every attempted write; preserve the
-/// original write error if observation also fails. Unknown state stays unknown.
+const observed = @import("observed_control.zig");
+pub const Outcome = observed.Outcome(bool);
+/// Preserve the existing boolean API using the shared observed transaction.
 pub fn apply(io: anytype, requested: bool) Outcome {
-    var out = Outcome{};
-    io.validate() catch |err| {
-        out.failure = err;
-        return out;
-    };
-    const previous = io.read() catch |err| {
-        out.failure = err;
-        return out;
-    };
-    out.previous = previous;
-    out.current = previous;
-    if (previous == requested) return out;
-    out.write_attempted = true;
-    out.current = null;
-    io.write(requested) catch |err| {
-        out.failure = err;
-    };
-    out.write_succeeded = out.failure == null;
-    out.current = io.read() catch |err| {
-        if (out.failure == null) out.failure = err;
-        return out;
-    };
-    if (out.failure == null and out.current.? != requested) out.failure = error.ControlNotApplied;
-    return out;
+    return observed.apply(bool, io, requested, false);
 }
 const Fake = struct {
     current: bool = false,
@@ -51,16 +18,16 @@ const Fake = struct {
     fail_write: bool = false,
     change_on_failed_write: bool = false,
     ignore_write: bool = false,
-    fn validate(self: *Fake) !void {
+    pub fn validate(self: *Fake) !void {
         self.validations += 1;
         if (self.fail_validation) return error.WrongDevice;
     }
-    fn read(self: *Fake) !bool {
+    pub fn read(self: *Fake) !bool {
         self.reads += 1;
         if (self.fail_read == self.reads) return error.ReadFailure;
         return self.current;
     }
-    fn write(self: *Fake, value: bool) !void {
+    pub fn write(self: *Fake, value: bool) !void {
         self.writes += 1;
         if (!self.ignore_write and (!self.fail_write or self.change_on_failed_write)) self.current = value;
         if (self.fail_write) return error.WriteFailure;

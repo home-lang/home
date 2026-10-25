@@ -1365,6 +1365,8 @@ pub const catalog_state = @import("core/catalog_state.zig");
 pub const manager_gate = @import("core/manager_gate.zig");
 pub const sensor_node = @import("core/sensor_node.zig");
 pub const boolean_control = @import("core/boolean_control.zig");
+pub const observed_control = @import("core/observed_control.zig");
+pub const imx500_roi = @import("core/imx500_roi.zig");
 
 /// Allocation-free AVC/HEVC/AAC RTP framing and correlated RTCP SR/SDES/BYE.
 pub const rtp_packetizer = @import("streaming/rtp_packetizer.zig");

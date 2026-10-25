@@ -161,3 +161,7 @@ retirement. The caller retains source leases until confirmed replacement/detach.
 [`serial_worker`](docs/serial-worker.md) provides a bounded native serial executor
 with stable state, active-inclusive admission, cleanup fences and joined close.
 It uses the existing ownership registry and has an explicit native entry point.
+
+[`observed_control` and `imx500_roi`](docs/inference-controls.md) provide generic
+single-write transactions with retained observations and checked active-array
+inference-window encoding. They own no hosted descriptor or camera manager.
