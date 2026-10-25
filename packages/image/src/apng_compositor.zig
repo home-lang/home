@@ -4,6 +4,7 @@
 //! nothing, and invalid frames leave pixels and pending disposal unchanged.
 const std = @import("std");
 pub const pixel = @import("formats/pixel_view.zig");
+const composite = @import("formats/pixel_composite.zig");
 pub const Control = struct { x: u32 = 0, y: u32 = 0, dispose: u8 = 0, blend: u8 = 0 };
 const Pending = struct { control: Control, width: u32, height: u32 };
 pub const Canvas = struct {
@@ -102,15 +103,15 @@ pub const Canvas = struct {
 /// Straight-alpha OVER, round-to-nearest with ties up, without intermediate
 /// alpha rounding. u64 holds the worst-case 16-bit color*alpha*alpha sum.
 fn over(dest: [4]u16, source: [4]u16, maximum: u64) [4]u16 {
-    if (source[3] == 0) return dest;
-    if (source[3] == maximum) return source;
-    const sa: u64 = source[3];
-    const remainder = @as(u64, dest[3]) * (maximum - sa);
-    const alpha = sa * maximum + remainder;
-    var result: [4]u16 = undefined;
-    result[3] = @intCast((alpha + maximum / 2) / maximum);
-    for (0..3) |ch| result[ch] = @intCast((@as(u64, source[ch]) * sa * maximum + @as(u64, dest[ch]) * remainder + alpha / 2) / alpha);
-    return result;
+    if (maximum == 65535) return composite.over(u16, dest, source, 65535);
+    var d: [4]u8 = undefined;
+    var s: [4]u8 = undefined;
+    for (0..4) |c| {
+        d[c] = @intCast(dest[c]);
+        s[c] = @intCast(source[c]);
+    }
+    const value = composite.over(u8, d, s, 65535);
+    return .{ value[0], value[1], value[2], value[3] };
 }
 
 test "APNG source over background previous and first previous use exact regions" {
