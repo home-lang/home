@@ -51,8 +51,8 @@ pub const StreamInfo = struct {
         const max_block_size = std.mem.readInt(u16, data[2..4], .big);
 
         // 24-bit values
-        const min_frame_size: u24 = @as(u24, data[4]) << 16 | @as(u24, data[5]) << 8 | @as(u24, data[6]);
-        const max_frame_size: u24 = @as(u24, data[7]) << 16 | @as(u24, data[8]) << 8 | @as(u24, data[9]);
+        const min_frame_size: u24 = (@as(u24, data[4]) << 16) | (@as(u24, data[5]) << 8) | @as(u24, data[6]);
+        const max_frame_size: u24 = (@as(u24, data[7]) << 16) | (@as(u24, data[8]) << 8) | @as(u24, data[9]);
 
         // Sample rate (20 bits), channels (3 bits), bits per sample (5 bits), total samples (36 bits)
         const sample_rate: u32 = (@as(u32, data[10]) << 12) | (@as(u32, data[11]) << 4) | (@as(u32, data[12]) >> 4);
@@ -136,7 +136,7 @@ pub const MetadataBlockHeader = struct {
 
         const is_last = (data[0] & 0x80) != 0;
         const block_type: BlockType = @enumFromInt(@as(u7, @truncate(data[0] & 0x7F)));
-        const length: u24 = @as(u24, data[1]) << 16 | @as(u24, data[2]) << 8 | @as(u24, data[3]);
+        const length: u24 = (@as(u24, data[1]) << 16) | (@as(u24, data[2]) << 8) | @as(u24, data[3]);
 
         return MetadataBlockHeader{
             .is_last = is_last,

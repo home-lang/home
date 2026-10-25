@@ -200,10 +200,10 @@ pub fn encode(allocator: std.mem.Allocator, img: *const Image) ![]u8 {
                         const db_dg = db -% dg;
 
                         if (dr >= -2 and dr <= 1 and dg >= -2 and dg <= 1 and db >= -2 and db <= 1) {
-                            try output.append(allocator, QOI_OP_DIFF | @as(u8, @bitCast(@as(i8, dr + 2) << 4 | @as(i8, dg + 2) << 2 | @as(i8, db + 2))));
+                            try output.append(allocator, QOI_OP_DIFF | @as(u8, @bitCast((@as(i8, dr + 2) << 4) | (@as(i8, dg + 2) << 2) | @as(i8, db + 2))));
                         } else if (dr_dg >= -8 and dr_dg <= 7 and dg >= -32 and dg <= 31 and db_dg >= -8 and db_dg <= 7) {
                             try output.append(allocator, QOI_OP_LUMA | @as(u8, @bitCast(@as(i8, dg + 32))));
-                            try output.append(allocator, @as(u8, @bitCast(@as(i8, dr_dg + 8) << 4 | @as(i8, db_dg + 8))));
+                            try output.append(allocator, @as(u8, @bitCast((@as(i8, dr_dg + 8) << 4) | @as(i8, db_dg + 8))));
                         } else {
                             try output.append(allocator, QOI_OP_RGB);
                             try output.appendSlice(allocator, &[_]u8{ color.r, color.g, color.b });

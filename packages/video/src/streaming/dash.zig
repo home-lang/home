@@ -298,17 +298,13 @@ pub const Manifest = struct {
             adaptation_set.id = std.fmt.parseInt(u32, id, 10) catch null;
         }
         if (getAttributeValue(attrs, "contentType")) |ct| {
-            if (std.mem.eql(u8, ct, "video")) adaptation_set.content_type = .video
-            else if (std.mem.eql(u8, ct, "audio")) adaptation_set.content_type = .audio
-            else if (std.mem.eql(u8, ct, "text")) adaptation_set.content_type = .text;
+            if (std.mem.eql(u8, ct, "video")) adaptation_set.content_type = .video else if (std.mem.eql(u8, ct, "audio")) adaptation_set.content_type = .audio else if (std.mem.eql(u8, ct, "text")) adaptation_set.content_type = .text;
         }
         if (getAttributeValue(attrs, "mimeType")) |mt| {
             adaptation_set.mime_type = try self.allocator.dupe(u8, mt);
             // Infer content type from mime type
             if (adaptation_set.content_type == null) {
-                if (std.mem.startsWith(u8, mt, "video/")) adaptation_set.content_type = .video
-                else if (std.mem.startsWith(u8, mt, "audio/")) adaptation_set.content_type = .audio
-                else if (std.mem.startsWith(u8, mt, "text/")) adaptation_set.content_type = .text;
+                if (std.mem.startsWith(u8, mt, "video/")) adaptation_set.content_type = .video else if (std.mem.startsWith(u8, mt, "audio/")) adaptation_set.content_type = .audio else if (std.mem.startsWith(u8, mt, "text/")) adaptation_set.content_type = .text;
             }
         }
         if (getAttributeValue(attrs, "codecs")) |c| {
@@ -331,7 +327,7 @@ pub const Manifest = struct {
         var pos: usize = 0;
         while (std.mem.indexOfPos(u8, content, pos, "<Representation")) |rep_start| {
             const rep_end = findClosingTag(content, rep_start, "Representation") orelse
-                (std.mem.indexOfPos(u8, content, rep_start, "/>") orelse break) + 2;
+                ((std.mem.indexOfPos(u8, content, rep_start, "/>") orelse break) + 2);
             try self.parseRepresentation(content[rep_start..rep_end], &adaptation_set);
             pos = rep_end;
         }
@@ -583,7 +579,7 @@ fn parseDuration(iso_duration: []const u8) ?u64 {
 pub fn isDash(data: []const u8) bool {
     return std.mem.indexOf(u8, data, "<MPD") != null and
         (std.mem.indexOf(u8, data, "urn:mpeg:dash:schema:mpd") != null or
-        std.mem.indexOf(u8, data, "xmlns") != null);
+            std.mem.indexOf(u8, data, "xmlns") != null);
 }
 
 // ============================================================================

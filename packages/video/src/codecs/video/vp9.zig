@@ -294,7 +294,7 @@ pub const FrameParser = struct {
         // profile_low_bit + profile_high_bit
         const profile_low = try self.readBits(1);
         const profile_high = try self.readBits(1);
-        const profile_val: u3 = @as(u3, profile_high) << 1 | @as(u3, profile_low);
+        const profile_val: u3 = (@as(u3, profile_high) << 1) | @as(u3, profile_low);
         header.profile = @enumFromInt(profile_val);
 
         if (header.profile == .profile3) {

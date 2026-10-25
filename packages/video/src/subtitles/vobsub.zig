@@ -345,7 +345,7 @@ pub const VobSubParser = struct {
                 const next_byte = data[offset];
                 offset += 1;
 
-                const count = @as(usize, nibble_low) << 4 | (next_byte >> 4);
+                const count = (@as(usize, nibble_low) << 4) | (next_byte >> 4);
                 const color = next_byte & 0x0F;
 
                 for (0..count) |_| {

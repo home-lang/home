@@ -319,7 +319,7 @@ test "rolling phase survives fractional block boundaries and gaps reset the cloc
         }
         const gap = q.last_end.? + 1000000;
         try q.pushRolling(&block, gap);
-        try std.testing.expectEqual(@as(u32, @intCast(@as(u64, 17) * 1000000000 % rate)), q.last_phase);
+        try std.testing.expectEqual(@as(u32, @intCast((@as(u64, 17) * 1000000000) % rate)), q.last_phase);
         var frozen = try q.cloneWindow(std.testing.allocator, gap, try at(gap, 7, rate));
         defer frozen.deinit();
         try std.testing.expectEqual(@as(usize, 7), frozen.used);

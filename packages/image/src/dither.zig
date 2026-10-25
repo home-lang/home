@@ -621,7 +621,7 @@ pub fn quantize(image: *Image, num_colors: u32, allocator: std.mem.Allocator) ![
             g = (g / 16) * 16;
             b = (b / 16) * 16;
 
-            const key: u24 = @as(u24, r) << 16 | @as(u24, g) << 8 | @as(u24, b);
+            const key: u24 = (@as(u24, r) << 16) | (@as(u24, g) << 8) | @as(u24, b);
             const entry = try hist.getOrPut(key);
             if (entry.found_existing) {
                 entry.value_ptr.* += 1;

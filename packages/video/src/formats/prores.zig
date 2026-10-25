@@ -226,14 +226,20 @@ pub const ProResContainer = struct {
 
     /// Check if FourCC is ProRes
     pub fn isProResFourCC(fourcc: [4]u8) bool {
-        const val = @as(u32, fourcc[0]) << 24 |
-            @as(u32, fourcc[1]) << 16 |
-            @as(u32, fourcc[2]) << 8 |
+        const val = (@as(u32, fourcc[0]) << 24) |
+            (@as(u32, fourcc[1]) << 16) |
+            (@as(u32, fourcc[2]) << 8) |
             @as(u32, fourcc[3]);
 
         return switch (val) {
-            0x61707063, 0x61706373, 0x6170636E, 0x61706368,
-            0x61703468, 0x61703478, 0x61707268, 0x6170726E,
+            0x61707063,
+            0x61706373,
+            0x6170636E,
+            0x61706368,
+            0x61703468,
+            0x61703478,
+            0x61707268,
+            0x6170726E,
             => true,
             else => false,
         };

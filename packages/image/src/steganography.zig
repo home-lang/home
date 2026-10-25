@@ -303,7 +303,7 @@ fn analyzeSpatialWatermark(img: *const Image, x: u32, y: u32, block_size: u32) f
             if (px < img.width and py < img.height) {
                 const pixel = img.getPixel(@intCast(px), @intCast(py)) orelse continue;
                 // Extract LSB pattern
-                const lsb_pattern = (pixel.r & 1) << 2 | (pixel.g & 1) << 1 | (pixel.b & 1);
+                const lsb_pattern = ((pixel.r & 1) << 2) | ((pixel.g & 1) << 1) | (pixel.b & 1);
                 bit_counts[lsb_pattern] += 1;
             }
         }

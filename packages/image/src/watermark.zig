@@ -568,9 +568,9 @@ pub fn generateFingerprint(image: *const Image) u64 {
             if (idx < image.pixels.len) {
                 const pixel = getPixelRGBA(image.pixels, idx, bytes_per_pixel);
                 // Mix pixel values into hash
-                const pixel_val: u64 = @as(u64, pixel[0]) << 24 |
-                    @as(u64, pixel[1]) << 16 |
-                    @as(u64, pixel[2]) << 8 |
+                const pixel_val: u64 = (@as(u64, pixel[0]) << 24) |
+                    (@as(u64, pixel[1]) << 16) |
+                    (@as(u64, pixel[2]) << 8) |
                     @as(u64, pixel[3]);
                 hash = hash *% 31 +% pixel_val;
             }

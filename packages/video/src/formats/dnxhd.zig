@@ -131,9 +131,9 @@ pub const DnxParser = struct {
 
         // Read prefix (5 bytes: 0x00 0x00 0x02 0x80 0x01/0x02)
         const prefix_bytes = data[0..5];
-        header.header_prefix = @as(u32, prefix_bytes[0]) << 24 |
-            @as(u32, prefix_bytes[1]) << 16 |
-            @as(u32, prefix_bytes[2]) << 8 |
+        header.header_prefix = (@as(u32, prefix_bytes[0]) << 24) |
+            (@as(u32, prefix_bytes[1]) << 16) |
+            (@as(u32, prefix_bytes[2]) << 8) |
             @as(u32, prefix_bytes[3]);
 
         const format_byte = prefix_bytes[4];

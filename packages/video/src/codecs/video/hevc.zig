@@ -494,7 +494,7 @@ pub const HvccRecord = struct {
             .general_tier_flag = ((data[1] >> 5) & 0x01) == 1,
             .general_profile_idc = @intCast(data[1] & 0x1F),
             .general_profile_compatibility_flags = std.mem.readInt(u32, data[2..6], .big),
-            .general_constraint_indicator_flags = @as(u48, std.mem.readInt(u32, data[6..10], .big)) << 16 |
+            .general_constraint_indicator_flags = (@as(u48, std.mem.readInt(u32, data[6..10], .big)) << 16) |
                 std.mem.readInt(u16, data[10..12], .big),
             .general_level_idc = data[12],
             .min_spatial_segmentation_idc = @intCast(std.mem.readInt(u16, data[13..15], .big) & 0x0FFF),
@@ -633,7 +633,7 @@ pub const HevcNalIterator = struct {
                     if (self.data[nal_end] == 0 and
                         self.data[nal_end + 1] == 0 and
                         (self.data[nal_end + 2] == 1 or
-                        (self.data[nal_end + 2] == 0 and self.data[nal_end + 3] == 1)))
+                            (self.data[nal_end + 2] == 0 and self.data[nal_end + 3] == 1)))
                     {
                         break;
                     }

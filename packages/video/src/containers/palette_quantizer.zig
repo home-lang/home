@@ -138,7 +138,7 @@ fn prepare(allocator: std.mem.Allocator, source: anytype, max_colors: usize) ![]
     try checkpoint(source);
     while (at < source.len) : (at += 1) {
         const color = try source.pixel(at) orelse continue;
-        const key = @as(u32, color[0]) << 16 | @as(u32, color[1]) << 8 | color[2];
+        const key = (@as(u32, color[0]) << 16) | (@as(u32, color[1]) << 8) | color[2];
         var slot: usize = (key *% 0x9e3779b1) >> 23;
         while (slots[slot] != 0 and !std.mem.eql(u8, &colors[slots[slot] - 1], &color)) slot = (slot + 1) & 511;
         if (slots[slot] == 0) {
@@ -159,7 +159,7 @@ fn prepare(allocator: std.mem.Allocator, source: anytype, max_colors: usize) ![]
     at = 0;
     while (at < source.len) : (at += 1) {
         const color = try source.pixel(at) orelse continue;
-        const key = @as(u16, color[0] >> 3) << 10 | @as(u16, color[1] >> 3) << 5 | color[2] >> 3;
+        const key = (@as(u16, color[0] >> 3) << 10) | (@as(u16, color[1] >> 3) << 5) | (color[2] >> 3);
         bins[key].count += 1;
         inline for (0..3) |channel| bins[key].sums[channel] += color[channel];
     }

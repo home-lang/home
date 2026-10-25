@@ -200,14 +200,14 @@ pub const AfdParser = struct {
         if (country_code != 0xB5) return error.UnsupportedCountryCode;
 
         // Terminal provider code (0x0031 for ATSC)
-        const provider_code = @as(u16, data[1]) << 8 | data[2];
+        const provider_code = (@as(u16, data[1]) << 8) | data[2];
         if (provider_code != 0x0031) return error.UnsupportedProviderCode;
 
         // User identifier (0x47413934 for ATSC DTG1)
         if (data.len < 8) return error.InvalidAfdData;
-        const user_id = @as(u32, data[3]) << 24 |
-            @as(u32, data[4]) << 16 |
-            @as(u32, data[5]) << 8 |
+        const user_id = (@as(u32, data[3]) << 24) |
+            (@as(u32, data[4]) << 16) |
+            (@as(u32, data[5]) << 8) |
             @as(u32, data[6]);
 
         if (user_id != 0x47413934) return error.UnsupportedUserIdentifier;

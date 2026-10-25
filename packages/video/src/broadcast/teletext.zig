@@ -229,7 +229,7 @@ pub const TeletextDecoder = struct {
         self.current_page = page;
 
         // Store in page buffer
-        const page_key = @as(u32, packet.magazine) << 8 | page_number;
+        const page_key = (@as(u32, packet.magazine) << 8) | page_number;
         try self.page_buffer.put(page_key, page);
     }
 
@@ -244,7 +244,7 @@ pub const TeletextDecoder = struct {
                 try self.parseAttributes(&page.rows[row_number]);
 
                 // Update stored page
-                const page_key = @as(u32, page.magazine) << 8 | page.page;
+                const page_key = (@as(u32, page.magazine) << 8) | page.page;
                 try self.page_buffer.put(page_key, page.*);
             }
         }
@@ -268,7 +268,7 @@ pub const TeletextDecoder = struct {
             page.enhancement = .{ .triplets = try triplets.toOwnedSlice() };
 
             // Update stored page
-            const page_key = @as(u32, page.magazine) << 8 | page.page;
+            const page_key = (@as(u32, page.magazine) << 8) | page.page;
             try self.page_buffer.put(page_key, page.*);
         }
     }
@@ -360,20 +360,20 @@ pub const TeletextDecoder = struct {
 
         // No error
         if (syndrome == 0) {
-            return @intCast((byte & 0x02) >> 1 |
-                (byte & 0x08) >> 2 |
-                (byte & 0x20) >> 3 |
-                (byte & 0x80) >> 4);
+            return @intCast(((byte & 0x02) >> 1) |
+                ((byte & 0x08) >> 2) |
+                ((byte & 0x20) >> 3) |
+                ((byte & 0x80) >> 4));
         }
 
         // Single bit error - correct it
         for (SYNDROMES, 0..) |syn, i| {
             if (syndrome == syn) {
                 const corrected = byte ^ (@as(u8, 1) << @intCast(i));
-                return @intCast((corrected & 0x02) >> 1 |
-                    (corrected & 0x08) >> 2 |
-                    (corrected & 0x20) >> 3 |
-                    (corrected & 0x80) >> 4);
+                return @intCast(((corrected & 0x02) >> 1) |
+                    ((corrected & 0x08) >> 2) |
+                    ((corrected & 0x20) >> 3) |
+                    ((corrected & 0x80) >> 4));
             }
         }
 
@@ -383,7 +383,7 @@ pub const TeletextDecoder = struct {
 
     /// Get a specific page from buffer
     pub fn getPage(self: *TeletextDecoder, magazine: Teletext.Magazine, page: u8) ?Teletext.Page {
-        const key = @as(u32, magazine) << 8 | page;
+        const key = (@as(u32, magazine) << 8) | page;
         return self.page_buffer.get(key);
     }
 

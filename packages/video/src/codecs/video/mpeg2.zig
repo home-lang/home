@@ -179,7 +179,7 @@ pub const Mpeg2Parser = struct {
         // Motion vector fields (for P and B frames)
         if (header.picture_type == .p_frame or header.picture_type == .b_frame) {
             header.full_pel_forward_vector = (data[7] & 0x04) != 0;
-            header.forward_f_code = @truncate((data[7] & 0x03) << 1 | (data[8] >> 7));
+            header.forward_f_code = @truncate(((data[7] & 0x03) << 1) | (data[8] >> 7));
         } else {
             header.full_pel_forward_vector = false;
             header.forward_f_code = 0;
