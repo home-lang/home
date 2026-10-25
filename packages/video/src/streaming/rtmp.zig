@@ -45,7 +45,11 @@ pub const ChunkBasicHeader = struct {
     format: ChunkFormat,
     chunk_stream_id: u32, // Can be 2-65599
 
+    /// Zero rejects an invalid ID or short output before writing any bytes.
     pub fn encode(self: *const ChunkBasicHeader, out: []u8) usize {
+        if (self.chunk_stream_id < 2 or self.chunk_stream_id > 65599) return 0;
+        const required: usize = if (self.chunk_stream_id < 64) 1 else if (self.chunk_stream_id < 320) 2 else 3;
+        if (out.len < required) return 0;
         if (self.chunk_stream_id < 64) {
             // 1 byte form
             out[0] = (@as(u8, @intFromEnum(self.format)) << 6) | @as(u8, @intCast(self.chunk_stream_id));
@@ -87,7 +91,7 @@ pub const ChunkBasicHeader = struct {
             return .{
                 .header = .{
                     .format = fmt,
-                    .chunk_stream_id = (@as(u32, data[2]) << 8) | @as(u32, data[1]) + 64,
+                    .chunk_stream_id = ((@as(u32, data[2]) << 8) | @as(u32, data[1])) + 64,
                 },
                 .bytes_read = 3,
             };
@@ -561,4 +565,36 @@ test "AMF0 number encoding" {
 
     try testing.expectEqual(@as(usize, 9), size);
     try testing.expectEqual(@as(u8, 0x00), out[0]);
+}
+
+test "RTMP chunk basic header preserves every valid encoded stream id and rejects short output" {
+    const t = std.testing;
+    inline for (.{ ChunkFormat.type_0, ChunkFormat.type_1, ChunkFormat.type_2, ChunkFormat.type_3 }) |format| {
+        for (2..65600) |id| {
+            const header = ChunkBasicHeader{ .format = format, .chunk_stream_id = @intCast(id) };
+            var bytes: [3]u8 = @splat(73);
+            const size = header.encode(&bytes);
+            const decoded = ChunkBasicHeader.decode(bytes[0..size]) orelse return error.MissingHeader;
+            try t.expectEqual(@as(u32, @intCast(id)), decoded.header.chunk_stream_id);
+            try t.expectEqual(format, decoded.header.format);
+            try t.expectEqual(size, decoded.bytes_read);
+        }
+        for ([_]u32{ 2, 63, 64, 319, 320, 511, 512, 65599 }) |id| {
+            const header = ChunkBasicHeader{ .format = format, .chunk_stream_id = id };
+            var bytes: [3]u8 = undefined;
+            const size = header.encode(&bytes);
+            for (0..size) |short| {
+                try t.expect(ChunkBasicHeader.decode(bytes[0..short]) == null);
+                var guard: [3]u8 = @splat(73);
+                try t.expectEqual(@as(usize, 0), header.encode(guard[0..short]));
+                for (guard) |v| try t.expectEqual(@as(u8, 73), v);
+            }
+        }
+        for ([_]u32{ 0, 1, 65600, std.math.maxInt(u32) }) |id| {
+            const header = ChunkBasicHeader{ .format = format, .chunk_stream_id = id };
+            var guard: [3]u8 = @splat(73);
+            try t.expectEqual(@as(usize, 0), header.encode(&guard));
+            for (guard) |v| try t.expectEqual(@as(u8, 73), v);
+        }
+    }
 }
