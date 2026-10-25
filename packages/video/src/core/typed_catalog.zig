@@ -234,14 +234,32 @@ pub const Reader = struct {
     }
     fn find(r: Reader, comptime T: type, query: ScalarQuery) !?T {
         const is_string = T == []const u8;
-        const selected = r.findValue(if (is_string) .string else scalarKind(T), query) catch |err| switch (err) {
-            error.InvalidValueQuery => return if (is_string) error.InvalidStringQuery else error.InvalidScalarQuery,
-            error.InvalidValue => return if (is_string) error.InvalidString else error.InvalidScalar,
-            error.AmbiguousValue => return if (is_string) error.AmbiguousString else error.AmbiguousScalar,
-            else => return err,
-        };
-        if (selected) |value| return if (is_string) try value.string() else try value.scalar(T);
-        return null;
+        const invalid = if (is_string) error.InvalidString else error.InvalidScalar;
+        const ambiguous = if (is_string) error.AmbiguousString else error.AmbiguousScalar;
+        if (query.name.len == 0 or query.vendors.len == 0 or query.required_flags & query.forbidden_flags != 0) return if (is_string) error.InvalidStringQuery else error.InvalidScalarQuery;
+        var result: ?T = null;
+        var matched = false;
+        var it = r.records();
+        while (try it.next()) |record| {
+            if (record.info.group != query.group or !std.mem.eql(u8, record.info.name, query.name) or record.info.flags & query.required_flags != query.required_flags or record.info.flags & query.forbidden_flags != 0) continue;
+            var accepted = false;
+            for (query.vendors) |vendor| if (std.mem.eql(u8, record.info.vendor, vendor)) {
+                accepted = true;
+                break;
+            };
+            if (!accepted) continue;
+            if (matched) return ambiguous;
+            matched = true;
+            if (record.info.kind != (if (is_string) Kind.string else scalarKind(T))) return invalid;
+            var values = record.values();
+            while (try values.next()) |value| {
+                if (value.role != query.role) continue;
+                if (result != null) return ambiguous;
+                result = if (is_string) try value.string() else try value.scalar(T);
+            }
+            if (result == null) return invalid;
+        }
+        return result;
     }
     /// Borrow one exact typed value (including arrays) with explicit provenance.
     /// The complete catalog is scanned so later ambiguity cannot be hidden.
@@ -553,4 +571,15 @@ test "typed value lookup borrows exact arrays without scalar coercion and valida
     try w.append(.{ .kind = .f32, .flags = array | little_endian, .count = 2, .data = &data });
     try w.end();
     try t.expectError(error.AmbiguousValue, (try Reader.init(try w.finish())).findValue(.f32, q));
+}
+
+test "legacy string validation precedes a later duplicate identity" {
+    var writer = try Writer.init(std.testing.allocator, 2, 2048);
+    defer writer.deinit();
+    for ([_][]const u8{ "\xff", "valid" }) |text| {
+        try writer.begin(.{ .name = "Model", .kind = .string });
+        try writer.append(.{ .kind = .string, .count = @intCast(text.len), .flags = array, .data = text });
+        try writer.end();
+    }
+    try std.testing.expectError(error.InvalidString, (try Reader.init(try writer.finish())).findString(.{ .name = "Model", .vendors = &.{""} }));
 }
