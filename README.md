@@ -757,10 +757,11 @@ project can already replace `tsc`.
 - **No tagged release yet.** `home tsc` ships inside the `home` binary from
   the first `v*` release on. Until then, build `home` from source (see
   [Build from source](#build-from-source)).
-- **Editor re-checks are per file.** `home lsp` re-checks a TypeScript file
-  when it is opened or edited, including against unsaved edits to the files it
-  imports, but files that import an edited file are not re-checked until they
-  change themselves.
+- **Editor re-checks follow imports.** `home lsp` recompiles an edited
+  TypeScript or JavaScript file and its transitive importers, then republishes
+  diagnostics for affected open documents, including empty results that clear
+  errors after an unsaved dependency edit. Files changed only on disk still
+  need an editor notification or a fresh check.
 
 More: [TypeScript compiler](https://home-lang.org/docs/features/typescript),
 [TypeScript parity by feature](https://home-lang.org/docs/PARITY-TYPESCRIPT),

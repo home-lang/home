@@ -1166,9 +1166,16 @@ fn runLspStdio(allocator: std.mem.Allocator) !void {
             break;
         }
 
-        const response = try routeLspMessage(allocator, &ts_project, request, message) orelse continue;
-        defer allocator.free(response);
-        try writeLspMessage(writer, response);
+        if (try routeLspMessage(allocator, &ts_project, request, message)) |response| {
+            defer allocator.free(response);
+            try writeLspMessage(writer, response);
+        }
+        if (ts_project) |project| {
+            while (project.takePendingDiagnostic()) |body| {
+                defer allocator.free(body);
+                try writeLspMessage(writer, body);
+            }
+        }
     }
 }
 

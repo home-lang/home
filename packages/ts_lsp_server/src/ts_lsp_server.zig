@@ -628,6 +628,11 @@ pub fn documentUri(frame_bytes: []const u8) ?[]const u8 {
     return findJsonStringField(frame_bytes, "uri");
 }
 
+/// The JSON-RPC method name used by the project host to track open documents.
+pub fn requestMethod(frame_bytes: []const u8) ?[]const u8 {
+    return findJsonStringField(frame_bytes, "method");
+}
+
 pub fn decodeJsonString(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);

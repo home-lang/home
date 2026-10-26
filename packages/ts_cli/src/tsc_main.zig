@@ -2425,6 +2425,10 @@ pub const LspProject = struct {
     program: ts_program.Program,
     adapter: CheckerResolverAdapter,
     service: ts_lsp.Service,
+    /// Last diagnostic revision published for each editor-open document.
+    open_documents: std.StringHashMapUnmanaged(u64) = .empty,
+    /// Additional, separately framed notifications for affected importers.
+    pending_diagnostics: std.ArrayListUnmanaged([]u8) = .empty,
 
     /// `config_path` is the tsconfig to load (`home lsp` passes the working
     /// directory's `tsconfig.json`); null or a missing file means defaults.
@@ -2432,6 +2436,8 @@ pub const LspProject = struct {
         const self = try gpa.create(LspProject);
         errdefer gpa.destroy(self);
         self.gpa = gpa;
+        self.open_documents = .empty;
+        self.pending_diagnostics = .empty;
         self.config_arena = std.heap.ArenaAllocator.init(gpa);
         self.config_source = &.{};
         self.config_source_owned = false;
@@ -2467,6 +2473,11 @@ pub const LspProject = struct {
 
     pub fn destroy(self: *LspProject) void {
         const gpa = self.gpa;
+        var open_it = self.open_documents.iterator();
+        while (open_it.next()) |entry| gpa.free(entry.key_ptr.*);
+        self.open_documents.deinit(gpa);
+        for (self.pending_diagnostics.items) |body| gpa.free(body);
+        self.pending_diagnostics.deinit(gpa);
         self.service.deinit();
         self.adapter.deinit();
         self.program.deinit();
@@ -2480,26 +2491,71 @@ pub const LspProject = struct {
     /// Handle one JSON-RPC message and return the response or notification
     /// body to send back (empty when there is none). Caller owns it.
     pub fn handle(self: *LspProject, message: []const u8) ![]u8 {
-        if (editsDocuments(message)) {
+        const method = ts_lsp_server.requestMethod(message) orelse "";
+        const uri = ts_lsp_server.documentUri(message);
+        const opening = std.mem.eql(u8, method, "textDocument/didOpen");
+        const changing = std.mem.eql(u8, method, "textDocument/didChange") or
+            std.mem.eql(u8, method, "textDocument/didSave");
+        const closing = std.mem.eql(u8, method, "textDocument/didClose");
+        if (opening or changing) {
             // The adapter caches imported modules as read from disk; start
             // fresh on each edit so saved changes to dependencies show up.
             self.adapter.deinit();
             self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
             self.adapter.setProgramSources(&self.program, self.service.compile_options);
         }
-        return ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
+        const response = try ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
+        errdefer if (response.len != 0) self.gpa.free(response);
+
+        if (opening or changing) {
+            // updateSource invalidates the changed source and its transitive
+            // importers. The dispatcher publishes only the changed document;
+            // refresh every other open document whose compilation revision
+            // changed, including an empty diagnostic set that clears an old
+            // editor error. Keep each notification as its own JSON-RPC body.
+            var it = self.open_documents.iterator();
+            while (it.next()) |entry| {
+                const open_uri = entry.key_ptr.*;
+                const open_path = ts_lsp_server.uriToPath(open_uri);
+                const id = self.program.lookupPath(open_path) orelse continue;
+                const revision = self.program.fileById(id).watch_revision;
+                if (revision == entry.value_ptr.*) continue;
+                // didOpen/didChange already return the edited document's
+                // notification; didSave returns no body, so a save carrying
+                // replacement text must publish that document here as well.
+                if (response.len != 0 and uri != null and std.mem.eql(u8, open_uri, uri.?)) {
+                    entry.value_ptr.* = revision;
+                    continue;
+                }
+                const diags = try self.service.diagnosticsStructured(self.gpa, open_path);
+                defer ts_lsp.freeLspDiagnostics(self.gpa, diags);
+                const body = try ts_lsp_server.encodePublishDiagnosticsStructured(self.gpa, open_uri, diags);
+                self.pending_diagnostics.append(self.gpa, body) catch |err| {
+                    self.gpa.free(body);
+                    return err;
+                };
+                entry.value_ptr.* = revision;
+            }
+            if (opening and uri != null) {
+                const id = self.program.lookupPath(ts_lsp_server.uriToPath(uri.?));
+                const revision = if (id) |file_id| self.program.fileById(file_id).watch_revision else 0;
+                if (self.open_documents.getPtr(uri.?)) |known| {
+                    known.* = revision;
+                } else {
+                    const owned_uri = try self.gpa.dupe(u8, uri.?);
+                    errdefer self.gpa.free(owned_uri);
+                    try self.open_documents.put(self.gpa, owned_uri, revision);
+                }
+            }
+        } else if (closing and uri != null) {
+            if (self.open_documents.fetchRemove(uri.?)) |entry| self.gpa.free(entry.key);
+        }
+        return response;
     }
 
-    fn editsDocuments(message: []const u8) bool {
-        const methods = [_][]const u8{
-            "\"textDocument/didOpen\"",
-            "\"textDocument/didChange\"",
-            "\"textDocument/didSave\"",
-        };
-        for (methods) |method| {
-            if (std.mem.indexOf(u8, message, method) != null) return true;
-        }
-        return false;
+    /// Caller sends and frees each returned body as a separate LSP frame.
+    pub fn takePendingDiagnostic(self: *LspProject) ?[]u8 {
+        return self.pending_diagnostics.pop();
     }
 };
 
@@ -7562,6 +7618,96 @@ test "LspProject: publishes diagnostics on open and change, answers hover, frees
     );
     defer std.testing.allocator.free(changed);
     try std.testing.expect(std.mem.indexOf(u8, changed, "\"diagnostics\":[]") != null);
+}
+
+test "LspProject: changed checked-JS owner republishes open importer diagnostics" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"checkJs\":true,\"strict\":true,\"noEmit\":true}}");
+    }
+    const js_source = "// @ts-check\n/** @type {string} */ export const value = 'old';\n";
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, js_source);
+    }
+    const ts_source = "import { value } from './owner.js';\nconst result: number = value;\n";
+    {
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, ts_source);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(js_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const js_uri = try std.fmt.allocPrint(a, "file://{s}", .{js_path});
+    defer a.free(js_uri);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const open_js = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = js_uri, .languageId = "javascript", .version = 1, .text = js_source } } }, .{});
+    defer a.free(open_js);
+    const js_initial = try project.handle(open_js);
+    defer a.free(js_initial);
+    const open_ts = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = ts_source } } }, .{});
+    defer a.free(open_ts);
+    const ts_initial = try project.handle(open_ts);
+    defer a.free(ts_initial);
+    try std.testing.expect(std.mem.indexOf(u8, ts_initial, "\"code\":2322") != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const number_source = "// @ts-check\n/** @type {number} */ export const value = 1;\n";
+    const change_js = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = js_uri, .version = 2 }, .contentChanges = .{.{ .text = number_source }} } }, .{});
+    defer a.free(change_js);
+    const js_changed = try project.handle(change_js);
+    defer a.free(js_changed);
+    const importer_cleared = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(importer_cleared);
+    try std.testing.expect(std.mem.indexOf(u8, importer_cleared, ts_uri) != null);
+    try std.testing.expect(std.mem.indexOf(u8, importer_cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const restore_js = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = js_uri, .version = 3 }, .contentChanges = .{.{ .text = js_source }} } }, .{});
+    defer a.free(restore_js);
+    const js_restored = try project.handle(restore_js);
+    defer a.free(js_restored);
+    const importer_rejected = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(importer_rejected);
+    try std.testing.expect(std.mem.indexOf(u8, importer_rejected, ts_uri) != null);
+    try std.testing.expect(std.mem.indexOf(u8, importer_rejected, "\"code\":2322") != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    // didSave carries a full replacement here and returns no primary body:
+    // both the owner and its open importer need separate notifications.
+    const save_js = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didSave", .params = .{ .textDocument = .{ .uri = js_uri }, .text = number_source } }, .{});
+    defer a.free(save_js);
+    const saved = try project.handle(save_js);
+    try std.testing.expectEqual(@as(usize, 0), saved.len);
+    const first_saved = project.takePendingDiagnostic() orelse return error.MissingSaveNotification;
+    defer a.free(first_saved);
+    const second_saved = project.takePendingDiagnostic() orelse return error.MissingSaveNotification;
+    defer a.free(second_saved);
+    try std.testing.expect(std.mem.indexOf(u8, first_saved, js_uri) != null or std.mem.indexOf(u8, second_saved, js_uri) != null);
+    try std.testing.expect(std.mem.indexOf(u8, first_saved, ts_uri) != null or std.mem.indexOf(u8, second_saved, ts_uri) != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const close_ts = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didClose", .params = .{ .textDocument = .{ .uri = ts_uri } } }, .{});
+    defer a.free(close_ts);
+    const closed = try project.handle(close_ts);
+    try std.testing.expectEqual(@as(usize, 0), closed.len);
+    const js_after_close = try project.handle(restore_js);
+    defer a.free(js_after_close);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 
 test "LspProject: loads an empty tsconfig as the default config" {
