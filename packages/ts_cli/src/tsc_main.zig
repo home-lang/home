@@ -7852,6 +7852,71 @@ test "LspProject: changed checked-JS owner republishes open importer diagnostics
     try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 
+test "LspProject: edited TypeScript imports admit and retire unopened JavaScript" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"strict\":true,\"noEmit\":true}}");
+    }
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, "export const value = 1;\n");
+    }
+    const initial_source = "export const local = 1;\n";
+    {
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, initial_source);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(js_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const open_ts = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = initial_source } } }, .{});
+    defer a.free(open_ts);
+    const opened = try project.handle(open_ts);
+    defer a.free(opened);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.program.lookupPath(js_path) == null);
+
+    const imported_source = "import { value } from './owner.js';\nconst wrong: string = value;\n";
+    const add_import = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = ts_uri, .version = 2 }, .contentChanges = .{.{ .text = imported_source }} } }, .{});
+    defer a.free(add_import);
+    const rejected = try project.handle(add_import);
+    defer a.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":2322") != null);
+    const owner_id = project.program.lookupPath(js_path) orelse return error.MissingAdmittedJavaScript;
+    try std.testing.expect(project.program.fileById(owner_id).present);
+
+    const remove_import = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = ts_uri, .version = 3 }, .contentChanges = .{.{ .text = initial_source }} } }, .{});
+    defer a.free(remove_import);
+    const cleared = try project.handle(remove_import);
+    defer a.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.program.lookupPath(js_path) == null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const readd_import = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didChange", .params = .{ .textDocument = .{ .uri = ts_uri, .version = 4 }, .contentChanges = .{.{ .text = imported_source }} } }, .{});
+    defer a.free(readd_import);
+    const rejected_again = try project.handle(readd_import);
+    defer a.free(rejected_again);
+    try std.testing.expect(std.mem.indexOf(u8, rejected_again, "\"code\":2322") != null);
+    try std.testing.expectEqual(owner_id, project.program.lookupPath(js_path).?);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
 test "LspProject: loads an empty tsconfig as the default config" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

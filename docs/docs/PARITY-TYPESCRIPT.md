@@ -328,6 +328,13 @@ See [README LSP coverage](/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tss
 `SUPPORTED_METHODS` list lives in
 [`packages/ts_lsp_server/src/ts_lsp_server.zig`](https://github.com/home-lang/home/blob/main/packages/ts_lsp_server/src/ts_lsp_server.zig).
 
+Checked-JavaScript import revisions have an end-to-end LSP regression: adding
+an import of an unopened `.js` file admits its inferred type, removing the
+import retires that source and clears the importer diagnostic, and re-adding
+it restores the same Program file identity. This verifies one editor workflow,
+not general tsserver parity; broader JavaScript admission, dependency-depth,
+and negative-diagnostic coverage remains tracked in [#846](https://github.com/home-lang/home/issues/846).
+
 ## Watch mode
 
 🟢 `home-tsc --watch` uses `ts_watch.Watcher` + `RealStatFs` —

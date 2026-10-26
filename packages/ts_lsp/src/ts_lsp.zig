@@ -3674,8 +3674,8 @@ pub const Service = struct {
     }
 
     /// Apply an editor `textDocument/didChange` to `file_path`:
-    /// replace the program's source bytes, recompile just that file
-    /// (cross-file imports are re-resolved as part of the recompile),
+    /// replace the program's source bytes, recompile its affected reverse
+    /// dependency closure (including newly admitted imports),
     /// and return the rendered diagnostics — the same shape
     /// `diagnostics(file)` returns. The caller (e.g. the LSP wire
     /// layer) is expected to push the result back to the editor as a
@@ -3697,12 +3697,11 @@ pub const Service = struct {
             // Unknown file — nothing to do, return empty rendered diagnostics.
             return gpa.dupe(u8, "");
         }
-        // Step 2: recompile through the whole-program pipeline, as didOpen
-        // does. `updateSource` invalidates the changed file's transitive
-        // importers, so `compileAll` refreshes every checked consumer while
-        // retaining unrelated compilations. New imports are loaded first.
-        _ = self.program.loadImportClosure(self.compile_options) catch 0;
-        try self.program.compileAll(self.compile_options);
+        // Step 2: use the revision pipeline to admit new imports, retire
+        // dependencies no longer reachable from any root, and recheck the
+        // affected importers. A plain closure load only adds files and would
+        // leave removed JavaScript imports incorrectly admitted to checkers.
+        _ = try self.program.recompileChanged(&.{file_path}, self.compile_options);
         // Step 3: render fresh diagnostics for the editor.
         return self.diagnostics(gpa, file_path);
     }
