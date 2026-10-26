@@ -3027,9 +3027,22 @@ const CheckerResolverAdapter = struct {
         // Excluded JS still resolves as an untyped physical module (TS7016).
         // Its source cannot supply inferred exports or declaration facts.
         if (!self.sourceAllowed(r.path) and !javaScriptPath(r.path)) return null;
+        const admitted = if (self.admitted_program) |program| program.lookupPath(r.path) != null else false;
+        // Program identity may be relative (for example, `bridge.js` when
+        // running from its project directory). TS7016 instead displays the
+        // filesystem's canonical absolute path. Keep these separate so an
+        // excluded JS implementation cannot become an admitted source just
+        // because its diagnostic path is absolute.
+        var diagnostic_path: ?[]const u8 = null;
+        if (!admitted and javaScriptPath(r.path) and !std.fs.path.isAbsolute(r.path)) {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            diagnostic_path = self.resolver.fs.realpath(self.resolver.arena.allocator(), r.path) catch null;
+        }
         return .{
             .path = r.path,
-            .source_is_admitted = if (self.admitted_program) |program| program.lookupPath(r.path) != null else false,
+            .diagnostic_path = diagnostic_path,
+            .source_is_admitted = admitted,
             // The checker API's bit means typed resolution, including
             // admitted JS source inference, not only declaration files.
             .is_declaration = r.is_declaration or self.admittedJavaScript(r.path),

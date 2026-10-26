@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true,
+    "noResolve": true
+  },
+  "files": ["main.ts", "root.js"]
+}

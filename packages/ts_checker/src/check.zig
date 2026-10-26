@@ -271,6 +271,10 @@ pub const ExternalResolver = struct {
         /// arena (which must outlive the `Checker`'s
         /// `checkSourceFile` call). The checker never frees it.
         path: []const u8,
+        /// Canonical path for diagnostics such as TS7016 when the resolver's
+        /// source-identity path is relative. Borrowed like `path`; never use
+        /// it for Program source lookup or module identity.
+        diagnostic_path: ?[]const u8 = null,
         /// The resolved path is an admitted Program source, not merely an
         /// output/declaration path that may alias another extension.
         source_is_admitted: bool = false,
@@ -60006,7 +60010,7 @@ pub const Checker = struct {
                 .implementation => {
                     if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.resolved_path)) return true;
                     if (self.strict_flags.no_implicit_any) {
-                        try self.appendUntypedModuleDiagnostic(node, spec, external.resolved_path);
+                        try self.appendUntypedModuleDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path);
                     }
                     return true;
                 },
@@ -61205,7 +61209,7 @@ pub const Checker = struct {
                     switch (external.kind) {
                         .implementation => {
                             if (self.strict_flags.no_implicit_any) {
-                                try self.appendUntypedModuleDiagnosticAlt(node, spec, external.resolved_path, external.alternate_result);
+                                try self.appendUntypedModuleDiagnosticAlt(node, spec, external.diagnostic_path orelse external.resolved_path, external.alternate_result);
                             }
                             return true;
                         },
@@ -61221,7 +61225,7 @@ pub const Checker = struct {
             .implementation => {
                 if (self.strict_flags.no_implicit_any) {
                     const path: ?[]const u8 = if (external_opt) |external|
-                        external.resolved_path
+                        external.diagnostic_path orelse external.resolved_path
                     else
                         null;
                     const alt: ?[]const u8 = if (external_opt) |external|
@@ -61242,6 +61246,7 @@ pub const Checker = struct {
         kind: enum { declaration, implementation },
         /// Borrowed from the caller's external-resolver arena.
         resolved_path: []const u8,
+        diagnostic_path: ?[]const u8 = null,
         /// Path to types that exist but were unreachable while
         /// respecting `package.json` `exports` (tsc's "alternate
         /// result"). Borrowed; null when none. Drives the TS6278
@@ -61291,6 +61296,7 @@ pub const Checker = struct {
         return .{
             .kind = kind,
             .resolved_path = r.path,
+            .diagnostic_path = r.diagnostic_path,
             .alternate_result = r.alternate_result,
             .project_reference_output = r.project_reference_output,
             .blocked_by_exports_null = r.blocked_by_exports_null,
@@ -268624,6 +268630,7 @@ test "checker: namespace-scoped classes keep independent instance members" {
 /// so callers must keep the literal alive across `checkSourceFile`.
 const StubExternalResolver = struct {
     canned_path: []const u8,
+    canned_diagnostic_path: ?[]const u8 = null,
     canned_is_declaration: bool,
     canned_source_is_admitted: bool = false,
     canned_module_name: ?[]const u8 = null,
@@ -268654,6 +268661,7 @@ const StubExternalResolver = struct {
         _ = containing_file;
         return .{
             .path = self.canned_path,
+            .diagnostic_path = self.canned_diagnostic_path,
             .source_is_admitted = self.canned_source_is_admitted,
             .is_declaration = self.canned_is_declaration,
             .alternate_result = self.canned_alternate_result,
@@ -269040,6 +269048,29 @@ test "checker: external resolver enriches TS7016 with resolved path" {
         found = true;
     }
     try T.expect(found);
+}
+
+test "checker: untyped relative import displays canonical diagnostic path without changing resolution identity" {
+    const s = try newSetup(
+        \\import { value } from "./bridge.js";
+        \\value;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "bridge.js",
+        .canned_diagnostic_path = "/fixture/bridge.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("main.ts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.untyped_module), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings(
+        "Could not find a declaration file for module './bridge.js'. '/fixture/bridge.js' implicitly has an 'any' type.",
+        s.checker.diagnostics.items[0].message,
+    );
 }
 
 test "checker: untyped external module suppresses named import export diagnostic" {

@@ -2315,6 +2315,20 @@ pub fn build(b: *std.Build) void {
             closure.expectExitCode(2);
             tsc_streams_step.dependOn(&closure.step);
         }
+        const bridge_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/bridge.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, bridge_abs_path, '\\', '/');
+        const closure_no_resolve = b.addRunArtifact(home_tsc_exe);
+        closure_no_resolve.setCwd(closure_dir);
+        closure_no_resolve.clearEnvironment();
+        closure_no_resolve.addArgs(&.{ "-p", "tsconfig-no-resolve.json", "--pretty", "false" });
+        closure_no_resolve.expectStdOutEqual(b.fmt(
+            "main.ts(1,23): error TS7016: Could not find a declaration file for module './bridge.js'. '{s}' implicitly has an 'any' type.\n" ++
+                "root.js(2,14): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+            .{bridge_abs_path},
+        ));
+        closure_no_resolve.expectStdErrEqual("");
+        closure_no_resolve.expectExitCode(2);
+        tsc_streams_step.dependOn(&closure_no_resolve.step);
 
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and

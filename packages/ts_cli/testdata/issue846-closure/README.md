@@ -15,3 +15,11 @@ TS2322 at `leaf.js:2:14`, `main.ts:4:7`, and `root.js:2:14`, in that order,
 and exit 2. With `allowJs` but no `checkJs`, only the `main.ts:4:7`
 diagnostic remains. `test-tsc-streams` asserts the exact output and exit
 code for all three modes.
+
+`tsconfig-no-resolve.json` checks the diagnostic-format boundary. With
+`noResolve`, `bridge.js` is physically found but is not admitted to the
+Program, so both compilers emit TS7016 at `main.ts:1:23` and TS2322 for
+the explicit `root.js`. Both compilers' TS7016 includes the absolute
+resolved path to `bridge.js`; Home keeps its relative Program identity
+separate from that diagnostic path. The exact result is asserted in
+`test-tsc-streams` and tracked in #954.
