@@ -23,3 +23,10 @@ the explicit `root.js`. Both compilers' TS7016 includes the absolute
 resolved path to `bridge.js`; Home keeps its relative Program identity
 separate from that diagnostic path. The exact result is asserted in
 `test-tsc-streams` and tracked in #954.
+
+`tsconfig-no-jsx.json` is the parallel negative JSX control: an admitted
+`.jsx` module is imported without selecting a `jsx` compiler option.
+Both compilers must report TS6142 at `jsx.ts:1:24`, naming the absolute
+resolved path to `widget.jsx`, and exit 2. This path uses the same
+diagnostic-only resolver field as the TS7016 case; `test-tsc-streams`
+asserts the exact message.

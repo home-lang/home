@@ -60008,7 +60008,7 @@ pub const Checker = struct {
             };
             switch (external.kind) {
                 .implementation => {
-                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.resolved_path)) return true;
+                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path)) return true;
                     if (self.strict_flags.no_implicit_any) {
                         try self.appendUntypedModuleDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path);
                     }
@@ -60023,7 +60023,7 @@ pub const Checker = struct {
                             return true;
                         return false;
                     }
-                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.resolved_path)) return true;
+                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path)) return true;
                     if (try self.reportExternalArbitraryExtensionDeclarationImport(node, spec, external.resolved_path)) return true;
                     return true;
                 },
@@ -61205,7 +61205,7 @@ pub const Checker = struct {
                         try self.reportProjectReferenceOutputNotBuilt(node, spec, output, external.resolved_path);
                         return true;
                     }
-                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.resolved_path)) return true;
+                    if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path)) return true;
                     switch (external.kind) {
                         .implementation => {
                             if (self.strict_flags.no_implicit_any) {
@@ -286078,7 +286078,8 @@ test "checker: external resolver TSX result without jsx reports TS6142" {
     );
     defer destroySetup(s);
     var stub = StubExternalResolver{
-        .canned_path = "/node_modules/comp/index.tsx",
+        .canned_path = "index.tsx",
+        .canned_diagnostic_path = "/node_modules/comp/index.tsx",
         .canned_is_declaration = true,
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
@@ -286104,7 +286105,8 @@ test "checker: external resolver JSX implementation without jsx reports TS6142 b
     );
     defer destroySetup(s);
     var stub = StubExternalResolver{
-        .canned_path = "/node_modules/view/index.jsx",
+        .canned_path = "index.jsx",
+        .canned_diagnostic_path = "/node_modules/view/index.jsx",
         .canned_is_declaration = false,
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
@@ -286115,7 +286117,10 @@ test "checker: external resolver JSX implementation without jsx reports TS6142 b
 
     var found = false;
     for (s.checker.diagnostics.items) |d| {
-        if (d.code == 6142) found = true;
+        if (d.code == 6142) {
+            found = true;
+            try T.expectEqualStrings("Module 'view' was resolved to '/node_modules/view/index.jsx', but '--jsx' is not set.", d.message);
+        }
         try T.expect(d.code != TsCodes.untyped_module);
         try T.expect(d.code != TsCodes.cannot_find_module);
     }

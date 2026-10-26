@@ -3034,7 +3034,8 @@ const CheckerResolverAdapter = struct {
         // excluded JS implementation cannot become an admitted source just
         // because its diagnostic path is absolute.
         var diagnostic_path: ?[]const u8 = null;
-        if (!admitted and javaScriptPath(r.path) and !std.fs.path.isAbsolute(r.path)) {
+        const jsx_source = std.mem.endsWith(u8, r.path, ".jsx") or std.mem.endsWith(u8, r.path, ".tsx");
+        if ((jsx_source or (!admitted and javaScriptPath(r.path))) and !std.fs.path.isAbsolute(r.path)) {
             self.resolver_mutex.lock();
             defer self.resolver_mutex.unlock();
             diagnostic_path = self.resolver.fs.realpath(self.resolver.arena.allocator(), r.path) catch null;

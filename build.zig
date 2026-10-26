@@ -2329,6 +2329,19 @@ pub fn build(b: *std.Build) void {
         closure_no_resolve.expectStdErrEqual("");
         closure_no_resolve.expectExitCode(2);
         tsc_streams_step.dependOn(&closure_no_resolve.step);
+        const widget_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/widget.jsx") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, widget_abs_path, '\\', '/');
+        const closure_no_jsx = b.addRunArtifact(home_tsc_exe);
+        closure_no_jsx.setCwd(closure_dir);
+        closure_no_jsx.clearEnvironment();
+        closure_no_jsx.addArgs(&.{ "-p", "tsconfig-no-jsx.json", "--pretty", "false" });
+        closure_no_jsx.expectStdOutEqual(b.fmt(
+            "jsx.ts(1,24): error TS6142: Module './widget.jsx' was resolved to '{s}', but '--jsx' is not set.\n",
+            .{widget_abs_path},
+        ));
+        closure_no_jsx.expectStdErrEqual("");
+        closure_no_jsx.expectExitCode(2);
+        tsc_streams_step.dependOn(&closure_no_jsx.step);
 
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
