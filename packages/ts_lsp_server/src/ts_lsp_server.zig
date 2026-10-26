@@ -3124,9 +3124,8 @@ pub fn handleDidDeleteFiles(
 
 /// Handle a `workspace/didChangeWatchedFiles` notification: a file
 /// watcher registered via dynamic capability fired. Validates the
-/// `changes` array shape and acknowledges. A future enhancement would
-/// dispatch each change by `type` (1=Created, 2=Changed, 3=Deleted)
-/// to refresh the program graph.
+/// `changes` array shape and acknowledges; the owning `LspProject` applies
+/// each disk revision to the Program and publishes affected open documents.
 pub fn handleDidChangeWatchedFiles(
     service: *ts_lsp.Service,
     gpa: std.mem.Allocator,

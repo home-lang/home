@@ -2488,6 +2488,47 @@ pub const LspProject = struct {
         gpa.destroy(self);
     }
 
+    fn refreshWatchedFiles(self: *LspProject, message: []const u8) !void {
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.gpa, message, .{});
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.InvalidWatchedChanges;
+        const params = parsed.value.object.get("params") orelse return error.InvalidWatchedChanges;
+        if (params != .object) return error.InvalidWatchedChanges;
+        const changes = params.object.get("changes") orelse return error.InvalidWatchedChanges;
+        if (changes != .array) return error.InvalidWatchedChanges;
+
+        var changed_paths: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer changed_paths.deinit(self.gpa);
+        self.resolver.invalidateCaches();
+        for (changes.array.items) |change| {
+            if (change != .object) return error.InvalidWatchedChanges;
+            const uri_value = change.object.get("uri") orelse return error.InvalidWatchedChanges;
+            const kind_value = change.object.get("type") orelse return error.InvalidWatchedChanges;
+            if (uri_value != .string or kind_value != .integer) return error.InvalidWatchedChanges;
+            if (kind_value.integer < 1 or kind_value.integer > 3) return error.InvalidWatchedChanges;
+            const uri = uri_value.string;
+            if (!std.mem.startsWith(u8, uri, "file://") or self.open_documents.contains(uri)) continue;
+            const path = ts_lsp_server.uriToPath(uri);
+            if (kind_value.integer == 3) {
+                _ = try self.program.removeSource(path);
+            } else {
+                const source = RealFs.read(self.gpa, path) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        _ = try self.program.removeSource(path);
+                        try changed_paths.append(self.gpa, path);
+                        continue;
+                    },
+                    else => return err,
+                };
+                defer self.gpa.free(source);
+                _ = try self.program.updateSource(path, source);
+            }
+            try changed_paths.append(self.gpa, path);
+        }
+        if (changed_paths.items.len == 0) return;
+        _ = try self.program.recompileChanged(changed_paths.items, self.service.compile_options);
+    }
+
     /// Handle one JSON-RPC message and return the response or notification
     /// body to send back (empty when there is none). Caller owns it.
     pub fn handle(self: *LspProject, message: []const u8) ![]u8 {
@@ -2496,23 +2537,25 @@ pub const LspProject = struct {
         const opening = std.mem.eql(u8, method, "textDocument/didOpen");
         const changing = std.mem.eql(u8, method, "textDocument/didChange") or
             std.mem.eql(u8, method, "textDocument/didSave");
+        const watched = std.mem.eql(u8, method, "workspace/didChangeWatchedFiles");
         const closing = std.mem.eql(u8, method, "textDocument/didClose");
-        if (opening or changing) {
+        if (opening or changing or watched) {
             // The adapter caches imported modules as read from disk; start
-            // fresh on each edit so saved changes to dependencies show up.
+            // fresh on editor edits and watcher events.
             self.adapter.deinit();
             self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
             self.adapter.setProgramSources(&self.program, self.service.compile_options);
         }
         const response = try ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
         errdefer if (response.len != 0) self.gpa.free(response);
+        if (watched) try self.refreshWatchedFiles(message);
 
-        if (opening or changing) {
-            // updateSource invalidates the changed source and its transitive
-            // importers. The dispatcher publishes only the changed document;
-            // refresh every other open document whose compilation revision
-            // changed, including an empty diagnostic set that clears an old
-            // editor error. Keep each notification as its own JSON-RPC body.
+        if (opening or changing or watched) {
+            // Source revisions invalidate affected importers. The dispatcher
+            // publishes only the edited document; watcher events publish no
+            // primary body. Refresh every other changed open document,
+            // including an empty diagnostic set that clears an old error.
+            // Keep each notification as its own JSON-RPC body.
             var it = self.open_documents.iterator();
             while (it.next()) |entry| {
                 const open_uri = entry.key_ptr.*;
@@ -7914,6 +7957,164 @@ test "LspProject: edited TypeScript imports admit and retire unopened JavaScript
     defer a.free(rejected_again);
     try std.testing.expect(std.mem.indexOf(u8, rejected_again, "\"code\":2322") != null);
     try std.testing.expectEqual(owner_id, project.program.lookupPath(js_path).?);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
+test "LspProject: watched unopened JavaScript changes refresh open importer" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"strict\":true,\"noEmit\":true}}");
+    }
+    const string_owner = "export const value = 'old';\n";
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, string_owner);
+    }
+    const ts_source = "import { value } from './owner.js';\nconst result: number = value;\n";
+    {
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, ts_source);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(js_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    const js_uri = try std.fmt.allocPrint(a, "file://{s}", .{js_path});
+    defer a.free(js_uri);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const open_ts = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = ts_source } } }, .{});
+    defer a.free(open_ts);
+    const opened = try project.handle(open_ts);
+    defer a.free(opened);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"code\":2322") != null);
+
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, "export const value = 1;\n");
+    }
+    const changed_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = js_uri, .type = 2 }} } }, .{});
+    defer a.free(changed_event);
+    const changed = try project.handle(changed_event);
+    defer a.free(changed);
+    const cleared = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, ts_uri) != null);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    try tmp.dir.deleteFile(io, "owner.js");
+    const deleted_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = js_uri, .type = 3 }} } }, .{});
+    defer a.free(deleted_event);
+    const deleted = try project.handle(deleted_event);
+    defer a.free(deleted);
+    const unresolved = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(unresolved);
+    try std.testing.expect(std.mem.indexOf(u8, unresolved, "\"code\":2307") != null);
+    try std.testing.expect(project.program.lookupPath(js_path) == null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, string_owner);
+    }
+    const created_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = js_uri, .type = 1 }} } }, .{});
+    defer a.free(created_event);
+    const created = try project.handle(created_event);
+    defer a.free(created);
+    const rejected = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":2322") != null);
+    try std.testing.expect(project.program.lookupPath(js_path) != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    const open_js = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = js_uri, .languageId = "javascript", .version = 1, .text = "export const value = 1;\n" } } }, .{});
+    defer a.free(open_js);
+    const opened_js = try project.handle(open_js);
+    defer a.free(opened_js);
+    const importer_cleared = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(importer_cleared);
+    try std.testing.expect(std.mem.indexOf(u8, importer_cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+
+    // A disk watcher event must not replace the unsaved text of an open owner.
+    const ignored = try project.handle(changed_event);
+    defer a.free(ignored);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+    const importer_after_watch = try project.service.diagnostics(a, ts_path);
+    defer a.free(importer_after_watch);
+    try std.testing.expect(std.mem.indexOf(u8, importer_after_watch, "TS2322") == null);
+}
+
+test "LspProject: watched creation admits a previously missing JavaScript import" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config.close(io);
+        try config.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"strict\":true,\"noEmit\":true}}");
+    }
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+    }
+    const ts_source = "import { value } from './owner.js';\nconst result: number = value;\n";
+    {
+        var importer = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer importer.close(io);
+        try importer.writeStreamingAll(io, ts_source);
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const js_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(js_path);
+    const ts_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(ts_path);
+    try tmp.dir.deleteFile(io, "owner.js");
+    const js_uri = try std.fmt.allocPrint(a, "file://{s}", .{js_path});
+    defer a.free(js_uri);
+    const ts_uri = try std.fmt.allocPrint(a, "file://{s}", .{ts_path});
+    defer a.free(ts_uri);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const open_ts = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = ts_uri, .languageId = "typescript", .version = 1, .text = ts_source } } }, .{});
+    defer a.free(open_ts);
+    const opened = try project.handle(open_ts);
+    defer a.free(opened);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"code\":2307") != null);
+    try std.testing.expect(project.program.lookupPath(js_path) == null);
+
+    {
+        var owner = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner.close(io);
+        try owner.writeStreamingAll(io, "export const value = 'new';\n");
+    }
+    const created_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = js_uri, .type = 1 }} } }, .{});
+    defer a.free(created_event);
+    const created = try project.handle(created_event);
+    defer a.free(created);
+    const importer_rejected = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(importer_rejected);
+    try std.testing.expect(std.mem.indexOf(u8, importer_rejected, "\"code\":2322") != null);
+    try std.testing.expect(std.mem.indexOf(u8, importer_rejected, "\"code\":2307") == null);
+    try std.testing.expect(project.program.lookupPath(js_path) != null);
     try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 

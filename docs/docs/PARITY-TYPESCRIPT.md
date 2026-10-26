@@ -334,6 +334,9 @@ import retires that source and clears the importer diagnostic, and re-adding
 it restores the same Program file identity. This verifies one editor workflow,
 not general tsserver parity; broader JavaScript admission, dependency-depth,
 and negative-diagnostic coverage remains tracked in [#846](https://github.com/home-lang/home/issues/846).
+Watched-file notifications also refresh an unopened imported `.js` owner on
+change, deletion, and recreation, while preserving unsaved text in open
+documents. Other watcher and project-configuration combinations remain open.
 
 ## Watch mode
 
