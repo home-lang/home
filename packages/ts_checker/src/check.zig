@@ -3365,6 +3365,21 @@ const IndexParamNames = struct {
     symbol_decl: NodeId = hir_mod.none_node_id,
 };
 
+/// Index-signature write permissions are independent by key domain. A
+/// numeric-string literal selects the number signature when present, while a
+/// dynamic string selects the string signature. Defaulting each bit to true
+/// preserves the existing semantics of synthetic readonly arrays and mapped
+/// types that mark their entire index surface readonly.
+const ReadonlyIndexDomains = struct {
+    string: bool = true,
+    number: bool = true,
+    symbol: bool = true,
+
+    fn any(self: @This()) bool {
+        return self.string or self.number or self.symbol;
+    }
+};
+
 const AccessorPairAccessibilityInfo = struct {
     getter_anchor: NodeId = hir_mod.none_node_id,
     setter_anchor: NodeId = hir_mod.none_node_id,
@@ -4413,7 +4428,7 @@ pub const CheckedTypes = struct {
     var_decl_annotation_nodes: std.AutoHashMapUnmanaged(VarDeclKey, NodeId) = .empty,
     this_type_markers: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     no_infer_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
-    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, ReadonlyIndexDomains) = .empty,
     polymorphic_this_boundaries: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     generic_polymorphic_this_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     declaration_this_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
@@ -5514,10 +5529,9 @@ pub const Checker = struct {
     /// each wrapper keeps source-declared object shapes from colliding with
     /// the inference-control marker.
     no_infer_types: std.AutoHashMapUnmanaged(TypeId, TypeId),
-    /// Object TypeIds whose index signature is readonly. Index
-    /// signatures are stored as value-type slots on object payloads,
-    /// so this side table preserves mutability for assignment checks.
-    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void),
+    /// Object TypeIds whose index signatures are readonly by key domain.
+    /// The object payload stores value types but not write permissions.
+    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, ReadonlyIndexDomains),
     /// Named class/interface bodies bind their own polymorphic `this`.
     /// A containing receiver substitutes only their explicit type arguments.
     polymorphic_this_boundaries: std.AutoHashMapUnmanaged(TypeId, void),
@@ -6676,7 +6690,11 @@ pub const Checker = struct {
             while (inferred_variance.next()) |entry| {
                 try self.inferred_variance.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
             }
-            inline for (.{ "readonly_index_types", "polymorphic_this_boundaries", "generic_polymorphic_this_types", "implicit_index_excluded_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
+            var readonly_indexes = source.readonly_index_types.iterator();
+            while (readonly_indexes.next()) |entry| {
+                try self.readonly_index_types.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            inline for (.{ "polymorphic_this_boundaries", "generic_polymorphic_this_types", "implicit_index_excluded_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
                 var entries = @field(source, name).iterator();
                 while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, {});
             }
@@ -43565,11 +43583,11 @@ pub const Checker = struct {
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
-        var has_readonly_index = false;
+        var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
         var static_string_idx: TypeId = types.Primitive.none;
         var static_number_idx: TypeId = types.Primitive.none;
         var static_symbol_idx: TypeId = types.Primitive.none;
-        var has_static_readonly_index = false;
+        var static_readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
         var own_index_signatures: IndexSignatureDuplicateState = .{};
         var own_static_index_signatures: IndexSignatureDuplicateState = .{};
         const parent_class_name = if (c.extends != hir_mod.none_node_id) self.classExtendsName(c.extends) else null;
@@ -44019,19 +44037,35 @@ pub const Checker = struct {
                     else
                         types.Primitive.string_t;
                     if (ix.is_static) {
-                        if (ix.is_readonly) has_static_readonly_index = true;
                         try self.checkDuplicateIndexSignature(m, key_t, &own_static_index_signatures);
                         try self.reportIndexSignatureGrammarDiagnostics(m, key_t);
-                        if (key_t == types.Primitive.string_t) static_string_idx = value_t;
-                        if (key_t == types.Primitive.number_t) static_number_idx = value_t;
-                        if (key_t == types.Primitive.symbol_t) static_symbol_idx = value_t;
+                        if (key_t == types.Primitive.string_t) {
+                            static_string_idx = value_t;
+                            static_readonly_domains.string = ix.is_readonly;
+                        }
+                        if (key_t == types.Primitive.number_t) {
+                            static_number_idx = value_t;
+                            static_readonly_domains.number = ix.is_readonly;
+                        }
+                        if (key_t == types.Primitive.symbol_t) {
+                            static_symbol_idx = value_t;
+                            static_readonly_domains.symbol = ix.is_readonly;
+                        }
                     } else {
-                        if (ix.is_readonly) has_readonly_index = true;
                         try self.checkDuplicateIndexSignature(m, key_t, &own_index_signatures);
                         try self.reportIndexSignatureGrammarDiagnostics(m, key_t);
-                        if (key_t == types.Primitive.string_t) string_idx = value_t;
-                        if (key_t == types.Primitive.number_t) number_idx = value_t;
-                        if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
+                        if (key_t == types.Primitive.string_t) {
+                            string_idx = value_t;
+                            readonly_domains.string = ix.is_readonly;
+                        }
+                        if (key_t == types.Primitive.number_t) {
+                            number_idx = value_t;
+                            readonly_domains.number = ix.is_readonly;
+                        }
+                        if (key_t == types.Primitive.symbol_t) {
+                            symbol_idx = value_t;
+                            readonly_domains.symbol = ix.is_readonly;
+                        }
                     }
                 },
                 .fn_decl, .fn_expr, .arrow_fn => {
@@ -45655,20 +45689,38 @@ pub const Checker = struct {
                 const parent_string_idx = self.interner.objectStringIndex(parent_t);
                 const parent_number_idx = self.interner.objectNumberIndex(parent_t);
                 const parent_symbol_idx = self.interner.objectSymbolIndex(parent_t);
-                if (string_idx == types.Primitive.none) string_idx = parent_string_idx;
-                if (number_idx == types.Primitive.none) number_idx = parent_number_idx;
-                if (symbol_idx == types.Primitive.none) symbol_idx = parent_symbol_idx;
-                if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
+                const parent_domains = self.readonly_index_types.get(parent_t) orelse ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
+                if (string_idx == types.Primitive.none) {
+                    string_idx = parent_string_idx;
+                    readonly_domains.string = parent_domains.string and parent_string_idx != types.Primitive.none;
+                }
+                if (number_idx == types.Primitive.none) {
+                    number_idx = parent_number_idx;
+                    readonly_domains.number = parent_domains.number and parent_number_idx != types.Primitive.none;
+                }
+                if (symbol_idx == types.Primitive.none) {
+                    symbol_idx = parent_symbol_idx;
+                    readonly_domains.symbol = parent_domains.symbol and parent_symbol_idx != types.Primitive.none;
+                }
             }
             if (parent_static_t) |pst| {
                 try self.mergeInheritedStaticMembers(node, pst, &temporaries.static_members);
                 const parent_static_string_idx = self.interner.objectStringIndex(pst);
                 const parent_static_number_idx = self.interner.objectNumberIndex(pst);
                 const parent_static_symbol_idx = self.interner.objectSymbolIndex(pst);
-                if (static_string_idx == types.Primitive.none) static_string_idx = parent_static_string_idx;
-                if (static_number_idx == types.Primitive.none) static_number_idx = parent_static_number_idx;
-                if (static_symbol_idx == types.Primitive.none) static_symbol_idx = parent_static_symbol_idx;
-                if (self.typeHasReadonlyIndexSignature(pst)) has_static_readonly_index = true;
+                const parent_static_domains = self.readonly_index_types.get(pst) orelse ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
+                if (static_string_idx == types.Primitive.none) {
+                    static_string_idx = parent_static_string_idx;
+                    static_readonly_domains.string = parent_static_domains.string and parent_static_string_idx != types.Primitive.none;
+                }
+                if (static_number_idx == types.Primitive.none) {
+                    static_number_idx = parent_static_number_idx;
+                    static_readonly_domains.number = parent_static_domains.number and parent_static_number_idx != types.Primitive.none;
+                }
+                if (static_symbol_idx == types.Primitive.none) {
+                    static_symbol_idx = parent_static_symbol_idx;
+                    static_readonly_domains.symbol = parent_static_domains.symbol and parent_static_symbol_idx != types.Primitive.none;
+                }
             }
         }
         // Checked-JS: infer members from `this.x = …` in non-constructor
@@ -45694,7 +45746,7 @@ pub const Checker = struct {
         try self.polymorphic_this_boundaries.put(self.gpa, instance_t, {});
         try self.implicit_index_excluded_types.put(self.gpa, instance_t, {});
         self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
-        if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
+        if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, instance_t, readonly_domains);
         var static_ctor_sig = ctor_sig;
         var inherited_ctor_sig: ?TypeId = null;
         var inherited_ctor_visibility: ?ConstructorVisibility = null;
@@ -45757,7 +45809,7 @@ pub const Checker = struct {
             });
         }
         var static_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
-        if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
+        if (static_readonly_domains.any()) try self.readonly_index_types.put(self.gpa, static_t, static_readonly_domains);
         if (parent_static_t) |pst| {
             try self.checkIntersectionFactoryClassStaticSide(node, c.extends, instance_t, pst);
         }
@@ -46748,7 +46800,7 @@ pub const Checker = struct {
                 }
             }
             static_t = self.interner.internObjectTypeWithIndexAndSymbol(temporaries.static_members.items, static_string_idx, static_number_idx, static_symbol_idx) catch return error.OutOfMemory;
-            if (has_static_readonly_index) try self.readonly_index_types.put(self.gpa, static_t, {});
+            if (static_readonly_domains.any()) try self.readonly_index_types.put(self.gpa, static_t, static_readonly_domains);
             try self.class_static_type_by_node.put(self.gpa, node, static_t);
             try self.recordMemberPredicatesForReceiver(instance_t, &temporaries.instance_member_predicates);
             if (parent_instance_t) |pt| try self.copyMemberPredicatesFromReceiver(instance_t, pt);
@@ -51359,7 +51411,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return false;
         if (self.interner.objectMemberInfo(t, name)) |info| return info.is_readonly;
-        return self.namedPropertyIndexType(t, name) != null and self.readonly_index_types.contains(t);
+        return self.namedPropertyIndexType(t, name) != null and self.indexReadonlyForName(t, name);
     }
 
     const ReadonlyStatus = enum { absent, readonly, writable };
@@ -51407,7 +51459,7 @@ pub const Checker = struct {
             return if (info.is_readonly) .readonly else .writable;
         }
         if (self.namedPropertyIndexType(t, name) != null) {
-            return if (self.readonly_index_types.contains(t)) .readonly else .writable;
+            return if (self.indexReadonlyForName(t, name)) .readonly else .writable;
         }
         return .absent;
     }
@@ -51528,10 +51580,10 @@ pub const Checker = struct {
         }
         var obj_t = self.hir.typeOf(obj_node);
         if (obj_t == types.Primitive.none) return;
-        if (!self.typeHasReadonlyIndexSignature(obj_t) and self.hir.kindOf(obj_node) == .identifier) {
+        if (!self.typeHasReadonlyIndexSignatureForTarget(obj_t, target) and self.hir.kindOf(obj_node) == .identifier) {
             obj_t = self.typeOfIdentifierDeclared(obj_node);
         }
-        if (!self.typeHasReadonlyIndexSignature(obj_t)) return;
+        if (!self.typeHasReadonlyIndexSignatureForTarget(obj_t, target)) return;
         // For named member access (`C.bar`), only fire if the class
         // has no concrete static member of that name ÃÂ¢ÃÂÃÂ otherwise the
         // signature doesn't apply and the assignment is fine.
@@ -51554,7 +51606,9 @@ pub const Checker = struct {
         // the static side of a class (`typeof C`). Falls back to the
         // short form for anonymous types. Mirrors `staticIndexSignature2`.
         const msg: []const u8 = blk: {
-            if (try self.allocPropertyMissingTargetTypeName(obj_t)) |target_text| {
+            if ((try self.allocPropertyMissingTargetTypeName(obj_t)) orelse
+                (try self.allocObjectTypeShapeOpts(obj_t, false))) |target_text|
+            {
                 break :blk try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Index signature in type '{s}' only permits reading.",
@@ -51585,6 +51639,62 @@ pub const Checker = struct {
             if (self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len) return false;
             for (self.interner.intersectionMembers(t)) |member| {
                 if (self.typeHasReadonlyIndexSignature(member)) return true;
+            }
+        }
+        return false;
+    }
+
+    fn indexReadonlyForName(self: *Checker, t: TypeId, name: hir_mod.StringId) bool {
+        const domains = self.readonly_index_types.get(t) orelse return false;
+        return if (self.isNumericStringId(name) and self.interner.objectNumberIndex(t) != types.Primitive.none)
+            domains.number
+        else
+            domains.string;
+    }
+
+    /// Pick the index signature that TypeScript uses for an assignment. A
+    /// numeric-string literal selects a number index when present; ordinary
+    /// strings do not. A number falls back to a string index if no number
+    /// index exists. This is separate from the broad "has any readonly
+    /// index" query used by type relations and inheritance.
+    fn typeHasReadonlyIndexSignatureForTarget(self: *Checker, t: TypeId, target: NodeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (self.readonly_index_types.get(t)) |domains| {
+            if (self.hir.kindOf(target) == .member_access) {
+                return self.indexReadonlyForName(t, hir_mod.memberOf(self.hir, target).name);
+            }
+            if (self.hir.kindOf(target) == .element_access) {
+                const index_node = hir_mod.elementOf(self.hir, target).index;
+                switch (self.hir.kindOf(index_node)) {
+                    .literal_string => {
+                        const name = hir_mod.literalStringOf(self.hir, index_node).value;
+                        return self.indexReadonlyForName(t, name);
+                    },
+                    .literal_number => return if (self.interner.objectNumberIndex(t) != types.Primitive.none) domains.number else domains.string,
+                    else => {},
+                }
+                const index_t = self.hir.typeOf(index_node);
+                if (index_t < self.interner.pool.typeCount()) {
+                    const flags = self.interner.pool.flagsOf(index_t);
+                    if (flags.is_symbol) return domains.symbol;
+                    if (flags.is_number) return if (self.interner.objectNumberIndex(t) != types.Primitive.none) domains.number else domains.string;
+                }
+                return domains.string;
+            }
+            return false;
+        }
+        if (self.tupleTypeLooksReadonly(t) and self.interner.objectNumberIndex(t) != types.Primitive.none) return true;
+        const flags = self.interner.pool.flagsOf(t);
+        if (self.typeIsMappedPayloadType(t) and self.interner.mappedPayload(t).readonly == .add) return true;
+        if (flags.is_union) {
+            for (self.interner.unionMembers(t)) |member| {
+                if (self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
+            }
+        }
+        if (flags.is_intersection) {
+            if (self.interner.pool.payloadOf(t) >= self.interner.pool.intersection_payloads.items.len) return false;
+            for (self.interner.intersectionMembers(t)) |member| {
+                if (self.typeHasReadonlyIndexSignatureForTarget(member, target)) return true;
             }
         }
         return false;
@@ -57390,8 +57500,8 @@ pub const Checker = struct {
                 self.interner.internObjectType(new_members.items) catch return t
             else
                 self.interner.internObjectTypeWithIndexAndSymbol(new_members.items, new_str, new_num, new_sym) catch return t;
-            if (self.readonly_index_types.contains(t)) {
-                try self.readonly_index_types.put(self.gpa, new_obj, {});
+            if (self.readonly_index_types.get(t)) |domains| {
+                try self.readonly_index_types.put(self.gpa, new_obj, domains);
             }
             if (self.array_origin_types.contains(t)) {
                 try self.array_origin_types.put(self.gpa, new_obj, {});
@@ -68446,7 +68556,7 @@ pub const Checker = struct {
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
-        var has_readonly_index = false;
+        var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
         var index_names: IndexParamNames = .{};
         var pattern_indexes: std.ArrayListUnmanaged(PatternIndexSignature) = .empty;
         defer pattern_indexes.deinit(self.gpa);
@@ -68463,7 +68573,6 @@ pub const Checker = struct {
         for (members) |m| {
             if (self.hir.kindOf(m) == .index_signature) {
                 const ix = hir_mod.indexSignatureOf(self.hir, m);
-                if (ix.is_readonly) has_readonly_index = true;
                 if (ix.value_type != hir_mod.none_node_id) {
                     try self.reportUnresolvedBodylessSignatureTypeRefs(ix.value_type, type_params);
                 }
@@ -68479,16 +68588,19 @@ pub const Checker = struct {
                 try self.reportIndexSignatureGrammarDiagnostics(m, key_t);
                 if (key_t == types.Primitive.string_t) {
                     string_idx = value_t;
+                    readonly_domains.string = ix.is_readonly;
                     if (ix.key_name != 0) index_names.string = ix.key_name;
                     index_names.string_decl = m;
                 }
                 if (key_t == types.Primitive.number_t) {
                     number_idx = value_t;
+                    readonly_domains.number = ix.is_readonly;
                     if (ix.key_name != 0) index_names.number = ix.key_name;
                     index_names.number_decl = m;
                 }
                 if (key_t == types.Primitive.symbol_t) {
                     symbol_idx = value_t;
+                    readonly_domains.symbol = ix.is_readonly;
                     if (ix.key_name != 0) index_names.symbol = ix.key_name;
                     index_names.symbol_decl = m;
                 } else if (key_t != types.Primitive.string_t and key_t != types.Primitive.number_t and
@@ -68675,10 +68787,20 @@ pub const Checker = struct {
                 hir_mod.identifierOf(self.hir, it.name).name
             else
                 null;
+            const own_string_idx = string_idx;
+            const own_number_idx = number_idx;
+            const own_symbol_idx = symbol_idx;
             try self.mergeInterfaceExtends(extends, iface_name_for_extends, &iface_members, &string_idx, &number_idx, &symbol_idx);
             for (extends) |extends_node| {
                 const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
-                if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
+                const parent_domains = self.readonly_index_types.get(parent_t) orelse
+                    if (self.typeHasReadonlyIndexSignature(parent_t)) ReadonlyIndexDomains{} else continue;
+                if (own_string_idx == types.Primitive.none and self.interner.objectStringIndex(parent_t) != types.Primitive.none)
+                    readonly_domains.string = readonly_domains.string or parent_domains.string;
+                if (own_number_idx == types.Primitive.none and self.interner.objectNumberIndex(parent_t) != types.Primitive.none)
+                    readonly_domains.number = readonly_domains.number or parent_domains.number;
+                if (own_symbol_idx == types.Primitive.none and self.interner.objectSymbolIndex(parent_t) != types.Primitive.none)
+                    readonly_domains.symbol = readonly_domains.symbol or parent_domains.symbol;
             }
         }
         if (validate_declaration) {
@@ -68710,7 +68832,7 @@ pub const Checker = struct {
         try self.polymorphic_this_boundaries.put(self.gpa, iface_t, {});
         try self.implicit_index_excluded_types.put(self.gpa, iface_t, {});
         self.engine.implicit_index_excluded_types = &self.implicit_index_excluded_types;
-        if (has_readonly_index) try self.readonly_index_types.put(self.gpa, iface_t, {});
+        if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, iface_t, readonly_domains);
         try self.registerIndexParamNames(iface_t, index_names);
         try self.registerPatternIndexSignatures(iface_t, pattern_indexes.items);
         try self.recordMemberPredicatesForReceiver(iface_t, &iface_member_predicates);
@@ -68911,7 +69033,7 @@ pub const Checker = struct {
                 try self.declaration_this_types.put(self.gpa, final_t, this_type);
                 self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(this_type)].constraint = final_t;
             }
-            if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
+            if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, final_t, readonly_domains);
             try self.putTypeName(id.name, final_t);
             for (extends) |extends_node| {
                 if (self.hir.kindOf(extends_node) != .type_ref) continue;
@@ -72478,7 +72600,7 @@ pub const Checker = struct {
             number_idx,
             symbol_idx,
         ) catch return error.OutOfMemory;
-        if (inherited_readonly_index) try self.readonly_index_types.put(self.gpa, refreshed, {});
+        if (inherited_readonly_index) try self.readonly_index_types.put(self.gpa, refreshed, .{});
         try self.copyMemberPredicatesFromReceiver(refreshed, instantiated_t);
         try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, refreshed);
         return refreshed;
@@ -76608,7 +76730,7 @@ pub const Checker = struct {
         var string_idx: TypeId = types.Primitive.none;
         var number_idx: TypeId = types.Primitive.none;
         var symbol_idx: TypeId = types.Primitive.none;
-        var has_readonly_index = false;
+        var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
         var forward_ctor_sig: ?TypeId = null;
 
         var forward_parent_t: ?TypeId = null;
@@ -76625,7 +76747,8 @@ pub const Checker = struct {
                     string_idx = self.interner.objectStringIndex(parent_t);
                     number_idx = self.interner.objectNumberIndex(parent_t);
                     symbol_idx = self.interner.objectSymbolIndex(parent_t);
-                    if (self.typeHasReadonlyIndexSignature(parent_t)) has_readonly_index = true;
+                    readonly_domains = self.readonly_index_types.get(parent_t) orelse
+                        ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
                 }
             }
             if (try self.classExtendsStaticType(c.extends)) |parent_static_t| {
@@ -76642,7 +76765,6 @@ pub const Checker = struct {
             switch (self.hir.kindOf(m)) {
                 .index_signature => {
                     const ix = hir_mod.indexSignatureOf(self.hir, m);
-                    has_readonly_index = true;
                     const value_t = if (ix.value_type != hir_mod.none_node_id)
                         (self.lowererLowerWithTypeParams(ix.value_type) catch types.Primitive.any)
                     else
@@ -76651,9 +76773,23 @@ pub const Checker = struct {
                         (self.lowererLowerWithTypeParams(ix.key_type) catch types.Primitive.string_t)
                     else
                         types.Primitive.string_t;
-                    if (key_t == types.Primitive.string_t) string_idx = value_t;
-                    if (key_t == types.Primitive.number_t) number_idx = value_t;
-                    if (key_t == types.Primitive.symbol_t) symbol_idx = value_t;
+                    if (key_t == types.Primitive.string_t) {
+                        string_idx = value_t;
+                        // This is a forward provisional class shape. A
+                        // recursive alias can observe it before the class
+                        // declaration is checked; tsc treats that unresolved
+                        // index as readonly, even if the eventual declaration
+                        // is mutable (see the StringTree regression below).
+                        readonly_domains.string = true;
+                    }
+                    if (key_t == types.Primitive.number_t) {
+                        number_idx = value_t;
+                        readonly_domains.number = true;
+                    }
+                    if (key_t == types.Primitive.symbol_t) {
+                        symbol_idx = value_t;
+                        readonly_domains.symbol = true;
+                    }
                 },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, m);
@@ -76787,7 +76923,7 @@ pub const Checker = struct {
             .is_method = false,
         });
         const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
-        if (has_readonly_index) try self.readonly_index_types.put(self.gpa, instance_t, {});
+        if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, instance_t, readonly_domains);
         try self.class_instance_types.put(self.gpa, cid.name, instance_t);
         try self.class_static_types.put(self.gpa, cid.name, static_t);
         try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
@@ -80191,7 +80327,7 @@ pub const Checker = struct {
                 var string_idx: TypeId = types.Primitive.none;
                 var number_idx: TypeId = types.Primitive.none;
                 var symbol_idx: TypeId = types.Primitive.none;
-                var has_readonly_index = false;
+                var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
                 var index_names: IndexParamNames = .{};
                 var pattern_indexes: std.ArrayListUnmanaged(PatternIndexSignature) = .empty;
                 defer pattern_indexes.deinit(self.gpa);
@@ -80199,7 +80335,6 @@ pub const Checker = struct {
                 for (members) |m| {
                     if (self.hir.kindOf(m) == .index_signature) {
                         const ix = hir_mod.indexSignatureOf(self.hir, m);
-                        if (ix.is_readonly) has_readonly_index = true;
                         const value_t = if (ix.value_type != hir_mod.none_node_id)
                             try self.lowererLowerWithTypeParams(ix.value_type)
                         else
@@ -80212,16 +80347,19 @@ pub const Checker = struct {
                         try self.reportIndexSignatureGrammarDiagnostics(m, key_t);
                         if (key_t == types.Primitive.string_t) {
                             string_idx = value_t;
+                            readonly_domains.string = ix.is_readonly;
                             if (ix.key_name != 0) index_names.string = ix.key_name;
                             index_names.string_decl = m;
                         }
                         if (key_t == types.Primitive.number_t) {
                             number_idx = value_t;
+                            readonly_domains.number = ix.is_readonly;
                             if (ix.key_name != 0) index_names.number = ix.key_name;
                             index_names.number_decl = m;
                         }
                         if (key_t == types.Primitive.symbol_t) {
                             symbol_idx = value_t;
+                            readonly_domains.symbol = ix.is_readonly;
                             if (ix.key_name != 0) index_names.symbol = ix.key_name;
                             index_names.symbol_decl = m;
                         } else if (key_t != types.Primitive.string_t and key_t != types.Primitive.number_t and
@@ -80289,7 +80427,7 @@ pub const Checker = struct {
                     try self.checkObjectTypeLiteralIndexConstraints(type_node, built.items, string_idx, number_idx);
                 }
                 const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(built.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
-                if (has_readonly_index) try self.readonly_index_types.put(self.gpa, obj_t, {});
+                if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, obj_t, readonly_domains);
                 try self.registerIndexParamNames(obj_t, index_names);
                 try self.registerPatternIndexSignatures(obj_t, pattern_indexes.items);
                 return obj_t;
@@ -85138,7 +85276,7 @@ pub const Checker = struct {
         if (has_symbolic_variadic) {
             try self.symbolic_tuple_layouts.put(self.gpa, tuple_t, try symbolic_layout.toOwnedSlice(self.gpa));
         }
-        if (readonly and elem_union != types.Primitive.none) try self.readonly_index_types.put(self.gpa, tuple_t, {});
+        if (readonly and elem_union != types.Primitive.none) try self.readonly_index_types.put(self.gpa, tuple_t, .{});
         return tuple_t;
     }
 
@@ -88134,7 +88272,7 @@ pub const Checker = struct {
         }
         const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
         try self.array_origin_types.put(self.gpa, array_t, {});
-        if (mapped.readonly == 1) try self.readonly_index_types.put(self.gpa, array_t, {});
+        if (mapped.readonly == 1) try self.readonly_index_types.put(self.gpa, array_t, .{});
         return array_t;
     }
 
@@ -88535,7 +88673,7 @@ pub const Checker = struct {
             number_idx,
             symbol_idx,
         ) catch return error.OutOfMemory;
-        if (m.readonly == 1) try self.readonly_index_types.put(self.gpa, obj_t, {});
+        if (m.readonly == 1) try self.readonly_index_types.put(self.gpa, obj_t, .{});
         if (self.hir.kindOf(m.constraint) != .keyof_type) {
             self.interner.setTypeSymbol(obj_t, @intCast(node));
         }
@@ -115515,7 +115653,7 @@ pub const Checker = struct {
             if (keyed_utility) types.Primitive.none else self.interner.objectNumberIndex(source_t),
             if (keyed_utility) types.Primitive.none else self.interner.objectSymbolIndex(source_t),
         ) catch return error.OutOfMemory;
-        if (kind == .readonly) try self.readonly_index_types.put(self.gpa, result, {});
+        if (kind == .readonly) try self.readonly_index_types.put(self.gpa, result, .{});
         return result;
     }
 
@@ -115571,7 +115709,7 @@ pub const Checker = struct {
         }
         const result = try self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, number_index, symbol_index);
         if (readonly and (string_index != types.Primitive.none or number_index != types.Primitive.none or symbol_index != types.Primitive.none))
-            try self.readonly_index_types.put(self.gpa, result, {});
+            try self.readonly_index_types.put(self.gpa, result, .{});
         return result;
     }
 
@@ -115618,27 +115756,29 @@ pub const Checker = struct {
                 var string_index = types.Primitive.none;
                 var number_index = types.Primitive.none;
                 var symbol_index = types.Primitive.none;
-                var has_readonly_index = false;
+                var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
                 var index_names: IndexParamNames = .{};
                 for (object.indices) |index| {
                     const key = try self.lowerProgramExpression(index.key, declaration, args);
                     const value = try self.lowerProgramExpression(index.value, declaration, args);
                     if (key == types.Primitive.string_t) {
                         string_index = value;
+                        readonly_domains.string = index.readonly;
                         if (index.name.len > 0) index_names.string = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else if (key == types.Primitive.number_t) {
                         number_index = value;
+                        readonly_domains.number = index.readonly;
                         if (index.name.len > 0) index_names.number = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else if (key == types.Primitive.symbol_t) {
                         symbol_index = value;
+                        readonly_domains.symbol = index.readonly;
                         if (index.name.len > 0) index_names.symbol = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else {
                         return error.UnsupportedProgramType;
                     }
-                    has_readonly_index = has_readonly_index or index.readonly;
                 }
                 const result = try self.interner.internObjectTypeWithIndexAndSymbol(members, string_index, number_index, symbol_index);
-                if (has_readonly_index) try self.readonly_index_types.put(self.gpa, result, {});
+                if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, result, readonly_domains);
                 try self.registerIndexParamNames(result, index_names);
                 return result;
             },
@@ -168032,7 +168172,7 @@ pub const Checker = struct {
         }};
         const array_t = self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, element) catch return error.OutOfMemory;
         try self.array_origin_types.put(self.gpa, array_t, {});
-        try self.readonly_index_types.put(self.gpa, array_t, {});
+        try self.readonly_index_types.put(self.gpa, array_t, .{});
         return array_t;
     }
 
@@ -170536,7 +170676,7 @@ pub const Checker = struct {
         }
         const array_t = self.interner.internArrayType(self.string_interner, element_t) catch return error.OutOfMemory;
         try self.array_origin_types.put(self.gpa, array_t, {});
-        if (mapped.readonly == .add) try self.readonly_index_types.put(self.gpa, array_t, {});
+        if (mapped.readonly == .add) try self.readonly_index_types.put(self.gpa, array_t, .{});
         return array_t;
     }
 
@@ -171277,8 +171417,8 @@ pub const Checker = struct {
             if (self.this_type_markers.get(t)) |this_raw| {
                 try self.this_type_markers.put(self.gpa, new_obj, try self.substituteType(this_raw, subs));
             }
-            if (self.readonly_index_types.contains(t)) {
-                try self.readonly_index_types.put(self.gpa, new_obj, {});
+            if (self.readonly_index_types.get(t)) |domains| {
+                try self.readonly_index_types.put(self.gpa, new_obj, domains);
             }
             if (self.array_origin_types.contains(t)) {
                 try self.array_origin_types.put(self.gpa, new_obj, {});
@@ -194314,6 +194454,7 @@ pub const Checker = struct {
         if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
+        const readonly_domains = self.readonly_index_types.get(t) orelse ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
         const members = self.interner.objectMembers(t);
         const string_idx = self.interner.objectStringIndex(t);
         const number_idx = self.interner.objectNumberIndex(t);
@@ -194341,14 +194482,14 @@ pub const Checker = struct {
             // Mirrors `getNameFromIndexInfo` and the pure-index-signature
             // renderer in `allocSimpleTypeName`.
             const param_name = self.indexParamName(t, "string");
-            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: string]: {s}; ", .{ if (self.readonly_index_types.contains(t)) "readonly " else "", param_name, value_display });
+            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: string]: {s}; ", .{ if (readonly_domains.string) "readonly " else "", param_name, value_display });
             try buf.appendSlice(arena, ix_text);
         }
         if (has_number_idx) {
             const value_name = (try self.allocSimpleTypeName(number_idx)) orelse return null;
             const value_display = std.mem.trim(u8, value_name, " ;");
             const param_name = self.indexParamName(t, "number");
-            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: number]: {s}; ", .{ if (self.readonly_index_types.contains(t)) "readonly " else "", param_name, value_display });
+            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: number]: {s}; ", .{ if (readonly_domains.number) "readonly " else "", param_name, value_display });
             try buf.appendSlice(arena, ix_text);
         }
         var sorted_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -246074,6 +246215,66 @@ test "checker: assigning through readonly index signatures emits TS2542" {
     try T.expectEqual(@as(usize, 2), found);
 }
 
+test "checker: mixed readonly index domains select the matching key" {
+    const source =
+        \\type ReadonlyStrings = { readonly [key: string]: number; [index: number]: number };
+        \\declare let strings: ReadonlyStrings;
+        \\strings["new"] = 2;
+        \\strings[0] = 2;
+        \\strings["0"] = 2;
+        \\strings.new = 2;
+        \\interface ReadonlyNumbers { [key: string]: number; readonly [index: number]: number }
+        \\declare let numbers: ReadonlyNumbers;
+        \\numbers["new"] = 2;
+        \\numbers[0] = 2;
+        \\numbers["0"] = 2;
+        \\numbers.new = 2;
+        \\class ReadonlyStringClass { readonly [key: string]: number; [index: number]: number; }
+        \\declare let string_class: ReadonlyStringClass;
+        \\string_class["new"] = 2;
+        \\string_class[0] = 2;
+        \\string_class["0"] = 2;
+        \\class ReadonlyNumberClass { [key: string]: number; readonly [index: number]: number; }
+        \\declare let number_class: ReadonlyNumberClass;
+        \\number_class["new"] = 2;
+        \\number_class[0] = 2;
+        \\number_class["0"] = 2;
+        \\declare const sym: unique symbol;
+        \\type ReadonlySymbols = { [key: string]: number; readonly [key: symbol]: number };
+        \\declare let symbols: ReadonlySymbols;
+        \\symbols["new"] = 2;
+        \\symbols[sym] = 2;
+        \\type ReadonlyStringSymbols = { readonly [key: string]: number; [key: symbol]: number };
+        \\declare let string_symbols: ReadonlyStringSymbols;
+        \\string_symbols.new = 2;
+        \\string_symbols[sym] = 2;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const readonly_writes = [_][]const u8{
+        "strings[\"new\"] = 2",      "strings.new = 2",     "numbers[0] = 2",          "numbers[\"0\"] = 2",
+        "string_class[\"new\"] = 2", "number_class[0] = 2", "number_class[\"0\"] = 2", "symbols[sym] = 2",
+        "string_symbols.new = 2",
+    };
+    var found: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code != TsCodes.readonly_index_signature) continue;
+        const pos = d.pos orelse s.hir.spanOf(d.node).start;
+        var expected = false;
+        for (readonly_writes) |write| {
+            if (pos == std.mem.indexOf(u8, source, write).?) {
+                expected = true;
+                break;
+            }
+        }
+        try T.expect(expected);
+        found += 1;
+    }
+    try T.expectEqual(readonly_writes.len, found);
+}
+
 test "checker: mutable class index signature assignment remains allowed" {
     const s = try newSetup(
         \\class C { [n: number]: string; }
@@ -246363,6 +246564,10 @@ test "checker: forward typeof class uses the static side in mapped constraints" 
 }
 
 test "checker: forward class references in recursive alias preserve readonly index signatures" {
+    // TypeScript 5.7.3 reports TS2542 for both writes through the
+    // uninitialized recursive alias, despite the final class index being
+    // mutable. A declared, flow-narrowed variable of the same alias does
+    // not have this diagnostic; the forward shape must stay conservative.
     const s = try newSetup(
         \\type StringTree = string | StringTreeCollection;
         \\class StringTreeCollectionBase {

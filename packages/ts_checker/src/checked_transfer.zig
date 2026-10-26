@@ -110,6 +110,11 @@ const index_names: Shape = .{ .fields = &.{
     .{ .name = "number_decl", .shape = node_id },
     .{ .name = "symbol_decl", .shape = node_id },
 } };
+const readonly_index_domains: Shape = .{ .fields = &.{
+    .{ .name = "string", .shape = scalar },
+    .{ .name = "number", .shape = scalar },
+    .{ .name = "symbol", .shape = scalar },
+} };
 const generator: Shape = .{ .fields = &.{
     .{ .name = "yield_type", .shape = type_id },
     .{ .name = "return_type", .shape = type_id },
@@ -153,7 +158,6 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .jsdoc_constrained_type_params,
         .string_named_export_types,
         .unknown_empty_object_types,
-        .readonly_index_types,
         .polymorphic_this_boundaries,
         .generic_polymorphic_this_types,
         .implicit_index_excluded_types,
@@ -167,6 +171,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .signature_display_min_args,
         .inferred_variance,
         => .{ .key = type_id, .value = scalar },
+        .readonly_index_types => .{ .key = type_id, .value = readonly_index_domains },
         .signature_this_params,
         .type_parameter_placeholder_targets,
         .recursive_interface_targets,
