@@ -195181,6 +195181,21 @@ pub const Checker = struct {
         return null;
     }
 
+    fn singleNonUndefinedAssignmentDiagnosticTarget(self: *Checker, source: TypeId, target: TypeId) ?TypeId {
+        if (source == types.Primitive.none or source == types.Primitive.any or
+            source == types.Primitive.unknown or self.typeIsNullishOnly(source)) return null;
+        if (source < self.interner.pool.typeCount()) {
+            const source_flags = self.interner.pool.flagsOf(source);
+            if (source_flags.is_union or source_flags.is_intersection or source_flags.is_type_parameter) return null;
+        }
+        if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return null;
+        const members = self.interner.unionMembers(target);
+        if (members.len != 2) return null;
+        if (members[0] == types.Primitive.undefined_t) return members[1];
+        if (members[1] == types.Primitive.undefined_t) return members[0];
+        return null;
+    }
+
     fn reportAssignmentTypeNotAssignable(
         self: *Checker,
         node: NodeId,
@@ -195278,6 +195293,20 @@ pub const Checker = struct {
         else
             null;
         const contextual_async_source_name = try self.contextualAsyncFunctionAssignmentDiagnosticName(value_node, target);
+        // A two-member `T | undefined` write target is reported as `T`
+        // when a concrete, non-nullish source fails against T. A source
+        // union containing a nullish member (or `unknown`) is compared to
+        // the entire target union instead. This is the same rule for an
+        // optional property, an explicit union property, and a local
+        // variable; it changes diagnostic presentation, not assignability.
+        const diagnostic_target = if (checked_js_default_parameter_union)
+            self.subtractType(target, types.Primitive.undefined_t) catch target
+        else
+            self.singleNonUndefinedAssignmentDiagnosticTarget(source, target) orelse target;
+        const diagnostic_source = if (diagnostic_target != target and self.shouldWidenForArgDiagnostic(source, diagnostic_target))
+            self.widenLiteralType(source)
+        else
+            source;
         const source_name = explicit_function_source_name orelse
             contextual_async_source_name orelse
             (try self.allocVisibleSignatureExpandingIndexedMethodAliases(value_node)) orelse
@@ -195304,15 +195333,11 @@ pub const Checker = struct {
             (try self.functionExpressionAssignmentDiagnosticName(value_node, source)) orelse
             (if (checked_js_default_parameter_union) try self.allocAssignmentDiagnosticTypeName(self.widenLiteralType(source)) else null) orelse
             (try self.assignmentValueExpressionDisplayName(value_node, source, target)) orelse
-            (try self.literalExpressionAssignmentName(value_node, source)) orelse
-            (try self.allocAssignmentDiagnosticTypeName(source)) orelse
+            (try self.literalExpressionAssignmentName(value_node, diagnostic_source)) orelse
+            (try self.allocAssignmentDiagnosticTypeName(diagnostic_source)) orelse
             (if (target_annotation_is_nonnullable) try self.allocAssignmentDiagnosticTypeName(related_source) else null) orelse
             (try self.allocObjectTypeShape(source)) orelse
             return try self.reportAt(node, anchor_pos, TsCodes.type_not_assignable, fallback);
-        const diagnostic_target = if (checked_js_default_parameter_union)
-            self.subtractType(target, types.Primitive.undefined_t) catch target
-        else
-            target;
         const target_name_raw = (try self.assignmentExpressionPredicateTypeName(target_node, diagnostic_target)) orelse
             (try self.memberAccessDeclaredSignatureDiagnosticName(target_node)) orelse
             (try self.visibleAnnotatedSignatureIdentifierDiagnosticName(target_node, diagnostic_target)) orelse
@@ -259511,6 +259536,37 @@ test "checker: assignment diagnostic widens string literal source for number tar
         try T.expect(std.mem.indexOf(u8, d.message, "Type '\"bad\"' is not assignable to type 'number'.") == null);
     }
     try T.expect(found);
+}
+
+test "checker: optional property assignment diagnostics select concrete union target" {
+    const s = try newSetup(
+        \\declare let target: { value?: string; literal?: "fixed" };
+        \\declare let numberValue: number;
+        \\declare let numberOrUndefined: number | undefined;
+        \\declare let nullValue: null;
+        \\target.value = 42;
+        \\target.value = true;
+        \\target.value = numberValue;
+        \\target.value = numberOrUndefined;
+        \\target.value = nullValue;
+        \\target.literal = "other";
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    const expected = [_][]const u8{
+        "Type 'number' is not assignable to type 'string'.",
+        "Type 'boolean' is not assignable to type 'string'.",
+        "Type 'number' is not assignable to type 'string'.",
+        "Type 'number | undefined' is not assignable to type 'string | undefined'.",
+        "Type 'null' is not assignable to type 'string | undefined'.",
+        "Type '\"other\"' is not assignable to type '\"fixed\"'.",
+    };
+    try T.expectEqual(expected.len, s.checker.diagnostics.items.len);
+    for (expected, s.checker.diagnostics.items) |message, diagnostic| {
+        try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        try T.expectEqualStrings(message, diagnostic.message);
+    }
 }
 
 test "checker: checkjs computed binary property type does not constrain dot assignment" {
