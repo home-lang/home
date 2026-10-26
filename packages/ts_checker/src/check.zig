@@ -99465,7 +99465,9 @@ pub const Checker = struct {
     }
 
     fn jsDocTypeForVarDecl(self: *Checker, node: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasCheckJsDirective()) {
+        // JavaScript JSDoc is declaration metadata even when checkJs is off:
+        // checkJs controls owner diagnostics, not the type seen by importers.
+        if (!self.sourceHasCheckJsDirective() and !self.virtualSectionIsJsLike(node)) {
             if (!self.sourceHasAllowJsDirective()) return null;
             if (self.sourceHasVirtualFilenameSections() and !self.virtualSectionIsJsLike(node)) return null;
             const v = hir_mod.varDeclOf(self.hir, node);
@@ -101760,6 +101762,34 @@ pub const Checker = struct {
 
         if (try self.jsDocGenericNominalTypeTextToType(src, name, args_text, type_text)) |nominal_t| {
             return nominal_t;
+        }
+
+        // The standard collection interfaces have canonical checker-owned
+        // shapes. Build them from parsed JSDoc arguments just as type-ref
+        // annotations do; a name-only `any` recovery loses readonly methods
+        // and the element constraints at every importing file boundary.
+        const is_map = std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "ReadonlyMap");
+        const is_set = std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "ReadonlySet");
+        const is_weak_map = std.mem.eql(u8, name, "WeakMap");
+        const is_weak_set = std.mem.eql(u8, name, "WeakSet");
+        if (is_map or is_set or is_weak_map or is_weak_set) {
+            var parsed = JsDocTopLevelSplitter.init(args_text, ',');
+            const first_text = parsed.next() orelse return null;
+            const first = (try self.jsDocTypeTextToType(src, first_text)) orelse return null;
+            if (is_map or is_weak_map) {
+                const second_text = parsed.next() orelse return null;
+                const second = (try self.jsDocTypeTextToType(src, second_text)) orelse return null;
+                if (parsed.next() != null) return null;
+                return if (is_weak_map)
+                    try self.builtinWeakMapInstanceType(first, second)
+                else
+                    try self.builtinMapLikeInstanceType(first, second, std.mem.eql(u8, name, "ReadonlyMap"));
+            }
+            if (parsed.next() != null) return null;
+            return if (is_weak_set)
+                try self.builtinWeakSetInstanceType(first)
+            else
+                try self.builtinSetLikeInstanceType(first, std.mem.eql(u8, name, "ReadonlySet"));
         }
 
         return null;
@@ -118832,7 +118862,13 @@ pub const Checker = struct {
                         break :blk try self.builtinSetInstanceType(elem_t);
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "WeakMap")) {
-                        break :blk try self.builtinWeakMapInstanceType(types.Primitive.any, types.Primitive.any);
+                        if (type_arg_nodes.len >= 2) {
+                            const k_t = self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.any;
+                            const v_t = self.lowererLowerWithTypeParams(type_arg_nodes[1]) catch types.Primitive.any;
+                            break :blk try self.builtinWeakMapInstanceType(k_t, v_t);
+                        }
+                        const entry = try self.inferMapEntryTypes(args);
+                        break :blk try self.builtinWeakMapInstanceType(entry.key, entry.value);
                     }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "WeakSet")) {
                         var value_t: TypeId = types.Primitive.any;
@@ -176386,6 +176422,21 @@ pub const Checker = struct {
                     "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
                     .{ arg_text, param_text },
                 );
+            }
+            if (param_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(param_t).is_object_type and
+                self.namedTypeForId(param_t) == null and
+                !self.alias_display_names.contains(param_t) and
+                self.class_name_by_instance.get(param_t) == null and
+                self.fixedTupleLength(param_t) == null)
+            {
+                if (try self.allocObjectTypeShape(param_t)) |param_text| {
+                    return try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                        .{ arg_text, param_text },
+                    );
+                }
             }
             if (self.interner.isSignature(param_t)) {
                 if (try self.allocCallableSignatureName(param_t)) |param_text| {

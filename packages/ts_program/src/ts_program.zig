@@ -1909,7 +1909,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptFunctionSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
@@ -1917,7 +1917,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptFunctionSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
         }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
@@ -2178,7 +2178,7 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptFunctionSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
@@ -2192,7 +2192,7 @@ pub const Program = struct {
             }
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptFunctionSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
 
@@ -2891,33 +2891,46 @@ pub const Program = struct {
         }
     }
 
-    /// Bound declaration routes are available before checking. For a
-    /// parameter-only JSDoc function, however, the return type is inferred
-    /// from its body. Publish the completed checked signature only after its
-    /// owner has been checked, before admitting a dependent consumer.
-    fn populateCheckedJavaScriptFunctionSchemas(
+    /// Bound declaration routes are available before checking, but JavaScript
+    /// functions with inferred returns and collection variables need their
+    /// checked owner types. Publish those types before checking importers.
+    fn populateCheckedJavaScriptExportSchemas(
         self: *Program,
         file: *File,
         declarations: *declaration_graph.Graph,
     ) ProgramError!void {
         const compilation = file.compilation orelse return;
-        if (!compilation.checked_types_ready or !jsdoc_types.isJavaScriptPath(file.path) or
-            std.mem.indexOf(u8, file.source, "@param") == null) return;
+        if (!compilation.checked_types_ready or !jsdoc_types.isJavaScriptPath(file.path)) return;
         var by_position: std.AutoHashMapUnmanaged(u32, hir_mod_ns.NodeId) = .empty;
         defer by_position.deinit(self.gpa);
         var node: hir_mod_ns.NodeId = 1;
         while (node < compilation.hir.nodeCount()) : (node += 1) {
-            if (compilation.hir.kindOf(node) != .fn_decl) continue;
+            switch (compilation.hir.kindOf(node)) {
+                .fn_decl, .var_decl, .let_decl, .const_decl => {},
+                else => continue,
+            }
             try by_position.put(self.gpa, compilation.hir.spanOf(node).start, node);
         }
         for (@constCast(declarations.values)) |*route| {
-            if (route.kind != .function) continue;
             const declaration = route.declaration orelse continue;
             if (!std.mem.eql(u8, declaration.path, file.path)) continue;
-            const function_node = by_position.get(declaration.position) orelse continue;
-            if (!(jsdoc_types.hasParameterWithoutReturn(self.gpa, compilation, function_node) catch return error.OutOfMemory)) continue;
-            const checked_type = compilation.hir.typeOf(function_node);
+            const owner_node = by_position.get(declaration.position) orelse continue;
+            const checked_type = compilation.hir.typeOf(owner_node);
             if (checked_type == ts_driver.Primitive.none) continue;
+            switch (route.kind) {
+                .function => {
+                    if (compilation.hir.kindOf(owner_node) != .fn_decl or
+                        std.mem.indexOf(u8, file.source, "@param") == null or
+                        !(jsdoc_types.hasParameterWithoutReturn(self.gpa, compilation, owner_node) catch return error.OutOfMemory)) continue;
+                },
+                .variable => {
+                    switch (compilation.hir.kindOf(owner_node)) {
+                        .var_decl, .let_decl, .const_decl => {},
+                        else => continue,
+                    }
+                    if (compilation.checked_types.builtin_generic_kinds.get(checked_type) == null) continue;
+                },
+            }
             const body = checked_schema.lowerTypeInArena(
                 declarations.arena.allocator(),
                 file.path,
@@ -3925,7 +3938,7 @@ pub const Program = struct {
         return false;
     }
 
-    fn checkedJavaScriptFunctionsNeedDependencyChecking(
+    fn checkedJavaScriptExportsNeedDependencyChecking(
         self: *const Program,
         values: []const ts_driver.ProgramExportedValue,
     ) ProgramError!bool {
@@ -3940,12 +3953,12 @@ pub const Program = struct {
             }
         }
         for (values) |value| {
-            if (value.kind != .function) continue;
             const declaration = value.declaration orelse continue;
             if (!jsdoc_types.isJavaScriptPath(declaration.path)) continue;
             const owner_id = self.by_path.get(declaration.path) orelse continue;
             if (owner_id >= imported.len or !imported[owner_id]) continue;
-            if (std.mem.indexOf(u8, self.files.items[owner_id].source, "@param") != null) return true;
+            if (value.kind == .variable or
+                std.mem.indexOf(u8, self.files.items[owner_id].source, "@param") != null) return true;
         }
         return false;
     }
@@ -4176,10 +4189,10 @@ pub const Program = struct {
             if (!needsCompilation(f, shared_options)) continue;
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
-            try self.populateCheckedJavaScriptFunctionSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
         }
         if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports) or
-            try self.checkedJavaScriptFunctionsNeedDependencyChecking(declarations.values))
+            try self.checkedJavaScriptExportsNeedDependencyChecking(declarations.values))
         {
             try self.compileFilesInDependencyBatches(
                 shared_options,
@@ -4250,7 +4263,7 @@ pub const Program = struct {
                     self.files.items[index],
                     program_commonjs_exports,
                 );
-                try self.populateCheckedJavaScriptFunctionSchemas(self.files.items[index], declarations);
+                try self.populateCheckedJavaScriptExportSchemas(self.files.items[index], declarations);
             }
         }
     }
@@ -15622,6 +15635,55 @@ test "Program: checked CommonJS Map export retains builtin generic arguments" {
             };
             if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
             try expectCompilationHasDiagnosticCode(program.fileById(consumer).compilation.?, 2345);
+        }
+    }
+}
+
+test "Program: checked CommonJS collection exports retain builtin generic identities" {
+    const source =
+        \\const key = { id: 1 };
+        \\exports.map = new Map([["ready", 1]]);
+        \\/** @type {ReadonlyMap<string, number>} */
+        \\const readonlyMap = new Map([["ready", 1]]);
+        \\exports.readonlyMap = readonlyMap;
+        \\exports.set = new Set([1]);
+        \\/** @type {ReadonlySet<number>} */
+        \\const readonlySet = new Set([1]);
+        \\exports.readonlySet = readonlySet;
+        \\exports.weakMap = new WeakMap([[key, { value: 1 }]]);
+        \\exports.weakSet = new WeakSet([key]);
+    ;
+    const compilation = try ts_driver.compileSource(T.allocator, source, .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .importer_path = "/collections.js",
+    });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    inline for (.{
+        .{ "map", "Map", 2 },
+        .{ "readonlyMap", "ReadonlyMap", 2 },
+        .{ "set", "Set", 1 },
+        .{ "readonlySet", "ReadonlySet", 1 },
+        .{ "weakMap", "WeakMap", 2 },
+        .{ "weakSet", "WeakSet", 1 },
+    }) |expected| {
+        const values = try checked_schema.namedExportTypes(T.allocator, compilation, expected[0]);
+        defer T.allocator.free(values);
+        try T.expectEqual(@as(usize, 1), values.len);
+        for (values) |typ| {
+            try T.expect(compilation.checked_types.builtin_generic_kinds.get(typ) != null);
+            const result = try checked_schema.collect(T.allocator, "/collections.js", compilation, &.{typ}, 0);
+            defer @constCast(result).deinit(T.allocator);
+            try T.expect(try result.isSupported(T.allocator));
+            const body = result.declaration.body.?;
+            try T.expect(body.* == .builtin_reference);
+            try T.expectEqualStrings(expected[1], body.builtin_reference.name);
+            try T.expectEqual(@as(usize, expected[2]), body.builtin_reference.arguments.len);
         }
     }
 }
