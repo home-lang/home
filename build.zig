@@ -2343,6 +2343,38 @@ pub fn build(b: *std.Build) void {
         closure_no_jsx.expectExitCode(2);
         tsc_streams_step.dependOn(&closure_no_jsx.step);
 
+        // A bare JavaScript package is untyped at the default node_modules
+        // depth, but its whole CommonJS export is typed once admitted. The
+        // equivalent relative import exercises the same source-owned type.
+        const untyped_package_dir = b.path("packages/ts_cli/testdata/issue846-untyped-package");
+        const package_index_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-untyped-package/node_modules/untyped-package/index.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, package_index_path, '\\', '/');
+        const untyped_package = b.addRunArtifact(home_tsc_exe);
+        untyped_package.setCwd(untyped_package_dir);
+        untyped_package.clearEnvironment();
+        untyped_package.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        untyped_package.expectStdOutEqual(b.fmt(
+            "main.ts(1,19): error TS7016: Could not find a declaration file for module 'untyped-package'. '{s}' implicitly has an 'any' type.\n" ++
+                "  Try `npm i --save-dev @types/untyped-package` if it exists or add a new declaration (.d.ts) file containing `declare module 'untyped-package';`\n",
+            .{package_index_path},
+        ));
+        untyped_package.expectStdErrEqual("");
+        untyped_package.expectExitCode(2);
+        tsc_streams_step.dependOn(&untyped_package.step);
+        inline for (.{
+            .{ "tsconfig-depth-one.json", "main.ts(2,7)" },
+            .{ "tsconfig-local.json", "consumer.ts(2,7)" },
+        }) |case| {
+            const admitted_package = b.addRunArtifact(home_tsc_exe);
+            admitted_package.setCwd(untyped_package_dir);
+            admitted_package.clearEnvironment();
+            admitted_package.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            admitted_package.expectStdOutEqual(case[1] ++ ": error TS2322: Type 'number' is not assignable to type 'string'.\n");
+            admitted_package.expectStdErrEqual("");
+            admitted_package.expectExitCode(2);
+            tsc_streams_step.dependOn(&admitted_package.step);
+        }
+
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
         // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.

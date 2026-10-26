@@ -64841,6 +64841,11 @@ pub const Checker = struct {
                     if (try self.virtualRelativeModuleExportValueType(stmt, imp.module, default_name)) |t| return t;
                     if (try self.virtualCommonJsModuleExportObjectType(stmt, spec_text)) |t| return t;
                 }
+                // An admitted CommonJS source can export a primitive, array,
+                // function, or object as its entire module value. The named
+                // export object below only models `exports.name` assignments;
+                // it cannot stand in for `module.exports = value`.
+                if (try self.programCommonJsWholeExportType(stmt, spec_text)) |t| return t;
                 if (try self.programCommonJsNamedExportObjectType(stmt, spec_text, false)) |t| return t;
             }
             for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {

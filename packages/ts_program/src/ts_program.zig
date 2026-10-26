@@ -15449,6 +15449,42 @@ test "Program: checked CommonJS whole exports type requiring consumers in depend
     }
 }
 
+test "Program: admitted CommonJS primitive default imports retain owner type" {
+    const owner_source = "module.exports = 42;\n";
+    const consumer_source =
+        \\import value from './owner.js';
+        \\const wrong: string = value;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        for ([_]bool{ false, true }) |owner_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const consumer = if (owner_first) blk: {
+                _ = try program.add("/owner.js", owner_source);
+                break :blk try program.add("/consumer.ts", consumer_source);
+            } else blk: {
+                const id = try program.add("/consumer.ts", consumer_source);
+                _ = try program.add("/owner.js", owner_source);
+                break :blk id;
+            };
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = true,
+                .strict = true,
+                .no_emit = true,
+            };
+            if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+            try expectCompilationHasDiagnosticCode(program.fileById(consumer).compilation.?, 2322);
+        }
+    }
+}
+
 test "Program: export-equals namespace require alias preserves const and mutable members" {
     const ResolveOnly = struct {
         resolver: *ts_resolver.Resolver,
