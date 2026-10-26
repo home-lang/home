@@ -2400,6 +2400,37 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&admitted_package.step);
         }
 
+        // Checked CommonJS exports preserve the source owner's inferred
+        // collection arguments in the TypeScript consumer. The other export
+        // shapes are controls for the same whole-export admission path.
+        const whole_export_consumer_output =
+            \\main.ts(6,7): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\main.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.
+            \\main.ts(8,7): error TS2322: Type 'number' is not assignable to type 'string'.
+            \\main.ts(9,11): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+            \\main.ts(10,11): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+            \\main.ts(11,21): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+            \\
+        ;
+        inline for (.{
+            .{ "tsconfig.json", whole_export_consumer_output ++ "map.js(2,29): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" },
+            .{ "tsconfig-no-checkjs.json", whole_export_consumer_output },
+            .{ "tsconfig-named-no-checkjs.json", "named-consumer.ts(2,11): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" },
+            .{ "tsconfig-function-exports.json", "function-consumer.ts(3,8): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+                "function-consumer.ts(4,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+                "function-consumer.ts(5,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+                "function-consumer.ts(6,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" },
+        }) |case| {
+            const whole_export_shapes = b.addRunArtifact(home_tsc_exe);
+            whole_export_shapes.setCwd(b.path("packages/ts_cli/testdata/issue846-whole-export-shapes"));
+            whole_export_shapes.clearEnvironment();
+            whole_export_shapes.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            whole_export_shapes.expectStdOutEqual(case[1]);
+            whole_export_shapes.expectStdErrEqual("");
+            whole_export_shapes.expectExitCode(2);
+            tsc_streams_step.dependOn(&whole_export_shapes.step);
+        }
+
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
         // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.
