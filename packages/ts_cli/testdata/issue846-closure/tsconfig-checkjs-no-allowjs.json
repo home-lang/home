@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "allowJs": false,
+    "checkJs": true,
+    "strict": true,
+    "noEmit": true
+  },
+  "files": ["main.ts"]
+}

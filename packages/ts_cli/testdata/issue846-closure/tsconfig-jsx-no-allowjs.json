@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "allowJs": false,
+    "strict": true,
+    "noEmit": true,
+    "jsx": "preserve"
+  },
+  "files": ["jsx.ts"]
+}
