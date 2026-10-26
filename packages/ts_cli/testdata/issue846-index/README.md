@@ -13,6 +13,6 @@ Both report TS2322 at `owner.js:4:1` and `main.ts:5:1`, `6:1`, `12:1`, and
 fixture exercises valid indexed reads, invalid writes through string, number,
 and symbol indexes, and readonly-index writes after importing a checked JS
 owner. It also verifies that a mutable index with the same key and value types
-remains writable. Diagnostic print order differs (TypeScript prints the TS
-consumer first; Home prints the JS owner first), as do process exit codes
-(TypeScript 2, Home 1).
+remains writable. Both processes now exit 2. Diagnostic print order still
+differs: TypeScript prints the TS consumer first; Home prints the JS owner
+first.

@@ -2214,13 +2214,15 @@ pub fn build(b: *std.Build) void {
     const tsc_streams_step = b.step("test-tsc-streams", "Check home tsc stdout/stderr parity with tsc");
     {
         const streams_dir = b.path("packages/ts_cli/testdata/streams");
+        const collision_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/streams/collision/a.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, collision_abs_path, '\\', '/');
         const type_error = b.addRunArtifact(home_tsc_exe);
         type_error.setCwd(streams_dir);
         type_error.clearEnvironment();
         type_error.addArgs(&.{ "--noEmit", "--ignoreConfig", "type_error.ts" });
         type_error.expectStdOutEqual("type_error.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n");
         type_error.expectStdErrEqual("");
-        type_error.expectExitCode(1);
+        type_error.expectExitCode(2);
         tsc_streams_step.dependOn(&type_error.step);
 
         const home_sound = b.addRunArtifact(home_tsc_exe);
@@ -2229,7 +2231,7 @@ pub fn build(b: *std.Build) void {
         home_sound.addArgs(&.{ "--noEmit", "--ignoreConfig", "--home-sound", "home_sound.ts" });
         home_sound.expectStdOutEqual("home_sound.ts(1,14): error HM9001: Explicit 'any' is not permitted in Home sound mode.\n");
         home_sound.expectStdErrEqual("");
-        home_sound.expectExitCode(1);
+        home_sound.expectExitCode(2);
         tsc_streams_step.dependOn(&home_sound.step);
 
         const clean = b.addRunArtifact(home_tsc_exe);
@@ -2245,11 +2247,10 @@ pub fn build(b: *std.Build) void {
         collision.setCwd(streams_dir);
         collision.clearEnvironment();
         collision.addArgs(&.{ "--listFilesOnly", "--project", "collision/tsconfig.json" });
-        collision.expectStdOutEqual(
-            \\error TS5055: Cannot write file 'collision/a.js' because it would overwrite input file.
-            \\collision/a.js
-            \\
-        );
+        collision.expectStdOutEqual(b.fmt(
+            "error TS5055: Cannot write file 'collision/a.js' because it would overwrite input file.\n{s}\n",
+            .{collision_abs_path},
+        ));
         collision.expectStdErrEqual("");
         collision.expectExitCode(1);
         tsc_streams_step.dependOn(&collision.step);
@@ -2258,7 +2259,7 @@ pub fn build(b: *std.Build) void {
         allow_js.setCwd(streams_dir);
         allow_js.clearEnvironment();
         allow_js.addArgs(&.{ "--allowJs", "--noEmit", "--listFilesOnly", "--ignoreConfig", "collision/a.js" });
-        allow_js.expectStdOutEqual("collision/a.js\n");
+        allow_js.expectStdOutEqual(b.fmt("{s}\n", .{collision_abs_path}));
         allow_js.expectStdErrEqual("");
         allow_js.expectExitCode(0);
         tsc_streams_step.dependOn(&allow_js.step);
@@ -2269,7 +2270,7 @@ pub fn build(b: *std.Build) void {
         check_js.addArgs(&.{ "--checkJs", "--noEmit", "--ignoreConfig", "check_js.js" });
         check_js.expectStdOutEqual("check_js.js(2,7): error TS2322: Type 'string' is not assignable to type 'number'.\n");
         check_js.expectStdErrEqual("");
-        check_js.expectExitCode(1);
+        check_js.expectExitCode(2);
         tsc_streams_step.dependOn(&check_js.step);
 
         const direct_js_rejection = b.addRunArtifact(home_tsc_exe);

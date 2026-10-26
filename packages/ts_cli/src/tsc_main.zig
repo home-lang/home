@@ -4208,18 +4208,10 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // this loop only handles JS / .d.ts emission. The streaming
     // any-errors flag flows into the final exit-code decision.
     const any_errors = any_errors_streaming;
-    // Options diagnostics suppress semantic diagnostics, not ordinary emit.
-    // The reference still writes selected outputs unless noEmit skips them.
-    // When no output kind is selected (for example emitDeclarationOnly without
-    // declaration), noEmit has no input to skip and the diagnostic status is 2.
-    const no_emit_skips_selected_input = blk: {
-        if (!compile_opts.no_emit or (!emit_js and !emit_dts)) break :blk false;
-        for (program.files.items) |file| {
-            if (sourceFileMayBeEmittedByProject(file) and file.redirect_target == null and
-                file.compilation != null) break :blk true;
-        }
-        break :blk false;
-    };
+    // TypeScript's whole-program `--noEmit` path calls `emitBuildInfo`, whose
+    // result is not marked emitSkipped merely because ordinary JS/d.ts output
+    // was disabled. Diagnostics therefore exit 2 unless an actual emit block
+    // was reported (the `--listFilesOnly` path exits separately above).
     _ = try emitProgramOutputs(gpa, &program, compile_opts, out_dir, declaration_dir, emit_js, emit_dts, emit_source_map, emit_decl_map, blocked_outputs.items);
 
     // §4.A.12 — write `.tsbuildinfo` when `compilerOptions.incremental: true`.
@@ -4423,7 +4415,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         const status = if (reported_command_line_errors)
             ts_cli.ExitCode.config_error
         else
-            ts_cli.diagnosticsExitCode(no_emit_skips_selected_input or output_collision_count != 0);
+            ts_cli.diagnosticsExitCode(output_collision_count != 0);
         std.process.exit(@backingInt(status));
     }
 }

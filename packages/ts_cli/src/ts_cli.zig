@@ -77,8 +77,9 @@ pub const ExitCode = enum(u8) {
 };
 
 /// Match the reference emit-skipped result, rather than counting written
-/// files. No-emit, list-only and blocked emit use status 1 for program errors;
-/// configuration failures are classified separately by their caller.
+/// files. `--listFilesOnly` and blocked emit use status 1 for program errors;
+/// whole-program `--noEmit` normally reports `emitSkipped = false` and uses
+/// status 2. Configuration failures are classified separately by their caller.
 pub fn diagnosticsExitCode(emit_skipped: bool) ExitCode {
     return if (emit_skipped) .type_errors else .config_error;
 }
