@@ -8,9 +8,11 @@ tsc -p packages/ts_cli/testdata/issue846-index/tsconfig.json --pretty false
 zig-out/bin/home-tsc -p packages/ts_cli/testdata/issue846-index/tsconfig.json --pretty false
 ```
 
-Both report TS2322 at `owner.js:4:1` and `main.ts:5:1`, `6:1`, `8:1`, and
-`11:1`, with the same messages. The fixture exercises valid indexed reads and
-invalid writes through string, number, and symbol indexes after importing a
-checked JS owner. Diagnostic print order differs (TypeScript prints the TS
+Both report TS2322 at `owner.js:4:1` and `main.ts:5:1`, `6:1`, `12:1`, and
+`15:1`, plus TS2542 at `main.ts:8:1` and `9:1`, with the same messages. The
+fixture exercises valid indexed reads, invalid writes through string, number,
+and symbol indexes, and readonly-index writes after importing a checked JS
+owner. It also verifies that a mutable index with the same key and value types
+remains writable. Diagnostic print order differs (TypeScript prints the TS
 consumer first; Home prints the JS owner first), as do process exit codes
-(TypeScript 2, Home 1). This fixture does not assert readonly-index parity.
+(TypeScript 2, Home 1).

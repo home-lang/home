@@ -5931,6 +5931,47 @@ test "tsc_main: admitted JavaScript object initializer constrains imported reads
     try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; tags: string[]; }'.", diagnostics[3].message);
 }
 
+test "tsc_main: admitted JSDoc readonly index remains distinct from mutable index" {
+    const owner_source =
+        \\// @ts-check
+        \\/** @type {{ readonly [key: string]: number }} */
+        \\export const readonlyCounts = { known: 1 };
+        \\/** @type {{ [key: string]: number }} */
+        \\export const mutableCounts = { known: 1 };
+    ;
+    const consumer_source =
+        \\import { readonlyCounts, mutableCounts } from './owner.js';
+        \\readonlyCounts['new'] = 2;
+        \\readonlyCounts.known = 3;
+        \\mutableCounts['new'] = 2;
+        \\mutableCounts.known = 3;
+        \\const good: number = readonlyCounts['known'];
+        \\void good;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| {
+        try std.testing.expectEqual(@as(u32, 2542), diagnostic.code);
+        try std.testing.expectEqualStrings("Index signature in type '{ readonly [key: string]: number; }' only permits reading.", diagnostic.message);
+    }
+}
+
 test "tsc_main: admitted JS and JSX default functions retain JSDoc return types" {
     const owner_source =
         \\/** @returns {number} */

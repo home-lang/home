@@ -8,3 +8,6 @@ export const labels = ["first"];
 
 /** @type {{ [key: symbol]: number }} */
 export const symbolCounts = {};
+
+/** @type {{ readonly [key: string]: number }} */
+export const readonlyCounts = { known: 1 };

@@ -1,9 +1,13 @@
-import { counts, labels, symbolCounts } from "./owner.js";
+import { counts, labels, symbolCounts, readonlyCounts } from "./owner.js";
 
 const known: number = counts.known;
 const dynamic: number = counts["other"];
 counts["other"] = "wrong";
 counts.known = "wrong";
+counts["valid"] = 2;
+readonlyCounts["new"] = 2;
+readonlyCounts.known = 3;
+const readonlyRead: number = readonlyCounts["known"];
 const label: string = labels[0];
 labels[1] = 42;
 declare const key: symbol;
@@ -13,3 +17,4 @@ void known;
 void dynamic;
 void label;
 void symbolRead;
+void readonlyRead;
