@@ -6064,6 +6064,87 @@ test "tsc_main: admitted JavaScript generic constructor field instantiates acros
     try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
 }
 
+test "tsc_main: admitted constrained JavaScript class template retains its field" {
+    const owner_source =
+        \\/** @template {string} T */
+        \\export class Box {
+        \\  /** @param {T} value */
+        \\  constructor(value) {
+        \\    /** @type {T} */
+        \\    this.value = value;
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const box = new Box('ready');
+        \\const same: 'ready' = box.value;
+        \\box.value = 1;
+        \\const bad: number = box.value;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+    try std.testing.expectEqualStrings("Type '1' is not assignable to type '\"ready\"'.", diagnostics[0].message);
+    try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+}
+
+test "tsc_main: admitted defaulted JavaScript class template applies to its field" {
+    const owner_source =
+        \\/** @template [T=string] */
+        \\export class Box {
+        \\  constructor() {
+        \\    /** @type {T} */
+        \\    this.value = /** @type {*} */ (null);
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const box = new Box();
+        \\box.value = 'ready';
+        \\box.value = 1;
+        \\const bad: number = box.value;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+    try std.testing.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+    try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+}
+
 test "tsc_main: real export-equals namespace retains require-alias member mutability" {
     const owner_source = "namespace N { export const fixed = 1; export let mutable = 2; } export = N;";
     const consumer_source = "import N = require('./owner'); N.fixed = 3; N.mutable = 4; const alias = N; alias.fixed = 3;";

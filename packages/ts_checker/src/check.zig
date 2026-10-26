@@ -107441,7 +107441,12 @@ pub const Checker = struct {
             const literal_t = try self.expressionLiteralType(init_node, init_t);
             if (literal_t != init_t) return literal_t;
         }
-        if (!init_flags.is_enum_literal) return init_t;
+        // Assignment diagnostics display a fresh literal source by its
+        // primitive base when the target is a different non-literal type.
+        // The value remains literal for assignability: `const x: number =
+        // box.value` reports `string` for a `"ready"` field, while assigning
+        // that same field to `"other"` still reports `"ready"`.
+        if (!init_flags.is_enum_literal) return if (self.shouldWidenForArgDiagnostic(init_t, target_t)) self.widenLiteralType(init_t) else init_t;
         const target_flags = if (target_t < self.interner.pool.typeCount())
             self.interner.pool.flagsOf(target_t)
         else

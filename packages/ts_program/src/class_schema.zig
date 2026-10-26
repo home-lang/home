@@ -854,14 +854,14 @@ pub const Builder = struct {
             }
         }
         const declaration_parameters = if (overload_declarations == null) info.params else &.{};
-        const jsdoc_parameter_names = if (def.is_class and declaration_parameters.len == 0 and jsdoc_types.isJavaScriptPath(source.path))
-            try jsdoc_types.classTemplateNames(self.gpa, c, key.node)
+        const jsdoc_parameters = if (def.is_class and declaration_parameters.len == 0 and jsdoc_types.isJavaScriptPath(source.path))
+            try jsdoc_types.classTemplateParameters(self.gpa, c, key.node)
         else
             null;
-        defer if (jsdoc_parameter_names) |names| if (names.len > 0) self.gpa.free(names);
-        def.parameters = try self.arena.alloc(schema.Parameter, if (jsdoc_parameter_names) |names| names.len else declaration_parameters.len);
-        if (jsdoc_parameter_names) |names| {
-            for (names, def.parameters) |name, *param| param.* = .{ .name = name };
+        defer if (jsdoc_parameters) |parameters| if (parameters.len > 0) jsdoc_types.deinitClassTemplateParameters(self.gpa, parameters);
+        def.parameters = try self.arena.alloc(schema.Parameter, if (jsdoc_parameters) |parameters| parameters.len else declaration_parameters.len);
+        if (jsdoc_parameters) |parameters| {
+            for (parameters, def.parameters) |parameter, *param| param.* = .{ .name = parameter.name };
         } else {
             for (declaration_parameters, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
         }
@@ -881,6 +881,12 @@ pub const Builder = struct {
             else => false,
         };
         const context: Context = .{ .source = key.source, .declaration = def, .allow_opaque = allow_opaque };
+        if (jsdoc_parameters) |parameters| {
+            for (parameters, def.parameters) |parameter, *param| {
+                if (parameter.constraint) |constraint| param.constraint = try self.jsdocTypeInContext(constraint, context);
+                if (parameter.default) |default| param.default = try self.jsdocTypeInContext(default, context);
+            }
+        }
         for (declaration_parameters, def.parameters[0..declaration_parameters.len]) |node, *param| {
             const value = hir.typeParameterOf(&c.hir, node);
             param.variance = value.variance;

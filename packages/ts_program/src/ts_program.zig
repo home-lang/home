@@ -20261,6 +20261,97 @@ test "Program: multiple JSDoc class templates instantiate independent constructo
     try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[3].message);
 }
 
+test "Program: constrained JSDoc class template keeps imported field identity" {
+    const owner_source =
+        \\/** @template {string} T */
+        \\export class Box {
+        \\  /** @param {T} value */
+        \\  constructor(value) {
+        \\    /** @type {T} */
+        \\    this.value = value;
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const box = new Box('ready');
+        \\const same: 'ready' = box.value;
+        \\box.value = 1;
+        \\const bad: number = box.value;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        try T.expectEqualStrings("Type '1' is not assignable to type '\"ready\"'.", diagnostics[0].message);
+        try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+    }
+}
+
+test "Program: defaulted JSDoc class template applies across the import boundary" {
+    const owner_source =
+        \\/** @template [T=string] */
+        \\export class Box {
+        \\  constructor() {
+        \\    /** @type {T} */
+        \\    this.value = /** @type {*} */ (null);
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Box } from './owner.js';
+        \\const box = new Box();
+        \\box.value = 'ready';
+        \\box.value = 1;
+        \\const bad: number = box.value;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", owner_source);
+        const consumer = try p.add("/consumer.ts", consumer_source);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+        try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+    }
+}
+
 test "Program: inferred object initializers retain imported nested JS and TS value types" {
     const owner_source =
         \\export const box = {

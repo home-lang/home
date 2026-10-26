@@ -133,43 +133,71 @@ fn declarationTypeWithParameters(gpa: std.mem.Allocator, c: *const driver.Compil
     return null;
 }
 
-/// Simple class-level JSDoc templates become source-owned schema parameters.
-/// Constraints and defaults need their own semantic transfer, so they are
-/// deliberately left to the existing unsupported path.
-pub fn classTemplateNames(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]const []const u8 {
+pub const ClassTemplateParameter = struct {
+    name: []const u8,
+    constraint: ?TypeExpression = null,
+    default: ?TypeExpression = null,
+};
+
+pub fn deinitClassTemplateParameters(gpa: std.mem.Allocator, parameters: []ClassTemplateParameter) void {
+    for (parameters) |parameter| {
+        if (parameter.constraint) |value| value.deinit(gpa);
+        if (parameter.default) |value| value.deinit(gpa);
+    }
+    gpa.free(parameters);
+}
+
+/// Class-level JSDoc templates are lowered using the same source-owned
+/// parameter identities as class members and constructors. A constraint or
+/// default is admitted only when its whole type expression can be transferred.
+pub fn classTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]ClassTemplateParameter {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return &.{};
     if (std.mem.indexOf(u8, body, "@template") == null) return &.{};
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer names.deinit(gpa);
+    const Raw = struct { name: []const u8, constraint_text: []const u8 = "", default_text: []const u8 = "" };
+    var raw: std.ArrayListUnmanaged(Raw) = .empty;
+    defer raw.deinit(gpa);
     for (tags) |tag| {
         if (tag.kind != .template_tag) continue;
-        if (!identifierName(tag.name) or tag.type_text.len != 0 or tag.has_default or tag.is_const or tag.template_variance != .none or
-            matchingParameter(tag.name, names.items) != null)
-        {
-            names.deinit(gpa);
-            return null;
-        }
-        try names.append(gpa, tag.name);
+        if (!identifierName(tag.name) or tag.is_const or tag.template_variance != .none or (tag.has_default and tag.default_text.len == 0)) return null;
+        for (raw.items) |existing| if (std.mem.eql(u8, existing.name, tag.name)) return null;
+        try raw.append(gpa, .{
+            .name = tag.name,
+            .constraint_text = tag.type_text,
+            .default_text = if (tag.has_default) tag.default_text else "",
+        });
         const extra = std.mem.trim(u8, tag.description, " \t\r\n");
         if (extra.len == 0) continue;
-        if (extra[0] != ',') {
-            names.deinit(gpa);
-            return null;
-        }
+        if (extra[0] != ',') return null;
         var parts = std.mem.splitScalar(u8, extra[1..], ',');
         while (parts.next()) |part| {
             const name = std.mem.trim(u8, part, " \t\r\n");
-            if (!identifierName(name) or matchingParameter(name, names.items) != null) {
-                names.deinit(gpa);
-                return null;
-            }
-            try names.append(gpa, name);
+            if (!identifierName(name)) return null;
+            for (raw.items) |existing| if (std.mem.eql(u8, existing.name, name)) return null;
+            try raw.append(gpa, .{ .name = name });
         }
     }
-    if (names.items.len == 0) return &.{};
-    return try names.toOwnedSlice(gpa);
+    if (raw.items.len == 0) return &.{};
+    const names = try gpa.alloc([]const u8, raw.items.len);
+    defer gpa.free(names);
+    for (raw.items, names) |parameter, *name| name.* = parameter.name;
+    const result = try gpa.alloc(ClassTemplateParameter, raw.items.len);
+    for (raw.items, result) |parameter, *out| out.* = .{ .name = parameter.name };
+    var transferred = false;
+    defer if (!transferred) deinitClassTemplateParameters(gpa, result);
+    for (raw.items, result) |parameter, *out| {
+        if (parameter.constraint_text.len > 0) {
+            out.constraint = try parseTypeExpressionWithParameters(gpa, parameter.constraint_text, names) orelse return null;
+            if (!out.constraint.?.transferable()) return null;
+        }
+        if (parameter.default_text.len > 0) {
+            out.default = try parseTypeExpressionWithParameters(gpa, parameter.default_text, names) orelse return null;
+            if (!out.default.?.transferable()) return null;
+        }
+    }
+    transferred = true;
+    return result;
 }
 
 pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?FunctionSignature {
