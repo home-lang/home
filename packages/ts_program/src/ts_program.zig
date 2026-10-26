@@ -20323,6 +20323,51 @@ test "Program: imported checked-JS JSDoc symbol index constrains writes" {
     try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[0].message);
 }
 
+test "Program: imported checked-JS JSDoc readonly index forbids writes" {
+    const owner_source =
+        \\// @ts-check
+        \\/** @type {{ readonly [key: string]: number }} */
+        \\export const counts = { known: 1 };
+        \\/** @type {{ [key: string]: number }} */
+        \\export const mutable = { known: 1 };
+    ;
+    const consumer_source =
+        \\import { counts, mutable } from './owner.js';
+        \\counts['new'] = 2;
+        \\counts.known = 3;
+        \\mutable['new'] = 2;
+        \\mutable.known = 3;
+        \\const good: number = counts['known'];
+        \\void good;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner = try p.add("/owner.js", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| {
+        try T.expectEqual(@as(u32, 2542), diagnostic.code);
+        try T.expectEqualStrings("Index signature in type '{ readonly [key: string]: number; }' only permits reading.", diagnostic.message);
+    }
+}
+
 test "Program: imported JSDoc generic constructor field instantiates at the consumer" {
     const annotated_owner_source =
         \\/** @template T */

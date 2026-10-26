@@ -36,8 +36,11 @@ pub const ObjectMember = struct {
 };
 
 pub const ObjectIndex = struct {
+    /// Borrowed from the declaration's JSDoc source until the schema copies it.
+    name: []const u8,
     key: TypeExpression,
     value: TypeExpression,
+    readonly: bool = false,
 };
 
 pub const IndexedObject = struct {
@@ -557,9 +560,6 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
             key = std.mem.trim(u8, key["readonly".len..], " \t\r\n");
         }
         if (key.len >= 2 and key[0] == '[' and key[key.len - 1] == ']') {
-            // The current source schema has no readonly bit on an index
-            // signature. Decline that form rather than allowing writes.
-            if (readonly) return null;
             const header = std.mem.trim(u8, key[1 .. key.len - 1], " \t\r\n");
             const key_colon = std.mem.indexOfScalar(u8, header, ':') orelse return null;
             const parameter = std.mem.trim(u8, header[0..key_colon], " \t\r\n");
@@ -570,8 +570,10 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
             for (indices.items) |index| if (index.key.base.primitive == key_type) return null;
             const value = try parseTypeExpressionWithParameters(gpa, segment[colon + 1 ..], parameter_names) orelse return null;
             indices.append(gpa, .{
+                .name = parameter,
                 .key = .{ .base = .{ .primitive = key_type } },
                 .value = value,
+                .readonly = readonly,
             }) catch |err| {
                 value.deinit(gpa);
                 return err;
@@ -945,13 +947,16 @@ test "JSDoc object index signatures retain open key and value types" {
     try std.testing.expectEqualStrings("known", object.members[0].name);
     try std.testing.expectEqual(@as(usize, 3), object.indices.len);
     try std.testing.expectEqual(Primitive.string_t, object.indices[0].key.base.primitive);
+    try std.testing.expectEqualStrings("key", object.indices[0].name);
     try std.testing.expectEqual(Primitive.number_t, object.indices[0].value.base.primitive);
     try std.testing.expectEqual(Primitive.number_t, object.indices[1].key.base.primitive);
     try std.testing.expectEqual(Primitive.symbol_t, object.indices[2].key.base.primitive);
     try std.testing.expectEqual(Primitive.boolean_t, object.indices[2].value.base.primitive);
     try std.testing.expect(parsed.transferable());
     try std.testing.expect((try parseTypeExpression(gpa, "{ [key: string]: number; [other: string]: string }")) == null);
-    try std.testing.expect((try parseTypeExpression(gpa, "{ readonly [key: string]: number }")) == null);
+    const readonly_index = (try parseTypeExpression(gpa, "{ readonly [key: string]: number }")).?;
+    defer readonly_index.deinit(gpa);
+    try std.testing.expect(readonly_index.base.indexed_object.indices[0].readonly);
     try std.testing.expect((try parseTypeExpression(gpa, "{ [key: boolean]: number }")) == null);
 }
 

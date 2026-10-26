@@ -115618,20 +115618,29 @@ pub const Checker = struct {
                 var string_index = types.Primitive.none;
                 var number_index = types.Primitive.none;
                 var symbol_index = types.Primitive.none;
+                var has_readonly_index = false;
+                var index_names: IndexParamNames = .{};
                 for (object.indices) |index| {
                     const key = try self.lowerProgramExpression(index.key, declaration, args);
                     const value = try self.lowerProgramExpression(index.value, declaration, args);
                     if (key == types.Primitive.string_t) {
                         string_index = value;
+                        if (index.name.len > 0) index_names.string = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else if (key == types.Primitive.number_t) {
                         number_index = value;
+                        if (index.name.len > 0) index_names.number = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else if (key == types.Primitive.symbol_t) {
                         symbol_index = value;
+                        if (index.name.len > 0) index_names.symbol = self.string_interner.intern(index.name) catch return error.OutOfMemory;
                     } else {
                         return error.UnsupportedProgramType;
                     }
+                    has_readonly_index = has_readonly_index or index.readonly;
                 }
-                return self.interner.internObjectTypeWithIndexAndSymbol(members, string_index, number_index, symbol_index);
+                const result = try self.interner.internObjectTypeWithIndexAndSymbol(members, string_index, number_index, symbol_index);
+                if (has_readonly_index) try self.readonly_index_types.put(self.gpa, result, {});
+                try self.registerIndexParamNames(result, index_names);
+                return result;
             },
             .record => |record| {
                 if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
@@ -194332,14 +194341,14 @@ pub const Checker = struct {
             // Mirrors `getNameFromIndexInfo` and the pure-index-signature
             // renderer in `allocSimpleTypeName`.
             const param_name = self.indexParamName(t, "string");
-            const ix_text = try std.fmt.allocPrint(arena, "[{s}: string]: {s}; ", .{ param_name, value_display });
+            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: string]: {s}; ", .{ if (self.readonly_index_types.contains(t)) "readonly " else "", param_name, value_display });
             try buf.appendSlice(arena, ix_text);
         }
         if (has_number_idx) {
             const value_name = (try self.allocSimpleTypeName(number_idx)) orelse return null;
             const value_display = std.mem.trim(u8, value_name, " ;");
             const param_name = self.indexParamName(t, "number");
-            const ix_text = try std.fmt.allocPrint(arena, "[{s}: number]: {s}; ", .{ param_name, value_display });
+            const ix_text = try std.fmt.allocPrint(arena, "{s}[{s}: number]: {s}; ", .{ if (self.readonly_index_types.contains(t)) "readonly " else "", param_name, value_display });
             try buf.appendSlice(arena, ix_text);
         }
         var sorted_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
@@ -198413,8 +198422,8 @@ pub const Checker = struct {
                                 const param_name = self.indexParamName(t, key_label);
                                 const out_text = try std.fmt.allocPrint(
                                     arena_ix,
-                                    "{{ [{s}: {s}]: {s}; }}",
-                                    .{ param_name, key_label, value_display },
+                                    "{{ {s}[{s}: {s}]: {s}; }}",
+                                    .{ if (self.readonly_index_types.contains(t)) "readonly " else "", param_name, key_label, value_display },
                                 );
                                 break :blk out_text;
                             }

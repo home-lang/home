@@ -1221,8 +1221,10 @@ pub const Builder = struct {
                 };
                 const indices = try self.arena.alloc(schema.IndexSignature, indexed.indices.len);
                 for (indexed.indices, indices) |index, *out| out.* = .{
+                    .name = try self.arena.dupe(u8, index.name),
                     .key = try self.jsdocTypeInContext(index.key, context),
                     .value = try self.jsdocTypeInContext(index.value, context),
+                    .readonly = index.readonly,
                 };
                 break :object_expression try self.expression(.{ .indexed_object = .{
                     .members = members,
@@ -1612,8 +1614,10 @@ pub const Builder = struct {
                 .index_signature => {
                     const index = hir.indexSignatureOf(&c.hir, node);
                     try indices.append(self.arena, .{
+                        .name = if (index.key_name == 0) "" else c.interner.get(index.key_name),
                         .key = try self.lower(context, index.key_type),
                         .value = try self.lower(context, index.value_type),
+                        .readonly = index.is_readonly,
                     });
                 },
                 else => return self.expression(.unsupported),

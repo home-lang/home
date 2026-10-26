@@ -75,7 +75,7 @@ pub const Mapped = struct {
     readonly: u8,
     optional: u8,
 };
-pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
+pub const IndexSignature = struct { name: []const u8 = "", key: *const Expression, value: *const Expression, readonly: bool = false };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Record = struct { key: *const Expression, value: *const Expression, readonly: bool = false };
 pub const UtilityKind = enum { partial, required, readonly, pick, omit, extract, exclude };
