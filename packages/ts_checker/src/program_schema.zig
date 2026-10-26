@@ -119,6 +119,11 @@ pub const builtin_generic_type_names = [_][]const u8{
     "Map",
     "Promise",
     "PromiseLike",
+    "ReadonlyMap",
+    "ReadonlySet",
+    "Set",
+    "WeakMap",
+    "WeakSet",
 };
 
 pub const Expression = union(enum) {

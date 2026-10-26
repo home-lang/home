@@ -688,7 +688,8 @@ pub const Builder = struct {
                     try pending.append(self.gpa, mapped.template);
                 },
                 .infer => |parameter| if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint),
-                .opaque_leaf, .builtin_reference, .typeof_class, .inherited_constructors, .unsupported => return false,
+                .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
+                .opaque_leaf, .typeof_class, .inherited_constructors, .unsupported => return false,
             }
         }
         return true;
@@ -1909,10 +1910,11 @@ pub const Builder = struct {
                 switch (if (ref.import_module != null or ref.qualifier_len != 0) try self.resolveQualified(context.source, node, ref) else try self.resolve(context.source, node, ref.name)) {
                     .declaration => |key| {
                         const target = try self.declaration(key);
+                        const whole_graph_supported = ref.qualifier_len == 0 or try self.qualifiedDeclarationGraphSupported(target);
                         const projection_only = ref.qualifier_len != 0 and
                             !context.allow_opaque and
-                            !try self.qualifiedDeclarationGraphSupported(target);
-                        if (ref.qualifier_len != 0 and context.allow_opaque) context.declaration.contextual_only = true;
+                            !whole_graph_supported;
+                        if (ref.qualifier_len != 0 and context.allow_opaque and !whole_graph_supported) context.declaration.contextual_only = true;
                         qualified_unresolved = false;
                         if (projection_only) {
                             const projected = schema.Reference{
@@ -2598,9 +2600,12 @@ test "class schema: qualified references admit supported declaration graphs" {
     defer callback_result.deinit(T.allocator);
     const callback = callback_result.declaration.body.?.function;
     try T.expectEqualStrings("Value", callback.parameters[0].type.reference.declaration.name);
-    try T.expect(callback.parameters[1].type.* == .opaque_leaf);
+    const opaque_ref = callback.parameters[1].type.reference;
+    try T.expect(!opaque_ref.projection_only);
+    try T.expectEqualStrings("Opaque", opaque_ref.declaration.name);
+    try T.expectEqualStrings("Set", opaque_ref.declaration.body.?.builtin_reference.name);
     try T.expectEqualStrings("Value", callback.result.reference.declaration.name);
-    try T.expect(callback_result.declaration.contextual_only);
+    try T.expect(!callback_result.declaration.contextual_only);
 }
 
 test "class schema: callable utility projections retain a proven read surface" {
@@ -3282,7 +3287,7 @@ test "class schema: namespace-qualified handler graphs remain lossless" {
     try T.expect(!extracted.source.reference.projection_only);
 }
 
-test "class schema: contextual handler projection preserves paths beside opaque leaves" {
+test "class schema: qualified handler graphs preserve paths beside collection references" {
     const graph = try TestGraph.init(&.{
         .{ .path = "/schemas.ts", .text =
         \\export interface A { _zod: { def: { type: "a" }; opaque: Set<string> }; a: number }
@@ -3304,18 +3309,18 @@ test "class schema: contextual handler projection preserves paths beside opaque 
 
     const visit = try graph.class(1, "visit");
     defer visit.deinit(T.allocator);
-    try T.expect(visit.declaration.contextual_only);
+    try T.expect(!visit.declaration.contextual_only);
     try T.expect(try visit.isSupported(T.allocator));
     const handlers_reference = visit.declaration.body.?.function.parameters[1].type.reference;
-    try T.expect(handlers_reference.contextual_projection);
-    try T.expect(handlers_reference.declaration.contextual_only);
+    try T.expect(!handlers_reference.contextual_projection);
+    try T.expect(!handlers_reference.declaration.contextual_only);
     const item = handlers_reference.declaration.body.?.mapped.template.function.parameters[0].type;
     try T.expect(item.* == .reference);
-    try T.expect(item.reference.contextual_projection);
+    try T.expect(!item.reference.contextual_projection);
 
     const handlers = try graph.class(1, "Handlers");
     defer handlers.deinit(T.allocator);
-    try T.expect(handlers.declaration.contextual_only);
+    try T.expect(!handlers.declaration.contextual_only);
     try T.expect(try handlers.isSupported(T.allocator));
 }
 

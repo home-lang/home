@@ -16955,6 +16955,25 @@ test "Program: qualified indexed assertions project destructured array members" 
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+test "Program: destructuring intersects named array properties with unknown index signatures" {
+    const compilation = try ts_driver.compileSource(T.allocator,
+        \\type Bag = { [key: string]: unknown } & { values: number[] | undefined };
+        \\declare const bag: Bag;
+        \\const { values } = bag;
+        \\if (values) values.map((value) => {
+        \\  const exact: number = value;
+        \\  const wrong: boolean = value;
+        \\  return exact;
+        \\});
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
 test "Program: function schemas preserve readonly Record inputs and array results" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

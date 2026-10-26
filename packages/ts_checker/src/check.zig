@@ -92076,10 +92076,24 @@ pub const Checker = struct {
             return self.interner.internUnion(vals.items) catch null;
         }
         if (flags.is_intersection) {
+            var vals: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer vals.deinit(self.gpa);
+            var saw_unknown = false;
             for (self.interner.intersectionMembers(source_t)) |member| {
-                if (self.objectPropertyTypeByName(member, key_name)) |t| return t;
+                if (self.objectPropertyTypeByName(member, key_name)) |t| {
+                    if (t == types.Primitive.unknown) {
+                        saw_unknown = true;
+                        continue;
+                    }
+                    if (t == types.Primitive.any) return t;
+                    vals.append(self.gpa, t) catch return null;
+                }
             }
-            return null;
+            // An index signature's `unknown` is the identity of a property
+            // intersection, not a replacement for a named property.
+            if (vals.items.len == 0) return if (saw_unknown) types.Primitive.unknown else null;
+            if (vals.items.len == 1) return vals.items[0];
+            return self.interner.internIntersection(vals.items) catch null;
         }
         if (!flags.is_object_type) return null;
         if (self.interner.objectMember(source_t, key_name)) |t| return t;
