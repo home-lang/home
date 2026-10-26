@@ -20416,6 +20416,32 @@ test "Program: imported mixed JSDoc index signatures keep independent readonly d
     try T.expectEqualStrings(diagnostics[0].message, diagnostics[3].message);
 }
 
+test "Program: recursive generic interface return keeps concrete index type" {
+    const source =
+        \\interface Alpha<T> { make(): Beta<T> }
+        \\interface MixedBase<T> { readonly [key: string]: T | (() => Beta<T>); [index: number]: T }
+        \\interface Beta<T> extends Alpha<T>, MixedBase<T> {}
+        \\declare const alpha: Alpha<number>;
+        \\const beta = alpha.make();
+        \\beta["new"] = 2;
+        \\beta[0] = 2;
+        \\beta["0"] = 2;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/repro.ts", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const file = try p.add("/repro.ts", source);
+    try p.compileAll(.{ .strict = true, .no_emit = true });
+    const diagnostics = p.fileById(file).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2542), diagnostics[0].code);
+    try T.expectEqualStrings("Index signature in type 'Beta<number>' only permits reading.", diagnostics[0].message);
+}
+
 test "Program: imported JSDoc generic constructor field instantiates at the consumer" {
     const annotated_owner_source =
         \\/** @template T */

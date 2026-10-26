@@ -108634,8 +108634,24 @@ pub const Checker = struct {
             try subs.put(self.gpa, info.params[i], args[i]);
         }
         try self.extendSubstitutionsByMatchingTypeParamNames(info.body, info.params, &subs);
+        // An interface member may have been recorded with an unknown return
+        // while a mutually recursive base was still provisional. Refreshing
+        // that return must lower its type syntax in the receiver's concrete
+        // generic scope, not in the declaration's formal T scope.
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        for (info.params[0..n], args[0..n]) |parameter, argument| {
+            if (parameter >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(parameter).is_type_parameter) continue;
+            const type_parameter = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
+            try self.recordNarrow(type_parameter.name, argument);
+        }
         const refreshed = self.substituteType(info.body, &subs) catch return null;
-        if (refreshed == obj_t) return null;
+        if (refreshed == obj_t) {
+            const member = self.interner.objectMember(obj_t, name) orelse return null;
+            const concrete = try self.refreshDeferredCallableReturns(member);
+            return if (concrete != member) concrete else null;
+        }
         if (try self.lookupObjectMember(refreshed, name)) |t| return t;
         return null;
     }
@@ -229826,6 +229842,40 @@ test "checker: generic interface extends refreshes forward instantiation members
         try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.unknown_catch_variable);
     }
+}
+
+test "checker: recursive generic interface refreshes return in concrete receiver scope" {
+    const s = try newSetup(
+        \\interface Alpha<T> { make(): Beta<T> }
+        \\interface MixedBase<T> { readonly [key: string]: T | (() => Beta<T>); [index: number]: T }
+        \\interface Beta<T> extends Alpha<T>, MixedBase<T> {}
+        \\declare const alpha: Alpha<number>;
+        \\const beta = alpha.make();
+        \\beta["new"] = 2;
+        \\beta[0] = 2;
+        \\beta["0"] = 2;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.readonly_index_signature), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("Index signature in type 'Beta<number>' only permits reading.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: recursive generic interface property keeps concrete type argument" {
+    const s = try newSetup(
+        \\interface Alpha<T> { make(): Beta<T> }
+        \\interface Beta<T> extends Alpha<T> { value: T }
+        \\declare const alpha: Alpha<number>;
+        \\const beta = alpha.make();
+        \\beta.value = 2;
+        \\const numeric: number = beta.value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: interface extends multiple parents merges all members" {
