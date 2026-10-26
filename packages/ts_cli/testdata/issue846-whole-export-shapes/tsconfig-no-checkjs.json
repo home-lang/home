@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "target": "es2022"
+  },
+  "files": ["main.ts"]
+}
