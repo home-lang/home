@@ -5,3 +5,6 @@ counts["local"] = "wrong";
 
 /** @type {{ [index: number]: string }} */
 export const labels = ["first"];
+
+/** @type {{ [key: symbol]: number }} */
+export const symbolCounts = {};
