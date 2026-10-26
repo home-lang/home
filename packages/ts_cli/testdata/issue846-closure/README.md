@@ -30,3 +30,10 @@ Both compilers must report TS6142 at `jsx.ts:1:24`, naming the absolute
 resolved path to `widget.jsx`, and exit 2. This path uses the same
 diagnostic-only resolver field as the TS7016 case; `test-tsc-streams`
 asserts the exact message.
+
+`tsconfig-jsx-no-allowjs.json` enables JSX syntax but explicitly disables
+JavaScript admission, so the same import reports TS7016 instead of TS6142.
+The `tsconfig-checkjs-no-allowjs*.json` controls explicitly set
+`checkJs: true` and `allowJs: false` in both key orders. TypeScript emits
+TS5052 at both option keys, in source order; the stream suite asserts
+both diagnostics and exit 2.

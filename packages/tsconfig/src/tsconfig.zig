@@ -567,7 +567,12 @@ pub const TsConfig = struct {
     /// option-resolution pass in the type checker.
     pub fn validate(self: TsConfig, gpa: std.mem.Allocator) ![]ValidationDiagnostic {
         var diags: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
-        errdefer diags.deinit(gpa);
+        errdefer {
+            for (diags.items) |diagnostic| {
+                if (diagnostic.owns_message) gpa.free(diagnostic.message);
+            }
+            diags.deinit(gpa);
+        }
 
         const co = self.compiler_options;
 
@@ -925,23 +930,38 @@ pub const TsConfig = struct {
             }
         }
 
-        // TypeScript visits JSON properties in source order, looking for
-        // either option named by the diagnostic, then falls back to the
-        // compilerOptions key. Do not assume the offending option is first.
-        for (diags.items) |*diagnostic| {
+        // TypeScript visits every matching JSON property in source order.
+        // A dependency error such as checkJs=true/allowJs=false therefore
+        // appears at both option keys, not only the first one. When neither
+        // key exists locally (for example after inheritance), use the
+        // compilerOptions key as the single fallback anchor.
+        var located: std.ArrayListUnmanaged(ValidationDiagnostic) = .empty;
+        errdefer located.deinit(gpa);
+        for (diags.items) |diagnostic| {
             if ((diagnostic.code == 5052 or diagnostic.code == 5069) and diagnostic.location == null) {
+                var found = false;
                 for (self.compiler_option_locations) |location| {
-                    if (std.mem.eql(u8, location.name, diagnostic.field) or
-                        std.mem.eql(u8, location.name, diagnostic.related_field))
-                    {
-                        diagnostic.location = location.key;
-                        break;
-                    }
+                    if (!std.mem.eql(u8, location.name, diagnostic.field) and
+                        !std.mem.eql(u8, location.name, diagnostic.related_field)) continue;
+                    var copy = diagnostic;
+                    copy.location = location.key;
+                    // All entries share one message allocation; the first
+                    // returned entry remains its sole owner.
+                    if (found) copy.owns_message = false;
+                    try located.append(gpa, copy);
+                    found = true;
                 }
-                if (diagnostic.location == null) diagnostic.location = self.compiler_options_key_location;
+                if (found) continue;
+                var fallback = diagnostic;
+                fallback.location = self.compiler_options_key_location;
+                try located.append(gpa, fallback);
+                continue;
             }
+            try located.append(gpa, diagnostic);
         }
-        return diags.toOwnedSlice(gpa);
+        const result = try located.toOwnedSlice(gpa);
+        diags.deinit(gpa);
+        return result;
     }
 
     pub fn compilerOptionValueLocation(self: TsConfig, name: []const u8) ?jsonc.SourceLocation {
@@ -3646,7 +3666,7 @@ test "tsconfig.validate: dependent options report TS5052" {
     );
     const diags = try cfg.validate(t.allocator);
     defer freeValidationDiagnostics(t.allocator, diags);
-    try t.expectEqual(@as(usize, 4), diags.len);
+    try t.expectEqual(@as(usize, 5), diags.len);
     try t.expectEqual(@as(u32, 5052), diags[0].code);
     try t.expectEqualStrings("Option 'strictPropertyInitialization' cannot be specified without specifying option 'strictNullChecks'.", diags[0].message);
     try t.expectEqual(@as(u32, 5052), diags[1].code);
@@ -3654,7 +3674,9 @@ test "tsconfig.validate: dependent options report TS5052" {
     try t.expectEqual(@as(u32, 5052), diags[2].code);
     try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[2].message);
     try t.expectEqual(@as(u32, 5052), diags[3].code);
-    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[3].message);
+    try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diags[3].message);
+    try t.expectEqual(@as(u32, 5052), diags[4].code);
+    try t.expectEqualStrings("Option 'emitDecoratorMetadata' cannot be specified without specifying option 'experimentalDecorators'.", diags[4].message);
 }
 
 test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
@@ -3690,6 +3712,25 @@ test "tsconfig.validate: checkJs implies allowJs when allowJs is omitted" {
     try t.expectEqual(@as(usize, 1), isolated_diags.len);
     try t.expectEqual(@as(u32, 5053), isolated_diags[0].code);
     try t.expectEqualStrings("Option 'allowJs' cannot be specified with option 'isolatedDeclarations'.", isolated_diags[0].message);
+}
+
+test "tsconfig.validate: dependent-option diagnostics use every explicit option key" {
+    inline for (.{
+        .{ "{\"compilerOptions\":{\"allowJs\":false,\"checkJs\":true}}", "allowJs", "checkJs" },
+        .{ "{\"compilerOptions\":{\"checkJs\":true,\"allowJs\":false}}", "checkJs", "allowJs" },
+    }) |case| {
+        var arena = std.heap.ArenaAllocator.init(t.allocator);
+        defer arena.deinit();
+        const config = try parseString(t.allocator, arena.allocator(), case[0]);
+        const diags = try config.validate(t.allocator);
+        defer freeValidationDiagnostics(t.allocator, diags);
+        try t.expectEqual(@as(usize, 2), diags.len);
+        for (diags, [_][]const u8{ case[1], case[2] }) |diag, name| {
+            try t.expectEqual(@as(u32, 5052), diag.code);
+            try t.expectEqualStrings("Option 'checkJs' cannot be specified without specifying option 'allowJs'.", diag.message);
+            try t.expectEqualDeep(config.compilerOptionKeyLocation(name), diag.location);
+        }
+    }
 }
 
 test "tsconfig: project input extension priority matches TypeScript wildcard discovery" {

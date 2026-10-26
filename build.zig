@@ -2342,6 +2342,31 @@ pub fn build(b: *std.Build) void {
         closure_no_jsx.expectStdErrEqual("");
         closure_no_jsx.expectExitCode(2);
         tsc_streams_step.dependOn(&closure_no_jsx.step);
+        const jsx_without_allow_js = b.addRunArtifact(home_tsc_exe);
+        jsx_without_allow_js.setCwd(closure_dir);
+        jsx_without_allow_js.clearEnvironment();
+        jsx_without_allow_js.addArgs(&.{ "-p", "tsconfig-jsx-no-allowjs.json", "--pretty", "false" });
+        jsx_without_allow_js.expectStdOutEqual(b.fmt(
+            "jsx.ts(1,24): error TS7016: Could not find a declaration file for module './widget.jsx'. '{s}' implicitly has an 'any' type.\n",
+            .{widget_abs_path},
+        ));
+        jsx_without_allow_js.expectStdErrEqual("");
+        jsx_without_allow_js.expectExitCode(2);
+        tsc_streams_step.dependOn(&jsx_without_allow_js.step);
+        inline for (.{ "tsconfig-checkjs-no-allowjs.json", "tsconfig-checkjs-no-allowjs-reversed.json" }) |config_name| {
+            const conflicting_js_options = b.addRunArtifact(home_tsc_exe);
+            conflicting_js_options.setCwd(closure_dir);
+            conflicting_js_options.clearEnvironment();
+            conflicting_js_options.addArgs(&.{ "-p", config_name, "--pretty", "false" });
+            conflicting_js_options.expectStdOutEqual(b.fmt(
+                "{s}(3,5): error TS5052: Option 'checkJs' cannot be specified without specifying option 'allowJs'.\n" ++
+                    "{s}(4,5): error TS5052: Option 'checkJs' cannot be specified without specifying option 'allowJs'.\n",
+                .{ config_name, config_name },
+            ));
+            conflicting_js_options.expectStdErrEqual("");
+            conflicting_js_options.expectExitCode(2);
+            tsc_streams_step.dependOn(&conflicting_js_options.step);
+        }
 
         // A bare JavaScript package is untyped at the default node_modules
         // depth, but its whole CommonJS export is typed once admitted. The
