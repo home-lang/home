@@ -1,6 +1,6 @@
 //! Exact primitive facts recovered from declaration-adjacent JSDoc.
 //! The tag parser owns syntax recognition; this module only associates those
-//! tags with Program declarations and direct constructor assignments.
+//! tags with Program declarations, class fields, and direct constructor assignments.
 
 const std = @import("std");
 const hir = @import("hir");
@@ -123,7 +123,7 @@ pub fn declarationType(gpa: std.mem.Allocator, c: *const driver.Compilation, nod
     return declarationTypeWithParameters(gpa, c, node, &.{});
 }
 
-fn declarationTypeWithParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?TypeExpression {
+pub fn declarationTypeWithParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?TypeExpression {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
@@ -821,6 +821,17 @@ fn leadingBody(source: []const u8, declaration_start: u32) ?[]const u8 {
     var limit = @min(@as(usize, declaration_start), source.len);
     var trimmed_end = limit;
     while (trimmed_end > 0 and std.ascii.isWhitespace(source[trimmed_end - 1])) : (trimmed_end -= 1) {}
+    // Class-field HIR spans begin at the field name, after `static`.
+    // Associate the preceding JSDoc with the whole declaration, not with
+    // the modifier token left between the comment and that name.
+    if (trimmed_end >= "static".len and
+        std.mem.eql(u8, source[trimmed_end - "static".len .. trimmed_end], "static") and
+        (trimmed_end == "static".len or !isIdentChar(source[trimmed_end - "static".len - 1])))
+    {
+        limit = trimmed_end - "static".len;
+        trimmed_end = limit;
+        while (trimmed_end > 0 and std.ascii.isWhitespace(source[trimmed_end - 1])) : (trimmed_end -= 1) {}
+    }
     if (trimmed_end >= "export".len and
         std.mem.eql(u8, source[trimmed_end - "export".len .. trimmed_end], "export") and
         (trimmed_end == "export".len or !isIdentChar(source[trimmed_end - "export".len - 1])))

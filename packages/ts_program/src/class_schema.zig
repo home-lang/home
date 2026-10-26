@@ -1212,6 +1212,15 @@ pub const Builder = struct {
         return names;
     }
 
+    fn classFieldJSDocType(self: *Builder, context: Context, member: hir.NodeId) !?*const schema.Expression {
+        const source = self.sources[context.source];
+        if (!jsdoc_types.isJavaScriptPath(source.path)) return null;
+        const parameter_names = try self.contextParameterNames(context);
+        const type_expression = try jsdoc_types.declarationTypeWithParameters(self.gpa, source.compilation, member, parameter_names) orelse return null;
+        defer type_expression.deinit(self.gpa);
+        return try self.jsdocTypeInContext(type_expression, context);
+    }
+
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
         const own = try self.object(context, hir.interfaceMembers(&c.hir, node));
@@ -1320,7 +1329,9 @@ pub const Builder = struct {
             const type_expression = if (setter_only) write_type.? else switch (kind) {
                 .object_property => blk: {
                     const property = hir.objectPropertyOf(&c.hir, member);
-                    if (property.type_annotation == hir.none_node_id or property.is_computed) return null;
+                    if (property.is_computed) return null;
+                    if (try self.classFieldJSDocType(context, member)) |jsdoc_type| break :blk jsdoc_type;
+                    if (property.type_annotation == hir.none_node_id) return null;
                     break :blk try self.lower(context, property.type_annotation);
                 },
                 .fn_decl, .fn_expr, .arrow_fn => blk: {
@@ -1382,10 +1393,12 @@ pub const Builder = struct {
                         try members.append(self.arena, .{ .name = name, .type = try self.expression(.unsupported), .visibility = .private });
                         continue;
                     }
-                    // Inferred fields and computed methods require the owner's
-                    // checked type, not a guess from an initializer expression.
-                    const value = property.type_annotation;
-                    try members.append(self.arena, .{ .name = name, .type = try self.lower(context, value), .optional = property.is_optional, .readonly = property.is_readonly, .visibility = switch (property.visibility) {
+                    // A declared JSDoc type governs a checked-JS field even
+                    // when its initializer is `any` or a different literal.
+                    // Otherwise use the owner's checked field type, not a
+                    // guess from the initializer expression.
+                    const field_type = (try self.classFieldJSDocType(context, member)) orelse try self.lower(context, property.type_annotation);
+                    try members.append(self.arena, .{ .name = name, .type = field_type, .optional = property.is_optional, .readonly = property.is_readonly, .visibility = switch (property.visibility) {
                         .public => .public,
                         .private => .private,
                         .protected => .protected,

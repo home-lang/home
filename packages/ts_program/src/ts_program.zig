@@ -20352,6 +20352,85 @@ test "Program: defaulted JSDoc class template applies across the import boundary
     }
 }
 
+test "Program: imported checked-JS class fields retain JSDoc types over initializers" {
+    const cases = [_]struct { owner: []const u8, consumer: []const u8 }{
+        .{
+            .owner =
+            \\export class Box {
+            \\  /** @type {string} */
+            \\  value = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\const box = new Box();
+            \\box.value = 'ready';
+            \\const good: string = box.value;
+            \\box.value = 1;
+            \\const bad: number = box.value;
+            ,
+        },
+        .{
+            .owner =
+            \\export class Box {
+            \\  /** @type {string} */
+            \\  static label = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\Box.label = 'ready';
+            \\const good: string = Box.label;
+            \\Box.label = 1;
+            \\const bad: number = Box.label;
+            ,
+        },
+        .{
+            .owner =
+            \\/** @template [T=string] */
+            \\export class Box {
+            \\  /** @type {T} */
+            \\  value = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\const box = new Box();
+            \\box.value = 'ready';
+            \\const good: string = box.value;
+            \\box.value = 1;
+            \\const bad: number = box.value;
+            ,
+        },
+    };
+    for (cases) |case| for ([_]bool{ false, true }) |parallel| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", case.owner);
+        try vfs.addFile("/consumer.ts", case.consumer);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        var p = Program.init(T.allocator, &resolver);
+        defer p.deinit();
+        _ = try p.add("/owner.js", case.owner);
+        const consumer = try p.add("/consumer.ts", case.consumer);
+        const options: ts_driver.CompileOptions = .{
+            .allow_js = true,
+            .check_js = true,
+            .no_emit = true,
+            .strict = true,
+            .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        if (parallel) try p.compileAllParallel(options, 2) else try p.compileAll(options);
+        const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+        try T.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+        try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+    };
+}
+
 test "Program: inferred object initializers retain imported nested JS and TS value types" {
     const owner_source =
         \\export const box = {

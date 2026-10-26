@@ -6145,6 +6145,82 @@ test "tsc_main: admitted defaulted JavaScript class template applies to its fiel
     try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
 }
 
+test "tsc_main: admitted direct JavaScript class fields retain JSDoc types" {
+    const cases = [_]struct { owner: []const u8, consumer: []const u8 }{
+        .{
+            .owner =
+            \\export class Box {
+            \\  /** @type {string} */
+            \\  value = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\const box = new Box();
+            \\box.value = 'ready';
+            \\const good: string = box.value;
+            \\box.value = 1;
+            \\const bad: number = box.value;
+            ,
+        },
+        .{
+            .owner =
+            \\export class Box {
+            \\  /** @type {string} */
+            \\  static label = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\Box.label = 'ready';
+            \\const good: string = Box.label;
+            \\Box.label = 1;
+            \\const bad: number = Box.label;
+            ,
+        },
+        .{
+            .owner =
+            \\/** @template [T=string] */
+            \\export class Box {
+            \\  /** @type {T} */
+            \\  value = /** @type {*} */ (null);
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\const box = new Box();
+            \\box.value = 'ready';
+            \\const good: string = box.value;
+            \\box.value = 1;
+            \\const bad: number = box.value;
+            ,
+        },
+    };
+    for (cases) |case| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/owner.js", case.owner);
+        try vfs.addFile("/consumer.ts", case.consumer);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        const consumer = try program.add("/consumer.ts", case.consumer);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+        try program.compileAll(options);
+        const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 2), diagnostics.len);
+        for (diagnostics) |diagnostic| try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+        try std.testing.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+        try std.testing.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+    }
+}
+
 test "tsc_main: real export-equals namespace retains require-alias member mutability" {
     const owner_source = "namespace N { export const fixed = 1; export let mutable = 2; } export = N;";
     const consumer_source = "import N = require('./owner'); N.fixed = 3; N.mutable = 4; const alias = N; alias.fixed = 3;";

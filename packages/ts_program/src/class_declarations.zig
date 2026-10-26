@@ -167,6 +167,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
     var statics: std.ArrayListUnmanaged(driver.ProgramExportedClassMember) = .empty;
     defer statics.deinit(gpa);
     var requires_schema_members = false;
+    var has_jsdoc_static_field = false;
     for (hir.classMembers(&c.hir, node)) |member_node| {
         switch (c.hir.kindOf(member_node)) {
             .object_property => {
@@ -174,6 +175,17 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
                 if (property.is_computed and c.hir.kindOf(property.key) != .literal_string) continue;
                 const name = nodeName(c, property.key) orelse continue;
                 const list = if (property.is_static) &statics else &members;
+                if (jsdoc_types.isJavaScriptPath(source.path)) {
+                    if (try jsdoc_types.declarationType(gpa, c, member_node)) |declared_type| {
+                        defer declared_type.deinit(gpa);
+                        if (declared_type.transferable()) {
+                            if (property.is_static)
+                                has_jsdoc_static_field = true
+                            else
+                                requires_schema_members = true;
+                        }
+                    }
+                }
                 try list.append(gpa, .{
                     .name = name,
                     .type_name = simpleTypeName(c, property.type_annotation, property.value),
@@ -239,6 +251,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
     try namespaceStatics(gpa, c, siblings, name, &statics);
     const source_schema = try schemas.collect(source, node);
     errdefer @constCast(source_schema).deinit(gpa);
+    const static_schema_members = if (has_jsdoc_static_field) try schemas.staticMembers(source, node) else null;
     const owned_params = try gpa.alloc([]const u8, source_schema.declaration.parameters.len);
     errdefer gpa.free(owned_params);
     for (source_schema.declaration.parameters, owned_params) |parameter, *out_name| out_name.* = parameter.name;
@@ -258,6 +271,7 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
         // their contextual parameter types across an otherwise ordinary
         // module boundary.
         .schema = source_schema,
+        .static_schema_members = static_schema_members,
         .schema_member_projection_only = owned_params.len == 0 and class.extends == 0 and !requires_schema_members,
         .members = owned_members,
         .static_members = owned_statics,
