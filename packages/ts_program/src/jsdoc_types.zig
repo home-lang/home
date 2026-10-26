@@ -949,24 +949,23 @@ fn identifierName(name: []const u8) bool {
 
 fn leadingBody(source: []const u8, declaration_start: u32) ?[]const u8 {
     var limit = @min(@as(usize, declaration_start), source.len);
-    var trimmed_end = limit;
-    while (trimmed_end > 0 and std.ascii.isWhitespace(source[trimmed_end - 1])) : (trimmed_end -= 1) {}
-    // Class-field HIR spans begin at the field name, after `static`.
-    // Associate the preceding JSDoc with the whole declaration, not with
-    // the modifier token left between the comment and that name.
-    if (trimmed_end >= "static".len and
-        std.mem.eql(u8, source[trimmed_end - "static".len .. trimmed_end], "static") and
-        (trimmed_end == "static".len or !isIdentChar(source[trimmed_end - "static".len - 1])))
-    {
-        limit = trimmed_end - "static".len;
-        trimmed_end = limit;
-        while (trimmed_end > 0 and std.ascii.isWhitespace(source[trimmed_end - 1])) : (trimmed_end -= 1) {}
-    }
-    if (trimmed_end >= "export".len and
-        std.mem.eql(u8, source[trimmed_end - "export".len .. trimmed_end], "export") and
-        (trimmed_end == "export".len or !isIdentChar(source[trimmed_end - "export".len - 1])))
-    {
-        limit = trimmed_end - "export".len;
+    // HIR spans start after declaration modifiers. The JSDoc belongs to the
+    // declaration before the full prefix (`export default async function`,
+    // `export class`, or `static` class fields), not the final keyword.
+    while (true) {
+        var end = limit;
+        while (end > 0 and std.ascii.isWhitespace(source[end - 1])) : (end -= 1) {}
+        var prefix: ?usize = null;
+        inline for (.{ "async", "default", "static", "export" }) |keyword| {
+            if (end >= keyword.len and
+                std.mem.eql(u8, source[end - keyword.len .. end], keyword) and
+                (end == keyword.len or !isIdentChar(source[end - keyword.len - 1])))
+            {
+                prefix = end - keyword.len;
+                break;
+            }
+        }
+        limit = prefix orelse break;
     }
     var cursor = limit;
     const end = while (true) {
@@ -985,4 +984,15 @@ fn leadingBody(source: []const u8, declaration_start: u32) ?[]const u8 {
         return null;
     } else return null;
     return source[start + 3 .. end];
+}
+
+test "JSDoc leading body traverses complete default declaration modifiers" {
+    for ([_][]const u8{
+        "/** @returns {number} */ export function answer() {}",
+        "/** @returns {number} */ export default function answer() {}",
+        "/** @returns {number} */ export default async function answer() {}",
+    }) |source| {
+        const start = std.mem.indexOf(u8, source, "function") orelse unreachable;
+        try std.testing.expectEqualStrings(" @returns {number} ", leadingBody(source, @intCast(start)).?);
+    }
 }

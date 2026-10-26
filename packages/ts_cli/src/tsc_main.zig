@@ -5875,6 +5875,40 @@ test "tsc_main: admitted JavaScript object initializer constrains imported reads
     try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; tags: string[]; }'.", diagnostics[3].message);
 }
 
+test "tsc_main: admitted JS and JSX default functions retain JSDoc return types" {
+    const owner_source =
+        \\/** @returns {number} */
+        \\export default function answer() { return 42; }
+    ;
+    const consumer_source =
+        \\import answer from './owner';
+        \\const text: string = answer();
+    ;
+    for ([_][]const u8{ "/owner.js", "/owner.jsx" }) |owner_path| {
+        var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+        defer vfs.deinit();
+        try vfs.addFile(owner_path, owner_source);
+        try vfs.addFile("/consumer.ts", consumer_source);
+        var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = ts_program.Program.init(std.testing.allocator, &resolver);
+        defer program.deinit();
+        const consumer = try program.add("/consumer.ts", consumer_source);
+        var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+        defer adapter.deinit();
+        var options: ts_driver.CompileOptions = .{ .allow_js = true, .strict = true, .no_emit = true };
+        if (std.mem.endsWith(u8, owner_path, ".jsx")) ts_driver.applyJsxOption(&options, .preserve);
+        adapter.setProgramSources(&program, options);
+        options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+        try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+        try program.compileAll(options);
+        const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+        try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+        try std.testing.expectEqual(@as(u32, 2322), diagnostics[0].code);
+        try std.testing.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[0].message);
+    }
+}
+
 test "tsc_main: admitted JavaScript shorthand properties retain local binding types" {
     const owner_source = "const value = 1; const alias = value; export const box = { value: alias, nested: { ready: true } };";
     const consumer_source = "import { box } from './owner.js'; box.value = 'bad'; box.nested.ready = 123; box.missing;";

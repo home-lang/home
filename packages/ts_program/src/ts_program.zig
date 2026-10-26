@@ -20877,6 +20877,59 @@ test "Program: checked JavaScript function JSDoc types cross the import boundary
     }
 }
 
+test "Program: admitted JavaScript default function retains JSDoc return type" {
+    const owner_source =
+        \\/** @returns {number} */
+        \\export default function answer() { return 42; }
+        \\/** @returns {number} */
+        \\export function named() { return 42; }
+    ;
+    const consumer_source =
+        \\import answer, { named } from './owner';
+        \\const defaultText: string = answer();
+        \\const namedText: string = named();
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/owner.js", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    var declarations = try p.collectProgramDeclarations();
+    defer declarations.deinit();
+    var default_route = false;
+    var supported_default_route = false;
+    var default_route_is_function = false;
+    for (declarations.values) |value| {
+        if (!std.mem.eql(u8, value.target_path, "/owner.js") or
+            !std.mem.eql(u8, value.export_name, "default")) continue;
+        default_route = true;
+        default_route_is_function = value.kind == .function;
+        supported_default_route = !value.projection_only;
+    }
+    try T.expect(default_route);
+    try T.expect(default_route_is_function);
+    try T.expect(supported_default_route);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    for (diagnostics) |diagnostic| {
+        try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostic.message);
+    }
+}
+
 test "Program: checked JavaScript primitive array JSDoc types cross the import boundary" {
     const owner_source =
         \\/** @type {string[]} */
