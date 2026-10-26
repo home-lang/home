@@ -2368,6 +2368,34 @@ pub fn build(b: *std.Build) void {
         forward_generic_negative.expectExitCode(2);
         tsc_streams_step.dependOn(&forward_generic_negative.step);
 
+        const generic_index_dir = b.path("packages/ts_cli/testdata/issue953-recursive-index");
+        const generic_index_repro = b.addRunArtifact(home_tsc_exe);
+        generic_index_repro.setCwd(generic_index_dir);
+        generic_index_repro.clearEnvironment();
+        generic_index_repro.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "repro.ts" });
+        generic_index_repro.expectStdOutEqual("repro.ts(6,1): error TS2542: Index signature in type 'Beta<number>' only permits reading.\n");
+        generic_index_repro.expectStdErrEqual("");
+        generic_index_repro.expectExitCode(2);
+        tsc_streams_step.dependOn(&generic_index_repro.step);
+
+        const generic_index_compatible = b.addRunArtifact(home_tsc_exe);
+        generic_index_compatible.setCwd(generic_index_dir);
+        generic_index_compatible.clearEnvironment();
+        generic_index_compatible.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "compatible.ts" });
+        generic_index_compatible.expectStdOutEqual("");
+        generic_index_compatible.expectStdErrEqual("");
+        generic_index_compatible.expectExitCode(0);
+        tsc_streams_step.dependOn(&generic_index_compatible.step);
+
+        const generic_index_invalid = b.addRunArtifact(home_tsc_exe);
+        generic_index_invalid.setCwd(generic_index_dir);
+        generic_index_invalid.clearEnvironment();
+        generic_index_invalid.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "invalid.ts" });
+        generic_index_invalid.expectStdOutEqual("invalid.ts(3,3): error TS2413: 'number' index type '() => T' is not assignable to 'string' index type 'T'.\n");
+        generic_index_invalid.expectStdErrEqual("");
+        generic_index_invalid.expectExitCode(2);
+        tsc_streams_step.dependOn(&generic_index_invalid.step);
+
         const direct_js_rejection = b.addRunArtifact(home_tsc_exe);
         direct_js_rejection.setCwd(streams_dir);
         direct_js_rejection.clearEnvironment();
