@@ -55831,6 +55831,8 @@ pub const Checker = struct {
         }
         if (target < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(target).is_type_parameter and
+            !self.interner.pool.flagsOf(target).is_union and
+            !self.interner.pool.flagsOf(target).is_intersection and
             !self.isThisTypeParameter(target))
         {
             if (source == types.Primitive.any or source == types.Primitive.never) return true;
@@ -55848,8 +55850,21 @@ pub const Checker = struct {
         }
         if (source < self.interner.pool.typeCount() and
             self.interner.pool.flagsOf(source).is_type_parameter and
+            !self.interner.pool.flagsOf(source).is_union and
+            !self.interner.pool.flagsOf(source).is_intersection and
             !self.isThisTypeParameter(source))
         {
+            // An unconstrained T is still assignable to a union containing
+            // that same T. Check the type-parameter alternatives before
+            // falling back to T's constraint (which may not exist).
+            if (target < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target).is_union) {
+                for (self.interner.unionMembers(target)) |member| {
+                    if (member == source) return true;
+                    if (member < self.interner.pool.typeCount() and
+                        self.interner.pool.flagsOf(member).is_type_parameter and
+                        try self.heritageAssignableDepth(source, member, depth + 1)) return true;
+                }
+            }
             const constraint = self.typeParameterConstraint(source) orelse return false;
             if (constraint == source) return false;
             return self.heritageAssignableDepth(constraint, target, depth + 1);
@@ -246371,6 +246386,54 @@ test "checker: mixed readonly index domains select the matching key" {
         found += 1;
     }
     try T.expectEqual(readonly_writes.len, found);
+}
+
+test "checker: generic number index is assignable to a string index union containing T" {
+    const s = try newSetup(
+        \\interface Derived<T> extends Base<T> {}
+        \\interface Base<T> { readonly [key: string]: T | (() => T); [index: number]: T }
+        \\declare let value: Derived<number>;
+        \\value[0] = 2;
+        \\value["0"] = 2;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: incompatible generic number index still reports TS2413" {
+    const s = try newSetup(
+        \\interface InvalidIndexes<T> {
+        \\  [key: string]: T;
+        \\  [index: number]: () => T;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.number_index_not_assignable_to_string_index), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("'number' index type '() => T' is not assignable to 'string' index type 'T'.", s.checker.diagnostics.items[0].message);
+}
+
+test "checker: recursive generic index relation retains only the readonly write" {
+    const s = try newSetup(
+        \\interface Alpha<T> { make(): Beta<T> }
+        \\interface Beta<T> extends Alpha<T>, MixedBase<T> {}
+        \\interface MixedBase<T> { readonly [key: string]: T | (() => Beta<T>); [index: number]: T }
+        \\declare const alpha: Alpha<number>;
+        \\const beta = alpha.make();
+        \\beta["new"] = 2;
+        \\beta[0] = 2;
+        \\beta["0"] = 2;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.readonly_index_signature), s.checker.diagnostics.items[0].code);
+    try T.expectEqualStrings("Index signature in type 'Beta<number>' only permits reading.", s.checker.diagnostics.items[0].message);
 }
 
 test "checker: mutable class index signature assignment remains allowed" {
