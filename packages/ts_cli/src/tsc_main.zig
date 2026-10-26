@@ -5992,7 +5992,7 @@ test "tsc_main: admitted JavaScript shorthand properties retain local binding ty
     try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; }'.", diagnostics[2].message);
 }
 
-test "tsc_main: admitted JSDoc string and number index signatures survive the real resolver" {
+test "tsc_main: admitted JSDoc string number and symbol indices survive the real resolver" {
     const owner_source =
         \\// @ts-check
         \\/** @type {{ [key: string]: number }} */
@@ -6000,16 +6000,21 @@ test "tsc_main: admitted JSDoc string and number index signatures survive the re
         \\counts['local'] = 'wrong';
         \\/** @type {{ [index: number]: string }} */
         \\export const labels = ['first'];
+        \\/** @type {{ [key: symbol]: number }} */
+        \\export const symbolCounts = {};
     ;
     const consumer_source =
-        \\import { counts, labels } from './owner.js';
+        \\import { counts, labels, symbolCounts } from './owner.js';
         \\const known: number = counts.known;
         \\const dynamic: number = counts['other'];
         \\counts['other'] = 'wrong';
         \\counts.known = 'wrong';
         \\const label: string = labels[0];
         \\labels[1] = 42;
-        \\void known; void dynamic; void label;
+        \\declare const key: symbol;
+        \\const symbolRead: number = symbolCounts[key];
+        \\symbolCounts[key] = 'wrong';
+        \\void known; void dynamic; void label; void symbolRead;
     ;
     var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
     defer vfs.deinit();
@@ -6032,11 +6037,12 @@ test "tsc_main: admitted JSDoc string and number index signatures survive the re
     try std.testing.expectEqual(@as(usize, 1), owner_diagnostics.len);
     try std.testing.expectEqual(@as(u32, 2322), owner_diagnostics[0].code);
     const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
-    try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+    try std.testing.expectEqual(@as(usize, 4), diagnostics.len);
     for (diagnostics, [_][]const u8{
         "Type 'string' is not assignable to type 'number'.",
         "Type 'string' is not assignable to type 'number'.",
         "Type 'number' is not assignable to type 'string'.",
+        "Type 'string' is not assignable to type 'number'.",
     }) |diagnostic, message| {
         try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
         try std.testing.expectEqualStrings(message, diagnostic.message);

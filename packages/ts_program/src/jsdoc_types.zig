@@ -524,7 +524,7 @@ fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, p
     return base;
 }
 
-/// JSDoc object types retain named members and open string/number index
+/// JSDoc object types retain named members and open string/number/symbol index
 /// signatures. Methods, computed keys, and malformed members leave the whole
 /// declaration unsupported rather than publishing a partial shape.
 fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) error{OutOfMemory}!?TypeExpression {
@@ -566,7 +566,7 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
             const domain = std.mem.trim(u8, header[key_colon + 1 ..], " \t\r\n");
             if (!isObjectMemberName(parameter)) return null;
             const key_type = parsePrimitive(domain) orelse return null;
-            if (key_type != .string_t and key_type != .number_t) return null;
+            if (key_type != .string_t and key_type != .number_t and key_type != .symbol_t) return null;
             for (indices.items) |index| if (index.key.base.primitive == key_type) return null;
             const value = try parseTypeExpressionWithParameters(gpa, segment[colon + 1 ..], parameter_names) orelse return null;
             indices.append(gpa, .{
@@ -938,19 +938,20 @@ test "JSDoc finite object types preserve nested, optional and readonly members" 
 
 test "JSDoc object index signatures retain open key and value types" {
     const gpa = std.testing.allocator;
-    const parsed = (try parseTypeExpression(gpa, "{ known: number; [key: string]: number; [position: number]: number }")).?;
+    const parsed = (try parseTypeExpression(gpa, "{ known: number; [key: string]: number; [position: number]: number; [token: symbol]: boolean }")).?;
     defer parsed.deinit(gpa);
     const object = parsed.base.indexed_object;
     try std.testing.expectEqual(@as(usize, 1), object.members.len);
     try std.testing.expectEqualStrings("known", object.members[0].name);
-    try std.testing.expectEqual(@as(usize, 2), object.indices.len);
+    try std.testing.expectEqual(@as(usize, 3), object.indices.len);
     try std.testing.expectEqual(Primitive.string_t, object.indices[0].key.base.primitive);
     try std.testing.expectEqual(Primitive.number_t, object.indices[0].value.base.primitive);
     try std.testing.expectEqual(Primitive.number_t, object.indices[1].key.base.primitive);
+    try std.testing.expectEqual(Primitive.symbol_t, object.indices[2].key.base.primitive);
+    try std.testing.expectEqual(Primitive.boolean_t, object.indices[2].value.base.primitive);
     try std.testing.expect(parsed.transferable());
     try std.testing.expect((try parseTypeExpression(gpa, "{ [key: string]: number; [other: string]: string }")) == null);
     try std.testing.expect((try parseTypeExpression(gpa, "{ readonly [key: string]: number }")) == null);
-    try std.testing.expect((try parseTypeExpression(gpa, "{ [key: symbol]: number }")) == null);
     try std.testing.expect((try parseTypeExpression(gpa, "{ [key: boolean]: number }")) == null);
 }
 

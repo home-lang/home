@@ -20284,6 +20284,45 @@ test "Program: imported checked-JS JSDoc index signatures constrain reads and wr
     }
 }
 
+test "Program: imported checked-JS JSDoc symbol index constrains writes" {
+    const owner_source =
+        \\// @ts-check
+        \\/** @type {{ [key: symbol]: number }} */
+        \\export const counts = {};
+    ;
+    const consumer_source =
+        \\import { counts } from './owner.js';
+        \\declare const key: symbol;
+        \\counts[key] = 'wrong';
+        \\const good: number = counts[key];
+        \\void good;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner = try p.add("/owner.js", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[0].message);
+}
+
 test "Program: imported JSDoc generic constructor field instantiates at the consumer" {
     const annotated_owner_source =
         \\/** @template T */

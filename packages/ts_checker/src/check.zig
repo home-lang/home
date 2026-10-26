@@ -115617,6 +115617,7 @@ pub const Checker = struct {
                 defer self.gpa.free(members);
                 var string_index = types.Primitive.none;
                 var number_index = types.Primitive.none;
+                var symbol_index = types.Primitive.none;
                 for (object.indices) |index| {
                     const key = try self.lowerProgramExpression(index.key, declaration, args);
                     const value = try self.lowerProgramExpression(index.value, declaration, args);
@@ -115624,11 +115625,13 @@ pub const Checker = struct {
                         string_index = value;
                     } else if (key == types.Primitive.number_t) {
                         number_index = value;
+                    } else if (key == types.Primitive.symbol_t) {
+                        symbol_index = value;
                     } else {
                         return error.UnsupportedProgramType;
                     }
                 }
-                return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
+                return self.interner.internObjectTypeWithIndexAndSymbol(members, string_index, number_index, symbol_index);
             },
             .record => |record| {
                 if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
