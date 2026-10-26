@@ -115910,10 +115910,10 @@ pub const Checker = struct {
                         if (position != class_declaration.position) continue;
                     }
                     const class_name = self.string_interner.intern(class_declaration.name) catch return error.OutOfMemory;
-                    // Exact source-owned statics are collected only for class
-                    // values admitted by merged ambient namespace routes.
-                    // Other `typeof Class` references retain the existing
-                    // projection behavior.
+                    // Strict `typeof Class` references retain the existing
+                    // source-owned-only route. Ordinary imported class values
+                    // can combine supported source-owned members with legacy
+                    // projections for unrelated unmodeled siblings.
                     return self.syntheticProgramClassStaticTypeImpl(exported_class, class_name, null, hir_mod.none_node_id, exported_class.static_schema_members != null);
                 }
                 return error.UnsupportedProgramType;
@@ -116332,9 +116332,19 @@ pub const Checker = struct {
                     .declaration_origin = if (member.visibility == .public) 0 else origin,
                 });
             }
-        } else {
-            if (strict) return error.UnsupportedProgramType;
+        } else if (strict) return error.UnsupportedProgramType;
+        if (!strict) {
             for (exported_class.static_members) |member| {
+                if (exported_class.static_schema_members) |source_members| {
+                    var covered = false;
+                    for (source_members) |source_member| {
+                        if (std.mem.eql(u8, source_member.name, member.name)) {
+                            covered = true;
+                            break;
+                        }
+                    }
+                    if (covered) continue;
+                }
                 const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
                 const member_t = try self.programExportedClassMemberType(member.type_name);
                 try static_members.append(self.gpa, .{

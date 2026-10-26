@@ -85,6 +85,13 @@ pub const Collection = struct {
         }
         unreachable;
     }
+
+    pub fn staticJSDocFieldMembers(self: *Collection, source: Source, node: hir.NodeId) !?[]const schema.Member {
+        for (self.builder.sources, 0..) |owner, index| {
+            if (owner.compilation == source.compilation) return self.builder.classStaticJSDocFieldMembers(.{ .source = index, .node = node });
+        }
+        unreachable;
+    }
 };
 
 pub const Builder = struct {
@@ -1372,6 +1379,38 @@ pub const Builder = struct {
             const name = c.interner.get(hir.identifierOf(&c.hir, function.name).name);
             if (!self.hasAccessorGetter(context, key.node, name, true) and memberCount(members.items, name) != 1) return null;
         }
+        return try members.toOwnedSlice(self.arena);
+    }
+
+    /// Preserve independently typed checked-JS static fields even when an
+    /// unrelated static method cannot enter the complete schema surface.
+    pub fn classStaticJSDocFieldMembers(self: *Builder, key: Key) !?[]const schema.Member {
+        const source = self.sources[key.source];
+        if (!jsdoc_types.isJavaScriptPath(source.path)) return null;
+        const c = source.compilation;
+        const source_decl = try self.declaration(key);
+        const context: Context = .{ .source = key.source, .declaration = source_decl };
+        var members: std.ArrayListUnmanaged(schema.Member) = .empty;
+        for (hir.classMembers(&c.hir, key.node)) |member| {
+            if (c.hir.kindOf(member) != .object_property) continue;
+            const property = hir.objectPropertyOf(&c.hir, member);
+            if (!property.is_static or property.is_computed) continue;
+            if (c.hir.kindOf(property.key) != .identifier) continue;
+            const type_expression = (try self.classFieldJSDocType(context, member)) orelse continue;
+            if (!try schema.Schema.expressionSupported(type_expression, self.gpa)) continue;
+            try members.append(self.arena, .{
+                .name = c.interner.get(hir.identifierOf(&c.hir, property.key).name),
+                .type = type_expression,
+                .optional = property.is_optional,
+                .readonly = property.is_readonly,
+                .visibility = switch (property.visibility) {
+                    .public => .public,
+                    .private => .private,
+                    .protected => .protected,
+                },
+            });
+        }
+        if (members.items.len == 0) return null;
         return try members.toOwnedSlice(self.arena);
     }
 

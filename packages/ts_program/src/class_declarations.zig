@@ -251,7 +251,10 @@ fn classFacts(gpa: std.mem.Allocator, schemas: *class_schema.Collection, source:
     try namespaceStatics(gpa, c, siblings, name, &statics);
     const source_schema = try schemas.collect(source, node);
     errdefer @constCast(source_schema).deinit(gpa);
-    const static_schema_members = if (has_jsdoc_static_field) try schemas.staticMembers(source, node) else null;
+    const static_schema_members = if (has_jsdoc_static_field)
+        (try schemas.staticMembers(source, node)) orelse try schemas.staticJSDocFieldMembers(source, node)
+    else
+        null;
     const owned_params = try gpa.alloc([]const u8, source_schema.declaration.parameters.len);
     errdefer gpa.free(owned_params);
     for (source_schema.declaration.parameters, owned_params) |parameter, *out_name| out_name.* = parameter.name;

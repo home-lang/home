@@ -6180,6 +6180,23 @@ test "tsc_main: admitted direct JavaScript class fields retain JSDoc types" {
         },
         .{
             .owner =
+            \\export class Box {
+            \\  /** @type {string} */
+            \\  static label = /** @type {*} */ (null);
+            \\  static make() { return 42; }
+            \\}
+            ,
+            .consumer =
+            \\import { Box } from './owner.js';
+            \\Box.label = 'ready';
+            \\const good: string = Box.label;
+            \\const made: number = Box.make();
+            \\Box.label = 1;
+            \\const bad: number = Box.label;
+            ,
+        },
+        .{
+            .owner =
             \\/** @template [T=string] */
             \\export class Box {
             \\  /** @type {T} */
