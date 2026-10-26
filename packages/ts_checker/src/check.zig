@@ -72569,28 +72569,34 @@ pub const Checker = struct {
         var number_idx = self.interner.objectNumberIndex(instantiated_t);
         var symbol_idx = self.interner.objectSymbolIndex(instantiated_t);
         var changed = false;
-        var inherited_readonly_index = self.readonly_index_types.contains(instantiated_t);
+        const original_domains = self.readonly_index_types.get(instantiated_t) orelse
+            ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
+        var readonly_domains = original_domains;
         for (extends) |ext_node| {
             const parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
             if (parent_t >= self.interner.pool.typeCount()) continue;
-            if (self.typeHasReadonlyIndexSignature(parent_t)) inherited_readonly_index = true;
+            const parent_domains = self.readonly_index_types.get(parent_t) orelse
+                ReadonlyIndexDomains{ .string = false, .number = false, .symbol = false };
             const parent_string = self.interner.objectStringIndex(parent_t);
             if (parent_string != types.Primitive.none and parent_string != string_idx) {
                 string_idx = parent_string;
+                readonly_domains.string = parent_domains.string;
                 changed = true;
             }
             const parent_number = self.interner.objectNumberIndex(parent_t);
             if (parent_number != types.Primitive.none and parent_number != number_idx) {
                 number_idx = parent_number;
+                readonly_domains.number = parent_domains.number;
                 changed = true;
             }
             const parent_symbol = self.interner.objectSymbolIndex(parent_t);
             if (parent_symbol != types.Primitive.none and parent_symbol != symbol_idx) {
                 symbol_idx = parent_symbol;
+                readonly_domains.symbol = parent_domains.symbol;
                 changed = true;
             }
         }
-        if (!changed and inherited_readonly_index == self.readonly_index_types.contains(instantiated_t)) {
+        if (!changed and std.meta.eql(readonly_domains, original_domains)) {
             try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, instantiated_t);
             return null;
         }
@@ -72600,7 +72606,7 @@ pub const Checker = struct {
             number_idx,
             symbol_idx,
         ) catch return error.OutOfMemory;
-        if (inherited_readonly_index) try self.readonly_index_types.put(self.gpa, refreshed, .{});
+        if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, refreshed, readonly_domains);
         try self.copyMemberPredicatesFromReceiver(refreshed, instantiated_t);
         try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, refreshed);
         return refreshed;
@@ -229876,6 +229882,48 @@ test "checker: recursive generic interface property keeps concrete type argument
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: refreshed forward generic indices retain independent readonly domains" {
+    const source =
+        \\interface Alpha<T> { make(): Beta<T> }
+        \\interface Beta<T> extends Alpha<T>, MixedBase<T> {}
+        \\interface MixedBase<T> { readonly [key: string]: unknown; [index: number]: T }
+        \\declare const alpha: Alpha<number>;
+        \\const beta = alpha.make();
+        \\beta["new"] = 2;
+        \\beta[0] = 2;
+        \\beta["0"] = 2;
+        \\interface NumberSource<T> { make(): NumberResult<T> }
+        \\interface NumberResult<T> extends NumberSource<T>, NumberBase<T> {}
+        \\interface NumberBase<T> { [key: string]: unknown; readonly [index: number]: T }
+        \\declare const numberSource: NumberSource<number>;
+        \\const numberResult = numberSource.make();
+        \\numberResult["new"] = 2;
+        \\numberResult[0] = 2;
+        \\numberResult["0"] = 2;
+        \\interface SymbolSource<T> { make(): SymbolResult<T> }
+        \\interface SymbolResult<T> extends SymbolSource<T>, SymbolBase<T> {}
+        \\interface SymbolBase<T> { [key: string]: unknown; readonly [key: symbol]: T }
+        \\declare const symbolSource: SymbolSource<number>;
+        \\declare const symbolKey: unique symbol;
+        \\const symbolResult = symbolSource.make();
+        \\symbolResult["new"] = 2;
+        \\symbolResult[symbolKey] = 2;
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    const expected_writes = [_][]const u8{
+        "beta[\"new\"] = 2", "numberResult[0] = 2", "numberResult[\"0\"] = 2", "symbolResult[symbolKey] = 2",
+    };
+    try T.expectEqual(expected_writes.len, s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items, expected_writes) |diagnostic, write| {
+        try T.expectEqual(@as(u32, TsCodes.readonly_index_signature), diagnostic.code);
+        const pos = diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start;
+        try T.expectEqual(std.mem.indexOf(u8, source, write).?, pos);
+    }
 }
 
 test "checker: interface extends multiple parents merges all members" {

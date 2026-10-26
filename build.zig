@@ -2322,6 +2322,23 @@ pub fn build(b: *std.Build) void {
         mixed_index.expectExitCode(2);
         tsc_streams_step.dependOn(&mixed_index.step);
 
+        // A forward-declared generic interface must refresh its inherited
+        // string, number, and symbol write permissions independently.
+        const refreshed_index = b.addRunArtifact(home_tsc_exe);
+        refreshed_index.setCwd(b.path("packages/ts_cli/testdata/issue846-mixed-index"));
+        refreshed_index.clearEnvironment();
+        refreshed_index.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "refresh-domain.ts" });
+        refreshed_index.expectStdOutEqual(
+            \\refresh-domain.ts(6,1): error TS2542: Index signature in type 'Beta<number>' only permits reading.
+            \\refresh-domain.ts(16,1): error TS2542: Index signature in type 'NumberResult<number>' only permits reading.
+            \\refresh-domain.ts(17,1): error TS2542: Index signature in type 'NumberResult<number>' only permits reading.
+            \\refresh-domain.ts(26,1): error TS2542: Index signature in type 'SymbolResult<number>' only permits reading.
+            \\
+        );
+        refreshed_index.expectStdErrEqual("");
+        refreshed_index.expectExitCode(2);
+        tsc_streams_step.dependOn(&refreshed_index.step);
+
         const forward_generic_dir = b.path("packages/ts_cli/testdata/issue952-forward-generic-index");
         const forward_generic_index = b.addRunArtifact(home_tsc_exe);
         forward_generic_index.setCwd(forward_generic_dir);

@@ -18,3 +18,12 @@ index, named writes use the string index, and inherited signatures retain
 their own readonly domain.
 The exact diagnostic text, order, and exit status are asserted in the
 `tsc-streams` suite.
+
+`refresh-domain.ts` additionally exercises a forward-declared generic
+interface whose inherited index types are refreshed after its first use.
+Run `tsc --strict --noEmit --pretty false refresh-domain.ts` and
+`home-tsc --ignoreConfig --strict --noEmit --pretty false refresh-domain.ts`.
+Both report only TS2542 at lines 6, 16, 17, and 26. In particular, the
+numeric writes through `Beta<number>`, named writes through
+`NumberResult<number>`, and named write through `SymbolResult<number>`
+remain mutable. The exact result is also asserted in `tsc-streams`.
