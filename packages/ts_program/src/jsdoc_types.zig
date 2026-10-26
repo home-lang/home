@@ -27,6 +27,14 @@ pub const Container = enum {
     readonly_array,
 };
 
+pub const ObjectMember = struct {
+    /// Borrowed from the declaration's JSDoc source until the schema copies it.
+    name: []const u8,
+    type_expression: TypeExpression,
+    optional: bool = false,
+    readonly: bool = false,
+};
+
 /// A lossless subset of JSDoc type expressions that can cross Program-owned
 /// checker pools without borrowing checker-local TypeIds. Containers are
 /// stored from outermost to innermost, so `Array<ReadonlyArray<string>>` is
@@ -40,6 +48,7 @@ pub const TypeExpression = struct {
         parameter: []const u8,
         unsupported,
         union_type: []TypeExpression,
+        object_type: []ObjectMember,
     },
     containers: []Container = &.{},
 
@@ -52,6 +61,10 @@ pub const TypeExpression = struct {
                 for (members) |member| member.deinit(gpa);
                 gpa.free(members);
             },
+            .object_type => |members| {
+                for (members) |member| member.type_expression.deinit(gpa);
+                gpa.free(members);
+            },
         }
     }
 
@@ -59,7 +72,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) return null;
         return switch (self.base) {
             .primitive => |primitive| primitive,
-            .string_literal, .number_literal, .boolean_literal, .parameter, .unsupported, .union_type => null,
+            .string_literal, .number_literal, .boolean_literal, .parameter, .unsupported, .union_type, .object_type => null,
         };
     }
 
@@ -68,6 +81,10 @@ pub const TypeExpression = struct {
             .unsupported => false,
             .union_type => |members| blk: {
                 for (members) |member| if (!member.transferable()) break :blk false;
+                break :blk true;
+            },
+            .object_type => |members| blk: {
+                for (members) |member| if (!member.type_expression.transferable()) break :blk false;
                 break :blk true;
             },
             else => true,
@@ -391,7 +408,7 @@ fn parseTypeExpression(gpa: std.mem.Allocator, text: []const u8) !?TypeExpressio
     return parseTypeExpressionWithParameters(gpa, text, &.{});
 }
 
-fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) !?TypeExpression {
+fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) error{OutOfMemory}!?TypeExpression {
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (topLevelUnionEnd(trimmed)) |first_end| {
         var members: std.ArrayListUnmanaged(TypeExpression) = .empty;
@@ -451,6 +468,8 @@ fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, p
         .{ .base = .{ .primitive = primitive } }
     else if (try parseLiteral(gpa, current)) |literal|
         literal
+    else if (try parseObjectType(gpa, current, parameter_names)) |object|
+        object
     else if (matchingParameter(current, parameter_names)) |name|
         .{ .base = .{ .parameter = name } }
     else if (outerGroupBody(current)) |body|
@@ -476,6 +495,95 @@ fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, p
     base.containers = combined;
     containers.deinit(gpa);
     return base;
+}
+
+/// Finite JSDoc object types are transferred as closed member schemas. A
+/// method, index signature, computed key, or malformed member is not a finite
+/// data property and leaves the complete declaration unsupported.
+fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) error{OutOfMemory}!?TypeExpression {
+    if (text.len < 2 or text[0] != '{' or text[text.len - 1] != '}') return null;
+    const body = std.mem.trim(u8, text[1 .. text.len - 1], " \t\r\n");
+    var members: std.ArrayListUnmanaged(ObjectMember) = .empty;
+    defer {
+        for (members.items) |member| member.type_expression.deinit(gpa);
+        members.deinit(gpa);
+    }
+    var start: usize = 0;
+    while (start < body.len) {
+        const relative_end = topLevelObjectDelimiter(body[start..], ",;") orelse body.len - start;
+        const end = start + relative_end;
+        const segment = std.mem.trim(u8, body[start..end], " \t\r\n");
+        if (segment.len == 0) return null;
+        const colon = topLevelObjectDelimiter(segment, ":") orelse return null;
+        var key = std.mem.trim(u8, segment[0..colon], " \t\r\n");
+        var readonly = false;
+        if (std.mem.startsWith(u8, key, "readonly") and key.len > "readonly".len and std.ascii.isWhitespace(key["readonly".len])) {
+            readonly = true;
+            key = std.mem.trim(u8, key["readonly".len..], " \t\r\n");
+        }
+        const optional = std.mem.endsWith(u8, key, "?");
+        if (optional) key = std.mem.trimEnd(u8, key[0 .. key.len - 1], " \t\r\n");
+        if (!isObjectMemberName(key)) return null;
+        for (members.items) |member| if (std.mem.eql(u8, member.name, key)) return null;
+        const value = try parseTypeExpressionWithParameters(gpa, segment[colon + 1 ..], parameter_names) orelse return null;
+        members.append(gpa, .{
+            .name = key,
+            .type_expression = value,
+            .optional = optional,
+            .readonly = readonly,
+        }) catch |err| {
+            value.deinit(gpa);
+            return err;
+        };
+        start = end + 1;
+    }
+    return .{ .base = .{ .object_type = try members.toOwnedSlice(gpa) } };
+}
+
+fn isObjectMemberName(name: []const u8) bool {
+    if (name.len == 0 or !(std.ascii.isAlphabetic(name[0]) or name[0] == '_' or name[0] == '$')) return false;
+    for (name[1..]) |byte| if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '$')) return false;
+    return true;
+}
+
+fn topLevelObjectDelimiter(text: []const u8, delimiters: []const u8) ?usize {
+    var angle: usize = 0;
+    var paren: usize = 0;
+    var bracket: usize = 0;
+    var brace: usize = 0;
+    var quote: u8 = 0;
+    var escaped = false;
+    for (text, 0..) |byte, index| {
+        if (quote != 0) {
+            if (escaped) escaped = false else if (byte == '\\') escaped = true else if (byte == quote) quote = 0;
+            continue;
+        }
+        if (byte == '\'' or byte == '"') {
+            quote = byte;
+            continue;
+        }
+        switch (byte) {
+            '<' => angle += 1,
+            '>' => if (angle == 0) return null else {
+                angle -= 1;
+            },
+            '(' => paren += 1,
+            ')' => if (paren == 0) return null else {
+                paren -= 1;
+            },
+            '[' => bracket += 1,
+            ']' => if (bracket == 0) return null else {
+                bracket -= 1;
+            },
+            '{' => brace += 1,
+            '}' => if (brace == 0) return null else {
+                brace -= 1;
+            },
+            else => {},
+        }
+        if (angle == 0 and paren == 0 and bracket == 0 and brace == 0 and std.mem.indexOfScalar(u8, delimiters, byte) != null) return index;
+    }
+    return null;
 }
 
 fn matchingParameter(name: []const u8, parameters: []const []const u8) ?[]const u8 {
@@ -737,7 +845,29 @@ test "JSDoc union expression parser preserves precedence and nested wrappers" {
     try std.testing.expectEqual(@as(usize, 2), readonly.base.union_type.len);
 
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "string | ")) == null);
-    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")) == null);
+    const object_array = (try parseTypeExpression(std.testing.allocator, "Array<string | { value: number }>")).?;
+    defer object_array.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), object_array.base.union_type.len);
+    try std.testing.expectEqualStrings("value", object_array.base.union_type[1].base.object_type[0].name);
+}
+
+test "JSDoc finite object types preserve nested, optional and readonly members" {
+    const parsed = (try parseTypeExpression(std.testing.allocator, "{ readonly count: number; label?: string; nested: { enabled: boolean | null } }")).?;
+    defer parsed.deinit(std.testing.allocator);
+    const members = parsed.base.object_type;
+    try std.testing.expectEqual(@as(usize, 3), members.len);
+    try std.testing.expectEqualStrings("count", members[0].name);
+    try std.testing.expect(members[0].readonly and !members[0].optional);
+    try std.testing.expect(members[1].optional and !members[1].readonly);
+    try std.testing.expectEqualStrings("nested", members[2].name);
+    try std.testing.expectEqual(@as(usize, 1), members[2].type_expression.base.object_type.len);
+    try std.testing.expectEqual(@as(usize, 2), members[2].type_expression.base.object_type[0].type_expression.base.union_type.len);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ value: string; value: number }")) == null);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ [key: string]: number }")) == null);
+    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ run(): number }")) == null);
+    const trailing = (try parseTypeExpression(std.testing.allocator, "{ count: number; label: string; }")).?;
+    defer trailing.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), trailing.base.object_type.len);
 }
 
 test "JSDoc nullable expressions preserve whole-array and element precedence" {

@@ -1201,6 +1201,16 @@ pub const Builder = struct {
                 for (members, expressions) |member, *out| out.* = try self.jsdocTypeInContext(member, context);
                 break :union_expression try self.expression(.{ .union_type = expressions });
             },
+            .object_type => |members| object_expression: {
+                const expressions = try self.arena.alloc(schema.Member, members.len);
+                for (members, expressions) |member, *out| out.* = .{
+                    .name = try self.arena.dupe(u8, member.name),
+                    .type = try self.jsdocTypeInContext(member.type_expression, context),
+                    .optional = member.optional,
+                    .readonly = member.readonly,
+                };
+                break :object_expression try self.expression(.{ .object = expressions });
+            },
         };
         var index = type_expression.containers.len;
         while (index > 0) {

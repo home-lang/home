@@ -14802,6 +14802,54 @@ test "Program: source revisions recompile transitive importers" {
     try expectCompilationLacksDiagnosticCode(p.fileById(main).compilation.?, 2322);
 }
 
+test "Program: admitted checked JavaScript revisions refresh importer and owner diagnostics" {
+    const old_owner = "// @ts-check\n/** @type {string} */ export const value = 'old';\n";
+    const new_owner = "// @ts-check\n/** @type {number} */ export const value = 1;\n";
+    const invalid_owner = "// @ts-check\n/** @type {number} */ export const value = 'bad';\n";
+    const consumer_source = "import { value } from './owner'; const result: number = value;";
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", old_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner = try p.add("/owner.js", old_owner);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    try expectCompilationHasDiagnosticCode(p.fileById(consumer).compilation.?, 2322);
+    try expectCompilationLacksDiagnosticCode(p.fileById(owner).compilation.?, 2322);
+
+    try vfs.addFile("/owner.js", new_owner);
+    _ = try p.updateSource("/owner.js", new_owner);
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/owner.js"}, options);
+    try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2322);
+    try expectCompilationLacksDiagnosticCode(p.fileById(owner).compilation.?, 2322);
+
+    try vfs.addFile("/owner.js", invalid_owner);
+    _ = try p.updateSource("/owner.js", invalid_owner);
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/owner.js"}, options);
+    try expectCompilationLacksDiagnosticCode(p.fileById(consumer).compilation.?, 2322);
+    try expectCompilationHasDiagnosticCode(p.fileById(owner).compilation.?, 2322);
+
+    try vfs.addFile("/owner.js", old_owner);
+    _ = try p.updateSource("/owner.js", old_owner);
+    resolver.invalidateCaches();
+    _ = try p.recompileChanged(&.{"/owner.js"}, options);
+    try expectCompilationHasDiagnosticCode(p.fileById(consumer).compilation.?, 2322);
+    try expectCompilationLacksDiagnosticCode(p.fileById(owner).compilation.?, 2322);
+}
+
 test "Program: package type revisions refresh implied module format" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -20151,6 +20199,47 @@ test "Program: checked JavaScript ESM exports retain JSDoc reads and constructor
         try T.expect(widened_label);
         try expectCompilationLacksDiagnosticCode(compilation, 2339);
     }
+}
+
+test "Program: imported checked-JS object JSDoc retains nested writes and modifiers" {
+    const owner_source =
+        \\// @ts-check
+        \\/** @type {{readonly count: number; label?: string; nested: {enabled: boolean}}} */
+        \\export const settings = { count: 1, nested: { enabled: true } };
+    ;
+    const consumer_source =
+        \\import { settings } from './owner';
+        \\const good: number = settings.count;
+        \\settings.count = 3;
+        \\settings.label = 42;
+        \\settings.nested.enabled = 1;
+        \\settings.missing;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const owner = try p.add("/owner.js", owner_source);
+    const consumer = try p.add("/consumer.ts", consumer_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try p.compileAll(options);
+    try T.expectEqual(@as(usize, 0), p.fileById(owner).compilation.?.diagnostics.items.len);
+    const diagnostics = p.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 4), diagnostics.len);
+    try T.expectEqual(@as(u32, 2540), diagnostics[0].code);
+    try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+    try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
+    try T.expectEqual(@as(u32, 2339), diagnostics[3].code);
 }
 
 test "Program: imported JSDoc generic constructor field instantiates at the consumer" {
