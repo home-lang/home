@@ -35,6 +35,16 @@ pub const ObjectMember = struct {
     readonly: bool = false,
 };
 
+pub const ObjectIndex = struct {
+    key: TypeExpression,
+    value: TypeExpression,
+};
+
+pub const IndexedObject = struct {
+    members: []ObjectMember,
+    indices: []ObjectIndex,
+};
+
 /// A lossless subset of JSDoc type expressions that can cross Program-owned
 /// checker pools without borrowing checker-local TypeIds. Containers are
 /// stored from outermost to innermost, so `Array<ReadonlyArray<string>>` is
@@ -49,6 +59,7 @@ pub const TypeExpression = struct {
         unsupported,
         union_type: []TypeExpression,
         object_type: []ObjectMember,
+        indexed_object: IndexedObject,
     },
     containers: []Container = &.{},
 
@@ -65,6 +76,15 @@ pub const TypeExpression = struct {
                 for (members) |member| member.type_expression.deinit(gpa);
                 gpa.free(members);
             },
+            .indexed_object => |object| {
+                for (object.members) |member| member.type_expression.deinit(gpa);
+                gpa.free(object.members);
+                for (object.indices) |index| {
+                    index.key.deinit(gpa);
+                    index.value.deinit(gpa);
+                }
+                gpa.free(object.indices);
+            },
         }
     }
 
@@ -72,7 +92,7 @@ pub const TypeExpression = struct {
         if (self.containers.len > 0) return null;
         return switch (self.base) {
             .primitive => |primitive| primitive,
-            .string_literal, .number_literal, .boolean_literal, .parameter, .unsupported, .union_type, .object_type => null,
+            .string_literal, .number_literal, .boolean_literal, .parameter, .unsupported, .union_type, .object_type, .indexed_object => null,
         };
     }
 
@@ -85,6 +105,13 @@ pub const TypeExpression = struct {
             },
             .object_type => |members| blk: {
                 for (members) |member| if (!member.type_expression.transferable()) break :blk false;
+                break :blk true;
+            },
+            .indexed_object => |object| blk: {
+                for (object.members) |member| if (!member.type_expression.transferable()) break :blk false;
+                for (object.indices) |index| {
+                    if (!index.key.transferable() or !index.value.transferable()) break :blk false;
+                }
                 break :blk true;
             },
             else => true,
@@ -497,9 +524,9 @@ fn parseTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, p
     return base;
 }
 
-/// Finite JSDoc object types are transferred as closed member schemas. A
-/// method, index signature, computed key, or malformed member is not a finite
-/// data property and leaves the complete declaration unsupported.
+/// JSDoc object types retain named members and open string/number index
+/// signatures. Methods, computed keys, and malformed members leave the whole
+/// declaration unsupported rather than publishing a partial shape.
 fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []const []const u8) error{OutOfMemory}!?TypeExpression {
     if (text.len < 2 or text[0] != '{' or text[text.len - 1] != '}') return null;
     const body = std.mem.trim(u8, text[1 .. text.len - 1], " \t\r\n");
@@ -507,6 +534,14 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
     defer {
         for (members.items) |member| member.type_expression.deinit(gpa);
         members.deinit(gpa);
+    }
+    var indices: std.ArrayListUnmanaged(ObjectIndex) = .empty;
+    defer {
+        for (indices.items) |index| {
+            index.key.deinit(gpa);
+            index.value.deinit(gpa);
+        }
+        indices.deinit(gpa);
     }
     var start: usize = 0;
     while (start < body.len) {
@@ -520,6 +555,29 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
         if (std.mem.startsWith(u8, key, "readonly") and key.len > "readonly".len and std.ascii.isWhitespace(key["readonly".len])) {
             readonly = true;
             key = std.mem.trim(u8, key["readonly".len..], " \t\r\n");
+        }
+        if (key.len >= 2 and key[0] == '[' and key[key.len - 1] == ']') {
+            // The current source schema has no readonly bit on an index
+            // signature. Decline that form rather than allowing writes.
+            if (readonly) return null;
+            const header = std.mem.trim(u8, key[1 .. key.len - 1], " \t\r\n");
+            const key_colon = std.mem.indexOfScalar(u8, header, ':') orelse return null;
+            const parameter = std.mem.trim(u8, header[0..key_colon], " \t\r\n");
+            const domain = std.mem.trim(u8, header[key_colon + 1 ..], " \t\r\n");
+            if (!isObjectMemberName(parameter)) return null;
+            const key_type = parsePrimitive(domain) orelse return null;
+            if (key_type != .string_t and key_type != .number_t) return null;
+            for (indices.items) |index| if (index.key.base.primitive == key_type) return null;
+            const value = try parseTypeExpressionWithParameters(gpa, segment[colon + 1 ..], parameter_names) orelse return null;
+            indices.append(gpa, .{
+                .key = .{ .base = .{ .primitive = key_type } },
+                .value = value,
+            }) catch |err| {
+                value.deinit(gpa);
+                return err;
+            };
+            start = end + 1;
+            continue;
         }
         const optional = std.mem.endsWith(u8, key, "?");
         if (optional) key = std.mem.trimEnd(u8, key[0 .. key.len - 1], " \t\r\n");
@@ -537,7 +595,16 @@ fn parseObjectType(gpa: std.mem.Allocator, text: []const u8, parameter_names: []
         };
         start = end + 1;
     }
-    return .{ .base = .{ .object_type = try members.toOwnedSlice(gpa) } };
+    const owned_members = try members.toOwnedSlice(gpa);
+    if (indices.items.len == 0) return .{ .base = .{ .object_type = owned_members } };
+    errdefer {
+        for (owned_members) |member| member.type_expression.deinit(gpa);
+        gpa.free(owned_members);
+    }
+    return .{ .base = .{ .indexed_object = .{
+        .members = owned_members,
+        .indices = try indices.toOwnedSlice(gpa),
+    } } };
 }
 
 fn isObjectMemberName(name: []const u8) bool {
@@ -863,11 +930,28 @@ test "JSDoc finite object types preserve nested, optional and readonly members" 
     try std.testing.expectEqual(@as(usize, 1), members[2].type_expression.base.object_type.len);
     try std.testing.expectEqual(@as(usize, 2), members[2].type_expression.base.object_type[0].type_expression.base.union_type.len);
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ value: string; value: number }")) == null);
-    try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ [key: string]: number }")) == null);
     try std.testing.expect((try parseTypeExpression(std.testing.allocator, "{ run(): number }")) == null);
     const trailing = (try parseTypeExpression(std.testing.allocator, "{ count: number; label: string; }")).?;
     defer trailing.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), trailing.base.object_type.len);
+}
+
+test "JSDoc object index signatures retain open key and value types" {
+    const gpa = std.testing.allocator;
+    const parsed = (try parseTypeExpression(gpa, "{ known: number; [key: string]: number; [position: number]: number }")).?;
+    defer parsed.deinit(gpa);
+    const object = parsed.base.indexed_object;
+    try std.testing.expectEqual(@as(usize, 1), object.members.len);
+    try std.testing.expectEqualStrings("known", object.members[0].name);
+    try std.testing.expectEqual(@as(usize, 2), object.indices.len);
+    try std.testing.expectEqual(Primitive.string_t, object.indices[0].key.base.primitive);
+    try std.testing.expectEqual(Primitive.number_t, object.indices[0].value.base.primitive);
+    try std.testing.expectEqual(Primitive.number_t, object.indices[1].key.base.primitive);
+    try std.testing.expect(parsed.transferable());
+    try std.testing.expect((try parseTypeExpression(gpa, "{ [key: string]: number; [other: string]: string }")) == null);
+    try std.testing.expect((try parseTypeExpression(gpa, "{ readonly [key: string]: number }")) == null);
+    try std.testing.expect((try parseTypeExpression(gpa, "{ [key: symbol]: number }")) == null);
+    try std.testing.expect((try parseTypeExpression(gpa, "{ [key: boolean]: number }")) == null);
 }
 
 test "JSDoc nullable expressions preserve whole-array and element precedence" {

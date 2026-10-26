@@ -1211,6 +1211,24 @@ pub const Builder = struct {
                 };
                 break :object_expression try self.expression(.{ .object = expressions });
             },
+            .indexed_object => |indexed| object_expression: {
+                const members = try self.arena.alloc(schema.Member, indexed.members.len);
+                for (indexed.members, members) |member, *out| out.* = .{
+                    .name = try self.arena.dupe(u8, member.name),
+                    .type = try self.jsdocTypeInContext(member.type_expression, context),
+                    .optional = member.optional,
+                    .readonly = member.readonly,
+                };
+                const indices = try self.arena.alloc(schema.IndexSignature, indexed.indices.len);
+                for (indexed.indices, indices) |index, *out| out.* = .{
+                    .key = try self.jsdocTypeInContext(index.key, context),
+                    .value = try self.jsdocTypeInContext(index.value, context),
+                };
+                break :object_expression try self.expression(.{ .indexed_object = .{
+                    .members = members,
+                    .indices = indices,
+                } });
+            },
         };
         var index = type_expression.containers.len;
         while (index > 0) {

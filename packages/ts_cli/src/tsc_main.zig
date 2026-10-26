@@ -5992,6 +5992,57 @@ test "tsc_main: admitted JavaScript shorthand properties retain local binding ty
     try std.testing.expectEqualStrings("Property 'missing' does not exist on type '{ value: number; nested: { ready: boolean; }; }'.", diagnostics[2].message);
 }
 
+test "tsc_main: admitted JSDoc string and number index signatures survive the real resolver" {
+    const owner_source =
+        \\// @ts-check
+        \\/** @type {{ [key: string]: number }} */
+        \\export const counts = { known: 1 };
+        \\counts['local'] = 'wrong';
+        \\/** @type {{ [index: number]: string }} */
+        \\export const labels = ['first'];
+    ;
+    const consumer_source =
+        \\import { counts, labels } from './owner.js';
+        \\const known: number = counts.known;
+        \\const dynamic: number = counts['other'];
+        \\counts['other'] = 'wrong';
+        \\counts.known = 'wrong';
+        \\const label: string = labels[0];
+        \\labels[1] = 42;
+        \\void known; void dynamic; void label;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/main.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(std.testing.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/main.ts", consumer_source);
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+    var options: ts_driver.CompileOptions = .{ .allow_js = true, .check_js = true, .strict = true, .no_emit = true };
+    adapter.setProgramSources(&program, options);
+    options.external_resolver = .{ .ptr = &adapter, .vtable = &CheckerResolverAdapter.vtable };
+    try std.testing.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+    try program.compileAll(options);
+    const owner = program.lookupPath("/owner.js") orelse return error.TestUnexpectedResult;
+    const owner_diagnostics = program.fileById(owner).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 1), owner_diagnostics.len);
+    try std.testing.expectEqual(@as(u32, 2322), owner_diagnostics[0].code);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try std.testing.expectEqual(@as(usize, 3), diagnostics.len);
+    for (diagnostics, [_][]const u8{
+        "Type 'string' is not assignable to type 'number'.",
+        "Type 'string' is not assignable to type 'number'.",
+        "Type 'number' is not assignable to type 'string'.",
+    }) |diagnostic, message| {
+        try std.testing.expectEqual(@as(u32, 2322), diagnostic.code);
+        try std.testing.expectEqualStrings(message, diagnostic.message);
+    }
+}
+
 test "tsc_main: admitted JavaScript JSDoc literal shorthand stays narrow" {
     const owner_source = "/** @type {1} */ const narrow = 1; const wide = 1; export const box = { narrow, wide };";
     const consumer_source = "import { box } from './owner.js'; box.narrow = 2; box.wide = 'bad';";
