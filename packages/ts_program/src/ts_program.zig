@@ -15688,6 +15688,97 @@ test "Program: checked CommonJS collection exports retain builtin generic identi
     }
 }
 
+test "Program: JavaScript collection imports retain six errors across module, checkJs and scheduling modes" {
+    const commonjs_owner =
+        \\const key = { id: 1 };
+        \\exports.map = new Map([["ready", 1]]);
+        \\/** @type {ReadonlyMap<string, number>} */
+        \\const readonlyMap = new Map([["ready", 1]]);
+        \\exports.readonlyMap = readonlyMap;
+        \\exports.set = new Set([1]);
+        \\/** @type {ReadonlySet<number>} */
+        \\const readonlySet = new Set([1]);
+        \\exports.readonlySet = readonlySet;
+        \\exports.weakMap = new WeakMap([[key, { value: 1 }]]);
+        \\exports.weakSet = new WeakSet([key]);
+    ;
+    const esm_owner =
+        \\const key = { id: 1 };
+        \\export const map = new Map([["ready", 1]]);
+        \\/** @type {ReadonlyMap<string, number>} */
+        \\export const readonlyMap = new Map([["ready", 1]]);
+        \\export const set = new Set([1]);
+        \\/** @type {ReadonlySet<number>} */
+        \\export const readonlySet = new Set([1]);
+        \\export const weakMap = new WeakMap([[key, { value: 1 }]]);
+        \\export const weakSet = new WeakSet([key]);
+    ;
+    const commonjs_consumer =
+        \\import collections from './owner.js';
+        \\collections.map.set("ready", "wrong");
+        \\collections.readonlyMap.set("ready", 2);
+        \\collections.set.add("wrong");
+        \\collections.readonlySet.add(2);
+        \\collections.weakMap.set({ id: 2 }, "wrong");
+        \\collections.weakSet.add("wrong");
+    ;
+    const esm_consumer =
+        \\import { map, readonlyMap, set, readonlySet, weakMap, weakSet } from './owner.js';
+        \\map.set("ready", "wrong");
+        \\readonlyMap.set("ready", 2);
+        \\set.add("wrong");
+        \\readonlySet.add(2);
+        \\weakMap.set({ id: 2 }, "wrong");
+        \\weakSet.add("wrong");
+    ;
+    for ([_]bool{ false, true }) |esm| {
+        for ([_]bool{ false, true }) |check_js| {
+            for ([_]bool{ false, true }) |parallel| {
+                for ([_]bool{ false, true }) |owner_first| {
+                    const owner_source = if (esm) esm_owner else commonjs_owner;
+                    const consumer_source = if (esm) esm_consumer else commonjs_consumer;
+                    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                    defer vfs.deinit();
+                    try vfs.addFile("/owner.js", owner_source);
+                    try vfs.addFile("/consumer.ts", consumer_source);
+                    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+                    defer resolver.deinit();
+                    var program = Program.init(T.allocator, &resolver);
+                    defer program.deinit();
+                    var source_exports = SourceExportResolver{
+                        .resolver = &resolver,
+                        .program = &program,
+                        .arena = std.heap.ArenaAllocator.init(T.allocator),
+                    };
+                    defer source_exports.arena.deinit();
+                    const consumer = if (owner_first) blk: {
+                        _ = try program.add("/owner.js", owner_source);
+                        break :blk try program.add("/consumer.ts", consumer_source);
+                    } else blk: {
+                        const id = try program.add("/consumer.ts", consumer_source);
+                        _ = try program.add("/owner.js", owner_source);
+                        break :blk id;
+                    };
+                    const options: ts_driver.CompileOptions = .{
+                        .allow_js = true,
+                        .check_js = check_js,
+                        .strict = true,
+                        .no_emit = true,
+                        .emit = .{ .es_module_interop = true },
+                        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+                    };
+                    if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+                    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                    try T.expectEqual(@as(usize, 6), diagnostics.len);
+                    for (diagnostics, 0..) |diagnostic, index| {
+                        try T.expectEqual(@as(u32, if (index == 1 or index == 3) 2339 else 2345), diagnostic.code);
+                    }
+                }
+            }
+        }
+    }
+}
+
 test "Program: unchecked JavaScript JSDoc parameter constrains an admitted importer" {
     const owner_source =
         \\/** @param {number} value */

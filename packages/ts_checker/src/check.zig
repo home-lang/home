@@ -60038,6 +60038,11 @@ pub const Checker = struct {
             switch (external.kind) {
                 .implementation => {
                     if (try self.reportExternalJsxResolutionDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path)) return true;
+                    // An admitted JavaScript source participates in this
+                    // Program's type graph when allowJs is enabled. It is
+                    // not an untyped external implementation needing a
+                    // declaration file, even when checkJs is disabled.
+                    if (external.source_is_admitted and self.sourceHasAllowJsDirective()) return true;
                     if (self.strict_flags.no_implicit_any) {
                         try self.appendUntypedModuleDiagnostic(node, spec, external.diagnostic_path orelse external.resolved_path);
                     }
@@ -61273,6 +61278,7 @@ pub const Checker = struct {
     /// the external resolver did not yield a result.
     const ExternalBareResolution = struct {
         kind: enum { declaration, implementation },
+        source_is_admitted: bool = false,
         /// Borrowed from the caller's external-resolver arena.
         resolved_path: []const u8,
         diagnostic_path: ?[]const u8 = null,
@@ -61324,6 +61330,7 @@ pub const Checker = struct {
             .declaration;
         return .{
             .kind = kind,
+            .source_is_admitted = r.source_is_admitted,
             .resolved_path = r.path,
             .diagnostic_path = r.diagnostic_path,
             .alternate_result = r.alternate_result,
