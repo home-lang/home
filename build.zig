@@ -2293,6 +2293,39 @@ pub fn build(b: *std.Build) void {
         imported_index.expectExitCode(2);
         tsc_streams_step.dependOn(&imported_index.step);
 
+        // #957: checked and unchecked JavaScript collection exports must
+        // retain their generic arguments through both module systems.
+        const collections_dir = b.path("packages/ts_cli/testdata/issue957-collections");
+        const commonjs_collections_output =
+            "commonjs-consumer.ts(3,30): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "commonjs-consumer.ts(4,25): error TS2339: Property 'set' does not exist on type 'ReadonlyMap<string, number>'.\n" ++
+            "commonjs-consumer.ts(5,21): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "commonjs-consumer.ts(6,25): error TS2339: Property 'add' does not exist on type 'ReadonlySet<number>'.\n" ++
+            "commonjs-consumer.ts(7,36): error TS2345: Argument of type 'string' is not assignable to parameter of type '{ value: number; }'.\n" ++
+            "commonjs-consumer.ts(8,25): error TS2345: Argument of type 'string' is not assignable to parameter of type '{ id: number; }'.\n";
+        const esm_collections_output =
+            "esm-consumer.ts(3,18): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "esm-consumer.ts(4,13): error TS2339: Property 'set' does not exist on type 'ReadonlyMap<string, number>'.\n" ++
+            "esm-consumer.ts(5,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "esm-consumer.ts(6,13): error TS2339: Property 'add' does not exist on type 'ReadonlySet<number>'.\n" ++
+            "esm-consumer.ts(7,24): error TS2345: Argument of type 'string' is not assignable to parameter of type '{ value: number; }'.\n" ++
+            "esm-consumer.ts(8,13): error TS2345: Argument of type 'string' is not assignable to parameter of type '{ id: number; }'.\n";
+        inline for (.{
+            .{ "tsconfig-commonjs.json", commonjs_collections_output },
+            .{ "tsconfig-commonjs-no-checkjs.json", commonjs_collections_output },
+            .{ "tsconfig-esm.json", esm_collections_output },
+            .{ "tsconfig-esm-no-checkjs.json", esm_collections_output },
+        }) |case| {
+            const collections = b.addRunArtifact(home_tsc_exe);
+            collections.setCwd(collections_dir);
+            collections.clearEnvironment();
+            collections.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            collections.expectStdOutEqual(case[1]);
+            collections.expectStdErrEqual("");
+            collections.expectExitCode(2);
+            tsc_streams_step.dependOn(&collections.step);
+        }
+
         // An explicit JS root and a two-hop JS import closure are admitted;
         // the unrelated sibling is not. JS checking is independent of
         // admission, and checkJs alone enables JavaScript sources.
