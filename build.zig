@@ -2273,6 +2273,26 @@ pub fn build(b: *std.Build) void {
         check_js.expectExitCode(2);
         tsc_streams_step.dependOn(&check_js.step);
 
+        // Checked-JS owner diagnostics are compiled before their TS importer,
+        // but tsc prints the importer first after sorting by source path.
+        const imported_index = b.addRunArtifact(home_tsc_exe);
+        imported_index.setCwd(b.path("packages/ts_cli/testdata/issue846-index"));
+        imported_index.clearEnvironment();
+        imported_index.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        imported_index.expectStdOutEqual(
+            \\main.ts(5,1): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\main.ts(6,1): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\main.ts(8,1): error TS2542: Index signature in type '{ readonly [key: string]: number; }' only permits reading.
+            \\main.ts(9,1): error TS2542: Index signature in type '{ readonly [key: string]: number; }' only permits reading.
+            \\main.ts(12,1): error TS2322: Type 'number' is not assignable to type 'string'.
+            \\main.ts(15,1): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\owner.js(4,1): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\
+        );
+        imported_index.expectStdErrEqual("");
+        imported_index.expectExitCode(2);
+        tsc_streams_step.dependOn(&imported_index.step);
+
         const direct_js_rejection = b.addRunArtifact(home_tsc_exe);
         direct_js_rejection.setCwd(streams_dir);
         direct_js_rejection.clearEnvironment();

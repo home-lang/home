@@ -3994,10 +3994,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     if (defer_program_diagnostics) {
         if (syntax_probe.has_errors) {
             stream_ctx.filter = .syntax_only;
-            for (program.files.items) |file| {
-                const compilation = file.compilation orelse continue;
-                streamDiagsCallback(&stream_ctx, file.path, compilation.diagnostics.items);
-            }
+            try streamProgramDiagnosticsSorted(&stream_ctx);
         } else {
             if (extension_diagnostics.hasErrors()) {
                 for (extension_diagnostics.messages.items) |message| {
@@ -4031,10 +4028,17 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             }
         }
     } else {
-        program.compileAllStreaming(compile_opts, &stream_ctx, streamDiagsCallback) catch |err| {
+        // TypeScript sorts the whole program's diagnostics by file path and
+        // source position before printing. Keep the incremental/watch path
+        // streaming, but defer one-shot CLI printing until all dependency-
+        // ordered compilations finish; the Program already owns the results.
+        var compile_ctx = stream_ctx;
+        if (!opts.watch) compile_ctx.filter = .none;
+        program.compileAllStreaming(compile_opts, &compile_ctx, streamDiagsCallback) catch |err| {
             std.debug.print("compile error: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
+        if (!opts.watch) try streamProgramDiagnosticsSorted(&stream_ctx);
     }
     // Emission may still need checked metadata and JS buffers after syntax
     // or option diagnostics. Compute those only when outputs are selected;
@@ -4647,6 +4651,40 @@ const ErrorFileCount = struct {
     path: []const u8,
     count: usize,
 };
+
+/// `tsc` sorts diagnostics across files by canonical path, independently of
+/// the import/dependency compilation order. Per-file diagnostics are already
+/// source-ordered by the driver; rendering after compilation does not duplicate
+/// their owned messages or change Program's streaming API.
+fn streamProgramDiagnosticsSorted(ctx: *StreamCtx) error{OutOfMemory}!void {
+    const Entry = struct {
+        file_id: ts_program.FileId,
+        absolute_path: []u8,
+
+        fn lessThan(_: void, left: @This(), right: @This()) bool {
+            const order = std.mem.order(u8, left.absolute_path, right.absolute_path);
+            return if (order == .eq) left.file_id < right.file_id else order == .lt;
+        }
+    };
+    var order: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (order.items) |entry| ctx.gpa.free(entry.absolute_path);
+        order.deinit(ctx.gpa);
+    }
+    for (ctx.program.files.items, 0..) |file, file_id| {
+        if (!file.present or file.redirect_target != null or file.compilation == null) continue;
+        const path = try std.fs.path.resolve(ctx.gpa, &.{ ctx.paths.directory, file.path });
+        order.append(ctx.gpa, .{ .file_id = @intCast(file_id), .absolute_path = path }) catch {
+            ctx.gpa.free(path);
+            return error.OutOfMemory;
+        };
+    }
+    std.sort.pdq(Entry, order.items, {}, Entry.lessThan);
+    for (order.items) |entry| {
+        const file = ctx.program.files.items[entry.file_id];
+        streamDiagsCallback(ctx, file.path, file.compilation.?.diagnostics.items);
+    }
+}
 
 /// Invoked once per compiled file, in compilation order. Renders
 /// every diagnostic via the same formatter the post-compile loop

@@ -13,6 +13,6 @@ Both report TS2322 at `owner.js:4:1` and `main.ts:5:1`, `6:1`, `12:1`, and
 fixture exercises valid indexed reads, invalid writes through string, number,
 and symbol indexes, and readonly-index writes after importing a checked JS
 owner. It also verifies that a mutable index with the same key and value types
-remains writable. Both processes now exit 2. Diagnostic print order still
-differs: TypeScript prints the TS consumer first; Home prints the JS owner
-first.
+remains writable. Both processes exit 2 and print the same seven diagnostic
+lines in the same order. The exact stdout and exit status are checked by
+`zig build test -Dfilter=tsc_streams`.
