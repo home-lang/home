@@ -293,6 +293,21 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
     return .{ .parameters = parameters, .result = return_type };
 }
 
+/// A parameter-only JSDoc function needs its checked, inferred return type
+/// before its complete signature can be transferred to an importing file.
+pub fn hasParameterWithoutReturn(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !bool {
+    const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return false;
+    const tags = try jsdoc.parse(gpa, body);
+    defer gpa.free(tags);
+    var has_parameter = false;
+    for (tags) |tag| switch (tag.kind) {
+        .param_tag => has_parameter = true,
+        .returns_tag => return false,
+        else => {},
+    };
+    return has_parameter;
+}
+
 pub fn constructorAssignedFields(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) ![]AssignedField {
     const function = hir.fnDeclOf(&c.hir, node);
     if (!function.flags.is_constructor or function.body == hir.none_node_id or c.hir.kindOf(function.body) != .block_stmt) return &.{};

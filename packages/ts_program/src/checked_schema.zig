@@ -12,6 +12,23 @@ const schema = driver.ProgramClassSchema;
 const TypeId = driver.TypeId;
 const Primitive = driver.Primitive;
 
+/// Lower one final checked owner type into a caller-owned schema arena.
+/// Unlike the HIR projector, this retains inferred parameter and return
+/// types even when a JavaScript function has only a partial JSDoc signature.
+pub fn lowerTypeInArena(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    compilation: *const driver.Compilation,
+    typ: TypeId,
+) !*const schema.Expression {
+    var builder: Builder = .{
+        .arena = arena,
+        .path = path,
+        .compilation = compilation,
+    };
+    return builder.lower(typ);
+}
+
 pub fn wholeExportTypes(
     gpa: std.mem.Allocator,
     compilation: *const driver.Compilation,
@@ -252,6 +269,12 @@ const Builder = struct {
     fn lowerUncached(self: *Builder, typ: TypeId) error{OutOfMemory}!*const schema.Expression {
         const interner = &self.compilation.type_interner;
         const flags = interner.pool.flagsOf(typ);
+        if (self.compilation.checked_types.builtin_generic_kinds.get(typ)) |kind| {
+            const source = self.compilation.checked_types.alias_type_args.get(typ) orelse return self.unsupported();
+            const arguments = try self.arena.alloc(*const schema.Expression, source.len);
+            for (source, arguments) |argument, *out| out.* = try self.lower(argument);
+            return self.expression(.{ .builtin_reference = .{ .name = kind.name(), .arguments = arguments } });
+        }
         if (flags.is_union) return self.typeList(interner.unionMembers(typ), true);
         if (flags.is_intersection) return self.typeList(interner.intersectionMembers(typ), false);
         if (flags.is_literal) {
