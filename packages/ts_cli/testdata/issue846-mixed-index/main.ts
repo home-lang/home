@@ -10,3 +10,5 @@ const stringRead: number = readonlyStrings["new"];
 const numberRead: number = readonlyNumbers[0];
 void stringRead;
 void numberRead;
+readonlyStrings.new = 2;
+readonlyNumbers.new = 2;

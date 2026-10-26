@@ -2293,6 +2293,35 @@ pub fn build(b: *std.Build) void {
         imported_index.expectExitCode(2);
         tsc_streams_step.dependOn(&imported_index.step);
 
+        // Mixed readonly string/number indices keep their own write rules
+        // through checked-JS imports, local declarations, generics, and
+        // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.
+        const mixed_index = b.addRunArtifact(home_tsc_exe);
+        mixed_index.setCwd(b.path("packages/ts_cli/testdata/issue846-mixed-index"));
+        mixed_index.clearEnvironment();
+        mixed_index.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        mixed_index.expectStdOutEqual(
+            \\local.ts(3,1): error TS2542: Index signature in type 'ReadonlyStrings' only permits reading.
+            \\local.ts(10,1): error TS2542: Index signature in type 'ReadonlyNumbers' only permits reading.
+            \\local.ts(11,1): error TS2542: Index signature in type 'ReadonlyNumbers' only permits reading.
+            \\local.ts(18,1): error TS2542: Index signature in type 'ReadonlyStringClass' only permits reading.
+            \\local.ts(28,1): error TS2542: Index signature in type 'ReadonlyNumberClass' only permits reading.
+            \\local.ts(29,1): error TS2542: Index signature in type 'ReadonlyNumberClass' only permits reading.
+            \\local.ts(34,1): error TS2542: Index signature in type 'GenericDerived<number>' only permits reading.
+            \\local.ts(45,1): error TS2542: Index signature in type 'DerivedMixed' only permits reading.
+            \\local.ts(46,1): error TS2542: Index signature in type 'DerivedMixed' only permits reading.
+            \\local.ts(52,1): error TS2542: Index signature in type 'ReadonlySymbols' only permits reading.
+            \\local.ts(56,1): error TS2542: Index signature in type 'ReadonlyStringSymbols' only permits reading.
+            \\main.ts(3,1): error TS2542: Index signature in type '{ readonly [key: string]: number; [index: number]: number; }' only permits reading.
+            \\main.ts(7,1): error TS2542: Index signature in type '{ [key: string]: number; readonly [index: number]: number; }' only permits reading.
+            \\main.ts(8,1): error TS2542: Index signature in type '{ [key: string]: number; readonly [index: number]: number; }' only permits reading.
+            \\main.ts(13,1): error TS2542: Index signature in type '{ readonly [key: string]: number; [index: number]: number; }' only permits reading.
+            \\
+        );
+        mixed_index.expectStdErrEqual("");
+        mixed_index.expectExitCode(2);
+        tsc_streams_step.dependOn(&mixed_index.step);
+
         const direct_js_rejection = b.addRunArtifact(home_tsc_exe);
         direct_js_rejection.setCwd(streams_dir);
         direct_js_rejection.clearEnvironment();
