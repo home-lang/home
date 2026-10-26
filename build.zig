@@ -2322,6 +2322,35 @@ pub fn build(b: *std.Build) void {
         mixed_index.expectExitCode(2);
         tsc_streams_step.dependOn(&mixed_index.step);
 
+        const forward_generic_dir = b.path("packages/ts_cli/testdata/issue952-forward-generic-index");
+        const forward_generic_index = b.addRunArtifact(home_tsc_exe);
+        forward_generic_index.setCwd(forward_generic_dir);
+        forward_generic_index.clearEnvironment();
+        forward_generic_index.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        forward_generic_index.expectStdOutEqual("repro.ts(6,1): error TS2542: Index signature in type 'Beta<number>' only permits reading.\n");
+        forward_generic_index.expectStdErrEqual("");
+        forward_generic_index.expectExitCode(2);
+        tsc_streams_step.dependOn(&forward_generic_index.step);
+
+        inline for (.{ "simple.ts", "recursive.ts" }) |control_file| {
+            const forward_generic_control = b.addRunArtifact(home_tsc_exe);
+            forward_generic_control.setCwd(forward_generic_dir);
+            forward_generic_control.clearEnvironment();
+            forward_generic_control.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", control_file });
+            forward_generic_control.expectStdOutEqual("");
+            forward_generic_control.expectStdErrEqual("");
+            forward_generic_control.expectExitCode(0);
+            tsc_streams_step.dependOn(&forward_generic_control.step);
+        }
+        const forward_generic_negative = b.addRunArtifact(home_tsc_exe);
+        forward_generic_negative.setCwd(forward_generic_dir);
+        forward_generic_negative.clearEnvironment();
+        forward_generic_negative.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "invalid.ts" });
+        forward_generic_negative.expectStdOutEqual("invalid.ts(5,1): error TS2322: Type 'number' is not assignable to type 'string'.\n");
+        forward_generic_negative.expectStdErrEqual("");
+        forward_generic_negative.expectExitCode(2);
+        tsc_streams_step.dependOn(&forward_generic_negative.step);
+
         const direct_js_rejection = b.addRunArtifact(home_tsc_exe);
         direct_js_rejection.setCwd(streams_dir);
         direct_js_rejection.clearEnvironment();
