@@ -116,6 +116,7 @@ pub const builtin_object_type_names = [_][]const u8{
 pub const builtin_generic_type_names = [_][]const u8{
     "AsyncGenerator",
     "Generator",
+    "Map",
     "Promise",
     "PromiseLike",
 };

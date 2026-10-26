@@ -4347,6 +4347,27 @@ const PriorJsDocPropertyAssignment = struct {
     section: usize,
 };
 
+/// Canonical collection identities, distinct from user-defined type aliases.
+pub const BuiltinGenericKind = enum {
+    map,
+    readonly_map,
+    set,
+    readonly_set,
+    weak_map,
+    weak_set,
+
+    pub fn name(self: BuiltinGenericKind) []const u8 {
+        return switch (self) {
+            .map => "Map",
+            .readonly_map => "ReadonlyMap",
+            .set => "Set",
+            .readonly_set => "ReadonlySet",
+            .weak_map => "WeakMap",
+            .weak_set => "WeakSet",
+        };
+    }
+};
+
 /// Owned declaration and signature metadata for a checked source file.
 /// TypeIds/StringIds/NodeIds belong to the accompanying interner and HIR;
 /// consumers must retain that owner rather than treating these as global IDs.
@@ -4535,6 +4556,8 @@ pub const CheckedTypes = struct {
     source_ordered_union_members: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
     alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
+    /// Canonical collection instances only, never source alias spellings.
+    builtin_generic_kinds: std.AutoHashMapUnmanaged(TypeId, BuiltinGenericKind) = .empty,
     substituted_interface_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     substituted_interface_display_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
     builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
@@ -5326,6 +5349,7 @@ pub const Checker = struct {
     /// ("Type 'string' is not assignable to type 'number'.") by
     /// comparing the differing argument pair. Arena-owned.
     alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId),
+    builtin_generic_kinds: std.AutoHashMapUnmanaged(TypeId, BuiltinGenericKind),
     /// Display-only interface arguments; never authorize semantic refresh.
     substituted_interface_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     substituted_interface_display_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
@@ -6234,6 +6258,7 @@ pub const Checker = struct {
             .qualified_alias_diagnostic_names = .empty,
             .type_alias_bodies = .empty,
             .alias_type_args = .empty,
+            .builtin_generic_kinds = .empty,
             .unknown_empty_object_types = .empty,
             .builtin_object_names = .empty,
             .overloads = .empty,
@@ -7092,6 +7117,7 @@ pub const Checker = struct {
         self.qualified_alias_diagnostic_names.deinit(self.gpa);
         self.type_alias_bodies.deinit(self.gpa);
         self.alias_type_args.deinit(self.gpa);
+        self.builtin_generic_kinds.deinit(self.gpa);
         self.substituted_interface_display_names.deinit(self.gpa);
         self.substituted_interface_display_args.deinit(self.gpa);
         self.unknown_empty_object_types.deinit(self.gpa);
@@ -38811,7 +38837,10 @@ pub const Checker = struct {
             if (has_anno) {
                 try self.reportUnresolvedBodylessSignatureTypeRefs(pp.type_annotation, type_params);
             }
-            const jsdoc_param_info: ?JsDocParamInfo = if (!has_anno and !is_this_param and self.sourceHasCheckJsDirective())
+            // checkJs controls diagnostics in JS owners, not whether their
+            // JSDoc parameter types constrain TypeScript importers.
+            const jsdoc_param_info: ?JsDocParamInfo = if (!has_anno and !is_this_param and
+                (self.sourceHasCheckJsDirective() or self.virtualSectionIsJsLike(node)))
                 if (pp.name != hir_mod.none_node_id and self.hir.kindOf(pp.name) == .identifier)
                     try self.jsDocParamInfoForFunctionParam(
                         node,
@@ -87354,6 +87383,22 @@ pub const Checker = struct {
     }
 
     fn lowerProgramBuiltinReference(self: *Checker, name: []const u8, args: []const TypeId) CheckError!?TypeId {
+        if (std.mem.eql(u8, name, "Map") or std.mem.eql(u8, name, "ReadonlyMap")) {
+            if (args.len != 2) return null;
+            return try self.builtinMapLikeInstanceType(args[0], args[1], std.mem.eql(u8, name, "ReadonlyMap"));
+        }
+        if (std.mem.eql(u8, name, "Set") or std.mem.eql(u8, name, "ReadonlySet")) {
+            if (args.len != 1) return null;
+            return try self.builtinSetLikeInstanceType(args[0], std.mem.eql(u8, name, "ReadonlySet"));
+        }
+        if (std.mem.eql(u8, name, "WeakMap")) {
+            if (args.len != 2) return null;
+            return try self.builtinWeakMapInstanceType(args[0], args[1]);
+        }
+        if (std.mem.eql(u8, name, "WeakSet")) {
+            if (args.len != 1) return null;
+            return try self.builtinWeakSetInstanceType(args[0]);
+        }
         if (std.mem.eql(u8, name, "Promise")) {
             if (args.len != 1) return null;
             return try self.buildStructuralPromise(args[0]);
@@ -149587,6 +149632,7 @@ pub const Checker = struct {
         // structural shape. Mirrors fixture `iterableArrayPattern26`.
         const map_name = self.string_interner.intern(if (is_readonly) "ReadonlyMap" else "Map") catch return map_t;
         self.registerAliasDisplayName(map_t, map_name, &[_]TypeId{ key_t, value_t }) catch {};
+        try self.builtin_generic_kinds.put(self.gpa, map_t, if (is_readonly) .readonly_map else .map);
         return map_t;
     }
 
@@ -149639,6 +149685,7 @@ pub const Checker = struct {
         // shape.
         const set_name = self.string_interner.intern(if (is_readonly) "ReadonlySet" else "Set") catch return set_t;
         self.registerAliasDisplayName(set_t, set_name, &[_]TypeId{value_t}) catch {};
+        try self.builtin_generic_kinds.put(self.gpa, set_t, if (is_readonly) .readonly_set else .set);
         return set_t;
     }
 
@@ -149660,6 +149707,7 @@ pub const Checker = struct {
         const weak_map_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         const weak_map_name = self.string_interner.intern("WeakMap") catch return weak_map_t;
         self.registerAliasDisplayName(weak_map_t, weak_map_name, &[_]TypeId{ key_t, value_t }) catch {};
+        try self.builtin_generic_kinds.put(self.gpa, weak_map_t, .weak_map);
         return weak_map_t;
     }
 
@@ -149674,6 +149722,7 @@ pub const Checker = struct {
         const weak_set_t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
         const weak_set_name = self.string_interner.intern("WeakSet") catch return weak_set_t;
         self.registerAliasDisplayName(weak_set_t, weak_set_name, &[_]TypeId{value_t}) catch {};
+        try self.builtin_generic_kinds.put(self.gpa, weak_set_t, .weak_set);
         return weak_set_t;
     }
 

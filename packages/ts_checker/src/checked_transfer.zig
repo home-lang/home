@@ -170,6 +170,7 @@ fn tableShape(comptime field: std.meta.FieldEnum(check.CheckedTypes)) MapShape {
         .signature_min_args,
         .signature_display_min_args,
         .inferred_variance,
+        .builtin_generic_kinds,
         => .{ .key = type_id, .value = scalar },
         .readonly_index_types => .{ .key = type_id, .value = readonly_index_domains },
         .signature_this_params,
