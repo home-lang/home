@@ -2293,6 +2293,29 @@ pub fn build(b: *std.Build) void {
         imported_index.expectExitCode(2);
         tsc_streams_step.dependOn(&imported_index.step);
 
+        // An explicit JS root and a two-hop JS import closure are admitted;
+        // the unrelated sibling is not. JS checking is independent of
+        // admission, and checkJs alone enables JavaScript sources.
+        const closure_dir = b.path("packages/ts_cli/testdata/issue846-closure");
+        const checked_closure_output =
+            "leaf.js(2,14): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "root.js(2,14): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+        inline for (.{
+            .{ "tsconfig.json", checked_closure_output },
+            .{ "tsconfig-no-checkjs.json", "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" },
+            .{ "tsconfig-implicit-checkjs.json", checked_closure_output },
+        }) |case| {
+            const closure = b.addRunArtifact(home_tsc_exe);
+            closure.setCwd(closure_dir);
+            closure.clearEnvironment();
+            closure.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            closure.expectStdOutEqual(case[1]);
+            closure.expectStdErrEqual("");
+            closure.expectExitCode(2);
+            tsc_streams_step.dependOn(&closure.step);
+        }
+
         // Mixed readonly string/number indices keep their own write rules
         // through checked-JS imports, local declarations, generics, and
         // inheritance. This is the exact TypeScript 5.7.3 CLI oracle.
