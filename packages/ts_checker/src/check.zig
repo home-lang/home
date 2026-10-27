@@ -96313,6 +96313,50 @@ pub const Checker = struct {
         return sig;
     }
 
+    fn recordJsDocOverloadTemplateParams(
+        self: *Checker,
+        fn_node: NodeId,
+        body: []const u8,
+        out: *std.ArrayListUnmanaged(TypeId),
+    ) CheckError!void {
+        const src = self.source orelse return;
+        const tags = ts_parser.jsdoc.parse(self.gpa, body) catch return;
+        defer self.gpa.free(tags);
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        var index: usize = 0;
+        const prior_anchor = self.jsdoc_diagnostic_anchor;
+        self.jsdoc_diagnostic_anchor = fn_node;
+        defer self.jsdoc_diagnostic_anchor = prior_anchor;
+        for (tags) |tag| {
+            if (tag.kind != .template_tag or tag.name.len == 0) continue;
+            try self.recordJsDocGenericTypedefTemplate(
+                src,
+                body,
+                tag.name,
+                tag.type_text,
+                tag.default_text,
+                tag.template_variance,
+                tag.is_const,
+                &.{},
+                &.{},
+                &substitutions,
+                out,
+                &index,
+            );
+            try self.recordJsDocGenericTypedefCommaTemplates(
+                src,
+                body,
+                tag.description,
+                &.{},
+                &.{},
+                &substitutions,
+                out,
+                &index,
+            );
+        }
+    }
+
     fn jsDocOverloadImplementationSignature(self: *Checker, fn_node: NodeId, body: []const u8) CheckError!?TypeId {
         const implementation_start = jsDocOverloadImplementationStart(body) orelse return null;
         return try self.jsDocFunctionSignatureFromBody(fn_node, body[implementation_start..]);
@@ -96366,14 +96410,25 @@ pub const Checker = struct {
             const body = block.body;
             var at = std.mem.indexOf(u8, body, "@overload") orelse continue;
             const implementation_start = jsDocOverloadImplementationStart(body);
+            var preceding_signature_start: usize = 0;
             while (true) {
                 const signature_start = at + "@overload".len;
                 const next_overload = std.mem.indexOfPos(u8, body, signature_start, "@overload");
                 const signature_end = next_overload orelse implementation_start orelse body.len;
+                const prior_floor = self.narrow_lookup_floor;
+                self.narrow_lookup_floor = self.narrow_scopes.items.len;
+                defer self.narrow_lookup_floor = prior_floor;
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                var template_params: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer template_params.deinit(self.gpa);
+                try self.recordJsDocOverloadTemplateParams(fn_node, body[preceding_signature_start..at], &template_params);
                 if (try self.jsDocFunctionSignatureFromBody(fn_node, body[signature_start..signature_end])) |sig| {
+                    if (template_params.items.len > 0) try self.recordGenericSignatureParams(sig, template_params.items);
                     try gop.value_ptr.*.append(self.gpa, sig);
                     try dop.value_ptr.*.append(self.gpa, fn_node);
                 }
+                preceding_signature_start = signature_start;
                 at = next_overload orelse break;
             }
         }
@@ -100424,7 +100479,9 @@ pub const Checker = struct {
         {
             const elem_text = std.mem.trim(u8, trimmed[0 .. trimmed.len - 2], " \t\r\n");
             if (try self.jsDocTypeTextToType(src, elem_text)) |elem_t| {
-                return self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                const array_t = self.interner.internArrayType(self.string_interner, elem_t) catch return error.OutOfMemory;
+                try self.array_origin_types.put(self.gpa, array_t, {});
+                return array_t;
             }
         }
         // An arrow signature's return type extends through a following union:
@@ -133971,10 +134028,18 @@ pub const Checker = struct {
         var count: usize = 0;
         for (overloads, 0..) |sig, i| {
             const effective_sig = self.instantiateSignatureFromArgs(sig, args, arg_types) catch sig;
+            // First decide applicability with the actual inference result.
+            // Replacing unbound parameters is solely a rendering step and
+            // must never add a candidate to the diagnostic chain.
             const arg_error = (try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_sig)) orelse continue;
+            const diagnostic_sig = try self.instantiateUninferredOverloadParametersForDiagnostics(sig, effective_sig);
+            const display_error = if (diagnostic_sig != effective_sig)
+                (try self.signatureArgumentErrorEntry(call_node, args, arg_types, diagnostic_sig)) orelse arg_error
+            else
+                arg_error;
             const children = try arena.alloc(DiagnosticChainEntry, 1);
-            children[0] = arg_error.entry;
-            const sig_text = (try self.allocCallSignatureNameColonReturn(sig)) orelse "unknown";
+            children[0] = display_error.entry;
+            const sig_text = (try self.allocCallSignatureNameColonReturn(diagnostic_sig)) orelse "unknown";
             const msg = try std.fmt.allocPrint(
                 arena,
                 "Overload {d} of {d}, '{s}', gave the following error.",
@@ -133988,6 +134053,32 @@ pub const Checker = struct {
             count += 1;
         }
         return entries[0..count];
+    }
+
+    /// Failed generic candidates still need concrete display types. TypeScript
+    /// instantiates parameters that received no inference from this call to
+    /// their constraint (or `unknown`), including inside the child argument
+    /// error. This does not change overload applicability or the call result.
+    fn instantiateUninferredOverloadParametersForDiagnostics(
+        self: *Checker,
+        declared_sig: TypeId,
+        inferred_sig: TypeId,
+    ) CheckError!TypeId {
+        const parameters = self.generic_signature_params.get(declared_sig) orelse return inferred_sig;
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        for (parameters) |parameter| {
+            if (parameter >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(parameter).is_type_parameter) continue;
+            const constraint = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)].constraint;
+            const fallback = if (constraint != types.Primitive.none)
+                try self.substituteType(constraint, &substitutions)
+            else
+                types.Primitive.unknown;
+            try substitutions.put(self.gpa, parameter, fallback);
+        }
+        if (substitutions.count() == 0) return inferred_sig;
+        return self.substituteType(inferred_sig, &substitutions) catch inferred_sig;
     }
 
     fn attachOverloadImplementationSuccessRelated(

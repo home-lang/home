@@ -200,6 +200,10 @@ pub fn deinitTemplateParameters(gpa: std.mem.Allocator, parameters: []TemplatePa
 pub fn declarationTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]TemplateParameter {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return &.{};
     if (std.mem.indexOf(u8, body, "@template") == null) return &.{};
+    // In a mixed JSDoc block, templates preceding @overload belong to the
+    // individual public signature, not to the exported function declaration.
+    // The implementation is never callable through the import boundary.
+    if (bodyHasOverloadTag(body)) return &.{};
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
     const Raw = struct { name: []const u8, constraint_text: []const u8 = "", default_text: []const u8 = "" };
@@ -245,6 +249,17 @@ pub fn declarationTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Co
     }
     transferred = true;
     return result;
+}
+
+fn bodyHasOverloadTag(body: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |raw_line| {
+        var line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len > 0 and line[0] == '*') line = std.mem.trim(u8, line[1..], " \t\r");
+        if (!std.mem.startsWith(u8, line, "@overload")) continue;
+        if (line.len == "@overload".len or std.ascii.isWhitespace(line["@overload".len])) return true;
+    }
+    return false;
 }
 
 pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?FunctionSignature {
@@ -1104,4 +1119,10 @@ test "JSDoc leading body traverses complete default declaration modifiers" {
         const start = std.mem.indexOf(u8, source, "function") orelse unreachable;
         try std.testing.expectEqualStrings(" @returns {number} ", leadingBody(source, @intCast(start)).?);
     }
+}
+
+test "JSDoc overload tag detection ignores prose mentions" {
+    try std.testing.expect(bodyHasOverloadTag("\n * @template T\n * @overload\n * @param {T} x\n "));
+    try std.testing.expect(!bodyHasOverloadTag("\n * Call an @overload signature\n * @template T\n "));
+    try std.testing.expect(!bodyHasOverloadTag("\n * @overloaded helper\n "));
 }

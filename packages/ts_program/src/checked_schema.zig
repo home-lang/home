@@ -38,18 +38,51 @@ pub fn lowerVisibleOverloadsInArena(
     compilation: *const driver.Compilation,
     signatures: []const TypeId,
 ) !*const schema.Expression {
-    var builder: Builder = .{
-        .arena = arena,
-        .path = path,
-        .compilation = compilation,
-    };
-    if (signatures.len == 0) return builder.unsupported();
-    if (signatures.len == 1) return builder.lower(signatures[0]);
+    if (signatures.len == 0) {
+        var builder: Builder = .{ .arena = arena, .path = path, .compilation = compilation };
+        return builder.unsupported();
+    }
+    if (signatures.len == 1) return lowerVisibleSignatureInArena(arena, path, compilation, signatures[0]);
     const members = try arena.alloc(*const schema.Expression, signatures.len);
-    for (signatures, members) |signature, *member| member.* = try builder.lower(signature);
+    for (signatures, members) |signature, *member| {
+        member.* = try lowerVisibleSignatureInArena(arena, path, compilation, signature);
+    }
     const expression = try arena.create(schema.Expression);
     expression.* = .{ .intersection = members };
     return expression;
+}
+
+fn lowerVisibleSignatureInArena(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    compilation: *const driver.Compilation,
+    signature: TypeId,
+) !*const schema.Expression {
+    var builder: Builder = .{ .arena = arena, .path = path, .compilation = compilation };
+    const source_parameters = compilation.checked_types.generic_signature_params.get(signature) orelse return builder.lower(signature);
+    if (source_parameters.len == 0) return builder.lower(signature);
+    const parameters = try arena.alloc(schema.Parameter, source_parameters.len);
+    for (source_parameters, parameters) |source, *parameter| {
+        if (source < Primitive.first_dynamic or source >= compilation.type_interner.pool.typeCount() or
+            !compilation.type_interner.pool.flagsOf(source).is_type_parameter) return builder.unsupported();
+        const payload = compilation.type_interner.pool.type_parameter_payloads.items[compilation.type_interner.pool.payloadOf(source)];
+        parameter.* = .{
+            .name = compilation.interner.get(payload.name),
+            .variance = @backingInt(payload.variance),
+            .is_const = payload.is_const,
+        };
+    }
+    builder.generic_signature = signature;
+    builder.generic_type_ids = source_parameters;
+    builder.generic_parameters = parameters;
+    builder.emit_function_type_parameters = true;
+    for (source_parameters, parameters) |source, *parameter| {
+        const payload = compilation.type_interner.pool.type_parameter_payloads.items[compilation.type_interner.pool.payloadOf(source)];
+        if (payload.constraint != Primitive.none and payload.constraint != Primitive.unknown)
+            parameter.constraint = try builder.lower(payload.constraint);
+        if (payload.default != Primitive.none) parameter.default = try builder.lower(payload.default);
+    }
+    return builder.lower(signature);
 }
 
 /// Lower a checked generic function against the declaration projected from
@@ -268,7 +301,8 @@ const Builder = struct {
     declarations: std.AutoHashMapUnmanaged(TypeId, *schema.Declaration) = .empty,
     generic_signature: ?TypeId = null,
     generic_type_ids: []const TypeId = &.{},
-    generic_parameters: []const schema.Parameter = &.{},
+    generic_parameters: []schema.Parameter = &.{},
+    emit_function_type_parameters: bool = false,
 
     fn expression(self: *Builder, value: schema.Expression) error{OutOfMemory}!*const schema.Expression {
         const result = try self.arena.create(schema.Expression);
@@ -423,6 +457,10 @@ const Builder = struct {
             .rest = is_rest and index + 1 == source.len,
         };
         return self.expression(.{ .function = .{
+            .type_parameters = if (self.emit_function_type_parameters and self.generic_signature != null and self.generic_signature.? == typ)
+                self.generic_parameters
+            else
+                &.{},
             .parameters = parameters,
             .result = try self.lower(payload.return_type),
             .this_type = if (payload.has_this_type) try self.lower(payload.this_type) else null,
