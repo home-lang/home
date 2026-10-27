@@ -2755,6 +2755,27 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&adjacent_overload.step);
         }
 
+        // A generic JSDoc overload belongs to its public signature, not the
+        // implementation. TypeScript 5.7.3 infers T from the array argument
+        // under both checkJs modes and retains the non-generic alternative.
+        const generic_overload_output =
+            "generic-main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "generic-main.ts(6,7): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(value: unknown[]): unknown', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'unknown[]'.\n" ++
+            "  Overload 2 of 2, '(value: string): string', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'string'.\n";
+        inline for (.{ "tsconfig-generic.json", "tsconfig-generic-no-checkjs.json" }) |config| {
+            const generic_overload = b.addRunArtifact(home_tsc_exe);
+            generic_overload.setCwd(jsdoc_overload_dir);
+            generic_overload.clearEnvironment();
+            generic_overload.addArgs(&.{ "-p", config, "--pretty", "false" });
+            generic_overload.expectStdOutEqual(generic_overload_output);
+            generic_overload.expectStdErrEqual("");
+            generic_overload.expectExitCode(2);
+            tsc_streams_step.dependOn(&generic_overload.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.
