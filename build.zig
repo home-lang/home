@@ -2433,6 +2433,46 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&admitted_package.step);
         }
 
+        // An explicitly listed JavaScript root is admitted even at the
+        // default node_modules depth, while its imports are not. checkJs
+        // alone implies allowJs, so it diagnoses both excluded requires.
+        const explicit_depth_dir = b.path("packages/ts_cli/testdata/issue846-explicit-depth");
+        const local_js_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-explicit-depth/node_modules/m1/local.js") catch @panic("OOM");
+        const m2_js_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-explicit-depth/node_modules/m2/index.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) {
+            std.mem.replaceScalar(u8, local_js_path, '\\', '/');
+            std.mem.replaceScalar(u8, m2_js_path, '\\', '/');
+        }
+        const depth_one_output =
+            "main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{
+            .{ "tsconfig.json", "", @as(u8, 0) },
+            .{ "tsconfig-depth-one.json", depth_one_output, @as(u8, 2) },
+            .{ "tsconfig-implicit-checkjs-depth-one.json", depth_one_output, @as(u8, 2) },
+        }) |case| {
+            const explicit_depth = b.addRunArtifact(home_tsc_exe);
+            explicit_depth.setCwd(explicit_depth_dir);
+            explicit_depth.clearEnvironment();
+            explicit_depth.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            explicit_depth.expectStdOutEqual(case[1]);
+            explicit_depth.expectStdErrEqual("");
+            explicit_depth.expectExitCode(case[2]);
+            tsc_streams_step.dependOn(&explicit_depth.step);
+        }
+        const implicit_checkjs_depth_zero = b.addRunArtifact(home_tsc_exe);
+        implicit_checkjs_depth_zero.setCwd(explicit_depth_dir);
+        implicit_checkjs_depth_zero.clearEnvironment();
+        implicit_checkjs_depth_zero.addArgs(&.{ "-p", "tsconfig-implicit-checkjs.json", "--pretty", "false" });
+        implicit_checkjs_depth_zero.expectStdOutEqual(b.fmt(
+            "node_modules/m1/index.js(1,23): error TS7016: Could not find a declaration file for module './local'. '{s}' implicitly has an 'any' type.\n" ++
+                "node_modules/m1/index.js(2,22): error TS7016: Could not find a declaration file for module 'm2'. '{s}' implicitly has an 'any' type.\n",
+            .{ local_js_path, m2_js_path },
+        ));
+        implicit_checkjs_depth_zero.expectStdErrEqual("");
+        implicit_checkjs_depth_zero.expectExitCode(2);
+        tsc_streams_step.dependOn(&implicit_checkjs_depth_zero.step);
+
         // Checked CommonJS exports preserve the source owner's inferred
         // collection arguments in the TypeScript consumer. The other export
         // shapes are controls for the same whole-export admission path.

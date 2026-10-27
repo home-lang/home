@@ -338,6 +338,15 @@ Watched-file notifications also refresh an unopened imported `.js` owner on
 change, deletion, and recreation, while preserving unsaved text in open
 documents. Other watcher and project-configuration combinations remain open.
 
+An explicit `node_modules` JavaScript root now has a four-config TypeScript
+5.7.3 CLI oracle: default and depth-one dependency admission, each with and
+without implicit `allowJs` through `checkJs`. At depth zero, checked JS reports
+TS7016 for both an excluded relative `require` and a package `require`
+without package identity; at depth one, the consumer receives the inferred
+types. The [fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-explicit-depth)
+records the exact diagnostics. This is one controlled dependency graph, not
+proof of all JavaScript import shapes or tsserver parity.
+
 ## Watch mode
 
 🟢 `home-tsc --watch` uses `ts_watch.Watcher` + `RealStatFs` —

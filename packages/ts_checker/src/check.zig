@@ -291,6 +291,10 @@ pub const ExternalResolver = struct {
         /// types at ..." elaboration to TS7016. Null when none applies.
         /// Borrowed like `path`.
         alternate_result: ?[]const u8 = null,
+        /// Resolution's package identity. TypeScript only attaches the
+        /// install-types elaboration to TS7016 for a bare import when the
+        /// resolved module has a package ID.
+        package_id: ?[]const u8 = null,
         /// Missing emitted output path that was reverse-mapped back to
         /// this source file through project-reference-style output
         /// mapping. When present, the checker reports TS6305.
@@ -61164,7 +61168,10 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "require")) return;
         const lit = hir_mod.literalStringOf(self.hir, args[0]);
         const spec = self.string_interner.get(lit.value);
-        if (std.mem.startsWith(u8, spec, ".") or std.mem.startsWith(u8, spec, "/")) return;
+        if (std.mem.startsWith(u8, spec, ".") or std.mem.startsWith(u8, spec, "/")) {
+            _ = try self.checkVirtualRelativeModuleImport(args[0], spec);
+            return;
+        }
         if (try self.reportAtTypesPackageImport(args[0], spec)) return;
         _ = try self.checkVirtualBareModuleImport(args[0], spec);
     }
@@ -61243,7 +61250,7 @@ pub const Checker = struct {
                     switch (external.kind) {
                         .implementation => {
                             if (self.strict_flags.no_implicit_any) {
-                                try self.appendUntypedModuleDiagnosticAlt(node, spec, external.diagnostic_path orelse external.resolved_path, external.alternate_result);
+                                try self.appendUntypedModuleDiagnosticAlt(node, spec, external.diagnostic_path orelse external.resolved_path, external.alternate_result, external.package_id != null);
                             }
                             return true;
                         },
@@ -61266,7 +61273,9 @@ pub const Checker = struct {
                         external.alternate_result
                     else
                         null;
-                    try self.appendUntypedModuleDiagnosticAlt(node, spec, path, alt);
+                    // Legacy virtual-section checks do not have a physical
+                    // resolver package ID; retain their existing hint shape.
+                    try self.appendUntypedModuleDiagnosticAlt(node, spec, path, alt, if (external_opt) |external| external.package_id != null else true);
                 }
                 return true;
             },
@@ -61293,6 +61302,7 @@ pub const Checker = struct {
         blocked_by_exports_null: bool = false,
         package_json_map: bool = false,
         package_imports_pattern: bool = false,
+        package_id: ?[]const u8 = null,
     };
 
     fn resolveBareModuleViaExternal(
@@ -61338,6 +61348,7 @@ pub const Checker = struct {
             .blocked_by_exports_null = r.blocked_by_exports_null,
             .package_json_map = r.package_json_map,
             .package_imports_pattern = r.package_imports_pattern,
+            .package_id = r.package_id,
         };
     }
 
@@ -61388,7 +61399,7 @@ pub const Checker = struct {
         spec: []const u8,
         resolved_path: ?[]const u8,
     ) CheckError!void {
-        return self.appendUntypedModuleDiagnosticAlt(node, spec, resolved_path, null);
+        return self.appendUntypedModuleDiagnosticAlt(node, spec, resolved_path, null, false);
     }
 
     fn appendUntypedModuleDiagnosticAlt(
@@ -61397,6 +61408,7 @@ pub const Checker = struct {
         spec: []const u8,
         resolved_path: ?[]const u8,
         alternate_result: ?[]const u8,
+        has_package_identity: bool,
     ) CheckError!void {
         for (self.diagnostics.items) |d| {
             if (d.node == node and d.code == TsCodes.untyped_module) return;
@@ -61435,7 +61447,7 @@ pub const Checker = struct {
                 .{ msg, alt, pkg_label },
             );
         } else msg;
-        const chain = if (alternate_result == null and untypedModuleCanInstallTypes(spec))
+        const chain = if (alternate_result == null and has_package_identity and untypedModuleCanInstallTypes(spec))
             try self.untypedModuleHintChain(spec)
         else
             &.{};
@@ -268767,6 +268779,7 @@ const StubExternalResolver = struct {
     canned_default_import_info: ?ExternalResolver.DefaultImportInfo = null,
     canned_exported_default_type: bool = false,
     canned_alternate_result: ?[]const u8 = null,
+    canned_package_id: ?[]const u8 = null,
     canned_project_reference_output: ?[]const u8 = null,
     canned_blocked_by_exports_null: bool = false,
     canned_package_json_map: bool = false,
@@ -268791,6 +268804,7 @@ const StubExternalResolver = struct {
             .source_is_admitted = self.canned_source_is_admitted,
             .is_declaration = self.canned_is_declaration,
             .alternate_result = self.canned_alternate_result,
+            .package_id = self.canned_package_id,
             .project_reference_output = self.canned_project_reference_output,
             .blocked_by_exports_null = self.canned_blocked_by_exports_null,
             .package_json_map = self.canned_package_json_map,
@@ -269157,6 +269171,7 @@ test "checker: external resolver enriches TS7016 with resolved path" {
     var stub = StubExternalResolver{
         .canned_path = "/node_modules/foo/index.js",
         .canned_is_declaration = false,
+        .canned_package_id = "foo/index.js@1.0.0",
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
     s.checker.setImporterPath("/main.ts");
@@ -269197,6 +269212,69 @@ test "checker: untyped relative import displays canonical diagnostic path withou
         "Could not find a declaration file for module './bridge.js'. '/fixture/bridge.js' implicitly has an 'any' type.",
         s.checker.diagnostics.items[0].message,
     );
+}
+
+test "checker: relative require of excluded JavaScript emits TS7016" {
+    const s = try newSetup(
+        \\const local = require("./local");
+        \\local.value;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/m1/local.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/node_modules/m1/index.js");
+    s.checker.setAllowJsEnabled(true);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.untyped_module));
+    const diagnostic = s.checker.diagnostics.items[0];
+    try T.expectEqualStrings(
+        "Could not find a declaration file for module './local'. '/node_modules/m1/local.js' implicitly has an 'any' type.",
+        diagnostic.message,
+    );
+    try T.expectEqual(@as(usize, 0), diagnostic.chain.len);
+}
+
+test "checker: relative require of admitted JavaScript has no TS7016" {
+    const s = try newSetup(
+        \\const local = require("./local");
+        \\local.value;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/m1/local.js",
+        .canned_is_declaration = true,
+        .canned_source_is_admitted = true,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/node_modules/m1/index.js");
+    s.checker.setAllowJsEnabled(true);
+    s.checker.setCheckJsEnabled(true);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_module));
+}
+
+test "checker: bare untyped resolution without package identity has no install hint" {
+    const s = try newSetup(
+        \\import { value } from "m2";
+        \\value;
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/node_modules/m2/index.js",
+        .canned_is_declaration = false,
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/main.ts");
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.untyped_module));
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items[0].chain.len);
 }
 
 test "checker: untyped external module suppresses named import export diagnostic" {
@@ -269288,6 +269366,7 @@ test "checker: external resolver TS7016 install hint mangles scoped packages" {
     var stub = StubExternalResolver{
         .canned_path = "/node_modules/@scope/pkg/sub.js",
         .canned_is_declaration = false,
+        .canned_package_id = "@scope/pkg/sub.js@1.0.0",
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
     s.checker.setImporterPath("/main.ts");
@@ -269342,6 +269421,7 @@ test "checker: external resolver without alternate_result emits plain TS7016" {
     var stub = StubExternalResolver{
         .canned_path = "/node_modules/foo/index.js",
         .canned_is_declaration = false,
+        .canned_package_id = "foo/index.js@1.0.0",
     };
     s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
     s.checker.setImporterPath("/main.ts");

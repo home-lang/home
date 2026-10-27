@@ -3091,6 +3091,7 @@ const CheckerResolverAdapter = struct {
             // admitted JS source inference, not only declaration files.
             .is_declaration = r.is_declaration or self.admittedJavaScript(r.path),
             .alternate_result = r.alternate_result,
+            .package_id = r.package_id,
             .project_reference_output = r.project_reference_output,
         };
     }
