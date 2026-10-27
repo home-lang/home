@@ -15257,6 +15257,52 @@ test "Program: checked JavaScript mixed-index revision refreshes importer reads 
     try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
 }
 
+test "Program: admitted JavaScript function templates preserve imported constraints" {
+    const owner_source =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ * @returns {T}
+        \\ */
+        \\export function identity(value) { return value; }
+        \\/**
+        \\ * @template {string | number} T
+        \\ * @param {T} value
+        \\ * @returns {T}
+        \\ */
+        \\export function constrained(value) { return value; }
+    ;
+    const consumer_source =
+        \\import { identity, constrained } from './owner.js';
+        \\const value: number = identity('one');
+        \\constrained(true);
+        \\void value;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", owner_source);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    _ = try program.add("/owner.js", owner_source);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try program.compileAll(options);
+    const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), diagnostics.len);
+    try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
+    try T.expectEqual(@as(u32, 2345), diagnostics[1].code);
+}
+
 test "Program: package type revisions refresh implied module format" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

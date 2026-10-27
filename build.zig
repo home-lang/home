@@ -2647,6 +2647,27 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&transitive_without_check_js.step);
         }
 
+        // JSDoc function templates must retain their source-owned type
+        // parameters and constraints across the import boundary. Disabling
+        // checkJs removes only the owner-side error, not importer typing.
+        const generic_functions_dir = b.path("packages/ts_cli/testdata/issue846-generic-functions");
+        const generic_consumer_output =
+            "main.ts(5,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(6,35): error TS2345: Argument of type 'boolean' is not assignable to parameter of type 'string | number'.\n";
+        inline for (.{ true, false }) |generic_check_js| {
+            const generic_functions = b.addRunArtifact(home_tsc_exe);
+            generic_functions.setCwd(generic_functions_dir);
+            generic_functions.clearEnvironment();
+            generic_functions.addArgs(&.{ "-p", if (generic_check_js) "tsconfig.json" else "tsconfig-no-checkjs.json", "--pretty", "false" });
+            generic_functions.expectStdOutEqual(generic_consumer_output ++ if (generic_check_js)
+                "owner.js(20,14): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+            else
+                "");
+            generic_functions.expectStdErrEqual("");
+            generic_functions.expectExitCode(2);
+            tsc_streams_step.dependOn(&generic_functions.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.

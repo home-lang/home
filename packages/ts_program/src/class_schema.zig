@@ -862,11 +862,11 @@ pub const Builder = struct {
             }
         }
         const declaration_parameters = if (overload_declarations == null) info.params else &.{};
-        const jsdoc_parameters = if (def.is_class and declaration_parameters.len == 0 and jsdoc_types.isJavaScriptPath(source.path))
-            try jsdoc_types.classTemplateParameters(self.gpa, c, key.node)
+        const jsdoc_parameters = if ((def.is_class or kind == .fn_decl) and declaration_parameters.len == 0 and jsdoc_types.isJavaScriptPath(source.path))
+            try jsdoc_types.declarationTemplateParameters(self.gpa, c, key.node)
         else
             null;
-        defer if (jsdoc_parameters) |parameters| if (parameters.len > 0) jsdoc_types.deinitClassTemplateParameters(self.gpa, parameters);
+        defer if (jsdoc_parameters) |parameters| if (parameters.len > 0) jsdoc_types.deinitTemplateParameters(self.gpa, parameters);
         def.parameters = try self.arena.alloc(schema.Parameter, if (jsdoc_parameters) |parameters| parameters.len else declaration_parameters.len);
         if (jsdoc_parameters) |parameters| {
             for (parameters, def.parameters) |parameter, *param| param.* = .{ .name = parameter.name };
@@ -908,9 +908,9 @@ pub const Builder = struct {
             if (overload_declarations) |declarations|
                 break :blk try self.functionOverloadType(context, declarations);
             if (jsdoc_types.isJavaScriptPath(source.path)) {
-                if (try jsdoc_types.functionSignature(self.gpa, c, key.node)) |signature| {
+                if (try jsdoc_types.functionSignature(self.gpa, c, key.node, try self.contextParameterNames(context))) |signature| {
                     defer signature.deinit(self.gpa);
-                    break :blk try self.jsdocFunctionType(signature);
+                    break :blk try self.jsdocFunctionType(signature, context);
                 }
             }
             break :blk try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false);
@@ -1162,18 +1162,18 @@ pub const Builder = struct {
         return self.expression(.{ .intersection = try signatures.toOwnedSlice(self.arena) });
     }
 
-    fn jsdocFunctionType(self: *Builder, signature: jsdoc_types.FunctionSignature) !*const schema.Expression {
+    fn jsdocFunctionType(self: *Builder, signature: jsdoc_types.FunctionSignature, context: Context) !*const schema.Expression {
         const parameters = try self.arena.alloc(schema.Element, signature.parameters.len);
         for (signature.parameters, parameters) |parameter, *result| {
             result.* = .{
-                .type = try self.jsdocType(parameter.type_expression),
+                .type = try self.jsdocTypeInContext(parameter.type_expression, context),
                 .optional = parameter.optional,
                 .rest = parameter.rest,
             };
         }
         return self.expression(.{ .function = .{
             .parameters = parameters,
-            .result = try self.jsdocType(signature.result),
+            .result = try self.jsdocTypeInContext(signature.result, context),
         } });
     }
 

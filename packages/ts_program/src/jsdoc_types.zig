@@ -180,13 +180,13 @@ pub fn declarationTypeWithParameters(gpa: std.mem.Allocator, c: *const driver.Co
     return null;
 }
 
-pub const ClassTemplateParameter = struct {
+pub const TemplateParameter = struct {
     name: []const u8,
     constraint: ?TypeExpression = null,
     default: ?TypeExpression = null,
 };
 
-pub fn deinitClassTemplateParameters(gpa: std.mem.Allocator, parameters: []ClassTemplateParameter) void {
+pub fn deinitTemplateParameters(gpa: std.mem.Allocator, parameters: []TemplateParameter) void {
     for (parameters) |parameter| {
         if (parameter.constraint) |value| value.deinit(gpa);
         if (parameter.default) |value| value.deinit(gpa);
@@ -194,10 +194,10 @@ pub fn deinitClassTemplateParameters(gpa: std.mem.Allocator, parameters: []Class
     gpa.free(parameters);
 }
 
-/// Class-level JSDoc templates are lowered using the same source-owned
-/// parameter identities as class members and constructors. A constraint or
-/// default is admitted only when its whole type expression can be transferred.
-pub fn classTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]ClassTemplateParameter {
+/// Declaration-level JSDoc templates are lowered using source-owned
+/// parameter identities. A constraint or default is admitted only when its
+/// whole type expression can be transferred.
+pub fn declarationTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?[]TemplateParameter {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return &.{};
     if (std.mem.indexOf(u8, body, "@template") == null) return &.{};
     const tags = try jsdoc.parse(gpa, body);
@@ -229,10 +229,10 @@ pub fn classTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilat
     const names = try gpa.alloc([]const u8, raw.items.len);
     defer gpa.free(names);
     for (raw.items, names) |parameter, *name| name.* = parameter.name;
-    const result = try gpa.alloc(ClassTemplateParameter, raw.items.len);
+    const result = try gpa.alloc(TemplateParameter, raw.items.len);
     for (raw.items, result) |parameter, *out| out.* = .{ .name = parameter.name };
     var transferred = false;
-    defer if (!transferred) deinitClassTemplateParameters(gpa, result);
+    defer if (!transferred) deinitTemplateParameters(gpa, result);
     for (raw.items, result) |parameter, *out| {
         if (parameter.constraint_text.len > 0) {
             out.constraint = try parseTypeExpressionWithParameters(gpa, parameter.constraint_text, names) orelse return null;
@@ -247,19 +247,19 @@ pub fn classTemplateParameters(gpa: std.mem.Allocator, c: *const driver.Compilat
     return result;
 }
 
-pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId) !?FunctionSignature {
+pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, node: hir.NodeId, parameter_names: []const []const u8) !?FunctionSignature {
     const body = leadingBody(c.source, c.hir.spanOf(node).start) orelse return null;
     const tags = try jsdoc.parse(gpa, body);
     defer gpa.free(tags);
-    for (tags) |tag| if (tag.kind == .template_tag) return null;
-
+    // A malformed template must not be projected as a nongeneric callable.
+    for (tags) |tag| if (tag.kind == .template_tag and parameter_names.len == 0) return null;
     var result: ?TypeExpression = null;
     var result_transferred = false;
     defer if (!result_transferred) if (result) |value| value.deinit(gpa);
     for (tags) |tag| {
         if (tag.kind != .returns_tag) continue;
         if (result != null) return null;
-        result = try parseTypeExpression(gpa, tag.type_text) orelse return null;
+        result = try parseTypeExpressionWithParameters(gpa, tag.type_text, parameter_names) orelse return null;
     }
     const return_type = result orelse return null;
     const nodes = hir.fnParams(&c.hir, node);
@@ -269,7 +269,7 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name) orelse return null;
         if (parameter.flags.is_rest and (tag.optional or parameter.default_value != hir.none_node_id)) return null;
-        var parsed = try parameterTypeExpression(gpa, tag.type_text, parameter.flags.is_rest) orelse return null;
+        var parsed = try parameterTypeExpressionWithParameters(gpa, tag.type_text, parameter.flags.is_rest, parameter_names) orelse return null;
         parsed.deinit(gpa);
     }
     const parameters = try gpa.alloc(FunctionParameter, nodes.len);
@@ -283,7 +283,7 @@ pub fn functionSignature(gpa: std.mem.Allocator, c: *const driver.Compilation, n
         const name = c.interner.get(hir.identifierOf(&c.hir, parameter.name).name);
         const tag = uniqueParameterTag(tags, name).?;
         parameter_result.* = .{
-            .type_expression = (try parameterTypeExpression(gpa, tag.type_text, parameter.flags.is_rest)).?,
+            .type_expression = (try parameterTypeExpressionWithParameters(gpa, tag.type_text, parameter.flags.is_rest, parameter_names)).?,
             .optional = tag.optional or parameter.flags.is_optional or parameter.default_value != hir.none_node_id,
             .rest = parameter.flags.is_rest,
         };
@@ -799,10 +799,14 @@ fn outerGroupBody(text: []const u8) ?[]const u8 {
 }
 
 fn parameterTypeExpression(gpa: std.mem.Allocator, text: []const u8, rest: bool) !?TypeExpression {
-    if (!rest) return parseTypeExpression(gpa, text);
+    return parameterTypeExpressionWithParameters(gpa, text, rest, &.{});
+}
+
+fn parameterTypeExpressionWithParameters(gpa: std.mem.Allocator, text: []const u8, rest: bool, parameter_names: []const []const u8) !?TypeExpression {
+    if (!rest) return parseTypeExpressionWithParameters(gpa, text, parameter_names);
     const trimmed = std.mem.trim(u8, text, " \t\r\n");
     if (std.mem.startsWith(u8, trimmed, "...")) {
-        var parsed = try parseTypeExpression(gpa, std.mem.trim(u8, trimmed[3..], " \t\r\n")) orelse return null;
+        var parsed = try parseTypeExpressionWithParameters(gpa, std.mem.trim(u8, trimmed[3..], " \t\r\n"), parameter_names) orelse return null;
         errdefer parsed.deinit(gpa);
         const containers = try gpa.alloc(Container, parsed.containers.len + 1);
         containers[0] = .array;
@@ -811,7 +815,7 @@ fn parameterTypeExpression(gpa: std.mem.Allocator, text: []const u8, rest: bool)
         parsed.containers = containers;
         return parsed;
     }
-    const parsed = try parseTypeExpression(gpa, trimmed) orelse return null;
+    const parsed = try parseTypeExpressionWithParameters(gpa, trimmed, parameter_names) orelse return null;
     if (parsed.containers.len > 0) return parsed;
     parsed.deinit(gpa);
     return null;
