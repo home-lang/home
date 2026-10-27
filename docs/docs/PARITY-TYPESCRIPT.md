@@ -60,7 +60,9 @@ consumer in both `checkJs` modes. This covers that class-method shape, not
 general class inference. A second string-signature oracle and Program/LSP
 edit-and-revert tests check that changing the admitted JavaScript owner
 refreshes the imported method's parameter and result, including editor
-diagnostic publication. The
+diagnostic publication. A further static-class fixture checks a JSDoc-typed
+static field alongside a checked static method (argument and inferred result)
+against TypeScript 5.7.3, with `checkJs` enabled or disabled. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 

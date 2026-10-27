@@ -2613,6 +2613,21 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&typed_class.step);
         }
 
+        const static_class_output =
+            "static-consumer.ts(3,16): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+            "static-consumer.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "static-consumer.ts(5,1): error TS2322: Type 'number' is not assignable to type 'boolean'.\n";
+        inline for (.{ true, false }) |class_check_js| {
+            const typed_static = b.addRunArtifact(home_tsc_exe);
+            typed_static.setCwd(typed_owners_dir);
+            typed_static.clearEnvironment();
+            typed_static.addArgs(&.{ "-p", "tsconfig-static.json", "--pretty", "false", "--checkJs", if (class_check_js) "true" else "false" });
+            typed_static.expectStdOutEqual(static_class_output);
+            typed_static.expectStdErrEqual("");
+            typed_static.expectExitCode(2);
+            tsc_streams_step.dependOn(&typed_static.step);
+        }
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.

@@ -25,3 +25,12 @@ and LSP revision tests edit the same logical owner from number to string and
 back without changing the importer. They require the importer's diagnostics to
 appear and then clear; the LSP test also checks a fresh publication after each
 edit and no duplicate publication while the result is unchanged.
+
+`static-owner.js` combines a JSDoc-typed static field with a JSDoc-typed
+static method whose result is inferred from its body. `static-consumer.ts`
+checks an invalid method argument, an invalid read of its result, and an
+invalid field write. TypeScript 5.7.3 and Home agree on TS2345, TS2322,
+TS2322 in that order with `checkJs` on or off. The checker must associate
+JSDoc before the `static` modifier with the method, and the Program must
+merge the checked method signature with the existing static-field schema;
+name-only `any` projection is not sufficient.
