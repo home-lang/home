@@ -103382,11 +103382,30 @@ pub const Checker = struct {
         const node_kind = self.hir.kindOf(fn_node);
         if (node_kind == .fn_decl or node_kind == .fn_expr or node_kind == .arrow_fn) {
             const function = hir_mod.fnDeclOf(self.hir, fn_node);
-            if (function.flags.is_async) {
-                if (asyncModifierStartBeforeFunction(src, span.start)) |async_start| {
-                    if (self.leadingJsDocBodyWithStart(src, async_start)) |jsdoc| return jsdoc;
+            // Class-member HIR spans start at the name, after `static` and
+            // `async`. JSDoc belongs to the declaration before those
+            // modifiers, in either order, not to the name token alone.
+            var modifier_start = span.start;
+            var saw_static = false;
+            var saw_async = false;
+            while (true) {
+                if (function.flags.is_async and !saw_async) {
+                    if (modifierStartBeforeFunction(src, modifier_start, "async")) |start| {
+                        modifier_start = start;
+                        saw_async = true;
+                        continue;
+                    }
                 }
+                if (function.flags.is_static and !saw_static) {
+                    if (modifierStartBeforeFunction(src, modifier_start, "static")) |start| {
+                        modifier_start = start;
+                        saw_static = true;
+                        continue;
+                    }
+                }
+                break;
             }
+            if (modifier_start != span.start) if (self.leadingJsDocBodyWithStart(src, modifier_start)) |jsdoc| return jsdoc;
         }
 
         const parent = self.hir.parentOf(fn_node);
@@ -103422,12 +103441,12 @@ pub const Checker = struct {
         return null;
     }
 
-    fn asyncModifierStartBeforeFunction(src: []const u8, function_start: u32) ?u32 {
+    fn modifierStartBeforeFunction(src: []const u8, function_start: u32, keyword: []const u8) ?u32 {
         var end = @min(@as(usize, function_start), src.len);
         while (end > 0 and std.ascii.isWhitespace(src[end - 1])) : (end -= 1) {}
-        if (end < "async".len) return null;
-        const start = end - "async".len;
-        if (!std.mem.eql(u8, src[start..end], "async")) return null;
+        if (end < keyword.len) return null;
+        const start = end - keyword.len;
+        if (!std.mem.eql(u8, src[start..end], keyword)) return null;
         if (start > 0 and isJsDocIdentChar(src[start - 1])) return null;
         return @intCast(start);
     }
@@ -258810,6 +258829,28 @@ test "checker: checkjs exported class static JSDoc this resolves through static 
         try T.expect(d.code != TsCodes.property_does_not_exist_static_member);
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: checkjs static and static async methods read JSDoc before modifiers" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\export class C {
+        \\  /** @param {number} value */
+        \\  static plain(value) { return value; }
+        \\  /** @param {number} value */
+        \\  static async later(value) { return value; }
+        \\}
+        \\C.plain('bad');
+        \\C.later('bad');
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var argument_errors: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != TsCodes.parameter_implicitly_any);
+        if (diagnostic.code == TsCodes.argument_type_mismatch) argument_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 2), argument_errors);
 }
 
 test "checker: checkjs JSDoc @type resolves multiline object typedef skeletons" {

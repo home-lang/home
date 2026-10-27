@@ -2959,6 +2959,7 @@ pub const Program = struct {
     ) ProgramError!void {
         const compilation = file.compilation orelse return;
         if (!compilation.checked_types_ready or !jsdoc_types.isJavaScriptPath(file.path)) return;
+        try self.populateCheckedJavaScriptStaticClassMethods(file, exported_classes);
         var visited: std.AutoHashMapUnmanaged(*const ts_driver.ProgramClassSchema.Declaration, void) = .empty;
         defer visited.deinit(self.gpa);
         for (exported_classes) |exported_class| {
@@ -3017,6 +3018,103 @@ pub const Program = struct {
                     !(ts_driver.ProgramClassSchema.Schema.expressionSupported(checked_type, self.gpa) catch return error.OutOfMemory)) continue;
                 member.type = checked_type;
             }
+        }
+    }
+
+    fn populateCheckedJavaScriptStaticClassMethods(
+        self: *Program,
+        file: *File,
+        exported_classes: []const ts_driver.ProgramExportedClass,
+    ) ProgramError!void {
+        const compilation = file.compilation orelse return;
+        for (exported_classes) |*class_const| {
+            const class: *ts_driver.ProgramExportedClass = @constCast(class_const);
+            const schema = class.schema orelse continue;
+            const declaration = schema.declaration;
+            if (!declaration.is_class or declaration.parameters.len != 0 or
+                !std.mem.eql(u8, declaration.path, file.path)) continue;
+            const arena = if (schema.shared_graph) |graph| graph.arena.allocator() else @constCast(schema).arena.allocator();
+            const existing = class.static_schema_members orelse &.{};
+            var additions: std.ArrayListUnmanaged(ts_driver.ProgramClassSchema.Member) = .empty;
+            defer additions.deinit(self.gpa);
+            for (class.static_members) |source_member| {
+                if (!source_member.is_method) continue;
+                var covered = false;
+                for (existing) |member| {
+                    if (std.mem.eql(u8, member.name, source_member.name)) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (covered) continue;
+
+                var consensus: ?ts_driver.TypeId = null;
+                var conflicting = false;
+                var static_nodes = compilation.checked_types.class_static_type_by_node.iterator();
+                while (static_nodes.next()) |static_node| {
+                    const class_node = static_node.key_ptr.*;
+                    if (compilation.hir.spanOf(class_node).start != declaration.position) continue;
+                    // The legacy facts may also contain namespace-merged
+                    // statics. Only source-declared class methods belong to
+                    // the checked class static type.
+                    var declarations: usize = 0;
+                    for (hir_mod_ns.classMembers(&compilation.hir, class_node)) |member_node| {
+                        switch (compilation.hir.kindOf(member_node)) {
+                            .fn_decl, .fn_expr, .arrow_fn => {},
+                            else => continue,
+                        }
+                        const function = hir_mod_ns.fnDeclOf(&compilation.hir, member_node);
+                        if (!function.flags.is_static or function.flags.is_constructor or
+                            compilation.hir.kindOf(function.name) != .identifier) continue;
+                        const name = compilation.interner.get(hir_mod_ns.identifierOf(&compilation.hir, function.name).name);
+                        if (std.mem.eql(u8, name, source_member.name)) declarations += 1;
+                    }
+                    if (declarations == 0) continue;
+                    if (declarations != 1) {
+                        conflicting = true;
+                        break;
+                    }
+                    var candidate: ?ts_driver.TypeId = null;
+                    for (compilation.type_interner.objectMembers(static_node.value_ptr.*)) |checked_member| {
+                        if (!checked_member.is_method or
+                            !std.mem.eql(u8, compilation.interner.get(checked_member.name), source_member.name)) continue;
+                        if (candidate != null) {
+                            conflicting = true;
+                            break;
+                        }
+                        candidate = checked_member.type;
+                    }
+                    if (conflicting or candidate == null) {
+                        conflicting = true;
+                        break;
+                    }
+                    if (consensus) |prior| {
+                        if (!checkedClassMethodSignaturesAgree(compilation, prior, candidate.?)) {
+                            conflicting = true;
+                            break;
+                        }
+                    } else consensus = candidate;
+                }
+                if (conflicting or consensus == null) continue;
+                const checked_type = checked_schema.lowerTypeInArena(arena, file.path, compilation, consensus.?) catch return error.OutOfMemory;
+                if (checked_type.* != .function or
+                    !(ts_driver.ProgramClassSchema.Schema.expressionSupported(checked_type, self.gpa) catch return error.OutOfMemory)) continue;
+                try additions.append(self.gpa, .{
+                    .name = source_member.name,
+                    .type = checked_type,
+                    .method = true,
+                    .visibility = switch (source_member.visibility) {
+                        .public => .public,
+                        .private => .private,
+                        .protected => .protected,
+                    },
+                });
+            }
+            if (additions.items.len == 0) continue;
+            const merged = arena.alloc(ts_driver.ProgramClassSchema.Member, existing.len + additions.items.len) catch return error.OutOfMemory;
+            @memcpy(merged[0..existing.len], existing);
+            @memcpy(merged[existing.len..], additions.items);
+            class.static_schema_members = merged;
         }
     }
 
@@ -4065,6 +4163,7 @@ pub const Program = struct {
             const owner_id = self.by_path.get(class.declaration_path) orelse continue;
             if (owner_id >= imported.len or !imported[owner_id]) continue;
             for (class.members) |member| if (member.is_method) return true;
+            for (class.static_members) |member| if (member.is_method) return true;
         }
         return false;
     }
@@ -16094,6 +16193,59 @@ test "Program: checked JavaScript class methods retain imported argument and res
                 const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
                 try T.expectEqual(@as(usize, 4), diagnostics.len);
                 for (diagnostics, [_]u32{ 2322, 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
+            }
+        }
+    }
+}
+
+test "Program: checked JavaScript static methods retain imported argument and result types" {
+    const owner_source =
+        \\export class Factory {
+        \\  /** @type {boolean} */ static ready = true;
+        \\  /** @param {number} value */
+        \\  static create(value) { return { value }; }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Factory } from './owner.js';
+        \\Factory.create('bad');
+        \\const label: string = Factory.create(1).value;
+        \\Factory.ready = 1;
+        \\void label;
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        for ([_]bool{ false, true }) |owner_first| {
+            for ([_]bool{ false, true }) |check_js| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                try vfs.addFile("/owner.js", owner_source);
+                try vfs.addFile("/consumer.ts", consumer_source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                const consumer = if (owner_first) blk: {
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk try program.add("/consumer.ts", consumer_source);
+                } else blk: {
+                    const id = try program.add("/consumer.ts", consumer_source);
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk id;
+                };
+                const options: ts_driver.CompileOptions = .{
+                    .allow_js = true,
+                    .check_js = check_js,
+                    .strict = true,
+                    .no_emit = true,
+                    .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+                };
+                if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+                const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 3), diagnostics.len);
+                try T.expectEqual(@as(u32, 2345), diagnostics[0].code);
+                try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+                try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
             }
         }
     }
