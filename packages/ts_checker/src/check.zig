@@ -135748,6 +135748,22 @@ pub const Checker = struct {
             const instantiated = self.instantiateReturn(selected_applicable, callee, param_ts, arg_types, ret) catch ret;
             return try self.optionalChainResult(instantiated, call_is_optional_chain);
         }
+        var sole_arity_sig: TypeId = types.Primitive.none;
+        var arity_candidate_count: usize = 0;
+        for (sigs.items) |sig| {
+            if (!self.callArityFitsSignature(call_node, sig, args)) continue;
+            arity_candidate_count += 1;
+            if (arity_candidate_count > 1) break;
+            sole_arity_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
+        }
+        if (arity_candidate_count == 1) {
+            // Overloads can be present while only one accepts this argument
+            // count. Diagnose its parameter directly (TS2345), as for named
+            // overloads and union signatures, instead of aggregating TS2769.
+            try self.checkArgsAgainstSignature(call_node, args, arg_types, sole_arity_sig);
+            const ret = self.interner.signatureReturn(sole_arity_sig) orelse types.Primitive.any;
+            return try self.optionalChainResult(ret, call_is_optional_chain);
+        }
         if (self.overloadArityError(call_node, sigs.items, args)) |ar| {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -236389,6 +236405,21 @@ test "checker: TS2769 when no overload matches the call" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: one arity-compatible member overload reports its argument" {
+    const s = try newSetup(
+        \\interface Values {
+        \\    copy(start: number): number[];
+        \\    copy(start: number, value: number): number[];
+        \\}
+        \\declare const values: Values;
+        \\values.copy(0, "wrong");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
 }
 
 test "checker: no overload match carries last overload chain and declaration" {

@@ -589,6 +589,13 @@ pub fn arrayProto(
     const optional_cb_tt_num = try ti.internUnion(&[_]TypeId{ cb_tt_num, undef_t });
     const sig_sort = try ti.internSignature(&[_]TypeId{optional_cb_tt_num}, arr_t, false);
     const sig_to_array = try ti.internSignature(&[_]TypeId{}, arr_t, false);
+    // ES2023 copying methods return a fresh mutable T[] even when the
+    // receiver is ReadonlyArray<T>. The item-taking toSpliced overload has
+    // a required deleteCount; its no-items overload permits omitting it.
+    const sig_to_spliced_items = try ti.internSignature(&[_]TypeId{ number_t, number_t, arr_t }, arr_t, false);
+    try rest_set.put(gpa, sig_to_spliced_items, {});
+    const sig_to_spliced_simple = try ti.internSignature(&[_]TypeId{ number_t, optional_number_t }, arr_t, false);
+    const sig_with = try ti.internSignature(&[_]TypeId{ number_t, elem }, arr_t, false);
     const key_iterator = try iteratorObjectType(ti, sint, number_t, false);
     const entry_iterator = try iteratorObjectType(ti, sint, any_t, false);
     const value_iterator = try iteratorObjectType(ti, sint, elem, false);
@@ -677,6 +684,10 @@ pub fn arrayProto(
         .{ .name = try sint.intern("reverse"), .type = sig_reverse, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("sort"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toSorted"), .type = sig_sort, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toReversed"), .type = sig_to_array, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toSpliced"), .type = sig_to_spliced_items, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("toSpliced"), .type = sig_to_spliced_simple, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("with"), .type = sig_with, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("values"), .type = sig_values, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("keys"), .type = sig_keys, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("entries"), .type = sig_entries, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -747,15 +758,16 @@ pub fn readonlyArrayProto(
     if (cache.readonly_array_proto_by_elem.get(elem)) |cached| return cached;
     const mutable = try arrayProto(cache, ti, sint, gpa, elem, rest_set);
     const readonly_names = std.StaticStringMap(void).initComptime(.{
-        .{"length"},   .{"map"},           .{"flatMap"},
-        .{"filter"},   .{"forEach"},       .{"every"},
-        .{"some"},     .{"includes"},      .{"indexOf"},
-        .{"slice"},    .{"join"},          .{"find"},
-        .{"concat"},   .{"toSorted"},      .{"values"},
-        .{"keys"},     .{"entries"},       .{"Symbol.iterator"},
-        .{"reduce"},   .{"reduceRight"},   .{"findIndex"},
-        .{"findLast"}, .{"findLastIndex"}, .{"lastIndexOf"},
-        .{"at"},       .{"flat"},
+        .{"length"},    .{"map"},           .{"flatMap"},
+        .{"filter"},    .{"forEach"},       .{"every"},
+        .{"some"},      .{"includes"},      .{"indexOf"},
+        .{"slice"},     .{"join"},          .{"find"},
+        .{"concat"},    .{"toSorted"},      .{"toReversed"},
+        .{"toSpliced"}, .{"with"},          .{"values"},
+        .{"keys"},      .{"entries"},       .{"Symbol.iterator"},
+        .{"reduce"},    .{"reduceRight"},   .{"findIndex"},
+        .{"findLast"},  .{"findLastIndex"}, .{"lastIndexOf"},
+        .{"at"},        .{"flat"},
     });
     var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
     defer members.deinit(gpa);
