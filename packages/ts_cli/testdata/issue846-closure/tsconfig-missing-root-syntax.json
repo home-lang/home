@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": ["bad-syntax.ts", "missing.ts"]
+}

@@ -29,6 +29,8 @@ disabled, it reports TS6053 and TS6504 in path order, not `files` order;
 semantic errors from the existing roots do not replace either option-phase
 diagnostic. The stream suite checks both exact outputs and exit status.
 The positional `missing.ts` control retains its relative CLI spelling.
+`tsconfig-missing-root-syntax.json` checks the earlier syntax phase: TS1109
+in `bad-syntax.ts` suppresses TS6053 until the syntax error is fixed.
 
 `tsconfig-no-resolve.json` checks the diagnostic-format boundary. With
 `noResolve`, `bridge.js` is physically found but is not admitted to the

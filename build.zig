@@ -2411,6 +2411,14 @@ pub fn build(b: *std.Build) void {
         mixed_rejected_roots.expectStdErrEqual("");
         mixed_rejected_roots.expectExitCode(2);
         tsc_streams_step.dependOn(&mixed_rejected_roots.step);
+        const syntax_before_missing = b.addRunArtifact(home_tsc_exe);
+        syntax_before_missing.setCwd(closure_dir);
+        syntax_before_missing.clearEnvironment();
+        syntax_before_missing.addArgs(&.{ "-p", "tsconfig-missing-root-syntax.json", "--pretty", "false" });
+        syntax_before_missing.expectStdOutEqual("bad-syntax.ts(1,16): error TS1109: Expression expected.\n");
+        syntax_before_missing.expectStdErrEqual("");
+        syntax_before_missing.expectExitCode(2);
+        tsc_streams_step.dependOn(&syntax_before_missing.step);
         const bridge_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/bridge.js") catch @panic("OOM");
         if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, bridge_abs_path, '\\', '/');
         const closure_no_resolve = b.addRunArtifact(home_tsc_exe);
