@@ -2419,6 +2419,8 @@ pub const LspProject = struct {
     /// Backs `config`'s strings, which alias it.
     config_source: []const u8,
     config_source_owned: bool,
+    /// Borrowed from the caller for the lifetime of the project.
+    config_path: ?[]const u8,
     config: ?tsconfig_mod.TsConfig,
     fs: ResolverRealFs,
     resolver: ts_resolver.Resolver,
@@ -2444,6 +2446,7 @@ pub const LspProject = struct {
         self.config_arena = std.heap.ArenaAllocator.init(gpa);
         self.config_source = &.{};
         self.config_source_owned = false;
+        self.config_path = config_path;
         self.config = null;
         if (config_path) |path| {
             if (RealFs.read(gpa, path)) |source| {
@@ -2480,8 +2483,16 @@ pub const LspProject = struct {
     fn seedExplicitConfigRoots(self: *LspProject) !void {
         var diagnostics: RootFileDiagnostics = .{};
         errdefer diagnostics.deinit(self.gpa);
-        const config = self.config orelse return;
-        const roots = config.files orelse return;
+        const config = self.config orelse {
+            self.config_root_diagnostics.deinit(self.gpa);
+            self.config_root_diagnostics = diagnostics;
+            return;
+        };
+        const roots = config.files orelse {
+            self.config_root_diagnostics.deinit(self.gpa);
+            self.config_root_diagnostics = diagnostics;
+            return;
+        };
         const project_dir = std.fs.path.dirname(config.file_path) orelse ".";
         var paths: std.ArrayListUnmanaged([]const u8) = .empty;
         defer paths.deinit(self.gpa);
@@ -2515,7 +2526,7 @@ pub const LspProject = struct {
     /// Config root errors have no source span in tsc, so publish them at the
     /// config document's start rather than inventing a location in its JSON.
     fn publishConfigRootDiagnostics(self: *LspProject) !void {
-        const config = self.config orelse return;
+        const config_path = self.config_path orelse return;
         const entries = self.config_root_diagnostics.entries.items;
         if (entries.len == 0 and self.last_config_root_hash == null) return;
         const diags = try self.gpa.alloc(ts_lsp.LspDiagnostic, entries.len);
@@ -2523,7 +2534,7 @@ pub const LspProject = struct {
         for (entries, 0..) |entry, i| {
             const prefix_end = (std.mem.indexOf(u8, entry.message, ": ") orelse unreachable) + 2;
             diags[i] = .{
-                .range = .{ .file = config.file_path, .start_line = 1, .start_col = 1, .end_line = 1, .end_col = 1 },
+                .range = .{ .file = config_path, .start_line = 1, .start_col = 1, .end_line = 1, .end_col = 1 },
                 .severity = .err,
                 .code = entry.code,
                 .message = entry.message[prefix_end..],
@@ -2531,12 +2542,12 @@ pub const LspProject = struct {
         }
         const hash = ts_lsp.hashLspDiagnostics(diags);
         if (self.last_config_root_hash == hash) return;
-        const absolute = if (std.fs.path.isAbsolute(config.file_path))
-            try self.gpa.dupe(u8, config.file_path)
+        const absolute = if (std.fs.path.isAbsolute(config_path))
+            try self.gpa.dupe(u8, config_path)
         else blk: {
             const cwd = try std.process.currentPathAlloc(std.Options.debug_io, self.gpa);
             defer self.gpa.free(cwd);
-            break :blk try std.fs.path.resolve(self.gpa, &.{ cwd, config.file_path });
+            break :blk try std.fs.path.resolve(self.gpa, &.{ cwd, config_path });
         };
         defer self.gpa.free(absolute);
         const uri = try std.fmt.allocPrint(self.gpa, "file://{s}", .{absolute});
@@ -2547,6 +2558,98 @@ pub const LspProject = struct {
             return err;
         };
         self.last_config_root_hash = hash;
+    }
+
+    /// Rebuild the project when its config changes. Compiler options and
+    /// resolver paths are baked into both the graph and checker caches, so
+    /// merely replacing `compile_options` would retain stale admissions.
+    /// Preserve editor buffers (which can differ from disk), then replay
+    /// them into the new graph after the explicit config roots are seeded.
+    fn reloadConfig(self: *LspProject) !void {
+        const path = self.config_path orelse return;
+        var next_arena = std.heap.ArenaAllocator.init(self.gpa);
+        var staged = true;
+        errdefer if (staged) next_arena.deinit();
+        var next_source: []const u8 = &.{};
+        var next_source_owned = false;
+        errdefer if (staged and next_source_owned) self.gpa.free(next_source);
+        var next_config: ?tsconfig_mod.TsConfig = null;
+        if (RealFs.read(self.gpa, path)) |source| {
+            next_source = source;
+            next_source_owned = true;
+            next_config = tsconfig_mod.parseString(self.gpa, next_arena.allocator(), source) catch null;
+            if (next_config) |*config| {
+                config.file_path = path;
+                if (config.extends.len != 0) {
+                    next_config = resolveConfigExtends(self.gpa, next_arena.allocator(), config.*, path) catch null;
+                }
+            }
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+
+        const OpenSnapshot = struct { path: []const u8, source: []u8 };
+        var open_sources: std.ArrayListUnmanaged(OpenSnapshot) = .empty;
+        defer {
+            for (open_sources.items) |item| self.gpa.free(item.source);
+            open_sources.deinit(self.gpa);
+        }
+        var open_it = self.open_documents.iterator();
+        while (open_it.next()) |entry| {
+            const open_path = ts_lsp_server.uriToPath(entry.key_ptr.*);
+            const id = self.program.lookupPath(open_path) orelse continue;
+            const file = self.program.fileById(id);
+            if (!file.present) continue;
+            const source = try self.gpa.dupe(u8, file.source);
+            open_sources.append(self.gpa, .{ .path = open_path, .source = source }) catch |err| {
+                self.gpa.free(source);
+                return err;
+            };
+        }
+
+        self.service.deinit();
+        self.adapter.deinit();
+        self.program.deinit();
+        self.resolver.deinit();
+        self.config_root_diagnostics.deinit(self.gpa);
+        self.config_root_diagnostics = .{};
+        if (self.config_source_owned) self.gpa.free(self.config_source);
+        self.config_arena.deinit();
+
+        self.config_arena = next_arena;
+        self.config_source = next_source;
+        self.config_source_owned = next_source_owned;
+        self.config = next_config;
+        staged = false;
+        const resolver_config: ts_resolver.Config = if (self.config) |config|
+            resolverConfigFromConfig(self.config_arena.allocator(), config, null)
+        else
+            .{};
+        self.resolver = ts_resolver.Resolver.init(self.gpa, self.fs.fs(), resolver_config);
+        self.program = ts_program.Program.init(self.gpa, &self.resolver);
+        self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
+        self.service = ts_lsp.Service.init(self.gpa, &self.program);
+        var compile_options: ts_driver.CompileOptions = if (self.config) |*config| ts_driver.optionsFromConfig(config) else .{};
+        self.adapter.setProgramSources(&self.program, compile_options);
+        compile_options.external_resolver = .{ .ptr = &self.adapter, .vtable = &CheckerResolverAdapter.vtable };
+        self.service.compile_options = compile_options;
+
+        try self.seedExplicitConfigRoots();
+        for (open_sources.items) |item| {
+            if (self.program.lookupPath(item.path) != null) {
+                _ = try self.program.updateSource(item.path, item.source);
+            } else {
+                _ = try self.program.add(item.path, item.source);
+            }
+        }
+        _ = try self.program.loadImportClosure(self.service.compile_options);
+        try self.program.compileAll(self.service.compile_options);
+        for (self.pending_diagnostics.items) |body| self.gpa.free(body);
+        self.pending_diagnostics.clearRetainingCapacity();
+        try self.publishConfigRootDiagnostics();
+        var revision_it = self.open_documents.valueIterator();
+        while (revision_it.next()) |revision| revision.* = std.math.maxInt(u64);
     }
 
     pub fn destroy(self: *LspProject) void {
@@ -2578,6 +2681,16 @@ pub const LspProject = struct {
 
         var changed_paths: std.ArrayListUnmanaged([]const u8) = .empty;
         defer changed_paths.deinit(self.gpa);
+        var owned_config_path: ?[]u8 = null;
+        defer if (owned_config_path) |path| self.gpa.free(path);
+        const watched_config_path: ?[]const u8 = if (self.config_path) |path| blk: {
+            if (std.fs.path.isAbsolute(path)) break :blk path;
+            const cwd = try std.process.currentPathAlloc(std.Options.debug_io, self.gpa);
+            defer self.gpa.free(cwd);
+            owned_config_path = try std.fs.path.resolve(self.gpa, &.{ cwd, path });
+            break :blk owned_config_path.?;
+        } else null;
+        var config_changed = false;
         self.resolver.invalidateCaches();
         for (changes.array.items) |change| {
             if (change != .object) return error.InvalidWatchedChanges;
@@ -2586,8 +2699,15 @@ pub const LspProject = struct {
             if (uri_value != .string or kind_value != .integer) return error.InvalidWatchedChanges;
             if (kind_value.integer < 1 or kind_value.integer > 3) return error.InvalidWatchedChanges;
             const uri = uri_value.string;
-            if (!std.mem.startsWith(u8, uri, "file://") or self.open_documents.contains(uri)) continue;
+            if (!std.mem.startsWith(u8, uri, "file://")) continue;
             const path = ts_lsp_server.uriToPath(uri);
+            if (watched_config_path) |config_path| {
+                if (std.mem.eql(u8, path, config_path)) {
+                    config_changed = true;
+                    continue;
+                }
+            }
+            if (self.open_documents.contains(uri)) continue;
             if (kind_value.integer == 3) {
                 _ = try self.program.removeSource(path);
             } else {
@@ -2603,6 +2723,10 @@ pub const LspProject = struct {
                 _ = try self.program.updateSource(path, source);
             }
             try changed_paths.append(self.gpa, path);
+        }
+        if (config_changed) {
+            try self.reloadConfig();
+            return;
         }
         // A newly-created explicit root was never present in the Program, so
         // updateSource above cannot admit it. Re-seed from the config list.
@@ -8231,6 +8355,12 @@ test "LspProject: missing config root publishes TS6053 and clears on creation" {
     try std.testing.expect(std.mem.indexOf(u8, initial, "\"uri\":\"file://") != null);
     try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":6053") != null);
     try std.testing.expect(std.mem.indexOf(u8, initial, missing_path) != null);
+    const parsed_initial = try std.json.parseFromSlice(std.json.Value, a, initial, .{});
+    defer parsed_initial.deinit();
+    const initial_diagnostic = parsed_initial.value.object.get("params").?.object.get("diagnostics").?.array.items[0];
+    const expected_missing = try std.fmt.allocPrint(a, "File '{s}' not found.\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json", .{missing_path});
+    defer a.free(expected_missing);
+    try std.testing.expectEqualStrings(expected_missing, initial_diagnostic.object.get("message").?.string);
     try std.testing.expect(project.program.lookupPath(missing_path) == null);
     try std.testing.expect(project.takePendingDiagnostic() == null);
 
@@ -8292,8 +8422,146 @@ test "LspProject: disallowed JavaScript config root publishes TS6504" {
     defer a.free(rejected);
     try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":6504") != null);
     try std.testing.expect(std.mem.indexOf(u8, rejected, owner_path) != null);
+    const parsed_rejected = try std.json.parseFromSlice(std.json.Value, a, rejected, .{});
+    defer parsed_rejected.deinit();
+    const rejected_diagnostic = parsed_rejected.value.object.get("params").?.object.get("diagnostics").?.array.items[0];
+    const expected_rejected = try std.fmt.allocPrint(a, "File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n  The file is in the program because:\n    Part of 'files' list in tsconfig.json", .{owner_path});
+    defer a.free(expected_rejected);
+    try std.testing.expectEqualStrings(expected_rejected, rejected_diagnostic.object.get("message").?.string);
     try std.testing.expect(project.program.lookupPath(owner_path) == null);
     try std.testing.expect(project.program.lookupPath(main_path) != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
+test "LspProject: watched config changes JavaScript root admission and clears errors" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":false,\"noEmit\":true},\"files\":[\"owner.js\"]}");
+        var owner_file = try tmp.dir.createFile(io, "owner.js", .{ .truncate = true });
+        defer owner_file.close(io);
+        try owner_file.writeStreamingAll(io, "export const value = 1;\n");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const owner_path = try tmp.dir.realPathFileAlloc(io, "owner.js", a);
+    defer a.free(owner_path);
+    const config_uri = try std.fmt.allocPrint(a, "file://{s}", .{config_path});
+    defer a.free(config_uri);
+    const event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 2 }} } }, .{});
+    defer a.free(event);
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const rejected = project.takePendingDiagnostic() orelse return error.MissingProjectNotification;
+    defer a.free(rejected);
+    try std.testing.expect(std.mem.indexOf(u8, rejected, "\"code\":6504") != null);
+    try std.testing.expect(project.program.lookupPath(owner_path) == null);
+
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"noEmit\":true},\"files\":[\"owner.js\"]}");
+    }
+    const enabled = try project.handle(event);
+    try std.testing.expectEqual(@as(usize, 0), enabled.len);
+    const cleared = project.takePendingDiagnostic() orelse return error.MissingClearNotification;
+    defer a.free(cleared);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.service.compile_options.allow_js);
+    const owner_id = project.program.lookupPath(owner_path) orelse return error.MissingAdmittedRoot;
+    try std.testing.expect(project.program.fileById(owner_id).root_input);
+    try std.testing.expect(project.program.fileById(owner_id).compilation != null);
+
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":false,\"noEmit\":true},\"files\":[\"owner.js\"]}");
+    }
+    const disabled = try project.handle(event);
+    try std.testing.expectEqual(@as(usize, 0), disabled.len);
+    const rejected_again = project.takePendingDiagnostic() orelse return error.MissingRestoredDiagnostic;
+    defer a.free(rejected_again);
+    try std.testing.expect(std.mem.indexOf(u8, rejected_again, "\"code\":6504") != null);
+    try std.testing.expect(!project.service.compile_options.allow_js);
+    try std.testing.expect(project.program.lookupPath(owner_path) == null);
+
+    try tmp.dir.deleteFile(io, "tsconfig.json");
+    const deleted_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 3 }} } }, .{});
+    defer a.free(deleted_event);
+    const deleted = try project.handle(deleted_event);
+    try std.testing.expectEqual(@as(usize, 0), deleted.len);
+    const no_config = project.takePendingDiagnostic() orelse return error.MissingClearNotification;
+    defer a.free(no_config);
+    try std.testing.expect(std.mem.indexOf(u8, no_config, "\"diagnostics\":[]") != null);
+    try std.testing.expect(project.config == null);
+    try std.testing.expect(project.program.lookupPath(owner_path) == null);
+
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"allowJs\":true,\"noEmit\":true},\"files\":[\"owner.js\"]}");
+    }
+    const created_event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 1 }} } }, .{});
+    defer a.free(created_event);
+    const created = try project.handle(created_event);
+    try std.testing.expectEqual(@as(usize, 0), created.len);
+    try std.testing.expect(project.service.compile_options.allow_js);
+    try std.testing.expect(project.program.lookupPath(owner_path) != null);
+    try std.testing.expect(project.takePendingDiagnostic() == null);
+}
+
+test "LspProject: config reload preserves unsaved editor source and republishes diagnostics" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"strict\":true,\"noEmit\":true},\"files\":[\"main.ts\"]}");
+        var source_file = try tmp.dir.createFile(io, "main.ts", .{ .truncate = true });
+        defer source_file.close(io);
+        try source_file.writeStreamingAll(io, "export const saved: number = 1;\n");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", a);
+    defer a.free(config_path);
+    const source_path = try tmp.dir.realPathFileAlloc(io, "main.ts", a);
+    defer a.free(source_path);
+    const config_uri = try std.fmt.allocPrint(a, "file://{s}", .{config_path});
+    defer a.free(config_uri);
+    const source_uri = try std.fmt.allocPrint(a, "file://{s}", .{source_path});
+    defer a.free(source_uri);
+    const unsaved_source = "export const saved: number = \"wrong\";\n";
+
+    const project = try LspProject.create(a, config_path);
+    defer project.destroy();
+    const opening = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "textDocument/didOpen", .params = .{ .textDocument = .{ .uri = source_uri, .languageId = "typescript", .version = 1, .text = unsaved_source } } }, .{});
+    defer a.free(opening);
+    const initial = try project.handle(opening);
+    defer a.free(initial);
+    try std.testing.expect(std.mem.indexOf(u8, initial, "\"code\":2322") != null);
+
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{\"compilerOptions\":{\"strict\":true,\"noEmit\":true,\"allowJs\":true},\"files\":[\"main.ts\"]}");
+    }
+    const event = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .method = "workspace/didChangeWatchedFiles", .params = .{ .changes = .{.{ .uri = config_uri, .type = 2 }} } }, .{});
+    defer a.free(event);
+    const response = try project.handle(event);
+    try std.testing.expectEqual(@as(usize, 0), response.len);
+    const refreshed = project.takePendingDiagnostic() orelse return error.MissingImporterNotification;
+    defer a.free(refreshed);
+    try std.testing.expect(std.mem.indexOf(u8, refreshed, "\"code\":2322") != null);
+    try std.testing.expect(std.mem.indexOf(u8, refreshed, source_uri) != null);
+    const source_id = project.program.lookupPath(source_path) orelse return error.MissingRestoredRoot;
+    try std.testing.expectEqualStrings(unsaved_source, project.program.fileById(source_id).source);
+    try std.testing.expect(project.program.fileById(source_id).root_input);
     try std.testing.expect(project.takePendingDiagnostic() == null);
 }
 
