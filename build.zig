@@ -2776,6 +2776,27 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&generic_overload.step);
         }
 
+        // Separate JSDoc blocks each own an independent generic parameter.
+        // A constraint failure must reject the second public overload while
+        // retaining both candidates in TypeScript's TS2769 diagnostic.
+        const adjacent_generic_overload_output =
+            "adjacent-generic-main.ts(5,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "adjacent-generic-main.ts(6,8): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(value: unknown[]): unknown', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'unknown[]'.\n" ++
+            "  Overload 2 of 2, '(value: string): string', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'string'.\n";
+        inline for (.{ "tsconfig-adjacent-generic.json", "tsconfig-adjacent-generic-no-checkjs.json" }) |config| {
+            const adjacent_generic_overload = b.addRunArtifact(home_tsc_exe);
+            adjacent_generic_overload.setCwd(jsdoc_overload_dir);
+            adjacent_generic_overload.clearEnvironment();
+            adjacent_generic_overload.addArgs(&.{ "-p", config, "--pretty", "false" });
+            adjacent_generic_overload.expectStdOutEqual(adjacent_generic_overload_output);
+            adjacent_generic_overload.expectStdErrEqual("");
+            adjacent_generic_overload.expectExitCode(2);
+            tsc_streams_step.dependOn(&adjacent_generic_overload.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.
