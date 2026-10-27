@@ -2690,6 +2690,27 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&generic_revision.step);
         }
 
+        // Optional and rest JSDoc parameters keep their arity and argument
+        // types in admitted JavaScript imports, even with checkJs disabled.
+        const function_parameters_dir = b.path("packages/ts_cli/testdata/issue846-function-parameters");
+        const function_parameters_output =
+            "main.ts(5,1): error TS2554: Expected 1-2 arguments, but got 0.\n" ++
+            "main.ts(6,10): error TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.\n" ++
+            "main.ts(7,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(9,14): error TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.\n" ++
+            "main.ts(10,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(11,16): error TS2554: Expected 1-2 arguments, but got 3.\n";
+        inline for (.{ "tsconfig.json", "tsconfig-no-checkjs.json" }) |config| {
+            const function_parameters = b.addRunArtifact(home_tsc_exe);
+            function_parameters.setCwd(function_parameters_dir);
+            function_parameters.clearEnvironment();
+            function_parameters.addArgs(&.{ "-p", config, "--pretty", "false" });
+            function_parameters.expectStdOutEqual(function_parameters_output);
+            function_parameters.expectStdErrEqual("");
+            function_parameters.expectExitCode(2);
+            tsc_streams_step.dependOn(&function_parameters.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.

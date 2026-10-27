@@ -99,6 +99,10 @@ Two [generic-return snapshots](https://github.com/home-lang/home/tree/main/packa
 also drive Program and LSP edit-and-revert tests at one JavaScript owner path:
 changing an inferred return from `T` to `T[]` moves the importer TS2322 to
 the opposite assignment and republishes the editor diagnostic.
+A separate [parameter fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-function-parameters)
+pins exact TypeScript 5.7.3 diagnostics for optional and rest JSDoc parameters
+across admitted imports, including lower and upper arity bounds with `checkJs`
+on and off.
 
 ### Arrays & tuples
 
