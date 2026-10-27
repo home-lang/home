@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true,
+    "noEmit": true,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "maxNodeModuleJsDepth": 1
+  },
+  "files": ["main.ts", "node_modules/m1/index.js"]
+}
