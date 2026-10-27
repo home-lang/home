@@ -2368,6 +2368,49 @@ pub fn build(b: *std.Build) void {
         rejected_config_root.expectStdErrEqual("");
         rejected_config_root.expectExitCode(2);
         tsc_streams_step.dependOn(&rejected_config_root.step);
+        const missing_root_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/missing.ts") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, missing_root_path, '\\', '/');
+        const missing_config_root = b.addRunArtifact(home_tsc_exe);
+        missing_config_root.setCwd(closure_dir);
+        missing_config_root.clearEnvironment();
+        missing_config_root.addArgs(&.{ "-p", "tsconfig-missing-root.json", "--pretty", "false" });
+        missing_config_root.expectStdOutEqual(b.fmt(
+            "error TS6053: File '{s}' not found.\n" ++
+                "  The file is in the program because:\n" ++
+                "    Part of 'files' list in tsconfig.json\n",
+            .{missing_root_path},
+        ));
+        missing_config_root.expectStdErrEqual("");
+        missing_config_root.expectExitCode(2);
+        tsc_streams_step.dependOn(&missing_config_root.step);
+        const missing_positional_root = b.addRunArtifact(home_tsc_exe);
+        missing_positional_root.setCwd(closure_dir);
+        missing_positional_root.clearEnvironment();
+        missing_positional_root.addArgs(&.{ "--ignoreConfig", "--pretty", "false", "--noEmit", "missing.ts" });
+        missing_positional_root.expectStdOutEqual(
+            "error TS6053: File 'missing.ts' not found.\n" ++
+                "  The file is in the program because:\n" ++
+                "    Root file specified for compilation\n",
+        );
+        missing_positional_root.expectStdErrEqual("");
+        missing_positional_root.expectExitCode(2);
+        tsc_streams_step.dependOn(&missing_positional_root.step);
+        const mixed_rejected_roots = b.addRunArtifact(home_tsc_exe);
+        mixed_rejected_roots.setCwd(closure_dir);
+        mixed_rejected_roots.clearEnvironment();
+        mixed_rejected_roots.addArgs(&.{ "-p", "tsconfig-missing-root.json", "--pretty", "false", "--allowJs", "false", "--checkJs", "false" });
+        mixed_rejected_roots.expectStdOutEqual(b.fmt(
+            "error TS6053: File '{s}' not found.\n" ++
+                "  The file is in the program because:\n" ++
+                "    Part of 'files' list in tsconfig.json\n" ++
+                "error TS6504: File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
+                "  The file is in the program because:\n" ++
+                "    Part of 'files' list in tsconfig.json\n",
+            .{ missing_root_path, rejected_root_path },
+        ));
+        mixed_rejected_roots.expectStdErrEqual("");
+        mixed_rejected_roots.expectExitCode(2);
+        tsc_streams_step.dependOn(&mixed_rejected_roots.step);
         const bridge_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/bridge.js") catch @panic("OOM");
         if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, bridge_abs_path, '\\', '/');
         const closure_no_resolve = b.addRunArtifact(home_tsc_exe);

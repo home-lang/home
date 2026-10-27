@@ -22,6 +22,14 @@ its absolute path, even when `-p tsconfig.json` was relative; a positional
 JavaScript root instead keeps the path as typed. The stream suite asserts
 the config-root wording and path exactly.
 
+`tsconfig-missing-root.json` lists `root.js` before the missing
+`missing.ts` to check diagnostic ordering. TypeScript reports TS6053 for
+the absent root without aborting the whole run. With JavaScript admission
+disabled, it reports TS6053 and TS6504 in path order, not `files` order;
+semantic errors from the existing roots do not replace either option-phase
+diagnostic. The stream suite checks both exact outputs and exit status.
+The positional `missing.ts` control retains its relative CLI spelling.
+
 `tsconfig-no-resolve.json` checks the diagnostic-format boundary. With
 `noResolve`, `bridge.js` is physically found but is not admitted to the
 Program, so both compilers emit TS7016 at `main.ts:1:23` and TS2322 for

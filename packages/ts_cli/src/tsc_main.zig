@@ -3965,17 +3965,21 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         cwd_buf[0..try std.process.currentPath(source_io, &cwd_buf)]
     else
         "";
-    var extension_diagnostics = try collectRootFileExtensionDiagnostics(
+    var root_diagnostics = try collectRootFileExtensionDiagnostics(
         gpa,
         &input_files,
         allow_js,
         root_file_reason,
         diagnostic_cwd,
     );
-    defer extension_diagnostics.deinit(gpa);
+    defer root_diagnostics.deinit(gpa);
 
     for (input_files.items) |path| {
         const src = RealFs.readWithIo(gpa, source_io, path) catch |err| {
+            if (err == error.FileNotFound and root_file_reason != .none) {
+                try root_diagnostics.appendMissing(gpa, path, root_file_reason, diagnostic_cwd);
+                continue;
+            }
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
             std.process.exit(1);
         };
@@ -3985,6 +3989,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             std.process.exit(1);
         };
     }
+    root_diagnostics.sort();
 
     var compile_opts: ts_driver.CompileOptions = if (loaded_cfg) |*c|
         ts_driver.optionsFromConfig(c)
@@ -4004,7 +4009,7 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
     // lets `--explainFiles` report imported files with their TS1393
     // "Imported via … from file …" reason. Best-effort: resolution gaps
     // simply leave the program partial, as they did before.
-    const option_diagnostics_present = extension_diagnostics.hasErrors() or pending_config_summary.hasErrors();
+    const option_diagnostics_present = root_diagnostics.hasErrors() or pending_config_summary.hasErrors();
     var discovery_options = compile_opts;
     // Discover and bind every source before choosing a diagnostic phase.
     // A syntax failure in any file precedes options and semantic diagnostics.
@@ -4060,13 +4065,13 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             stream_ctx.filter = .syntax_only;
             try streamProgramDiagnosticsSorted(&stream_ctx);
         } else {
-            if (extension_diagnostics.hasErrors()) {
-                for (extension_diagnostics.messages.items) |message| {
-                    printStdout("{s}\n", .{message});
+            if (root_diagnostics.hasErrors()) {
+                for (root_diagnostics.entries.items) |entry| {
+                    printStdout("{s}\n", .{entry.message});
                 }
                 any_errors_streaming = true;
                 reported_command_line_errors = root_file_reason == .command_line;
-                stream_error_count += extension_diagnostics.messages.items.len;
+                stream_error_count += root_diagnostics.entries.items.len;
             }
             if (pending_config_summary.hasErrors()) {
                 try printConfigValidationDiagnostics(
@@ -4467,7 +4472,9 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
             if (root_file_reason != .none) {
                 for (input_files.items) |path| {
                     if (program.lookupPath(path) != null) continue;
-                    const message = try missingRootFileDiagnostic(gpa, path, root_file_reason);
+                    const display_path = try rootFileDiagnosticPath(gpa, path, root_file_reason, diagnostic_cwd);
+                    defer gpa.free(display_path);
+                    const message = try missingRootFileDiagnostic(gpa, display_path, root_file_reason);
                     defer gpa.free(message);
                     printStdout("{s}\n", .{message});
                     watch_error_count += 1;
@@ -5250,16 +5257,57 @@ const RootFileDiagnosticReason = enum {
     files_list,
 };
 
-const RootFileExtensionDiagnostics = struct {
-    messages: std.ArrayListUnmanaged([]u8) = .empty,
+fn rootFileDiagnosticPath(gpa: std.mem.Allocator, path: []const u8, reason: RootFileDiagnosticReason, cwd: []const u8) ![]u8 {
+    // Config-listed roots are displayed as absolute paths; positional roots
+    // keep their spelling. This allocation belongs to RootFileDiagnostics.
+    if (reason == .files_list and !std.fs.path.isAbsolute(path)) {
+        return std.fs.path.resolve(gpa, &.{ cwd, path });
+    }
+    return gpa.dupe(u8, path);
+}
 
-    fn deinit(this: *RootFileExtensionDiagnostics, gpa: std.mem.Allocator) void {
-        for (this.messages.items) |message| gpa.free(message);
-        this.messages.deinit(gpa);
+const RootFileDiagnostic = struct {
+    path: []u8,
+    message: []u8,
+
+    fn lessThan(_: void, a: RootFileDiagnostic, b: RootFileDiagnostic) bool {
+        return std.mem.lessThan(u8, a.path, b.path);
+    }
+};
+
+const RootFileDiagnostics = struct {
+    entries: std.ArrayListUnmanaged(RootFileDiagnostic) = .empty,
+
+    fn deinit(this: *RootFileDiagnostics, gpa: std.mem.Allocator) void {
+        for (this.entries.items) |entry| {
+            gpa.free(entry.path);
+            gpa.free(entry.message);
+        }
+        this.entries.deinit(gpa);
     }
 
-    fn hasErrors(this: RootFileExtensionDiagnostics) bool {
-        return this.messages.items.len > 0;
+    fn hasErrors(this: RootFileDiagnostics) bool {
+        return this.entries.items.len > 0;
+    }
+
+    fn appendExtension(this: *RootFileDiagnostics, gpa: std.mem.Allocator, path: []const u8, class: ExtensionClass, reason: RootFileDiagnosticReason, cwd: []const u8) !void {
+        const display_path = try rootFileDiagnosticPath(gpa, path, reason, cwd);
+        errdefer gpa.free(display_path);
+        const message = try rootFileExtensionDiagnostic(gpa, display_path, class, reason);
+        errdefer gpa.free(message);
+        try this.entries.append(gpa, .{ .path = display_path, .message = message });
+    }
+
+    fn appendMissing(this: *RootFileDiagnostics, gpa: std.mem.Allocator, path: []const u8, reason: RootFileDiagnosticReason, cwd: []const u8) !void {
+        const display_path = try rootFileDiagnosticPath(gpa, path, reason, cwd);
+        errdefer gpa.free(display_path);
+        const message = try missingRootFileDiagnostic(gpa, display_path, reason);
+        errdefer gpa.free(message);
+        try this.entries.append(gpa, .{ .path = display_path, .message = message });
+    }
+
+    fn sort(this: *RootFileDiagnostics) void {
+        std.sort.pdq(RootFileDiagnostic, this.entries.items, {}, RootFileDiagnostic.lessThan);
     }
 };
 
@@ -5314,8 +5362,8 @@ fn collectRootFileExtensionDiagnostics(
     allow_js: bool,
     reason: RootFileDiagnosticReason,
     cwd: []const u8,
-) !RootFileExtensionDiagnostics {
-    var diagnostics: RootFileExtensionDiagnostics = .{};
+) !RootFileDiagnostics {
+    var diagnostics: RootFileDiagnostics = .{};
     errdefer diagnostics.deinit(gpa);
     var valid_len: usize = 0;
     for (input_files.items) |path| {
@@ -5326,19 +5374,7 @@ fn collectRootFileExtensionDiagnostics(
             valid_len += 1;
             continue;
         }
-        // TypeScript prints config-listed roots as absolute paths even when
-        // --project was relative. Keep the original root for Program identity;
-        // only the rejection diagnostic needs the absolute spelling.
-        const absolute_path: ?[]u8 = if (reason == .files_list and !std.fs.path.isAbsolute(path))
-            try std.fs.path.resolve(gpa, &.{ cwd, path })
-        else
-            null;
-        defer if (absolute_path) |owned| gpa.free(owned);
-        const message = try rootFileExtensionDiagnostic(gpa, absolute_path orelse path, class, reason);
-        diagnostics.messages.append(gpa, message) catch |err| {
-            gpa.free(message);
-            return err;
-        };
+        try diagnostics.appendExtension(gpa, path, class, reason, cwd);
     }
     input_files.items.len = valid_len;
     return diagnostics;
@@ -5773,22 +5809,23 @@ test "tsc_main: root extension diagnostics retain only admissible Program roots"
         "/repo",
     );
     defer diagnostics.deinit(std.testing.allocator);
+    diagnostics.sort();
 
     try std.testing.expectEqual(@as(usize, 2), roots.items.len);
     try std.testing.expectEqualStrings("/repo/input.ts", roots.items[0]);
     try std.testing.expectEqualStrings("/repo/component.home", roots.items[1]);
-    try std.testing.expectEqual(@as(usize, 2), diagnostics.messages.items.len);
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.entries.items.len);
     try std.testing.expectEqualStrings(
         "error TS6504: File '/repo/input.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
             "  The file is in the program because:\n" ++
             "    Part of 'files' list in tsconfig.json",
-        diagnostics.messages.items[0],
+        diagnostics.entries.items[0].message,
     );
     try std.testing.expectEqualStrings(
         "error TS6054: File '/repo/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.\n" ++
             "  The file is in the program because:\n" ++
             "    Part of 'files' list in tsconfig.json",
-        diagnostics.messages.items[1],
+        diagnostics.entries.items[1].message,
     );
 }
 
@@ -5804,21 +5841,35 @@ test "tsc_main: relative config roots use absolute rejection paths without chang
         "/repo/app",
     );
     defer diagnostics.deinit(std.testing.allocator);
+    diagnostics.sort();
     try std.testing.expectEqual(@as(usize, 1), roots.items.len);
     try std.testing.expectEqualStrings("main.ts", roots.items[0]);
-    try std.testing.expectEqual(@as(usize, 2), diagnostics.messages.items.len);
-    try std.testing.expectEqualStrings(
-        "error TS6504: File '/repo/app/root.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
-            "  The file is in the program because:\n" ++
-            "    Part of 'files' list in tsconfig.json",
-        diagnostics.messages.items[0],
-    );
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.entries.items.len);
     try std.testing.expectEqualStrings(
         "error TS6054: File '/repo/app/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.\n" ++
             "  The file is in the program because:\n" ++
             "    Part of 'files' list in tsconfig.json",
-        diagnostics.messages.items[1],
+        diagnostics.entries.items[0].message,
     );
+    try std.testing.expectEqualStrings(
+        "error TS6504: File '/repo/app/root.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
+            "  The file is in the program because:\n" ++
+            "    Part of 'files' list in tsconfig.json",
+        diagnostics.entries.items[1].message,
+    );
+}
+
+test "tsc_main: missing and rejected roots sort by path, not declaration order" {
+    var diagnostics: RootFileDiagnostics = .{};
+    defer diagnostics.deinit(std.testing.allocator);
+    try diagnostics.appendExtension(std.testing.allocator, "root.js", .javascript, .files_list, "/repo/app");
+    try diagnostics.appendMissing(std.testing.allocator, "missing.ts", .files_list, "/repo/app");
+    diagnostics.sort();
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.entries.items.len);
+    try std.testing.expectEqualStrings("/repo/app/missing.ts", diagnostics.entries.items[0].path);
+    try std.testing.expectEqualStrings("/repo/app/root.js", diagnostics.entries.items[1].path);
+    try std.testing.expect(std.mem.startsWith(u8, diagnostics.entries.items[0].message, "error TS6053:"));
+    try std.testing.expect(std.mem.startsWith(u8, diagnostics.entries.items[1].message, "error TS6504:"));
 }
 
 test "tsc_main: direct exported values remain runtime values when aggregate origins are incomplete" {
