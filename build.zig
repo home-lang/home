@@ -2844,6 +2844,18 @@ pub fn build(b: *std.Build) void {
             readonly_array.expectExitCode(2);
             tsc_streams_step.dependOn(&readonly_array.step);
         }
+        const readonly_surface = b.addRunArtifact(home_tsc_exe);
+        readonly_surface.setCwd(readonly_array_dir);
+        readonly_surface.clearEnvironment();
+        readonly_surface.addArgs(&.{ "-p", "tsconfig-surface.json", "--pretty", "false" });
+        readonly_surface.expectStdOutEqual(
+            "surface.ts(13,24): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+                "surface.ts(14,32): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n" ++
+                "surface.ts(15,7): error TS2322: Type 'number[]' is not assignable to type 'string'.\n",
+        );
+        readonly_surface.expectStdErrEqual("");
+        readonly_surface.expectExitCode(2);
+        tsc_streams_step.dependOn(&readonly_surface.step);
 
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.

@@ -31,5 +31,14 @@ arrays still exclude `push`. It expects two TS2339 diagnostics.
 array rather than a mutable one. It expects TS2339 for `array.push` and
 TS4104 when assigning the callback array to `number[]`.
 
+`tsconfig-surface.json` selects the ES2023 library and tests copying
+methods on both imported readonly and mutable arrays. TypeScript 5.7.3
+returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,
+and `with`, and accepts `toString` and `toLocaleString`. It reports two
+TS2345 argument errors and one TS2322 result error; the stream step checks
+their exact text, positions, order, and exit status. The second TS2345
+also checks the general rule that a member-call overload set with only one
+arity-compatible signature reports the argument mismatch directly.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.
