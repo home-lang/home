@@ -2477,9 +2477,11 @@ pub fn build(b: *std.Build) void {
         // Checked JS reports TS7016 at the current admission frontier;
         // once both hops enter the Program, its inferred value is typed.
         const transitive_depth_dir = b.path("packages/ts_cli/testdata/issue846-transitive-depth");
+        const transitive_m1_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-transitive-depth/node_modules/m1/index.js") catch @panic("OOM");
         const transitive_m2_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-transitive-depth/node_modules/m2/index.js") catch @panic("OOM");
         const transitive_m3_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-transitive-depth/node_modules/m3/index.js") catch @panic("OOM");
         if (target.result.os.tag == .windows) {
+            std.mem.replaceScalar(u8, transitive_m1_path, '\\', '/');
             std.mem.replaceScalar(u8, transitive_m2_path, '\\', '/');
             std.mem.replaceScalar(u8, transitive_m3_path, '\\', '/');
         }
@@ -2504,6 +2506,32 @@ pub fn build(b: *std.Build) void {
         transitive_depth_two.expectStdErrEqual("");
         transitive_depth_two.expectExitCode(2);
         tsc_streams_step.dependOn(&transitive_depth_two.step);
+
+        // With only the TypeScript consumer as a root, the first admitted
+        // package itself uses a depth level. The frontier moves one hop
+        // later than in the explicit-JavaScript-root controls above.
+        inline for (.{
+            .{ "0", "main.ts(1,23): error TS7016: Could not find a declaration file for module 'm1'. '{s}' implicitly has an 'any' type.\n", transitive_m1_path },
+            .{ "1", "node_modules/m1/index.js(1,22): error TS7016: Could not find a declaration file for module 'm2'. '{s}' implicitly has an 'any' type.\n", transitive_m2_path },
+            .{ "2", "node_modules/m2/index.js(1,22): error TS7016: Could not find a declaration file for module 'm3'. '{s}' implicitly has an 'any' type.\n", transitive_m3_path },
+        }) |case| {
+            const transitive_import_only = b.addRunArtifact(home_tsc_exe);
+            transitive_import_only.setCwd(transitive_depth_dir);
+            transitive_import_only.clearEnvironment();
+            transitive_import_only.addArgs(&.{ "-p", "tsconfig-import-only.json", "--pretty", "false", "--maxNodeModuleJsDepth", case[0] });
+            transitive_import_only.expectStdOutEqual(b.fmt(case[1], .{case[2]}));
+            transitive_import_only.expectStdErrEqual("");
+            transitive_import_only.expectExitCode(2);
+            tsc_streams_step.dependOn(&transitive_import_only.step);
+        }
+        const transitive_import_only_three = b.addRunArtifact(home_tsc_exe);
+        transitive_import_only_three.setCwd(transitive_depth_dir);
+        transitive_import_only_three.clearEnvironment();
+        transitive_import_only_three.addArgs(&.{ "-p", "tsconfig-import-only.json", "--pretty", "false", "--maxNodeModuleJsDepth", "3" });
+        transitive_import_only_three.expectStdOutEqual("main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n");
+        transitive_import_only_three.expectStdErrEqual("");
+        transitive_import_only_three.expectExitCode(2);
+        tsc_streams_step.dependOn(&transitive_import_only_three.step);
 
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same

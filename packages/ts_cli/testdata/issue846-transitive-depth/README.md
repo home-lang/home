@@ -16,3 +16,9 @@ package-install hint because these packages have no package identity. The
 exact CLI output and exit code for all three configs are asserted by
 `zig build test-tsc-streams`. A passing result establishes this graph only,
 not every JavaScript dependency shape.
+
+`tsconfig-import-only.json` removes the explicit JavaScript root. With only
+`main.ts` as a root, `--maxNodeModuleJsDepth 0` reports TS7016 on its `m1`
+import; depths 1 and 2 move that diagnostic to `m1`'s `m2` require and
+`m2`'s `m3` require respectively. Depth 3 admits the entire chain and reports
+the same TS2322 in `main.ts`. The stream suite pins all four CLI overrides.

@@ -359,6 +359,9 @@ TS7016 moves from the explicit root's excluded `m2` require to `m2`'s
 excluded `m3` require; at depth two, the TypeScript consumer receives the
 inferred number and reports TS2322 for a string assignment. All three exact
 TypeScript 5.7.3 CLI streams match Home and are pinned in the stream suite.
+The import-only control removes the explicit JS root: depths zero through
+three then move the admission frontier from `m1` to `m2` to `m3` before the
+typed consumer error appears. This also matches the exact CLI oracle.
 
 ## Watch mode
 
