@@ -2733,6 +2733,27 @@ pub fn build(b: *std.Build) void {
             jsdoc_overload.expectExitCode(2);
             tsc_streams_step.dependOn(&jsdoc_overload.step);
         }
+        // TypeScript also accepts separate adjacent blocks for each overload
+        // and the implementation. Their order and public-only call surface
+        // must survive the owner-to-importer transfer in both checkJs modes.
+        const adjacent_overload_output =
+            "adjacent-main.ts(5,9): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(value: string): string', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'string'.\n" ++
+            "  Overload 2 of 2, '(value: number): number', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'number'.\n" ++
+            "adjacent-main.ts(6,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "adjacent-main.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{ "tsconfig-adjacent.json", "tsconfig-adjacent-no-checkjs.json" }) |config| {
+            const adjacent_overload = b.addRunArtifact(home_tsc_exe);
+            adjacent_overload.setCwd(jsdoc_overload_dir);
+            adjacent_overload.clearEnvironment();
+            adjacent_overload.addArgs(&.{ "-p", config, "--pretty", "false" });
+            adjacent_overload.expectStdOutEqual(adjacent_overload_output);
+            adjacent_overload.expectStdErrEqual("");
+            adjacent_overload.expectExitCode(2);
+            tsc_streams_step.dependOn(&adjacent_overload.step);
+        }
 
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
