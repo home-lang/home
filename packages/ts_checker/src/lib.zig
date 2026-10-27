@@ -500,13 +500,13 @@ pub fn arrayProto(
     // `T | undefined` — return for `pop`, `find`.
     const t_or_undef = try ti.internUnion(&[_]TypeId{ elem, undef_t });
 
-    // A fresh result type-parameter `U` for the generic callback
+    // A result type-parameter `U` for the generic callback
     // methods (`map<U>`, `flatMap<U>`, `reduce<U>`). Unconstrained with
     // no default, so call-site inference (inferFromPair on the callback
     // return for map/flatMap, or on `reduce`'s initial-value argument)
-    // is what binds it. Built fresh per element type, which is fine
-    // because the array-proto shape is cached per element type so `U`
-    // never escapes a single arrayProto build.
+    // is what binds it. The array-proto shape is cached per element type;
+    // #962 tracks the remaining cross-declaration collision for a separate
+    // in-source generic named `U`.
     const u_tp = try ti.internTypeParameter(try sint.intern("U"), types.Primitive.none, types.Primitive.none);
     // `U[]` — return type for the generic `map` / `flatMap`.
     const u_arr = try ti.internArrayType(sint, u_tp);
@@ -781,7 +781,10 @@ pub fn readonlyArrayProto(
         if (!readonly_names.has(sint.get(member.name))) continue;
         var inherited = member;
         if (std.mem.eql(u8, sint.get(member.name), "length")) inherited.is_readonly = true;
-        if (inherited.is_method) {
+        // lib.es2019.array.d.ts declares flatMap's callback array as T[]
+        // even on ReadonlyArray<T>; the es5 callback methods use readonly T[].
+        // Keep that declared distinction instead of rewriting every callback.
+        if (inherited.is_method and !std.mem.eql(u8, sint.get(member.name), "flatMap")) {
             inherited.type = try readonlyArrayCallbackSignature(ti, gpa, inherited.type, elem, readonly_array);
         }
         try members.append(gpa, inherited);

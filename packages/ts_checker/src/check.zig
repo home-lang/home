@@ -166925,23 +166925,61 @@ pub const Checker = struct {
         return t;
     }
 
-    /// Recursively infer type-parameter substitutions by walking the
-    /// parameter shape and the argument shape in parallel. Handles:
-    ///
-    ///   - Bare type parameter: `T` against `number` ÃÂ¢ÃÂÃÂ `T = number`.
-    ///     Literals are widened to their base primitive (matches tsc).
-    ///   - Array element: `T[]` against `number[]` ÃÂ¢ÃÂÃÂ `T = number`.
-    ///     Arrays are object types with a number indexer, so we read
-    ///     `objectNumberIndex` on both sides.
-    ///   - Function param: `(x: T) => U` against `(x: number) => string`
-    ///     ÃÂ¢ÃÂÃÂ `T = number, U = string`.
-    ///   - Object property: `{ value: T }` against `{ value: number }`
-    ///     ÃÂ¢ÃÂÃÂ `T = number`. Walks every member by name.
-    ///   - Union / intersection on the parameter side: recurse into
-    ///     each member against the same arg (any structural match
-    ///     contributes a mapping). Keeps `T | undefined` working.
-    ///
-    /// First-seen wins on conflict; common-supertype is a follow-up.
+    /// Infer a scalar-or-array generic from every arm of a union result.
+    /// For `U | U[]` against `number | readonly number[]`, matching the
+    /// whole source union to bare `U` makes U include the array itself.
+    /// Match bona fide array arms by their element index first, then infer U
+    /// from the union of those elements and the scalar arms. This is a
+    /// structural generic-inference rule, not a method-name special case.
+    fn inferScalarOrArrayUnion(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!bool {
+        const pool = &self.interner.pool;
+        if (arg_t >= pool.typeCount() or !pool.flagsOf(arg_t).is_union) return false;
+        const param_members = self.interner.unionMembers(param_t);
+        if (param_members.len != 2) return false;
+
+        var type_param: TypeId = types.Primitive.none;
+        var array_arm: TypeId = types.Primitive.none;
+        for (param_members) |member| {
+            if (member >= pool.typeCount()) return false;
+            const flags = pool.flagsOf(member);
+            if (flags.is_type_parameter and !flags.is_object_type and !flags.is_union) {
+                type_param = member;
+            } else if (flags.is_object_type and !flags.is_union) {
+                array_arm = member;
+            } else return false;
+        }
+        if (type_param == types.Primitive.none or array_arm == types.Primitive.none or
+            self.interner.objectNumberIndex(array_arm) != type_param) return false;
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        if (self.interner.objectMember(array_arm, length_id) == null) return false;
+
+        var candidates: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer candidates.deinit(self.gpa);
+        var saw_array = false;
+        var saw_scalar = false;
+        for (self.interner.unionMembers(arg_t)) |member| {
+            const is_array = self.array_origin_types.contains(member) or
+                self.tuple_origin_types.contains(member) or self.isActualTupleType(member);
+            const element = if (is_array) self.interner.objectNumberIndex(member) else types.Primitive.none;
+            if (element != types.Primitive.none) {
+                try candidates.append(self.gpa, element);
+                saw_array = true;
+            } else {
+                try candidates.append(self.gpa, member);
+                saw_scalar = true;
+            }
+        }
+        if (!saw_array or !saw_scalar) return false;
+        const inferred = self.interner.internUnion(candidates.items) catch return error.OutOfMemory;
+        try self.inferFromPair(type_param, inferred, subs);
+        return true;
+    }
+
     fn inferUnionRemainder(
         self: *Checker,
         param_t: TypeId,
@@ -167036,6 +167074,11 @@ pub const Checker = struct {
         return true;
     }
 
+    /// Recursively infer type-parameter substitutions by walking the
+    /// parameter and argument shapes in parallel. Bare parameters, array
+    /// elements, signatures, object members and compound types contribute
+    /// candidates; conflicting candidates prefer a common supertype when
+    /// the relation proves one, otherwise the first candidate is retained.
     fn inferFromPair(
         self: *Checker,
         param_t: TypeId,
@@ -167078,6 +167121,7 @@ pub const Checker = struct {
         // case or `(T | undefined)[]` will bind the whole union as T.
         if (p_flags.is_union) {
             if (p_payload >= pool.union_payloads.items.len) return;
+            if (try self.inferScalarOrArrayUnion(param_t, arg_t, subs)) return;
             if (try self.inferUnionRemainder(param_t, arg_t, subs)) return;
             // Recursive inference can intern new types and grow the
             // member pool, invalidating the borrowed unionMembers
@@ -280004,6 +280048,23 @@ test "checker: Array.prototype.flatMap accepts array-returning callback" {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
     }
+}
+
+test "checker: readonly flatMap infers mixed scalar and array results" {
+    const s = try newSetup(
+        \\const values: readonly number[] = [1, 2];
+        \\const flattened: number[] = values.flatMap(value => value > 1 ? values : value);
+        \\const callbackResult: number[] = values.flatMap((value, index, array) => {
+        \\  array.push(value);
+        \\  return value;
+        \\});
+        \\const wrong: string[] = values.flatMap(() => values);
+        \\void [flattened, callbackResult, wrong];
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: recursiveConditionalTypes Flatten terminates" {
