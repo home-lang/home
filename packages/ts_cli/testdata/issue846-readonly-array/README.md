@@ -23,5 +23,9 @@ Home now matches all five lines and exit status in both modes. The
 lookup, indexed write, and `keyof`. It expects TS2339, TS2542, and TS2322
 in that order, with exact streams and exit status checked by the same step.
 
+`tsconfig-augmentation.json` checks that adding `firstOrUndefined` to
+`ReadonlyArray<T>` does not add it to mutable `Array<T>`, while readonly
+arrays still exclude `push`. It expects two TS2339 diagnostics.
+
 [Issue #960](https://github.com/home-lang/home/issues/960) tracks the remaining work to model the complete TypeScript
 `ReadonlyArray<T>` surface; these passing cases do not claim full parity.
