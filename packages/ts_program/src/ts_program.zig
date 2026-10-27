@@ -16397,6 +16397,54 @@ test "Program: unchecked JavaScript JSDoc parameter constrains an admitted impor
     }
 }
 
+test "Program: imported JavaScript readonly array excludes mutators" {
+    const owner_source =
+        \\/** @type {ReadonlyArray<number>} */
+        \\export const readonlyValues = [1, 2];
+        \\/** @type {Array<number>} */
+        \\export const values = [1, 2];
+    ;
+    const consumer_source =
+        \\import { readonlyValues, values } from './owner.js';
+        \\const read: number = readonlyValues[0];
+        \\readonlyValues[0] = 3;
+        \\readonlyValues.push(4);
+        \\const wrongRead: string = readonlyValues[0];
+        \\values[0] = 'bad';
+        \\values.push('bad');
+        \\void [read, wrongRead];
+    ;
+    for ([_]bool{ false, true }) |check_js| {
+        for ([_]bool{ false, true }) |parallel| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/consumer.ts", consumer_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            _ = try program.add("/owner.js", owner_source);
+            const consumer = try program.add("/consumer.ts", consumer_source);
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = check_js,
+                .strict = true,
+                .no_emit = true,
+                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+            };
+            if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+            const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+            try T.expectEqual(@as(usize, 5), diagnostics.len);
+            for ([_]u32{ 2542, 2339, 2322, 2322, 2345 }, diagnostics) |expected, diagnostic| {
+                try T.expectEqual(expected, diagnostic.code);
+            }
+            try T.expectEqualStrings("Property 'push' does not exist on type 'readonly number[]'.", diagnostics[1].message);
+        }
+    }
+}
+
 test "Program: checked JavaScript typedef-backed object retains imported union writes" {
     const owner_source =
         \\/** @typedef {{ choice: string | number, maybe?: string | number }} Payload */

@@ -74,6 +74,10 @@ pub const LibCache = struct {
     /// repeated `T[]` member access doesn't re-intern the dozen-ish
     /// methods on every lookup.
     array_proto_by_elem: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    /// `ReadonlyArray<T>` has a distinct method surface. It shares many
+    /// non-mutating signatures with `Array<T>`, but never inherits mutation
+    /// members merely because both types have a numeric index signature.
+    readonly_array_proto_by_elem: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     /// Signature identities for the built-in `Array.sort` callback, whose
     /// declaration uses `(a: T, b: T) => number` rather than synthesized
     /// positional names. The checker reads this only for diagnostics.
@@ -81,6 +85,7 @@ pub const LibCache = struct {
 
     pub fn deinit(self: *LibCache, gpa: std.mem.Allocator) void {
         self.array_proto_by_elem.deinit(gpa);
+        self.readonly_array_proto_by_elem.deinit(gpa);
         self.sort_comparator_signatures.deinit(gpa);
     }
 };
@@ -695,6 +700,78 @@ pub fn arrayProto(
     };
     const proto = try ti.internObjectType(&m);
     try cache.array_proto_by_elem.put(gpa, elem, proto);
+    return proto;
+}
+
+fn readonlyArrayCallbackSignature(
+    ti: *interner_mod.Interner,
+    gpa: std.mem.Allocator,
+    signature: TypeId,
+    element: TypeId,
+    readonly_array: TypeId,
+) !TypeId {
+    if (!ti.isSignature(signature)) return signature;
+    const params = ti.signatureParams(signature);
+    const updated = try gpa.dupe(TypeId, params);
+    defer gpa.free(updated);
+    var changed = false;
+    for (updated) |*param| {
+        if (!ti.isSignature(param.*)) continue;
+        const callback_params = ti.signatureParams(param.*);
+        if (callback_params.len < 3 or
+            ti.objectNumberIndex(callback_params[callback_params.len - 1]) != element) continue;
+        const callback_return = ti.signatureReturn(param.*) orelse continue;
+        const readonly_params = try gpa.dupe(TypeId, callback_params);
+        defer gpa.free(readonly_params);
+        readonly_params[readonly_params.len - 1] = readonly_array;
+        param.* = try ti.internSignature(readonly_params, callback_return, false);
+        changed = true;
+    }
+    if (!changed) return signature;
+    return ti.internSignature(updated, ti.signatureReturn(signature) orelse types.Primitive.any, false);
+}
+
+/// The members common to TypeScript's `ReadonlyArray<T>` and the synthetic
+/// `Array<T>` prototype above. Additional declarations on `ReadonlyArray`
+/// are resolved by the checker from the appropriate interface, not from
+/// `Array<T>` or by treating an absent mutator as a diagnostic special case.
+pub fn readonlyArrayProto(
+    cache: *LibCache,
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    gpa: std.mem.Allocator,
+    elem: TypeId,
+    readonly_array: TypeId,
+    rest_set: *std.AutoHashMapUnmanaged(TypeId, void),
+) !TypeId {
+    if (cache.readonly_array_proto_by_elem.get(elem)) |cached| return cached;
+    const mutable = try arrayProto(cache, ti, sint, gpa, elem, rest_set);
+    const readonly_names = std.StaticStringMap(void).initComptime(.{
+        .{"length"},   .{"map"},           .{"flatMap"},
+        .{"filter"},   .{"forEach"},       .{"every"},
+        .{"some"},     .{"includes"},      .{"indexOf"},
+        .{"slice"},    .{"join"},          .{"find"},
+        .{"concat"},   .{"toSorted"},      .{"values"},
+        .{"keys"},     .{"entries"},       .{"Symbol.iterator"},
+        .{"reduce"},   .{"reduceRight"},   .{"findIndex"},
+        .{"findLast"}, .{"findLastIndex"}, .{"lastIndexOf"},
+        .{"at"},       .{"flat"},
+    });
+    var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+    defer members.deinit(gpa);
+    const mutable_members = try gpa.dupe(types.ObjectMember, ti.objectMembers(mutable));
+    defer gpa.free(mutable_members);
+    for (mutable_members) |member| {
+        if (!readonly_names.has(sint.get(member.name))) continue;
+        var inherited = member;
+        if (std.mem.eql(u8, sint.get(member.name), "length")) inherited.is_readonly = true;
+        if (inherited.is_method) {
+            inherited.type = try readonlyArrayCallbackSignature(ti, gpa, inherited.type, elem, readonly_array);
+        }
+        try members.append(gpa, inherited);
+    }
+    const proto = try ti.internObjectType(members.items);
+    try cache.readonly_array_proto_by_elem.put(gpa, elem, proto);
     return proto;
 }
 

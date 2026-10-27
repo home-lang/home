@@ -88949,11 +88949,10 @@ pub const Checker = struct {
         if (self.isActualTupleType(t) or self.typeIsArrayLikeObject(t)) {
             var elem_t = self.interner.objectNumberIndex(t);
             if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
-            if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
-                for (self.interner.objectMembers(proto)) |member| {
-                    try self.appendUniqueKeyofName(out, member.name);
-                }
-            } else |_| {}
+            const proto = try self.arrayPrototypeForReceiver(t, elem_t);
+            for (self.interner.objectMembers(proto)) |member| {
+                try self.appendUniqueKeyofName(out, member.name);
+            }
         }
         return true;
     }
@@ -112395,11 +112394,10 @@ pub const Checker = struct {
         return false;
     }
 
-    fn lookupDeclaredArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
-        const array_names = [_][]const u8{ "Array", "ReadonlyArray" };
-        for (array_names) |array_name| {
-            const array_id = self.string_interner.intern(array_name) catch return error.OutOfMemory;
-            const info = self.generic_aliases.get(array_id) orelse continue;
+    fn lookupDeclaredArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId, readonly: bool) CheckError!?TypeId {
+        const array_name = if (readonly) "ReadonlyArray" else "Array";
+        const array_id = self.string_interner.intern(array_name) catch return error.OutOfMemory;
+        if (self.generic_aliases.get(array_id)) |info| {
             var inst_t = info.body;
             if (info.params.len > 0) {
                 var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -112410,11 +112408,11 @@ pub const Checker = struct {
             }
             if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
         }
-        if (try self.lookupDeclareGlobalArrayMember(elem_t, name)) |member_t| return member_t;
-        return try self.lookupProgramGlobalArrayMember(elem_t, name);
+        if (try self.lookupDeclareGlobalArrayMember(elem_t, name, readonly)) |member_t| return member_t;
+        return try self.lookupProgramGlobalArrayMember(elem_t, name, readonly);
     }
 
-    fn lookupDeclareGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+    fn lookupDeclareGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId, readonly: bool) CheckError!?TypeId {
         var root = hir_mod.none_node_id;
         var node: NodeId = 1;
         while (node < self.hir.nodeCount()) : (node += 1) {
@@ -112432,8 +112430,7 @@ pub const Checker = struct {
                 if (self.hir.kindOf(iface) != .interface_decl) continue;
                 const iface_name = self.declarationName(iface) orelse continue;
                 const iface_text = self.string_interner.get(iface_name);
-                if (!std.mem.eql(u8, iface_text, "Array") and
-                    !std.mem.eql(u8, iface_text, "ReadonlyArray")) continue;
+                if (!std.mem.eql(u8, iface_text, if (readonly) "ReadonlyArray" else "Array")) continue;
                 if (self.hir.typeOf(iface) == types.Primitive.none) try self.checkInterfaceDecl(iface);
                 var inst_t = self.hir.typeOf(iface);
                 if (self.generic_interfaces_by_decl.get(iface)) |info| {
@@ -112451,12 +112448,11 @@ pub const Checker = struct {
         return null;
     }
 
-    fn lookupProgramGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+    fn lookupProgramGlobalArrayMember(self: *Checker, elem_t: TypeId, name: hir_mod.StringId, readonly: bool) CheckError!?TypeId {
         const name_text = self.string_interner.get(name);
         for (self.program_ambient_module_interface_exports) |augmentation| {
             if (!std.mem.eql(u8, augmentation.specifier, "__global__")) continue;
-            if (!std.mem.eql(u8, augmentation.name, "Array") and
-                !std.mem.eql(u8, augmentation.name, "ReadonlyArray")) continue;
+            if (!std.mem.eql(u8, augmentation.name, if (readonly) "ReadonlyArray" else "Array")) continue;
             for (augmentation.members) |member| {
                 if (!std.mem.eql(u8, member.name, name_text)) continue;
                 const value_t = if (std.mem.eql(u8, member.type_name, "T"))
@@ -112483,20 +112479,12 @@ pub const Checker = struct {
             operand;
         if (!self.everyTypeIsArrayOrTuple(array_like)) return null;
         const mapped_element = try self.mappedArrayElementFromConstraint(mapped, array_like);
-        if (lib.arrayProto(
-            &self.lib_cache,
-            self.interner,
-            self.string_interner,
-            self.gpa,
-            mapped_element,
-            &self.rest_signatures,
-        )) |proto| {
-            if (self.interner.objectMember(proto, name)) |member_t| {
-                try self.registerSyntheticArrayMethodTypeParameters(name, member_t);
-                return member_t;
-            }
-        } else |_| {}
-        return try self.lookupDeclaredArrayMember(mapped_element, name);
+        const proto = try self.arrayPrototypeForReceiver(array_like, mapped_element);
+        if (self.interner.objectMember(proto, name)) |member_t| {
+            try self.registerSyntheticArrayMethodTypeParameters(name, member_t);
+            return member_t;
+        }
+        return try self.lookupDeclaredArrayMember(mapped_element, name, self.typeIsReadonlyArrayLike(array_like));
     }
 
     fn mappedArrayElementFromConstraint(
@@ -112533,6 +112521,14 @@ pub const Checker = struct {
         return element_t;
     }
 
+    fn arrayPrototypeForReceiver(self: *Checker, receiver: TypeId, element: TypeId) CheckError!TypeId {
+        if (self.typeIsReadonlyArrayLike(receiver)) {
+            const readonly_array = try self.internReadonlyArrayType(element);
+            return lib.readonlyArrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, readonly_array, &self.rest_signatures) catch return error.OutOfMemory;
+        }
+        return lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element, &self.rest_signatures) catch return error.OutOfMemory;
+    }
+
     fn lookupArrayLikePrototypeMember(self: *Checker, t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
@@ -112551,13 +112547,12 @@ pub const Checker = struct {
         if (!flags.is_object_type or flags.is_intersection) return null;
         const elem_t = try self.arrayElementType(t);
         if (elem_t == types.Primitive.none) return null;
-        if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
-            if (self.interner.objectMember(proto, name)) |member_t| {
-                try self.registerSyntheticArrayMethodTypeParameters(name, member_t);
-                return member_t;
-            }
-        } else |_| {}
-        return try self.lookupDeclaredArrayMember(elem_t, name);
+        const proto = try self.arrayPrototypeForReceiver(t, elem_t);
+        if (self.interner.objectMember(proto, name)) |member_t| {
+            try self.registerSyntheticArrayMethodTypeParameters(name, member_t);
+            return member_t;
+        }
+        return try self.lookupDeclaredArrayMember(elem_t, name, self.typeIsReadonlyArrayLike(t));
     }
 
     fn registerSyntheticArrayMethodTypeParameters(
@@ -121334,12 +121329,11 @@ pub const Checker = struct {
                 if (self.interner.pool.flagsOf(access_obj_t).is_object_type) {
                     const num_idx = try self.arrayElementType(access_obj_t);
                     if (num_idx != types.Primitive.none) {
-                        if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx, &self.rest_signatures)) |proto| {
-                            if (self.interner.objectMember(proto, m.name)) |t| {
-                                break :blk try self.optionalChainResult(t, member_is_optional_chain);
-                            }
-                        } else |_| {}
-                        if (try self.lookupDeclaredArrayMember(num_idx, m.name)) |t| {
+                        const proto = try self.arrayPrototypeForReceiver(access_obj_t, num_idx);
+                        if (self.interner.objectMember(proto, m.name)) |t| {
+                            break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                        }
+                        if (try self.lookupDeclaredArrayMember(num_idx, m.name, self.typeIsReadonlyArrayLike(access_obj_t))) |t| {
                             break :blk try self.optionalChainResult(t, member_is_optional_chain);
                         }
                     }
@@ -135342,15 +135336,14 @@ pub const Checker = struct {
         }
         const num_idx = try self.arrayElementType(t);
         if (num_idx != types.Primitive.none) {
-            if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, num_idx, &self.rest_signatures)) |proto| {
-                for (0..self.interner.objectMembers(proto).len) |borrow_index_4| {
-                    const member = self.interner.objectMembers(proto)[borrow_index_4];
-                    if (member.name == name) {
-                        try self.registerSyntheticArrayMethodTypeParameters(name, member.type);
-                        try self.collectCallSignatures(member.type, out);
-                    }
+            const proto = try self.arrayPrototypeForReceiver(t, num_idx);
+            for (0..self.interner.objectMembers(proto).len) |borrow_index_4| {
+                const member = self.interner.objectMembers(proto)[borrow_index_4];
+                if (member.name == name) {
+                    try self.registerSyntheticArrayMethodTypeParameters(name, member.type);
+                    try self.collectCallSignatures(member.type, out);
                 }
-            } else |_| {}
+            }
         }
     }
 
@@ -145104,7 +145097,7 @@ pub const Checker = struct {
             !self.arrayCallbackReceiverIsArrayLike(receiver)) return false;
         if (self.interner.objectMember(receiver, name) != null) return false;
         const element = try self.contextualArrayElementType(receiver);
-        if (try self.lookupDeclaredArrayMember(element, name) != null) return false;
+        if (try self.lookupDeclaredArrayMember(element, name, self.typeIsReadonlyArrayLike(receiver)) != null) return false;
         if (!self.configured_no_lib) {
             if (self.configured_libs) |libs| {
                 for (libs) |selected| {
@@ -182064,13 +182057,10 @@ pub const Checker = struct {
         if (!self.isTupleShapedTarget(object_t) and !self.typeIsArrayLikeObject(object_t)) return null;
         var elem_t = try self.arrayElementType(object_t);
         if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
-        if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, elem_t, &self.rest_signatures)) |proto| {
-            const member_t = self.interner.objectMember(proto, key) orelse return null;
-            try self.registerSyntheticArrayMethodTypeParameters(key, member_t);
-            return member_t;
-        } else |_| {
-            return null;
-        }
+        const proto = try self.arrayPrototypeForReceiver(object_t, elem_t);
+        const member_t = self.interner.objectMember(proto, key) orelse return null;
+        try self.registerSyntheticArrayMethodTypeParameters(key, member_t);
+        return member_t;
     }
 
     fn indexTypeHasKeysMissingFromObject(self: *Checker, object_t: TypeId, index_t: TypeId) bool {
@@ -191066,10 +191056,9 @@ pub const Checker = struct {
             if (self.objectTypeIsArrayLikeContainer(constraint)) {
                 const element_t = try self.arrayElementType(constraint);
                 if (element_t != types.Primitive.none) {
-                    if (lib.arrayProto(&self.lib_cache, self.interner, self.string_interner, self.gpa, element_t, &self.rest_signatures)) |proto| {
-                        if (self.interner.objectMember(proto, sid) != null) return true;
-                    } else |_| {}
-                    if (try self.lookupDeclaredArrayMember(element_t, sid) != null) return true;
+                    const proto = try self.arrayPrototypeForReceiver(constraint, element_t);
+                    if (self.interner.objectMember(proto, sid) != null) return true;
+                    if (try self.lookupDeclaredArrayMember(element_t, sid, self.typeIsReadonlyArrayLike(constraint)) != null) return true;
                 }
             }
         }
@@ -192375,6 +192364,13 @@ pub const Checker = struct {
             return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
         }
         if (try self.tryReportConditionalFunctionVarDeclMismatch(node, init_node, target_node, target)) return;
+        if (self.visibleAnnotatedIdentifierTypeNode(target_node)) |type_node| {
+            if (self.hir.kindOf(type_node) == .keyof_type and
+                self.typeNodeHasArraySyntax(hir_mod.keyofTypeOf(self.hir, type_node).operand))
+            {
+                return try self.reportAssignmentTypeNotAssignable(node, init_node, target_node, source, related_source, target, fallback);
+            }
+        }
         try self.reportTypeNotAssignable(node, source, target, fallback);
     }
 
