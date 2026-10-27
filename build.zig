@@ -2473,6 +2473,38 @@ pub fn build(b: *std.Build) void {
         implicit_checkjs_depth_zero.expectExitCode(2);
         tsc_streams_step.dependOn(&implicit_checkjs_depth_zero.step);
 
+        // A second package hop is excluded until the depth reaches two.
+        // Checked JS reports TS7016 at the current admission frontier;
+        // once both hops enter the Program, its inferred value is typed.
+        const transitive_depth_dir = b.path("packages/ts_cli/testdata/issue846-transitive-depth");
+        const transitive_m2_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-transitive-depth/node_modules/m2/index.js") catch @panic("OOM");
+        const transitive_m3_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-transitive-depth/node_modules/m3/index.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) {
+            std.mem.replaceScalar(u8, transitive_m2_path, '\\', '/');
+            std.mem.replaceScalar(u8, transitive_m3_path, '\\', '/');
+        }
+        inline for (.{
+            .{ "tsconfig.json", "node_modules/m1/index.js(1,22): error TS7016: Could not find a declaration file for module 'm2'. '{s}' implicitly has an 'any' type.\n", transitive_m2_path },
+            .{ "tsconfig-depth-one.json", "node_modules/m2/index.js(1,22): error TS7016: Could not find a declaration file for module 'm3'. '{s}' implicitly has an 'any' type.\n", transitive_m3_path },
+        }) |case| {
+            const transitive_depth = b.addRunArtifact(home_tsc_exe);
+            transitive_depth.setCwd(transitive_depth_dir);
+            transitive_depth.clearEnvironment();
+            transitive_depth.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            transitive_depth.expectStdOutEqual(b.fmt(case[1], .{case[2]}));
+            transitive_depth.expectStdErrEqual("");
+            transitive_depth.expectExitCode(2);
+            tsc_streams_step.dependOn(&transitive_depth.step);
+        }
+        const transitive_depth_two = b.addRunArtifact(home_tsc_exe);
+        transitive_depth_two.setCwd(transitive_depth_dir);
+        transitive_depth_two.clearEnvironment();
+        transitive_depth_two.addArgs(&.{ "-p", "tsconfig-depth-two.json", "--pretty", "false" });
+        transitive_depth_two.expectStdOutEqual("main.ts(4,7): error TS2322: Type 'number' is not assignable to type 'string'.\n");
+        transitive_depth_two.expectStdErrEqual("");
+        transitive_depth_two.expectExitCode(2);
+        tsc_streams_step.dependOn(&transitive_depth_two.step);
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.

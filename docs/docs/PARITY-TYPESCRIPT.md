@@ -353,6 +353,13 @@ types. The [fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli
 records the exact diagnostics. This is one controlled dependency graph, not
 proof of all JavaScript import shapes or tsserver parity.
 
+A [transitive depth fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-transitive-depth)
+extends that oracle through a second package hop. At depths zero and one,
+TS7016 moves from the explicit root's excluded `m2` require to `m2`'s
+excluded `m3` require; at depth two, the TypeScript consumer receives the
+inferred number and reports TS2322 for a string assignment. All three exact
+TypeScript 5.7.3 CLI streams match Home and are pinned in the stream suite.
+
 ## Watch mode
 
 🟢 `home-tsc --watch` uses `ts_watch.Watcher` + `RealStatFs` —
