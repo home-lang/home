@@ -2832,6 +2832,34 @@ pub fn build(b: *std.Build) void {
         mixed_index.expectExitCode(2);
         tsc_streams_step.dependOn(&mixed_index.step);
 
+        // The same admitted JS export is checked in both mutable and
+        // readonly-index forms. These streams match TypeScript 5.7.3 exactly;
+        // Program/LSP tests cover editing one logical owner path between them.
+        const index_revision_dir = b.path("packages/ts_cli/testdata/issue846-index-revision");
+        const index_revision_number = b.addRunArtifact(home_tsc_exe);
+        index_revision_number.setCwd(index_revision_dir);
+        index_revision_number.clearEnvironment();
+        index_revision_number.addArgs(&.{ "-p", "tsconfig-number.json", "--pretty", "false" });
+        index_revision_number.expectStdOutEqual("");
+        index_revision_number.expectStdErrEqual("");
+        index_revision_number.expectExitCode(0);
+        tsc_streams_step.dependOn(&index_revision_number.step);
+
+        const index_revision_string = b.addRunArtifact(home_tsc_exe);
+        index_revision_string.setCwd(index_revision_dir);
+        index_revision_string.clearEnvironment();
+        index_revision_string.addArgs(&.{ "-p", "tsconfig-string.json", "--pretty", "false" });
+        index_revision_string.expectStdOutEqual(
+            \\main-string.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.
+            \\main-string.ts(4,1): error TS2322: Type 'number' is not assignable to type 'string'.
+            \\main-string.ts(5,1): error TS2322: Type 'number' is not assignable to type 'string'.
+            \\main-string.ts(5,1): error TS2542: Index signature in type '{ readonly [key: string]: string; known: string; }' only permits reading.
+            \\
+        );
+        index_revision_string.expectStdErrEqual("");
+        index_revision_string.expectExitCode(2);
+        tsc_streams_step.dependOn(&index_revision_string.step);
+
         // A forward-declared generic interface must refresh its inherited
         // string, number, and symbol write permissions independently.
         const refreshed_index = b.addRunArtifact(home_tsc_exe);

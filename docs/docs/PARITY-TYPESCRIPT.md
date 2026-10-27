@@ -63,6 +63,12 @@ checked JavaScript owner, including inside a nested object. Exact TypeScript
 only when checked, while the TypeScript consumer retains its indexed types.
 A mutable concrete member remains writable even beside a readonly index;
 only an index-only key gets TS2542.
+An [index-revision fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-index-revision)
+has two exact TypeScript 5.7.3 snapshots that change an imported checked-JS
+owner from a mutable number-valued index to a readonly string-valued index.
+Program and LSP edit-and-revert tests apply both bodies to the same logical
+source path, checking that importer type errors and editor publications are
+refreshed rather than retained from the previous revision.
 
 A [typedef-backed imported-JS fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-typed-owners)
 checks required and optional union-valued properties through two invalid

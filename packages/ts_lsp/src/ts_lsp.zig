@@ -8017,6 +8017,82 @@ test "Service: checked JavaScript class method edits republish importer diagnost
     try T.expectEqual(@as(usize, 0), reverted.len);
 }
 
+test "Service: checked JavaScript mixed-index edits republish importer diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const number_owner =
+        \\/** @type {{ known: number; [key: string]: number }} */
+        \\export const counts = { known: 1 };
+    ;
+    const string_owner =
+        \\/** @type {{ known: string; readonly [key: string]: string }} */
+        \\export const counts = { known: 'one' };
+    ;
+    const consumer_source =
+        \\import { counts } from './owner.js';
+        \\const read: number = counts.known;
+        \\counts.known = 2;
+        \\counts['other'] = 2;
+        \\void read;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", number_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.js", number_owner);
+    _ = try program.add("/consumer.ts", consumer_source);
+    var admitted = Admitted{ .resolver = &resolver, .program = &program };
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+    };
+    try program.compileAll(options);
+
+    var svc = Service.init(T.allocator, &program);
+    defer svc.deinit();
+    svc.compile_options = options;
+    const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+    defer freeLspDiagnostics(T.allocator, initial);
+    try T.expectEqual(@as(usize, 0), initial.len);
+
+    const owner_changed = try svc.didChangeFile(T.allocator, "/owner.js", string_owner);
+    defer T.allocator.free(owner_changed);
+    const changed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingChangedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, changed);
+    try T.expectEqual(@as(usize, 4), changed.len);
+    for ([_]u32{ 2322, 2322, 2322, 2542 }, changed) |code, diagnostic| {
+        try T.expectEqual(code, diagnostic.code);
+    }
+    try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+    const owner_reverted = try svc.didChangeFile(T.allocator, "/owner.js", number_owner);
+    defer T.allocator.free(owner_reverted);
+    const reverted = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRevertedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, reverted);
+    try T.expectEqual(@as(usize, 0), reverted.len);
+}
+
 test "Service: didChangeFile on unknown file returns empty diagnostics" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
