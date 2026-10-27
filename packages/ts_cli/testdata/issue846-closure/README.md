@@ -10,6 +10,19 @@ unadmitted sibling and must not supply diagnostics. The imported value is
 typed as `number`, so the TypeScript consumer's string assignment fails
 even when JS diagnostics are disabled.
 
+The editor lifecycle has a separate invariant: an import-only JavaScript
+owner is admitted while reachable, retired when the importer removes its
+edge, and readmitted under the same Program file identity when that import
+returns. The focused Program tests exercise both `checkJs` modes and contrast
+that owner with an explicitly listed JavaScript root, which must stay admitted
+after an importer removes its edge. LSP diagnostic publication for this exact
+remove-and-readmit sequence remains unverified.
+
+`tsconfig-root-only.json` is the static TypeScript 5.7.3 oracle for the
+explicit-root half of that lifecycle: `main-no-import.ts` has no dependency
+edge, yet the listed `root.js` still reports TS2322 at `2:14`. The stream
+suite asserts the exact output and error exit.
+
 With `allowJs` and `checkJs`, or with `checkJs` alone, both compilers report
 TS2322 at `leaf.js:2:14`, `main.ts:4:7`, and `root.js:2:14`, in that order,
 and exit 2. With `allowJs` but no `checkJs`, only the `main.ts:4:7`

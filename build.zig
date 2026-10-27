@@ -2377,6 +2377,17 @@ pub fn build(b: *std.Build) void {
             closure.expectExitCode(2);
             tsc_streams_step.dependOn(&closure.step);
         }
+        // Removing every import edge does not retire a JavaScript file that
+        // the project lists as an explicit root. TypeScript 5.7.3 still
+        // reports the root's own checked-JS diagnostic.
+        const root_only = b.addRunArtifact(home_tsc_exe);
+        root_only.setCwd(closure_dir);
+        root_only.clearEnvironment();
+        root_only.addArgs(&.{ "-p", "tsconfig-root-only.json", "--pretty", "false" });
+        root_only.expectStdOutEqual("root.js(2,14): error TS2322: Type 'string' is not assignable to type 'number'.\n");
+        root_only.expectStdErrEqual("");
+        root_only.expectExitCode(2);
+        tsc_streams_step.dependOn(&root_only.step);
         const rejected_root_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/root.js") catch @panic("OOM");
         if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, rejected_root_path, '\\', '/');
         const rejected_config_root = b.addRunArtifact(home_tsc_exe);

@@ -15623,6 +15623,82 @@ test "Program: detached import cycle is retired and can be readmitted" {
     try T.expect(program.fileById(b_id).compilation != null);
 }
 
+test "Program: import-only JavaScript owner retires and readmits with the same FileId" {
+    const imported = "import { value } from './owner.js'; const result: number = value;";
+    const detached = "export const result: number = 0;";
+    const owner = "export const value = 'wrong';";
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/main.ts", imported);
+        try vfs.addFile("/owner.js", owner);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const main_id = try program.add("/main.ts", imported);
+        var external = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        const options: ts_driver.CompileOptions = .{
+            .strict = true,
+            .allow_js = true,
+            .check_js = check_js,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &external, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try T.expectEqual(@as(usize, 1), try program.loadImportClosure(options));
+        const owner_id = program.lookupPath("/owner.js") orelse return error.MissingJavaScriptOwner;
+        try program.compileAll(options);
+        try expectCompilationHasDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+        _ = (try program.updateSource("/main.ts", detached)) orelse return error.MissingRoot;
+        _ = try program.recompileChanged(&.{"/main.ts"}, options);
+        try T.expect(program.lookupPath("/owner.js") == null);
+        try T.expect(program.fileById(owner_id).compilation == null);
+        try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+        _ = (try program.updateSource("/main.ts", imported)) orelse return error.MissingRoot;
+        _ = try program.recompileChanged(&.{"/main.ts"}, options);
+        try T.expectEqual(owner_id, program.lookupPath("/owner.js").?);
+        try T.expect(program.fileById(owner_id).compilation != null);
+        try expectCompilationHasDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+    }
+}
+
+test "Program: explicit JavaScript root survives removal of an importer edge" {
+    const imported = "import { value } from './owner.js'; const result: number = value;";
+    const detached = "export const result: number = 0;";
+    const owner = "export const value = 'wrong';";
+    for ([_]bool{ false, true }) |check_js| {
+        var vfs = ts_resolver.VirtualFs.init(T.allocator);
+        defer vfs.deinit();
+        try vfs.addFile("/main.ts", imported);
+        try vfs.addFile("/owner.js", owner);
+        var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+        defer resolver.deinit();
+        var program = Program.init(T.allocator, &resolver);
+        defer program.deinit();
+        const main_id = try program.add("/main.ts", imported);
+        const owner_id = try program.add("/owner.js", owner);
+        var external = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+        const options: ts_driver.CompileOptions = .{
+            .strict = true,
+            .allow_js = true,
+            .check_js = check_js,
+            .no_emit = true,
+            .external_resolver = .{ .ptr = &external, .vtable = &NamespaceImportTestResolver.vtable },
+        };
+        try T.expectEqual(@as(usize, 0), try program.loadImportClosure(options));
+        try program.compileAll(options);
+        try expectCompilationHasDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+
+        _ = (try program.updateSource("/main.ts", detached)) orelse return error.MissingRoot;
+        _ = try program.recompileChanged(&.{"/main.ts"}, options);
+        try T.expectEqual(owner_id, program.lookupPath("/owner.js").?);
+        try T.expect(program.fileById(owner_id).compilation != null);
+        try expectCompilationLacksDiagnosticCode(program.fileById(main_id).compilation.?, 2322);
+    }
+}
+
 test "Program: added transitive imports report errors and replacement retires their graph" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
