@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig-class.json",
+  "files": ["class-consumer-string.ts"]
+}

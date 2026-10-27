@@ -2596,6 +2596,23 @@ pub fn build(b: *std.Build) void {
             typed_class.expectExitCode(2);
             tsc_streams_step.dependOn(&typed_class.step);
         }
+
+        // The alternate owner gives the same class a string signature. It is
+        // also the second state in the Program/LSP source-revision tests.
+        const class_string_output =
+            "class-consumer-string.ts(4,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "class-consumer-string.ts(4,35): error TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.\n";
+        inline for (.{ true, false }) |class_check_js| {
+            const typed_class = b.addRunArtifact(home_tsc_exe);
+            typed_class.setCwd(typed_owners_dir);
+            typed_class.clearEnvironment();
+            typed_class.addArgs(&.{ "-p", "tsconfig-class-string.json", "--pretty", "false", "--checkJs", if (class_check_js) "true" else "false" });
+            typed_class.expectStdOutEqual(class_string_output);
+            typed_class.expectStdErrEqual("");
+            typed_class.expectExitCode(2);
+            tsc_streams_step.dependOn(&typed_class.step);
+        }
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.
