@@ -46,6 +46,16 @@ errors; a structural numeric-index interface control retains the distinct
 `'number' index signatures are incompatible` chain. The exact TypeScript
 5.7.3 streams and exit code are pinned in `test-tsc-streams`.
 
+`tsconfig-flat-map.json` checks generic inference when a callback returns
+either a scalar or an admitted readonly array, as well as the `T[]` callback
+array parameter declared for `flatMap` in TypeScript 5.7.3's
+`lib.es2019.array.d.ts`. Both calls must succeed; only assigning the
+resulting `number[]` to `string[]` reports TS2322. The stream step pins the
+exact location, elaboration and exit status with both `checkJs` settings.
+An independent generic-name interaction still changes array inference;
+[issue #962](https://github.com/home-lang/home/issues/962) tracks that
+separate, currently failing cross-declaration case.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,
