@@ -18,3 +18,11 @@ export function constrained(value) {
 
 /** @type {number} */
 export const ownerBad = identity('one');
+
+/**
+ * @template T
+ * @param {T} value
+ */
+export function inferred(value) {
+  return value;
+}
