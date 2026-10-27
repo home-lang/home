@@ -2711,6 +2711,29 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&function_parameters.step);
         }
 
+        // The implementation's broad JSDoc signature is not callable from an
+        // importer. Both checkJs modes expose the two public overloads, their
+        // source parameter names, and the same TS2769 chain as tsc 5.7.3.
+        const jsdoc_overload_dir = b.path("packages/ts_cli/testdata/issue846-jsdoc-overload");
+        const jsdoc_overload_output =
+            "main.ts(5,9): error TS2769: No overload matches this call.\n" ++
+            "  Overload 1 of 2, '(value: string): string', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'string'.\n" ++
+            "  Overload 2 of 2, '(value: number): number', gave the following error.\n" ++
+            "    Argument of type 'boolean' is not assignable to parameter of type 'number'.\n" ++
+            "main.ts(6,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        inline for (.{ "tsconfig.json", "tsconfig-no-checkjs.json" }) |config| {
+            const jsdoc_overload = b.addRunArtifact(home_tsc_exe);
+            jsdoc_overload.setCwd(jsdoc_overload_dir);
+            jsdoc_overload.clearEnvironment();
+            jsdoc_overload.addArgs(&.{ "-p", config, "--pretty", "false" });
+            jsdoc_overload.expectStdOutEqual(jsdoc_overload_output);
+            jsdoc_overload.expectStdErrEqual("");
+            jsdoc_overload.expectExitCode(2);
+            tsc_streams_step.dependOn(&jsdoc_overload.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.
