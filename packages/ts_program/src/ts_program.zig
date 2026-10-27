@@ -1910,6 +1910,7 @@ pub const Program = struct {
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
@@ -1918,6 +1919,7 @@ pub const Program = struct {
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
@@ -2179,6 +2181,7 @@ pub const Program = struct {
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
@@ -2193,6 +2196,7 @@ pub const Program = struct {
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
 
@@ -2946,6 +2950,93 @@ pub const Program = struct {
             @constCast(declaration).body = body;
             route.projection_only = false;
         }
+    }
+
+    fn populateCheckedJavaScriptClassMethods(
+        self: *Program,
+        file: *File,
+        exported_classes: []const ts_driver.ProgramExportedClass,
+    ) ProgramError!void {
+        const compilation = file.compilation orelse return;
+        if (!compilation.checked_types_ready or !jsdoc_types.isJavaScriptPath(file.path)) return;
+        var visited: std.AutoHashMapUnmanaged(*const ts_driver.ProgramClassSchema.Declaration, void) = .empty;
+        defer visited.deinit(self.gpa);
+        for (exported_classes) |exported_class| {
+            const schema = exported_class.schema orelse continue;
+            const declaration = schema.declaration;
+            if (!declaration.is_class or declaration.parameters.len != 0 or
+                !std.mem.eql(u8, declaration.path, file.path)) continue;
+            const entry = try visited.getOrPut(self.gpa, declaration);
+            if (entry.found_existing) continue;
+            const body = declaration.body orelse continue;
+            const own = switch (body.*) {
+                .object => body,
+                .intersection => |parts| if (parts.len > 0 and parts[parts.len - 1].* == .object) parts[parts.len - 1] else continue,
+                else => continue,
+            };
+            const arena = if (schema.shared_graph) |graph| graph.arena.allocator() else @constCast(schema).arena.allocator();
+            for (@constCast(own.object)) |*member| {
+                if (!member.method) continue;
+                // The checker can register several instance IDs for one
+                // class. Publish a method only when every such instance has
+                // the same signature, not whichever ID a hash map yields.
+                var consensus: ?ts_driver.TypeId = null;
+                var conflicting = false;
+                var classes = compilation.checked_types.class_decl_by_instance.iterator();
+                while (classes.next()) |class| {
+                    if (compilation.hir.spanOf(class.value_ptr.*).start != declaration.position) continue;
+                    var candidate: ?ts_driver.TypeId = null;
+                    for (compilation.type_interner.objectMembers(class.key_ptr.*)) |checked_member| {
+                        if (!checked_member.is_method or
+                            !std.mem.eql(u8, compilation.interner.get(checked_member.name), member.name)) continue;
+                        if (candidate != null) {
+                            conflicting = true;
+                            break;
+                        }
+                        candidate = checked_member.type;
+                    }
+                    if (conflicting or candidate == null) {
+                        conflicting = true;
+                        break;
+                    }
+                    if (consensus) |prior| {
+                        if (!checkedClassMethodSignaturesAgree(compilation, prior, candidate.?)) {
+                            conflicting = true;
+                            break;
+                        }
+                    } else consensus = candidate;
+                }
+                if (conflicting or consensus == null) continue;
+                const checked_type = checked_schema.lowerTypeInArena(
+                    arena,
+                    file.path,
+                    compilation,
+                    consensus.?,
+                ) catch return error.OutOfMemory;
+                if (checked_type.* != .function or
+                    !(ts_driver.ProgramClassSchema.Schema.expressionSupported(checked_type, self.gpa) catch return error.OutOfMemory)) continue;
+                member.type = checked_type;
+            }
+        }
+    }
+
+    fn checkedClassMethodSignaturesAgree(compilation: *const ts_driver.Compilation, left: ts_driver.TypeId, right: ts_driver.TypeId) bool {
+        if (left == right) return true;
+        const interner = &compilation.type_interner;
+        if (!interner.isSignature(left) or !interner.isSignature(right)) return false;
+        var a = interner.pool.signature_payloads.items[interner.pool.payloadOf(left)];
+        var b = interner.pool.signature_payloads.items[interner.pool.payloadOf(right)];
+        if (a.type_params_len != 0 or b.type_params_len != 0) return false;
+        a.params_start = 0;
+        b.params_start = 0;
+        a.type_params_start = 0;
+        b.type_params_start = 0;
+        return std.meta.eql(a, b) and
+            std.mem.eql(ts_driver.TypeId, interner.signatureParams(left), interner.signatureParams(right)) and
+            std.meta.eql(compilation.checked_types.signature_min_args.get(left), compilation.checked_types.signature_min_args.get(right)) and
+            compilation.checked_types.rest_signatures.contains(left) == compilation.checked_types.rest_signatures.contains(right) and
+            !compilation.checked_types.generic_signature_params.contains(left) and
+            !compilation.checked_types.generic_signature_params.contains(right);
     }
 
     fn collectProgramUmdGlobals(self: *const Program) ProgramError![]const ts_driver.ProgramUmdGlobal {
@@ -3946,8 +4037,9 @@ pub const Program = struct {
     fn checkedJavaScriptExportsNeedDependencyChecking(
         self: *const Program,
         values: []const ts_driver.ProgramExportedValue,
+        classes: []const ts_driver.ProgramExportedClass,
     ) ProgramError!bool {
-        if (values.len == 0) return false;
+        if (values.len == 0 and classes.len == 0) return false;
         const imported = try self.gpa.alloc(bool, self.files.items.len);
         defer self.gpa.free(imported);
         @memset(imported, false);
@@ -3964,6 +4056,15 @@ pub const Program = struct {
             if (owner_id >= imported.len or !imported[owner_id]) continue;
             if (value.kind == .variable or
                 std.mem.indexOf(u8, self.files.items[owner_id].source, "@param") != null) return true;
+        }
+        // Class method signatures may depend on checked JSDoc parameters and
+        // an inferred return. Compile an imported JS owner before its users
+        // whenever its exported class actually has instance methods.
+        for (classes) |class| {
+            if (!jsdoc_types.isJavaScriptPath(class.declaration_path)) continue;
+            const owner_id = self.by_path.get(class.declaration_path) orelse continue;
+            if (owner_id >= imported.len or !imported[owner_id]) continue;
+            for (class.members) |member| if (member.is_method) return true;
         }
         return false;
     }
@@ -4195,9 +4296,10 @@ pub const Program = struct {
             try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             try self.populateCheckedJavaScriptExportSchemas(f, &declarations);
+            try self.populateCheckedJavaScriptClassMethods(f, program_exported_classes);
         }
         if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports) or
-            try self.checkedJavaScriptExportsNeedDependencyChecking(declarations.values))
+            try self.checkedJavaScriptExportsNeedDependencyChecking(declarations.values, program_exported_classes))
         {
             try self.compileFilesInDependencyBatches(
                 shared_options,
@@ -4269,6 +4371,7 @@ pub const Program = struct {
                     program_commonjs_exports,
                 );
                 try self.populateCheckedJavaScriptExportSchemas(self.files.items[index], declarations);
+                try self.populateCheckedJavaScriptClassMethods(self.files.items[index], options.program_exported_classes);
             }
         }
     }
@@ -15876,6 +15979,63 @@ test "Program: checked JavaScript typedef-backed object retains imported union w
                 const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
                 try T.expectEqual(@as(usize, 4), diagnostics.len);
                 for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            }
+        }
+    }
+}
+
+test "Program: checked JavaScript class methods retain imported argument and result types" {
+    const owner_source =
+        \\export class Counter {
+        \\  /** @type {number} */
+        \\  value = 0;
+        \\  /** @param {number} delta */
+        \\  add(delta) {
+        \\    this.value += delta;
+        \\    return this.value;
+        \\  }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Counter } from './owner.js';
+        \\const counter = new Counter();
+        \\counter.value = "bad";
+        \\counter.add("bad");
+        \\const label: string = counter.value;
+        \\const output: string = counter.add(1);
+        \\void [label, output];
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        for ([_]bool{ false, true }) |owner_first| {
+            for ([_]bool{ false, true }) |check_js| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                try vfs.addFile("/owner.js", owner_source);
+                try vfs.addFile("/consumer.ts", consumer_source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                const consumer = if (owner_first) blk: {
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk try program.add("/consumer.ts", consumer_source);
+                } else blk: {
+                    const id = try program.add("/consumer.ts", consumer_source);
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk id;
+                };
+                const options: ts_driver.CompileOptions = .{
+                    .allow_js = true,
+                    .check_js = check_js,
+                    .strict = true,
+                    .no_emit = true,
+                    .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+                };
+                if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+                const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 4), diagnostics.len);
+                for (diagnostics, [_]u32{ 2322, 2345, 2322, 2322 }) |diagnostic, code| try T.expectEqual(code, diagnostic.code);
             }
         }
     }

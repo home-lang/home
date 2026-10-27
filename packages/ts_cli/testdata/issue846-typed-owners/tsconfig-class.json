@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig-union.json",
+  "files": ["class-consumer.ts"]
+}
