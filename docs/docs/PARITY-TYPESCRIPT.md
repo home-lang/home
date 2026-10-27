@@ -57,7 +57,10 @@ TypeScript 5.7.3 CLI streams match with `checkJs` enabled or disabled. The
 same fixture also checks an imported checked-JS class: its JSDoc-constrained
 method argument and checked-body return type remain visible to the TypeScript
 consumer in both `checkJs` modes. This covers that class-method shape, not
-general class inference. The
+general class inference. A second string-signature oracle and Program/LSP
+edit-and-revert tests check that changing the admitted JavaScript owner
+refreshes the imported method's parameter and result, including editor
+diagnostic publication. The
 broader typed-JavaScript owner surface remains tracked in
 [#846](https://github.com/home-lang/home/issues/846).
 
