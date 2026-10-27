@@ -49,6 +49,13 @@ Its local control verifies the same optional-boolean diagnostic without an
 import; this is a targeted object-shape result, not complete JavaScript
 inference parity.
 
+A [nested checked-JavaScript fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-nested-constraints)
+checks nested property reads and writes, readonly members, and array-method
+arguments through an imported JSDoc type. TypeScript 5.7.3 and Home agree on
+the four exact consumer diagnostics with `checkJs` enabled or disabled; the
+owner has no extra diagnostic. This remains a targeted shape, not a claim of
+general JSDoc inference parity.
+
 A [typedef-backed imported-JS fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-typed-owners)
 checks required and optional union-valued properties through two invalid
 writes and two invalid reads. The checked owner now supplies its resolved

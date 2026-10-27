@@ -2713,6 +2713,22 @@ pub fn build(b: *std.Build) void {
         imported_object_constraints.expectStdErrEqual("");
         imported_object_constraints.expectExitCode(2);
         tsc_streams_step.dependOn(&imported_object_constraints.step);
+        const nested_constraints_dir = b.path("packages/ts_cli/testdata/issue846-nested-constraints");
+        const nested_constraints_output =
+            "main.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(6,7): error TS2322: Type 'number' is not assignable to type 'boolean'.\n" ++
+            "main.ts(7,13): error TS2540: Cannot assign to 'name' because it is a read-only property.\n" ++
+            "main.ts(11,18): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n";
+        inline for (.{ "true", "false" }) |check_js_flag| {
+            const nested_constraints = b.addRunArtifact(home_tsc_exe);
+            nested_constraints.setCwd(nested_constraints_dir);
+            nested_constraints.clearEnvironment();
+            nested_constraints.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false", "--checkJs", check_js_flag });
+            nested_constraints.expectStdOutEqual(nested_constraints_output);
+            nested_constraints.expectStdErrEqual("");
+            nested_constraints.expectExitCode(2);
+            tsc_streams_step.dependOn(&nested_constraints.step);
+        }
         const local_object_constraints = b.addRunArtifact(home_tsc_exe);
         local_object_constraints.setCwd(object_constraints_dir);
         local_object_constraints.clearEnvironment();

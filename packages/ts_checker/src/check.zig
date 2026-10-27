@@ -104647,17 +104647,29 @@ pub const Checker = struct {
 
     const JsDocTopLevelSplitter = struct {
         text: []const u8,
-        delim: u8,
+        delimiter: union(enum) { single: u8, any: []const u8 },
         index: usize = 0,
 
         fn init(text: []const u8, delim: u8) JsDocTopLevelSplitter {
-            return .{ .text = text, .delim = delim };
+            return .{ .text = text, .delimiter = .{ .single = delim } };
+        }
+
+        fn initAny(text: []const u8, delimiters: []const u8) JsDocTopLevelSplitter {
+            return .{ .text = text, .delimiter = .{ .any = delimiters } };
+        }
+
+        fn isDelimiter(self: *const JsDocTopLevelSplitter, c: u8) bool {
+            return switch (self.delimiter) {
+                .single => |delim| c == delim,
+                .any => |delimiters| std.mem.indexOfScalar(u8, delimiters, c) != null,
+            };
         }
 
         fn next(self: *JsDocTopLevelSplitter) ?[]const u8 {
             if (self.index > self.text.len) return null;
             var paren_depth: i32 = 0;
             var brace_depth: i32 = 0;
+            var bracket_depth: i32 = 0;
             var angle_depth: i32 = 0;
             var quote: u8 = 0;
             const start = self.index;
@@ -104685,13 +104697,17 @@ pub const Checker = struct {
                     '}' => {
                         if (brace_depth > 0) brace_depth -= 1;
                     },
+                    '[' => bracket_depth += 1,
+                    ']' => {
+                        if (bracket_depth > 0) bracket_depth -= 1;
+                    },
                     '<' => angle_depth += 1,
                     '>' => {
                         if (angle_depth > 0) angle_depth -= 1;
                     },
                     else => {},
                 }
-                if (c == self.delim and paren_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+                if (self.isDelimiter(c) and paren_depth == 0 and brace_depth == 0 and bracket_depth == 0 and angle_depth == 0) {
                     self.index = i + 1;
                     return std.mem.trim(u8, self.text[start..i], " \t\r\n");
                 }
@@ -104953,7 +104969,7 @@ pub const Checker = struct {
         else
             type_text;
         if (try self.jsDocObjectBodyIndexSignatureType(object_body)) |idx_t| return idx_t;
-        var lines = std.mem.tokenizeAny(u8, object_body, "\n;,");
+        var lines = JsDocTopLevelSplitter.initAny(object_body, "\n;,");
         while (lines.next()) |raw_line| {
             var line = std.mem.trim(u8, raw_line, " \t\r");
             if (line.len > 0 and line[0] == '*') {
@@ -296647,4 +296663,14 @@ test "checker: namespace-only export needs proven absent runtime value" {
 
     resolved.runtime_value = true;
     try T.expectEqual(Checker.ModuleExportRuntimeStatus.value, Checker.moduleExportRuntimeStatus(resolved));
+}
+
+test "checker: JSDoc object members split only at top-level delimiters" {
+    var members = Checker.JsDocTopLevelSplitter.initAny(
+        "inner: { count: number; readonly name: string; flag?: boolean }, items: number[]",
+        "\n;,",
+    );
+    try T.expectEqualStrings("inner: { count: number; readonly name: string; flag?: boolean }", members.next().?);
+    try T.expectEqualStrings("items: number[]", members.next().?);
+    try T.expect(members.next() == null);
 }
