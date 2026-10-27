@@ -96318,6 +96318,30 @@ pub const Checker = struct {
         return try self.jsDocFunctionSignatureFromBody(fn_node, body[implementation_start..]);
     }
 
+    /// The nearest JSDoc may describe the implementation while preceding
+    /// adjacent blocks declare the public overloads. Find the nearest block
+    /// through the full declaration prefix first (`export`, modifiers, owner),
+    /// then collect only blocks separated from it by whitespace.
+    fn adjacentFunctionJsDocBlocks(
+        self: *Checker,
+        src: []const u8,
+        fn_node: NodeId,
+        out: *std.ArrayListUnmanaged(JsDocBody),
+    ) CheckError!void {
+        const nearest = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return;
+        if (nearest.start < 3) return;
+        const nearest_start = nearest.start - 3;
+        var cursor = nearest_start;
+        while (cursor > 0 and std.ascii.isWhitespace(src[cursor - 1])) : (cursor -= 1) {}
+        // The existing collector searches backward through the source. Only
+        // invoke it when a preceding JSDoc block is actually adjacent; most
+        // functions have one block, so their overload check remains local.
+        if (cursor >= 2 and std.mem.eql(u8, src[cursor - 2 .. cursor], "*/")) {
+            try self.adjacentLeadingJsDocBlocks(src, @intCast(nearest_start), out);
+        }
+        try out.append(self.gpa, nearest);
+    }
+
     fn registerJsDocFunctionOverloads(self: *Checker, fn_node: NodeId, fn_name: hir_mod.StringId) CheckError!void {
         // JSDoc declares the callable surface even when checkJs is disabled;
         // that option controls owner diagnostics, not importer-visible types.
@@ -96326,34 +96350,48 @@ pub const Checker = struct {
             for (decls.items) |decl| if (decl == fn_node) return;
         }
         const src = self.source orelse return;
-        const body = self.leadingJsDocBodyForFunctionOrOwner(src, fn_node) orelse return;
-        var at = std.mem.indexOf(u8, body, "@overload") orelse return;
-        const implementation_start = jsDocOverloadImplementationStart(body);
+        var blocks: std.ArrayListUnmanaged(JsDocBody) = .empty;
+        defer blocks.deinit(self.gpa);
+        try self.adjacentFunctionJsDocBlocks(src, fn_node, &blocks);
+        var has_overload = false;
+        for (blocks.items) |block| {
+            if (std.mem.indexOf(u8, block.body, "@overload") != null) has_overload = true;
+        }
+        if (!has_overload) return;
         const gop = try self.overloads.getOrPut(self.gpa, fn_name);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         const dop = try self.overload_decls.getOrPut(self.gpa, fn_name);
         if (!dop.found_existing) dop.value_ptr.* = .empty;
-        while (true) {
-            const signature_start = at + "@overload".len;
-            const next_overload = std.mem.indexOfPos(u8, body, signature_start, "@overload");
-            const signature_end = next_overload orelse implementation_start orelse body.len;
-            if (try self.jsDocFunctionSignatureFromBody(fn_node, body[signature_start..signature_end])) |sig| {
-                try gop.value_ptr.*.append(self.gpa, sig);
-                try dop.value_ptr.*.append(self.gpa, fn_node);
+        for (blocks.items) |block| {
+            const body = block.body;
+            var at = std.mem.indexOf(u8, body, "@overload") orelse continue;
+            const implementation_start = jsDocOverloadImplementationStart(body);
+            while (true) {
+                const signature_start = at + "@overload".len;
+                const next_overload = std.mem.indexOfPos(u8, body, signature_start, "@overload");
+                const signature_end = next_overload orelse implementation_start orelse body.len;
+                if (try self.jsDocFunctionSignatureFromBody(fn_node, body[signature_start..signature_end])) |sig| {
+                    try gop.value_ptr.*.append(self.gpa, sig);
+                    try dop.value_ptr.*.append(self.gpa, fn_node);
+                }
+                at = next_overload orelse break;
             }
-            at = next_overload orelse break;
         }
     }
 
     fn jsDocOverloadPositionAt(self: *Checker, fn_node: NodeId, wanted_index: usize) ?u32 {
         const src = self.source orelse return null;
-        const jsdoc = self.leadingJsDocBodyForFunctionOrOwnerWithStart(src, fn_node) orelse return null;
-        var search: usize = 0;
+        var blocks: std.ArrayListUnmanaged(JsDocBody) = .empty;
+        defer blocks.deinit(self.gpa);
+        self.adjacentFunctionJsDocBlocks(src, fn_node, &blocks) catch return null;
         var index: usize = 0;
-        while (std.mem.indexOfPos(u8, jsdoc.body, search, "@overload")) |at| {
-            if (index == wanted_index) return @intCast(jsdoc.start + at + 1);
-            index += 1;
-            search = at + "@overload".len;
+        for (blocks.items) |block| {
+            var search: usize = 0;
+            while (std.mem.indexOfPos(u8, block.body, search, "@overload")) |at| {
+                if (index == wanted_index) return @intCast(block.start + at + 1);
+                index += 1;
+                search = at + "@overload".len;
+            }
         }
         return null;
     }
@@ -96376,7 +96414,7 @@ pub const Checker = struct {
         const src = self.source orelse return;
         var blocks: std.ArrayListUnmanaged(JsDocBody) = .empty;
         defer blocks.deinit(self.gpa);
-        try self.adjacentLeadingJsDocBlocks(src, self.hir.spanOf(fn_node).start, &blocks);
+        try self.adjacentFunctionJsDocBlocks(src, fn_node, &blocks);
         for (blocks.items) |block| {
             if (std.mem.indexOf(u8, block.body, "@overload") == null) continue;
             if (std.mem.indexOf(u8, block.body, "@constructor") != null) continue;

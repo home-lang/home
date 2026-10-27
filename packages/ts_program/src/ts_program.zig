@@ -22338,6 +22338,23 @@ test "Program: admitted JavaScript JSDoc overloads exclude implementation signat
         \\ */
         \\export function convert(value) { return value; }
     ;
+    const adjacent_owner_source =
+        \\/**
+        \\ * @overload
+        \\ * @param {string} value
+        \\ * @returns {string}
+        \\ */
+        \\/**
+        \\ * @overload
+        \\ * @param {number} value
+        \\ * @returns {number}
+        \\ */
+        \\/**
+        \\ * @param {string | number} value
+        \\ * @returns {string | number}
+        \\ */
+        \\export function convert(value) { return value; }
+    ;
     const consumer_source =
         \\import { convert } from './owner.js';
         \\const text: string = convert('one');
@@ -22347,39 +22364,41 @@ test "Program: admitted JavaScript JSDoc overloads exclude implementation signat
         \\const wrongText: string = convert(1);
         \\void [text, count, wrongCount, wrongText];
     ;
-    for ([_]bool{ false, true }) |check_js| {
-        for ([_]bool{ false, true }) |parallel| {
-            var vfs = ts_resolver.VirtualFs.init(T.allocator);
-            defer vfs.deinit();
-            try vfs.addFile("/owner.js", owner_source);
-            try vfs.addFile("/consumer.ts", consumer_source);
-            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
-            defer resolver.deinit();
-            var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
-            var program = Program.init(T.allocator, &resolver);
-            defer program.deinit();
-            _ = try program.add("/owner.js", owner_source);
-            const consumer = try program.add("/consumer.ts", consumer_source);
-            const options: ts_driver.CompileOptions = .{
-                .allow_js = true,
-                .check_js = check_js,
-                .no_emit = true,
-                .strict = true,
-                .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
-            };
-            if (parallel)
-                try program.compileAllParallel(options, 2)
-            else
-                try program.compileAll(options);
-            const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
-            try T.expectEqual(@as(usize, 3), diagnostics.len);
-            try T.expectEqual(@as(u32, 2769), diagnostics[0].code);
-            try T.expectEqual(@as(usize, 2), diagnostics[0].chain.len);
-            try T.expectEqualStrings("No overload matches this call.", diagnostics[0].message);
-            try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
-            try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
-            try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
-            try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[2].message);
+    for ([_][]const u8{ owner_source, adjacent_owner_source }) |source| {
+        for ([_]bool{ false, true }) |check_js| {
+            for ([_]bool{ false, true }) |parallel| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                try vfs.addFile("/owner.js", source);
+                try vfs.addFile("/consumer.ts", consumer_source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                _ = try program.add("/owner.js", source);
+                const consumer = try program.add("/consumer.ts", consumer_source);
+                const options: ts_driver.CompileOptions = .{
+                    .allow_js = true,
+                    .check_js = check_js,
+                    .no_emit = true,
+                    .strict = true,
+                    .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+                };
+                if (parallel)
+                    try program.compileAllParallel(options, 2)
+                else
+                    try program.compileAll(options);
+                const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 3), diagnostics.len);
+                try T.expectEqual(@as(u32, 2769), diagnostics[0].code);
+                try T.expectEqual(@as(usize, 2), diagnostics[0].chain.len);
+                try T.expectEqualStrings("No overload matches this call.", diagnostics[0].message);
+                try T.expectEqual(@as(u32, 2322), diagnostics[1].code);
+                try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostics[1].message);
+                try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
+                try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", diagnostics[2].message);
+            }
         }
     }
 }
