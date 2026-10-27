@@ -95,6 +95,10 @@ their source-owned type parameters and constraint
 in the TypeScript consumer; exact TypeScript 5.7.3 streams match with
 `checkJs` on and off. This covers those function-template forms, not all
 JSDoc generic syntax or inference.
+Two [generic-return snapshots](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-generic-revision)
+also drive Program and LSP edit-and-revert tests at one JavaScript owner path:
+changing an inferred return from `T` to `T[]` moves the importer TS2322 to
+the opposite assignment and republishes the editor diagnostic.
 
 ### Arrays & tuples
 

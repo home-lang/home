@@ -2672,6 +2672,24 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&generic_functions.step);
         }
 
+        // Two snapshots of an inferred JSDoc-generic return have opposite
+        // importer errors. Program/LSP tests edit one logical owner path
+        // between these bodies and verify diagnostic republication.
+        const generic_revision_dir = b.path("packages/ts_cli/testdata/issue846-generic-revision");
+        inline for (.{
+            .{ "tsconfig-direct.json", "main-direct.ts(4,7): error TS2322: Type 'string' is not assignable to type 'string[]'.\n" },
+            .{ "tsconfig-array.json", "main-array.ts(3,7): error TS2322: Type 'string[]' is not assignable to type 'string'.\n" },
+        }) |case| {
+            const generic_revision = b.addRunArtifact(home_tsc_exe);
+            generic_revision.setCwd(generic_revision_dir);
+            generic_revision.clearEnvironment();
+            generic_revision.addArgs(&.{ "-p", case[0], "--pretty", "false" });
+            generic_revision.expectStdOutEqual(case[1]);
+            generic_revision.expectStdErrEqual("");
+            generic_revision.expectExitCode(2);
+            tsc_streams_step.dependOn(&generic_revision.step);
+        }
+
         // A typedef-backed checked-JS object must transfer its resolved
         // union and optional-member types into the TypeScript importer.
         // Owner diagnostics can be on or off without losing the shape.

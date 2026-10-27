@@ -8093,6 +8093,91 @@ test "Service: checked JavaScript mixed-index edits republish importer diagnosti
     try T.expectEqual(@as(usize, 0), reverted.len);
 }
 
+test "Service: checked JavaScript generic return edits republish importer diagnostics" {
+    const Admitted = struct {
+        resolver: *ts_resolver.Resolver,
+        program: *ts_program.Program,
+        const vtable: ts_driver.ExternalResolver.VTable = .{ .resolve = resolve };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const admitted = self.program.lookupPath(result.path) != null;
+            return .{
+                .path = result.path,
+                .source_is_admitted = admitted,
+                .is_declaration = result.is_declaration or admitted,
+            };
+        }
+    };
+    const direct_owner =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function infer(value) { return value; }
+    ;
+    const array_owner =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function infer(value) { return [value]; }
+    ;
+    const consumer_source =
+        \\import { infer } from './owner.js';
+        \\const scalar: string = infer('one');
+        \\const array: string[] = infer('one');
+        \\void scalar;
+        \\void array;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", direct_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.js", direct_owner);
+    _ = try program.add("/consumer.ts", consumer_source);
+    var admitted = Admitted{ .resolver = &resolver, .program = &program };
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &admitted, .vtable = &Admitted.vtable },
+    };
+    try program.compileAll(options);
+
+    var svc = Service.init(T.allocator, &program);
+    defer svc.deinit();
+    svc.compile_options = options;
+    const initial = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingInitialDiagnostics;
+    defer freeLspDiagnostics(T.allocator, initial);
+    try T.expectEqual(@as(usize, 1), initial.len);
+    try T.expectEqual(@as(u32, 2322), initial[0].code);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'string[]'.", initial[0].message);
+
+    const owner_changed = try svc.didChangeFile(T.allocator, "/owner.js", array_owner);
+    defer T.allocator.free(owner_changed);
+    const changed = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingChangedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, changed);
+    try T.expectEqual(@as(usize, 1), changed.len);
+    try T.expectEqual(@as(u32, 2322), changed[0].code);
+    try T.expectEqualStrings("Type 'string[]' is not assignable to type 'string'.", changed[0].message);
+    try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+
+    const owner_reverted = try svc.didChangeFile(T.allocator, "/owner.js", direct_owner);
+    defer T.allocator.free(owner_reverted);
+    const reverted = (try svc.publishDiagnostics(T.allocator, "/consumer.ts")) orelse return error.MissingRevertedDiagnostics;
+    defer freeLspDiagnostics(T.allocator, reverted);
+    try T.expectEqual(@as(usize, 1), reverted.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'string[]'.", reverted[0].message);
+    try T.expect((try svc.publishDiagnostics(T.allocator, "/consumer.ts")) == null);
+}
+
 test "Service: didChangeFile on unknown file returns empty diagnostics" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

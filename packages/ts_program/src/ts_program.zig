@@ -15337,6 +15337,70 @@ test "Program: admitted JavaScript function templates preserve constraints and i
     for (diagnostics[2..]) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+test "Program: admitted JavaScript generic return revision refreshes importer" {
+    const direct_owner =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function infer(value) { return value; }
+    ;
+    const array_owner =
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function infer(value) { return [value]; }
+    ;
+    const consumer_source =
+        \\import { infer } from './owner.js';
+        \\const scalar: string = infer('one');
+        \\const array: string[] = infer('one');
+        \\void scalar;
+        \\void array;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", direct_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    _ = try program.add("/owner.js", direct_owner);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try program.compileAll(options);
+    const initial = program.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), initial.len);
+    try T.expectEqual(@as(u32, 2322), initial[0].code);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'string[]'.", initial[0].message);
+
+    try vfs.addFile("/owner.js", array_owner);
+    _ = try program.updateSource("/owner.js", array_owner);
+    resolver.invalidateCaches();
+    try T.expectEqual(@as(u32, 2), try program.recompileChanged(&.{"/owner.js"}, options));
+    const changed = program.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), changed.len);
+    try T.expectEqual(@as(u32, 2322), changed[0].code);
+    try T.expectEqualStrings("Type 'string[]' is not assignable to type 'string'.", changed[0].message);
+
+    try vfs.addFile("/owner.js", direct_owner);
+    _ = try program.updateSource("/owner.js", direct_owner);
+    resolver.invalidateCaches();
+    try T.expectEqual(@as(u32, 2), try program.recompileChanged(&.{"/owner.js"}, options));
+    const reverted = program.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 1), reverted.len);
+    try T.expectEqualStrings("Type 'string' is not assignable to type 'string[]'.", reverted[0].message);
+}
+
 test "Program: package type revisions refresh implied module format" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
