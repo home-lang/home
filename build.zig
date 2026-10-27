@@ -2552,6 +2552,28 @@ pub fn build(b: *std.Build) void {
             tsc_streams_step.dependOn(&transitive_without_check_js.step);
         }
 
+        // A typedef-backed checked-JS object must transfer its resolved
+        // union and optional-member types into the TypeScript importer.
+        // Owner diagnostics can be on or off without losing the shape.
+        const typed_owners_dir = b.path("packages/ts_cli/testdata/issue846-typed-owners");
+        const union_owner_output =
+            "union-consumer.ts(3,1): error TS2322: Type 'boolean' is not assignable to type 'string | number'.\n" ++
+            "union-consumer.ts(4,1): error TS2322: Type 'false' is not assignable to type 'string | number | undefined'.\n" ++
+            "union-consumer.ts(5,7): error TS2322: Type 'string | number' is not assignable to type 'boolean'.\n" ++
+            "  Type 'string' is not assignable to type 'boolean'.\n" ++
+            "union-consumer.ts(6,7): error TS2322: Type 'string | number | undefined' is not assignable to type 'number'.\n" ++
+            "  Type 'undefined' is not assignable to type 'number'.\n";
+        inline for (.{ "tsconfig-union.json", "tsconfig-union-no-checkjs.json" }) |config| {
+            const typed_union = b.addRunArtifact(home_tsc_exe);
+            typed_union.setCwd(typed_owners_dir);
+            typed_union.clearEnvironment();
+            typed_union.addArgs(&.{ "-p", config, "--pretty", "false" });
+            typed_union.expectStdOutEqual(union_owner_output);
+            typed_union.expectStdErrEqual("");
+            typed_union.expectExitCode(2);
+            tsc_streams_step.dependOn(&typed_union.step);
+        }
+
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.

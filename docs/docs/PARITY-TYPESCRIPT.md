@@ -49,6 +49,14 @@ Its local control verifies the same optional-boolean diagnostic without an
 import; this is a targeted object-shape result, not complete JavaScript
 inference parity.
 
+A [typedef-backed imported-JS fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-typed-owners)
+checks required and optional union-valued properties through two invalid
+writes and two invalid reads. The checked owner now supplies its resolved
+structural type when the pre-check JSDoc alias cannot be transferred; exact
+TypeScript 5.7.3 CLI streams match with `checkJs` enabled or disabled. The
+broader typed-JavaScript owner surface remains tracked in
+[#846](https://github.com/home-lang/home/issues/846).
+
 ### Arrays & tuples
 
 🟡 `T[]` / `Array<T>` — 🟢. Tuples — 🟡; arity + variadic
