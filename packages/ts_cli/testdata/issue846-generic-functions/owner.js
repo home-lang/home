@@ -26,3 +26,19 @@ export const ownerBad = identity('one');
 export function inferred(value) {
   return value;
 }
+
+/**
+ * @template T
+ * @param {T} value
+ */
+export function boxed(value) {
+  return { value };
+}
+
+/**
+ * @template T
+ * @param {T} value
+ */
+export function listed(value) {
+  return [value];
+}
