@@ -296693,12 +296693,22 @@ test "checker: overload applicability preserves final contextual callback diagno
             const actual = diagnostic.pos orelse setup.hir.spanOf(diagnostic.node).start;
             try T.expectEqual(@as(u32, @intCast(expected)), actual);
             try T.expectEqual(@as(usize, 0), diagnostic.related.len);
-            try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
-            const element = diagnostic.chain[0].children[0];
-            try T.expectEqual(@as(u32, TsCodes.type_not_assignable), element.code);
-            try T.expect(std.mem.indexOf(u8, element.message, "number") != null);
-            try T.expect(std.mem.indexOf(u8, element.message, "string") != null);
-            try T.expect(std.mem.indexOf(u8, element.message, "unknown[]") == null);
+            // Pinned TypeScript 5.7.3 reports both rejected overloads. The
+            // first fails its literal tag; the second fails its tuple value.
+            // Exact candidate text remains tracked in #959.
+            try T.expectEqual(@as(usize, 2), diagnostic.chain.len);
+            try T.expectEqual(@as(u32, TsCodes.overload_n_error), diagnostic.chain[0].code);
+            try T.expectEqual(@as(u32, TsCodes.overload_n_error), diagnostic.chain[1].code);
+            try T.expectEqual(@as(usize, 1), diagnostic.chain[0].children.len);
+            try T.expectEqual(@as(usize, 1), diagnostic.chain[1].children.len);
+            const tag_error = diagnostic.chain[0].children[0];
+            try T.expectEqual(@as(u32, TsCodes.argument_type_mismatch), tag_error.code);
+            try T.expect(std.mem.indexOf(u8, tag_error.message, "numeric") != null);
+            const tuple_error = diagnostic.chain[1].children[0];
+            try T.expectEqual(@as(u32, TsCodes.type_not_assignable), tuple_error.code);
+            try T.expect(std.mem.indexOf(u8, tuple_error.message, "number") != null);
+            try T.expect(std.mem.indexOf(u8, tuple_error.message, "string") != null);
+            try T.expect(std.mem.indexOf(u8, tuple_error.message, "unknown[]") == null);
         }
     }
 }
