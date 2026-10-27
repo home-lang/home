@@ -133990,7 +133990,12 @@ pub const Checker = struct {
             if (self.callArityFitsSignature(call_node, sig, args)) last_arity_compatible = sig;
         }
         if (last_arity_compatible) |sig| {
-            if (try self.genericConstraintArgumentErrorEntry(args, arg_types, sig) != null) {
+            // Keep the per-candidate chain for two or three public overloads
+            // when it is available, including a constrained generic. The
+            // last-overload shortcut applies outside that diagnostic shape.
+            if ((overloads.len < 2 or overloads.len > 3) and
+                try self.genericConstraintArgumentErrorEntry(args, arg_types, sig) != null)
+            {
                 try self.reportNoOverloadMatchesWithLastOverload(call_node, args, arg_types, sig);
                 return;
             }
@@ -133999,8 +134004,7 @@ pub const Checker = struct {
             const chain = try self.overloadArgumentErrorChains(call_node, args, arg_types, overloads);
             if (chain.len > 0) {
                 try self.checkFailedOverloadArgumentContexts(call_node, args, arg_types);
-                const effective_last = self.instantiateSignatureFromArgs(overloads[overloads.len - 1], args, arg_types) catch overloads[overloads.len - 1];
-                const error_node = if (try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_last)) |arg_error|
+                const error_node = if (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, overloads[overloads.len - 1])) |arg_error|
                     arg_error.node
                 else
                     call_node;
@@ -134031,7 +134035,7 @@ pub const Checker = struct {
             // First decide applicability with the actual inference result.
             // Replacing unbound parameters is solely a rendering step and
             // must never add a candidate to the diagnostic chain.
-            const arg_error = (try self.signatureArgumentErrorEntry(call_node, args, arg_types, effective_sig)) orelse continue;
+            const arg_error = (try self.overloadSignatureArgumentErrorEntry(call_node, args, arg_types, sig)) orelse continue;
             const diagnostic_sig = try self.instantiateUninferredOverloadParametersForDiagnostics(sig, effective_sig);
             const display_error = if (diagnostic_sig != effective_sig)
                 (try self.signatureArgumentErrorEntry(call_node, args, arg_types, diagnostic_sig)) orelse arg_error
@@ -135731,6 +135735,7 @@ pub const Checker = struct {
         var selected_applicable: TypeId = types.Primitive.none;
         for (sigs.items) |sig| {
             if (try self.signatureDefinitelyRejectsLiteralArguments(sig, args, arg_types)) continue;
+            if (!try self.inferredCallSatisfiesGenericConstraints(sig, args, arg_types)) continue;
             const effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             if (!try self.signatureAccepts(call_node, effective_sig, args, arg_types)) continue;
             if (preserve_intersection_order or preserve_interface_order) {
