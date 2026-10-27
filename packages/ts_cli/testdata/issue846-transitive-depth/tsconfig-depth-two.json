@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "maxNodeModuleJsDepth": 2 }
+}
