@@ -2832,6 +2832,14 @@ pub fn build(b: *std.Build) void {
             "entries.ts(6,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
             "entries.ts(7,7): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
             "entries.ts(12,7): error TS2322: Type 'number' is not assignable to type 'string'.\n";
+        const readonly_concat_output =
+            "concat.ts(5,7): error TS2322: Type 'number[]' is not assignable to type 'string[]'.\n" ++
+            "  Type 'number' is not assignable to type 'string'.\n" ++
+            "concat.ts(6,31): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "concat.ts(6,34): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "concat.ts(11,7): error TS2322: Type 'NumericIndex' is not assignable to type 'StringIndex'.\n" ++
+            "  'number' index signatures are incompatible.\n" ++
+            "    Type 'number' is not assignable to type 'string'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
@@ -2839,6 +2847,7 @@ pub fn build(b: *std.Build) void {
             .{ "tsconfig-augmentation.json", readonly_augmentation_output },
             .{ "tsconfig-callback.json", readonly_callback_output },
             .{ "tsconfig-entries.json", readonly_entries_output },
+            .{ "tsconfig-concat.json", readonly_concat_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);

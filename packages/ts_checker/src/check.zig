@@ -193525,6 +193525,23 @@ pub const Checker = struct {
             }
         }
 
+        // Actual array types relate their element types directly. TypeScript
+        // reports `Type 'number' is not assignable to type 'string'.` beneath
+        // an Array<number> -> Array<string> failure, without the index-
+        // signature wrapper reserved for structural indexed objects. Keep
+        // this keyed to source provenance, not an `X[]` display-name guess.
+        if (self.array_origin_types.contains(source) and self.array_origin_types.contains(target)) {
+            const source_elem = self.interner.objectNumberIndex(source);
+            const target_elem = self.interner.objectNumberIndex(target);
+            if (source_elem != types.Primitive.none and target_elem != types.Primitive.none and
+                !(try self.indexSignatureValueAssignable(source_elem, target_elem)))
+            {
+                const slice = try arena.alloc(DiagnosticChainEntry, 1);
+                slice[0] = try self.typeNotAssignableChainEntry(source_elem, target_elem, false);
+                return slice;
+            }
+        }
+
         const incompatible_idx_pairs = [_]struct { key: []const u8, src: TypeId, tgt: TypeId }{
             .{ .key = "string", .src = self.interner.objectStringIndex(source), .tgt = self.interner.objectStringIndex(target) },
             .{ .key = "number", .src = self.interner.objectNumberIndex(source), .tgt = self.interner.objectNumberIndex(target) },
@@ -282724,6 +282741,20 @@ test "checker: buildAssignabilityElaborationChain emits TS2634 for incompatible 
     try T.expectEqualStrings("'number' index signatures are incompatible.", entry.message);
     try T.expectEqual(@as(usize, 1), entry.children.len);
     try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", entry.children[0].message);
+}
+
+test "checker: array-origin assignability elaborates element type without index wrapper" {
+    const s = try newSetup("const x = 1;");
+    defer destroySetup(s);
+    const numbers = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    const strings = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    try s.checker.array_origin_types.put(T.allocator, numbers, {});
+    try s.checker.array_origin_types.put(T.allocator, strings, {});
+    const chain = try s.checker.buildAssignabilityElaborationChain(numbers, strings);
+    try T.expectEqual(@as(usize, 1), chain.len);
+    try T.expectEqual(@as(u32, TsCodes.type_not_assignable), chain[0].code);
+    try T.expectEqualStrings("Type 'number' is not assignable to type 'string'.", chain[0].message);
+    try T.expectEqual(@as(usize, 0), chain[0].children.len);
 }
 
 test "checker: buildAssignabilityElaborationChain emits TS2330 for paired index key mismatch" {

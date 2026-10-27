@@ -38,6 +38,14 @@ is assigned to `string`; Home now preserves those types instead of treating
 the iterator values as `any`. The stream step pins all three locations,
 messages, and exit status.
 
+`tsconfig-concat.json` checks that readonly arrays can be concatenated into
+either readonly or mutable receivers while the result remains a mutable
+`number[]`. Its invalid result assignment must elaborate the array *element*
+mismatch directly. A local array-literal control keeps its element-site
+errors; a structural numeric-index interface control retains the distinct
+`'number' index signatures are incompatible` chain. The exact TypeScript
+5.7.3 streams and exit code are pinned in `test-tsc-streams`.
+
 `tsconfig-surface.json` selects the ES2023 library and tests copying
 methods on both imported readonly and mutable arrays. TypeScript 5.7.3
 returns mutable `number[]` from `toReversed`, both `toSpliced` overloads,
