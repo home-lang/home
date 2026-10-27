@@ -2654,7 +2654,10 @@ pub fn build(b: *std.Build) void {
         const generic_consumer_output =
             "main.ts(5,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
             "main.ts(6,35): error TS2345: Argument of type 'boolean' is not assignable to parameter of type 'string | number'.\n" ++
-            "main.ts(8,7): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+            "main.ts(8,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(10,1): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+            "main.ts(11,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(12,7): error TS2322: Type 'string' is not assignable to type 'number'.\n";
         inline for (.{ true, false }) |generic_check_js| {
             const generic_functions = b.addRunArtifact(home_tsc_exe);
             generic_functions.setCwd(generic_functions_dir);

@@ -15267,7 +15267,7 @@ test "Program: checked JavaScript mixed-index revision refreshes importer reads 
     try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
 }
 
-test "Program: admitted JavaScript function templates preserve imported constraints" {
+test "Program: admitted JavaScript function templates preserve constraints and inferred members" {
     const owner_source =
         \\/**
         \\ * @template T
@@ -15286,14 +15286,30 @@ test "Program: admitted JavaScript function templates preserve imported constrai
         \\ * @param {T} value
         \\ */
         \\export function inferred(value) { return value; }
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function boxed(value) { return { value }; }
+        \\/**
+        \\ * @template T
+        \\ * @param {T} value
+        \\ */
+        \\export function listed(value) { return [value]; }
     ;
     const consumer_source =
-        \\import { identity, constrained, inferred } from './owner.js';
+        \\import { identity, constrained, inferred, boxed, listed } from './owner.js';
         \\const value: number = identity('one');
         \\constrained(true);
         \\const inferredValue: number = inferred('two');
+        \\const box = boxed('three');
+        \\box.value = 1;
+        \\const boxedRead: number = box.value;
+        \\const listedRead: number = listed('four')[0];
         \\void value;
         \\void inferredValue;
+        \\void boxedRead;
+        \\void listedRead;
     ;
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -15315,10 +15331,10 @@ test "Program: admitted JavaScript function templates preserve imported constrai
     };
     try program.compileAll(options);
     const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
-    try T.expectEqual(@as(usize, 3), diagnostics.len);
+    try T.expectEqual(@as(usize, 6), diagnostics.len);
     try T.expectEqual(@as(u32, 2322), diagnostics[0].code);
     try T.expectEqual(@as(u32, 2345), diagnostics[1].code);
-    try T.expectEqual(@as(u32, 2322), diagnostics[2].code);
+    for (diagnostics[2..]) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
 test "Program: package type revisions refresh implied module format" {

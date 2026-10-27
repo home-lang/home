@@ -89,8 +89,9 @@ broader typed-JavaScript owner surface remains tracked in
 
 An [imported JSDoc function fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-generic-functions)
 also checks an unconstrained identity function, a constrained template, and
-a template whose result is inferred from the checked JavaScript body. The
-declaration graph retains their source-owned type parameters and constraint
+a template whose result is inferred from the checked JavaScript body, including
+`T` nested in returned object and array members. The declaration graph retains
+their source-owned type parameters and constraint
 in the TypeScript consumer; exact TypeScript 5.7.3 streams match with
 `checkJs` on and off. This covers those function-template forms, not all
 JSDoc generic syntax or inference.
