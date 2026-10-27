@@ -2928,7 +2928,12 @@ pub const Program = struct {
                         .var_decl, .let_decl, .const_decl => {},
                         else => continue,
                     }
-                    if (compilation.checked_types.builtin_generic_kinds.get(checked_type) == null) continue;
+                    // A JSDoc typedef can resolve to a structural type only
+                    // after its owner has been checked. The syntax projector
+                    // correctly leaves that route opaque; publish the actual
+                    // checked type when the complete shape is transferable.
+                    if (!route.projection_only and
+                        compilation.checked_types.builtin_generic_kinds.get(checked_type) == null) continue;
                 },
             }
             const body = checked_schema.lowerTypeInArena(
@@ -15822,6 +15827,56 @@ test "Program: unchecked JavaScript JSDoc parameter constrains an admitted impor
                 "Argument of type 'string' is not assignable to parameter of type 'number'.",
                 diagnostics[0].message,
             );
+        }
+    }
+}
+
+test "Program: checked JavaScript typedef-backed object retains imported union writes" {
+    const owner_source =
+        \\/** @typedef {{ choice: string | number, maybe?: string | number }} Payload */
+        \\/** @type {Payload} */
+        \\export const payload = { choice: 1 };
+    ;
+    const consumer_source =
+        \\import { payload } from './owner.js';
+        \\payload.choice = true;
+        \\payload.maybe = false;
+        \\const booleanChoice: boolean = payload.choice;
+        \\const requiredMaybe: number = payload.maybe;
+        \\void [booleanChoice, requiredMaybe];
+    ;
+    for ([_]bool{ false, true }) |parallel| {
+        for ([_]bool{ false, true }) |owner_first| {
+            for ([_]bool{ false, true }) |check_js| {
+                var vfs = ts_resolver.VirtualFs.init(T.allocator);
+                defer vfs.deinit();
+                try vfs.addFile("/owner.js", owner_source);
+                try vfs.addFile("/consumer.ts", consumer_source);
+                var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+                defer resolver.deinit();
+                var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+                var program = Program.init(T.allocator, &resolver);
+                defer program.deinit();
+                const consumer = if (owner_first) blk: {
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk try program.add("/consumer.ts", consumer_source);
+                } else blk: {
+                    const id = try program.add("/consumer.ts", consumer_source);
+                    _ = try program.add("/owner.js", owner_source);
+                    break :blk id;
+                };
+                const options: ts_driver.CompileOptions = .{
+                    .allow_js = true,
+                    .check_js = check_js,
+                    .strict = true,
+                    .no_emit = true,
+                    .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+                };
+                if (parallel) try program.compileAllParallel(options, 2) else try program.compileAll(options);
+                const diagnostics = program.fileById(consumer).compilation.?.diagnostics.items;
+                try T.expectEqual(@as(usize, 4), diagnostics.len);
+                for (diagnostics) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+            }
         }
     }
 }
