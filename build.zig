@@ -2298,6 +2298,30 @@ pub fn build(b: *std.Build) void {
         imported_index.expectExitCode(2);
         tsc_streams_step.dependOn(&imported_index.step);
 
+        // A checked-JS owner keeps named and string-index members together,
+        // including inside a nested object. A concrete mutable member also
+        // takes precedence over a readonly index for dot and literal access.
+        const mixed_object_index_dir = b.path("packages/ts_cli/testdata/issue846-mixed-object-index");
+        const mixed_object_index_consumer =
+            "main.ts(5,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(6,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(11,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(12,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "main.ts(16,1): error TS2542: Index signature in type '{ readonly [key: string]: number; known: number; }' only permits reading.\n";
+        const mixed_object_index_owner =
+            "owner.js(3,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+            "owner.js(7,1): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+        inline for (.{ true, false }) |mixed_check_js| {
+            const mixed_object_index = b.addRunArtifact(home_tsc_exe);
+            mixed_object_index.setCwd(mixed_object_index_dir);
+            mixed_object_index.clearEnvironment();
+            mixed_object_index.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false", "--checkJs", if (mixed_check_js) "true" else "false" });
+            mixed_object_index.expectStdOutEqual(mixed_object_index_consumer ++ if (mixed_check_js) mixed_object_index_owner else "");
+            mixed_object_index.expectStdErrEqual("");
+            mixed_object_index.expectExitCode(2);
+            tsc_streams_step.dependOn(&mixed_object_index.step);
+        }
+
         // #957: checked and unchecked JavaScript collection exports must
         // retain their generic arguments through both module systems.
         const collections_dir = b.path("packages/ts_cli/testdata/issue957-collections");

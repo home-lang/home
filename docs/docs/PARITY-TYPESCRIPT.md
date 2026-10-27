@@ -56,6 +56,14 @@ the four exact consumer diagnostics with `checkJs` enabled or disabled; the
 owner has no extra diagnostic. This remains a targeted shape, not a claim of
 general JSDoc inference parity.
 
+A [mixed named/indexed JSDoc fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-mixed-object-index)
+checks that a concrete property and string index survive together in the
+checked JavaScript owner, including inside a nested object. Exact TypeScript
+5.7.3 streams match with `checkJs` on and off: owner-side bad writes appear
+only when checked, while the TypeScript consumer retains its indexed types.
+A mutable concrete member remains writable even beside a readonly index;
+only an index-only key gets TS2542.
+
 A [typedef-backed imported-JS fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-typed-owners)
 checks required and optional union-valued properties through two invalid
 writes and two invalid reads. The checked owner now supplies its resolved

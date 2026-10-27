@@ -51621,6 +51621,22 @@ pub const Checker = struct {
             obj_t = self.typeOfIdentifierDeclared(obj_node);
         }
         if (!self.typeHasReadonlyIndexSignatureForTarget(obj_t, target)) return;
+        // A concrete property takes precedence over an index signature for
+        // both dot access and a literal string key. Its own readonly bit is
+        // checked separately; an index-only key still gets TS2542.
+        const explicit_name: ?hir_mod.StringId = switch (target_kind) {
+            .member_access => hir_mod.memberOf(self.hir, target).name,
+            .element_access => blk: {
+                const index = hir_mod.elementOf(self.hir, target).index;
+                if (self.hir.kindOf(index) == .literal_string)
+                    break :blk hir_mod.literalStringOf(self.hir, index).value;
+                break :blk null;
+            },
+            else => null,
+        };
+        if (explicit_name) |name| {
+            if (self.interner.objectMemberInfo(obj_t, name) != null) return;
+        }
         // For named member access (`C.bar`), only fire if the class
         // has no concrete static member of that name ÃÂ¢ÃÂÃÂ otherwise the
         // signature doesn't apply and the assignment is fine.
@@ -104968,7 +104984,16 @@ pub const Checker = struct {
             std.mem.trim(u8, trimmed_outer[1 .. trimmed_outer.len - 1], " \t\r\n")
         else
             type_text;
-        if (try self.jsDocObjectBodyIndexSignatureType(object_body)) |idx_t| return idx_t;
+        // Property-tag bodies have their own line-oriented index syntax.
+        // Inline object types must collect indices alongside named members;
+        // returning an index-only type here drops the named half.
+        if (!is_inline_braced_object) {
+            if (try self.jsDocObjectBodyIndexSignatureType(object_body)) |idx_t| return idx_t;
+        }
+        var string_index: TypeId = types.Primitive.none;
+        var number_index: TypeId = types.Primitive.none;
+        var symbol_index: TypeId = types.Primitive.none;
+        var readonly_domains: ReadonlyIndexDomains = .{ .string = false, .number = false, .symbol = false };
         var lines = JsDocTopLevelSplitter.initAny(object_body, "\n;,");
         while (lines.next()) |raw_line| {
             var line = std.mem.trim(u8, raw_line, " \t\r");
@@ -104980,7 +105005,38 @@ pub const Checker = struct {
                 is_readonly = true;
                 line = std.mem.trim(u8, line["readonly ".len..], " \t");
             }
-            if (line.len == 0 or line[0] == '[' or line[0] == '}') continue;
+            if (line.len == 0 or line[0] == '}') continue;
+            if (is_inline_braced_object and line[0] == '[') {
+                const close = jsDocMatchingBracket(line, 0) orelse continue;
+                const header = std.mem.trim(u8, line[1..close], " \t\r");
+                const colon = std.mem.indexOfScalar(u8, header, ':') orelse continue;
+                const key_name = std.mem.trim(u8, header[0..colon], " \t\r");
+                if (key_name.len == 0 or !isJsDocIdentStart(key_name[0])) continue;
+                const valid_key_name = blk: {
+                    for (key_name[1..]) |c| if (!isJsDocIdentChar(c)) break :blk false;
+                    break :blk true;
+                };
+                if (!valid_key_name) continue;
+                const key_type = std.mem.trim(u8, header[colon + 1 ..], " \t\r");
+                const rest = std.mem.trim(u8, line[close + 1 ..], " \t\r");
+                if (rest.len < 2 or rest[0] != ':') continue;
+                const value_type = (try self.jsDocTypeTextToType(self.source orelse "", std.mem.trim(u8, rest[1..], " \t\r"))) orelse types.Primitive.any;
+                if (std.mem.eql(u8, key_type, "string")) {
+                    if (string_index != types.Primitive.none) return null;
+                    string_index = value_type;
+                    readonly_domains.string = is_readonly;
+                } else if (std.mem.eql(u8, key_type, "number")) {
+                    if (number_index != types.Primitive.none) return null;
+                    number_index = value_type;
+                    readonly_domains.number = is_readonly;
+                } else if (std.mem.eql(u8, key_type, "symbol")) {
+                    if (symbol_index != types.Primitive.none) return null;
+                    symbol_index = value_type;
+                    readonly_domains.symbol = is_readonly;
+                }
+                continue;
+            }
+            if (line[0] == '[') continue;
             if (line[0] == '(') {
                 const close = jsDocMatchingParen(line, 0) orelse continue;
                 const rest = std.mem.trim(u8, line[close + 1 ..], " \t\r");
@@ -105093,8 +105149,9 @@ pub const Checker = struct {
             });
         }
 
-        if (members.items.len == 0) return null;
-        const obj_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        if (members.items.len == 0 and string_index == types.Primitive.none and number_index == types.Primitive.none and symbol_index == types.Primitive.none) return null;
+        const obj_t = self.interner.internObjectTypeWithIndexAndSymbol(members.items, string_index, number_index, symbol_index) catch return error.OutOfMemory;
+        if (readonly_domains.any()) try self.readonly_index_types.put(self.gpa, obj_t, readonly_domains);
         if (is_inline_braced_object) {
             if (try self.allocAnonymousObjectName(obj_t)) |display| {
                 try self.registerAliasDisplayText(obj_t, display);
@@ -258913,6 +258970,34 @@ test "checker: checkjs JSDoc typedef resolves multiline index signature skeleton
             try T.expect(std.mem.indexOf(u8, d.message, "'ResolveRejectMap'") == null);
         }
     }
+}
+
+test "checker: checked JS mixed named and indexed JSDoc objects retain both surfaces" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\/** @type {{ known: number; [key: string]: number }} */
+        \\const counts = { known: 1 };
+        \\counts['other'] = 'bad';
+        \\/** @type {{ inner: { known: number; [key: string]: number } }} */
+        \\const nested = { inner: { known: 2 } };
+        \\nested.inner['other'] = 'bad';
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 7053));
+}
+
+test "checker: concrete member writes override a readonly string index" {
+    const s = try newSetup(
+        \\const counts: { known: number; readonly [key: string]: number } = { known: 1 };
+        \\counts.known = 2;
+        \\counts['known'] = 3;
+        \\counts['other'] = 4;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.readonly_index_signature));
 }
 
 test "checker: checkjs JSDoc Object string map exposes string indexer" {
