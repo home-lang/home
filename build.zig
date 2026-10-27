@@ -423,6 +423,11 @@ pub fn build(b: *std.Build) void {
         "ts-program-test-filter",
         "Only compile/run ts_program tests whose name contains this substring",
     );
+    const ts_lsp_test_filter = b.option(
+        []const u8,
+        "ts-lsp-test-filter",
+        "Only compile/run ts_lsp tests whose name contains this substring",
+    );
     const ts_driver_test_filter = b.option(
         []const u8,
         "ts-driver-test-filter",
@@ -2591,7 +2596,6 @@ pub fn build(b: *std.Build) void {
             typed_class.expectExitCode(2);
             tsc_streams_step.dependOn(&typed_class.step);
         }
-
         // JSDoc object members imported from checked JS keep readonly and
         // optional write constraints. The local control pins the same
         // diagnostic rule without module-resolution involvement.
@@ -3273,9 +3277,14 @@ pub fn build(b: *std.Build) void {
     run_ts_watch_program_tests.has_side_effects = true;
     dependOnTest(test_step, &run_ts_watch_program_tests.step, test_filter, "ts_watch_program");
 
-    const ts_lsp_tests = b.addTest(.{ .root_module = ts_lsp_pkg });
+    const ts_lsp_tests = b.addTest(.{
+        .root_module = ts_lsp_pkg,
+        .filters = if (ts_lsp_test_filter) |needle| &.{needle} else &.{},
+    });
     const run_ts_lsp_tests = b.addRunArtifact(ts_lsp_tests);
     dependOnTest(test_step, &run_ts_lsp_tests.step, test_filter, "ts_lsp");
+    const ts_lsp_step = b.step("test-ts-lsp", "Run only the TypeScript LSP package tests");
+    ts_lsp_step.dependOn(&run_ts_lsp_tests.step);
 
     const ts_cache_tests = b.addTest(.{ .root_module = ts_cache_pkg });
     const run_ts_cache_tests = b.addRunArtifact(ts_cache_tests);

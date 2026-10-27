@@ -15046,6 +15046,64 @@ test "Program: admitted checked JavaScript revisions refresh importer and owner 
     try expectCompilationLacksDiagnosticCode(p.fileById(owner).compilation.?, 2322);
 }
 
+test "Program: checked JavaScript class method revision refreshes importer signatures" {
+    const number_owner =
+        \\export class Counter {
+        \\  /** @type {number} */ value = 0;
+        \\  /** @param {number} delta */
+        \\  add(delta) { this.value += delta; return this.value; }
+        \\}
+    ;
+    const string_owner =
+        \\export class Counter {
+        \\  /** @type {string} */ value = '';
+        \\  /** @param {string} delta */
+        \\  add(delta) { this.value += delta; return this.value; }
+        \\}
+    ;
+    const consumer_source =
+        \\import { Counter } from './owner.js';
+        \\const counter = new Counter();
+        \\const value: number = counter.add(1);
+        \\void value;
+    ;
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.js", number_owner);
+    try vfs.addFile("/consumer.ts", consumer_source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .admitted_javascript = true };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const consumer = try program.add("/consumer.ts", consumer_source);
+    _ = try program.add("/owner.js", number_owner);
+    const options: ts_driver.CompileOptions = .{
+        .allow_js = true,
+        .check_js = true,
+        .strict = true,
+        .no_emit = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    };
+    try program.compileAll(options);
+    try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
+
+    try vfs.addFile("/owner.js", string_owner);
+    _ = try program.updateSource("/owner.js", string_owner);
+    resolver.invalidateCaches();
+    try T.expectEqual(@as(u32, 2), try program.recompileChanged(&.{"/owner.js"}, options));
+    const changed = program.fileById(consumer).compilation.?.diagnostics.items;
+    try T.expectEqual(@as(usize, 2), changed.len);
+    try T.expectEqual(@as(u32, 2322), changed[0].code);
+    try T.expectEqual(@as(u32, 2345), changed[1].code);
+
+    try vfs.addFile("/owner.js", number_owner);
+    _ = try program.updateSource("/owner.js", number_owner);
+    resolver.invalidateCaches();
+    try T.expectEqual(@as(u32, 2), try program.recompileChanged(&.{"/owner.js"}, options));
+    try T.expectEqual(@as(usize, 0), program.fileById(consumer).compilation.?.diagnostics.items.len);
+}
+
 test "Program: package type revisions refresh implied module format" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
