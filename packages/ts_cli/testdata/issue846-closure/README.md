@@ -16,6 +16,12 @@ and exit 2. With `allowJs` but no `checkJs`, only the `main.ts:4:7`
 diagnostic remains. `test-tsc-streams` asserts the exact output and exit
 code for all three modes.
 
+With `--allowJs false --checkJs false`, TypeScript rejects the explicit
+`root.js` with TS6504 before it enters the Program. The diagnostic names
+its absolute path, even when `-p tsconfig.json` was relative; a positional
+JavaScript root instead keeps the path as typed. The stream suite asserts
+the config-root wording and path exactly.
+
 `tsconfig-no-resolve.json` checks the diagnostic-format boundary. With
 `noResolve`, `bridge.js` is physically found but is not admitted to the
 Program, so both compilers emit TS7016 at `main.ts:1:23` and TS2322 for

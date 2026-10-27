@@ -2353,6 +2353,21 @@ pub fn build(b: *std.Build) void {
             closure.expectExitCode(2);
             tsc_streams_step.dependOn(&closure.step);
         }
+        const rejected_root_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/root.js") catch @panic("OOM");
+        if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, rejected_root_path, '\\', '/');
+        const rejected_config_root = b.addRunArtifact(home_tsc_exe);
+        rejected_config_root.setCwd(closure_dir);
+        rejected_config_root.clearEnvironment();
+        rejected_config_root.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false", "--allowJs", "false", "--checkJs", "false" });
+        rejected_config_root.expectStdOutEqual(b.fmt(
+            "error TS6504: File '{s}' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
+                "  The file is in the program because:\n" ++
+                "    Part of 'files' list in tsconfig.json\n",
+            .{rejected_root_path},
+        ));
+        rejected_config_root.expectStdErrEqual("");
+        rejected_config_root.expectExitCode(2);
+        tsc_streams_step.dependOn(&rejected_config_root.step);
         const bridge_abs_path = b.root.joinString(b.allocator, "packages/ts_cli/testdata/issue846-closure/bridge.js") catch @panic("OOM");
         if (target.result.os.tag == .windows) std.mem.replaceScalar(u8, bridge_abs_path, '\\', '/');
         const closure_no_resolve = b.addRunArtifact(home_tsc_exe);

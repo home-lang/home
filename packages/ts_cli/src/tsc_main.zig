@@ -3957,17 +3957,23 @@ pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) 
         .files_list
     else
         .none;
+    var source_io_threaded = std.Io.Threaded.init(gpa, .{});
+    defer source_io_threaded.deinit();
+    const source_io = source_io_threaded.io();
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const diagnostic_cwd: []const u8 = if (root_file_reason == .files_list)
+        cwd_buf[0..try std.process.currentPath(source_io, &cwd_buf)]
+    else
+        "";
     var extension_diagnostics = try collectRootFileExtensionDiagnostics(
         gpa,
         &input_files,
         allow_js,
         root_file_reason,
+        diagnostic_cwd,
     );
     defer extension_diagnostics.deinit(gpa);
 
-    var source_io_threaded = std.Io.Threaded.init(gpa, .{});
-    defer source_io_threaded.deinit();
-    const source_io = source_io_threaded.io();
     for (input_files.items) |path| {
         const src = RealFs.readWithIo(gpa, source_io, path) catch |err| {
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
@@ -5307,6 +5313,7 @@ fn collectRootFileExtensionDiagnostics(
     input_files: *std.ArrayListUnmanaged([]const u8),
     allow_js: bool,
     reason: RootFileDiagnosticReason,
+    cwd: []const u8,
 ) !RootFileExtensionDiagnostics {
     var diagnostics: RootFileExtensionDiagnostics = .{};
     errdefer diagnostics.deinit(gpa);
@@ -5319,7 +5326,15 @@ fn collectRootFileExtensionDiagnostics(
             valid_len += 1;
             continue;
         }
-        const message = try rootFileExtensionDiagnostic(gpa, path, class, reason);
+        // TypeScript prints config-listed roots as absolute paths even when
+        // --project was relative. Keep the original root for Program identity;
+        // only the rejection diagnostic needs the absolute spelling.
+        const absolute_path: ?[]u8 = if (reason == .files_list and !std.fs.path.isAbsolute(path))
+            try std.fs.path.resolve(gpa, &.{ cwd, path })
+        else
+            null;
+        defer if (absolute_path) |owned| gpa.free(owned);
+        const message = try rootFileExtensionDiagnostic(gpa, absolute_path orelse path, class, reason);
         diagnostics.messages.append(gpa, message) catch |err| {
             gpa.free(message);
             return err;
@@ -5755,6 +5770,7 @@ test "tsc_main: root extension diagnostics retain only admissible Program roots"
         &roots,
         false,
         .files_list,
+        "/repo",
     );
     defer diagnostics.deinit(std.testing.allocator);
 
@@ -5770,6 +5786,35 @@ test "tsc_main: root extension diagnostics retain only admissible Program roots"
     );
     try std.testing.expectEqualStrings(
         "error TS6054: File '/repo/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.\n" ++
+            "  The file is in the program because:\n" ++
+            "    Part of 'files' list in tsconfig.json",
+        diagnostics.messages.items[1],
+    );
+}
+
+test "tsc_main: relative config roots use absolute rejection paths without changing admitted roots" {
+    var roots: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer roots.deinit(std.testing.allocator);
+    try roots.appendSlice(std.testing.allocator, &.{ "main.ts", "root.js", "notes.txt" });
+    var diagnostics = try collectRootFileExtensionDiagnostics(
+        std.testing.allocator,
+        &roots,
+        false,
+        .files_list,
+        "/repo/app",
+    );
+    defer diagnostics.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), roots.items.len);
+    try std.testing.expectEqualStrings("main.ts", roots.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), diagnostics.messages.items.len);
+    try std.testing.expectEqualStrings(
+        "error TS6504: File '/repo/app/root.js' is a JavaScript file. Did you mean to enable the 'allowJs' option?\n" ++
+            "  The file is in the program because:\n" ++
+            "    Part of 'files' list in tsconfig.json",
+        diagnostics.messages.items[0],
+    );
+    try std.testing.expectEqualStrings(
+        "error TS6054: File '/repo/app/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.\n" ++
             "  The file is in the program because:\n" ++
             "    Part of 'files' list in tsconfig.json",
         diagnostics.messages.items[1],
