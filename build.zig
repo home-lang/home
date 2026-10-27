@@ -2473,6 +2473,44 @@ pub fn build(b: *std.Build) void {
         implicit_checkjs_depth_zero.expectExitCode(2);
         tsc_streams_step.dependOn(&implicit_checkjs_depth_zero.step);
 
+        // JSDoc object members imported from checked JS keep readonly and
+        // optional write constraints. The local control pins the same
+        // diagnostic rule without module-resolution involvement.
+        const object_constraints_dir = b.path("packages/ts_cli/testdata/issue846-object-constraints");
+        const imported_object_constraints = b.addRunArtifact(home_tsc_exe);
+        imported_object_constraints.setCwd(object_constraints_dir);
+        imported_object_constraints.clearEnvironment();
+        imported_object_constraints.addArgs(&.{ "-p", "tsconfig.json", "--pretty", "false" });
+        imported_object_constraints.expectStdOutEqual(
+            "main.ts(4,8): error TS2540: Cannot assign to 'id' because it is a read-only property.\n" ++
+                "main.ts(5,1): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                "main.ts(6,1): error TS2322: Type '\"bad\"' is not assignable to type 'boolean | undefined'.\n" ++
+                "main.ts(7,7): error TS2322: Type 'boolean | undefined' is not assignable to type 'boolean'.\n" ++
+                "  Type 'undefined' is not assignable to type 'boolean'.\n" ++
+                "main.ts(8,8): error TS2339: Property 'extra' does not exist on type '{ readonly id: number; label: string; optional?: boolean | undefined; }'.\n",
+        );
+        imported_object_constraints.expectStdErrEqual("");
+        imported_object_constraints.expectExitCode(2);
+        tsc_streams_step.dependOn(&imported_object_constraints.step);
+        const local_object_constraints = b.addRunArtifact(home_tsc_exe);
+        local_object_constraints.setCwd(object_constraints_dir);
+        local_object_constraints.clearEnvironment();
+        local_object_constraints.addArgs(&.{ "--ignoreConfig", "--strict", "--noEmit", "--pretty", "false", "local-matrix.ts" });
+        local_object_constraints.expectStdOutEqual(
+            "local-matrix.ts(2,1): error TS2322: Type '\"bad\"' is not assignable to type 'boolean | undefined'.\n" ++
+                "local-matrix.ts(3,1): error TS2322: Type '1' is not assignable to type 'boolean | undefined'.\n" ++
+                "local-matrix.ts(4,1): error TS2322: Type 'null' is not assignable to type 'boolean | undefined'.\n" ++
+                "local-matrix.ts(7,1): error TS2322: Type 'string' is not assignable to type 'number'.\n" ++
+                "local-matrix.ts(8,1): error TS2322: Type 'boolean' is not assignable to type 'number'.\n" ++
+                "local-matrix.ts(9,1): error TS2322: Type 'null' is not assignable to type 'number | undefined'.\n" ++
+                "local-matrix.ts(12,1): error TS2322: Type 'number' is not assignable to type 'string'.\n" ++
+                "local-matrix.ts(13,1): error TS2322: Type 'boolean' is not assignable to type 'string'.\n" ++
+                "local-matrix.ts(14,1): error TS2322: Type 'null' is not assignable to type 'string | undefined'.\n",
+        );
+        local_object_constraints.expectStdErrEqual("");
+        local_object_constraints.expectExitCode(2);
+        tsc_streams_step.dependOn(&local_object_constraints.step);
+
         // Checked CommonJS exports preserve the source owner's inferred
         // collection arguments in the TypeScript consumer. The other export
         // shapes are controls for the same whole-export admission path.

@@ -43,6 +43,12 @@ literals). Coercion / widening rules per upstream.
 index signatures (string / number / symbol), call + construct
 signatures, method shorthand, getters / setters.
 
+An [imported checked-JavaScript object fixture](https://github.com/home-lang/home/tree/main/packages/ts_cli/testdata/issue846-object-constraints)
+checks readonly and optional property reads/writes against TypeScript 5.7.3.
+Its local control verifies the same optional-boolean diagnostic without an
+import; this is a targeted object-shape result, not complete JavaScript
+inference parity.
+
 ### Arrays & tuples
 
 🟡 `T[]` / `Array<T>` — 🟢. Tuples — 🟡; arity + variadic

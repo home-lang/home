@@ -195525,9 +195525,19 @@ pub const Checker = struct {
         if (target >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(target).is_union) return null;
         const members = self.interner.unionMembers(target);
         if (members.len != 2) return null;
-        if (members[0] == types.Primitive.undefined_t) return members[1];
-        if (members[1] == types.Primitive.undefined_t) return members[0];
-        return null;
+        const defined = if (members[0] == types.Primitive.undefined_t)
+            members[1]
+        else if (members[1] == types.Primitive.undefined_t)
+            members[0]
+        else
+            return null;
+        // TypeScript models `boolean` as the union `false | true`. A
+        // boolean-optional slot therefore has three constituents, not one
+        // defined constituent plus undefined. Keep the full target in the
+        // diagnostic, including the literal source, just as other
+        // multi-constituent unions do.
+        if (defined == types.Primitive.boolean_t) return null;
+        return defined;
     }
 
     fn reportAssignmentTypeNotAssignable(
@@ -260083,6 +260093,28 @@ test "checker: optional property assignment diagnostics select concrete union ta
         "Type 'number | undefined' is not assignable to type 'string | undefined'.",
         "Type 'null' is not assignable to type 'string | undefined'.",
         "Type '\"other\"' is not assignable to type '\"fixed\"'.",
+    };
+    try T.expectEqual(expected.len, s.checker.diagnostics.items.len);
+    for (expected, s.checker.diagnostics.items) |message, diagnostic| {
+        try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        try T.expectEqualStrings(message, diagnostic.message);
+    }
+}
+
+test "checker: optional boolean write retains three-constituent diagnostic" {
+    const s = try newSetup(
+        \\declare let boolSlot: { value?: boolean };
+        \\boolSlot.value = "bad";
+        \\boolSlot.value = 1;
+        \\boolSlot.value = null;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    const expected = [_][]const u8{
+        "Type '\"bad\"' is not assignable to type 'boolean | undefined'.",
+        "Type '1' is not assignable to type 'boolean | undefined'.",
+        "Type 'null' is not assignable to type 'boolean | undefined'.",
     };
     try T.expectEqual(expected.len, s.checker.diagnostics.items.len);
     for (expected, s.checker.diagnostics.items) |message, diagnostic| {
