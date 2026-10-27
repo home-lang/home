@@ -2825,11 +2825,15 @@ pub fn build(b: *std.Build) void {
         const readonly_augmentation_output =
             "augmentation.ts(11,56): error TS2339: Property 'firstOrUndefined' does not exist on type 'number[]'.\n" ++
             "augmentation.ts(12,16): error TS2339: Property 'push' does not exist on type 'readonly number[]'.\n";
+        const readonly_callback_output =
+            "callback.ts(3,9): error TS2339: Property 'push' does not exist on type 'readonly number[]'.\n" ++
+            "callback.ts(4,9): error TS4104: The type 'readonly number[]' is 'readonly' and cannot be assigned to the mutable type 'number[]'.\n";
         inline for (.{
             .{ "tsconfig.json", readonly_import_output },
             .{ "tsconfig-no-checkjs.json", readonly_import_output },
             .{ "tsconfig-local.json", readonly_local_output },
             .{ "tsconfig-augmentation.json", readonly_augmentation_output },
+            .{ "tsconfig-callback.json", readonly_callback_output },
         }) |case| {
             const readonly_array = b.addRunArtifact(home_tsc_exe);
             readonly_array.setCwd(readonly_array_dir);
